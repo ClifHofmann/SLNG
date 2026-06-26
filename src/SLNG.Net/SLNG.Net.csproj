@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>SLNG.Net</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SLNG.Core\SLNG.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    LibreMetaverse is added in task M0-2 (login flow), e.g.:
+    <ItemGroup>
+      <PackageReference Include="LibreMetaverse" Version="..." />
+    </ItemGroup>
+    Kept out of the M0-1 scaffold so the bootstrap build has no external deps.
+  -->
+
+</Project>

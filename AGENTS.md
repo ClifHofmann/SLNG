@@ -47,14 +47,20 @@ rendering while another works the protocol without colliding. Enforce it in revi
 
 ## Build & run
 
-> The project is scaffolded in task M0-1. Until then these are the *target* commands.
-
 ```bash
 dotnet build SLNG.sln              # build engine-agnostic libraries + tests
 dotnet test                        # run unit tests
 godot --path app                   # launch the client (or open app/ in the Godot editor)
 godot --headless --path app -- --selftest   # smoke test without a window
 ```
+
+Verified toolchain: **.NET SDK 8** and **Godot 4.7-stable (.NET/mono)**.
+
+> Dev-machine note: the .NET 8 SDK is installed per-user at `%USERPROFILE%\.dotnet`.
+> A runtime-only `dotnet` in `C:\Program Files\dotnet` wins PATH precedence, so if a
+> bare `dotnet` reports "no SDK", source `. tools/dev-env.ps1` first (or call
+> `%USERPROFILE%\.dotnet\dotnet.exe` directly, or install system-wide via
+> `winget install Microsoft.DotNet.SDK.8`). Godot is on PATH as `godot`.
 
 ## Coding conventions
 
