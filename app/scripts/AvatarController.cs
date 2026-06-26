@@ -88,8 +88,8 @@ public partial class AvatarController : Camera3D
                 if (godotMoveDir.LengthSquared() > 0)
                 {
                     float speed = 4.0f; // SL walk speed is roughly 3-4 m/s
-                    float slDx = -godotMoveDir.Z * speed * (float)delta;
-                    float slDy = -godotMoveDir.X * speed * (float)delta;
+                    float slDx = godotMoveDir.X * speed * (float)delta; // Godot Right (+X) is SL East (+X)
+                    float slDy = -godotMoveDir.Z * speed * (float)delta; // Godot Forward (-Z) is SL North (+Y)
                     float slDz = godotMoveDir.Y * speed * (float)delta;
 
                     transform.Position += new System.Numerics.Vector3(slDx, slDy, slDz);
@@ -130,11 +130,15 @@ public partial class AvatarController : Camera3D
 
             // The camera's Quaternion is Godot's space. We need SL space.
             // SL uses Z up, X forward, Y left. Godot uses Y up, -Z forward, X right.
-            // The conversion from Godot Quat to SL Quat:
+            // Godot's default forward (-Z) maps to SL's Y axis (North).
+            // But SL's default forward is the X axis (East).
+            // So we must rotate the SL quaternion by +90 degrees around Z to align them.
             var godotQuat = Quaternion;
             var slQuat = new System.Numerics.Quaternion(godotQuat.X, -godotQuat.Z, godotQuat.Y, godotQuat.W);
+            var offset = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, (float)System.Math.PI / 2.0f);
+            var finalQuat = offset * slQuat;
 
-            _session.SetMovement(fwd, back, left, right, up, down, slQuat);
+            _session.SetMovement(fwd, back, left, right, up, down, finalQuat);
         }
     }
 }
