@@ -8,7 +8,7 @@ config_version=5
 config/name="SLNG"
 config/description="Next-gen Second Life / OpenSim viewer"
 run/main_scene="res://Main.tscn"
-config/features=PackedStringArray("4.4", "Forward Plus")
+config/features=PackedStringArray("4.7", "Forward Plus")
 
 [dotnet]
 
