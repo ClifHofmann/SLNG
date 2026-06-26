@@ -67,3 +67,17 @@ text = "Login"
 layout_mode = 2
 size_flags_vertical = 3
 scroll_following = true
+
+[node name="ChatBox" type="HBoxContainer" parent="VBoxContainer"]
+layout_mode = 2
+
+[node name="ChatInput" type="LineEdit" parent="VBoxContainer/ChatBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+placeholder_text = "Type your message here..."
+editable = false
+
+[node name="ChatSendButton" type="Button" parent="VBoxContainer/ChatBox"]
+layout_mode = 2
+text = "Send"
+disabled = true

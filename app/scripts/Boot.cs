@@ -11,6 +11,9 @@ public partial class Boot : Control
     private LineEdit _passInput = null!;
     private Button _loginButton = null!;
     private RichTextLabel _logPanel = null!;
+    
+    private LineEdit _chatInput = null!;
+    private Button _chatSendButton = null!;
 
     private GridSession? _session;
     private SLNG.Core.ECS.World? _world;
@@ -34,8 +37,13 @@ public partial class Boot : Control
         _passInput = GetNode<LineEdit>("VBoxContainer/HBoxContainer/PassInput");
         _loginButton = GetNode<Button>("VBoxContainer/HBoxContainer/LoginButton");
         _logPanel = GetNode<RichTextLabel>("VBoxContainer/LogPanel");
+        
+        _chatInput = GetNode<LineEdit>("VBoxContainer/ChatBox/ChatInput");
+        _chatSendButton = GetNode<Button>("VBoxContainer/ChatBox/ChatSendButton");
 
         _loginButton.Pressed += OnLoginPressed;
+        _chatSendButton.Pressed += OnChatSend;
+        _chatInput.TextSubmitted += (text) => OnChatSend();
 
         _terrainRenderer = new TerrainRenderer();
         AddChild(_terrainRenderer);
@@ -188,12 +196,25 @@ public partial class Boot : Control
 
             AddChild(_freeCamera);
             _freeCamera.MakeCurrent();
+
+            LogMessage($"[System] Login succeeded! Agent: {result.AgentId}");
+            _chatInput.Editable = true;
+            _chatSendButton.Disabled = false;
         }
         else
         {
-            LogMessage($"[color=red]Login FAILED[/color]: {result.Message}");
+            LogMessage($"[System] Login failed: {result.Message}");
             _loginButton.Disabled = false;
         }
+    }
+
+    private void OnChatSend()
+    {
+        var text = _chatInput.Text;
+        if (string.IsNullOrWhiteSpace(text)) return;
+        
+        _session?.SendChat(text);
+        _chatInput.Text = "";
     }
 
     private void OnChatMessage(object? sender, ChatMessageEvent e)

@@ -201,11 +201,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>Logs out if connected. Safe to call when already disconnected.</summary>
+    /// <summary>Logs out if connected. Safe to call when already disconnected.</summary>
     public void Logout()
     {
         if (_client.Network.Connected)
         {
             _client.Network.Logout();
+        }
+    }
+
+    /// <summary>Sends a local chat message.</summary>
+    public void SendChat(string message, int channel = 0, ChatType type = ChatType.Normal)
+    {
+        if (_client.Network.Connected)
+        {
+            _client.Self.Chat(message, channel, type);
         }
     }
 
