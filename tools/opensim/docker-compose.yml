@@ -7,8 +7,12 @@ services:
     ports:
       - "9000:9000/tcp"
       - "9000:9000/udp"
+    environment:
+      - ESTATE_NAME=SLNG Test Estate
+      - ESTATE_OWNER_NAME=Test User
+      - ESTATE_OWNER_PASSWORD=secret
+      - REGION_NAME=SLNG Test Region
+      - REGION_EXTERNAL_HOSTNAME=127.0.0.1
     volumes:
-      - ./config/OpenSim.ini:/opt/opensim/bin/OpenSim.ini:ro
-      - ./config/Regions/Regions.ini:/opt/opensim/bin/Regions/Regions.ini:ro
-      - ./config/startup.txt:/opt/opensim/bin/config/startup.txt:ro
+      - ./data:/opt/opensim/bin/sqlite-database
     restart: unless-stopped
