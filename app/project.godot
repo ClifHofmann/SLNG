@@ -1,0 +1,19 @@
+; Engine configuration file.
+; Godot 4 .NET project for the SLNG client.
+
+config_version=5
+
+[application]
+
+config/name="SLNG"
+config/description="Next-gen Second Life / OpenSim viewer"
+run/main_scene="res://Main.tscn"
+config/features=PackedStringArray("4.4", "Forward Plus")
+
+[dotnet]
+
+project/assembly_name="SLNG.App"
+
+[rendering]
+
+renderer/rendering_method="forward_plus"

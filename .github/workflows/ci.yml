@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  dotnet:
+    name: build & test (.NET)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore SLNG.sln
+
+      - name: Build
+        run: dotnet build SLNG.sln --no-restore -c Release
+
+      - name: Test
+        run: dotnet test SLNG.sln --no-build -c Release --verbosity normal
+
+  # A Godot export/build job (godot --headless --path app -- --selftest) is added
+  # once the engine version is pinned. It needs the Godot .NET editor in CI,
+  # so it is kept separate from the always-on .NET job above.
