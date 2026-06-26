@@ -60,7 +60,7 @@ Goal: terrain + placeholder prims rendered; free-fly camera.
 |---|---|---|---|---|---|---|---|
 | M1-1 | World model / ECS: entities, components, diffable updates ✅ | core | gemini | architect | claude | M0-3 | Object updates produce a queryable world model + tests |
 | M1-2 | Terrain: region heightmap → Godot mesh + collision ✅ | render | gemini | graphics-engineer | gemini | M0-1 | Region terrain visible and walkable |
-| M1-3 | Prims as placeholder primitives (box/sphere/cylinder) | render | — | graphics-engineer | claude | M1-1 | Objects appear at correct transforms |
+| M1-3 | Prims as placeholder primitives (box/sphere/cylinder) | render | gemini | graphics-engineer | gemini | M1-1 | Objects appear at correct transforms |
 | M1-4 | Free-fly camera + entity→Node3D scene sync | render | — | graphics-engineer | gemini | M1-1 | Camera flies; spawned/removed objects sync live |
 | M1-5 | Interest management + region bounds / neighbor handoff | core | — | architect | claude | M1-1 | Only in-range objects instantiated; no leaks crossing regions |
 

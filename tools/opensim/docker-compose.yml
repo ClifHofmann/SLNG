@@ -14,7 +14,7 @@ services:
       - ESTATE_OWNER_NAME=Test User
       - ESTATE_OWNER_PASSWORD=secret
       - REGION_NAME=SLNG Test Region
-      - REGION_EXTERNAL_HOSTNAME=127.0.0.1
+      - REGION_EXTERNAL_HOSTNAME=172.19.191.128
     volumes:
       - ./data:/opt/opensim/bin/sqlite-database
     restart: unless-stopped

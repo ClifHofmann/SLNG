@@ -25,7 +25,10 @@ public class WorldSimulationTests
         // Since GridSession.RaiseObjectUpdate is internal, and InternalsVisibleTo is set for SLNG.Net.Tests,
         // we need to make sure SLNG.Core.Tests also has InternalsVisibleTo!
         
-        session.RaiseObjectUpdate(new ObjectUpdateEvent(100, pos, rot));
+        var scale = new Vector3(1, 1, 1);
+        byte pCode = 1;
+
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(100, pos, rot, scale, pCode));
 
         var entity = world.GetEntity(100);
         Assert.NotNull(entity);
@@ -34,5 +37,10 @@ public class WorldSimulationTests
         Assert.NotNull(transform);
         Assert.Equal(pos, transform.Position);
         Assert.Equal(rot, transform.Rotation);
+
+        var prim = entity.GetComponent<PrimitiveComponent>();
+        Assert.NotNull(prim);
+        Assert.Equal(scale, prim.Scale);
+        Assert.Equal(pCode, prim.ProfileCurve);
     }
 }

@@ -41,7 +41,9 @@ public sealed class GridSession : IDisposable
         ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
             e.Prim.LocalID,
             new System.Numerics.Vector3(e.Prim.Position.X, e.Prim.Position.Y, e.Prim.Position.Z),
-            new System.Numerics.Quaternion(e.Prim.Rotation.X, e.Prim.Rotation.Y, e.Prim.Rotation.Z, e.Prim.Rotation.W)));
+            new System.Numerics.Quaternion(e.Prim.Rotation.X, e.Prim.Rotation.Y, e.Prim.Rotation.Z, e.Prim.Rotation.W),
+            new System.Numerics.Vector3(e.Prim.Scale.X, e.Prim.Scale.Y, e.Prim.Scale.Z),
+            (byte)e.Prim.PrimData.ProfileCurve));
     }
 
     private void OnLandPatchReceived(object? sender, LandPatchReceivedEventArgs e)

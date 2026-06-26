@@ -10,7 +10,7 @@ public record ChatMessageEvent(string FromName, string Message, byte ChatType);
 /// <summary>
 /// Represents a spatial update for a simulator object or avatar.
 /// </summary>
-public record ObjectUpdateEvent(uint LocalId, Vector3 Position, Quaternion Rotation);
+public record ObjectUpdateEvent(uint LocalId, Vector3 Position, Quaternion Rotation, Vector3 Scale, byte ProfileCurve);
 
 /// <summary>
 /// Represents a raw 16x16 chunk of terrain height data from the simulator.

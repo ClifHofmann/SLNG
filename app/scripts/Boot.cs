@@ -15,6 +15,7 @@ public partial class Boot : Control
     private SLNG.Core.ECS.World? _world;
     private SLNG.Core.WorldSimulation? _worldSimulation;
     private TerrainRenderer? _terrainRenderer;
+    private ObjectRenderer? _objectRenderer;
 
     public override void _Ready()
     {
@@ -29,6 +30,9 @@ public partial class Boot : Control
 
         _terrainRenderer = new TerrainRenderer();
         AddChild(_terrainRenderer);
+
+        _objectRenderer = new ObjectRenderer();
+        AddChild(_objectRenderer);
         
         LogMessage("Ready. Enter credentials and click Login.");
     }
@@ -49,6 +53,7 @@ public partial class Boot : Control
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
 
         _terrainRenderer?.Initialize(_world);
+        _objectRenderer?.Initialize(_world);
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.ObjectUpdateReceived += OnObjectUpdate;

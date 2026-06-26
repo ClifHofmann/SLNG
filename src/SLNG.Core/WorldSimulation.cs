@@ -26,21 +26,33 @@ public class WorldSimulation : IDisposable
     {
         var entity = _world.GetOrCreateEntity(e.LocalId);
 
-        // We either update an existing transform or create a new one.
-        var transform = entity.GetComponent<TransformComponent>();
-        if (transform != null)
+        if (!entity.HasComponent<TransformComponent>())
         {
-            transform.Position = e.Position;
-            transform.Rotation = e.Rotation;
+            var transform = new TransformComponent(e.Position, e.Rotation);
+            entity.SetComponent(transform);
+            _world.NotifyComponentUpdated(entity, transform);
         }
         else
         {
-            transform = new TransformComponent(e.Position, e.Rotation);
-            entity.SetComponent(transform);
+            var transform = entity.GetComponent<TransformComponent>()!;
+            transform.Position = e.Position;
+            transform.Rotation = e.Rotation;
+            _world.NotifyComponentUpdated(entity, transform);
         }
 
-        // Notify observers that this component has changed so they can update the scene graph.
-        _world.NotifyComponentUpdated(entity, transform);
+        if (!entity.HasComponent<PrimitiveComponent>())
+        {
+            var prim = new PrimitiveComponent(e.Scale, e.ProfileCurve);
+            entity.SetComponent(prim);
+            _world.NotifyComponentUpdated(entity, prim);
+        }
+        else
+        {
+            var prim = entity.GetComponent<PrimitiveComponent>()!;
+            prim.Scale = e.Scale;
+            prim.ProfileCurve = e.ProfileCurve;
+            _world.NotifyComponentUpdated(entity, prim);
+        }
     }
 
     private void OnTerrainPatchReceived(object? sender, TerrainPatchEvent e)
