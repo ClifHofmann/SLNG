@@ -138,6 +138,17 @@ public partial class AvatarController : Camera3D
             var offset = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, (float)System.Math.PI / 2.0f);
             var finalQuat = offset * slQuat;
 
+            // Locally update the avatar's rotation so it visibly turns
+            if (localAgent != null)
+            {
+                var transform = localAgent.GetComponent<TransformComponent>();
+                if (transform != null)
+                {
+                    transform.Rotation = finalQuat;
+                    _world.NotifyComponentUpdated(localAgent, transform);
+                }
+            }
+
             _session.SetMovement(fwd, back, left, right, up, down, finalQuat);
         }
     }
