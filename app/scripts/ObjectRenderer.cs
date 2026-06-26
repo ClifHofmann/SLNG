@@ -96,9 +96,9 @@ public partial class ObjectRenderer : Node3D
                 };
             }
 
-            if (_assetService != null && prim.TextureId != Guid.Empty)
+            if (_assetService != null && (prim.TextureId != Guid.Empty || prim.RenderMaterialId != Guid.Empty))
             {
-                _ = LoadAndApplyTextureAsync(meshInstance, prim.TextureId);
+                _ = LoadAndApplyMaterialAsync(meshInstance, prim.TextureId, prim.RenderMaterialId, new Godot.Color(prim.ColorTint.X, prim.ColorTint.Y, prim.ColorTint.Z, prim.ColorTint.W));
             }
 
             // Apply Scale
@@ -140,28 +140,76 @@ public partial class ObjectRenderer : Node3D
         Godot.Callable.From(() => ApplyMeshData(meshInstance, mesh)).CallDeferred();
     }
 
-    private async System.Threading.Tasks.Task LoadAndApplyTextureAsync(MeshInstance3D meshInstance, Guid textureId)
+    private async System.Threading.Tasks.Task LoadAndApplyMaterialAsync(MeshInstance3D meshInstance, Guid textureId, Guid renderMaterialId, Godot.Color colorTint)
     {
         if (_assetService == null) return;
 
-        var texture = await _assetService.GetTextureAsync(textureId);
-        if (texture == null) return;
-
-        // Build the Godot texture/material on the main thread.
-        Godot.Callable.From(() => ApplyTexture(meshInstance, texture)).CallDeferred();
-    }
-
-    private void ApplyTexture(MeshInstance3D meshInstance, TextureData texture)
-    {
-        if (meshInstance == null || !IsInstanceValid(meshInstance)) return;
-
-        var image = Image.CreateFromData(texture.Width, texture.Height, false, Image.Format.Rgba8, texture.Rgba);
-        var albedo = ImageTexture.CreateFromImage(image);
-        meshInstance.MaterialOverride = new StandardMaterial3D 
-        { 
-            AlbedoTexture = albedo,
+        StandardMaterial3D material = new StandardMaterial3D
+        {
+            AlbedoColor = colorTint,
             TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest
         };
+
+        if (renderMaterialId != Guid.Empty)
+        {
+            // GLTF PBR Material
+            var pbr = await _assetService.GetMaterialAsync(renderMaterialId);
+            if (pbr != null)
+            {
+                material.AlbedoColor = new Godot.Color(pbr.BaseColorFactor.X, pbr.BaseColorFactor.Y, pbr.BaseColorFactor.Z, pbr.BaseColorFactor.W) * colorTint;
+                material.Metallic = pbr.MetallicFactor;
+                material.Roughness = pbr.RoughnessFactor;
+                material.EmissionEnabled = pbr.EmissiveFactor != System.Numerics.Vector3.Zero;
+                material.Emission = new Godot.Color(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z);
+
+                // Fetch underlying maps concurrently
+                var tasks = new List<System.Threading.Tasks.Task>();
+
+                if (pbr.BaseColorTextureId != Guid.Empty)
+                    tasks.Add(_assetService.GetTextureAsync(pbr.BaseColorTextureId).ContinueWith(t => 
+                        Godot.Callable.From(() => material.AlbedoTexture = CreateGodotTexture(t.Result)).CallDeferred()));
+
+                if (pbr.NormalTextureId != Guid.Empty)
+                    tasks.Add(_assetService.GetTextureAsync(pbr.NormalTextureId).ContinueWith(t => 
+                        Godot.Callable.From(() => {
+                            material.NormalEnabled = true;
+                            material.NormalTexture = CreateGodotTexture(t.Result);
+                        }).CallDeferred()));
+
+                if (pbr.MetallicRoughnessTextureId != Guid.Empty)
+                    tasks.Add(_assetService.GetTextureAsync(pbr.MetallicRoughnessTextureId).ContinueWith(t => 
+                        Godot.Callable.From(() => material.OrmTexture = CreateGodotTexture(t.Result)).CallDeferred()));
+
+                if (pbr.EmissiveTextureId != Guid.Empty)
+                    tasks.Add(_assetService.GetTextureAsync(pbr.EmissiveTextureId).ContinueWith(t => 
+                        Godot.Callable.From(() => material.EmissionTexture = CreateGodotTexture(t.Result)).CallDeferred()));
+
+                await System.Threading.Tasks.Task.WhenAll(tasks);
+            }
+        }
+        else if (textureId != Guid.Empty)
+        {
+            // Classic Material (Fallback)
+            var texture = await _assetService.GetTextureAsync(textureId);
+            if (texture != null)
+            {
+                Godot.Callable.From(() => material.AlbedoTexture = CreateGodotTexture(texture)).CallDeferred();
+            }
+        }
+
+        Godot.Callable.From(() => {
+            if (IsInstanceValid(meshInstance))
+            {
+                meshInstance.MaterialOverride = material;
+            }
+        }).CallDeferred();
+    }
+
+    private static ImageTexture? CreateGodotTexture(TextureData? textureData)
+    {
+        if (textureData == null) return null;
+        var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+        return ImageTexture.CreateFromImage(image);
     }
 
     private void ApplyMeshData(MeshInstance3D meshInstance, MeshData mesh)

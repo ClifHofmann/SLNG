@@ -11,7 +11,7 @@ public class RegionTerrainTests
     {
         var terrain = new RegionTerrain();
         float[] patchHeights = new float[16 * 16];
-        
+
         // Fill the patch with a specific value
         for (int i = 0; i < patchHeights.Length; i++)
             patchHeights[i] = 15.5f;
@@ -20,7 +20,7 @@ public class RegionTerrainTests
         terrain.ApplyPatch(1, 1, patchHeights);
 
         var masterHeights = terrain.GetHeights();
-        
+
         // Verify a point inside the patch
         int indexInside = (16 + 5) * 256 + (16 + 5);
         Assert.Equal(15.5f, masterHeights[indexInside]);
@@ -35,7 +35,7 @@ public class RegionTerrainTests
     {
         var terrain = new RegionTerrain(256, 256);
         float[] patchHeights = new float[16 * 16];
-        
+
         for (int i = 0; i < patchHeights.Length; i++)
             patchHeights[i] = 20.0f;
 

@@ -21,17 +21,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     static GridSession()
     {
-        // CoreJ2K relies on AppDomain.CurrentDomain.GetAssemblies() to find IImageCreator.
-        // In Godot 4 .NET, scripts are loaded into a custom AssemblyLoadContext, so CoreJ2K
-        // fails to find it. We must inject it manually via reflection to prevent
-        // LibreMetaverse's automatic AssetTexture.Decode from crashing on network receive.
+        Console.WriteLine("[GridSession] Static constructor running...");
         try
         {
             var factoryType = typeof(CoreJ2K.J2kImage).Assembly.GetType("CoreJ2K.Util.ImageFactory");
+            if (factoryType == null) Console.WriteLine("[GridSession] factoryType is null!");
+            
             var creatorsField = factoryType?.GetField("_creators", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            if (creatorsField == null) Console.WriteLine("[GridSession] creatorsField is null!");
+            
             if (creatorsField?.GetValue(null) is System.Collections.IList list)
             {
                 list.Add(new CoreJ2K.Util.SKBitmapImageCreator());
+                Console.WriteLine($"[GridSession] Injected SKBitmapImageCreator successfully. Creators count: {list.Count}");
             }
         }
         catch (Exception ex)
@@ -78,10 +80,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
 
         Guid textureId = Guid.Empty;
+        Guid renderMaterialId = Guid.Empty;
+        System.Numerics.Vector4 colorTint = new System.Numerics.Vector4(1, 1, 1, 1);
+
         var defaultFace = e.Prim.Textures?.DefaultTexture;
         if (defaultFace != null)
         {
             textureId = defaultFace.TextureID.Guid;
+            renderMaterialId = defaultFace.RenderMaterialID.Guid;
+            colorTint = new System.Numerics.Vector4(defaultFace.RGBA.R, defaultFace.RGBA.G, defaultFace.RGBA.B, defaultFace.RGBA.A);
         }
 
         ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
@@ -93,7 +100,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             (byte)e.Prim.PrimData.ProfileCurve,
             isMesh,
             meshId,
-            textureId));
+            textureId,
+            renderMaterialId,
+            colorTint));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)
@@ -197,9 +206,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>
-    /// Fetches the raw bytes of a texture asset (JPEG2000) from the simulator. Returns a
-    /// neutral payload — no LibreMetaverse type crosses this boundary; decoding lives in
-    /// <c>SLNG.Assets</c>.
+    /// Fetches the raw bytes of a texture asset (JPEG2000) from the simulator. Returns null
+    /// if the fetch times out or fails.
     /// </summary>
     public async Task<byte[]?> FetchTextureDataAsync(Guid textureId)
     {
@@ -207,6 +215,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             .RequestImageAsync(new UUID(textureId), ImageType.Normal, CancellationToken.None)
             .ConfigureAwait(false);
         return texture?.AssetData;
+    }
+
+    /// <summary>
+    /// Fetches a GLTF PBR Material asset from the simulator. Returns null if the fetch fails.
+    /// </summary>
+    public async Task<LibreMetaverse.Assets.AssetMaterial?> FetchMaterialDataAsync(Guid materialId)
+    {
+        var asset = await _client.Assets
+            .RequestAssetAsync(new UUID(materialId), AssetType.Material, true, CancellationToken.None)
+            .ConfigureAwait(false);
+        return asset as LibreMetaverse.Assets.AssetMaterial;
     }
 
     public void Dispose()

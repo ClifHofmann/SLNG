@@ -1,8 +1,8 @@
 using System.Linq;
-using SLNG.Core.ECS;
-using SLNG.Core.Components;
-using Xunit;
 using System.Numerics;
+using SLNG.Core.Components;
+using SLNG.Core.ECS;
+using Xunit;
 
 namespace SLNG.Core.Tests.ECS;
 
@@ -14,7 +14,7 @@ public class WorldTests
         var world = new World();
         var entity1 = world.GetOrCreateEntity(123ul, 123);
         var entity2 = world.GetOrCreateEntity(123ul, 123);
-        
+
         Assert.Same(entity1, entity2);
         Assert.Equal(123u, entity1.LocalId);
         Assert.Equal(123ul, entity1.RegionHandle);
@@ -24,7 +24,7 @@ public class WorldTests
     public void World_Query_FindsEntitiesWithSpecificComponent()
     {
         var world = new World();
-        
+
         var e1 = world.GetOrCreateEntity(123ul, 1);
         e1.SetComponent(new TransformComponent());
 

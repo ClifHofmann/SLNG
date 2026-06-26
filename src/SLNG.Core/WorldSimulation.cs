@@ -75,18 +75,21 @@ public sealed class WorldSimulation : IDisposable
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim == null)
         {
-            prim = new PrimitiveComponent(e.Scale, e.ProfileCurve, e.IsMesh, e.MeshId, e.TextureId);
+            prim = new PrimitiveComponent(e.Scale, e.ProfileCurve, e.IsMesh, e.MeshId, e.TextureId, e.RenderMaterialId, e.ColorTint);
             entity.SetComponent(prim);
         }
         else
         {
+            // Update existing prim visual state
             prim.Scale = e.Scale;
             prim.ProfileCurve = e.ProfileCurve;
             prim.IsMesh = e.IsMesh;
             prim.MeshId = e.MeshId;
             prim.TextureId = e.TextureId;
-            _world.NotifyComponentUpdated(entity, prim);
+            prim.RenderMaterialId = e.RenderMaterialId;
+            prim.ColorTint = e.ColorTint;
         }
+        _world.NotifyComponentUpdated(entity, prim);
     }
 
     private void ApplyTerrainPatch(TerrainPatchEvent e)

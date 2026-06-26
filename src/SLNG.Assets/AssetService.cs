@@ -134,6 +134,80 @@ public class AssetService
         }
     }
 
+    private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _materialCache = new();
+
+    /// <summary>
+    /// Fetches a GLTF PBR material by UUID and returns its mapped parameters and texture UUIDs.
+    /// </summary>
+    public Task<PbrMaterialData?> GetMaterialAsync(Guid materialId)
+    {
+        return _materialCache.GetOrAdd(materialId, FetchMaterialAsync);
+    }
+
+    private async Task<PbrMaterialData?> FetchMaterialAsync(Guid materialId)
+    {
+        if (!_session.IsConnected)
+        {
+            return null;
+        }
+
+        try
+        {
+            var asset = await _session.FetchMaterialDataAsync(materialId).ConfigureAwait(false);
+            if (asset == null)
+            {
+                return null;
+            }
+
+            Guid baseColorTex = Guid.Empty;
+            Guid normalTex = Guid.Empty;
+            Guid ormTex = Guid.Empty;
+            Guid emissiveTex = Guid.Empty;
+
+            if (asset.TextureIds != null)
+            {
+                if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_BASE_COLOR)
+                    baseColorTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_BASE_COLOR].Guid;
+                
+                if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_NORMAL)
+                    normalTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_NORMAL].Guid;
+                
+                if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_METALLIC_ROUGHNESS)
+                    ormTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_METALLIC_ROUGHNESS].Guid;
+                
+                if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_EMISSIVE)
+                    emissiveTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_EMISSIVE].Guid;
+            }
+
+            var baseColor = new System.Numerics.Vector4(
+                asset.BaseColorFactor.R, 
+                asset.BaseColorFactor.G, 
+                asset.BaseColorFactor.B, 
+                asset.BaseColorFactor.A);
+
+            var emissive = new System.Numerics.Vector3(
+                asset.EmissiveFactor.X,
+                asset.EmissiveFactor.Y,
+                asset.EmissiveFactor.Z);
+
+            return new PbrMaterialData(
+                baseColorTex,
+                normalTex,
+                ormTex,
+                emissiveTex,
+                baseColor,
+                asset.MetallicFactor,
+                asset.RoughnessFactor,
+                emissive
+            );
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AssetService] Failed to fetch material {materialId}: {ex.Message}");
+            return null;
+        }
+    }
+
     private static TextureData? DecodeTexture(byte[] bytes)
     {
         try

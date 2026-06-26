@@ -9,10 +9,10 @@ public class RegionTerrain
 {
     public const int DefaultRegionSize = 256;
     public const int PatchSize = 16;
-    
+
     // The master heightmap (Y-up elevation).
     private float[] _heights;
-    
+
     public int Width { get; }
     public int Height { get; }
 
@@ -45,7 +45,7 @@ public class RegionTerrain
             {
                 int localIndex = y * PatchSize + x;
                 int globalIndex = (startY + y) * Width + (startX + x);
-                
+
                 if (globalIndex < _heights.Length)
                 {
                     _heights[globalIndex] = patchHeights[localIndex];

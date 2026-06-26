@@ -56,7 +56,7 @@ public partial class Boot : Control
             AmbientLightEnergy = 1.0f,
             TonemapMode = Godot.Environment.ToneMapper.Aces,
         };
-        AddChild(new WorldEnvironment { Environment = environment });
+        AddChild(new WorldEnvironment { Name = "WorldEnvironment", Environment = environment });
 
         var sun = new DirectionalLight3D
         {
@@ -126,6 +126,13 @@ public partial class Boot : Control
             // Start at a reasonable height in the middle of a 256x256 region
             _freeCamera.Position = new Godot.Vector3(regionX + 128f, 50f, -(regionY + 128f));
             
+            // Assign the environment directly to the camera to ensure the sky renders
+            var worldEnv = GetNodeOrNull<WorldEnvironment>("WorldEnvironment");
+            if (worldEnv != null)
+            {
+                _freeCamera.Environment = worldEnv.Environment;
+            }
+
             AddChild(_freeCamera);
             _freeCamera.MakeCurrent();
         }

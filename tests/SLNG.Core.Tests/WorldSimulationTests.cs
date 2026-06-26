@@ -1,7 +1,7 @@
 using System.Linq;
 using System.Numerics;
-using SLNG.Core.ECS;
 using SLNG.Core.Components;
+using SLNG.Core.ECS;
 using SLNG.Net;
 using Xunit;
 
@@ -24,7 +24,7 @@ public class WorldSimulationTests
         // Trigger the internal RaiseObjectUpdate method (which we added a wrapper or just made internal).
         // Since GridSession.RaiseObjectUpdate is internal, and InternalsVisibleTo is set for SLNG.Net.Tests,
         // we need to make sure SLNG.Core.Tests also has InternalsVisibleTo!
-        
+
         var scale = new Vector3(1, 1, 1);
         byte pCode = 1;
 
@@ -34,7 +34,7 @@ public class WorldSimulationTests
 
         var entity = world.GetEntity(123ul, 42);
         Assert.NotNull(entity);
-        
+
         var transform = entity.GetComponent<TransformComponent>();
         Assert.NotNull(transform);
         Assert.Equal(pos, transform.Position);

@@ -59,7 +59,7 @@ public class World
         _entities[entity.Id] = entity;
         _entityIndex[key] = entity.Id;
         EntityAdded?.Invoke(this, new EntityEventArgs(entity));
-        
+
         return entity;
     }
 
