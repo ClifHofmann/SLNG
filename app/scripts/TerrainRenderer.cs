@@ -102,20 +102,14 @@ public partial class TerrainRenderer : Node3D
                 Vector3 v2 = new Vector3(x, heights[i2], -(z + 1));
                 Vector3 v3 = new Vector3(x + 1, heights[i3], -(z + 1));
 
-                // Triangle 1 (v0, v2, v1)
-                st.SetNormal(CalculateNormal(v0, v2, v1));
+                // Triangle 1
                 st.AddVertex(v0);
-                st.SetNormal(CalculateNormal(v2, v1, v0));
                 st.AddVertex(v2);
-                st.SetNormal(CalculateNormal(v1, v0, v2));
                 st.AddVertex(v1);
 
-                // Triangle 2 (v1, v2, v3)
-                st.SetNormal(CalculateNormal(v1, v3, v2));
+                // Triangle 2
                 st.AddVertex(v1);
-                st.SetNormal(CalculateNormal(v2, v1, v3));
                 st.AddVertex(v2);
-                st.SetNormal(CalculateNormal(v3, v2, v1));
                 st.AddVertex(v3);
             }
         }
@@ -133,13 +127,6 @@ public partial class TerrainRenderer : Node3D
         
         regionNode.CollisionShape.Shape = shape;
         regionNode.CollisionShape.Position = new Vector3((width - 1) / 2.0f, 0, -(height - 1) / 2.0f);
-    }
-
-    private Vector3 CalculateNormal(Vector3 p1, Vector3 p2, Vector3 p3)
-    {
-        var u = p2 - p1;
-        var v = p3 - p1;
-        return u.Cross(v).Normalized();
     }
 
     public override void _ExitTree()
