@@ -34,3 +34,20 @@ This keeps one shared set of role definitions for both tools.
 - Integrate through small PRs into `main`; rebase often.
 - The roadmap's `Suggested tool` column is a hint, not a rule — whoever is free
   takes the next unblocked task and marks ownership.
+
+## Review learnings (M0–M2 — read before continuing)
+
+A code review of the early milestones surfaced recurring issues. They are now codified in
+`AGENTS.md` under **Layering & boundaries** and **Threading model** — follow them. Short
+version:
+
+- **Don't invert the layers.** `SLNG.Core` must not reference `SLNG.Net` / `SLNG.Assets`
+  (it picked up a `Core -> Net` reference, which pulls LibreMetaverse into the domain).
+  Use an interface defined in `Core`, or put the bridge in `app`.
+- **Don't leak LibreMetaverse types** (`FacetedMesh`, `AssetMesh`, …) past `Net` / `Assets`
+  into the renderer — emit engine-neutral DTOs.
+- **Don't mutate `World` from network-thread callbacks.** Buffer events and apply them on
+  a single thread, once per frame.
+- **Keep asset codecs (CoreJ2K) in `SLNG.Assets`, not `SLNG.Net`.**
+- **Repo hygiene:** never commit runtime caches (`app/linden/`) or throwaway probes
+  (`tools/Probe/`) — both are now git-ignored.
