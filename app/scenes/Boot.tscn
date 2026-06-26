@@ -1,0 +1,69 @@
+[gd_scene load_steps=2 format=3 uid="uid://c8slng0bootui1"]
+
+[ext_resource type="Script" path="res://scripts/Boot.cs" id="1_script"]
+
+[node name="Boot" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_script")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="HBoxContainer" type="HBoxContainer" parent="VBoxContainer"]
+layout_mode = 2
+
+[node name="GridLabel" type="Label" parent="VBoxContainer/HBoxContainer"]
+layout_mode = 2
+text = "Grid URI:"
+
+[node name="GridInput" type="LineEdit" parent="VBoxContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "http://127.0.0.1:9000/"
+
+[node name="FirstLabel" type="Label" parent="VBoxContainer/HBoxContainer"]
+layout_mode = 2
+text = "First:"
+
+[node name="FirstInput" type="LineEdit" parent="VBoxContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Test"
+
+[node name="LastLabel" type="Label" parent="VBoxContainer/HBoxContainer"]
+layout_mode = 2
+text = "Last:"
+
+[node name="LastInput" type="LineEdit" parent="VBoxContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "User"
+
+[node name="PassLabel" type="Label" parent="VBoxContainer/HBoxContainer"]
+layout_mode = 2
+text = "Pass:"
+
+[node name="PassInput" type="LineEdit" parent="VBoxContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+secret = true
+text = "secret"
+
+[node name="LoginButton" type="Button" parent="VBoxContainer/HBoxContainer"]
+layout_mode = 2
+text = "Login"
+
+[node name="LogPanel" type="RichTextLabel" parent="VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+scroll_following = true
