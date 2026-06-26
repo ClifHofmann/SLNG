@@ -46,7 +46,7 @@ Goal: log in to a grid, join a region, and log incoming object/chat events.
 |---|---|---|---|---|---|---|---|
 | M0-1 | Scaffold `SLNG.sln`, `src/*` projects, Godot `app/`, CI stub | infra | claude | architect | claude | — | `dotnet build` + `godot --path app` both succeed |
 | M0-2 | Login flow via LibreMetaverse (grid/user/pass → connected) ✅ | net | claude | protocol-re | claude | M0-1 | Connects to OpenSim, returns agent/session id |
-| M0-3 | Event logger: subscribe to ObjectUpdate + Chat, structured log | net | gemini | protocol-re | gemini | M0-2 | Object & chat events printed with key fields |
+| M0-3 | Event logger: subscribe to ObjectUpdate + Chat, structured log ✅ | net | gemini | protocol-re | gemini | M0-2 | Object & chat events printed with key fields |
 | M0-4 | Godot boot scene: login form + scrolling log panel | ui | — | ux-designer | gemini | M0-1 | Form submits creds; panel shows live events |
 | M0-5 | Test harness + local OpenSim grid bring-up script | infra | — | test-engineer | gemini | M0-1 | `dotnet test` green; `tools/opensim-up` documented |
 

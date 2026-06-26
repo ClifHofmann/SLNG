@@ -16,4 +16,8 @@
     <PackageReference Include="LibreMetaverse" Version="3.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="SLNG.Net.Tests" />
+  </ItemGroup>
+
 </Project>

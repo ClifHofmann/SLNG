@@ -34,6 +34,7 @@ if (string.IsNullOrWhiteSpace(first) || string.IsNullOrWhiteSpace(pass))
 Console.WriteLine($"Logging in {first} {last} @ {grid} ...");
 
 using var session = new GridSession();
+using var logger = new ProtocolLogger(session);
 var result = await session.LoginAsync(new LoginCredentials
 {
     FirstName = first,
@@ -49,6 +50,10 @@ if (result.Success)
     {
         Console.WriteLine($"message: {result.Message}");
     }
+
+    Console.WriteLine("Listening for events for 5 seconds (press Ctrl+C to exit early)...");
+    await Task.Delay(5000);
+
     session.Logout();
     return 0;
 }

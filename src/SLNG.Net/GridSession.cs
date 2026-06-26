@@ -10,7 +10,36 @@ namespace SLNG.Net;
 /// </summary>
 public sealed class GridSession : IDisposable
 {
-    private readonly GridClient _client = new();
+    private readonly GridClient _client;
+
+    public event EventHandler<ChatMessageEvent>? ChatMessageReceived;
+    public event EventHandler<ObjectUpdateEvent>? ObjectUpdateReceived;
+
+    internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
+    internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
+
+    public GridSession()
+    {
+        _client = new GridClient();
+        _client.Self.ChatFromSimulator += OnChatFromSimulator;
+        _client.Objects.ObjectUpdate += OnObjectUpdate;
+    }
+
+    private void OnChatFromSimulator(object? sender, ChatEventArgs e)
+    {
+        ChatMessageReceived?.Invoke(this, new ChatMessageEvent(
+            e.FromName,
+            e.Message,
+            (byte)e.Type));
+    }
+
+    private void OnObjectUpdate(object? sender, PrimEventArgs e)
+    {
+        ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
+            e.Prim.LocalID,
+            new System.Numerics.Vector3(e.Prim.Position.X, e.Prim.Position.Y, e.Prim.Position.Z),
+            new System.Numerics.Quaternion(e.Prim.Rotation.X, e.Prim.Rotation.Y, e.Prim.Rotation.Z, e.Prim.Rotation.W)));
+    }
 
     /// <summary>True once a login has succeeded and the circuit is up.</summary>
     public bool IsConnected => _client.Network.Connected;
