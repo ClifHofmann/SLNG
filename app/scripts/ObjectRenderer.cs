@@ -1,6 +1,7 @@
 using Godot;
 using SLNG.Core.ECS;
 using SLNG.Core.Components;
+using SLNG.Assets;
 using System.Collections.Generic;
 using System;
 
@@ -86,19 +87,13 @@ public partial class ObjectRenderer : Node3D
             }
             else
             {
-                // Fallback primitives
-                if (prim.ProfileCurve == 0) // Circle -> Cylinder
+                // Fallback primitives — reuse shared mesh resources, don't allocate per update.
+                meshInstance.Mesh = prim.ProfileCurve switch
                 {
-                    meshInstance.Mesh = new CylinderMesh();
-                }
-                else if (prim.ProfileCurve == 5) // HalfCircle -> Sphere
-                {
-                    meshInstance.Mesh = new SphereMesh();
-                }
-                else // Square -> Box
-                {
-                    meshInstance.Mesh = new BoxMesh();
-                }
+                    0 => _cylinderMesh, // Circle -> Cylinder
+                    5 => _sphereMesh,   // HalfCircle -> Sphere
+                    _ => _boxMesh,      // Square -> Box
+                };
             }
 
             // Apply Scale
@@ -132,42 +127,41 @@ public partial class ObjectRenderer : Node3D
     private async System.Threading.Tasks.Task LoadAndApplyMeshAsync(MeshInstance3D meshInstance, Guid meshId)
     {
         if (_assetService == null) return;
-        
-        var facetedMesh = await _assetService.GetMeshAsync(meshId);
-        if (facetedMesh == null || facetedMesh.Faces == null || facetedMesh.Faces.Count == 0) return;
 
-        // Create the ArrayMesh on the main thread
-        Godot.Callable.From(() => ApplyFacetedMesh(meshInstance, facetedMesh)).CallDeferred();
+        var mesh = await _assetService.GetMeshAsync(meshId);
+        if (mesh == null || mesh.Submeshes.Count == 0) return;
+
+        // Build the Godot mesh on the main thread.
+        Godot.Callable.From(() => ApplyMeshData(meshInstance, mesh)).CallDeferred();
     }
 
-    private void ApplyFacetedMesh(MeshInstance3D meshInstance, LibreMetaverse.Rendering.FacetedMesh facetedMesh)
+    private void ApplyMeshData(MeshInstance3D meshInstance, MeshData mesh)
     {
         if (meshInstance == null || !IsInstanceValid(meshInstance)) return;
 
         var arrayMesh = new ArrayMesh();
-        var st = new SurfaceTool();
 
-        int surfaceIndex = 0;
-        foreach (var face in facetedMesh.Faces)
+        foreach (var sub in mesh.Submeshes)
         {
-            if (face.Vertices == null || face.Indices == null || face.Indices.Count == 0) continue;
+            if (sub.Indices.Length == 0) continue;
 
+            var st = new SurfaceTool();
             st.Begin(Mesh.PrimitiveType.Triangles);
 
-            for (int i = 0; i < face.Indices.Count; i++)
+            foreach (int index in sub.Indices)
             {
-                var vertex = face.Vertices[face.Indices[i]];
-                
-                // Decode positions & normals
-                // Position: SL Z-up -> Godot Y-up
-                st.SetNormal(new Godot.Vector3(vertex.Normal.X, vertex.Normal.Z, -vertex.Normal.Y));
-                st.SetUV(new Godot.Vector2(vertex.TexCoord.X, vertex.TexCoord.Y));
-                st.AddVertex(new Godot.Vector3(vertex.Position.X, vertex.Position.Z, -vertex.Position.Y));
+                var p = sub.Positions[index];
+                var n = sub.Normals[index];
+                var uv = sub.UVs[index];
+
+                // SL Z-up -> Godot Y-up
+                st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+                st.SetUV(new Godot.Vector2(uv.X, uv.Y));
+                st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
             }
 
-            st.GenerateTangents(); // Useful for PBR later
+            st.GenerateTangents(); // useful for PBR later
             st.Commit(arrayMesh);
-            surfaceIndex++;
         }
 
         meshInstance.Mesh = arrayMesh;

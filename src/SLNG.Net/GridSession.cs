@@ -158,12 +158,26 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>
-    /// Fetches a mesh asset from the simulator via the AssetManager.
+    /// Fetches the raw bytes of a mesh asset from the simulator. Returns a neutral
+    /// payload — no LibreMetaverse type crosses this boundary; decoding lives in
+    /// <c>SLNG.Assets</c>.
     /// </summary>
-    public Task<LibreMetaverse.Assets.AssetMesh?> FetchMeshAsync(Guid meshId)
+    public async Task<byte[]?> FetchMeshDataAsync(Guid meshId)
     {
-        return _client.Assets.RequestMeshAsync(new LibreMetaverse.UUID(meshId), System.Threading.CancellationToken.None);
+        var asset = await _client.Assets
+            .RequestMeshAsync(new UUID(meshId), CancellationToken.None)
+            .ConfigureAwait(false);
+        return asset?.AssetData;
     }
 
-    public void Dispose() => Logout();
+    public void Dispose()
+    {
+        _client.Self.ChatFromSimulator -= OnChatFromSimulator;
+        _client.Objects.ObjectUpdate -= OnObjectUpdate;
+        _client.Objects.KillObject -= OnKillObject;
+        _client.Objects.KillObjects -= OnKillObjects;
+        _client.Terrain.LandPatchReceived -= OnLandPatchReceived;
+        _client.Network.SimDisconnected -= OnSimDisconnected;
+        Logout();
+    }
 }
