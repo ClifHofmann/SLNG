@@ -2,13 +2,13 @@ version: '3.8'
 
 services:
   opensim:
-    build: .
+    image: soupbowl/opensimulator:0.9.3.0-screen
     container_name: slng-opensim
     ports:
       - "9000:9000/tcp"
       - "9000:9000/udp"
     volumes:
-      - ./config/OpenSim.ini:/opensim/bin/OpenSim.ini:ro
-      - ./config/Regions/Regions.ini:/opensim/bin/Regions/Regions.ini:ro
-      - ./config/startup.txt:/opensim/bin/config/startup.txt:ro
+      - ./config/OpenSim.ini:/opt/opensim/bin/OpenSim.ini:ro
+      - ./config/Regions/Regions.ini:/opt/opensim/bin/Regions/Regions.ini:ro
+      - ./config/startup.txt:/opt/opensim/bin/config/startup.txt:ro
     restart: unless-stopped
