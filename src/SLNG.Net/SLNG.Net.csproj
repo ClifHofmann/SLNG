@@ -8,9 +8,6 @@
     <RootNamespace>SLNG.Net</RootNamespace>
   </PropertyGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\SLNG.Core\SLNG.Core.csproj" />
-  </ItemGroup>
 
   <ItemGroup>
     <!-- Protocol stack: login, UDP message system, HTTP CAPS, asset formats. -->
@@ -19,6 +16,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="SLNG.Net.Tests" />
+    <InternalsVisibleTo Include="SLNG.Core.Tests" />
   </ItemGroup>
 
 </Project>
