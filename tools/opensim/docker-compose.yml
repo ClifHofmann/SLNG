@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  opensim:
+    image: misterblue/opensim:0.9.2.2
+    container_name: slng-opensim
+    ports:
+      - "9000:9000/tcp"
+      - "9000:9000/udp"
+    environment:
+      - OS_REGION_NAME=SLNG Test Region
+      - OS_ESTATE_NAME=SLNG Test Estate
+      - OS_EXTERNAL_HOST_NAME=127.0.0.1
+      - OS_INTERNAL_PORT=9000
+    volumes:
+      - ./config:/opensim/config
+      - ./data:/opensim/data
+    restart: unless-stopped
