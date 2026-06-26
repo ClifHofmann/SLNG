@@ -31,6 +31,12 @@ public partial class TerrainRenderer : Node3D
     }
 
     private readonly Dictionary<ulong, RegionTerrainNode> _regions = new();
+
+    // Regions whose terrain changed since the last frame. Many 16x16 patches arrive per
+    // region during load; we coalesce them into at most one rebuild per region per frame.
+    private readonly HashSet<ulong> _dirtyRegions = new();
+    private readonly StandardMaterial3D _terrainMaterial = new() { AlbedoColor = new Color(0.2f, 0.6f, 0.2f) };
+
     private World? _world;
 
     public void Initialize(World world)
@@ -41,13 +47,24 @@ public partial class TerrainRenderer : Node3D
 
     private void OnTerrainUpdated(object? sender, ulong regionHandle)
     {
-        // Must run on main thread to interact with Godot Nodes
-        CallDeferred(nameof(RebuildTerrain), regionHandle.ToString());
+        // World events are applied on the main thread (WorldSimulation.Pump), so this is
+        // safe. Just mark the region dirty; the rebuild is coalesced in _Process.
+        _dirtyRegions.Add(regionHandle);
     }
 
-    private void RebuildTerrain(string regionHandleStr)
+    public override void _Process(double delta)
     {
-        if (!ulong.TryParse(regionHandleStr, out var regionHandle)) return;
+        if (_dirtyRegions.Count == 0) return;
+
+        foreach (var regionHandle in _dirtyRegions)
+        {
+            RebuildTerrain(regionHandle);
+        }
+        _dirtyRegions.Clear();
+    }
+
+    private void RebuildTerrain(ulong regionHandle)
+    {
         if (_world == null) return;
 
         if (!_world.Terrains.TryGetValue(regionHandle, out var regionTerrain))
@@ -81,11 +98,7 @@ public partial class TerrainRenderer : Node3D
 
         var st = new SurfaceTool();
         st.Begin(Mesh.PrimitiveType.Triangles);
-
-        // Optional: Simple material
-        var mat = new StandardMaterial3D();
-        mat.AlbedoColor = new Color(0.2f, 0.6f, 0.2f); // Greenish
-        st.SetMaterial(mat);
+        st.SetMaterial(_terrainMaterial);
 
         // Generate vertices
         for (int z = 0; z < height - 1; z++)
