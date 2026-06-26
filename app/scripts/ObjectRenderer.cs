@@ -157,7 +157,11 @@ public partial class ObjectRenderer : Node3D
 
         var image = Image.CreateFromData(texture.Width, texture.Height, false, Image.Format.Rgba8, texture.Rgba);
         var albedo = ImageTexture.CreateFromImage(image);
-        meshInstance.MaterialOverride = new StandardMaterial3D { AlbedoTexture = albedo };
+        meshInstance.MaterialOverride = new StandardMaterial3D 
+        { 
+            AlbedoTexture = albedo,
+            TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest
+        };
     }
 
     private void ApplyMeshData(MeshInstance3D meshInstance, MeshData mesh)

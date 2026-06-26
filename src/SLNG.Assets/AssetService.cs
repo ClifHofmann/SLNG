@@ -2,9 +2,9 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using CoreJ2K;
 using LibreMetaverse;
 using LibreMetaverse.Assets;
-using LibreMetaverse.Imaging;
 using LibreMetaverse.Rendering;
 using SLNG.Net;
 
@@ -125,43 +125,98 @@ public class AssetService
             }
 
             // Decode off the render thread; never block the main thread.
-            return await Task.Run(() => DecodeTexture(textureId, bytes)).ConfigureAwait(false);
+            return await Task.Run(() => DecodeTexture(bytes)).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[AssetService] Failed to fetch/decode texture {textureId}: {ex.Message}");
+            Console.WriteLine($"[AssetService] Failed to fetch/decode texture {textureId}: {ex.ToString()}");
             return null;
         }
     }
 
-    private static TextureData? DecodeTexture(Guid textureId, byte[] bytes)
+    private static TextureData? DecodeTexture(byte[] bytes)
     {
-        var texture = new AssetTexture(new UUID(textureId), bytes);
-        if (!texture.Decode() || texture.Image is null)
+        // OpenSim UDP texture packets are sometimes padded with trailing zeros,
+        // which causes CoreJ2K's FileBitstreamReaderAgent to throw a NullReferenceException.
+        // Trim trailing zeros before decoding.
+        int len = bytes.Length;
+        while (len > 0 && bytes[len - 1] == 0)
         {
-            return null;
+            len--;
         }
 
-        var image = texture.Image;
+        if (len < bytes.Length)
+        {
+            var trimmed = new byte[len];
+            Array.Copy(bytes, 0, trimmed, 0, len);
+            bytes = trimmed;
+        }
+
+        // Decode JPEG2000 directly to raw component samples. This avoids LibreMetaverse's
+        // AssetTexture.Decode path, which requires a platform image creator (SkiaSharp) to be
+        // registered with CoreJ2K; the raw decode has no such dependency.
+        CoreJ2K.Util.InterleavedImage image;
+        try
+        {
+            image = (CoreJ2K.Util.InterleavedImage)J2kImage.FromBytes(bytes, J2kImage.GetDefaultDecoderParameterList());
+            if (image == null) return CreateFallbackTexture();
+        }
+        catch (Exception)
+        {
+            // CoreJ2K throws NullReferenceException on some corrupted OpenSim textures 
+            // (especially the default plywood). Return a fallback so the object isn't left untextured.
+            return CreateFallbackTexture();
+        }
+
         int width = image.Width;
         int height = image.Height;
         int pixelCount = width * height;
-        if (pixelCount <= 0 || image.Red is null || image.Green is null || image.Blue is null)
+        int components = image.NumberOfComponents;
+        if (pixelCount <= 0 || components < 1)
         {
             return null;
         }
 
-        bool hasAlpha = image.Alpha is not null && (image.Channels & ManagedImage.ImageChannels.Alpha) != 0;
+        byte[]? red = image.GetComponentBytes(0);
+        byte[]? green = components > 1 ? image.GetComponentBytes(1) : red;
+        byte[]? blue = components > 2 ? image.GetComponentBytes(2) : red;
+        byte[]? alpha = components > 3 ? image.GetComponentBytes(3) : null;
+
+        if (red == null || green == null || blue == null)
+        {
+            return null; // Decode failed or incomplete
+        }
+
         var rgba = new byte[pixelCount * 4];
         for (int i = 0; i < pixelCount; i++)
         {
             int o = i * 4;
-            rgba[o] = image.Red[i];
-            rgba[o + 1] = image.Green[i];
-            rgba[o + 2] = image.Blue[i];
-            rgba[o + 3] = hasAlpha ? image.Alpha![i] : (byte)255;
+            rgba[o] = red[i];
+            rgba[o + 1] = green[i];
+            rgba[o + 2] = blue[i];
+            rgba[o + 3] = alpha is not null ? alpha[i] : (byte)255;
         }
 
         return new TextureData(width, height, rgba);
+    }
+
+    private static TextureData CreateFallbackTexture()
+    {
+        // 8x8 bright magenta/black checkerboard texture so it's blatantly obvious
+        int size = 8;
+        var rgba = new byte[size * size * 4];
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                int o = (y * size + x) * 4;
+                bool isMagenta = ((x / 2) + (y / 2)) % 2 == 0;
+                rgba[o] = isMagenta ? (byte)255 : (byte)0;
+                rgba[o + 1] = 0;
+                rgba[o + 2] = isMagenta ? (byte)255 : (byte)0;
+                rgba[o + 3] = 255;
+            }
+        }
+        return new TextureData(size, size, rgba);
     }
 }
