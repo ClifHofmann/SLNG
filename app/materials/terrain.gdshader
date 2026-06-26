@@ -30,7 +30,9 @@ void vertex() {
 }
 
 void fragment() {
-    vec2 detail_uv = UV * uv_scale;
+    // Generate UVs based on world coordinates (VERTEX is local to mesh, which is world-aligned)
+    // Godot vertices have -Z as North, X as East.
+    vec2 detail_uv = vec2(VERTEX.x, -VERTEX.z) * uv_scale;
 
     vec4 t0 = texture(detail0, detail_uv);
     vec4 t1 = texture(detail1, detail_uv);

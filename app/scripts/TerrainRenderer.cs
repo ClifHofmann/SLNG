@@ -212,8 +212,16 @@ public partial class TerrainRenderer : Node3D
         regionNode.CollisionShape.Shape = mesh.CreateTrimeshShape();
         
         // Use a per-region material instance
-        var mat = (ShaderMaterial)_terrainMaterial.Duplicate();
-        regionNode.MeshInstance.MaterialOverride = mat;
+        ShaderMaterial mat;
+        if (regionNode.MeshInstance.MaterialOverride is ShaderMaterial existingMat)
+        {
+            mat = existingMat;
+        }
+        else
+        {
+            mat = (ShaderMaterial)_terrainMaterial.Duplicate();
+            regionNode.MeshInstance.MaterialOverride = mat;
+        }
         
         // Pass height parameters to shader
         mat.SetShaderParameter("start_height", new Vector4(
