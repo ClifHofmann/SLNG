@@ -219,6 +219,31 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
+    /// <summary>Sends an AgentUpdate to move the avatar.</summary>
+    public void SetMovement(bool forward, bool backward, bool left, bool right, bool up, bool down, System.Numerics.Quaternion cameraRotation)
+    {
+        if (!_client.Network.Connected) return;
+
+        // Map Godot/SLNG axes to LibreMetaverse (which uses OpenSim/SL axes: X forward, Y left, Z up)
+        // For LibreMetaverse, we just pass the rotation directly.
+        var slQuat = new LibreMetaverse.Quaternion(cameraRotation.X, cameraRotation.Y, cameraRotation.Z, cameraRotation.W);
+        
+        // Update the agent's movement state
+        _client.Self.Movement.Camera.LookDirection(LibreMetaverse.Vector3.UnitX * slQuat);
+        _client.Self.Movement.HeadRotation = slQuat;
+        _client.Self.Movement.BodyRotation = slQuat;
+
+        _client.Self.Movement.AtPos = forward;
+        _client.Self.Movement.AtNeg = backward;
+        _client.Self.Movement.LeftPos = left;
+        _client.Self.Movement.LeftNeg = right;
+        _client.Self.Movement.UpPos = up;
+        _client.Self.Movement.UpNeg = down;
+
+        // Force an AgentUpdate packet to be sent
+        _client.Self.Movement.SendUpdate(true);
+    }
+
     /// <summary>
     /// Fetches the raw bytes of a mesh asset from the simulator. Returns a neutral
     /// payload — no LibreMetaverse type crosses this boundary; decoding lives in

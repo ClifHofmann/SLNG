@@ -22,7 +22,7 @@ public partial class Boot : Control
     private ObjectRenderer? _objectRenderer;
     private AvatarRenderer? _avatarRenderer;
     private SLNG.Assets.AssetService? _assetService;
-    private FreeCamera? _freeCamera;
+    private AvatarController? _avatarController;
     private VBoxContainer _vboxContainer = null!;
     
     private WorldEnvironment? _worldEnvironment;
@@ -176,26 +176,27 @@ public partial class Boot : Control
             // Hide the login form but keep chat/logs visible
             GetNode<HBoxContainer>("VBoxContainer/HBoxContainer").Visible = false;
 
-            // Spawn the free camera
-            _freeCamera = new FreeCamera();
+            // Spawn the avatar controller (camera)
+            _avatarController = new AvatarController();
+            _avatarController.Initialize(_world, _session);
             
-            // Get current region global coordinates
+            // Get current region global coordinates (only needed to start near the center before AvatarUpdate arrives)
             ulong regionHandle = _session.CurrentRegionHandle;
             uint regionX = (uint)(regionHandle >> 32);
             uint regionY = (uint)(regionHandle & 0xFFFFFFFF);
 
             // Start at a reasonable height in the middle of a 256x256 region
-            _freeCamera.Position = new Godot.Vector3(regionX + 128f, 50f, -(regionY + 128f));
+            _avatarController.Position = new Godot.Vector3(regionX + 128f, 50f, -(regionY + 128f));
             
             // Assign the environment directly to the camera to ensure the sky renders
             var worldEnv = GetNodeOrNull<WorldEnvironment>("WorldEnvironment");
             if (worldEnv != null)
             {
-                _freeCamera.Environment = worldEnv.Environment;
+                _avatarController.Environment = worldEnv.Environment;
             }
 
-            AddChild(_freeCamera);
-            _freeCamera.MakeCurrent();
+            AddChild(_avatarController);
+            _avatarController.MakeCurrent();
 
             LogMessage($"[System] Login succeeded! Agent: {result.AgentId}");
             _chatInput.Editable = true;
