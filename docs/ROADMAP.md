@@ -87,7 +87,7 @@ Goal: control your own avatar, move, and chat. Completes the **first shot**.
 | ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
 |---|---|---|---|---|---|---|---|
 | M3-1 | Self-avatar movement + AgentUpdate send | net | — | protocol-re | claude | M1-5 | Movement updates accepted by the sim |
-| M3-2 | Local chat send/receive UI | ui | — | ux-designer | gemini | M0-4 | Two-way local chat works |
+| M3-2 | Local chat send/receive UI ✅ | ui | gemini | ux-designer | gemini | M0-4 | Two-way local chat works |
 | M3-3 | Camera follow + avatar controller | render | — | graphics-engineer | claude | M3-1 | Third/first-person camera follows avatar |
 | M3-4 | Own-avatar render (system avatar or placeholder mesh) ✅ | render | gemini | graphics-engineer | gemini | M1-4 | Your avatar is visible and moves |
 
