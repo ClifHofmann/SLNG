@@ -12,6 +12,7 @@ public partial class AvatarController : Camera3D
     private GridSession? _session;
     private float _pitch = 0f;
     private float _yaw = 0f;
+    private double _timeSinceLastUpdate = 0;
 
     // We store the last sent movement to avoid spamming the network
     private bool _lastFwd, _lastBack, _lastLeft, _lastRight, _lastUp, _lastDown;
@@ -93,11 +94,14 @@ public partial class AvatarController : Camera3D
         bool down = Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down");
 
         var curRot = Rotation;
+        
+        _timeSinceLastUpdate += delta;
 
-        // Only send update if something changed (to avoid spamming AgentUpdate)
-        // Note: For continuous turning, we might want to send more often, but let's stick to this for now.
-        if (fwd != _lastFwd || back != _lastBack || left != _lastLeft || right != _lastRight || up != _lastUp || down != _lastDown || _lastCameraRot.DistanceTo(curRot) > 0.05f)
+        // Send AgentUpdate at 10 Hz (every 0.1s)
+        if (_timeSinceLastUpdate >= 0.1)
         {
+            _timeSinceLastUpdate = 0;
+
             // The camera's Quaternion is Godot's space. We need SL space.
             // SL uses Z up, X forward, Y left. Godot uses Y up, -Z forward, X right.
             // The conversion from Godot Quat to SL Quat:
@@ -105,14 +109,6 @@ public partial class AvatarController : Camera3D
             var slQuat = new System.Numerics.Quaternion(godotQuat.X, -godotQuat.Z, godotQuat.Y, godotQuat.W);
 
             _session.SetMovement(fwd, back, left, right, up, down, slQuat);
-
-            _lastFwd = fwd;
-            _lastBack = back;
-            _lastLeft = left;
-            _lastRight = right;
-            _lastUp = up;
-            _lastDown = down;
-            _lastCameraRot = curRot;
         }
     }
 }

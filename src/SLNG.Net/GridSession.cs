@@ -224,6 +224,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         if (!_client.Network.Connected) return;
 
+        // Ensure we send agent updates and update from our heading
+        _client.Self.Movement.UpdateFromHeading(0.1, true);
+
         // Map Godot/SLNG axes to LibreMetaverse (which uses OpenSim/SL axes: X forward, Y left, Z up)
         // For LibreMetaverse, we just pass the rotation directly.
         var slQuat = new LibreMetaverse.Quaternion(cameraRotation.X, cameraRotation.Y, cameraRotation.Z, cameraRotation.W);
