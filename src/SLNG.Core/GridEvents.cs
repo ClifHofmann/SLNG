@@ -18,7 +18,7 @@ public interface IWorldEvent
 public record ChatMessageEvent(string FromName, string Message, byte ChatType);
 
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
-public record ObjectUpdateEvent(ulong RegionHandle, uint LocalId, Vector3 Position, Quaternion Rotation, Vector3 Scale, byte ProfileCurve, bool IsMesh, Guid MeshId) : IWorldEvent;
+public record ObjectUpdateEvent(ulong RegionHandle, uint LocalId, Vector3 Position, Quaternion Rotation, Vector3 Scale, byte ProfileCurve, bool IsMesh, Guid MeshId, Guid TextureId) : IWorldEvent;
 
 /// <summary>Represents the removal of an object from the simulator's interest list.</summary>
 public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent;

@@ -96,6 +96,11 @@ public partial class ObjectRenderer : Node3D
                 };
             }
 
+            if (_assetService != null && prim.TextureId != Guid.Empty)
+            {
+                _ = LoadAndApplyTextureAsync(meshInstance, prim.TextureId);
+            }
+
             // Apply Scale
             // SL uses Z up, Godot uses Y up, so we swap Y and Z in the scale
             meshInstance.Scale = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y);
@@ -133,6 +138,26 @@ public partial class ObjectRenderer : Node3D
 
         // Build the Godot mesh on the main thread.
         Godot.Callable.From(() => ApplyMeshData(meshInstance, mesh)).CallDeferred();
+    }
+
+    private async System.Threading.Tasks.Task LoadAndApplyTextureAsync(MeshInstance3D meshInstance, Guid textureId)
+    {
+        if (_assetService == null) return;
+
+        var texture = await _assetService.GetTextureAsync(textureId);
+        if (texture == null) return;
+
+        // Build the Godot texture/material on the main thread.
+        Godot.Callable.From(() => ApplyTexture(meshInstance, texture)).CallDeferred();
+    }
+
+    private void ApplyTexture(MeshInstance3D meshInstance, TextureData texture)
+    {
+        if (meshInstance == null || !IsInstanceValid(meshInstance)) return;
+
+        var image = Image.CreateFromData(texture.Width, texture.Height, false, Image.Format.Rgba8, texture.Rgba);
+        var albedo = ImageTexture.CreateFromImage(image);
+        meshInstance.MaterialOverride = new StandardMaterial3D { AlbedoTexture = albedo };
     }
 
     private void ApplyMeshData(MeshInstance3D meshInstance, MeshData mesh)

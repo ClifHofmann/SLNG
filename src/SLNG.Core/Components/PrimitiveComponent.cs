@@ -19,11 +19,15 @@ public class PrimitiveComponent : IComponent
     public bool IsMesh { get; set; }
     public Guid MeshId { get; set; }
 
-    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default)
+    /// <summary>UUID of the prim's default-face texture, or empty if untextured.</summary>
+    public Guid TextureId { get; set; }
+
+    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default)
     {
         Scale = scale;
         ProfileCurve = profileCurve;
         IsMesh = isMesh;
         MeshId = meshId;
+        TextureId = textureId;
     }
 }

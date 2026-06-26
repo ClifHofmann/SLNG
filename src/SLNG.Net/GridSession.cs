@@ -59,6 +59,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             meshId = e.Prim.Sculpt.SculptTexture.Guid;
         }
 
+        Guid textureId = Guid.Empty;
+        var defaultFace = e.Prim.Textures?.DefaultTexture;
+        if (defaultFace != null)
+        {
+            textureId = defaultFace.TextureID.Guid;
+        }
+
         ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
             e.Simulator.Handle,
             e.Prim.LocalID,
@@ -67,7 +74,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             new System.Numerics.Vector3(e.Prim.Scale.X, e.Prim.Scale.Y, e.Prim.Scale.Z),
             (byte)e.Prim.PrimData.ProfileCurve,
             isMesh,
-            meshId));
+            meshId,
+            textureId));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)
@@ -168,6 +176,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             .RequestMeshAsync(new UUID(meshId), CancellationToken.None)
             .ConfigureAwait(false);
         return asset?.AssetData;
+    }
+
+    /// <summary>
+    /// Fetches the raw bytes of a texture asset (JPEG2000) from the simulator. Returns a
+    /// neutral payload — no LibreMetaverse type crosses this boundary; decoding lives in
+    /// <c>SLNG.Assets</c>.
+    /// </summary>
+    public async Task<byte[]?> FetchTextureDataAsync(Guid textureId)
+    {
+        var texture = await _client.Assets
+            .RequestImageAsync(new UUID(textureId), ImageType.Normal, CancellationToken.None)
+            .ConfigureAwait(false);
+        return texture?.AssetData;
     }
 
     public void Dispose()
