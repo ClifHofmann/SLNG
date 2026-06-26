@@ -1,4 +1,5 @@
 using Godot;
+using SLNG.Core;
 using SLNG.Net;
 using SLNG.App;
 
@@ -15,9 +16,14 @@ public partial class Boot : Control
     private SLNG.Core.ECS.World? _world;
     private SLNG.Core.WorldSimulation? _worldSimulation;
     private TerrainRenderer? _terrainRenderer;
+    private ObjectRenderer? _objectRenderer;
+    private SLNG.Assets.AssetService? _assetService;
+    private FreeCamera? _freeCamera;
+    private VBoxContainer _vboxContainer = null!;
 
     public override void _Ready()
     {
+        _vboxContainer = GetNode<VBoxContainer>("VBoxContainer");
         _gridInput = GetNode<LineEdit>("VBoxContainer/HBoxContainer/GridInput");
         _firstInput = GetNode<LineEdit>("VBoxContainer/HBoxContainer/FirstInput");
         _lastInput = GetNode<LineEdit>("VBoxContainer/HBoxContainer/LastInput");
@@ -29,8 +35,17 @@ public partial class Boot : Control
 
         _terrainRenderer = new TerrainRenderer();
         AddChild(_terrainRenderer);
+
+        _objectRenderer = new ObjectRenderer();
+        AddChild(_objectRenderer);
         
         LogMessage("Ready. Enter credentials and click Login.");
+    }
+
+    public override void _Process(double delta)
+    {
+        // Drain queued world events on the main thread — the only place the world mutates.
+        _worldSimulation?.Pump();
     }
 
     private async void OnLoginPressed()
@@ -47,8 +62,10 @@ public partial class Boot : Control
         _world = new SLNG.Core.ECS.World();
         _session = new GridSession();
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
+        _assetService = new SLNG.Assets.AssetService(_session);
 
         _terrainRenderer?.Initialize(_world);
+        _objectRenderer?.Initialize(_world, _assetService);
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.ObjectUpdateReceived += OnObjectUpdate;
@@ -70,6 +87,23 @@ public partial class Boot : Control
             {
                 LogMessage(result.Message);
             }
+            
+            // Hide the UI to show the 3D scene
+            _vboxContainer.Visible = false;
+
+            // Spawn the free camera
+            _freeCamera = new FreeCamera();
+            
+            // Get current region global coordinates
+            ulong regionHandle = _session.CurrentRegionHandle;
+            uint regionX = (uint)(regionHandle >> 32);
+            uint regionY = (uint)(regionHandle & 0xFFFFFFFF);
+
+            // Start at a reasonable height in the middle of a 256x256 region
+            _freeCamera.Position = new Godot.Vector3(regionX + 128f, 50f, -(regionY + 128f));
+            
+            AddChild(_freeCamera);
+            _freeCamera.MakeCurrent();
         }
         else
         {

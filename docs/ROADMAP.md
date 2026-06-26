@@ -60,9 +60,9 @@ Goal: terrain + placeholder prims rendered; free-fly camera.
 |---|---|---|---|---|---|---|---|
 | M1-1 | World model / ECS: entities, components, diffable updates ✅ | core | gemini | architect | claude | M0-3 | Object updates produce a queryable world model + tests |
 | M1-2 | Terrain: region heightmap → Godot mesh + collision ✅ | render | gemini | graphics-engineer | gemini | M0-1 | Region terrain visible and walkable |
-| M1-3 | Prims as placeholder primitives (box/sphere/cylinder) | render | — | graphics-engineer | claude | M1-1 | Objects appear at correct transforms |
-| M1-4 | Free-fly camera + entity→Node3D scene sync | render | — | graphics-engineer | gemini | M1-1 | Camera flies; spawned/removed objects sync live |
-| M1-5 | Interest management + region bounds / neighbor handoff | core | — | architect | claude | M1-1 | Only in-range objects instantiated; no leaks crossing regions |
+| M1-3 | Prims as placeholder primitives (box/sphere/cylinder) ✅ | render | gemini | graphics-engineer | gemini | M1-1 | Objects appear at correct transforms |
+| M1-4 | Free-fly camera + entity→Node3D scene sync ✅ | render | gemini | graphics-engineer | gemini | M1-1 | Camera flies; spawned/removed objects sync live |
+| M1-5 | Interest management + region bounds / neighbor handoff ✅ | core | gemini | architect | claude | M1-1 | Only in-range objects instantiated; no leaks crossing regions |
 
 Parallel: M1-2 (terrain) is independent of the core work and can start immediately.
 
@@ -72,7 +72,7 @@ Goal: real meshes + textures with modern PBR lighting. This is the graphics payo
 
 | ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
 |---|---|---|---|---|---|---|---|
-| M2-1 | Mesh fetch + LLMesh parse + LOD selection | assets | — | asset-pipeline | claude | M1-3 | Real object meshes render at correct LOD |
+| M2-1 | Mesh fetch + LLMesh parse + LOD selection ✅ | assets | gemini | asset-pipeline | claude | M1-3 | Real object meshes render at correct LOD |
 | M2-2 | JPEG2000 (.j2c) decode pool, fully off main thread | assets | — | asset-pipeline | gemini | M0-1 | Textures decode on workers; no main-thread stalls |
 | M2-3 | glTF 2.0 PBR material resolve → Godot ORM material | render | — | graphics-engineer | claude | M2-2 | Metallic-roughness materials applied correctly |
 | M2-4 | Texture streaming + RAM/disk/GPU cache + VRAM budget | assets | — | performance-engineer | gemini | M2-2 | Stable VRAM under a busy sim; mip prioritization works |

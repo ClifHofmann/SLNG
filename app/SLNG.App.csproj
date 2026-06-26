@@ -17,6 +17,7 @@
   <ItemGroup>
     <ProjectReference Include="..\src\SLNG.Core\SLNG.Core.csproj" />
     <ProjectReference Include="..\src\SLNG.Net\SLNG.Net.csproj" />
+    <ProjectReference Include="..\src\SLNG.Assets\SLNG.Assets.csproj" />
   </ItemGroup>
 
 </Project>

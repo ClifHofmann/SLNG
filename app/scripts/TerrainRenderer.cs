@@ -2,28 +2,36 @@ using Godot;
 using SLNG.Core;
 using SLNG.Core.ECS;
 using System;
+using System.Collections.Generic;
 
 namespace SLNG.App;
 
 public partial class TerrainRenderer : Node3D
 {
-    private MeshInstance3D _meshInstance = null!;
-    private StaticBody3D _staticBody = null!;
-    private CollisionShape3D _collisionShape = null!;
-    
-    private World? _world;
-
-    public override void _Ready()
+    private class RegionTerrainNode
     {
-        _meshInstance = new MeshInstance3D();
-        AddChild(_meshInstance);
+        public Node3D Root { get; }
+        public MeshInstance3D MeshInstance { get; }
+        public StaticBody3D StaticBody { get; }
+        public CollisionShape3D CollisionShape { get; }
 
-        _staticBody = new StaticBody3D();
-        AddChild(_staticBody);
+        public RegionTerrainNode()
+        {
+            Root = new Node3D();
+            MeshInstance = new MeshInstance3D();
+            StaticBody = new StaticBody3D();
+            CollisionShape = new CollisionShape3D();
 
-        _collisionShape = new CollisionShape3D();
-        _staticBody.AddChild(_collisionShape);
+            Root.AddChild(MeshInstance);
+            Root.AddChild(StaticBody);
+            StaticBody.AddChild(CollisionShape);
+        }
+
+        public void QueueFree() => Root.QueueFree();
     }
+
+    private readonly Dictionary<ulong, RegionTerrainNode> _regions = new();
+    private World? _world;
 
     public void Initialize(World world)
     {
@@ -31,19 +39,45 @@ public partial class TerrainRenderer : Node3D
         _world.TerrainUpdated += OnTerrainUpdated;
     }
 
-    private void OnTerrainUpdated(object? sender, EventArgs e)
+    private void OnTerrainUpdated(object? sender, ulong regionHandle)
     {
         // Must run on main thread to interact with Godot Nodes
-        CallDeferred(nameof(RebuildTerrain));
+        CallDeferred(nameof(RebuildTerrain), regionHandle.ToString());
     }
 
-    private void RebuildTerrain()
+    private void RebuildTerrain(string regionHandleStr)
     {
+        if (!ulong.TryParse(regionHandleStr, out var regionHandle)) return;
         if (_world == null) return;
 
-        var heights = _world.Terrain.GetHeights();
-        int width = _world.Terrain.Width;
-        int height = _world.Terrain.Height;
+        if (!_world.Terrains.TryGetValue(regionHandle, out var regionTerrain))
+        {
+            // Region was removed
+            if (_regions.TryGetValue(regionHandle, out var node))
+            {
+                node.QueueFree();
+                _regions.Remove(regionHandle);
+            }
+            return;
+        }
+
+        if (!_regions.TryGetValue(regionHandle, out var regionNode))
+        {
+            regionNode = new RegionTerrainNode();
+            AddChild(regionNode.Root);
+            _regions[regionHandle] = regionNode;
+
+            // Position root node based on global coordinates
+            uint regionX = (uint)(regionHandle >> 32);
+            uint regionY = (uint)(regionHandle & 0xFFFFFFFF);
+            
+            // Godot X = SL X, Godot -Z = SL Y
+            regionNode.Root.Position = new Vector3(regionX, 0, -regionY);
+        }
+
+        var heights = regionTerrain.GetHeights();
+        int width = regionTerrain.Width;
+        int height = regionTerrain.Height;
 
         var st = new SurfaceTool();
         st.Begin(Mesh.PrimitiveType.Triangles);
@@ -58,10 +92,6 @@ public partial class TerrainRenderer : Node3D
         {
             for (int x = 0; x < width - 1; x++)
             {
-                // In Second Life, coordinate system is usually Z-up. Godot is Y-up.
-                // We'll map OpenSim X to Godot X, and OpenSim Y to Godot -Z
-                // Height (Z in SL) -> Godot Y
-                
                 int i0 = z * width + x;
                 int i1 = z * width + (x + 1);
                 int i2 = (z + 1) * width + x;
@@ -90,24 +120,19 @@ public partial class TerrainRenderer : Node3D
             }
         }
 
-        st.GenerateNormals(); // Redundant if we provide good normals, but good for safety
+        st.GenerateNormals(); 
         
         var arrayMesh = st.Commit();
-        _meshInstance.Mesh = arrayMesh;
+        regionNode.MeshInstance.Mesh = arrayMesh;
 
         // Create CollisionShape
         var shape = new HeightMapShape3D();
         shape.MapWidth = width;
         shape.MapDepth = height;
-        // HeightMapShape3D takes a 1D float array of size MapWidth * MapDepth
-        // In Godot, Y is height. The data is row-major.
         shape.MapData = heights; 
         
-        _collisionShape.Shape = shape;
-        
-        // HeightMapShape3D is centered by default in Godot, 
-        // we might need to offset it to match the mesh, which starts at (0, 0, 0).
-        _collisionShape.Position = new Vector3((width - 1) / 2.0f, 0, -(height - 1) / 2.0f);
+        regionNode.CollisionShape.Shape = shape;
+        regionNode.CollisionShape.Position = new Vector3((width - 1) / 2.0f, 0, -(height - 1) / 2.0f);
     }
 
     private Vector3 CalculateNormal(Vector3 p1, Vector3 p2, Vector3 p3)

@@ -32,50 +32,104 @@ public class ComponentEventArgs : EventArgs
 /// </summary>
 public class World
 {
-    private readonly Dictionary<uint, Entity> _entities = new();
+    private readonly Dictionary<Guid, Entity> _entities = new();
+    private readonly Dictionary<(ulong, uint), Guid> _entityIndex = new();
+    private readonly Dictionary<ulong, RegionTerrain> _terrains = new();
 
-    public RegionTerrain Terrain { get; } = new RegionTerrain();
+    public IReadOnlyDictionary<ulong, RegionTerrain> Terrains => _terrains;
 
     // Events to notify observers (e.g. Godot renderer) about world state changes
     public event EventHandler<EntityEventArgs>? EntityAdded;
     public event EventHandler<EntityEventArgs>? EntityRemoved;
     public event EventHandler<ComponentEventArgs>? ComponentUpdated;
-    public event EventHandler? TerrainUpdated;
+    public event EventHandler<ulong>? TerrainUpdated;
 
     /// <summary>
-    /// Gets or creates an entity with the specified LocalId.
+    /// Gets or creates an entity with the specified RegionHandle and LocalId.
     /// </summary>
-    public Entity GetOrCreateEntity(uint localId)
+    public Entity GetOrCreateEntity(ulong regionHandle, uint localId)
     {
-        if (!_entities.TryGetValue(localId, out var entity))
+        var key = (regionHandle, localId);
+        if (_entityIndex.TryGetValue(key, out var id) && _entities.TryGetValue(id, out var entity))
         {
-            entity = new Entity(localId);
-            _entities[localId] = entity;
-            EntityAdded?.Invoke(this, new EntityEventArgs(entity));
+            return entity;
         }
+
+        entity = new Entity(regionHandle, localId);
+        _entities[entity.Id] = entity;
+        _entityIndex[key] = entity.Id;
+        EntityAdded?.Invoke(this, new EntityEventArgs(entity));
+        
         return entity;
     }
 
     /// <summary>
-    /// Retrieves an entity by its LocalId, or null if it doesn't exist.
+    /// Retrieves an entity by its RegionHandle and LocalId, or null if it doesn't exist.
     /// </summary>
-    public Entity? GetEntity(uint localId)
+    public Entity? GetEntity(ulong regionHandle, uint localId)
     {
-        return _entities.TryGetValue(localId, out var entity) ? entity : null;
+        var key = (regionHandle, localId);
+        if (_entityIndex.TryGetValue(key, out var id) && _entities.TryGetValue(id, out var entity))
+        {
+            return entity;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Retrieves an entity by its global Guid, or null if it doesn't exist.
+    /// </summary>
+    public Entity? GetEntity(Guid id)
+    {
+        return _entities.TryGetValue(id, out var entity) ? entity : null;
     }
 
     /// <summary>
     /// Removes an entity from the world.
     /// </summary>
-    public bool RemoveEntity(uint localId)
+    public bool RemoveEntity(ulong regionHandle, uint localId)
     {
-        if (_entities.TryGetValue(localId, out var entity))
+        var key = (regionHandle, localId);
+        if (_entityIndex.TryGetValue(key, out var id) && _entities.TryGetValue(id, out var entity))
         {
-            _entities.Remove(localId);
+            _entities.Remove(id);
+            _entityIndex.Remove(key);
             EntityRemoved?.Invoke(this, new EntityEventArgs(entity));
             return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Removes all entities and terrain associated with a specific region.
+    /// </summary>
+    public void RemoveRegion(ulong regionHandle)
+    {
+        var toRemove = _entities.Values.Where(e => e.RegionHandle == regionHandle).ToList();
+        foreach (var entity in toRemove)
+        {
+            _entities.Remove(entity.Id);
+            _entityIndex.Remove((regionHandle, entity.LocalId));
+            EntityRemoved?.Invoke(this, new EntityEventArgs(entity));
+        }
+
+        if (_terrains.Remove(regionHandle))
+        {
+            NotifyTerrainUpdated(regionHandle);
+        }
+    }
+
+    /// <summary>
+    /// Gets or creates a terrain object for the specified region.
+    /// </summary>
+    public RegionTerrain GetOrCreateTerrain(ulong regionHandle)
+    {
+        if (!_terrains.TryGetValue(regionHandle, out var terrain))
+        {
+            terrain = new RegionTerrain();
+            _terrains[regionHandle] = terrain;
+        }
+        return terrain;
     }
 
     /// <summary>
@@ -105,8 +159,8 @@ public class World
     /// <summary>
     /// Manually triggers a terrain update notification for observers.
     /// </summary>
-    public void NotifyTerrainUpdated()
+    public void NotifyTerrainUpdated(ulong regionHandle)
     {
-        TerrainUpdated?.Invoke(this, EventArgs.Empty);
+        TerrainUpdated?.Invoke(this, regionHandle);
     }
 }
