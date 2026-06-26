@@ -89,6 +89,41 @@ Verified toolchain: **.NET SDK 8** and **Godot 4.7-stable (.NET/mono)**.
    graceful degradation (impostors, LOD, caps) to stutter.
 4. **`src/` stays engine-agnostic.** No `using Godot;` outside `app/`.
 
+## Layering & boundaries (enforced — from code review)
+
+The project dependency direction is fixed. Do **not** invert it:
+
+```
+app          ->  SLNG.Core, SLNG.Net, SLNG.Assets
+SLNG.Assets  ->  SLNG.Core   (+ SLNG.Net for fetching)
+SLNG.Net     ->  SLNG.Core
+SLNG.Core    ->  nothing in this repo          <- pure domain
+```
+
+- **`SLNG.Core` must not reference `SLNG.Net` or `SLNG.Assets`.** It is the engine- *and*
+  protocol-agnostic world model; a `Core -> Net` reference drags LibreMetaverse into the
+  domain. A bridge that needs both world state and the network (e.g. feeding
+  `GridSession` events into `World`) belongs in `app`, or `Core` depends only on an
+  **interface it defines** that `Net` implements (dependency inversion).
+- **No LibreMetaverse type crosses a public boundary of `SLNG.Net` / `SLNG.Assets`.**
+  Convert at the boundary to `System.Numerics` / engine-neutral DTOs. The renderer must
+  never see `FacetedMesh`, `AssetMesh`, `Primitive`, `UUID`, etc. — `SLNG.Assets` emits a
+  neutral mesh/material description.
+- **Asset codecs (CoreJ2K / JPEG2000, mesh decode) live in `SLNG.Assets`, not `SLNG.Net`.**
+
+## Threading model (enforced — from code review)
+
+- LibreMetaverse raises events on **background network threads**. **Never mutate the
+  `World` directly from those callbacks** — the `Dictionary`-based world state is not
+  thread-safe and the Godot main thread reads it concurrently. Buffer incoming events and
+  apply them to the world on **one** thread (drain once per frame); read world state on
+  the main thread only.
+- Decode (J2K, mesh) on worker threads; marshal only the final GPU upload / node mutation
+  to the Godot main thread via `CallDeferred`. (The asset path already does this — keep
+  it that way.)
+- Render budgets: don't rebuild a whole-region mesh per terrain patch — batch/debounce.
+  Reuse shared mesh & material resources instead of allocating per update.
+
 ## Definition of done
 
 A task is done when: it builds (`dotnet build`), tests pass (`dotnet test`), the

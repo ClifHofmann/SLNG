@@ -36,6 +36,10 @@ mono_crash.*.json
 /scratch/
 /captures/
 asset-cache/
+# LibreMetaverse runtime cache + bundled static assets
+app/linden/
+# throwaway reflection / dev probes
+tools/Probe/
 
 # AI tooling — local/personal config (shared config IS committed)
 .claude/settings.local.json
