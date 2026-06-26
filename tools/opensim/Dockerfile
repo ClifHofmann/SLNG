@@ -1,7 +1,7 @@
-FROM mono:6.12
+FROM ubuntu:22.04
 
 RUN apt-get update && \
-    apt-get install -y curl tar sqlite3 && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y mono-complete curl tar sqlite3 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opensim
