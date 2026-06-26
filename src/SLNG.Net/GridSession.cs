@@ -1,4 +1,5 @@
 using LibreMetaverse;
+using SLNG.Core;
 
 namespace SLNG.Net;
 
@@ -8,7 +9,7 @@ namespace SLNG.Net;
 /// seam between the protocol stack and the rest of SLNG: nothing above this layer
 /// sees a LibreMetaverse type.
 /// </summary>
-public sealed class GridSession : IDisposable
+public sealed class GridSession : IDisposable, IWorldEventSource
 {
     private readonly GridClient _client;
 

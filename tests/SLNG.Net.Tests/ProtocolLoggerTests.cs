@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Text;
+using SLNG.Core;
 using Xunit;
 
 namespace SLNG.Net.Tests;

@@ -17,6 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\SLNG.Core\SLNG.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="SLNG.Net.Tests" />
     <InternalsVisibleTo Include="SLNG.Core.Tests" />
   </ItemGroup>

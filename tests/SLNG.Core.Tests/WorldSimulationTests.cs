@@ -30,6 +30,7 @@ public class WorldSimulationTests
 
         var updateEvt = new ObjectUpdateEvent(123ul, 42, new Vector3(10, 20, 30), Quaternion.Identity, Vector3.One, 1, false, Guid.Empty);
         session.RaiseObjectUpdate(updateEvt);
+        simulation.Pump();
 
         var entity = world.GetEntity(123ul, 42);
         Assert.NotNull(entity);

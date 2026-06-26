@@ -1,4 +1,5 @@
 using Godot;
+using SLNG.Core;
 using SLNG.Net;
 using SLNG.App;
 
@@ -39,6 +40,12 @@ public partial class Boot : Control
         AddChild(_objectRenderer);
         
         LogMessage("Ready. Enter credentials and click Login.");
+    }
+
+    public override void _Process(double delta)
+    {
+        // Drain queued world events on the main thread — the only place the world mutates.
+        _worldSimulation?.Pump();
     }
 
     private async void OnLoginPressed()
