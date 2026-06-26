@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   opensim:
-    image: soupbowl/opensimulator:0.9.3.0-screen
+    image: soupbowl/opensimulator:latest
     container_name: slng-opensim
     ports:
       - "9000:9000/tcp"
