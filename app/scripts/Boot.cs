@@ -86,10 +86,14 @@ public partial class Boot : Control
         _world = new SLNG.Core.ECS.World();
         _session = new GridSession();
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
-        _assetService = new SLNG.Assets.AssetService(_session);
+
+        string cacheDir = ProjectSettings.GlobalizePath("user://cache/assets");
+        _assetService = new SLNG.Assets.AssetService(_session, cacheDir);
+
+        var gpuCache = new GpuCache();
 
         _terrainRenderer?.Initialize(_world);
-        _objectRenderer?.Initialize(_world, _assetService);
+        _objectRenderer?.Initialize(_world, _assetService, gpuCache);
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.ObjectUpdateReceived += OnObjectUpdate;

@@ -4,6 +4,7 @@ using SLNG.Core.Components;
 using SLNG.Assets;
 using System.Collections.Generic;
 using System;
+using System.Linq;
 
 namespace SLNG.App;
 
@@ -11,19 +12,25 @@ public partial class ObjectRenderer : Node3D
 {
     private World? _world;
     private SLNG.Assets.AssetService? _assetService;
-    private readonly Dictionary<Guid, MeshInstance3D> _visuals = new();
+    private GpuCache? _gpuCache;
 
-    // Box = 0 (Square), Cylinder = 1 (Circle), Sphere = 5 (HalfCircle) in LibreMetaverse typically
-    // Actually, ProfileCurve maps roughly: Circle = 0, Square = 1, IsoTriangle = 2, EqualTriangle = 3, RightTriangle = 4, HalfCircle = 5
-    // Let's do a basic mapping
+    private class VisualState
+    {
+        public MeshInstance3D MeshInstance = null!;
+        public List<Guid> UsedTextureIds = new();
+    }
+
+    private readonly Dictionary<Guid, VisualState> _visuals = new();
+
     private Mesh _boxMesh = new BoxMesh();
     private Mesh _sphereMesh = new SphereMesh();
     private Mesh _cylinderMesh = new CylinderMesh();
 
-    public void Initialize(World world, SLNG.Assets.AssetService assetService)
+    public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
         _world = world;
         _assetService = assetService;
+        _gpuCache = gpuCache;
 
         _world.EntityAdded += OnEntityAdded;
         _world.EntityRemoved += OnEntityRemoved;
@@ -52,7 +59,7 @@ public partial class ObjectRenderer : Node3D
 
         var meshInstance = new MeshInstance3D();
         AddChild(meshInstance);
-        _visuals[entityId] = meshInstance;
+        _visuals[entityId] = new VisualState { MeshInstance = meshInstance };
 
         UpdateVisual(entityIdStr);
     }
@@ -60,18 +67,42 @@ public partial class ObjectRenderer : Node3D
     private void RemoveVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
-        if (_visuals.TryGetValue(entityId, out var meshInstance))
+        if (_visuals.TryGetValue(entityId, out var state))
         {
-            meshInstance.QueueFree();
+            state.MeshInstance.QueueFree();
+            if (_gpuCache != null)
+            {
+                foreach (var texId in state.UsedTextureIds)
+                {
+                    _gpuCache.ReleaseRef(texId);
+                }
+            }
             _visuals.Remove(entityId);
         }
+    }
+
+    private void SetTexturesForVisual(VisualState state, List<Guid> newTextureIds)
+    {
+        if (_gpuCache == null) return;
+        
+        foreach (var old in state.UsedTextureIds)
+        {
+            if (!newTextureIds.Contains(old)) _gpuCache.ReleaseRef(old);
+        }
+        
+        foreach (var newTex in newTextureIds)
+        {
+            if (!state.UsedTextureIds.Contains(newTex)) _gpuCache.AddRef(newTex);
+        }
+
+        state.UsedTextureIds = newTextureIds;
     }
 
     private void UpdateVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
         if (_world == null) return;
-        if (!_visuals.TryGetValue(entityId, out var meshInstance)) return;
+        if (!_visuals.TryGetValue(entityId, out var state)) return;
 
         var entity = _world.GetEntity(entityId);
         if (entity == null) return;
@@ -81,51 +112,39 @@ public partial class ObjectRenderer : Node3D
         {
             if (prim.IsMesh && _assetService != null && prim.MeshId != Guid.Empty)
             {
-                // We use an async fire-and-forget to load the mesh
-                // Godot's CallDeferred inside the async method will ensure we update the mesh thread-safely
-                _ = LoadAndApplyMeshAsync(meshInstance, prim.MeshId);
+                _ = LoadAndApplyMeshAsync(state.MeshInstance, prim.MeshId);
             }
             else
             {
-                // Fallback primitives — reuse shared mesh resources, don't allocate per update.
-                meshInstance.Mesh = prim.ProfileCurve switch
+                state.MeshInstance.Mesh = prim.ProfileCurve switch
                 {
-                    0 => _cylinderMesh, // Circle -> Cylinder
-                    5 => _sphereMesh,   // HalfCircle -> Sphere
-                    _ => _boxMesh,      // Square -> Box
+                    0 => _cylinderMesh,
+                    5 => _sphereMesh,
+                    _ => _boxMesh,
                 };
             }
 
             if (_assetService != null && (prim.TextureId != Guid.Empty || prim.RenderMaterialId != Guid.Empty))
             {
-                _ = LoadAndApplyMaterialAsync(meshInstance, prim.TextureId, prim.RenderMaterialId, new Godot.Color(prim.ColorTint.X, prim.ColorTint.Y, prim.ColorTint.Z, prim.ColorTint.W));
+                _ = LoadAndApplyMaterialAsync(state, prim.TextureId, prim.RenderMaterialId, new Godot.Color(prim.ColorTint.X, prim.ColorTint.Y, prim.ColorTint.Z, prim.ColorTint.W));
             }
 
-            // Apply Scale
-            // SL uses Z up, Godot uses Y up, so we swap Y and Z in the scale
-            meshInstance.Scale = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y);
+            state.MeshInstance.Scale = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y);
         }
 
         var transform = entity.GetComponent<TransformComponent>();
         if (transform != null)
         {
-            // Extract global region offset
             uint regionX = (uint)(entity.RegionHandle >> 32);
             uint regionY = (uint)(entity.RegionHandle & 0xFFFFFFFF);
 
-            // Apply Position (SL Z-up -> Godot Y-up)
-            // Godot X = SL RegionX + SL X
-            // Godot Y = SL Z
-            // Godot Z = -(SL RegionY + SL Y)
-            meshInstance.Position = new Godot.Vector3(
+            state.MeshInstance.Position = new Godot.Vector3(
                 regionX + transform.Position.X, 
                 transform.Position.Z, 
                 -(regionY + transform.Position.Y));
 
-            // Apply Rotation (SL Z-up -> Godot Y-up mapping)
-            // This is a naive conversion; exact SL-to-Godot quaternion conversion might require careful axis flipping
             var slQuat = new Godot.Quaternion(transform.Rotation.X, transform.Rotation.Z, -transform.Rotation.Y, transform.Rotation.W);
-            meshInstance.Quaternion = slQuat;
+            state.MeshInstance.Quaternion = slQuat;
         }
     }
 
@@ -136,11 +155,10 @@ public partial class ObjectRenderer : Node3D
         var mesh = await _assetService.GetMeshAsync(meshId);
         if (mesh == null || mesh.Submeshes.Count == 0) return;
 
-        // Build the Godot mesh on the main thread.
         Godot.Callable.From(() => ApplyMeshData(meshInstance, mesh)).CallDeferred();
     }
 
-    private async System.Threading.Tasks.Task LoadAndApplyMaterialAsync(MeshInstance3D meshInstance, Guid textureId, Guid renderMaterialId, Godot.Color colorTint)
+    private async System.Threading.Tasks.Task LoadAndApplyMaterialAsync(VisualState state, Guid textureId, Guid renderMaterialId, Godot.Color colorTint)
     {
         if (_assetService == null) return;
 
@@ -150,9 +168,10 @@ public partial class ObjectRenderer : Node3D
             TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest
         };
 
+        var usedTextures = new List<Guid>();
+
         if (renderMaterialId != Guid.Empty)
         {
-            // GLTF PBR Material
             var pbr = await _assetService.GetMaterialAsync(renderMaterialId);
             if (pbr != null)
             {
@@ -162,54 +181,98 @@ public partial class ObjectRenderer : Node3D
                 material.EmissionEnabled = pbr.EmissiveFactor != System.Numerics.Vector3.Zero;
                 material.Emission = new Godot.Color(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z);
 
-                // Fetch underlying maps concurrently
                 var tasks = new List<System.Threading.Tasks.Task>();
 
                 if (pbr.BaseColorTextureId != Guid.Empty)
-                    tasks.Add(_assetService.GetTextureAsync(pbr.BaseColorTextureId).ContinueWith(t => 
-                        Godot.Callable.From(() => material.AlbedoTexture = CreateGodotTexture(t.Result)).CallDeferred()));
+                {
+                    usedTextures.Add(pbr.BaseColorTextureId);
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId).ContinueWith(t => 
+                        Godot.Callable.From(() => material.AlbedoTexture = t.Result).CallDeferred()));
+                }
 
                 if (pbr.NormalTextureId != Guid.Empty)
-                    tasks.Add(_assetService.GetTextureAsync(pbr.NormalTextureId).ContinueWith(t => 
+                {
+                    usedTextures.Add(pbr.NormalTextureId);
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId).ContinueWith(t => 
                         Godot.Callable.From(() => {
                             material.NormalEnabled = true;
-                            material.NormalTexture = CreateGodotTexture(t.Result);
+                            material.NormalTexture = t.Result;
                         }).CallDeferred()));
+                }
 
                 if (pbr.MetallicRoughnessTextureId != Guid.Empty)
-                    tasks.Add(_assetService.GetTextureAsync(pbr.MetallicRoughnessTextureId).ContinueWith(t => 
-                        Godot.Callable.From(() => material.OrmTexture = CreateGodotTexture(t.Result)).CallDeferred()));
+                {
+                    usedTextures.Add(pbr.MetallicRoughnessTextureId);
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId).ContinueWith(t => 
+                        Godot.Callable.From(() => material.OrmTexture = t.Result).CallDeferred()));
+                }
 
                 if (pbr.EmissiveTextureId != Guid.Empty)
-                    tasks.Add(_assetService.GetTextureAsync(pbr.EmissiveTextureId).ContinueWith(t => 
-                        Godot.Callable.From(() => material.EmissionTexture = CreateGodotTexture(t.Result)).CallDeferred()));
+                {
+                    usedTextures.Add(pbr.EmissiveTextureId);
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId).ContinueWith(t => 
+                        Godot.Callable.From(() => material.EmissionTexture = t.Result).CallDeferred()));
+                }
 
                 await System.Threading.Tasks.Task.WhenAll(tasks);
             }
         }
         else if (textureId != Guid.Empty)
         {
-            // Classic Material (Fallback)
-            var texture = await _assetService.GetTextureAsync(textureId);
-            if (texture != null)
+            usedTextures.Add(textureId);
+            var tex = await GetOrCreateGpuTextureAsync(textureId);
+            if (tex != null)
             {
-                Godot.Callable.From(() => material.AlbedoTexture = CreateGodotTexture(texture)).CallDeferred();
+                Godot.Callable.From(() => material.AlbedoTexture = tex).CallDeferred();
             }
         }
 
         Godot.Callable.From(() => {
-            if (IsInstanceValid(meshInstance))
+            if (IsInstanceValid(state.MeshInstance))
             {
-                meshInstance.MaterialOverride = material;
+                SetTexturesForVisual(state, usedTextures);
+                state.MeshInstance.MaterialOverride = material;
+            }
+            else
+            {
+                // If it was destroyed while we were fetching, immediately release the refs we just intended to add
+                if (_gpuCache != null)
+                {
+                    foreach (var id in usedTextures) _gpuCache.ReleaseRef(id);
+                }
             }
         }).CallDeferred();
     }
 
-    private static ImageTexture? CreateGodotTexture(TextureData? textureData)
+    private async System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
     {
+        if (_gpuCache != null)
+        {
+            var cached = _gpuCache.Get(textureId) as ImageTexture;
+            if (cached != null) return cached;
+        }
+
+        if (_assetService == null) return null;
+
+        var textureData = await _assetService.GetTextureAsync(textureId);
         if (textureData == null) return null;
-        var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-        return ImageTexture.CreateFromImage(image);
+
+        // Create on main thread, but we can do it via CallDeferred and TaskCompletionSource
+        var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
+        
+        Godot.Callable.From(() => {
+            var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+            var tex = ImageTexture.CreateFromImage(image);
+            
+            if (tex != null && _gpuCache != null)
+            {
+                long size = textureData.Width * textureData.Height * 4;
+                _gpuCache.Put(textureId, tex, size);
+            }
+            tcs.SetResult(tex);
+        }).CallDeferred();
+
+        return await tcs.Task;
     }
 
     private void ApplyMeshData(MeshInstance3D meshInstance, MeshData mesh)
@@ -231,13 +294,12 @@ public partial class ObjectRenderer : Node3D
                 var n = sub.Normals[index];
                 var uv = sub.UVs[index];
 
-                // SL Z-up -> Godot Y-up
                 st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
                 st.SetUV(new Godot.Vector2(uv.X, uv.Y));
                 st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
             }
 
-            st.GenerateTangents(); // useful for PBR later
+            st.GenerateTangents();
             st.Commit(arrayMesh);
         }
 

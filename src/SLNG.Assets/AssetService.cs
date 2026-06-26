@@ -1,8 +1,9 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading.Tasks;
-using CoreJ2K;
+using Microsoft.Extensions.Caching.Memory;
 using LibreMetaverse;
 using LibreMetaverse.Assets;
 using LibreMetaverse.Rendering;
@@ -18,12 +19,27 @@ namespace SLNG.Assets;
 public class AssetService
 {
     private readonly GridSession _session;
-    private readonly ConcurrentDictionary<Guid, Task<MeshData?>> _meshCache = new();
-    private readonly ConcurrentDictionary<Guid, Task<TextureData?>> _textureCache = new();
+    private readonly string _cacheDir;
+    private readonly MemoryCache _memCache;
+    
+    private readonly ConcurrentDictionary<Guid, Task<MeshData?>> _inflightMeshes = new();
+    private readonly ConcurrentDictionary<Guid, Task<TextureData?>> _inflightTextures = new();
+    private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _inflightMaterials = new();
 
-    public AssetService(GridSession session)
+    public AssetService(GridSession session, string cacheDirectory)
     {
         _session = session;
+        _cacheDir = cacheDirectory;
+        if (!string.IsNullOrEmpty(_cacheDir) && !Directory.Exists(_cacheDir))
+        {
+            Directory.CreateDirectory(_cacheDir);
+        }
+
+        var opts = new MemoryCacheOptions
+        {
+            SizeLimit = 256 * 1024 * 1024 // 256 MB RAM cache
+        };
+        _memCache = new MemoryCache(opts);
     }
 
     /// <summary>
@@ -32,30 +48,54 @@ public class AssetService
     /// </summary>
     public Task<MeshData?> GetMeshAsync(Guid meshId)
     {
-        return _meshCache.GetOrAdd(meshId, FetchAndDecodeMeshAsync);
+        if (_memCache.TryGetValue(meshId, out MeshData? cached))
+        {
+            return Task.FromResult(cached);
+        }
+        return _inflightMeshes.GetOrAdd(meshId, async id => {
+            try {
+                var result = await FetchAndDecodeMeshAsync(id).ConfigureAwait(false);
+                if (result != null) {
+                    long size = 1024 * 10; // rough 10KB estimate per mesh
+                    _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
+                }
+                return result;
+            } finally {
+                _inflightMeshes.TryRemove(id, out _);
+            }
+        });
     }
 
     private async Task<MeshData?> FetchAndDecodeMeshAsync(Guid meshId)
     {
-        if (!_session.IsConnected)
+        byte[]? bytes = null;
+        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, meshId.ToString() + ".mesh");
+
+        if (cacheFile != null && File.Exists(cacheFile))
         {
-            return null;
+            try { bytes = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
+        }
+
+        if (bytes == null || bytes.Length == 0)
+        {
+            if (!_session.IsConnected) return null;
+
+            bytes = await _session.FetchMeshDataAsync(meshId).ConfigureAwait(false);
+            if (bytes == null || bytes.Length == 0) return null;
+
+            if (cacheFile != null)
+            {
+                try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
+            }
         }
 
         try
         {
-            byte[]? bytes = await _session.FetchMeshDataAsync(meshId).ConfigureAwait(false);
-            if (bytes == null || bytes.Length == 0)
-            {
-                return null;
-            }
-
-            // Decode off the render thread; never block the main thread.
             return await Task.Run(() => Decode(meshId, bytes)).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[AssetService] Failed to fetch/decode mesh {meshId}: {ex.Message}");
+            Console.WriteLine($"[AssetService] Failed to decode mesh {meshId}: {ex.Message}");
             return null;
         }
     }
@@ -106,42 +146,79 @@ public class AssetService
     /// </summary>
     public Task<TextureData?> GetTextureAsync(Guid textureId)
     {
-        return _textureCache.GetOrAdd(textureId, FetchAndDecodeTextureAsync);
+        if (_memCache.TryGetValue(textureId, out TextureData? cached))
+        {
+            return Task.FromResult(cached);
+        }
+        return _inflightTextures.GetOrAdd(textureId, async id => {
+            try {
+                var result = await FetchAndDecodeTextureAsync(id).ConfigureAwait(false);
+                if (result != null) {
+                    long size = result.Width * result.Height * 4;
+                    if (size <= 0) size = 1024;
+                    _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(5) });
+                }
+                return result;
+            } finally {
+                _inflightTextures.TryRemove(id, out _);
+            }
+        });
     }
 
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId)
     {
-        if (!_session.IsConnected)
+        byte[]? bytes = null;
+        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + ".j2c");
+
+        if (cacheFile != null && File.Exists(cacheFile))
         {
-            return null;
+            try { bytes = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
+        }
+
+        if (bytes == null || bytes.Length == 0)
+        {
+            if (!_session.IsConnected) return null;
+
+            bytes = await _session.FetchTextureDataAsync(textureId).ConfigureAwait(false);
+            if (bytes == null || bytes.Length == 0) return null;
+
+            if (cacheFile != null)
+            {
+                try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
+            }
         }
 
         try
         {
-            byte[]? bytes = await _session.FetchTextureDataAsync(textureId).ConfigureAwait(false);
-            if (bytes == null || bytes.Length == 0)
-            {
-                return null;
-            }
-
-            // Decode off the render thread; never block the main thread.
             return await Task.Run(() => DecodeTexture(bytes)).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[AssetService] Failed to fetch/decode texture {textureId}: {ex.ToString()}");
+            Console.WriteLine($"[AssetService] Failed to decode texture {textureId}: {ex.Message}");
             return null;
         }
     }
-
-    private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _materialCache = new();
 
     /// <summary>
     /// Fetches a GLTF PBR material by UUID and returns its mapped parameters and texture UUIDs.
     /// </summary>
     public Task<PbrMaterialData?> GetMaterialAsync(Guid materialId)
     {
-        return _materialCache.GetOrAdd(materialId, FetchMaterialAsync);
+        if (_memCache.TryGetValue(materialId, out PbrMaterialData? cached))
+        {
+            return Task.FromResult(cached);
+        }
+        return _inflightMaterials.GetOrAdd(materialId, async id => {
+            try {
+                var result = await FetchMaterialAsync(id).ConfigureAwait(false);
+                if (result != null) {
+                    _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = 1024, SlidingExpiration = TimeSpan.FromMinutes(10) });
+                }
+                return result;
+            } finally {
+                _inflightMaterials.TryRemove(id, out _);
+            }
+        });
     }
 
     private async Task<PbrMaterialData?> FetchMaterialAsync(Guid materialId)
@@ -229,9 +306,6 @@ public class AssetService
             int width = (int)image.Width;
             int height = (int)image.Height;
 
-            // GetPixels returns an IPixelCollection which can be dumped to a byte array.
-            // MagickImage automatically handles conversion to 8-bit RGBA if requested.
-            // But usually we just get the raw values.
             byte[] rgba;
             
             using (var pixels = image.GetPixels())
