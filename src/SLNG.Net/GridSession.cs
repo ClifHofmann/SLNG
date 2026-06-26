@@ -19,6 +19,27 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
     public event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
 
+    static GridSession()
+    {
+        // CoreJ2K relies on AppDomain.CurrentDomain.GetAssemblies() to find IImageCreator.
+        // In Godot 4 .NET, scripts are loaded into a custom AssemblyLoadContext, so CoreJ2K
+        // fails to find it. We must inject it manually via reflection to prevent
+        // LibreMetaverse's automatic AssetTexture.Decode from crashing on network receive.
+        try
+        {
+            var factoryType = typeof(CoreJ2K.J2kImage).Assembly.GetType("CoreJ2K.Util.ImageFactory");
+            var creatorsField = factoryType?.GetField("_creators", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            if (creatorsField?.GetValue(null) is System.Collections.IList list)
+            {
+                list.Add(new CoreJ2K.Util.SKBitmapImageCreator());
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[GridSession] Failed to register CoreJ2K Skia image creator: {ex.Message}");
+        }
+    }
+
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
     internal void RaiseObjectRemoved(ObjectRemovedEvent e) => ObjectRemovedReceived?.Invoke(this, e);
@@ -27,9 +48,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     public GridSession()
     {
-        // Force load CoreJ2K.Skia assembly so LibreMetaverse can decode J2K textures
-        _ = typeof(CoreJ2K.Util.SKBitmapImageCreator).Assembly;
-
         _client = new GridClient();
         _client.Settings.Agent.SendAppearance = false;
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
