@@ -1,0 +1,101 @@
+# AGENTS.md — single source of truth
+
+This file is the canonical context for **every** AI assistant and human working on
+SLNG. Both `CLAUDE.md` and `GEMINI.md` import it. If a rule matters, it lives here,
+not in a tool-specific file.
+
+## What we are building
+
+A modern viewer for **Second Life** and **OpenSimulator**. We keep full grid
+compatibility by reusing **LibreMetaverse** for the protocol, and we replace the
+legacy renderer with **Godot 4 (.NET / Vulkan)** for PBR lighting, shadows and
+post-processing.
+
+Read alongside this file:
+- `docs/ARCHITECTURE.md` — the five-layer architecture and module map
+- `docs/ROADMAP.md` — milestones broken into AI-sized tasks
+- `docs/AI_WORKFLOW.md` — how Claude Code and Gemini work the repo in parallel
+- `docs/adr/` — architecture decision records
+
+## Tech stack (do not change without an ADR)
+
+- **Language:** C# / .NET 8.
+- **Engine:** Godot 4, .NET build, Vulkan renderer.
+- **Protocol:** LibreMetaverse (login via LLSD, legacy UDP message system, HTTP CAPS).
+- **Physics:** Godot Jolt.
+- **Test framework:** xUnit. Integration tests run against a local OpenSim grid.
+- **Targets:** Windows first; Linux/macOS kept buildable. Mobile is a later goal.
+
+## Repository layout
+
+```
+app/                       Godot 4 .NET project (project.godot, scenes, UI, render adapters)
+src/
+  SLNG.Core/               World state (ECS), session lifecycle, orchestration. Engine-agnostic.
+  SLNG.Net/                LibreMetaverse wrapper: login, region connect, UDP, CAPS, EventQueue.
+  SLNG.Assets/             J2K decode, mesh/LOD, glTF PBR materials, avatar bake, caching.
+tests/
+  SLNG.Core.Tests/         Unit tests.
+  SLNG.Integration.Tests/  OpenSim-backed integration tests.
+docs/                      Architecture, roadmap, workflow, ADRs.
+tools/                     Dev scripts, OpenSim test-grid helpers, packet-capture utilities.
+```
+
+**Layering rule:** `src/` is engine-agnostic and must **not** reference Godot.
+Only `app/` references both Godot and `src/`. This is what lets one agent work
+rendering while another works the protocol without colliding. Enforce it in reviews.
+
+## Build & run
+
+> The project is scaffolded in task M0-1. Until then these are the *target* commands.
+
+```bash
+dotnet build SLNG.sln              # build engine-agnostic libraries + tests
+dotnet test                        # run unit tests
+godot --path app                   # launch the client (or open app/ in the Godot editor)
+godot --headless --path app -- --selftest   # smoke test without a window
+```
+
+## Coding conventions
+
+- **C#:** `dotnet format` clean. Nullable reference types **on**. `async`/`await`
+  for all I/O; never block the Godot main thread.
+- **Naming:** `PascalCase` types/methods, `_camelCase` private fields, one public
+  type per file named after the file.
+- **No magic UUIDs / endpoints** in code — constants in config.
+- **Threading:** asset decode (J2K, mesh) happens on worker threads; only the
+  final GPU upload / scene-graph mutation touches the Godot main thread. This is
+  the single most important performance rule — see Non-negotiables.
+- **Commits:** Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`,
+  `test:`, `chore:`). Reference the roadmap task id, e.g. `feat(net): login flow (M0-2)`.
+- **Tests:** every non-trivial PR ships tests. Protocol/asset code is test-first
+  where feasible because AI output must be verifiable.
+
+## Non-negotiables
+
+1. **TPV Policy compliance.** Any code path that touches the live Second Life grid
+   must respect the Linden Lab Third-Party Viewer Policy: honor object permissions,
+   never circumvent asset protection, never enable content theft. When in doubt,
+   stop and flag it. OpenSim is the default test target precisely because it avoids
+   this risk during early development.
+2. **Never decode or upload assets on the main thread.** It freezes the renderer.
+3. **Render budgets over fidelity.** Real sims are unbounded user content. Prefer
+   graceful degradation (impostors, LOD, caps) to stutter.
+4. **`src/` stays engine-agnostic.** No `using Godot;` outside `app/`.
+
+## Definition of done
+
+A task is done when: it builds (`dotnet build`), tests pass (`dotnet test`), the
+acceptance criteria in its roadmap entry are met, `dotnet format` is clean, and the
+change is committed on its own branch with a Conventional-Commit message.
+
+## Parallel-agent rules (short form — full version in docs/AI_WORKFLOW.md)
+
+- Each work item runs on its **own branch + git worktree**. Never two agents in one
+  working tree.
+- **One owner per task.** Claim a task by setting its `Owner` in `docs/ROADMAP.md`
+  to `claude` or `gemini` in the same branch you start work on.
+- Workstreams are designed to be **independent** (net vs. render vs. assets vs. ui)
+  so two agents rarely touch the same files. If you must edit a shared file
+  (`AGENTS.md`, `SLNG.sln`), do it in a tiny dedicated commit and rebase often.
+- Integrate through `main` via small PRs, not long-lived branches.
