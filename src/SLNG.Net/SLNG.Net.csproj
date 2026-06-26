@@ -11,12 +11,9 @@
     <ProjectReference Include="..\SLNG.Core\SLNG.Core.csproj" />
   </ItemGroup>
 
-  <!--
-    LibreMetaverse is added in task M0-2 (login flow), e.g.:
-    <ItemGroup>
-      <PackageReference Include="LibreMetaverse" Version="..." />
-    </ItemGroup>
-    Kept out of the M0-1 scaffold so the bootstrap build has no external deps.
-  -->
+  <ItemGroup>
+    <!-- Protocol stack: login, UDP message system, HTTP CAPS, asset formats. -->
+    <PackageReference Include="LibreMetaverse" Version="3.0.0" />
+  </ItemGroup>
 
 </Project>
