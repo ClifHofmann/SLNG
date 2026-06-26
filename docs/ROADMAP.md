@@ -95,12 +95,21 @@ Goal: control your own avatar, move, and chat. Completes the **first shot**.
 **End of first shot.** A demoable client: connect → see a real, modern-lit world →
 fly/walk around → chat. Other users' avatars are intentionally deferred to M4.
 
-## M4+ — Beyond the first shot
+## M4 — "The Avatar" (~4–8 weeks)
+
+Goal: Replace the placeholder capsule with a real Second Life avatar (Bento skeleton) and sync animations.
+
+| ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
+|---|---|---|---|---|---|---|---|
+| M4-1 | Bento Skeleton & Base Mesh 🏗️ | render | | graphics-engineer | | M3-4 | A static system avatar mesh with the SL skeleton is rendered instead of a capsule |
+| M4-2 | Animation decode & playback | assets | | asset-pipeline | | M4-1 | Server-sent animations (`.anim` / `.bvh`) play correctly on the skeleton |
+| M4-3 | Appearance & Bakes-on-Mesh (BoM) | net/render | | graphics-engineer | | M4-1 | Avatar shape params and baked skin textures are downloaded and applied |
+| M4-4 | Mesh Attachments | assets/render | | graphics-engineer | | M4-1 | Equipped objects (hair, clothes) are attached to the correct skeleton bones |
+
+## M5+ — Beyond the first shot
 
 The hard, long-tail work. Not part of the first shot; sequence later.
 
-- **Other avatars (the endgame):** Bento skeleton, Bakes-on-Mesh, attachments,
-  animations. Budget months, not weeks.
 - **Viewer features:** inventory, world map, IM, friends, groups, teleport.
 - **Performance hardening:** profiling on overloaded real sims; impostors; draw-call
   reduction; aggressive culling.
