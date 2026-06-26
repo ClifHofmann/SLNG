@@ -35,7 +35,11 @@ public partial class TerrainRenderer : Node3D
     // Regions whose terrain changed since the last frame. Many 16x16 patches arrive per
     // region during load; we coalesce them into at most one rebuild per region per frame.
     private readonly HashSet<ulong> _dirtyRegions = new();
-    private readonly StandardMaterial3D _terrainMaterial = new() { AlbedoColor = new Color(0.2f, 0.6f, 0.2f) };
+    private readonly StandardMaterial3D _terrainMaterial = new() 
+    { 
+        AlbedoColor = new Color(0.2f, 0.6f, 0.2f),
+        CullMode = BaseMaterial3D.CullModeEnum.Disabled
+    };
 
     private World? _world;
 
