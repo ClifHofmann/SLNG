@@ -25,6 +25,7 @@ public sealed class WorldSimulation : IDisposable
         _source = source;
 
         _source.ObjectUpdateReceived += OnObjectUpdate;
+        _source.AvatarUpdateReceived += OnAvatarUpdate;
         _source.ObjectRemovedReceived += OnObjectRemoved;
         _source.TerrainPatchReceived += OnTerrainPatch;
         _source.RegionDisconnectedReceived += OnRegionDisconnected;
@@ -32,6 +33,7 @@ public sealed class WorldSimulation : IDisposable
 
     // These run on background network threads: enqueue only, never touch the world.
     private void OnObjectUpdate(object? sender, ObjectUpdateEvent e) => _pending.Enqueue(e);
+    private void OnAvatarUpdate(object? sender, AvatarUpdateEvent e) => _pending.Enqueue(e);
     private void OnObjectRemoved(object? sender, ObjectRemovedEvent e) => _pending.Enqueue(e);
     private void OnTerrainPatch(object? sender, TerrainPatchEvent e) => _pending.Enqueue(e);
     private void OnRegionDisconnected(object? sender, RegionDisconnectedEvent e) => _pending.Enqueue(e);
@@ -47,6 +49,7 @@ public sealed class WorldSimulation : IDisposable
             switch (evt)
             {
                 case ObjectUpdateEvent e: ApplyObjectUpdate(e); break;
+                case AvatarUpdateEvent e: ApplyAvatarUpdate(e); break;
                 case ObjectRemovedEvent e: _world.RemoveEntity(e.RegionHandle, e.LocalId); break;
                 case TerrainPatchEvent e: ApplyTerrainPatch(e); break;
                 case RegionDisconnectedEvent e: _world.RemoveRegion(e.RegionHandle); break;
@@ -80,7 +83,6 @@ public sealed class WorldSimulation : IDisposable
         }
         else
         {
-            // Update existing prim visual state
             prim.Scale = e.Scale;
             prim.ProfileCurve = e.ProfileCurve;
             prim.IsMesh = e.IsMesh;
@@ -88,8 +90,44 @@ public sealed class WorldSimulation : IDisposable
             prim.TextureId = e.TextureId;
             prim.RenderMaterialId = e.RenderMaterialId;
             prim.ColorTint = e.ColorTint;
+            entity.SetComponent(prim);
         }
         _world.NotifyComponentUpdated(entity, prim);
+    }
+
+    private void ApplyAvatarUpdate(AvatarUpdateEvent e)
+    {
+        var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
+
+        var transform = entity.GetComponent<TransformComponent>();
+        if (transform == null)
+        {
+            transform = new TransformComponent(e.Position, e.Rotation);
+            entity.SetComponent(transform);
+        }
+        else
+        {
+            transform.Position = e.Position;
+            transform.Rotation = e.Rotation;
+            entity.SetComponent(transform);
+        }
+        _world.NotifyComponentUpdated(entity, transform);
+
+        var avatar = entity.GetComponent<AvatarComponent>();
+        if (avatar == null)
+        {
+            avatar = new AvatarComponent(e.AgentId, e.FirstName, e.LastName, e.IsLocalAgent);
+            entity.SetComponent(avatar);
+        }
+        else
+        {
+            avatar.AgentId = e.AgentId;
+            avatar.FirstName = e.FirstName;
+            avatar.LastName = e.LastName;
+            avatar.IsLocalAgent = e.IsLocalAgent;
+            entity.SetComponent(avatar);
+        }
+        _world.NotifyComponentUpdated(entity, avatar);
     }
 
     private void ApplyTerrainPatch(TerrainPatchEvent e)

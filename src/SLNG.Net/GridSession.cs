@@ -15,6 +15,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     public event EventHandler<ChatMessageEvent>? ChatMessageReceived;
     public event EventHandler<ObjectUpdateEvent>? ObjectUpdateReceived;
+    public event EventHandler<AvatarUpdateEvent>? AvatarUpdateReceived;
     public event EventHandler<ObjectRemovedEvent>? ObjectRemovedReceived;
     public event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
     public event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
@@ -44,6 +45,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
+    internal void RaiseAvatarUpdate(AvatarUpdateEvent e) => AvatarUpdateReceived?.Invoke(this, e);
     internal void RaiseObjectRemoved(ObjectRemovedEvent e) => ObjectRemovedReceived?.Invoke(this, e);
     internal void RaiseTerrainPatch(TerrainPatchEvent e) => TerrainPatchReceived?.Invoke(this, e);
     internal void RaiseRegionDisconnected(RegionDisconnectedEvent e) => RegionDisconnectedReceived?.Invoke(this, e);
@@ -54,6 +56,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Settings.Agent.SendAppearance = false;
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
+        _client.Objects.AvatarUpdate += OnAvatarUpdate;
         _client.Objects.KillObject += OnKillObject;
         _client.Objects.KillObjects += OnKillObjects;
         _client.Terrain.LandPatchReceived += OnLandPatchReceived;
@@ -66,6 +69,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             e.FromName,
             e.Message,
             (byte)e.Type));
+    }
+
+    private void OnAvatarUpdate(object? sender, AvatarUpdateEventArgs e)
+    {
+        bool isLocalAgent = e.Avatar.ID == _client.Self.AgentID;
+        AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
+            e.Simulator.Handle,
+            e.Avatar.LocalID,
+            e.Avatar.ID.Guid,
+            new System.Numerics.Vector3(e.Avatar.Position.X, e.Avatar.Position.Y, e.Avatar.Position.Z),
+            new System.Numerics.Quaternion(e.Avatar.Rotation.X, e.Avatar.Rotation.Y, e.Avatar.Rotation.Z, e.Avatar.Rotation.W),
+            e.Avatar.FirstName,
+            e.Avatar.LastName,
+            isLocalAgent));
     }
 
     private void OnObjectUpdate(object? sender, PrimEventArgs e)

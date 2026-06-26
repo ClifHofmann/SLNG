@@ -10,6 +10,7 @@ namespace SLNG.Core;
 public interface IWorldEventSource
 {
     event EventHandler<ObjectUpdateEvent>? ObjectUpdateReceived;
+    event EventHandler<AvatarUpdateEvent>? AvatarUpdateReceived;
     event EventHandler<ObjectRemovedEvent>? ObjectRemovedReceived;
     event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
     event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;

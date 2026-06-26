@@ -17,6 +17,7 @@ public partial class Boot : Control
     private SLNG.Core.WorldSimulation? _worldSimulation;
     private TerrainRenderer? _terrainRenderer;
     private ObjectRenderer? _objectRenderer;
+    private AvatarRenderer? _avatarRenderer;
     private SLNG.Assets.AssetService? _assetService;
     private FreeCamera? _freeCamera;
     private VBoxContainer _vboxContainer = null!;
@@ -38,6 +39,9 @@ public partial class Boot : Control
 
         _objectRenderer = new ObjectRenderer();
         AddChild(_objectRenderer);
+        
+        _avatarRenderer = new AvatarRenderer();
+        AddChild(_avatarRenderer);
         
         SetupEnvironment();
 
@@ -94,6 +98,7 @@ public partial class Boot : Control
 
         _terrainRenderer?.Initialize(_world);
         _objectRenderer?.Initialize(_world, _assetService, gpuCache);
+        _avatarRenderer?.Initialize(_world);
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.ObjectUpdateReceived += OnObjectUpdate;

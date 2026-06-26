@@ -28,7 +28,7 @@ public class WorldSimulationTests
         var scale = new Vector3(1, 1, 1);
         byte pCode = 1;
 
-        var updateEvt = new ObjectUpdateEvent(123ul, 42, new Vector3(10, 20, 30), Quaternion.Identity, Vector3.One, 1, false, Guid.Empty, Guid.Empty);
+        var updateEvt = new ObjectUpdateEvent(123ul, 42, new Vector3(10, 20, 30), Quaternion.Identity, Vector3.One, 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One);
         session.RaiseObjectUpdate(updateEvt);
         simulation.Pump();
 
