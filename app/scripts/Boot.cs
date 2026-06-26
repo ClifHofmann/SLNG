@@ -39,7 +39,31 @@ public partial class Boot : Control
         _objectRenderer = new ObjectRenderer();
         AddChild(_objectRenderer);
         
+        SetupEnvironment();
+
         LogMessage("Ready. Enter credentials and click Login.");
+    }
+
+    private void SetupEnvironment()
+    {
+        // A sky + sun so the 3D world reads as an outdoor scene instead of a grey void,
+        // and so meshes get form and cast shadows.
+        var environment = new Godot.Environment
+        {
+            BackgroundMode = Godot.Environment.BGMode.Sky,
+            Sky = new Sky { SkyMaterial = new ProceduralSkyMaterial() },
+            AmbientLightSource = Godot.Environment.AmbientSource.Sky,
+            AmbientLightEnergy = 1.0f,
+            TonemapMode = Godot.Environment.ToneMapper.Aces,
+        };
+        AddChild(new WorldEnvironment { Environment = environment });
+
+        var sun = new DirectionalLight3D
+        {
+            RotationDegrees = new Godot.Vector3(-50f, -130f, 0f),
+            ShadowEnabled = true,
+        };
+        AddChild(sun);
     }
 
     public override void _Process(double delta)
