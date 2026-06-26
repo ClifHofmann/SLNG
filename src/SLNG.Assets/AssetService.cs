@@ -136,68 +136,44 @@ public class AssetService
 
     private static TextureData? DecodeTexture(byte[] bytes)
     {
-        // OpenSim UDP texture packets are sometimes padded with trailing zeros,
-        // which causes CoreJ2K's FileBitstreamReaderAgent to throw a NullReferenceException.
-        // Trim trailing zeros before decoding.
-        int len = bytes.Length;
-        while (len > 0 && bytes[len - 1] == 0)
-        {
-            len--;
-        }
-
-        if (len < bytes.Length)
-        {
-            var trimmed = new byte[len];
-            Array.Copy(bytes, 0, trimmed, 0, len);
-            bytes = trimmed;
-        }
-
-        // Decode JPEG2000 directly to raw component samples. This avoids LibreMetaverse's
-        // AssetTexture.Decode path, which requires a platform image creator (SkiaSharp) to be
-        // registered with CoreJ2K; the raw decode has no such dependency.
-        CoreJ2K.Util.InterleavedImage image;
         try
         {
-            image = (CoreJ2K.Util.InterleavedImage)J2kImage.FromBytes(bytes, J2kImage.GetDefaultDecoderParameterList());
-            if (image == null) return CreateFallbackTexture();
+            // Magick.NET wraps OpenJPEG and seamlessly handles malformed J2C 
+            // bitstreams (missing EOC, trailing padding, etc.) that crash CoreJ2K.
+            using var image = new ImageMagick.MagickImage(bytes);
+            
+            // Ensure we have RGBA output
+            if (image.HasAlpha)
+            {
+                image.ColorSpace = ImageMagick.ColorSpace.Transparent;
+            }
+            else
+            {
+                image.ColorSpace = ImageMagick.ColorSpace.sRGB;
+            }
+
+            int width = (int)image.Width;
+            int height = (int)image.Height;
+
+            // GetPixels returns an IPixelCollection which can be dumped to a byte array.
+            // MagickImage automatically handles conversion to 8-bit RGBA if requested.
+            // But usually we just get the raw values.
+            byte[] rgba;
+            
+            using (var pixels = image.GetPixels())
+            {
+                // ToByteArray returns pixels based on the channel mapping.
+                // We map exactly to "RGBA" (1 byte per channel)
+                rgba = pixels.ToByteArray("RGBA") ?? Array.Empty<byte>();
+            }
+
+            return new TextureData(width, height, rgba);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // CoreJ2K throws NullReferenceException on some corrupted OpenSim textures 
-            // (especially the default plywood). Return a fallback so the object isn't left untextured.
+            Console.WriteLine($"[AssetService] Magick.NET failed to decode texture: {ex.Message}");
             return CreateFallbackTexture();
         }
-
-        int width = image.Width;
-        int height = image.Height;
-        int pixelCount = width * height;
-        int components = image.NumberOfComponents;
-        if (pixelCount <= 0 || components < 1)
-        {
-            return null;
-        }
-
-        byte[]? red = image.GetComponentBytes(0);
-        byte[]? green = components > 1 ? image.GetComponentBytes(1) : red;
-        byte[]? blue = components > 2 ? image.GetComponentBytes(2) : red;
-        byte[]? alpha = components > 3 ? image.GetComponentBytes(3) : null;
-
-        if (red == null || green == null || blue == null)
-        {
-            return null; // Decode failed or incomplete
-        }
-
-        var rgba = new byte[pixelCount * 4];
-        for (int i = 0; i < pixelCount; i++)
-        {
-            int o = i * 4;
-            rgba[o] = red[i];
-            rgba[o + 1] = green[i];
-            rgba[o + 2] = blue[i];
-            rgba[o + 3] = alpha is not null ? alpha[i] : (byte)255;
-        }
-
-        return new TextureData(width, height, rgba);
     }
 
     private static TextureData CreateFallbackTexture()
