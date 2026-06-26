@@ -76,7 +76,7 @@ Goal: real meshes + textures with modern PBR lighting. This is the graphics payo
 | M2-2 | JPEG2000 (.j2c) decode pool, fully off main thread ✅ | assets | gemini | asset-pipeline | gemini | M0-1 | Textures decode on workers; no main-thread stalls |
 | M2-3 | glTF 2.0 PBR material resolve → Godot ORM material ✅ | render | gemini | graphics-engineer | claude | M2-2 | Metallic-roughness materials applied correctly |
 | M2-4 | Texture streaming + RAM/disk/GPU cache + VRAM budget ✅ | assets | gemini | performance-engineer | gemini | M2-2 | Stable VRAM under a busy sim; mip prioritization works |
-| M2-5 | Lighting & post-fx: sky, CSM shadows, GTAO, ACES tonemap | render | — | graphics-engineer | gemini | M1-2 | Scene has modern lighting; toggleable post-fx |
+| M2-5 | Lighting & post-fx: sky, CSM shadows, GTAO, ACES tonemap ✅ | render | gemini | graphics-engineer | gemini | M1-2 | Scene has modern lighting; toggleable post-fx |
 
 Parallel: assets track (M2-1/2/4) and render track (M2-5) progress side by side.
 
