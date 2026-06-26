@@ -21,6 +21,9 @@ public partial class Boot : Control
     private SLNG.Assets.AssetService? _assetService;
     private FreeCamera? _freeCamera;
     private VBoxContainer _vboxContainer = null!;
+    
+    private WorldEnvironment? _worldEnvironment;
+    private bool _postFxEnabled = true;
 
     public override void _Ready()
     {
@@ -59,13 +62,35 @@ public partial class Boot : Control
             AmbientLightSource = Godot.Environment.AmbientSource.Sky,
             AmbientLightEnergy = 1.0f,
             TonemapMode = Godot.Environment.ToneMapper.Aces,
+            
+            // Post-FX (M2-5)
+            SsaoEnabled = true,
+            SsaoRadius = 1.0f,
+            SsaoIntensity = 2.0f,
+            
+            SsilEnabled = true,
+            
+            GlowEnabled = true,
+            GlowNormalized = true,
+            GlowIntensity = 1.0f,
+            GlowBloom = 0.1f,
+            GlowBlendMode = Godot.Environment.GlowBlendModeEnum.Additive,
+            
+            VolumetricFogEnabled = true,
+            VolumetricFogDensity = 0.005f,
         };
-        AddChild(new WorldEnvironment { Name = "WorldEnvironment", Environment = environment });
+        _worldEnvironment = new WorldEnvironment { Name = "WorldEnvironment", Environment = environment };
+        AddChild(_worldEnvironment);
 
         var sun = new DirectionalLight3D
         {
             RotationDegrees = new Godot.Vector3(-50f, -130f, 0f),
             ShadowEnabled = true,
+            DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel4Splits,
+            DirectionalShadowBlendSplits = true,
+            ShadowBias = 0.02f,
+            ShadowNormalBias = 1.0f,
+            ShadowOpacity = 0.9f,
         };
         AddChild(sun);
     }
@@ -74,6 +99,25 @@ public partial class Boot : Control
     {
         // Drain queued world events on the main thread — the only place the world mutates.
         _worldSimulation?.Pump();
+    }
+
+    public override void _Input(InputEvent @event)
+    {
+        if (@event is InputEventKey keyEvent && keyEvent.Pressed && !keyEvent.Echo)
+        {
+            if (keyEvent.Keycode == Key.F2)
+            {
+                _postFxEnabled = !_postFxEnabled;
+                if (_worldEnvironment?.Environment != null)
+                {
+                    _worldEnvironment.Environment.SsaoEnabled = _postFxEnabled;
+                    _worldEnvironment.Environment.SsilEnabled = _postFxEnabled;
+                    _worldEnvironment.Environment.GlowEnabled = _postFxEnabled;
+                    _worldEnvironment.Environment.VolumetricFogEnabled = _postFxEnabled;
+                    LogMessage($"Post-FX {(_postFxEnabled ? "enabled" : "disabled")}");
+                }
+            }
+        }
     }
 
     private async void OnLoginPressed()
