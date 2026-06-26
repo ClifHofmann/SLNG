@@ -18,6 +18,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<AvatarUpdateEvent>? AvatarUpdateReceived;
     public event EventHandler<ObjectRemovedEvent>? ObjectRemovedReceived;
     public event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
+    public event EventHandler<TerrainSettingsEvent>? TerrainSettingsReceived;
     public event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
 
     static GridSession()
@@ -48,6 +49,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     internal void RaiseAvatarUpdate(AvatarUpdateEvent e) => AvatarUpdateReceived?.Invoke(this, e);
     internal void RaiseObjectRemoved(ObjectRemovedEvent e) => ObjectRemovedReceived?.Invoke(this, e);
     internal void RaiseTerrainPatch(TerrainPatchEvent e) => TerrainPatchReceived?.Invoke(this, e);
+    internal void RaiseTerrainSettings(TerrainSettingsEvent e) => TerrainSettingsReceived?.Invoke(this, e);
     internal void RaiseRegionDisconnected(RegionDisconnectedEvent e) => RegionDisconnectedReceived?.Invoke(this, e);
 
     public GridSession()
@@ -60,7 +62,22 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Objects.KillObject += OnKillObject;
         _client.Objects.KillObjects += OnKillObjects;
         _client.Terrain.LandPatchReceived += OnLandPatchReceived;
+        _client.Network.SimConnected += OnSimConnected;
         _client.Network.SimDisconnected += OnSimDisconnected;
+    }
+
+    private void OnSimConnected(object? sender, LibreMetaverse.SimConnectedEventArgs e)
+    {
+        var sim = e.Simulator;
+        var startHeights = new float[] { sim.TerrainStartHeight00, sim.TerrainStartHeight01, sim.TerrainStartHeight10, sim.TerrainStartHeight11 };
+        var heightRanges = new float[] { sim.TerrainHeightRange00, sim.TerrainHeightRange01, sim.TerrainHeightRange10, sim.TerrainHeightRange11 };
+
+        RaiseTerrainSettings(new TerrainSettingsEvent(
+            sim.Handle,
+            sim.TerrainDetail0.Guid, sim.TerrainDetail1.Guid, sim.TerrainDetail2.Guid, sim.TerrainDetail3.Guid,
+            startHeights, heightRanges,
+            sim.WaterHeight
+        ));
     }
 
     private void OnChatFromSimulator(object? sender, ChatEventArgs e)
@@ -287,6 +304,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Objects.KillObject -= OnKillObject;
         _client.Objects.KillObjects -= OnKillObjects;
         _client.Terrain.LandPatchReceived -= OnLandPatchReceived;
+        _client.Network.SimConnected -= OnSimConnected;
         _client.Network.SimDisconnected -= OnSimDisconnected;
         Logout();
     }

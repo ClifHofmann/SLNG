@@ -10,6 +10,17 @@ public class RegionTerrain
     public const int DefaultRegionSize = 256;
     public const int PatchSize = 16;
 
+    // Terrain Settings
+    public Guid TerrainDetail0 { get; set; }
+    public Guid TerrainDetail1 { get; set; }
+    public Guid TerrainDetail2 { get; set; }
+    public Guid TerrainDetail3 { get; set; }
+
+    public float[] TerrainStartHeights { get; } = new float[4];
+    public float[] TerrainHeightRanges { get; } = new float[4];
+
+    public float WaterHeight { get; set; } = 20.0f; // Default OpenSim water height
+
     // The master heightmap (Y-up elevation).
     private float[] _heights;
 

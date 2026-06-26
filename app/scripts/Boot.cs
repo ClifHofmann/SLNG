@@ -148,7 +148,7 @@ public partial class Boot : Control
 
         var gpuCache = new GpuCache();
 
-        _terrainRenderer?.Initialize(_world);
+        _terrainRenderer?.Initialize(_world, _assetService, gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, gpuCache);
         _avatarRenderer?.Initialize(_world);
 

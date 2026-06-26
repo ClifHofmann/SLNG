@@ -43,6 +43,7 @@ public class World
     public event EventHandler<EntityEventArgs>? EntityRemoved;
     public event EventHandler<ComponentEventArgs>? ComponentUpdated;
     public event EventHandler<ulong>? TerrainUpdated;
+    public event EventHandler<ulong>? TerrainSettingsUpdated;
 
     /// <summary>
     /// Gets or creates an entity with the specified RegionHandle and LocalId.
@@ -162,5 +163,10 @@ public class World
     public void NotifyTerrainUpdated(ulong regionHandle)
     {
         TerrainUpdated?.Invoke(this, regionHandle);
+    }
+
+    public void NotifyTerrainSettingsUpdated(ulong regionHandle)
+    {
+        TerrainSettingsUpdated?.Invoke(this, regionHandle);
     }
 }

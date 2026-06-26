@@ -28,6 +28,12 @@ public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent
 
 /// <summary>Represents a raw 16x16 chunk of terrain height data from the simulator.</summary>
 public record TerrainPatchEvent(ulong RegionHandle, int X, int Y, int PatchSize, float[] HeightMap) : IWorldEvent;
+public record TerrainSettingsEvent(
+    ulong RegionHandle,
+    Guid Detail0, Guid Detail1, Guid Detail2, Guid Detail3,
+    float[] StartHeights, float[] HeightRanges,
+    float WaterHeight
+) : IWorldEvent;
 
 /// <summary>Represents a simulator disconnection or departure.</summary>
 public record RegionDisconnectedEvent(ulong RegionHandle) : IWorldEvent;

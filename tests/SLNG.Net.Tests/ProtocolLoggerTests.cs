@@ -30,7 +30,7 @@ public class ProtocolLoggerTests
 
         using var logger = new ProtocolLogger(session, log => sb.AppendLine(log));
 
-        var objEvent = new ObjectUpdateEvent(123ul, 42, new Vector3(1, 2, 3), Quaternion.Identity, new Vector3(1, 1, 1), 1, false, Guid.Empty, Guid.Empty);
+        var objEvent = new ObjectUpdateEvent(123ul, 42, new Vector3(1, 2, 3), Quaternion.Identity, new Vector3(1, 1, 1), 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One);
         session.RaiseObjectUpdate(objEvent);
 
         var output = sb.ToString().Trim();

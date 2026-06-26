@@ -77,8 +77,9 @@ Goal: real meshes + textures with modern PBR lighting. This is the graphics payo
 | M2-3 | glTF 2.0 PBR material resolve → Godot ORM material ✅ | render | gemini | graphics-engineer | claude | M2-2 | Metallic-roughness materials applied correctly |
 | M2-4 | Texture streaming + RAM/disk/GPU cache + VRAM budget ✅ | assets | gemini | performance-engineer | gemini | M2-2 | Stable VRAM under a busy sim; mip prioritization works |
 | M2-5 | Lighting & post-fx: sky, CSM shadows, GTAO, ACES tonemap ✅ | render | gemini | graphics-engineer | gemini | M1-2 | Scene has modern lighting; toggleable post-fx |
+| M2-6 | Terrain textures, water plane, and dynamic sky 🏗️ | render | gemini | graphics-engineer | gemini | M2-2 | Terrain uses SL textures; water renders at WaterHeight; nice sky |
 
-Parallel: assets track (M2-1/2/4) and render track (M2-5) progress side by side.
+Parallel: assets track (M2-1/2/4) and render track (M2-5/M2-6) progress side by side.
 
 ## M3 — "I'm in-world" (~1–2 weeks)
 

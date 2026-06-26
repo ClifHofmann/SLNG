@@ -28,6 +28,7 @@ public sealed class WorldSimulation : IDisposable
         _source.AvatarUpdateReceived += OnAvatarUpdate;
         _source.ObjectRemovedReceived += OnObjectRemoved;
         _source.TerrainPatchReceived += OnTerrainPatch;
+        _source.TerrainSettingsReceived += OnTerrainSettings;
         _source.RegionDisconnectedReceived += OnRegionDisconnected;
     }
 
@@ -36,6 +37,7 @@ public sealed class WorldSimulation : IDisposable
     private void OnAvatarUpdate(object? sender, AvatarUpdateEvent e) => _pending.Enqueue(e);
     private void OnObjectRemoved(object? sender, ObjectRemovedEvent e) => _pending.Enqueue(e);
     private void OnTerrainPatch(object? sender, TerrainPatchEvent e) => _pending.Enqueue(e);
+    private void OnTerrainSettings(object? sender, TerrainSettingsEvent e) => _pending.Enqueue(e);
     private void OnRegionDisconnected(object? sender, RegionDisconnectedEvent e) => _pending.Enqueue(e);
 
     /// <summary>
@@ -52,6 +54,7 @@ public sealed class WorldSimulation : IDisposable
                 case AvatarUpdateEvent e: ApplyAvatarUpdate(e); break;
                 case ObjectRemovedEvent e: _world.RemoveEntity(e.RegionHandle, e.LocalId); break;
                 case TerrainPatchEvent e: ApplyTerrainPatch(e); break;
+                case TerrainSettingsEvent e: ApplyTerrainSettings(e); break;
                 case RegionDisconnectedEvent e: _world.RemoveRegion(e.RegionHandle); break;
             }
         }
@@ -137,11 +140,28 @@ public sealed class WorldSimulation : IDisposable
         _world.NotifyTerrainUpdated(e.RegionHandle);
     }
 
+    private void ApplyTerrainSettings(TerrainSettingsEvent e)
+    {
+        var terrain = _world.GetOrCreateTerrain(e.RegionHandle);
+        terrain.TerrainDetail0 = e.Detail0;
+        terrain.TerrainDetail1 = e.Detail1;
+        terrain.TerrainDetail2 = e.Detail2;
+        terrain.TerrainDetail3 = e.Detail3;
+        
+        Array.Copy(e.StartHeights, terrain.TerrainStartHeights, 4);
+        Array.Copy(e.HeightRanges, terrain.TerrainHeightRanges, 4);
+        
+        terrain.WaterHeight = e.WaterHeight;
+        
+        _world.NotifyTerrainSettingsUpdated(e.RegionHandle);
+    }
+
     public void Dispose()
     {
         _source.ObjectUpdateReceived -= OnObjectUpdate;
         _source.ObjectRemovedReceived -= OnObjectRemoved;
         _source.TerrainPatchReceived -= OnTerrainPatch;
+        _source.TerrainSettingsReceived -= OnTerrainSettings;
         _source.RegionDisconnectedReceived -= OnRegionDisconnected;
     }
 }

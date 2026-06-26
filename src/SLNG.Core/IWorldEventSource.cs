@@ -13,5 +13,6 @@ public interface IWorldEventSource
     event EventHandler<AvatarUpdateEvent>? AvatarUpdateReceived;
     event EventHandler<ObjectRemovedEvent>? ObjectRemovedReceived;
     event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
+    event EventHandler<TerrainSettingsEvent>? TerrainSettingsReceived;
     event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
 }
