@@ -19,12 +19,14 @@ public class WorldSimulation : IDisposable
         _session = session;
 
         _session.ObjectUpdateReceived += OnObjectUpdateReceived;
+        _session.ObjectRemovedReceived += OnObjectRemovedReceived;
         _session.TerrainPatchReceived += OnTerrainPatchReceived;
+        _session.RegionDisconnectedReceived += OnRegionDisconnectedReceived;
     }
 
     private void OnObjectUpdateReceived(object? sender, ObjectUpdateEvent e)
     {
-        var entity = _world.GetOrCreateEntity(e.LocalId);
+        var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
 
         if (!entity.HasComponent<TransformComponent>())
         {
@@ -40,30 +42,44 @@ public class WorldSimulation : IDisposable
             _world.NotifyComponentUpdated(entity, transform);
         }
 
-        if (!entity.HasComponent<PrimitiveComponent>())
+        var prim = entity.GetComponent<PrimitiveComponent>();
+        if (prim == null)
         {
-            var prim = new PrimitiveComponent(e.Scale, e.ProfileCurve);
+            prim = new PrimitiveComponent(e.Scale, e.ProfileCurve, e.IsMesh, e.MeshId);
             entity.SetComponent(prim);
-            _world.NotifyComponentUpdated(entity, prim);
         }
         else
         {
-            var prim = entity.GetComponent<PrimitiveComponent>()!;
             prim.Scale = e.Scale;
             prim.ProfileCurve = e.ProfileCurve;
+            prim.IsMesh = e.IsMesh;
+            prim.MeshId = e.MeshId;
             _world.NotifyComponentUpdated(entity, prim);
         }
     }
 
+    private void OnObjectRemovedReceived(object? sender, ObjectRemovedEvent e)
+    {
+        _world.RemoveEntity(e.RegionHandle, e.LocalId);
+    }
+
     private void OnTerrainPatchReceived(object? sender, TerrainPatchEvent e)
     {
-        _world.Terrain.ApplyPatch(e.X, e.Y, e.HeightMap);
-        _world.NotifyTerrainUpdated();
+        var terrain = _world.GetOrCreateTerrain(e.RegionHandle);
+        terrain.ApplyPatch(e.X, e.Y, e.HeightMap);
+        _world.NotifyTerrainUpdated(e.RegionHandle);
+    }
+
+    private void OnRegionDisconnectedReceived(object? sender, RegionDisconnectedEvent e)
+    {
+        _world.RemoveRegion(e.RegionHandle);
     }
 
     public void Dispose()
     {
         _session.ObjectUpdateReceived -= OnObjectUpdateReceived;
+        _session.ObjectRemovedReceived -= OnObjectRemovedReceived;
         _session.TerrainPatchReceived -= OnTerrainPatchReceived;
+        _session.RegionDisconnectedReceived -= OnRegionDisconnectedReceived;
     }
 }

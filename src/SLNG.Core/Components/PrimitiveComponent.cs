@@ -16,9 +16,14 @@ public class PrimitiveComponent : IComponent
     /// </summary>
     public byte ProfileCurve { get; set; }
 
-    public PrimitiveComponent(Vector3 scale, byte profileCurve)
+    public bool IsMesh { get; set; }
+    public Guid MeshId { get; set; }
+
+    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default)
     {
         Scale = scale;
         ProfileCurve = profileCurve;
+        IsMesh = isMesh;
+        MeshId = meshId;
     }
 }

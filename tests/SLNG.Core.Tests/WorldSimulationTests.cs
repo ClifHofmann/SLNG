@@ -28,9 +28,10 @@ public class WorldSimulationTests
         var scale = new Vector3(1, 1, 1);
         byte pCode = 1;
 
-        session.RaiseObjectUpdate(new ObjectUpdateEvent(100, pos, rot, scale, pCode));
+        var updateEvt = new ObjectUpdateEvent(123ul, 42, new Vector3(10, 20, 30), Quaternion.Identity, Vector3.One, 1, false, Guid.Empty);
+        session.RaiseObjectUpdate(updateEvt);
 
-        var entity = world.GetEntity(100);
+        var entity = world.GetEntity(123ul, 42);
         Assert.NotNull(entity);
         
         var transform = entity.GetComponent<TransformComponent>();

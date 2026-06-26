@@ -11,6 +11,8 @@
 
   <ItemGroup>
     <!-- Protocol stack: login, UDP message system, HTTP CAPS, asset formats. -->
+    <PackageReference Include="CoreJ2K.ImageSharp" Version="1.0.1" />
+    <PackageReference Include="CoreJ2K.Skia" Version="2.3.0.81" />
     <PackageReference Include="LibreMetaverse" Version="3.0.0" />
   </ItemGroup>
 

@@ -14,18 +14,29 @@ public sealed class GridSession : IDisposable
 
     public event EventHandler<ChatMessageEvent>? ChatMessageReceived;
     public event EventHandler<ObjectUpdateEvent>? ObjectUpdateReceived;
+    public event EventHandler<ObjectRemovedEvent>? ObjectRemovedReceived;
     public event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
+    public event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
 
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
+    internal void RaiseObjectRemoved(ObjectRemovedEvent e) => ObjectRemovedReceived?.Invoke(this, e);
     internal void RaiseTerrainPatch(TerrainPatchEvent e) => TerrainPatchReceived?.Invoke(this, e);
+    internal void RaiseRegionDisconnected(RegionDisconnectedEvent e) => RegionDisconnectedReceived?.Invoke(this, e);
 
     public GridSession()
     {
+        // Force load CoreJ2K.Skia assembly so LibreMetaverse can decode J2K textures
+        _ = typeof(CoreJ2K.Util.SKBitmapImageCreator).Assembly;
+
         _client = new GridClient();
+        _client.Settings.Agent.SendAppearance = false;
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
+        _client.Objects.KillObject += OnKillObject;
+        _client.Objects.KillObjects += OnKillObjects;
         _client.Terrain.LandPatchReceived += OnLandPatchReceived;
+        _client.Network.SimDisconnected += OnSimDisconnected;
     }
 
     private void OnChatFromSimulator(object? sender, ChatEventArgs e)
@@ -38,17 +49,43 @@ public sealed class GridSession : IDisposable
 
     private void OnObjectUpdate(object? sender, PrimEventArgs e)
     {
+        bool isMesh = false;
+        Guid meshId = Guid.Empty;
+
+        if (e.Prim.Sculpt != null && e.Prim.Sculpt.Type == LibreMetaverse.SculptType.Mesh)
+        {
+            isMesh = true;
+            meshId = e.Prim.Sculpt.SculptTexture.Guid;
+        }
+
         ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
+            e.Simulator.Handle,
             e.Prim.LocalID,
             new System.Numerics.Vector3(e.Prim.Position.X, e.Prim.Position.Y, e.Prim.Position.Z),
             new System.Numerics.Quaternion(e.Prim.Rotation.X, e.Prim.Rotation.Y, e.Prim.Rotation.Z, e.Prim.Rotation.W),
             new System.Numerics.Vector3(e.Prim.Scale.X, e.Prim.Scale.Y, e.Prim.Scale.Z),
-            (byte)e.Prim.PrimData.ProfileCurve));
+            (byte)e.Prim.PrimData.ProfileCurve,
+            isMesh,
+            meshId));
+    }
+
+    private void OnKillObject(object? sender, KillObjectEventArgs e)
+    {
+        ObjectRemovedReceived?.Invoke(this, new ObjectRemovedEvent(e.Simulator.Handle, e.ObjectLocalID));
+    }
+
+    private void OnKillObjects(object? sender, KillObjectsEventArgs e)
+    {
+        foreach (var localId in e.ObjectLocalIDs)
+        {
+            ObjectRemovedReceived?.Invoke(this, new ObjectRemovedEvent(e.Simulator.Handle, localId));
+        }
     }
 
     private void OnLandPatchReceived(object? sender, LandPatchReceivedEventArgs e)
     {
         TerrainPatchReceived?.Invoke(this, new TerrainPatchEvent(
+            e.Simulator.Handle,
             e.X,
             e.Y,
             e.PatchSize,
@@ -56,8 +93,16 @@ public sealed class GridSession : IDisposable
         ));
     }
 
+    private void OnSimDisconnected(object? sender, SimDisconnectedEventArgs e)
+    {
+        RegionDisconnectedReceived?.Invoke(this, new RegionDisconnectedEvent(e.Simulator.Handle));
+    }
+
     /// <summary>True once a login has succeeded and the circuit is up.</summary>
     public bool IsConnected => _client.Network.Connected;
+
+    /// <summary>The handle of the region the agent is currently in.</summary>
+    public ulong CurrentRegionHandle => _client.Network.CurrentSim?.Handle ?? 0;
 
     /// <summary>Agent UUID of the logged-in avatar, or empty until connected.</summary>
     public string AgentId => _client.Self.AgentID.ToString();
@@ -109,6 +154,14 @@ public sealed class GridSession : IDisposable
         {
             _client.Network.Logout();
         }
+    }
+
+    /// <summary>
+    /// Fetches a mesh asset from the simulator via the AssetManager.
+    /// </summary>
+    public Task<LibreMetaverse.Assets.AssetMesh?> FetchMeshAsync(Guid meshId)
+    {
+        return _client.Assets.RequestMeshAsync(new LibreMetaverse.UUID(meshId), System.Threading.CancellationToken.None);
     }
 
     public void Dispose() => Logout();

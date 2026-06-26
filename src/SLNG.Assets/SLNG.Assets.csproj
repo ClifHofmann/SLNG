@@ -8,7 +8,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="LibreMetaverse" Version="3.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\SLNG.Core\SLNG.Core.csproj" />
+    <ProjectReference Include="..\SLNG.Net\SLNG.Net.csproj" />
   </ItemGroup>
 
 </Project>

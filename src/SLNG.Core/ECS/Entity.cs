@@ -8,11 +8,15 @@ namespace SLNG.Core.ECS;
 /// </summary>
 public class Entity
 {
+    public Guid Id { get; }
+    public ulong RegionHandle { get; }
     public uint LocalId { get; }
     private readonly Dictionary<Type, IComponent> _components = new();
 
-    public Entity(uint localId)
+    public Entity(ulong regionHandle, uint localId)
     {
+        Id = Guid.NewGuid();
+        RegionHandle = regionHandle;
         LocalId = localId;
     }
 
