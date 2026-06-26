@@ -107,8 +107,29 @@ public partial class AvatarController : Camera3D
                     float slDz = godotMoveDir.Y * speed * (float)delta;
 
                     transform.Position += new System.Numerics.Vector3(slDx, slDy, slDz);
-                    _world.NotifyComponentUpdated(localAgent, transform);
                 }
+
+                // Terrain collision and gravity (apply regardless of input)
+                if (_world.Terrains.TryGetValue(localAgent.RegionHandle, out var terrain))
+                {
+                    int tx = (int)Mathf.Clamp(transform.Position.X, 0, terrain.Width - 1);
+                    int ty = (int)Mathf.Clamp(transform.Position.Y, 0, terrain.Height - 1);
+                    float groundHeight = terrain.GetHeights()[ty * terrain.Width + tx];
+                    
+                    if (transform.Position.Z < groundHeight)
+                    {
+                        // Push up out of terrain
+                        transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, groundHeight);
+                    }
+                    else if (transform.Position.Z > groundHeight)
+                    {
+                        // Fall down to terrain
+                        float fallSpeed = 9.81f * (float)delta;
+                        transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, System.Math.Max(groundHeight, transform.Position.Z - fallSpeed));
+                    }
+                }
+
+                _world.NotifyComponentUpdated(localAgent, transform);
 
                 uint regionX = (uint)(localAgent.RegionHandle >> 32);
                 uint regionY = (uint)(localAgent.RegionHandle & 0xFFFFFFFF);
