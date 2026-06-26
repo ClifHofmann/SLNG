@@ -70,6 +70,32 @@ public partial class AvatarController : Camera3D
             var transform = localAgent.GetComponent<TransformComponent>();
             if (transform != null)
             {
+                // Local movement prediction
+                bool isFwd = Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W);
+                bool isBack = Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S);
+                bool isLeft = Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A);
+                bool isRight = Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D);
+
+                var godotMoveDir = new Vector3();
+                if (isFwd) godotMoveDir += -Transform.Basis.Z;
+                if (isBack) godotMoveDir += Transform.Basis.Z;
+                if (isLeft) godotMoveDir += -Transform.Basis.X;
+                if (isRight) godotMoveDir += Transform.Basis.X;
+
+                godotMoveDir.Y = 0; // Constrain to Godot's ground plane
+                godotMoveDir = godotMoveDir.Normalized();
+
+                if (godotMoveDir.LengthSquared() > 0)
+                {
+                    float speed = 4.0f; // SL walk speed is roughly 3-4 m/s
+                    float slDx = -godotMoveDir.Z * speed * (float)delta;
+                    float slDy = -godotMoveDir.X * speed * (float)delta;
+                    float slDz = godotMoveDir.Y * speed * (float)delta;
+
+                    transform.Position += new System.Numerics.Vector3(slDx, slDy, slDz);
+                    _world.NotifyComponentUpdated(localAgent, transform);
+                }
+
                 uint regionX = (uint)(localAgent.RegionHandle >> 32);
                 uint regionY = (uint)(localAgent.RegionHandle & 0xFFFFFFFF);
 
