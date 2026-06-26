@@ -173,8 +173,8 @@ public partial class Boot : Control
                 LogMessage(result.Message);
             }
             
-            // Hide the UI to show the 3D scene
-            _vboxContainer.Visible = false;
+            // Hide the login form but keep chat/logs visible
+            GetNode<HBoxContainer>("VBoxContainer/HBoxContainer").Visible = false;
 
             // Spawn the free camera
             _freeCamera = new FreeCamera();
