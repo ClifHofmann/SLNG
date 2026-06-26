@@ -17,6 +17,7 @@ public partial class AvatarController : Camera3D
     // We store the last sent movement to avoid spamming the network
     private bool _lastFwd, _lastBack, _lastLeft, _lastRight, _lastUp, _lastDown;
     private Vector3 _lastCameraRot;
+    private float _zoom = 4.0f;
 
     public void Initialize(World world, GridSession session)
     {
@@ -26,12 +27,33 @@ public partial class AvatarController : Camera3D
 
     public override void _Ready()
     {
-        // Capture mouse so we can look around like a typical first-person/third-person game
-        Input.MouseMode = Input.MouseModeEnum.Captured;
+        // Default to visible mouse for UI interaction
+        Input.MouseMode = Input.MouseModeEnum.Visible;
     }
 
     public override void _UnhandledInput(InputEvent @event)
     {
+        // Orbit camera with Right Mouse Button
+        if (@event is InputEventMouseButton mouseBtn)
+        {
+            if (mouseBtn.ButtonIndex == MouseButton.Right)
+            {
+                if (mouseBtn.Pressed)
+                    Input.MouseMode = Input.MouseModeEnum.Captured;
+                else
+                    Input.MouseMode = Input.MouseModeEnum.Visible;
+            }
+            // Mouse wheel zoom
+            else if (mouseBtn.ButtonIndex == MouseButton.WheelUp)
+            {
+                _zoom = Mathf.Max(0.5f, _zoom - 0.5f);
+            }
+            else if (mouseBtn.ButtonIndex == MouseButton.WheelDown)
+            {
+                _zoom = Mathf.Min(20.0f, _zoom + 0.5f);
+            }
+        }
+
         if (@event is InputEventMouseMotion mouseMotion && Input.MouseMode == Input.MouseModeEnum.Captured)
         {
             // Mouse look
@@ -41,19 +63,6 @@ public partial class AvatarController : Camera3D
 
             // Clamp pitch to avoid flipping over
             _pitch = Mathf.Clamp(_pitch, -1.5f, 1.5f);
-
-            Rotation = new Vector3(_pitch, _yaw, 0);
-        }
-
-        if (@event is InputEventKey keyEvent && keyEvent.Pressed && keyEvent.Keycode == Key.Escape)
-        {
-            // Free the mouse if user presses Escape
-            Input.MouseMode = Input.MouseModeEnum.Visible;
-        }
-        else if (@event is InputEventMouseButton mouseBtn && mouseBtn.Pressed && mouseBtn.ButtonIndex == MouseButton.Left)
-        {
-            // Capture mouse if user clicks
-            Input.MouseMode = Input.MouseModeEnum.Captured;
         }
     }
 
@@ -76,11 +85,16 @@ public partial class AvatarController : Camera3D
                 bool isLeft = Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A);
                 bool isRight = Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D);
 
+                // In SL/Firestorm, A and D turn the avatar when not strafing
+                if (isLeft) _yaw += 2.5f * (float)delta;
+                if (isRight) _yaw -= 2.5f * (float)delta;
+
+                // Apply rotation continuously
+                Rotation = new Vector3(_pitch, _yaw, 0);
+
                 var godotMoveDir = new Vector3();
                 if (isFwd) godotMoveDir += -Transform.Basis.Z;
                 if (isBack) godotMoveDir += Transform.Basis.Z;
-                if (isLeft) godotMoveDir += -Transform.Basis.X;
-                if (isRight) godotMoveDir += Transform.Basis.X;
 
                 godotMoveDir.Y = 0; // Constrain to Godot's ground plane
                 godotMoveDir = godotMoveDir.Normalized();
@@ -107,7 +121,7 @@ public partial class AvatarController : Camera3D
                 );
 
                 // Third-person camera: pull back along the camera's Z axis
-                Position = targetPos + Transform.Basis.Z * 4.0f;
+                Position = targetPos + Transform.Basis.Z * _zoom;
             }
         }
 
@@ -149,7 +163,8 @@ public partial class AvatarController : Camera3D
                 }
             }
 
-            _session.SetMovement(fwd, back, left, right, up, down, finalQuat);
+            // We pass false for left/right because A/D are turning now, not strafing
+            _session.SetMovement(fwd, back, false, false, up, down, finalQuat);
         }
     }
 }
