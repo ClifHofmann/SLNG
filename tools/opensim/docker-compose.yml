@@ -4,6 +4,8 @@ services:
   opensim:
     image: soupbowl/opensimulator:latest
     container_name: slng-opensim
+    tty: true
+    stdin_open: true
     ports:
       - "9000:9000/tcp"
       - "9000:9000/udp"
