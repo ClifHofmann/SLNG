@@ -19,6 +19,7 @@ public class WorldSimulation : IDisposable
         _session = session;
 
         _session.ObjectUpdateReceived += OnObjectUpdateReceived;
+        _session.TerrainPatchReceived += OnTerrainPatchReceived;
     }
 
     private void OnObjectUpdateReceived(object? sender, ObjectUpdateEvent e)
@@ -42,8 +43,15 @@ public class WorldSimulation : IDisposable
         _world.NotifyComponentUpdated(entity, transform);
     }
 
+    private void OnTerrainPatchReceived(object? sender, TerrainPatchEvent e)
+    {
+        _world.Terrain.ApplyPatch(e.X, e.Y, e.HeightMap);
+        _world.NotifyTerrainUpdated();
+    }
+
     public void Dispose()
     {
         _session.ObjectUpdateReceived -= OnObjectUpdateReceived;
+        _session.TerrainPatchReceived -= OnTerrainPatchReceived;
     }
 }

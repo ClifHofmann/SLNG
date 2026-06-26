@@ -14,15 +14,18 @@ public sealed class GridSession : IDisposable
 
     public event EventHandler<ChatMessageEvent>? ChatMessageReceived;
     public event EventHandler<ObjectUpdateEvent>? ObjectUpdateReceived;
+    public event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
 
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
+    internal void RaiseTerrainPatch(TerrainPatchEvent e) => TerrainPatchReceived?.Invoke(this, e);
 
     public GridSession()
     {
         _client = new GridClient();
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
+        _client.Terrain.LandPatchReceived += OnLandPatchReceived;
     }
 
     private void OnChatFromSimulator(object? sender, ChatEventArgs e)
@@ -39,6 +42,16 @@ public sealed class GridSession : IDisposable
             e.Prim.LocalID,
             new System.Numerics.Vector3(e.Prim.Position.X, e.Prim.Position.Y, e.Prim.Position.Z),
             new System.Numerics.Quaternion(e.Prim.Rotation.X, e.Prim.Rotation.Y, e.Prim.Rotation.Z, e.Prim.Rotation.W)));
+    }
+
+    private void OnLandPatchReceived(object? sender, LandPatchReceivedEventArgs e)
+    {
+        TerrainPatchReceived?.Invoke(this, new TerrainPatchEvent(
+            e.X,
+            e.Y,
+            e.PatchSize,
+            e.HeightMap
+        ));
     }
 
     /// <summary>True once a login has succeeded and the circuit is up.</summary>

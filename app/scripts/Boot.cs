@@ -1,5 +1,6 @@
 using Godot;
 using SLNG.Net;
+using SLNG.App;
 
 public partial class Boot : Control
 {
@@ -11,6 +12,9 @@ public partial class Boot : Control
     private RichTextLabel _logPanel = null!;
 
     private GridSession? _session;
+    private SLNG.Core.ECS.World? _world;
+    private SLNG.Core.WorldSimulation? _worldSimulation;
+    private TerrainRenderer? _terrainRenderer;
 
     public override void _Ready()
     {
@@ -22,6 +26,9 @@ public partial class Boot : Control
         _logPanel = GetNode<RichTextLabel>("VBoxContainer/LogPanel");
 
         _loginButton.Pressed += OnLoginPressed;
+
+        _terrainRenderer = new TerrainRenderer();
+        AddChild(_terrainRenderer);
         
         LogMessage("Ready. Enter credentials and click Login.");
     }
@@ -35,8 +42,14 @@ public partial class Boot : Control
         {
             _session.Dispose();
         }
+        if (_worldSimulation != null) _worldSimulation.Dispose();
 
+        _world = new SLNG.Core.ECS.World();
         _session = new GridSession();
+        _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
+
+        _terrainRenderer?.Initialize(_world);
+
         _session.ChatMessageReceived += OnChatMessage;
         _session.ObjectUpdateReceived += OnObjectUpdate;
 
@@ -82,6 +95,7 @@ public partial class Boot : Control
 
     public override void _ExitTree()
     {
+        _worldSimulation?.Dispose();
         _session?.Dispose();
     }
 }

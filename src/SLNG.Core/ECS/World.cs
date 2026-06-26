@@ -34,10 +34,13 @@ public class World
 {
     private readonly Dictionary<uint, Entity> _entities = new();
 
+    public RegionTerrain Terrain { get; } = new RegionTerrain();
+
     // Events to notify observers (e.g. Godot renderer) about world state changes
     public event EventHandler<EntityEventArgs>? EntityAdded;
     public event EventHandler<EntityEventArgs>? EntityRemoved;
     public event EventHandler<ComponentEventArgs>? ComponentUpdated;
+    public event EventHandler? TerrainUpdated;
 
     /// <summary>
     /// Gets or creates an entity with the specified LocalId.
@@ -97,5 +100,13 @@ public class World
     public void NotifyComponentUpdated<T>(Entity entity, T component) where T : class, IComponent
     {
         ComponentUpdated?.Invoke(this, new ComponentEventArgs(entity, component));
+    }
+
+    /// <summary>
+    /// Manually triggers a terrain update notification for observers.
+    /// </summary>
+    public void NotifyTerrainUpdated()
+    {
+        TerrainUpdated?.Invoke(this, EventArgs.Empty);
     }
 }
