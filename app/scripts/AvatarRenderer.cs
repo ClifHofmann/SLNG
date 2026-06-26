@@ -1,4 +1,5 @@
 using Godot;
+using SLNG.Core;
 using SLNG.Core.ECS;
 using SLNG.Core.Components;
 using System.Collections.Generic;
@@ -8,19 +9,40 @@ namespace SLNG.App;
 
 public partial class AvatarRenderer : Node3D
 {
+    private class AvatarVisual
+    {
+        public Node3D Root { get; }
+        public Skeleton3D? Skeleton { get; set; }
+        public MeshInstance3D? MeshInstance { get; set; }
+
+        public AvatarVisual()
+        {
+            Root = new Node3D();
+        }
+
+        public void QueueFree() => Root.QueueFree();
+    }
+
     private World? _world;
-    private readonly Dictionary<Guid, MeshInstance3D> _visuals = new();
-    
-    // A standard capsule mesh as placeholder for the avatar
-    private Mesh _avatarMesh = new CapsuleMesh() 
-    { 
-        Radius = 0.45f, 
-        Height = 1.9f 
-    };
+    private AvatarSkeleton? _avatarSkeleton;
+    private readonly Dictionary<Guid, AvatarVisual> _visuals = new();
 
     public void Initialize(World world)
     {
         _world = world;
+
+        // Load the SL Bento skeleton definition
+        string skeletonPath = ProjectSettings.GlobalizePath("res://assets/avatar/avatar_skeleton.xml");
+        try
+        {
+            _avatarSkeleton = AvatarSkeleton.LoadFromFile(skeletonPath);
+            GD.Print($"[AvatarRenderer] Loaded Bento skeleton: {_avatarSkeleton.Bones.Count} entries");
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[AvatarRenderer] Failed to load skeleton: {ex.Message}. Falling back to capsule.");
+            _avatarSkeleton = null;
+        }
 
         _world.EntityAdded += OnEntityAdded;
         _world.EntityRemoved += OnEntityRemoved;
@@ -51,27 +73,41 @@ public partial class AvatarRenderer : Node3D
         var entity = _world.GetEntity(entityId);
         if (entity == null || entity.GetComponent<AvatarComponent>() == null) return;
 
-        var meshInstance = new MeshInstance3D
+        var avatar = entity.GetComponent<AvatarComponent>()!;
+        var visual = new AvatarVisual();
+
+        bool isLocal = avatar.IsLocalAgent;
+        var color = isLocal
+            ? new Color(0.3f, 0.5f, 1.0f)   // Blue for local agent
+            : new Color(0.2f, 0.8f, 0.3f);   // Green for others
+
+        if (_avatarSkeleton != null)
         {
-            Mesh = _avatarMesh
-        };
-        
-        var material = new StandardMaterial3D();
-        var avatar = entity.GetComponent<AvatarComponent>();
-        if (avatar != null && avatar.IsLocalAgent)
-        {
-            // Give the local agent a distinct color (e.g. Blue)
-            material.AlbedoColor = new Godot.Color(0.2f, 0.4f, 1.0f);
+            // Build skeleton-based humanoid
+            var skeleton = SkeletonBuilder.Build(_avatarSkeleton);
+            skeleton.Name = "Skeleton3D";
+            visual.Root.AddChild(skeleton);
+            visual.Skeleton = skeleton;
+
+            var meshInstance = ProceduralAvatarMesh.Create(skeleton, color);
+            meshInstance.Name = "AvatarMesh";
+            skeleton.AddChild(meshInstance);
+            visual.MeshInstance = meshInstance;
         }
         else
         {
-            // Other avatars (e.g. Green)
-            material.AlbedoColor = new Godot.Color(0.2f, 0.8f, 0.2f);
+            // Fallback to capsule
+            var capsule = new MeshInstance3D
+            {
+                Mesh = new CapsuleMesh { Radius = 0.45f, Height = 1.9f },
+                MaterialOverride = new StandardMaterial3D { AlbedoColor = color }
+            };
+            visual.Root.AddChild(capsule);
+            visual.MeshInstance = capsule;
         }
-        meshInstance.MaterialOverride = material;
 
-        AddChild(meshInstance);
-        _visuals[entityId] = meshInstance;
+        AddChild(visual.Root);
+        _visuals[entityId] = visual;
 
         UpdateVisual(entityIdStr);
     }
@@ -79,9 +115,9 @@ public partial class AvatarRenderer : Node3D
     private void RemoveVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
-        if (_visuals.TryGetValue(entityId, out var meshInstance))
+        if (_visuals.TryGetValue(entityId, out var visual))
         {
-            meshInstance.QueueFree();
+            visual.QueueFree();
             _visuals.Remove(entityId);
         }
     }
@@ -90,7 +126,7 @@ public partial class AvatarRenderer : Node3D
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
         if (_world == null) return;
-        if (!_visuals.TryGetValue(entityId, out var meshInstance))
+        if (!_visuals.TryGetValue(entityId, out var visual))
         {
             // Might have just gained the AvatarComponent
             CreateVisual(entityIdStr);
@@ -106,15 +142,16 @@ public partial class AvatarRenderer : Node3D
             uint regionX = (uint)(entity.RegionHandle >> 32);
             uint regionY = (uint)(entity.RegionHandle & 0xFFFFFFFF);
 
-            // Capsule origin is the center. SL avatars stand on the ground, so we might need an offset,
-            // but for a placeholder, centering it at the given position is fine.
-            meshInstance.Position = new Godot.Vector3(
-                regionX + transform.Position.X, 
-                transform.Position.Z + 0.95f, // offset by half height so feet are roughly on ground
+            // Position the avatar root node
+            visual.Root.Position = new Godot.Vector3(
+                regionX + transform.Position.X,
+                transform.Position.Z,
                 -(regionY + transform.Position.Y));
 
-            var slQuat = new Godot.Quaternion(transform.Rotation.X, transform.Rotation.Z, -transform.Rotation.Y, transform.Rotation.W);
-            meshInstance.Quaternion = slQuat;
+            var slQuat = new Godot.Quaternion(
+                transform.Rotation.X, transform.Rotation.Z,
+                -transform.Rotation.Y, transform.Rotation.W);
+            visual.Root.Quaternion = slQuat;
         }
     }
 
