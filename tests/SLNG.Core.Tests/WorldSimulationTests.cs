@@ -45,4 +45,40 @@ public class WorldSimulationTests
         Assert.Equal(scale, prim.Scale);
         Assert.Equal(pCode, prim.ProfileCurve);
     }
+
+    [Fact]
+    public void AvatarAppearanceEvent_UpdatesAvatarComponent()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+
+        // 1. Create the avatar entity first by raising an AvatarUpdate
+        var updateEvt = new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Test", "User", false);
+        session.RaiseAvatarUpdate(updateEvt);
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        Assert.NotNull(entity);
+        var avatar = entity.GetComponent<AvatarComponent>();
+        Assert.NotNull(avatar);
+        Assert.Null(avatar.VisualParams);
+        Assert.Null(avatar.BakedTextures);
+
+        // 2. Raise the appearance update
+        var visualParams = new byte[] { 10, 20, 30 };
+        var bakedTextures = new Dictionary<int, Guid> { { 8, Guid.NewGuid() } };
+        var appearanceEvt = new AvatarAppearanceEvent(123ul, agentId, visualParams, bakedTextures);
+
+        session.RaiseAvatarAppearance(appearanceEvt);
+        simulation.Pump();
+
+        // 3. Verify it was applied
+        avatar = entity.GetComponent<AvatarComponent>();
+        Assert.NotNull(avatar);
+        Assert.Equal(visualParams, avatar.VisualParams);
+        Assert.Equal(bakedTextures, avatar.BakedTextures);
+    }
 }

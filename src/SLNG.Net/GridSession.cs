@@ -20,29 +20,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
     public event EventHandler<TerrainSettingsEvent>? TerrainSettingsReceived;
     public event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
-
-    static GridSession()
-    {
-        Console.WriteLine("[GridSession] Static constructor running...");
-        try
-        {
-            var factoryType = typeof(CoreJ2K.J2kImage).Assembly.GetType("CoreJ2K.Util.ImageFactory");
-            if (factoryType == null) Console.WriteLine("[GridSession] factoryType is null!");
-            
-            var creatorsField = factoryType?.GetField("_creators", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-            if (creatorsField == null) Console.WriteLine("[GridSession] creatorsField is null!");
-            
-            if (creatorsField?.GetValue(null) is System.Collections.IList list)
-            {
-                list.Add(new CoreJ2K.Util.SKBitmapImageCreator());
-                Console.WriteLine($"[GridSession] Injected SKBitmapImageCreator successfully. Creators count: {list.Count}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[GridSession] Failed to register CoreJ2K Skia image creator: {ex.Message}");
-        }
-    }
+    public event EventHandler<AvatarAppearanceEvent>? AvatarAppearanceReceived;
 
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
@@ -51,6 +29,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     internal void RaiseTerrainPatch(TerrainPatchEvent e) => TerrainPatchReceived?.Invoke(this, e);
     internal void RaiseTerrainSettings(TerrainSettingsEvent e) => TerrainSettingsReceived?.Invoke(this, e);
     internal void RaiseRegionDisconnected(RegionDisconnectedEvent e) => RegionDisconnectedReceived?.Invoke(this, e);
+    internal void RaiseAvatarAppearance(AvatarAppearanceEvent e) => AvatarAppearanceReceived?.Invoke(this, e);
 
     public GridSession()
     {
@@ -64,6 +43,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Terrain.LandPatchReceived += OnLandPatchReceived;
         _client.Network.SimConnected += OnSimConnected;
         _client.Network.SimDisconnected += OnSimDisconnected;
+        _client.Avatars.AvatarAppearance += OnAvatarAppearance;
     }
 
     private void OnSimConnected(object? sender, LibreMetaverse.SimConnectedEventArgs e)
@@ -100,6 +80,29 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             e.Avatar.FirstName,
             e.Avatar.LastName,
             isLocalAgent));
+    }
+
+    private void OnAvatarAppearance(object? sender, AvatarAppearanceEventArgs e)
+    {
+        var textures = new Dictionary<int, Guid>();
+        if (e.FaceTextures != null)
+        {
+            for (int i = 0; i < e.FaceTextures.Length; i++)
+            {
+                var face = e.FaceTextures[i];
+                if (face != null && face.TextureID != LibreMetaverse.UUID.Zero)
+                {
+                    textures[i] = face.TextureID.Guid;
+                }
+            }
+        }
+
+        AvatarAppearanceReceived?.Invoke(this, new AvatarAppearanceEvent(
+            e.Simulator.Handle,
+            e.AvatarID.Guid,
+            e.VisualParams?.ToArray() ?? Array.Empty<byte>(),
+            textures
+        ));
     }
 
     private void OnObjectUpdate(object? sender, PrimEventArgs e)

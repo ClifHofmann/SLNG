@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Linq;
 using SLNG.Core.Components;
 using SLNG.Core.ECS;
 
@@ -30,6 +31,7 @@ public sealed class WorldSimulation : IDisposable
         _source.TerrainPatchReceived += OnTerrainPatch;
         _source.TerrainSettingsReceived += OnTerrainSettings;
         _source.RegionDisconnectedReceived += OnRegionDisconnected;
+        _source.AvatarAppearanceReceived += OnAvatarAppearance;
     }
 
     // These run on background network threads: enqueue only, never touch the world.
@@ -39,6 +41,7 @@ public sealed class WorldSimulation : IDisposable
     private void OnTerrainPatch(object? sender, TerrainPatchEvent e) => _pending.Enqueue(e);
     private void OnTerrainSettings(object? sender, TerrainSettingsEvent e) => _pending.Enqueue(e);
     private void OnRegionDisconnected(object? sender, RegionDisconnectedEvent e) => _pending.Enqueue(e);
+    private void OnAvatarAppearance(object? sender, AvatarAppearanceEvent e) => _pending.Enqueue(e);
 
     /// <summary>
     /// Applies all queued world events to the world. Call once per frame on the main
@@ -56,6 +59,7 @@ public sealed class WorldSimulation : IDisposable
                 case TerrainPatchEvent e: ApplyTerrainPatch(e); break;
                 case TerrainSettingsEvent e: ApplyTerrainSettings(e); break;
                 case RegionDisconnectedEvent e: _world.RemoveRegion(e.RegionHandle); break;
+                case AvatarAppearanceEvent e: ApplyAvatarAppearance(e); break;
             }
         }
     }
@@ -131,6 +135,21 @@ public sealed class WorldSimulation : IDisposable
             entity.SetComponent(avatar);
         }
         _world.NotifyComponentUpdated(entity, avatar);
+    }
+
+    private void ApplyAvatarAppearance(AvatarAppearanceEvent e)
+    {
+        var entity = _world.Query<AvatarComponent>()
+            .FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.AgentId == e.AgentId);
+
+        if (entity != null)
+        {
+            var avatar = entity.GetComponent<AvatarComponent>()!;
+            avatar.VisualParams = e.VisualParams;
+            avatar.BakedTextures = e.BakedTextures;
+            entity.SetComponent(avatar);
+            _world.NotifyComponentUpdated(entity, avatar);
+        }
     }
 
     private void ApplyTerrainPatch(TerrainPatchEvent e)

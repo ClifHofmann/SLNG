@@ -150,7 +150,7 @@ public partial class Boot : Control
 
         _terrainRenderer?.Initialize(_world, _assetService, gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, gpuCache);
-        _avatarRenderer?.Initialize(_world);
+        _avatarRenderer?.Initialize(_world, _assetService, gpuCache);
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.ObjectUpdateReceived += OnObjectUpdate;

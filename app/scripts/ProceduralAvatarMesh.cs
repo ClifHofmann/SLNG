@@ -10,37 +10,38 @@ namespace SLNG.App;
 /// </summary>
 public static class ProceduralAvatarMesh
 {
-    private struct BodyPart
+    public struct BodyPart
     {
         public string BoneName;
         public Vector3 Offset;
         public Vector3 Size;
         public bool IsSphere;
+        public int BakeIndex;
     }
 
-    private static readonly BodyPart[] _bodyParts =
+    public static readonly BodyPart[] BodyParts =
     {
-        new() { BoneName = "mHead", Offset = new Vector3(0, 0.1f, 0), Size = new Vector3(0.22f, 0.25f, 0.24f), IsSphere = true },
-        new() { BoneName = "mNeck", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.08f, 0.08f) },
-        new() { BoneName = "mChest", Offset = new Vector3(0, 0.12f, 0), Size = new Vector3(0.38f, 0.28f, 0.22f) },
-        new() { BoneName = "mTorso", Offset = new Vector3(0, 0.10f, 0), Size = new Vector3(0.34f, 0.22f, 0.20f) },
-        new() { BoneName = "mPelvis", Offset = Vector3.Zero, Size = new Vector3(0.32f, 0.16f, 0.20f) },
+        new() { BoneName = "mHead", Offset = new Vector3(0, 0.1f, 0), Size = new Vector3(0.22f, 0.25f, 0.24f), IsSphere = true, BakeIndex = 8 },
+        new() { BoneName = "mNeck", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.08f, 0.08f), BakeIndex = 9 },
+        new() { BoneName = "mChest", Offset = new Vector3(0, 0.12f, 0), Size = new Vector3(0.38f, 0.28f, 0.22f), BakeIndex = 9 },
+        new() { BoneName = "mTorso", Offset = new Vector3(0, 0.10f, 0), Size = new Vector3(0.34f, 0.22f, 0.20f), BakeIndex = 9 },
+        new() { BoneName = "mPelvis", Offset = Vector3.Zero, Size = new Vector3(0.32f, 0.16f, 0.20f), BakeIndex = 10 },
 
-        new() { BoneName = "mShoulderLeft", Offset = Vector3.Zero, Size = new Vector3(0.10f, 0.28f, 0.10f) },
-        new() { BoneName = "mElbowLeft", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.25f, 0.08f) },
-        new() { BoneName = "mWristLeft", Offset = Vector3.Zero, Size = new Vector3(0.06f, 0.10f, 0.04f) },
+        new() { BoneName = "mShoulderLeft", Offset = Vector3.Zero, Size = new Vector3(0.10f, 0.28f, 0.10f), BakeIndex = 9 },
+        new() { BoneName = "mElbowLeft", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.25f, 0.08f), BakeIndex = 9 },
+        new() { BoneName = "mWristLeft", Offset = Vector3.Zero, Size = new Vector3(0.06f, 0.10f, 0.04f), BakeIndex = 9 },
 
-        new() { BoneName = "mShoulderRight", Offset = Vector3.Zero, Size = new Vector3(0.10f, 0.28f, 0.10f) },
-        new() { BoneName = "mElbowRight", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.25f, 0.08f) },
-        new() { BoneName = "mWristRight", Offset = Vector3.Zero, Size = new Vector3(0.06f, 0.10f, 0.04f) },
+        new() { BoneName = "mShoulderRight", Offset = Vector3.Zero, Size = new Vector3(0.10f, 0.28f, 0.10f), BakeIndex = 9 },
+        new() { BoneName = "mElbowRight", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.25f, 0.08f), BakeIndex = 9 },
+        new() { BoneName = "mWristRight", Offset = Vector3.Zero, Size = new Vector3(0.06f, 0.10f, 0.04f), BakeIndex = 9 },
 
-        new() { BoneName = "mHipLeft", Offset = Vector3.Zero, Size = new Vector3(0.12f, 0.40f, 0.12f) },
-        new() { BoneName = "mKneeLeft", Offset = Vector3.Zero, Size = new Vector3(0.10f, 0.40f, 0.10f) },
-        new() { BoneName = "mAnkleLeft", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.06f, 0.16f) },
+        new() { BoneName = "mHipLeft", Offset = Vector3.Zero, Size = new Vector3(0.12f, 0.40f, 0.12f), BakeIndex = 10 },
+        new() { BoneName = "mKneeLeft", Offset = Vector3.Zero, Size = new Vector3(0.10f, 0.40f, 0.10f), BakeIndex = 10 },
+        new() { BoneName = "mAnkleLeft", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.06f, 0.16f), BakeIndex = 10 },
 
-        new() { BoneName = "mHipRight", Offset = Vector3.Zero, Size = new Vector3(0.12f, 0.40f, 0.12f) },
-        new() { BoneName = "mKneeRight", Offset = Vector3.Zero, Size = new Vector3(0.10f, 0.40f, 0.10f) },
-        new() { BoneName = "mAnkleRight", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.06f, 0.16f) },
+        new() { BoneName = "mHipRight", Offset = Vector3.Zero, Size = new Vector3(0.12f, 0.40f, 0.12f), BakeIndex = 10 },
+        new() { BoneName = "mKneeRight", Offset = Vector3.Zero, Size = new Vector3(0.10f, 0.40f, 0.10f), BakeIndex = 10 },
+        new() { BoneName = "mAnkleRight", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.06f, 0.16f), BakeIndex = 10 },
     };
 
     /// <summary>
@@ -53,7 +54,7 @@ public static class ProceduralAvatarMesh
         var st = new SurfaceTool();
         st.Begin(Mesh.PrimitiveType.Triangles);
 
-        foreach (var part in _bodyParts)
+        foreach (var part in BodyParts)
         {
             var slPos = skeleton.GetGlobalRestPosition(part.BoneName);
             // SL Z-up -> Godot Y-up
