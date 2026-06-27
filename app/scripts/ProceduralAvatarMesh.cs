@@ -69,15 +69,19 @@ public static class ProceduralAvatarMesh
                 continue;
             }
 
-            // Get the global bone rest position for placing the box
-            // We'll use the bone index for skinning
+            // Author the body part at the bone's global rest transform. The mesh is skinned
+            // with bind pose = inverse rest, so vertices authored in mesh-local space collapse
+            // back onto the skeleton origin; placing them at the rest transform makes each part
+            // appear at its bone and form a spread-out figure.
+            Transform3D boneRest = skeleton.GetBoneGlobalRest(boneIdx);
+
             if (part.IsSphere)
             {
-                AddSkinnedSphere(surfaceTool, part.Offset, part.Size.X, boneIdx, 8);
+                AddSkinnedSphere(surfaceTool, boneRest, part.Offset, part.Size.X, boneIdx, 8);
             }
             else
             {
-                AddSkinnedBox(surfaceTool, part.Offset, part.Size, boneIdx);
+                AddSkinnedBox(surfaceTool, boneRest, part.Offset, part.Size, boneIdx);
             }
         }
 
@@ -96,21 +100,21 @@ public static class ProceduralAvatarMesh
         return meshInstance;
     }
 
-    private static void AddSkinnedBox(SurfaceTool st, Vector3 center, Vector3 size, int boneIdx)
+    private static void AddSkinnedBox(SurfaceTool st, Transform3D boneRest, Vector3 center, Vector3 size, int boneIdx)
     {
         var half = size * 0.5f;
 
-        // Define the 8 corners of the box
+        // 8 corners around 'center', each placed at the bone's global rest transform.
         Vector3[] corners = new Vector3[]
         {
-            center + new Vector3(-half.X, -half.Y, -half.Z),
-            center + new Vector3( half.X, -half.Y, -half.Z),
-            center + new Vector3( half.X,  half.Y, -half.Z),
-            center + new Vector3(-half.X,  half.Y, -half.Z),
-            center + new Vector3(-half.X, -half.Y,  half.Z),
-            center + new Vector3( half.X, -half.Y,  half.Z),
-            center + new Vector3( half.X,  half.Y,  half.Z),
-            center + new Vector3(-half.X,  half.Y,  half.Z),
+            boneRest * (center + new Vector3(-half.X, -half.Y, -half.Z)),
+            boneRest * (center + new Vector3( half.X, -half.Y, -half.Z)),
+            boneRest * (center + new Vector3( half.X,  half.Y, -half.Z)),
+            boneRest * (center + new Vector3(-half.X,  half.Y, -half.Z)),
+            boneRest * (center + new Vector3(-half.X, -half.Y,  half.Z)),
+            boneRest * (center + new Vector3( half.X, -half.Y,  half.Z)),
+            boneRest * (center + new Vector3( half.X,  half.Y,  half.Z)),
+            boneRest * (center + new Vector3(-half.X,  half.Y,  half.Z)),
         };
 
         // 6 faces, 2 triangles each
@@ -151,9 +155,9 @@ public static class ProceduralAvatarMesh
         st.AddVertex(pos);
     }
 
-    private static void AddSkinnedSphere(SurfaceTool st, Vector3 center, float radius, int boneIdx, int segments)
+    private static void AddSkinnedSphere(SurfaceTool st, Transform3D boneRest, Vector3 center, float radius, int boneIdx, int segments)
     {
-        // Simple UV sphere
+        // Simple UV sphere, placed at the bone's global rest transform.
         for (int lat = 0; lat < segments; lat++)
         {
             float theta1 = Mathf.Pi * lat / segments;
@@ -164,10 +168,10 @@ public static class ProceduralAvatarMesh
                 float phi1 = Mathf.Tau * lon / (segments * 2);
                 float phi2 = Mathf.Tau * (lon + 1) / (segments * 2);
 
-                Vector3 p1 = center + SphericalToCartesian(radius, theta1, phi1);
-                Vector3 p2 = center + SphericalToCartesian(radius, theta1, phi2);
-                Vector3 p3 = center + SphericalToCartesian(radius, theta2, phi2);
-                Vector3 p4 = center + SphericalToCartesian(radius, theta2, phi1);
+                Vector3 p1 = boneRest * (center + SphericalToCartesian(radius, theta1, phi1));
+                Vector3 p2 = boneRest * (center + SphericalToCartesian(radius, theta1, phi2));
+                Vector3 p3 = boneRest * (center + SphericalToCartesian(radius, theta2, phi2));
+                Vector3 p4 = boneRest * (center + SphericalToCartesian(radius, theta2, phi1));
 
                 // Two triangles per quad
                 AddSkinnedVertex(st, p1, boneIdx);
