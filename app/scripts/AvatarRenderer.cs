@@ -90,6 +90,9 @@ public partial class AvatarRenderer : Node3D
         var avatar = entity.GetComponent<AvatarComponent>()!;
         var visual = new AvatarVisual();
 
+        // Add the visual root to the tree first so all sub-nodes inherit the active scene tree lifecycle
+        AddChild(visual.Root);
+
         bool isLocal = avatar.IsLocalAgent;
         var color = isLocal
             ? new Color(0.3f, 0.5f, 1.0f)   // Blue for local agent
@@ -108,8 +111,17 @@ public partial class AvatarRenderer : Node3D
             {
                 var attachment = new BoneAttachment3D();
                 attachment.Name = "Attach_" + part.BoneName;
-                attachment.BoneName = part.BoneName;
+                
+                // Add attachment to skeleton FIRST while it's in the tree
                 skeleton.AddChild(attachment);
+
+                // Set bone index and name so it binds correctly
+                int boneIdx = skeleton.FindBone(part.BoneName);
+                if (boneIdx != -1)
+                {
+                    attachment.BoneIdx = boneIdx;
+                }
+                attachment.BoneName = part.BoneName;
 
                 Mesh mesh;
                 if (part.IsSphere)
@@ -151,7 +163,6 @@ public partial class AvatarRenderer : Node3D
             visual.Parts["root"] = capsule;
         }
 
-        AddChild(visual.Root);
         _visuals[entityId] = visual;
 
         UpdateVisual(entityIdStr);
