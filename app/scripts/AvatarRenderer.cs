@@ -16,6 +16,8 @@ public partial class AvatarRenderer : Node3D
         public Skeleton3D? Skeleton { get; set; }
         public Dictionary<string, MeshInstance3D> Parts { get; } = new();
         public Dictionary<int, Guid> LoadedTextures { get; } = new();
+        public AvatarAnimationPlayer AnimPlayer { get; } = new();
+        public List<Guid>? LoadedAnimationIds { get; set; }
 
         public AvatarVisual()
         {
@@ -151,6 +153,9 @@ public partial class AvatarRenderer : Node3D
                 visual.Parts[part.BoneName] = meshInstance;
             }
             skeleton.ResetBonePoses();
+
+            // Bind animation player to the skeleton
+            visual.AnimPlayer.SetSkeleton(skeleton);
         }
         else
         {
@@ -238,6 +243,34 @@ public partial class AvatarRenderer : Node3D
                         }
                     }
                 }
+            }
+        }
+
+        // 4. Animation playback — detect changes in ActiveAnimations
+        if (avatar.ActiveAnimations != null && _assetService != null && visual.Skeleton != null)
+        {
+            bool animsChanged = false;
+            if (visual.LoadedAnimationIds == null || visual.LoadedAnimationIds.Count != avatar.ActiveAnimations.Count)
+            {
+                animsChanged = true;
+            }
+            else
+            {
+                for (int i = 0; i < avatar.ActiveAnimations.Count; i++)
+                {
+                    if (avatar.ActiveAnimations[i] != visual.LoadedAnimationIds[i])
+                    {
+                        animsChanged = true;
+                        break;
+                    }
+                }
+            }
+
+            if (animsChanged)
+            {
+                visual.LoadedAnimationIds = new List<Guid>(avatar.ActiveAnimations);
+                var animIds = new List<Guid>(avatar.ActiveAnimations);
+                _ = LoadAndStartAnimationsAsync(visual, animIds);
             }
         }
     }
@@ -342,5 +375,45 @@ public partial class AvatarRenderer : Node3D
             _world.EntityRemoved -= OnEntityRemoved;
             _world.ComponentUpdated -= OnComponentUpdated;
         }
+    }
+
+    public override void _Process(double delta)
+    {
+        float dt = (float)delta;
+        foreach (var visual in _visuals.Values)
+        {
+            if (visual.AnimPlayer.IsPlaying)
+            {
+                visual.AnimPlayer.Advance(dt);
+            }
+        }
+    }
+
+    private async System.Threading.Tasks.Task LoadAndStartAnimationsAsync(AvatarVisual visual, List<Guid> animIds)
+    {
+        if (_assetService == null) return;
+
+        var loaded = new List<(Guid id, AnimationData data)>();
+        foreach (var animId in animIds)
+        {
+            try
+            {
+                var data = await _assetService.GetAnimationAsync(animId);
+                if (data != null)
+                {
+                    loaded.Add((animId, data));
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[AvatarRenderer] Failed to fetch animation {animId}: {ex.Message}");
+            }
+        }
+
+        // Apply on main thread via CallDeferred
+        Godot.Callable.From(() => {
+            if (visual.Root == null || !IsInstanceValid(visual.Root)) return;
+            visual.AnimPlayer.SetActiveAnimations(loaded);
+        }).CallDeferred();
     }
 }
