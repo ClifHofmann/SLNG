@@ -150,6 +150,7 @@ public partial class AvatarRenderer : Node3D
                 attachment.AddChild(meshInstance);
                 visual.Parts[part.BoneName] = meshInstance;
             }
+            skeleton.ResetBonePoses();
         }
         else
         {
@@ -218,6 +219,7 @@ public partial class AvatarRenderer : Node3D
         {
             var distortions = AvatarShapeService.ComputeDistortions(avatar.VisualParams);
             ApplyShape(visual.Skeleton, _avatarSkeleton, distortions);
+            visual.Skeleton.ResetBonePoses();
         }
 
         // 3. Texture streaming / Bakes-on-Mesh
