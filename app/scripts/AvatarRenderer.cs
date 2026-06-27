@@ -31,11 +31,19 @@ public partial class AvatarRenderer : Node3D
     {
         _world = world;
 
-        // Load the SL Bento skeleton definition
-        string skeletonPath = ProjectSettings.GlobalizePath("res://assets/avatar/avatar_skeleton.xml");
+        // Load the SL Bento skeleton definition. Read via Godot's FileAccess so it works
+        // both from source and from an exported .pck — System.IO + GlobalizePath cannot
+        // read resources packed into the export, which silently fell back to a capsule.
+        const string skeletonResPath = "res://assets/avatar/avatar_skeleton.xml";
         try
         {
-            _avatarSkeleton = AvatarSkeleton.LoadFromFile(skeletonPath);
+            using var file = FileAccess.Open(skeletonResPath, FileAccess.ModeFlags.Read);
+            if (file == null)
+            {
+                throw new Exception($"cannot open {skeletonResPath}: {FileAccess.GetOpenError()}");
+            }
+
+            _avatarSkeleton = AvatarSkeleton.LoadFromXml(file.GetAsText());
             GD.Print($"[AvatarRenderer] Loaded Bento skeleton: {_avatarSkeleton.Bones.Count} entries");
         }
         catch (Exception ex)
