@@ -62,9 +62,10 @@ for a screenshot.
 
 ## Known issues / tech debt
 
-- **#4 layering:** CoreJ2K (JPEG2000 codec) + its image-creator registration live in
-  `SLNG.Net` (`GridSession`). They belong in `SLNG.Assets` (where decode happens). Move
-  them; `SLNG.Net` should not reference CoreJ2K.
+- **#4 layering:** J2C decode now uses **Magick.NET** in `SLNG.Assets`, but the old
+  **CoreJ2K** packages + a SKBitmap image-creator registration are still in `SLNG.Net`
+  (`GridSession`) and are now **vestigial dead code**. Remove them — `SLNG.Net` should
+  not reference an image codec at all.
 - **Avatar placeholder:** the box-man (`app/scripts/ProceduralAvatarMesh.cs`) ignores
   bone rest *rotations* (positions only), so limbs are slightly off. It's a throwaway —
   replaced by M4-3. `SkeletonBuilder.cs` (Godot `Skeleton3D`) is currently unused but
