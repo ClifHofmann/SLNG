@@ -1,197 +1,145 @@
 using Godot;
-using System.Collections.Generic;
+using SLNG.Core;
 
 namespace SLNG.App;
 
 /// <summary>
-/// Generates a simple procedural humanoid mesh (box-man) skinned to a Skeleton3D.
-/// Each body part is a box or sphere attached to the appropriate bone.
+/// Generates a simple static "box-man" placeholder mesh from the SL skeleton's rest pose.
+/// Each body part is a box (or a sphere for the head) placed at its bone's global rest
+/// position. Static and un-skinned — a stand-in until real avatar appearance (M4-3).
 /// </summary>
 public static class ProceduralAvatarMesh
 {
     private struct BodyPart
     {
         public string BoneName;
-        public Vector3 Offset;    // Local offset from bone
-        public Vector3 Size;      // Box dimensions (x, y, z)
-        public bool IsSphere;     // If true, render as sphere instead of box
+        public Vector3 Offset;
+        public Vector3 Size;
+        public bool IsSphere;
     }
 
-    private static readonly BodyPart[] _bodyParts = new BodyPart[]
+    private static readonly BodyPart[] _bodyParts =
     {
-        // Head
         new() { BoneName = "mHead", Offset = new Vector3(0, 0.1f, 0), Size = new Vector3(0.22f, 0.25f, 0.24f), IsSphere = true },
-        // Neck
         new() { BoneName = "mNeck", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.08f, 0.08f) },
-        // Chest
         new() { BoneName = "mChest", Offset = new Vector3(0, 0.12f, 0), Size = new Vector3(0.38f, 0.28f, 0.22f) },
-        // Torso (abdomen)
         new() { BoneName = "mTorso", Offset = new Vector3(0, 0.10f, 0), Size = new Vector3(0.34f, 0.22f, 0.20f) },
-        // Pelvis
         new() { BoneName = "mPelvis", Offset = Vector3.Zero, Size = new Vector3(0.32f, 0.16f, 0.20f) },
 
-        // Left arm
-        new() { BoneName = "mShoulderLeft", Offset = new Vector3(0, 0, 0), Size = new Vector3(0.10f, 0.28f, 0.10f) },
-        new() { BoneName = "mElbowLeft", Offset = new Vector3(0, 0, 0), Size = new Vector3(0.08f, 0.25f, 0.08f) },
-        new() { BoneName = "mWristLeft", Offset = new Vector3(0, 0, 0), Size = new Vector3(0.06f, 0.10f, 0.04f) },
+        new() { BoneName = "mShoulderLeft", Offset = Vector3.Zero, Size = new Vector3(0.10f, 0.28f, 0.10f) },
+        new() { BoneName = "mElbowLeft", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.25f, 0.08f) },
+        new() { BoneName = "mWristLeft", Offset = Vector3.Zero, Size = new Vector3(0.06f, 0.10f, 0.04f) },
 
-        // Right arm
-        new() { BoneName = "mShoulderRight", Offset = new Vector3(0, 0, 0), Size = new Vector3(0.10f, 0.28f, 0.10f) },
-        new() { BoneName = "mElbowRight", Offset = new Vector3(0, 0, 0), Size = new Vector3(0.08f, 0.25f, 0.08f) },
-        new() { BoneName = "mWristRight", Offset = new Vector3(0, 0, 0), Size = new Vector3(0.06f, 0.10f, 0.04f) },
+        new() { BoneName = "mShoulderRight", Offset = Vector3.Zero, Size = new Vector3(0.10f, 0.28f, 0.10f) },
+        new() { BoneName = "mElbowRight", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.25f, 0.08f) },
+        new() { BoneName = "mWristRight", Offset = Vector3.Zero, Size = new Vector3(0.06f, 0.10f, 0.04f) },
 
-        // Left leg
-        new() { BoneName = "mHipLeft", Offset = new Vector3(0, 0, 0), Size = new Vector3(0.12f, 0.40f, 0.12f) },
-        new() { BoneName = "mKneeLeft", Offset = new Vector3(0, 0, 0), Size = new Vector3(0.10f, 0.40f, 0.10f) },
-        new() { BoneName = "mAnkleLeft", Offset = new Vector3(0, 0, 0), Size = new Vector3(0.08f, 0.06f, 0.16f) },
+        new() { BoneName = "mHipLeft", Offset = Vector3.Zero, Size = new Vector3(0.12f, 0.40f, 0.12f) },
+        new() { BoneName = "mKneeLeft", Offset = Vector3.Zero, Size = new Vector3(0.10f, 0.40f, 0.10f) },
+        new() { BoneName = "mAnkleLeft", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.06f, 0.16f) },
 
-        // Right leg
-        new() { BoneName = "mHipRight", Offset = new Vector3(0, 0, 0), Size = new Vector3(0.12f, 0.40f, 0.12f) },
-        new() { BoneName = "mKneeRight", Offset = new Vector3(0, 0, 0), Size = new Vector3(0.10f, 0.40f, 0.10f) },
-        new() { BoneName = "mAnkleRight", Offset = new Vector3(0, 0, 0), Size = new Vector3(0.08f, 0.06f, 0.16f) },
+        new() { BoneName = "mHipRight", Offset = Vector3.Zero, Size = new Vector3(0.12f, 0.40f, 0.12f) },
+        new() { BoneName = "mKneeRight", Offset = Vector3.Zero, Size = new Vector3(0.10f, 0.40f, 0.10f) },
+        new() { BoneName = "mAnkleRight", Offset = Vector3.Zero, Size = new Vector3(0.08f, 0.06f, 0.16f) },
     };
 
     /// <summary>
-    /// Creates a MeshInstance3D with a procedural humanoid mesh skinned to the given skeleton.
+    /// Builds a static box-man MeshInstance3D from the skeleton's rest pose. The figure's
+    /// feet sit near the local origin, so parenting it to a node at ground height stands it
+    /// on the ground.
     /// </summary>
-    public static MeshInstance3D Create(Skeleton3D skeleton, Color color)
+    public static MeshInstance3D Create(AvatarSkeleton skeleton, Color color)
     {
-        var meshInstance = new MeshInstance3D();
-        var surfaceTool = new SurfaceTool();
-        surfaceTool.Begin(Mesh.PrimitiveType.Triangles);
+        var st = new SurfaceTool();
+        st.Begin(Mesh.PrimitiveType.Triangles);
 
         foreach (var part in _bodyParts)
         {
-            int boneIdx = skeleton.FindBone(part.BoneName);
-            if (boneIdx < 0)
-            {
-                GD.Print($"[ProceduralAvatarMesh] Bone '{part.BoneName}' not found, skipping body part");
-                continue;
-            }
-
-            // Author the body part at the bone's global rest transform. The mesh is skinned
-            // with bind pose = inverse rest, so vertices authored in mesh-local space collapse
-            // back onto the skeleton origin; placing them at the rest transform makes each part
-            // appear at its bone and form a spread-out figure.
-            Transform3D boneRest = skeleton.GetBoneGlobalRest(boneIdx);
+            var slPos = skeleton.GetGlobalRestPosition(part.BoneName);
+            // SL Z-up -> Godot Y-up
+            var center = new Vector3(slPos.X, slPos.Z, -slPos.Y) + part.Offset;
 
             if (part.IsSphere)
             {
-                AddSkinnedSphere(surfaceTool, boneRest, part.Offset, part.Size.X, boneIdx, 8);
+                AddSphere(st, center, part.Size.X, 8);
             }
             else
             {
-                AddSkinnedBox(surfaceTool, boneRest, part.Offset, part.Size, boneIdx);
+                AddBox(st, center, part.Size);
             }
         }
 
-        surfaceTool.GenerateNormals();
-        var mesh = surfaceTool.Commit();
-        meshInstance.Mesh = mesh;
-        meshInstance.Skeleton = new NodePath("..");
+        st.GenerateNormals();
 
-        var material = new StandardMaterial3D
+        return new MeshInstance3D
         {
-            AlbedoColor = color,
-            CullMode = BaseMaterial3D.CullModeEnum.Disabled
+            Mesh = st.Commit(),
+            MaterialOverride = new StandardMaterial3D
+            {
+                AlbedoColor = color,
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            },
         };
-        meshInstance.MaterialOverride = material;
-
-        return meshInstance;
     }
 
-    private static void AddSkinnedBox(SurfaceTool st, Transform3D boneRest, Vector3 center, Vector3 size, int boneIdx)
+    private static void AddBox(SurfaceTool st, Vector3 center, Vector3 size)
     {
-        var half = size * 0.5f;
-
-        // 8 corners around 'center', each placed at the bone's global rest transform.
-        Vector3[] corners = new Vector3[]
+        var h = size * 0.5f;
+        Vector3[] c =
         {
-            boneRest * (center + new Vector3(-half.X, -half.Y, -half.Z)),
-            boneRest * (center + new Vector3( half.X, -half.Y, -half.Z)),
-            boneRest * (center + new Vector3( half.X,  half.Y, -half.Z)),
-            boneRest * (center + new Vector3(-half.X,  half.Y, -half.Z)),
-            boneRest * (center + new Vector3(-half.X, -half.Y,  half.Z)),
-            boneRest * (center + new Vector3( half.X, -half.Y,  half.Z)),
-            boneRest * (center + new Vector3( half.X,  half.Y,  half.Z)),
-            boneRest * (center + new Vector3(-half.X,  half.Y,  half.Z)),
+            center + new Vector3(-h.X, -h.Y, -h.Z),
+            center + new Vector3( h.X, -h.Y, -h.Z),
+            center + new Vector3( h.X,  h.Y, -h.Z),
+            center + new Vector3(-h.X,  h.Y, -h.Z),
+            center + new Vector3(-h.X, -h.Y,  h.Z),
+            center + new Vector3( h.X, -h.Y,  h.Z),
+            center + new Vector3( h.X,  h.Y,  h.Z),
+            center + new Vector3(-h.X,  h.Y,  h.Z),
         };
-
-        // 6 faces, 2 triangles each
-        int[][] faces = new int[][]
+        int[][] faces =
         {
-            new[] {0, 1, 2, 3}, // front
-            new[] {5, 4, 7, 6}, // back
-            new[] {4, 0, 3, 7}, // left
-            new[] {1, 5, 6, 2}, // right
-            new[] {3, 2, 6, 7}, // top
-            new[] {4, 5, 1, 0}, // bottom
+            new[] { 0, 1, 2, 3 }, // front
+            new[] { 5, 4, 7, 6 }, // back
+            new[] { 4, 0, 3, 7 }, // left
+            new[] { 1, 5, 6, 2 }, // right
+            new[] { 3, 2, 6, 7 }, // top
+            new[] { 4, 5, 1, 0 }, // bottom
         };
-
-        foreach (var face in faces)
+        foreach (var f in faces)
         {
-            AddSkinnedQuad(st, corners[face[0]], corners[face[1]], corners[face[2]], corners[face[3]], boneIdx);
+            Quad(st, c[f[0]], c[f[1]], c[f[2]], c[f[3]]);
         }
     }
 
-    private static void AddSkinnedQuad(SurfaceTool st, Vector3 a, Vector3 b, Vector3 c, Vector3 d, int boneIdx)
+    private static void Quad(SurfaceTool st, Vector3 a, Vector3 b, Vector3 c, Vector3 d)
     {
-        // Triangle 1: a, b, c
-        AddSkinnedVertex(st, a, boneIdx);
-        AddSkinnedVertex(st, b, boneIdx);
-        AddSkinnedVertex(st, c, boneIdx);
-
-        // Triangle 2: a, c, d
-        AddSkinnedVertex(st, a, boneIdx);
-        AddSkinnedVertex(st, c, boneIdx);
-        AddSkinnedVertex(st, d, boneIdx);
+        st.AddVertex(a); st.AddVertex(b); st.AddVertex(c);
+        st.AddVertex(a); st.AddVertex(c); st.AddVertex(d);
     }
 
-    private static void AddSkinnedVertex(SurfaceTool st, Vector3 pos, int boneIdx)
+    private static void AddSphere(SurfaceTool st, Vector3 center, float radius, int segments)
     {
-        // Set bone weights: 100% weight on the single bone
-        st.SetBones(new int[] { boneIdx, 0, 0, 0 });
-        st.SetWeights(new float[] { 1.0f, 0.0f, 0.0f, 0.0f });
-        st.AddVertex(pos);
-    }
-
-    private static void AddSkinnedSphere(SurfaceTool st, Transform3D boneRest, Vector3 center, float radius, int boneIdx, int segments)
-    {
-        // Simple UV sphere, placed at the bone's global rest transform.
         for (int lat = 0; lat < segments; lat++)
         {
-            float theta1 = Mathf.Pi * lat / segments;
-            float theta2 = Mathf.Pi * (lat + 1) / segments;
-
+            float t1 = Mathf.Pi * lat / segments;
+            float t2 = Mathf.Pi * (lat + 1) / segments;
             for (int lon = 0; lon < segments * 2; lon++)
             {
-                float phi1 = Mathf.Tau * lon / (segments * 2);
-                float phi2 = Mathf.Tau * (lon + 1) / (segments * 2);
-
-                Vector3 p1 = boneRest * (center + SphericalToCartesian(radius, theta1, phi1));
-                Vector3 p2 = boneRest * (center + SphericalToCartesian(radius, theta1, phi2));
-                Vector3 p3 = boneRest * (center + SphericalToCartesian(radius, theta2, phi2));
-                Vector3 p4 = boneRest * (center + SphericalToCartesian(radius, theta2, phi1));
-
-                // Two triangles per quad
-                AddSkinnedVertex(st, p1, boneIdx);
-                AddSkinnedVertex(st, p3, boneIdx);
-                AddSkinnedVertex(st, p2, boneIdx);
-
-                AddSkinnedVertex(st, p1, boneIdx);
-                AddSkinnedVertex(st, p4, boneIdx);
-                AddSkinnedVertex(st, p3, boneIdx);
+                float p1 = Mathf.Tau * lon / (segments * 2);
+                float p2 = Mathf.Tau * (lon + 1) / (segments * 2);
+                Vector3 v1 = center + Spherical(radius, t1, p1);
+                Vector3 v2 = center + Spherical(radius, t1, p2);
+                Vector3 v3 = center + Spherical(radius, t2, p2);
+                Vector3 v4 = center + Spherical(radius, t2, p1);
+                st.AddVertex(v1); st.AddVertex(v3); st.AddVertex(v2);
+                st.AddVertex(v1); st.AddVertex(v4); st.AddVertex(v3);
             }
         }
     }
 
-    private static Vector3 SphericalToCartesian(float r, float theta, float phi)
+    private static Vector3 Spherical(float r, float theta, float phi)
     {
-        float sinTheta = Mathf.Sin(theta);
-        return new Vector3(
-            r * sinTheta * Mathf.Cos(phi),
-            r * Mathf.Cos(theta),
-            r * sinTheta * Mathf.Sin(phi)
-        );
+        float s = Mathf.Sin(theta);
+        return new Vector3(r * s * Mathf.Cos(phi), r * Mathf.Cos(theta), r * s * Mathf.Sin(phi));
     }
 }

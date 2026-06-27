@@ -91,15 +91,10 @@ public partial class AvatarRenderer : Node3D
 
         if (_avatarSkeleton != null)
         {
-            // Build skeleton-based humanoid
-            var skeleton = SkeletonBuilder.Build(_avatarSkeleton);
-            skeleton.Name = "Skeleton3D";
-            visual.Root.AddChild(skeleton);
-            visual.Skeleton = skeleton;
-
-            var meshInstance = ProceduralAvatarMesh.Create(skeleton, color);
+            // Static box-man positioned from the skeleton's rest pose (no skinning yet).
+            var meshInstance = ProceduralAvatarMesh.Create(_avatarSkeleton, color);
             meshInstance.Name = "AvatarMesh";
-            skeleton.AddChild(meshInstance);
+            visual.Root.AddChild(meshInstance);
             visual.MeshInstance = meshInstance;
         }
         else

@@ -49,6 +49,22 @@ public class AvatarSkeleton
         _bonesByName.TryGetValue(name, out var b) ? b : null;
 
     /// <summary>
+    /// Computes a bone's global rest position (SL space) by summing local positions up the
+    /// parent chain. Parent rest rotations are ~identity for the SL rest pose, so this is a
+    /// good approximation for placing a blocky placeholder figure. Returns zero if unknown.
+    /// </summary>
+    public Vector3 GetGlobalRestPosition(string boneName)
+    {
+        var position = Vector3.Zero;
+        for (var bone = GetBone(boneName); bone != null;
+             bone = bone.ParentName != null ? GetBone(bone.ParentName) : null)
+        {
+            position += bone.Position;
+        }
+        return position;
+    }
+
+    /// <summary>
     /// Loads the skeleton from an avatar_skeleton.xml file.
     /// </summary>
     public static AvatarSkeleton LoadFromFile(string path)
