@@ -48,3 +48,6 @@ public record RegionDisconnectedEvent(ulong RegionHandle) : IWorldEvent;
 
 /// <summary>Represents an update to an avatar's visual appearance and baked textures.</summary>
 public record AvatarAppearanceEvent(ulong RegionHandle, Guid AgentId, byte[] VisualParams, Dictionary<int, Guid> BakedTextures) : IWorldEvent;
+
+/// <summary>Represents the set of animations currently playing on an avatar.</summary>
+public record AvatarAnimationEvent(Guid AgentId, List<Guid> AnimationIds) : IWorldEvent;

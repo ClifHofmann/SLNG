@@ -81,4 +81,40 @@ public class WorldSimulationTests
         Assert.Equal(visualParams, avatar.VisualParams);
         Assert.Equal(bakedTextures, avatar.BakedTextures);
     }
+
+    [Fact]
+    public void AvatarAnimationEvent_UpdatesActiveAnimations()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+
+        // 1. Create the avatar entity first
+        var updateEvt = new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Test", "User", false);
+        session.RaiseAvatarUpdate(updateEvt);
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        Assert.NotNull(entity);
+        var avatar = entity.GetComponent<AvatarComponent>();
+        Assert.NotNull(avatar);
+        Assert.Null(avatar.ActiveAnimations);
+
+        // 2. Raise animation event with two animation IDs
+        var anim1 = Guid.NewGuid();
+        var anim2 = Guid.NewGuid();
+        var animEvt = new AvatarAnimationEvent(agentId, new List<Guid> { anim1, anim2 });
+        session.RaiseAvatarAnimation(animEvt);
+        simulation.Pump();
+
+        // 3. Verify
+        avatar = entity.GetComponent<AvatarComponent>();
+        Assert.NotNull(avatar);
+        Assert.NotNull(avatar.ActiveAnimations);
+        Assert.Equal(2, avatar.ActiveAnimations.Count);
+        Assert.Contains(anim1, avatar.ActiveAnimations);
+        Assert.Contains(anim2, avatar.ActiveAnimations);
+    }
 }

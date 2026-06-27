@@ -21,6 +21,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<TerrainSettingsEvent>? TerrainSettingsReceived;
     public event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
     public event EventHandler<AvatarAppearanceEvent>? AvatarAppearanceReceived;
+    public event EventHandler<AvatarAnimationEvent>? AvatarAnimationReceived;
 
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
@@ -30,6 +31,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     internal void RaiseTerrainSettings(TerrainSettingsEvent e) => TerrainSettingsReceived?.Invoke(this, e);
     internal void RaiseRegionDisconnected(RegionDisconnectedEvent e) => RegionDisconnectedReceived?.Invoke(this, e);
     internal void RaiseAvatarAppearance(AvatarAppearanceEvent e) => AvatarAppearanceReceived?.Invoke(this, e);
+    internal void RaiseAvatarAnimation(AvatarAnimationEvent e) => AvatarAnimationReceived?.Invoke(this, e);
 
     public GridSession()
     {
@@ -44,6 +46,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Network.SimConnected += OnSimConnected;
         _client.Network.SimDisconnected += OnSimDisconnected;
         _client.Avatars.AvatarAppearance += OnAvatarAppearance;
+        _client.Avatars.AvatarAnimation += OnAvatarAnimation;
     }
 
     private void OnSimConnected(object? sender, LibreMetaverse.SimConnectedEventArgs e)
@@ -102,6 +105,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             e.AvatarID.Guid,
             e.VisualParams?.ToArray() ?? Array.Empty<byte>(),
             textures
+        ));
+    }
+
+    private void OnAvatarAnimation(object? sender, LibreMetaverse.AvatarAnimationEventArgs e)
+    {
+        var animIds = new List<Guid>(e.Animations.Count);
+        foreach (var anim in e.Animations)
+        {
+            animIds.Add(anim.AnimationID.Guid);
+        }
+
+        AvatarAnimationReceived?.Invoke(this, new AvatarAnimationEvent(
+            e.AvatarID.Guid,
+            animIds
         ));
     }
 
@@ -300,6 +317,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             .RequestAssetAsync(new UUID(materialId), AssetType.Material, true, CancellationToken.None)
             .ConfigureAwait(false);
         return asset as LibreMetaverse.Assets.AssetMaterial;
+    }
+
+    /// <summary>
+    /// Fetches the raw bytes of an animation asset from the simulator.
+    /// </summary>
+    public async Task<byte[]?> FetchAnimationDataAsync(Guid animId)
+    {
+        var asset = await _client.Assets
+            .RequestAssetAsync(new UUID(animId), AssetType.Animation, true, CancellationToken.None)
+            .ConfigureAwait(false);
+        return asset?.AssetData;
     }
 
     public void Dispose()

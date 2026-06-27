@@ -25,6 +25,7 @@ public class AssetService
     private readonly ConcurrentDictionary<Guid, Task<MeshData?>> _inflightMeshes = new();
     private readonly ConcurrentDictionary<Guid, Task<TextureData?>> _inflightTextures = new();
     private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _inflightMaterials = new();
+    private readonly ConcurrentDictionary<Guid, Task<AnimationData?>> _inflightAnimations = new();
 
     public AssetService(GridSession session, string cacheDirectory)
     {
@@ -281,6 +282,64 @@ public class AssetService
         catch (Exception ex)
         {
             Console.WriteLine($"[AssetService] Failed to fetch material {materialId}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Fetches and decodes an animation (binary BVH) by UUID into engine-neutral keyframe
+    /// data, or null if it cannot be decoded. Concurrent requests for the same id share
+    /// one fetch/decode.
+    /// </summary>
+    public Task<AnimationData?> GetAnimationAsync(Guid animId)
+    {
+        if (_memCache.TryGetValue(animId, out AnimationData? cached))
+        {
+            return Task.FromResult(cached);
+        }
+        return _inflightAnimations.GetOrAdd(animId, async id => {
+            try {
+                var result = await FetchAndDecodeAnimationAsync(id).ConfigureAwait(false);
+                if (result != null) {
+                    _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = 4096, SlidingExpiration = TimeSpan.FromMinutes(15) });
+                }
+                return result;
+            } finally {
+                _inflightAnimations.TryRemove(id, out _);
+            }
+        });
+    }
+
+    private async Task<AnimationData?> FetchAndDecodeAnimationAsync(Guid animId)
+    {
+        byte[]? bytes = null;
+        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, animId.ToString() + ".anim");
+
+        if (cacheFile != null && File.Exists(cacheFile))
+        {
+            try { bytes = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
+        }
+
+        if (bytes == null || bytes.Length == 0)
+        {
+            if (!_session.IsConnected) return null;
+
+            bytes = await _session.FetchAnimationDataAsync(animId).ConfigureAwait(false);
+            if (bytes == null || bytes.Length == 0) return null;
+
+            if (cacheFile != null)
+            {
+                try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
+            }
+        }
+
+        try
+        {
+            return await Task.Run(() => AnimationDecodeService.Decode(bytes)).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AssetService] Failed to decode animation {animId}: {ex.Message}");
             return null;
         }
     }
