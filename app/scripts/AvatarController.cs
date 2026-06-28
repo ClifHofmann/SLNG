@@ -134,7 +134,7 @@ public partial class AvatarController : Camera3D
                 bool isLeft = Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A);
                 bool isRight = Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D);
                 bool isUp = Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up");
-                bool isDown = Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down");
+                bool isDown = Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down");
 
                 // Pressing up engages fly automatically (matches the "E = go up" instinct);
                 // Home toggles it off. See _Input.
@@ -234,7 +234,7 @@ public partial class AvatarController : Camera3D
         bool left = Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A);
         bool right = Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D);
         bool up = Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up");
-        bool down = Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down");
+        bool down = Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down");
 
         var curRot = Rotation;
         
