@@ -34,6 +34,12 @@ public partial class ObjectRenderer : Node3D
 
     private readonly Dictionary<Guid, VisualState> _visuals = new();
 
+    // Share one GPU mesh resource across every object with the same prim shape / mesh asset.
+    // Without this, each of the (often thousands of) prims uploads its own ArrayMesh and the
+    // GPU runs out of memory (VkResult -2). Identical shapes/meshes now cost one upload.
+    private readonly Dictionary<PrimShape, ArrayMesh> _primMeshCache = new();
+    private readonly Dictionary<Guid, ArrayMesh> _assetMeshCache = new();
+
     private Mesh _boxMesh = new BoxMesh();
     private Mesh _sphereMesh = new SphereMesh();
     private Mesh _cylinderMesh = new CylinderMesh();
@@ -204,7 +210,16 @@ public partial class ObjectRenderer : Node3D
         var mesh = await _assetService.GetMeshAsync(meshId);
         if (mesh == null || mesh.Submeshes.Count == 0) return;
 
-        Godot.Callable.From(() => ApplyMeshData(meshInstance, mesh)).CallDeferred();
+        Godot.Callable.From(() =>
+        {
+            if (!IsInstanceValid(meshInstance)) return;
+            if (!_assetMeshCache.TryGetValue(meshId, out var arrayMesh))
+            {
+                arrayMesh = BuildArrayMesh(mesh);
+                _assetMeshCache[meshId] = arrayMesh;
+            }
+            meshInstance.Mesh = arrayMesh;
+        }).CallDeferred();
     }
 
     private async System.Threading.Tasks.Task LoadAndApplyPrimMeshAsync(VisualState state, PrimShape shape, byte profileCurve)
@@ -221,7 +236,12 @@ public partial class ObjectRenderer : Node3D
 
             if (mesh != null && mesh.Submeshes.Count > 0)
             {
-                ApplyMeshData(state.MeshInstance, mesh);
+                if (!_primMeshCache.TryGetValue(shape, out var arrayMesh))
+                {
+                    arrayMesh = BuildArrayMesh(mesh);
+                    _primMeshCache[shape] = arrayMesh;
+                }
+                state.MeshInstance.Mesh = arrayMesh;
             }
             else
             {
@@ -353,10 +373,10 @@ public partial class ObjectRenderer : Node3D
         return await tcs.Task;
     }
 
-    private void ApplyMeshData(MeshInstance3D meshInstance, MeshData mesh)
+    /// <summary>Builds a Godot <see cref="ArrayMesh"/> from neutral mesh data. The result is
+    /// cached and shared across all instances using the same shape/asset.</summary>
+    private static ArrayMesh BuildArrayMesh(MeshData mesh)
     {
-        if (meshInstance == null || !IsInstanceValid(meshInstance)) return;
-
         var arrayMesh = new ArrayMesh();
 
         foreach (var sub in mesh.Submeshes)
@@ -381,7 +401,7 @@ public partial class ObjectRenderer : Node3D
             st.Commit(arrayMesh);
         }
 
-        meshInstance.Mesh = arrayMesh;
+        return arrayMesh;
     }
 
     public override void _ExitTree()
