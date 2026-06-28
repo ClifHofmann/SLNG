@@ -259,7 +259,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>Sends an AgentUpdate to move the avatar.</summary>
-    public void SetMovement(bool forward, bool backward, bool left, bool right, bool up, bool down, System.Numerics.Quaternion cameraRotation)
+    public void SetMovement(bool forward, bool backward, bool left, bool right, bool up, bool down, System.Numerics.Quaternion cameraRotation, bool fly = false)
     {
         if (!_client.Network.Connected) return;
 
@@ -278,6 +278,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Self.Movement.LeftNeg = right;
         _client.Self.Movement.UpPos = up;
         _client.Self.Movement.UpNeg = down;
+        _client.Self.Movement.Fly = fly;
 
         // Send the update to the server
         _client.Self.Movement.SendUpdate(false);
