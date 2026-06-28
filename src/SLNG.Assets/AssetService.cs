@@ -203,36 +203,47 @@ public class AssetService
 
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId)
     {
-        byte[]? bytes = null;
         string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + ".j2c");
 
+        // 1. Try the on-disk bytes. If they decode, great; if not, the cache entry is
+        //    poisoned (a partial download from an earlier run) — drop it and re-fetch.
         if (cacheFile != null && File.Exists(cacheFile))
         {
-            try { bytes = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
-        }
-
-        if (bytes == null || bytes.Length == 0)
-        {
-            if (!_session.IsConnected) return null;
-
-            bytes = await _session.FetchTextureDataAsync(textureId).ConfigureAwait(false);
-            if (bytes == null || bytes.Length == 0) return null;
-
-            if (cacheFile != null)
+            byte[]? cached = null;
+            try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
+            if (cached != null && cached.Length > 0)
             {
-                try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
+                var decodedFromCache = await Task.Run(() => DecodeTexture(cached)).ConfigureAwait(false);
+                if (decodedFromCache != null) return decodedFromCache;
+                try { File.Delete(cacheFile); } catch { }
             }
         }
 
-        try
+        // 2. Fetch fresh and decode, with a few retries. On a busy region the first transfer
+        //    can come back truncated; a retry once congestion eases usually succeeds. We only
+        //    persist bytes that actually decode, so the cache is never poisoned.
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            return await Task.Run(() => DecodeTexture(bytes)).ConfigureAwait(false);
+            if (!_session.IsConnected) return null;
+
+            var bytes = await _session.FetchTextureDataAsync(textureId).ConfigureAwait(false);
+            if (bytes is { Length: > 0 })
+            {
+                var result = await Task.Run(() => DecodeTexture(bytes)).ConfigureAwait(false);
+                if (result != null)
+                {
+                    if (cacheFile != null)
+                    {
+                        try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
+                    }
+                    return result;
+                }
+            }
+
+            await Task.Delay(250).ConfigureAwait(false);
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[AssetService] Failed to decode texture {textureId}: {ex.Message}");
-            return null;
-        }
+
+        return null;
     }
 
     /// <summary>
@@ -413,28 +424,11 @@ public class AssetService
         }
         catch (Exception ex)
         {
+            // Return null (not a magenta placeholder): null is not cached, so the texture is
+            // re-fetched/re-decoded next time instead of being locked to a fallback, and the
+            // caller can drop a poisoned disk-cache entry. The surface keeps its base colour.
             Console.WriteLine($"[AssetService] Magick.NET failed to decode texture: {ex.Message}");
-            return CreateFallbackTexture();
+            return null;
         }
-    }
-
-    private static TextureData CreateFallbackTexture()
-    {
-        // 8x8 bright magenta/black checkerboard texture so it's blatantly obvious
-        int size = 8;
-        var rgba = new byte[size * size * 4];
-        for (int y = 0; y < size; y++)
-        {
-            for (int x = 0; x < size; x++)
-            {
-                int o = (y * size + x) * 4;
-                bool isMagenta = ((x / 2) + (y / 2)) % 2 == 0;
-                rgba[o] = isMagenta ? (byte)255 : (byte)0;
-                rgba[o + 1] = 0;
-                rgba[o + 2] = isMagenta ? (byte)255 : (byte)0;
-                rgba[o + 3] = 255;
-            }
-        }
-        return new TextureData(size, size, rgba);
     }
 }

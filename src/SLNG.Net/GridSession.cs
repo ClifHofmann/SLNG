@@ -321,7 +321,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var texture = await _client.Assets
             .RequestImageAsync(new UUID(textureId), ImageType.Normal, CancellationToken.None)
             .ConfigureAwait(false);
-        return texture?.AssetData;
+
+        // AssetTexture has no completeness flag, so a busy-region timeout can hand back a
+        // truncated JPEG2000 stream. We don't trust it here; the asset layer validates by
+        // decoding and only caches data that actually decodes (see FetchAndDecodeTextureAsync).
+        var data = texture?.AssetData;
+        return data is { Length: > 0 } ? data : null;
     }
 
     /// <summary>
