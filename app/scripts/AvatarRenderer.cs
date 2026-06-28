@@ -4,6 +4,7 @@ using SLNG.Core.ECS;
 using SLNG.Core.Components;
 using SLNG.Assets;
 using System.Collections.Generic;
+using System.Linq;
 using System;
 
 namespace SLNG.App;
@@ -100,10 +101,8 @@ public partial class AvatarRenderer : Node3D
         // Add the visual root to the tree first so all sub-nodes inherit the active scene tree lifecycle
         AddChild(visual.Root);
 
-        bool isLocal = avatar.IsLocalAgent;
-        var color = isLocal
-            ? new Color(0.3f, 0.5f, 1.0f)   // Blue for local agent
-            : new Color(0.2f, 0.8f, 0.3f);   // Green for others
+        // Neutral skin tone as placeholder — replaced by baked textures once they arrive.
+        var color = new Color(0.76f, 0.60f, 0.46f);
 
         if (_avatarSkeleton != null)
         {
@@ -222,6 +221,8 @@ public partial class AvatarRenderer : Node3D
         // 3. Texture streaming / Bakes-on-Mesh
         if (avatar.BakedTextures != null && _assetService != null)
         {
+            if (avatar.BakedTextures.Count > 0)
+                GD.Print($"[AvatarRenderer] Appearance: {avatar.BakedTextures.Count} bake slots received");
             foreach (var kv in avatar.BakedTextures)
             {
                 int bakeIndex = kv.Key;
@@ -333,13 +334,30 @@ public partial class AvatarRenderer : Node3D
 
         if (godotTexture == null) return;
 
-        // Apply baked texture to all mesh parts on the main thread.
-        // Bake index 0=head, 1=upper, 2=lower — apply to all parts for now
-        // (real viewer filters by mesh type; that can be refined later).
+        // Map SL bake indices (AvatarTextureIndex) to which mesh parts they cover.
+        // 8=BakedHead, 9=BakedUpperBody, 10=BakedLowerBody, 11=BakedEyes, 12=BakedSkirt, 13=BakedHair
+        // Part names match AvatarBodyPartMesh.Name (after stripping "avatar_" prefix in AvatarBodyMeshService).
+        var partsForBake = bakeIndex switch
+        {
+            8  => new[] { "head", "eyelashes" },
+            9  => new[] { "upper_body" },
+            10 => new[] { "lower_body" },
+            11 => new[] { "eye" },
+            12 => new[] { "lower_body" },
+            13 => new[] { "hair" },
+            _  => (string[]?)null
+        };
+
         Godot.Callable.From(() => {
             if (visual.Root == null || !IsInstanceValid(visual.Root)) return;
 
-            foreach (var meshInstance in visual.Parts.Values)
+            var targets = partsForBake != null
+                ? partsForBake.Select(n => visual.Parts.TryGetValue(n, out var m) ? m : null)
+                              .Where(m => m != null)
+                              .Cast<MeshInstance3D>()
+                : visual.Parts.Values.Cast<MeshInstance3D>();
+
+            foreach (var meshInstance in targets)
             {
                 if (!IsInstanceValid(meshInstance)) continue;
                 var mat = meshInstance.MaterialOverride as StandardMaterial3D;
