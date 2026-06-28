@@ -18,6 +18,17 @@ public partial class ObjectRenderer : Node3D
     {
         public MeshInstance3D MeshInstance = null!;
         public List<Guid> UsedTextureIds = new();
+
+        // What we've already loaded, so position/scale updates don't rebuild the mesh or
+        // re-create the material every frame. Guid.Empty means "not yet loaded".
+        public Guid LoadedMeshId;
+        public Guid LoadedTextureId = NotLoaded;
+        public Guid LoadedMaterialId = NotLoaded;
+        public int LoadedProfileCurve = int.MinValue;
+
+        // Sentinel distinct from Guid.Empty (which is a valid "no texture" value) so the
+        // first update always applies.
+        public static readonly Guid NotLoaded = new("ffffffff-ffff-ffff-ffff-ffffffffffff");
     }
 
     private readonly Dictionary<Guid, VisualState> _visuals = new();
@@ -133,12 +144,21 @@ public partial class ObjectRenderer : Node3D
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim != null)
         {
+            // Only (re)load the mesh when it actually changes — UpdateVisual fires on every
+            // ObjectUpdate (i.e. every position change), and rebuilding the mesh each time is
+            // what stalls the main thread on a busy region.
             if (prim.IsMesh && _assetService != null && prim.MeshId != Guid.Empty)
             {
-                _ = LoadAndApplyMeshAsync(state.MeshInstance, prim.MeshId);
+                if (state.LoadedMeshId != prim.MeshId)
+                {
+                    state.LoadedMeshId = prim.MeshId;
+                    _ = LoadAndApplyMeshAsync(state.MeshInstance, prim.MeshId);
+                }
             }
-            else
+            else if (state.LoadedProfileCurve != prim.ProfileCurve)
             {
+                state.LoadedProfileCurve = prim.ProfileCurve;
+                state.LoadedMeshId = Guid.Empty;
                 state.MeshInstance.Mesh = prim.ProfileCurve switch
                 {
                     0 => _cylinderMesh,
@@ -147,9 +167,16 @@ public partial class ObjectRenderer : Node3D
                 };
             }
 
-            if (_assetService != null && (prim.TextureId != Guid.Empty || prim.RenderMaterialId != Guid.Empty))
+            // Likewise, only rebuild the material when the texture/material id changes.
+            if (_assetService != null
+                && (prim.TextureId != state.LoadedTextureId || prim.RenderMaterialId != state.LoadedMaterialId))
             {
-                _ = LoadAndApplyMaterialAsync(state, prim.TextureId, prim.RenderMaterialId, new Godot.Color(prim.ColorTint.X, prim.ColorTint.Y, prim.ColorTint.Z, prim.ColorTint.W));
+                state.LoadedTextureId = prim.TextureId;
+                state.LoadedMaterialId = prim.RenderMaterialId;
+                if (prim.TextureId != Guid.Empty || prim.RenderMaterialId != Guid.Empty)
+                {
+                    _ = LoadAndApplyMaterialAsync(state, prim.TextureId, prim.RenderMaterialId, new Godot.Color(prim.ColorTint.X, prim.ColorTint.Y, prim.ColorTint.Z, prim.ColorTint.W));
+                }
             }
 
             state.MeshInstance.Scale = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y);
