@@ -163,7 +163,6 @@ public partial class Boot : Control
         _avatarRenderer?.Initialize(_world, _assetService, gpuCache);
 
         _session.ChatMessageReceived += OnChatMessage;
-        _session.ObjectUpdateReceived += OnObjectUpdate;
 
         var creds = new LoginCredentials
         {
@@ -233,13 +232,17 @@ public partial class Boot : Control
         CallDeferred(nameof(LogMessage), $"[CHAT] {e.FromName}: {e.Message}");
     }
 
-    private void OnObjectUpdate(object? sender, ObjectUpdateEvent e)
-    {
-        CallDeferred(nameof(LogMessage), $"[OBJECT] {e.LocalId} at {e.Position}");
-    }
+    private int _logLineCount;
 
     private void LogMessage(string message)
     {
+        // Cap the panel — an unbounded RichTextLabel re-layouts everything on every append
+        // and tanks the frame rate once it holds thousands of lines.
+        if (++_logLineCount > 200)
+        {
+            _logPanel.Clear();
+            _logLineCount = 1;
+        }
         _logPanel.AppendText(message + "\n");
     }
 
