@@ -19,8 +19,12 @@ public partial class AvatarController : Camera3D
     private Vector3 _lastCameraRot;
     private float _zoom = 4.0f;
 
-    // Alt+LMB orbit state
+    // Alt+LMB orbit state. The orbit offsets rotate the CAMERA around the avatar
+    // without changing the avatar's facing (_yaw/_pitch). They snap back to 0 when
+    // the avatar moves, so the camera returns behind the avatar — SL-style.
     private bool _altOrbitActive = false;
+    private float _orbitYaw = 0f;
+    private float _orbitPitch = 0f;
 
     public void Initialize(World world, GridSession session)
     {
@@ -74,17 +78,29 @@ public partial class AvatarController : Camera3D
 
         if (@event is InputEventMouseMotion mouseMotion && Input.MouseMode == Input.MouseModeEnum.Captured)
         {
-            // Exit alt-orbit if Alt is no longer held during motion
-            if (_altOrbitActive && !mouseMotion.AltPressed)
-            {
-                _altOrbitActive = false;
-                Input.MouseMode = Input.MouseModeEnum.Visible;
-                return;
-            }
             float sensitivity = 0.003f;
-            _yaw -= mouseMotion.Relative.X * sensitivity;
-            _pitch -= mouseMotion.Relative.Y * sensitivity;
-            _pitch = Mathf.Clamp(_pitch, -1.5f, 1.5f);
+            if (_altOrbitActive)
+            {
+                // Exit alt-orbit if Alt is no longer held during motion
+                if (!mouseMotion.AltPressed)
+                {
+                    _altOrbitActive = false;
+                    Input.MouseMode = Input.MouseModeEnum.Visible;
+                    return;
+                }
+                // Orbit the camera only — do NOT touch _yaw/_pitch so the avatar
+                // keeps facing where it was.
+                _orbitYaw   -= mouseMotion.Relative.X * sensitivity;
+                _orbitPitch -= mouseMotion.Relative.Y * sensitivity;
+                _orbitPitch  = Mathf.Clamp(_orbitPitch, -1.4f, 1.4f);
+            }
+            else
+            {
+                // RMB free-look: turns the avatar with the camera.
+                _yaw   -= mouseMotion.Relative.X * sensitivity;
+                _pitch -= mouseMotion.Relative.Y * sensitivity;
+                _pitch  = Mathf.Clamp(_pitch, -1.5f, 1.5f);
+            }
         }
     }
 
@@ -111,8 +127,16 @@ public partial class AvatarController : Camera3D
                 if (isLeft) _yaw += 2.5f * (float)delta;
                 if (isRight) _yaw -= 2.5f * (float)delta;
 
-                // Apply rotation continuously
-                Rotation = new Vector3(_pitch, _yaw, 0);
+                // Any movement/turn snaps the orbit camera back behind the avatar.
+                if (isFwd || isBack || isLeft || isRight)
+                {
+                    _orbitYaw = 0f;
+                    _orbitPitch = 0f;
+                }
+
+                // Camera rotation = avatar facing (_yaw/_pitch) plus the orbit offset.
+                // The orbit offset moves the camera around the avatar without turning it.
+                Rotation = new Vector3(_pitch + _orbitPitch, _yaw + _orbitYaw, 0);
 
                 var godotMoveDir = new Vector3();
                 if (isFwd) godotMoveDir += -Transform.Basis.Z;
@@ -185,12 +209,11 @@ public partial class AvatarController : Camera3D
         {
             _timeSinceLastUpdate = 0;
 
-            // The camera's Quaternion is Godot's space. We need SL space.
-            // SL uses Z up, X forward, Y left. Godot uses Y up, -Z forward, X right.
-            // Godot's default forward (-Z) maps to SL's Y axis (North).
-            // But SL's default forward is the X axis (East).
-            // So we must rotate the SL quaternion by +90 degrees around Z to align them.
-            var godotQuat = Quaternion;
+            // Avatar facing comes from _yaw ONLY — never the camera's full orientation.
+            // Using the camera quaternion would fold the orbit offset and pitch into the
+            // avatar's facing, making it spin/tilt while orbiting. A yaw-only quaternion
+            // keeps the avatar upright and facing where the player aims.
+            var godotQuat = Quaternion.FromEuler(new Vector3(0, _yaw, 0));
             var slQuat = new System.Numerics.Quaternion(godotQuat.X, -godotQuat.Z, godotQuat.Y, godotQuat.W);
             var offset = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, (float)System.Math.PI / 2.0f);
             var finalQuat = offset * slQuat;

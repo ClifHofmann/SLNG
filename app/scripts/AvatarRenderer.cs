@@ -130,6 +130,11 @@ public partial class AvatarRenderer : Node3D
                     if (mi == null) continue;
                     mi.Name = part.Name + "_Mesh";
                     skeleton.AddChild(mi);
+                    // Explicitly point the mesh at the skeleton. The default NodePath("..")
+                    // is not reliably populated for programmatically-created MeshInstance3D,
+                    // and without it Godot renders the static vertex buffer (the T-pose) and
+                    // never applies bone skinning.
+                    mi.Skeleton = mi.GetPathTo(skeleton);
                     visual.Parts[part.Name] = mi;
                 }
             }
@@ -536,6 +541,12 @@ public partial class AvatarRenderer : Node3D
             float w1 = part.Bone1Weights[vi];
             float w2 = part.Bone2Weights[vi];
 
+            // Normalize the two SL weights so they sum to 1 — Godot expects normalized
+            // skin weights and a zero-sum vertex would not deform at all.
+            float wsum = w1 + w2;
+            if (wsum > 0.0001f) { w1 /= wsum; w2 /= wsum; }
+            else { w1 = 1f; w2 = 0f; }
+
             // SL is Z-up; Godot is Y-up: SL(X,Y,Z) → Godot(X,Z,−Y)
             st.SetBones(new int[]   { s1,  s2,  0,   0   });
             st.SetWeights(new float[]{ w1,  w2,  0f,  0f  });
@@ -574,8 +585,11 @@ public partial class AvatarRenderer : Node3D
         if (boneIdx < 0) return;
 
         var globalRest = ComputeGlobalRestTransform(skeleton, boneIdx);
-        int slot = skinSlots.Count;
-        skin.AddNamedBind(boneName, globalRest.Inverse());
+        // Bind by explicit skeleton bone index rather than by name. Named binds rely on
+        // a name-resolution pass that has proven unreliable here; AddBind ties the skin
+        // slot directly to the bone that drives it. The slot index is the bind's position.
+        int slot = skin.GetBindCount();
+        skin.AddBind(boneIdx, globalRest.Inverse());
         skinSlots[boneName] = slot;
     }
 
@@ -656,7 +670,7 @@ public partial class AvatarRenderer : Node3D
                 var data = await _assetService.GetAnimationAsync(animId);
                 if (data != null)
                 {
-                    GD.Print($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints, {data.Length:F2}s  joints=[{string.Join(",", System.Linq.Enumerable.Select(data.Joints, j => j.JointName))}]");
+                    GD.Print($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints, {data.Length:F2}s");
                     loaded.Add((animId, data));
                 }
                 else

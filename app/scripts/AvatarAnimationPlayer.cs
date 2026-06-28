@@ -115,26 +115,9 @@ public sealed class AvatarAnimationPlayer
         ApplyBonePoses();
     }
 
-    private bool _diagnosticLogged = false;
-
     private void ApplyBonePoses()
     {
         if (_skeleton == null) return;
-
-        // One-time diagnostic: verify joint names match skeleton bone names.
-        if (!_diagnosticLogged && _active.Count > 0)
-        {
-            _diagnosticLogged = true;
-            var anim0 = _active[0];
-            int found = 0, missing = 0;
-            var missingNames = new System.Collections.Generic.List<string>();
-            foreach (var joint in anim0.Data.Joints)
-            {
-                if (_skeleton.FindBone(joint.JointName) >= 0) found++;
-                else { missing++; missingNames.Add(joint.JointName); }
-            }
-            Console.WriteLine($"[AnimPlayer] Bone match: {found}/{anim0.Data.Joints.Length} found, {missing} missing: [{string.Join(",", missingNames)}]");
-        }
 
         // For each bone in the skeleton, find the highest-priority animation that
         // affects it and apply that animation's value.
@@ -177,14 +160,14 @@ public sealed class AvatarAnimationPlayer
             }
         }
 
-        // Apply to skeleton.
+        // Apply to skeleton. Rotation only for now: SL animation position keys (almost
+        // always just on mPelvis) use a reference frame that, applied directly, drops the
+        // pelvis to the avatar root and sinks the whole body into the ground. The rest
+        // pose already places every bone correctly, so rotation-only gives a correct
+        // standing/idle pose. Root motion (jumps, real translation) is deferred.
         foreach (var (boneIdx, pose) in bonePoses)
         {
             _skeleton.SetBonePoseRotation(boneIdx, pose.rotation);
-            if (pose.hasPos)
-            {
-                _skeleton.SetBonePosePosition(boneIdx, pose.position);
-            }
         }
     }
 
