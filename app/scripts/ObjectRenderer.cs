@@ -1,4 +1,5 @@
 using Godot;
+using SLNG.Core;
 using SLNG.Core.ECS;
 using SLNG.Core.Components;
 using SLNG.Assets;
@@ -24,7 +25,7 @@ public partial class ObjectRenderer : Node3D
         public Guid LoadedMeshId;
         public Guid LoadedTextureId = NotLoaded;
         public Guid LoadedMaterialId = NotLoaded;
-        public int LoadedProfileCurve = int.MinValue;
+        public PrimShape? LoadedPrimShape;
 
         // Sentinel distinct from Guid.Empty (which is a valid "no texture" value) so the
         // first update always applies.
@@ -155,16 +156,14 @@ public partial class ObjectRenderer : Node3D
                     _ = LoadAndApplyMeshAsync(state.MeshInstance, prim.MeshId);
                 }
             }
-            else if (state.LoadedProfileCurve != prim.ProfileCurve)
+            else if (_assetService != null && state.LoadedPrimShape != prim.Shape)
             {
-                state.LoadedProfileCurve = prim.ProfileCurve;
+                // Procedural prim: generate its real geometry (profile/path/cut/hollow/twist)
+                // off-thread instead of a box placeholder. Re-requested only when the shape
+                // changes. Falls back to a primitive solid if meshing fails.
+                state.LoadedPrimShape = prim.Shape;
                 state.LoadedMeshId = Guid.Empty;
-                state.MeshInstance.Mesh = prim.ProfileCurve switch
-                {
-                    0 => _cylinderMesh,
-                    5 => _sphereMesh,
-                    _ => _boxMesh,
-                };
+                _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve);
             }
 
             // Likewise, only rebuild the material when the texture/material id changes.
@@ -206,6 +205,35 @@ public partial class ObjectRenderer : Node3D
         if (mesh == null || mesh.Submeshes.Count == 0) return;
 
         Godot.Callable.From(() => ApplyMeshData(meshInstance, mesh)).CallDeferred();
+    }
+
+    private async System.Threading.Tasks.Task LoadAndApplyPrimMeshAsync(VisualState state, PrimShape shape, byte profileCurve)
+    {
+        if (_assetService == null) return;
+
+        var mesh = await _assetService.GetPrimMeshAsync(shape);
+
+        Godot.Callable.From(() =>
+        {
+            if (!IsInstanceValid(state.MeshInstance)) return;
+            // Drop stale results: the shape may have changed again while we were meshing.
+            if (state.LoadedPrimShape != shape) return;
+
+            if (mesh != null && mesh.Submeshes.Count > 0)
+            {
+                ApplyMeshData(state.MeshInstance, mesh);
+            }
+            else
+            {
+                // Meshing failed (e.g. sculpt or odd shape) — fall back to a primitive solid.
+                state.MeshInstance.Mesh = profileCurve switch
+                {
+                    0 => _cylinderMesh,
+                    5 => _sphereMesh,
+                    _ => _boxMesh,
+                };
+            }
+        }).CallDeferred();
     }
 
     private async System.Threading.Tasks.Task LoadAndApplyMaterialAsync(VisualState state, Guid textureId, Guid renderMaterialId, Godot.Color colorTint)

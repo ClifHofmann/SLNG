@@ -28,7 +28,14 @@ public class PrimitiveComponent : IComponent
     /// <summary>Base color tint (RGBA) applied to the texture/material.</summary>
     public Vector4 ColorTint { get; set; }
 
-    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default)
+    /// <summary>
+    /// Procedural shape of a non-mesh prim. Used to regenerate real prim geometry
+    /// (profile/path/cut/hollow/twist) instead of a box placeholder. Ignored when
+    /// <see cref="IsMesh"/> is true.
+    /// </summary>
+    public PrimShape Shape { get; set; }
+
+    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, PrimShape shape = default)
     {
         Scale = scale;
         ProfileCurve = profileCurve;
@@ -37,5 +44,6 @@ public class PrimitiveComponent : IComponent
         TextureId = textureId;
         RenderMaterialId = renderMaterialId;
         ColorTint = colorTint;
+        Shape = shape;
     }
 }

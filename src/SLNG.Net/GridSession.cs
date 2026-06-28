@@ -145,6 +145,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             colorTint = new System.Numerics.Vector4(defaultFace.RGBA.R, defaultFace.RGBA.G, defaultFace.RGBA.B, defaultFace.RGBA.A);
         }
 
+        // Convert the prim's construction data to a neutral PrimShape so the asset layer can
+        // regenerate real geometry without seeing a LibreMetaverse type.
+        var pd = e.Prim.PrimData;
+        var shape = new PrimShape(
+            (byte)pd.ProfileCurve,
+            (byte)pd.PathCurve,
+            pd.PathBegin, pd.PathEnd,
+            pd.PathScaleX, pd.PathScaleY,
+            pd.PathShearX, pd.PathShearY,
+            pd.PathTaperX, pd.PathTaperY,
+            pd.PathTwist, pd.PathTwistBegin,
+            pd.PathRadiusOffset, pd.PathSkew, pd.PathRevolutions,
+            pd.ProfileBegin, pd.ProfileEnd, pd.ProfileHollow);
+
         ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
             e.Simulator.Handle,
             e.Prim.LocalID,
@@ -158,7 +172,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             renderMaterialId,
             colorTint,
             e.Prim.ParentID,
-            (byte)e.Prim.PrimData.AttachmentPoint));
+            (byte)e.Prim.PrimData.AttachmentPoint,
+            shape));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)

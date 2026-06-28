@@ -7,6 +7,7 @@ using Microsoft.Extensions.Caching.Memory;
 using LibreMetaverse;
 using LibreMetaverse.Assets;
 using LibreMetaverse.Rendering;
+using SLNG.Core;
 using SLNG.Net;
 
 namespace SLNG.Assets;
@@ -26,6 +27,7 @@ public class AssetService
     private readonly ConcurrentDictionary<Guid, Task<TextureData?>> _inflightTextures = new();
     private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _inflightMaterials = new();
     private readonly ConcurrentDictionary<Guid, Task<AnimationData?>> _inflightAnimations = new();
+    private readonly ConcurrentDictionary<PrimShape, Task<MeshData?>> _inflightPrimMeshes = new();
 
     public AssetService(GridSession session, string cacheDirectory)
     {
@@ -47,6 +49,39 @@ public class AssetService
     /// Fetches and decodes a mesh by UUID, or null if it cannot be decoded. Concurrent
     /// requests for the same id share a single fetch/decode.
     /// </summary>
+    /// <summary>
+    /// Generates (and caches) real prim geometry for a procedural <see cref="PrimShape"/>.
+    /// Meshing runs on a worker thread; identical shapes share one cached mesh. Returns null
+    /// if the shape can't be meshed (caller falls back to a placeholder).
+    /// </summary>
+    public Task<MeshData?> GetPrimMeshAsync(PrimShape shape)
+    {
+        if (_memCache.TryGetValue(shape, out MeshData? cached))
+        {
+            return Task.FromResult(cached);
+        }
+        return _inflightPrimMeshes.GetOrAdd(shape, async s => {
+            try {
+                var result = await Task.Run(() => PrimMeshService.Generate(s)).ConfigureAwait(false);
+                if (result != null) {
+                    long size = EstimateMeshSize(result);
+                    _memCache.Set(s, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
+                }
+                return result;
+            } finally {
+                _inflightPrimMeshes.TryRemove(s, out _);
+            }
+        });
+    }
+
+    private static long EstimateMeshSize(MeshData mesh)
+    {
+        long total = 0;
+        foreach (var sub in mesh.Submeshes)
+            total += (long)sub.Positions.Length * 32 + (long)sub.Indices.Length * 4;
+        return total > 0 ? total : 1;
+    }
+
     public Task<MeshData?> GetMeshAsync(Guid meshId)
     {
         if (_memCache.TryGetValue(meshId, out MeshData? cached))

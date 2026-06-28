@@ -25,7 +25,8 @@ public record ObjectUpdateEvent(
     ulong RegionHandle, uint LocalId,
     Vector3 Position, Quaternion Rotation, Vector3 Scale,
     byte ProfileCurve, bool IsMesh, Guid MeshId, Guid TextureId, Guid RenderMaterialId, Vector4 ColorTint,
-    uint ParentLocalId, byte AttachmentPoint
+    uint ParentLocalId, byte AttachmentPoint,
+    PrimShape Shape = default
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar.</summary>
