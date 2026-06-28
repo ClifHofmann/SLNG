@@ -5,6 +5,7 @@ using SLNG.Core.Components;
 using SLNG.Assets;
 using System.Collections.Generic;
 using System;
+using System.IO;
 
 namespace SLNG.App;
 
@@ -105,56 +106,32 @@ public partial class AvatarRenderer : Node3D
 
         if (_avatarSkeleton != null)
         {
-            // Build the Skeleton3D
             var skeleton = SkeletonBuilder.Build(_avatarSkeleton);
             skeleton.Name = "Skeleton3D";
             visual.Root.AddChild(skeleton);
             visual.Skeleton = skeleton;
 
-            // Instantiate separate Box/Sphere meshes parented via BoneAttachment3D
-            foreach (var part in ProceduralAvatarMesh.BodyParts)
+            // Try to load real SL base-avatar meshes (LGPL, shipped via LibreMetaverse NuGet).
+            var charDir = Path.Combine(AppContext.BaseDirectory, "linden", "character");
+            var bodyData = AvatarBodyMeshService.Load(charDir);
+
+            if (bodyData != null)
             {
-                var attachment = new BoneAttachment3D();
-                attachment.Name = "Attach_" + part.BoneName;
-                
-                // Add attachment to skeleton FIRST while it's in the tree
-                skeleton.AddChild(attachment);
-
-                // Set bone index and name so it binds correctly
-                int boneIdx = skeleton.FindBone(part.BoneName);
-                if (boneIdx != -1)
+                foreach (var part in bodyData.Parts)
                 {
-                    attachment.BoneIdx = boneIdx;
+                    var mi = BuildSkinnedMeshInstance(part, skeleton, color);
+                    if (mi == null) continue;
+                    mi.Name = part.Name + "_Mesh";
+                    skeleton.AddChild(mi);
+                    visual.Parts[part.Name] = mi;
                 }
-                attachment.BoneName = part.BoneName;
-
-                Mesh mesh;
-                if (part.IsSphere)
-                {
-                    mesh = new SphereMesh { Radius = part.Size.X * 0.5f, Height = part.Size.Y };
-                }
-                else
-                {
-                    mesh = new BoxMesh { Size = part.Size };
-                }
-
-                var mat = new StandardMaterial3D
-                {
-                    AlbedoColor = color,
-                    CullMode = BaseMaterial3D.CullModeEnum.Disabled
-                };
-
-                var meshInstance = new MeshInstance3D
-                {
-                    Name = part.BoneName + "_Mesh",
-                    Mesh = mesh,
-                    MaterialOverride = mat,
-                    Position = part.Offset
-                };
-
-                attachment.AddChild(meshInstance);
-                visual.Parts[part.BoneName] = meshInstance;
             }
+            else
+            {
+                // Fallback: procedural box-man when character files are absent.
+                BuildProceduralBoxMan(skeleton, visual, color);
+            }
+
             skeleton.ResetBonePoses();
         }
         else
@@ -235,18 +212,15 @@ public partial class AvatarRenderer : Node3D
         // 3. Texture streaming / Bakes-on-Mesh
         if (avatar.BakedTextures != null && _assetService != null)
         {
-            foreach (var part in ProceduralAvatarMesh.BodyParts)
+            foreach (var kv in avatar.BakedTextures)
             {
-                if (avatar.BakedTextures.TryGetValue(part.BakeIndex, out var textureId))
+                int bakeIndex = kv.Key;
+                var textureId = kv.Value;
+                if (textureId == Guid.Empty) continue;
+                if (!visual.LoadedTextures.TryGetValue(bakeIndex, out var currentId) || currentId != textureId)
                 {
-                    if (textureId != Guid.Empty)
-                    {
-                        if (!visual.LoadedTextures.TryGetValue(part.BakeIndex, out var currentLoadedId) || currentLoadedId != textureId)
-                        {
-                            visual.LoadedTextures[part.BakeIndex] = textureId;
-                            _ = LoadAndApplyTextureAsync(visual, part.BakeIndex, textureId);
-                        }
-                    }
+                    visual.LoadedTextures[bakeIndex] = textureId;
+                    _ = LoadAndApplyTextureAsync(visual, bakeIndex, textureId);
                 }
             }
         }
@@ -321,25 +295,22 @@ public partial class AvatarRenderer : Node3D
 
         if (godotTexture == null) return;
 
-        // Apply texture to all body parts matching this BakeIndex on the main thread
+        // Apply baked texture to all mesh parts on the main thread.
+        // Bake index 0=head, 1=upper, 2=lower — apply to all parts for now
+        // (real viewer filters by mesh type; that can be refined later).
         Godot.Callable.From(() => {
             if (visual.Root == null || !IsInstanceValid(visual.Root)) return;
 
-            foreach (var part in ProceduralAvatarMesh.BodyParts)
+            foreach (var meshInstance in visual.Parts.Values)
             {
-                if (part.BakeIndex == bakeIndex)
+                if (!IsInstanceValid(meshInstance)) continue;
+                var mat = meshInstance.MaterialOverride as StandardMaterial3D;
+                if (mat == null)
                 {
-                    if (visual.Parts.TryGetValue(part.BoneName, out var meshInstance) && IsInstanceValid(meshInstance))
-                    {
-                        var mat = meshInstance.MaterialOverride as StandardMaterial3D;
-                        if (mat == null)
-                        {
-                            mat = new StandardMaterial3D { CullMode = BaseMaterial3D.CullModeEnum.Disabled };
-                            meshInstance.MaterialOverride = mat;
-                        }
-                        mat.AlbedoTexture = godotTexture;
-                    }
+                    mat = new StandardMaterial3D { CullMode = BaseMaterial3D.CullModeEnum.Disabled };
+                    meshInstance.MaterialOverride = mat;
                 }
+                mat.AlbedoTexture = godotTexture;
             }
         }).CallDeferred();
     }
@@ -457,6 +428,135 @@ public partial class AvatarRenderer : Node3D
             var mat = new StandardMaterial3D { AlbedoTexture = tex };
             mi.MaterialOverride = mat;
         }).CallDeferred();
+    }
+
+    // -------------------------------------------------------------------------
+    // Skinned-mesh helpers
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Builds a <see cref="MeshInstance3D"/> with correct per-vertex bone indices and weights
+    /// for one SL body-part mesh. The instance must be added as a DIRECT child of the
+    /// <see cref="Skeleton3D"/> for Godot's built-in skinning to take effect.
+    /// </summary>
+    private MeshInstance3D? BuildSkinnedMeshInstance(
+        AvatarBodyPartMesh part, Skeleton3D skeleton, Color baseColor)
+    {
+        if (part.Indices.Length == 0) return null;
+
+        // Build a Skin resource: one named bind per unique bone referenced in this part.
+        var skin = new Skin();
+        var skinSlots = new Dictionary<string, int>(); // boneName → slot index in Skin
+
+        for (int vi = 0; vi < part.Positions.Length; vi++)
+        {
+            AddSkinSlot(part.Bone1Names[vi], skin, skeleton, skinSlots);
+            AddSkinSlot(part.Bone2Names[vi], skin, skeleton, skinSlots);
+        }
+
+        // Non-indexed surface: expand each face into 3 unique vertex entries so
+        // GenerateTangents() works correctly and the approach mirrors the existing
+        // attachment-mesh builder.
+        var st = new SurfaceTool();
+        st.Begin(Mesh.PrimitiveType.Triangles);
+
+        for (int fi = 0; fi < part.Indices.Length; fi++)
+        {
+            int vi = part.Indices[fi];
+            var p  = part.Positions[vi];
+            var n  = part.Normals[vi];
+            var uv = part.UVs[vi];
+
+            // Resolve skin slot indices
+            int s1 = 0, s2 = 0;
+            if (part.Bone1Names[vi] != null && skinSlots.TryGetValue(part.Bone1Names[vi]!, out int ss1)) s1 = ss1;
+            if (part.Bone2Names[vi] != null && skinSlots.TryGetValue(part.Bone2Names[vi]!, out int ss2)) s2 = ss2;
+
+            float w1 = part.Bone1Weights[vi];
+            float w2 = part.Bone2Weights[vi];
+
+            // SL is Z-up; Godot is Y-up: SL(X,Y,Z) → Godot(X,Z,−Y)
+            st.SetBones(new int[]   { s1,  s2,  0,   0   });
+            st.SetWeights(new float[]{ w1,  w2,  0f,  0f  });
+            st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+            st.SetUV(new Godot.Vector2(uv.X, uv.Y));
+            st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
+        }
+
+        st.GenerateTangents();
+
+        var mat = new StandardMaterial3D
+        {
+            AlbedoColor = baseColor,
+            CullMode    = BaseMaterial3D.CullModeEnum.Disabled
+        };
+
+        return new MeshInstance3D
+        {
+            Mesh             = st.Commit(),
+            Skin             = skin,
+            MaterialOverride = mat
+        };
+    }
+
+    /// <summary>
+    /// Adds a named bind to <paramref name="skin"/> for <paramref name="boneName"/> if not
+    /// already present. The bind transform is the INVERSE of the bone's global rest transform
+    /// so that the avatar mesh appears unchanged when the skeleton is in T-pose.
+    /// </summary>
+    private static void AddSkinSlot(
+        string? boneName, Skin skin, Skeleton3D skeleton, Dictionary<string, int> skinSlots)
+    {
+        if (boneName == null || skinSlots.ContainsKey(boneName)) return;
+
+        int boneIdx = skeleton.FindBone(boneName);
+        if (boneIdx < 0) return;
+
+        var globalRest = ComputeGlobalRestTransform(skeleton, boneIdx);
+        int slot = skinSlots.Count;
+        skin.AddNamedBind(boneName, globalRest.Inverse());
+        skinSlots[boneName] = slot;
+    }
+
+    /// <summary>
+    /// Computes the global rest transform of a bone by multiplying local rest transforms
+    /// up the parent chain — equivalent to <c>GetBoneGlobalRest</c> but explicit.
+    /// </summary>
+    private static Transform3D ComputeGlobalRestTransform(Skeleton3D skeleton, int boneIdx)
+    {
+        int parent = skeleton.GetBoneParent(boneIdx);
+        var local  = skeleton.GetBoneRest(boneIdx);
+        if (parent < 0) return local;
+        return ComputeGlobalRestTransform(skeleton, parent) * local;
+    }
+
+    /// <summary>Procedural box/sphere man — used when the .llm character files are absent.</summary>
+    private static void BuildProceduralBoxMan(Skeleton3D skeleton, AvatarVisual visual, Color color)
+    {
+        foreach (var part in ProceduralAvatarMesh.BodyParts)
+        {
+            var attachment = new BoneAttachment3D { Name = "Attach_" + part.BoneName };
+            skeleton.AddChild(attachment);
+
+            int boneIdx = skeleton.FindBone(part.BoneName);
+            if (boneIdx != -1) attachment.BoneIdx = boneIdx;
+            attachment.BoneName = part.BoneName;
+
+            Mesh mesh = part.IsSphere
+                ? new SphereMesh { Radius = part.Size.X * 0.5f, Height = part.Size.Y }
+                : new BoxMesh    { Size   = part.Size };
+
+            var mi = new MeshInstance3D
+            {
+                Name             = part.BoneName + "_Mesh",
+                Mesh             = mesh,
+                MaterialOverride = new StandardMaterial3D { AlbedoColor = color, CullMode = BaseMaterial3D.CullModeEnum.Disabled },
+                Position         = part.Offset
+            };
+
+            attachment.AddChild(mi);
+            visual.Parts[part.BoneName] = mi;
+        }
     }
 
     public override void _ExitTree()
