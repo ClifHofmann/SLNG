@@ -1,4 +1,5 @@
 using LibreMetaverse;
+using Microsoft.Extensions.Logging;
 using SLNG.Core;
 
 namespace SLNG.Net;
@@ -12,6 +13,12 @@ namespace SLNG.Net;
 public sealed class GridSession : IDisposable, IWorldEventSource
 {
     private readonly GridClient _client;
+
+    /// <summary>
+    /// Fired for Warning/Error log messages from LibreMetaverse so the UI can surface them
+    /// without the app/ layer needing a direct dependency on LibreMetaverse.Logger.
+    /// </summary>
+    public event EventHandler<string>? LibraryLog;
 
     public event EventHandler<ChatMessageEvent>? ChatMessageReceived;
     public event EventHandler<ObjectUpdateEvent>? ObjectUpdateReceived;
@@ -37,6 +44,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         _client = new GridClient();
         _client.Settings.Agent.SendAppearance = false;
+
+        // Forward LibreMetaverse Warning/Error logs through an engine-agnostic event so
+        // Boot.cs can show them in the in-game log panel without a direct LMV dependency.
+        Logger.OnLogMessage += (msg, level) =>
+        {
+            if (level >= LogLevel.Warning)
+                LibraryLog?.Invoke(this, $"[LMV:{level}] {msg?.ToString() ?? ""}");
+        };
+
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
         _client.Objects.AvatarUpdate += OnAvatarUpdate;
@@ -223,7 +239,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
             if (response is null)
             {
-                return LoginResult.Fail("no-response", "Grid returned no login response.");
+                // LMV swallowed the failure; surface whatever it recorded internally.
+                var errorKey = _client.Network.LoginErrorKey ?? "";
+                var lmvMsg   = _client.Network.LoginMessage   ?? "";
+                var status   = _client.Network.LoginStatusCode.ToString();
+                var detail   = string.IsNullOrEmpty(lmvMsg)
+                    ? $"status={status}, no message from grid"
+                    : $"status={status} key={errorKey}: {lmvMsg}";
+                return LoginResult.Fail("no-response", $"Grid returned no login response ({detail}).");
             }
 
             return response.Success

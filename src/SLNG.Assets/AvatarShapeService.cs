@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using System.Numerics;
 using LibreMetaverse;
@@ -24,56 +23,38 @@ public static class AvatarShapeService
         for (int i = 0; i < group0.Length; i++)
         {
             int paramId = group0[i];
-            
+
+            if (!VisualParams.Params.TryGetValue(paramId, out var param))
+                continue;
+
             float valFloat;
             if (visualParams != null && i < visualParams.Length)
             {
                 byte valByte = visualParams[i];
-                if (VisualParams.Params.TryGetValue(paramId, out var vp))
-                {
-                    valFloat = vp.MinValue + (valByte / 255.0f) * (vp.MaxValue - vp.MinValue);
-                }
-                else
-                {
-                    continue;
-                }
+                valFloat = param.MinValue + (valByte / 255.0f) * (param.MaxValue - param.MinValue);
             }
             else
             {
-                if (VisualParams.Params.TryGetValue(paramId, out var vp))
-                {
-                    valFloat = vp.DefaultValue;
-                }
-                else
-                {
-                    continue;
-                }
+                valFloat = param.DefaultValue;
             }
 
-            if (VisualParams.Params.TryGetValue(paramId, out var param))
+            if (param.SkeletalDistortions == null || param.SkeletalDistortions.Length == 0)
+                continue;
+
+            foreach (var dist in param.SkeletalDistortions)
             {
-                if (param.SkeletalDistortions == null || param.SkeletalDistortions.Length == 0)
-                    continue;
+                string boneName = dist.BoneName;
+                var scaleDef = new Vector3(dist.ScaleDeformation.X, dist.ScaleDeformation.Y, dist.ScaleDeformation.Z);
+                var posDef = new Vector3(dist.PositionDeformation.X, dist.PositionDeformation.Y, dist.PositionDeformation.Z);
 
-                foreach (var dist in param.SkeletalDistortions)
-                {
-                    string boneName = dist.BoneName;
-                    var scaleDef = new Vector3(dist.ScaleDeformation.X, dist.ScaleDeformation.Y, dist.ScaleDeformation.Z);
-                    var posDef = new Vector3(dist.PositionDeformation.X, dist.PositionDeformation.Y, dist.PositionDeformation.Z);
+                if (!distortions.TryGetValue(boneName, out var current))
+                    current = (Vector3.Zero, Vector3.Zero);
 
-                    if (!distortions.TryGetValue(boneName, out var current))
-                    {
-                        current = (Vector3.Zero, Vector3.Zero);
-                    }
+                current.Scale += scaleDef * valFloat;
+                if (dist.HasPositionDeformation)
+                    current.Position += posDef * valFloat;
 
-                    current.Scale += scaleDef * valFloat;
-                    if (dist.HasPositionDeformation)
-                    {
-                        current.Position += posDef * valFloat;
-                    }
-
-                    distortions[boneName] = current;
-                }
+                distortions[boneName] = current;
             }
         }
 

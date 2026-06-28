@@ -173,16 +173,17 @@ public sealed class AvatarAnimationPlayer
 
     /// <summary>
     /// Evaluate rotation keyframes at the given time using spherical interpolation.
-    /// Returns an SL-space quaternion (not yet converted to Godot).
+    /// Returns an SL-space quaternion (not yet converted to Godot-space axes).
+    /// Caller is responsible for the SL→Godot axis swap.
     /// </summary>
-    private static Quaternion EvaluateRotation(RotationKeyframe[] keys, float time)
+    private static System.Numerics.Quaternion EvaluateRotation(RotationKeyframe[] keys, float time)
     {
-        if (keys.Length == 0) return Quaternion.Identity;
-        if (keys.Length == 1) return ToGodotQuat(keys[0].Rotation);
+        if (keys.Length == 0) return System.Numerics.Quaternion.Identity;
+        if (keys.Length == 1) return keys[0].Rotation;
 
         // Find the two bounding keyframes.
-        if (time <= keys[0].Time) return ToGodotQuat(keys[0].Rotation);
-        if (time >= keys[^1].Time) return ToGodotQuat(keys[^1].Rotation);
+        if (time <= keys[0].Time) return keys[0].Rotation;
+        if (time >= keys[^1].Time) return keys[^1].Rotation;
 
         for (int i = 0; i < keys.Length - 1; i++)
         {
@@ -190,13 +191,11 @@ public sealed class AvatarAnimationPlayer
             {
                 float span = keys[i + 1].Time - keys[i].Time;
                 float t = span > 0 ? (time - keys[i].Time) / span : 0f;
-                var a = ToGodotQuat(keys[i].Rotation);
-                var b = ToGodotQuat(keys[i + 1].Rotation);
-                return a.Slerp(b, t);
+                return System.Numerics.Quaternion.Slerp(keys[i].Rotation, keys[i + 1].Rotation, t);
             }
         }
 
-        return ToGodotQuat(keys[^1].Rotation);
+        return keys[^1].Rotation;
     }
 
     /// <summary>
@@ -223,13 +222,6 @@ public sealed class AvatarAnimationPlayer
 
         return keys[^1].Position;
     }
-
-    /// <summary>
-    /// Convert a System.Numerics.Quaternion to a Godot.Quaternion.
-    /// This is a straight copy — coordinate-system conversion happens later.
-    /// </summary>
-    private static Quaternion ToGodotQuat(System.Numerics.Quaternion q)
-        => new Quaternion(q.X, q.Y, q.Z, q.W);
 
     private void ResetToRestPose()
     {

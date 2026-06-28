@@ -152,6 +152,7 @@ public partial class Boot : Control
         _objectRenderer?.Initialize(_world, _assetService, gpuCache);
         _avatarRenderer?.Initialize(_world, _assetService, gpuCache);
 
+        _session.LibraryLog += (_, msg) => CallDeferred(nameof(LogMessage), msg);
         _session.ChatMessageReceived += OnChatMessage;
         _session.ObjectUpdateReceived += OnObjectUpdate;
 

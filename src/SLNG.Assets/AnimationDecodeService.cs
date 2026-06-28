@@ -32,9 +32,9 @@ public static class AnimationDecodeService
             var reader = new BinBVHAnimationReader(animationBytes);
             return Convert(reader);
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
-            // Malformed animation data — swallow and return null.
+            Console.Error.WriteLine($"[AnimationDecodeService] Failed to decode animation: {ex.Message}");
             return null;
         }
     }
