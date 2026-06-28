@@ -27,6 +27,10 @@ public partial class ObjectRenderer : Node3D
         public Guid LoadedMaterialId = NotLoaded;
         public PrimShape? LoadedPrimShape;
 
+        // True while this object is beyond draw distance and we've dropped its mesh/texture
+        // refs to free GPU memory. It reloads when it comes back into range.
+        public bool ResourcesReleased;
+
         // Sentinel distinct from Guid.Empty (which is a valid "no texture" value) so the
         // first update always applies.
         public static readonly Guid NotLoaded = new("ffffffff-ffff-ffff-ffff-ffffffffffff");
@@ -74,9 +78,11 @@ public partial class ObjectRenderer : Node3D
 
     public override void _Process(double delta)
     {
-        // Draw-distance culling: hide objects beyond the configured radius from the local
-        // agent. Throttled to ~4 Hz; objects don't move often and the agent lookup scans
-        // all entities.
+        // Draw-distance management, throttled to ~4 Hz. Beyond the radius an object is hidden;
+        // beyond the radius + hysteresis its GPU resources (mesh + texture refs) are released
+        // so VRAM stays bounded to the nearby working set — without this, every object ever
+        // seen keeps its texture pinned and memory grows without bound. Re-enters reload when
+        // it comes back into range.
         _cullAccum += delta;
         if (_cullAccum < 0.25) return;
         _cullAccum = 0;
@@ -84,13 +90,51 @@ public partial class ObjectRenderer : Node3D
         if (_world == null) return;
         if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
 
-        float maxSq = RenderConfig.DrawDistance * RenderConfig.DrawDistance;
-        foreach (var state in _visuals.Values)
+        float draw = RenderConfig.DrawDistance;
+        float drawSq = draw * draw;
+        float releaseSq = (draw * 1.25f) * (draw * 1.25f); // hysteresis: free a bit past the edge
+
+        foreach (var (id, state) in _visuals)
         {
             if (!IsInstanceValid(state.MeshInstance)) continue;
-            bool visible = state.MeshInstance.Position.DistanceSquaredTo(agentPos) <= maxSq;
-            if (state.MeshInstance.Visible != visible) state.MeshInstance.Visible = visible;
+
+            float dSq = state.MeshInstance.Position.DistanceSquaredTo(agentPos);
+
+            if (dSq <= drawSq)
+            {
+                if (!state.MeshInstance.Visible) state.MeshInstance.Visible = true;
+                if (state.ResourcesReleased)
+                {
+                    state.ResourcesReleased = false;
+                    UpdateVisual(id.ToString()); // reload mesh + material now that it's near
+                }
+            }
+            else
+            {
+                if (state.MeshInstance.Visible) state.MeshInstance.Visible = false;
+                if (!state.ResourcesReleased && dSq > releaseSq) ReleaseResources(state);
+            }
         }
+    }
+
+    /// <summary>Drops an out-of-range object's GPU resources so VRAM can be reclaimed. The
+    /// load state is reset so <see cref="UpdateVisual"/> rebuilds it when it returns.</summary>
+    private void ReleaseResources(VisualState state)
+    {
+        if (state.ResourcesReleased) return;
+
+        state.MeshInstance.Mesh = null;
+        state.MeshInstance.MaterialOverride = null;
+
+        if (_gpuCache != null)
+            foreach (var texId in state.UsedTextureIds) _gpuCache.ReleaseRef(texId);
+        state.UsedTextureIds = new List<Guid>();
+
+        state.LoadedMeshId = Guid.Empty;
+        state.LoadedPrimShape = null;
+        state.LoadedTextureId = VisualState.NotLoaded;
+        state.LoadedMaterialId = VisualState.NotLoaded;
+        state.ResourcesReleased = true;
     }
 
     private void CreateVisual(string entityIdStr)
@@ -151,6 +195,11 @@ public partial class ObjectRenderer : Node3D
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim != null)
         {
+            // Skip all asset loading while the object is released (out of draw distance). The
+            // cull pass clears ResourcesReleased and re-calls UpdateVisual when it returns; only
+            // position/scale are kept current here so the distance check stays accurate.
+            if (!state.ResourcesReleased)
+            {
             // Only (re)load the mesh when it actually changes — UpdateVisual fires on every
             // ObjectUpdate (i.e. every position change), and rebuilding the mesh each time is
             // what stalls the main thread on a busy region.
@@ -182,6 +231,7 @@ public partial class ObjectRenderer : Node3D
                 {
                     _ = LoadAndApplyMaterialAsync(state, prim.TextureId, prim.RenderMaterialId, new Godot.Color(prim.ColorTint.X, prim.ColorTint.Y, prim.ColorTint.Z, prim.ColorTint.W));
                 }
+            }
             }
 
             state.MeshInstance.Scale = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y);
