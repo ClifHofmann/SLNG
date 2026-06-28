@@ -125,6 +125,16 @@ public partial class Boot : Control
                     LogMessage($"Post-FX {(_postFxEnabled ? "enabled" : "disabled")}");
                 }
             }
+            else if (keyEvent.Keycode == Key.F3)
+            {
+                RenderConfig.DrawDistance = Mathf.Max(16f, RenderConfig.DrawDistance - 16f);
+                LogMessage($"Draw distance: {RenderConfig.DrawDistance:0} m");
+            }
+            else if (keyEvent.Keycode == Key.F4)
+            {
+                RenderConfig.DrawDistance = Mathf.Min(512f, RenderConfig.DrawDistance + 16f);
+                LogMessage($"Draw distance: {RenderConfig.DrawDistance:0} m");
+            }
         }
     }
 
@@ -153,7 +163,6 @@ public partial class Boot : Control
         _avatarRenderer?.Initialize(_world, _assetService, gpuCache);
 
         _session.ChatMessageReceived += OnChatMessage;
-        _session.ObjectUpdateReceived += OnObjectUpdate;
 
         var creds = new LoginCredentials
         {
@@ -223,13 +232,17 @@ public partial class Boot : Control
         CallDeferred(nameof(LogMessage), $"[CHAT] {e.FromName}: {e.Message}");
     }
 
-    private void OnObjectUpdate(object? sender, ObjectUpdateEvent e)
-    {
-        CallDeferred(nameof(LogMessage), $"[OBJECT] {e.LocalId} at {e.Position}");
-    }
+    private int _logLineCount;
 
     private void LogMessage(string message)
     {
+        // Cap the panel — an unbounded RichTextLabel re-layouts everything on every append
+        // and tanks the frame rate once it holds thousands of lines.
+        if (++_logLineCount > 200)
+        {
+            _logPanel.Clear();
+            _logLineCount = 1;
+        }
         _logPanel.AppendText(message + "\n");
     }
 

@@ -18,6 +18,17 @@ public partial class ObjectRenderer : Node3D
     {
         public MeshInstance3D MeshInstance = null!;
         public List<Guid> UsedTextureIds = new();
+
+        // What we've already loaded, so position/scale updates don't rebuild the mesh or
+        // re-create the material every frame. Guid.Empty means "not yet loaded".
+        public Guid LoadedMeshId;
+        public Guid LoadedTextureId = NotLoaded;
+        public Guid LoadedMaterialId = NotLoaded;
+        public int LoadedProfileCurve = int.MinValue;
+
+        // Sentinel distinct from Guid.Empty (which is a valid "no texture" value) so the
+        // first update always applies.
+        public static readonly Guid NotLoaded = new("ffffffff-ffff-ffff-ffff-ffffffffffff");
     }
 
     private readonly Dictionary<Guid, VisualState> _visuals = new();
@@ -50,6 +61,29 @@ public partial class ObjectRenderer : Node3D
     private void OnComponentUpdated(object? sender, ComponentEventArgs e)
     {
         CallDeferred(nameof(UpdateVisual), e.Entity.Id.ToString());
+    }
+
+    private double _cullAccum = 0;
+
+    public override void _Process(double delta)
+    {
+        // Draw-distance culling: hide objects beyond the configured radius from the local
+        // agent. Throttled to ~4 Hz; objects don't move often and the agent lookup scans
+        // all entities.
+        _cullAccum += delta;
+        if (_cullAccum < 0.25) return;
+        _cullAccum = 0;
+
+        if (_world == null) return;
+        if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
+
+        float maxSq = RenderConfig.DrawDistance * RenderConfig.DrawDistance;
+        foreach (var state in _visuals.Values)
+        {
+            if (!IsInstanceValid(state.MeshInstance)) continue;
+            bool visible = state.MeshInstance.Position.DistanceSquaredTo(agentPos) <= maxSq;
+            if (state.MeshInstance.Visible != visible) state.MeshInstance.Visible = visible;
+        }
     }
 
     private void CreateVisual(string entityIdStr)
@@ -110,12 +144,21 @@ public partial class ObjectRenderer : Node3D
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim != null)
         {
+            // Only (re)load the mesh when it actually changes — UpdateVisual fires on every
+            // ObjectUpdate (i.e. every position change), and rebuilding the mesh each time is
+            // what stalls the main thread on a busy region.
             if (prim.IsMesh && _assetService != null && prim.MeshId != Guid.Empty)
             {
-                _ = LoadAndApplyMeshAsync(state.MeshInstance, prim.MeshId);
+                if (state.LoadedMeshId != prim.MeshId)
+                {
+                    state.LoadedMeshId = prim.MeshId;
+                    _ = LoadAndApplyMeshAsync(state.MeshInstance, prim.MeshId);
+                }
             }
-            else
+            else if (state.LoadedProfileCurve != prim.ProfileCurve)
             {
+                state.LoadedProfileCurve = prim.ProfileCurve;
+                state.LoadedMeshId = Guid.Empty;
                 state.MeshInstance.Mesh = prim.ProfileCurve switch
                 {
                     0 => _cylinderMesh,
@@ -124,9 +167,16 @@ public partial class ObjectRenderer : Node3D
                 };
             }
 
-            if (_assetService != null && (prim.TextureId != Guid.Empty || prim.RenderMaterialId != Guid.Empty))
+            // Likewise, only rebuild the material when the texture/material id changes.
+            if (_assetService != null
+                && (prim.TextureId != state.LoadedTextureId || prim.RenderMaterialId != state.LoadedMaterialId))
             {
-                _ = LoadAndApplyMaterialAsync(state, prim.TextureId, prim.RenderMaterialId, new Godot.Color(prim.ColorTint.X, prim.ColorTint.Y, prim.ColorTint.Z, prim.ColorTint.W));
+                state.LoadedTextureId = prim.TextureId;
+                state.LoadedMaterialId = prim.RenderMaterialId;
+                if (prim.TextureId != Guid.Empty || prim.RenderMaterialId != Guid.Empty)
+                {
+                    _ = LoadAndApplyMaterialAsync(state, prim.TextureId, prim.RenderMaterialId, new Godot.Color(prim.ColorTint.X, prim.ColorTint.Y, prim.ColorTint.Z, prim.ColorTint.W));
+                }
             }
 
             state.MeshInstance.Scale = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y);

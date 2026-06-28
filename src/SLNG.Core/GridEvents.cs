@@ -18,7 +18,15 @@ public interface IWorldEvent
 public record ChatMessageEvent(string FromName, string Message, byte ChatType);
 
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
-public record ObjectUpdateEvent(ulong RegionHandle, uint LocalId, Vector3 Position, Quaternion Rotation, Vector3 Scale, byte ProfileCurve, bool IsMesh, Guid MeshId, Guid TextureId, Guid RenderMaterialId, Vector4 ColorTint) : IWorldEvent;
+/// <param name="ParentLocalId">Local ID of the parent object, or 0 if unparented.</param>
+/// <param name="AttachmentPoint">SL AttachmentPoint enum byte value; non-zero when the object
+/// is worn on an avatar (i.e. ParentLocalId is an avatar's LocalId).</param>
+public record ObjectUpdateEvent(
+    ulong RegionHandle, uint LocalId,
+    Vector3 Position, Quaternion Rotation, Vector3 Scale,
+    byte ProfileCurve, bool IsMesh, Guid MeshId, Guid TextureId, Guid RenderMaterialId, Vector4 ColorTint,
+    uint ParentLocalId, byte AttachmentPoint
+) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar.</summary>
 public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent) : IWorldEvent;
@@ -40,3 +48,6 @@ public record RegionDisconnectedEvent(ulong RegionHandle) : IWorldEvent;
 
 /// <summary>Represents an update to an avatar's visual appearance and baked textures.</summary>
 public record AvatarAppearanceEvent(ulong RegionHandle, Guid AgentId, byte[] VisualParams, Dictionary<int, Guid> BakedTextures) : IWorldEvent;
+
+/// <summary>Represents the set of animations currently playing on an avatar.</summary>
+public record AvatarAnimationEvent(Guid AgentId, List<Guid> AnimationIds) : IWorldEvent;

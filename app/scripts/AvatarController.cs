@@ -19,6 +19,17 @@ public partial class AvatarController : Camera3D
     private Vector3 _lastCameraRot;
     private float _zoom = 4.0f;
 
+    // Alt+LMB orbit state. The orbit offsets rotate the CAMERA around the avatar
+    // without changing the avatar's facing (_yaw/_pitch). They snap back to 0 when
+    // the avatar moves, so the camera returns behind the avatar — SL-style.
+    private bool _altOrbitActive = false;
+    private float _orbitYaw = 0f;
+    private float _orbitPitch = 0f;
+
+    // Fly mode: Home toggles; pressing E (up) also engages it. While flying, gravity is
+    // suspended and E/C move vertically. Landing on the ground leaves fly mode.
+    private bool _flying = false;
+
     public void Initialize(World world, GridSession session)
     {
         _world = world;
@@ -31,19 +42,41 @@ public partial class AvatarController : Camera3D
         Input.MouseMode = Input.MouseModeEnum.Visible;
     }
 
-    public override void _UnhandledInput(InputEvent @event)
+    public override void _Input(InputEvent @event)
     {
-        // Orbit camera with Right Mouse Button
+        // Home toggles fly mode (SL convention).
+        if (@event is InputEventKey keyEvt && keyEvt.Pressed && !keyEvt.Echo && keyEvt.Keycode == Key.Home)
+        {
+            _flying = !_flying;
+            GD.Print($"[AvatarController] Flying: {(_flying ? "ON" : "off")}");
+        }
+
         if (@event is InputEventMouseButton mouseBtn)
         {
             if (mouseBtn.ButtonIndex == MouseButton.Right)
             {
+                // RMB: orbit (existing behaviour)
                 if (mouseBtn.Pressed)
                     Input.MouseMode = Input.MouseModeEnum.Captured;
-                else
+                else if (!_altOrbitActive)
                     Input.MouseMode = Input.MouseModeEnum.Visible;
             }
-            // Mouse wheel zoom
+            else if (mouseBtn.ButtonIndex == MouseButton.Left)
+            {
+                // Alt+LMB: orbit around avatar (SL-style).
+                // Use the event's AltPressed flag — Input.IsKeyPressed(Key.Alt) is
+                // unreliable inside _UnhandledInput on some platforms.
+                if (mouseBtn.Pressed && mouseBtn.AltPressed)
+                {
+                    _altOrbitActive = true;
+                    Input.MouseMode = Input.MouseModeEnum.Captured;
+                }
+                else if (!mouseBtn.Pressed && _altOrbitActive)
+                {
+                    _altOrbitActive = false;
+                    Input.MouseMode = Input.MouseModeEnum.Visible;
+                }
+            }
             else if (mouseBtn.ButtonIndex == MouseButton.WheelUp)
             {
                 _zoom = Mathf.Max(0.5f, _zoom - 0.5f);
@@ -56,13 +89,29 @@ public partial class AvatarController : Camera3D
 
         if (@event is InputEventMouseMotion mouseMotion && Input.MouseMode == Input.MouseModeEnum.Captured)
         {
-            // Mouse look
             float sensitivity = 0.003f;
-            _yaw -= mouseMotion.Relative.X * sensitivity;
-            _pitch -= mouseMotion.Relative.Y * sensitivity;
-
-            // Clamp pitch to avoid flipping over
-            _pitch = Mathf.Clamp(_pitch, -1.5f, 1.5f);
+            if (_altOrbitActive)
+            {
+                // Exit alt-orbit if Alt is no longer held during motion
+                if (!mouseMotion.AltPressed)
+                {
+                    _altOrbitActive = false;
+                    Input.MouseMode = Input.MouseModeEnum.Visible;
+                    return;
+                }
+                // Orbit the camera only — do NOT touch _yaw/_pitch so the avatar
+                // keeps facing where it was.
+                _orbitYaw   -= mouseMotion.Relative.X * sensitivity;
+                _orbitPitch -= mouseMotion.Relative.Y * sensitivity;
+                _orbitPitch  = Mathf.Clamp(_orbitPitch, -1.4f, 1.4f);
+            }
+            else
+            {
+                // RMB free-look: turns the avatar with the camera.
+                _yaw   -= mouseMotion.Relative.X * sensitivity;
+                _pitch -= mouseMotion.Relative.Y * sensitivity;
+                _pitch  = Mathf.Clamp(_pitch, -1.5f, 1.5f);
+            }
         }
     }
 
@@ -84,13 +133,27 @@ public partial class AvatarController : Camera3D
                 bool isBack = Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S);
                 bool isLeft = Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A);
                 bool isRight = Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D);
+                bool isUp = Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up");
+                bool isDown = Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down");
+
+                // Pressing up engages fly automatically (matches the "E = go up" instinct);
+                // Home toggles it off. See _Input.
+                if (isUp && !_flying) _flying = true;
 
                 // In SL/Firestorm, A and D turn the avatar when not strafing
                 if (isLeft) _yaw += 2.5f * (float)delta;
                 if (isRight) _yaw -= 2.5f * (float)delta;
 
-                // Apply rotation continuously
-                Rotation = new Vector3(_pitch, _yaw, 0);
+                // Any movement/turn snaps the orbit camera back behind the avatar.
+                if (isFwd || isBack || isLeft || isRight)
+                {
+                    _orbitYaw = 0f;
+                    _orbitPitch = 0f;
+                }
+
+                // Camera rotation = avatar facing (_yaw/_pitch) plus the orbit offset.
+                // The orbit offset moves the camera around the avatar without turning it.
+                Rotation = new Vector3(_pitch + _orbitPitch, _yaw + _orbitYaw, 0);
 
                 var godotMoveDir = new Vector3();
                 if (isFwd) godotMoveDir += -Transform.Basis.Z;
@@ -101,7 +164,7 @@ public partial class AvatarController : Camera3D
 
                 if (godotMoveDir.LengthSquared() > 0)
                 {
-                    float speed = 4.0f; // SL walk speed is roughly 3-4 m/s
+                    float speed = _flying ? 12.0f : 4.0f; // fly faster than walk
                     float slDx = godotMoveDir.X * speed * (float)delta; // Godot Right (+X) is SL East (+X)
                     float slDy = -godotMoveDir.Z * speed * (float)delta; // Godot Forward (-Z) is SL North (+Y)
                     float slDz = godotMoveDir.Y * speed * (float)delta;
@@ -109,14 +172,33 @@ public partial class AvatarController : Camera3D
                     transform.Position += new System.Numerics.Vector3(slDx, slDy, slDz);
                 }
 
-                // Terrain collision and gravity (apply regardless of input)
+                // Vertical movement while flying (E up / C down).
+                if (_flying && (isUp || isDown))
+                {
+                    float vspeed = 8.0f;
+                    float dz = (isUp ? vspeed : 0f) - (isDown ? vspeed : 0f);
+                    transform.Position = new System.Numerics.Vector3(
+                        transform.Position.X, transform.Position.Y, transform.Position.Z + dz * (float)delta);
+                }
+
+                // Terrain floor. Walking snaps to the ground and applies gravity; flying just
+                // refuses to sink below the ground (so it holds altitude instead of falling).
                 if (_world.Terrains.TryGetValue(localAgent.RegionHandle, out var terrain))
                 {
                     int tx = (int)Mathf.Clamp(transform.Position.X, 0, terrain.Width - 1);
                     int ty = (int)Mathf.Clamp(transform.Position.Y, 0, terrain.Height - 1);
                     float groundHeight = terrain.GetHeights()[ty * terrain.Width + tx];
-                    
-                    if (transform.Position.Z < groundHeight)
+
+                    if (_flying)
+                    {
+                        if (transform.Position.Z < groundHeight)
+                        {
+                            // Touched down — land and leave fly mode.
+                            transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, groundHeight);
+                            _flying = false;
+                        }
+                    }
+                    else if (transform.Position.Z < groundHeight)
                     {
                         // Push up out of terrain
                         transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, groundHeight);
@@ -152,7 +234,7 @@ public partial class AvatarController : Camera3D
         bool left = Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A);
         bool right = Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D);
         bool up = Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up");
-        bool down = Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down");
+        bool down = Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down");
 
         var curRot = Rotation;
         
@@ -163,12 +245,11 @@ public partial class AvatarController : Camera3D
         {
             _timeSinceLastUpdate = 0;
 
-            // The camera's Quaternion is Godot's space. We need SL space.
-            // SL uses Z up, X forward, Y left. Godot uses Y up, -Z forward, X right.
-            // Godot's default forward (-Z) maps to SL's Y axis (North).
-            // But SL's default forward is the X axis (East).
-            // So we must rotate the SL quaternion by +90 degrees around Z to align them.
-            var godotQuat = Quaternion;
+            // Avatar facing comes from _yaw ONLY — never the camera's full orientation.
+            // Using the camera quaternion would fold the orbit offset and pitch into the
+            // avatar's facing, making it spin/tilt while orbiting. A yaw-only quaternion
+            // keeps the avatar upright and facing where the player aims.
+            var godotQuat = Quaternion.FromEuler(new Vector3(0, _yaw, 0));
             var slQuat = new System.Numerics.Quaternion(godotQuat.X, -godotQuat.Z, godotQuat.Y, godotQuat.W);
             var offset = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, (float)System.Math.PI / 2.0f);
             var finalQuat = offset * slQuat;
@@ -185,7 +266,7 @@ public partial class AvatarController : Camera3D
             }
 
             // We pass false for left/right because A/D are turning now, not strafing
-            _session.SetMovement(fwd, back, false, false, up, down, finalQuat);
+            _session.SetMovement(fwd, back, false, false, up, down, finalQuat, _flying);
         }
     }
 }

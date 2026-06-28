@@ -21,6 +21,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<TerrainSettingsEvent>? TerrainSettingsReceived;
     public event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
     public event EventHandler<AvatarAppearanceEvent>? AvatarAppearanceReceived;
+    public event EventHandler<AvatarAnimationEvent>? AvatarAnimationReceived;
 
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
@@ -30,6 +31,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     internal void RaiseTerrainSettings(TerrainSettingsEvent e) => TerrainSettingsReceived?.Invoke(this, e);
     internal void RaiseRegionDisconnected(RegionDisconnectedEvent e) => RegionDisconnectedReceived?.Invoke(this, e);
     internal void RaiseAvatarAppearance(AvatarAppearanceEvent e) => AvatarAppearanceReceived?.Invoke(this, e);
+    internal void RaiseAvatarAnimation(AvatarAnimationEvent e) => AvatarAnimationReceived?.Invoke(this, e);
 
     public GridSession()
     {
@@ -44,6 +46,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Network.SimConnected += OnSimConnected;
         _client.Network.SimDisconnected += OnSimDisconnected;
         _client.Avatars.AvatarAppearance += OnAvatarAppearance;
+        _client.Avatars.AvatarAnimation += OnAvatarAnimation;
     }
 
     private void OnSimConnected(object? sender, LibreMetaverse.SimConnectedEventArgs e)
@@ -105,6 +108,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         ));
     }
 
+    private void OnAvatarAnimation(object? sender, LibreMetaverse.AvatarAnimationEventArgs e)
+    {
+        var animIds = new List<Guid>(e.Animations.Count);
+        foreach (var anim in e.Animations)
+        {
+            animIds.Add(anim.AnimationID.Guid);
+        }
+
+        AvatarAnimationReceived?.Invoke(this, new AvatarAnimationEvent(
+            e.AvatarID.Guid,
+            animIds
+        ));
+    }
+
     private void OnObjectUpdate(object? sender, PrimEventArgs e)
     {
         bool isMesh = false;
@@ -139,7 +156,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             meshId,
             textureId,
             renderMaterialId,
-            colorTint));
+            colorTint,
+            e.Prim.ParentID,
+            (byte)e.Prim.PrimData.AttachmentPoint));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)
@@ -240,7 +259,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>Sends an AgentUpdate to move the avatar.</summary>
-    public void SetMovement(bool forward, bool backward, bool left, bool right, bool up, bool down, System.Numerics.Quaternion cameraRotation)
+    public void SetMovement(bool forward, bool backward, bool left, bool right, bool up, bool down, System.Numerics.Quaternion cameraRotation, bool fly = false)
     {
         if (!_client.Network.Connected) return;
 
@@ -259,6 +278,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Self.Movement.LeftNeg = right;
         _client.Self.Movement.UpPos = up;
         _client.Self.Movement.UpNeg = down;
+        _client.Self.Movement.Fly = fly;
 
         // Send the update to the server
         _client.Self.Movement.SendUpdate(false);
@@ -298,6 +318,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             .RequestAssetAsync(new UUID(materialId), AssetType.Material, true, CancellationToken.None)
             .ConfigureAwait(false);
         return asset as LibreMetaverse.Assets.AssetMaterial;
+    }
+
+    /// <summary>
+    /// Fetches the raw bytes of an animation asset from the simulator.
+    /// </summary>
+    public async Task<byte[]?> FetchAnimationDataAsync(Guid animId)
+    {
+        var asset = await _client.Assets
+            .RequestAssetAsync(new UUID(animId), AssetType.Animation, true, CancellationToken.None)
+            .ConfigureAwait(false);
+        return asset?.AssetData;
     }
 
     public void Dispose()

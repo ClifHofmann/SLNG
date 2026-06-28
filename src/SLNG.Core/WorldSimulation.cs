@@ -32,6 +32,7 @@ public sealed class WorldSimulation : IDisposable
         _source.TerrainSettingsReceived += OnTerrainSettings;
         _source.RegionDisconnectedReceived += OnRegionDisconnected;
         _source.AvatarAppearanceReceived += OnAvatarAppearance;
+        _source.AvatarAnimationReceived += OnAvatarAnimation;
     }
 
     // These run on background network threads: enqueue only, never touch the world.
@@ -42,6 +43,7 @@ public sealed class WorldSimulation : IDisposable
     private void OnTerrainSettings(object? sender, TerrainSettingsEvent e) => _pending.Enqueue(e);
     private void OnRegionDisconnected(object? sender, RegionDisconnectedEvent e) => _pending.Enqueue(e);
     private void OnAvatarAppearance(object? sender, AvatarAppearanceEvent e) => _pending.Enqueue(e);
+    private void OnAvatarAnimation(object? sender, AvatarAnimationEvent e) => _pending.Enqueue(e);
 
     /// <summary>
     /// Applies all queued world events to the world. Call once per frame on the main
@@ -60,6 +62,7 @@ public sealed class WorldSimulation : IDisposable
                 case TerrainSettingsEvent e: ApplyTerrainSettings(e); break;
                 case RegionDisconnectedEvent e: _world.RemoveRegion(e.RegionHandle); break;
                 case AvatarAppearanceEvent e: ApplyAvatarAppearance(e); break;
+                case AvatarAnimationEvent e: ApplyAvatarAnimation(e); break;
             }
         }
     }
@@ -100,6 +103,28 @@ public sealed class WorldSimulation : IDisposable
             entity.SetComponent(prim);
         }
         _world.NotifyComponentUpdated(entity, prim);
+
+        // When the object has a parent, check if the parent is an avatar; if so mark
+        // this entity as an attachment so the renderer can wire it to the correct bone.
+        if (e.ParentLocalId != 0)
+        {
+            var parentEntity = _world.GetEntity(e.RegionHandle, e.ParentLocalId);
+            if (parentEntity?.GetComponent<AvatarComponent>() != null)
+            {
+                var attachment = entity.GetComponent<AttachmentComponent>();
+                if (attachment == null)
+                {
+                    attachment = new AttachmentComponent(parentEntity.Id, e.AttachmentPoint);
+                    entity.SetComponent(attachment);
+                }
+                else
+                {
+                    attachment.AvatarEntityId = parentEntity.Id;
+                    attachment.AttachmentPoint = e.AttachmentPoint;
+                }
+                _world.NotifyComponentUpdated(entity, attachment);
+            }
+        }
     }
 
     private void ApplyAvatarUpdate(AvatarUpdateEvent e)
@@ -152,6 +177,20 @@ public sealed class WorldSimulation : IDisposable
         }
     }
 
+    private void ApplyAvatarAnimation(AvatarAnimationEvent e)
+    {
+        var entity = _world.Query<AvatarComponent>()
+            .FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.AgentId == e.AgentId);
+
+        if (entity != null)
+        {
+            var avatar = entity.GetComponent<AvatarComponent>()!;
+            avatar.ActiveAnimations = e.AnimationIds;
+            entity.SetComponent(avatar);
+            _world.NotifyComponentUpdated(entity, avatar);
+        }
+    }
+
     private void ApplyTerrainPatch(TerrainPatchEvent e)
     {
         var terrain = _world.GetOrCreateTerrain(e.RegionHandle);
@@ -182,5 +221,6 @@ public sealed class WorldSimulation : IDisposable
         _source.TerrainPatchReceived -= OnTerrainPatch;
         _source.TerrainSettingsReceived -= OnTerrainSettings;
         _source.RegionDisconnectedReceived -= OnRegionDisconnected;
+        _source.AvatarAnimationReceived -= OnAvatarAnimation;
     }
 }

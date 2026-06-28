@@ -16,4 +16,5 @@ public interface IWorldEventSource
     event EventHandler<TerrainSettingsEvent>? TerrainSettingsReceived;
     event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
     event EventHandler<AvatarAppearanceEvent>? AvatarAppearanceReceived;
+    event EventHandler<AvatarAnimationEvent>? AvatarAnimationReceived;
 }

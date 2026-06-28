@@ -30,6 +30,7 @@ public class AvatarComponent : IComponent
     public bool IsLocalAgent { get; set; }
     public byte[]? VisualParams { get; set; }
     public Dictionary<int, Guid>? BakedTextures { get; set; }
+    public List<Guid>? ActiveAnimations { get; set; }
 
     public AvatarComponent(Guid agentId, string firstName, string lastName, bool isLocalAgent)
     {
