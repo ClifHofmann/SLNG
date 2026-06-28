@@ -641,6 +641,8 @@ public partial class AvatarRenderer : Node3D
     {
         if (_assetService == null) return;
 
+        GD.Print($"[AvatarRenderer] Loading {animIds.Count} animation(s): {string.Join(", ", animIds)}");
+
         var loaded = new List<(Guid id, AnimationData data)>();
         foreach (var animId in animIds)
         {
@@ -649,7 +651,12 @@ public partial class AvatarRenderer : Node3D
                 var data = await _assetService.GetAnimationAsync(animId);
                 if (data != null)
                 {
+                    GD.Print($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints, {data.Length:F2}s");
                     loaded.Add((animId, data));
+                }
+                else
+                {
+                    GD.PrintErr($"[AvatarRenderer] Animation {animId}: fetch returned null (not in grid assets?)");
                 }
             }
             catch (Exception ex)
@@ -657,6 +664,8 @@ public partial class AvatarRenderer : Node3D
                 GD.PrintErr($"[AvatarRenderer] Failed to fetch animation {animId}: {ex.Message}");
             }
         }
+
+        GD.Print($"[AvatarRenderer] Starting {loaded.Count}/{animIds.Count} animation(s)");
 
         // Apply on main thread via CallDeferred
         Godot.Callable.From(() => {

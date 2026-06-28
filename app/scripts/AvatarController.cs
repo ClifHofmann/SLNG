@@ -19,6 +19,9 @@ public partial class AvatarController : Camera3D
     private Vector3 _lastCameraRot;
     private float _zoom = 4.0f;
 
+    // Alt+LMB orbit state
+    private bool _altOrbitActive = false;
+
     public void Initialize(World world, GridSession session)
     {
         _world = world;
@@ -33,15 +36,31 @@ public partial class AvatarController : Camera3D
 
     public override void _UnhandledInput(InputEvent @event)
     {
-        // Orbit camera with Right Mouse Button
+        bool altHeld = Input.IsKeyPressed(Key.Alt);
+
         if (@event is InputEventMouseButton mouseBtn)
         {
             if (mouseBtn.ButtonIndex == MouseButton.Right)
             {
+                // RMB: orbit (existing behaviour)
                 if (mouseBtn.Pressed)
                     Input.MouseMode = Input.MouseModeEnum.Captured;
-                else
+                else if (!_altOrbitActive)
                     Input.MouseMode = Input.MouseModeEnum.Visible;
+            }
+            else if (mouseBtn.ButtonIndex == MouseButton.Left)
+            {
+                // Alt+LMB: orbit around avatar (SL-style)
+                if (mouseBtn.Pressed && altHeld)
+                {
+                    _altOrbitActive = true;
+                    Input.MouseMode = Input.MouseModeEnum.Captured;
+                }
+                else if (!mouseBtn.Pressed && _altOrbitActive)
+                {
+                    _altOrbitActive = false;
+                    Input.MouseMode = Input.MouseModeEnum.Visible;
+                }
             }
             // Mouse wheel zoom
             else if (mouseBtn.ButtonIndex == MouseButton.WheelUp)
@@ -54,14 +73,18 @@ public partial class AvatarController : Camera3D
             }
         }
 
+        // Release Alt-orbit if Alt key is released while mouse is captured
+        if (@event is InputEventKey keyEvt && !keyEvt.Pressed && keyEvt.Keycode == Key.Alt && _altOrbitActive)
+        {
+            _altOrbitActive = false;
+            Input.MouseMode = Input.MouseModeEnum.Visible;
+        }
+
         if (@event is InputEventMouseMotion mouseMotion && Input.MouseMode == Input.MouseModeEnum.Captured)
         {
-            // Mouse look
             float sensitivity = 0.003f;
             _yaw -= mouseMotion.Relative.X * sensitivity;
             _pitch -= mouseMotion.Relative.Y * sensitivity;
-
-            // Clamp pitch to avoid flipping over
             _pitch = Mathf.Clamp(_pitch, -1.5f, 1.5f);
         }
     }
