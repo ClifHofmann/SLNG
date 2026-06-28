@@ -111,8 +111,14 @@ public partial class AvatarRenderer : Node3D
             visual.Root.AddChild(skeleton);
             visual.Skeleton = skeleton;
 
-            // Try to load real SL base-avatar meshes (LGPL, shipped via LibreMetaverse NuGet).
-            var charDir = Path.Combine(AppContext.BaseDirectory, "linden", "character");
+            // The LibreMetaverse NuGet package deploys .llm character files to the
+            // assembly output directory (linden/character/*.llm). Use the assembly
+            // location rather than AppContext.BaseDirectory — in the Godot editor the
+            // latter resolves to the editor executable directory, not the build output.
+            var asmDir = System.IO.Path.GetDirectoryName(
+                typeof(AvatarBodyMeshService).Assembly.Location) ?? AppContext.BaseDirectory;
+            var charDir = System.IO.Path.Combine(asmDir, "linden", "character");
+            GD.Print($"[AvatarRenderer] character dir: {charDir}");
             var bodyData = AvatarBodyMeshService.Load(charDir);
 
             if (bodyData != null)
