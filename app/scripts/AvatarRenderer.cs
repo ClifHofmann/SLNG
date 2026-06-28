@@ -19,6 +19,7 @@ public partial class AvatarRenderer : Node3D
         public Dictionary<int, Guid> LoadedTextures { get; } = new();
         public AvatarAnimationPlayer AnimPlayer { get; } = new();
         public List<Guid>? LoadedAnimationIds { get; set; }
+        public byte[]? LastAppliedVisualParams { get; set; }
 
         public AvatarVisual()
         {
@@ -210,9 +211,13 @@ public partial class AvatarRenderer : Node3D
             visual.Root.Quaternion = slQuat;
         }
 
-        // 2. Apply Shape Morphs (Skeletal Distortions)
-        if (visual.Skeleton != null && _avatarSkeleton != null && avatar.VisualParams != null)
+        // 2. Apply Shape Morphs (Skeletal Distortions) — only when params actually changed.
+        // ResetBonePoses() wipes all animation poses, so calling it every frame (via
+        // frequent AvatarAnimationEvents) would keep the skeleton stuck in T-pose.
+        if (visual.Skeleton != null && _avatarSkeleton != null && avatar.VisualParams != null
+            && !avatar.VisualParams.SequenceEqual(visual.LastAppliedVisualParams ?? Array.Empty<byte>()))
         {
+            visual.LastAppliedVisualParams = avatar.VisualParams;
             var distortions = AvatarShapeService.ComputeDistortions(avatar.VisualParams);
             ApplyShape(visual.Skeleton, _avatarSkeleton, distortions);
             visual.Skeleton.ResetBonePoses();

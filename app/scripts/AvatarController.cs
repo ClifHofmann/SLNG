@@ -36,8 +36,6 @@ public partial class AvatarController : Camera3D
 
     public override void _UnhandledInput(InputEvent @event)
     {
-        bool altHeld = Input.IsKeyPressed(Key.Alt);
-
         if (@event is InputEventMouseButton mouseBtn)
         {
             if (mouseBtn.ButtonIndex == MouseButton.Right)
@@ -50,8 +48,10 @@ public partial class AvatarController : Camera3D
             }
             else if (mouseBtn.ButtonIndex == MouseButton.Left)
             {
-                // Alt+LMB: orbit around avatar (SL-style)
-                if (mouseBtn.Pressed && altHeld)
+                // Alt+LMB: orbit around avatar (SL-style).
+                // Use the event's AltPressed flag — Input.IsKeyPressed(Key.Alt) is
+                // unreliable inside _UnhandledInput on some platforms.
+                if (mouseBtn.Pressed && mouseBtn.AltPressed)
                 {
                     _altOrbitActive = true;
                     Input.MouseMode = Input.MouseModeEnum.Captured;
@@ -62,7 +62,6 @@ public partial class AvatarController : Camera3D
                     Input.MouseMode = Input.MouseModeEnum.Visible;
                 }
             }
-            // Mouse wheel zoom
             else if (mouseBtn.ButtonIndex == MouseButton.WheelUp)
             {
                 _zoom = Mathf.Max(0.5f, _zoom - 0.5f);
@@ -73,15 +72,15 @@ public partial class AvatarController : Camera3D
             }
         }
 
-        // Release Alt-orbit if Alt key is released while mouse is captured
-        if (@event is InputEventKey keyEvt && !keyEvt.Pressed && keyEvt.Keycode == Key.Alt && _altOrbitActive)
-        {
-            _altOrbitActive = false;
-            Input.MouseMode = Input.MouseModeEnum.Visible;
-        }
-
         if (@event is InputEventMouseMotion mouseMotion && Input.MouseMode == Input.MouseModeEnum.Captured)
         {
+            // Exit alt-orbit if Alt is no longer held during motion
+            if (_altOrbitActive && !mouseMotion.AltPressed)
+            {
+                _altOrbitActive = false;
+                Input.MouseMode = Input.MouseModeEnum.Visible;
+                return;
+            }
             float sensitivity = 0.003f;
             _yaw -= mouseMotion.Relative.X * sensitivity;
             _pitch -= mouseMotion.Relative.Y * sensitivity;
