@@ -24,7 +24,12 @@ public static class AnimationDecodeService
     /// </summary>
     public static AnimationData? Decode(byte[] animationBytes)
     {
-        if (animationBytes == null || animationBytes.Length < 4)
+        // SL binary BVH header is at least 41 bytes (version 2 + sub_version 2 +
+        // base_priority 4 + duration 4 + emote_name ≥1 + loop_in 4 + loop_out 4 +
+        // loop 4 + ease_in 4 + ease_out 4 + hand_pose 4 + num_joints 4). Reject
+        // anything shorter before handing it to BinBVHAnimationReader, which would
+        // otherwise read garbage field lengths and attempt huge allocations.
+        if (animationBytes == null || animationBytes.Length < 40)
             return null;
 
         try
@@ -32,8 +37,12 @@ public static class AnimationDecodeService
             var reader = new BinBVHAnimationReader(animationBytes);
             return Convert(reader);
         }
-        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        catch (Exception ex) when (ex is not StackOverflowException)
         {
+            // OutOfMemoryException is included here: BinBVHAnimationReader can allocate
+            // enormous arrays when given corrupted length fields, producing a spurious
+            // OOM that is indistinguishable from a genuine low-memory condition. For an
+            // asset decoder, the correct response to either case is null (skip asset).
             Console.Error.WriteLine($"[AnimationDecodeService] Failed to decode animation: {ex.Message}");
             return null;
         }
