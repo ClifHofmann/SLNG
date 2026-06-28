@@ -139,7 +139,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             meshId,
             textureId,
             renderMaterialId,
-            colorTint));
+            colorTint,
+            e.Prim.ParentID,
+            (byte)e.Prim.PrimData.AttachmentPoint));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)

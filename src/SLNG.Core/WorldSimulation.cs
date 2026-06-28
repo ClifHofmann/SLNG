@@ -100,6 +100,28 @@ public sealed class WorldSimulation : IDisposable
             entity.SetComponent(prim);
         }
         _world.NotifyComponentUpdated(entity, prim);
+
+        // When the object has a parent, check if the parent is an avatar; if so mark
+        // this entity as an attachment so the renderer can wire it to the correct bone.
+        if (e.ParentLocalId != 0)
+        {
+            var parentEntity = _world.GetEntity(e.RegionHandle, e.ParentLocalId);
+            if (parentEntity?.GetComponent<AvatarComponent>() != null)
+            {
+                var attachment = entity.GetComponent<AttachmentComponent>();
+                if (attachment == null)
+                {
+                    attachment = new AttachmentComponent(parentEntity.Id, e.AttachmentPoint);
+                    entity.SetComponent(attachment);
+                }
+                else
+                {
+                    attachment.AvatarEntityId = parentEntity.Id;
+                    attachment.AttachmentPoint = e.AttachmentPoint;
+                }
+                _world.NotifyComponentUpdated(entity, attachment);
+            }
+        }
     }
 
     private void ApplyAvatarUpdate(AvatarUpdateEvent e)

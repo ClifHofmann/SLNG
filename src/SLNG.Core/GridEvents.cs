@@ -18,7 +18,15 @@ public interface IWorldEvent
 public record ChatMessageEvent(string FromName, string Message, byte ChatType);
 
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
-public record ObjectUpdateEvent(ulong RegionHandle, uint LocalId, Vector3 Position, Quaternion Rotation, Vector3 Scale, byte ProfileCurve, bool IsMesh, Guid MeshId, Guid TextureId, Guid RenderMaterialId, Vector4 ColorTint) : IWorldEvent;
+/// <param name="ParentLocalId">Local ID of the parent object, or 0 if unparented.</param>
+/// <param name="AttachmentPoint">SL AttachmentPoint enum byte value; non-zero when the object
+/// is worn on an avatar (i.e. ParentLocalId is an avatar's LocalId).</param>
+public record ObjectUpdateEvent(
+    ulong RegionHandle, uint LocalId,
+    Vector3 Position, Quaternion Rotation, Vector3 Scale,
+    byte ProfileCurve, bool IsMesh, Guid MeshId, Guid TextureId, Guid RenderMaterialId, Vector4 ColorTint,
+    uint ParentLocalId, byte AttachmentPoint
+) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar.</summary>
 public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent) : IWorldEvent;

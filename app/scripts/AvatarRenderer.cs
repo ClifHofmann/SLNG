@@ -30,6 +30,8 @@ public partial class AvatarRenderer : Node3D
     private GpuCache? _gpuCache;
     private AvatarSkeleton? _avatarSkeleton;
     private readonly Dictionary<Guid, AvatarVisual> _visuals = new();
+    // attachment entity ID → BoneAttachment3D node parented to the avatar skeleton
+    private readonly Dictionary<Guid, BoneAttachment3D> _attachmentNodes = new();
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache)
     {
@@ -75,7 +77,10 @@ public partial class AvatarRenderer : Node3D
 
     private void OnComponentUpdated(object? sender, ComponentEventArgs e)
     {
-        CallDeferred(nameof(UpdateVisual), e.Entity.Id.ToString());
+        if (e.Component is AttachmentComponent)
+            CallDeferred(nameof(UpdateAttachment), e.Entity.Id.ToString());
+        else
+            CallDeferred(nameof(UpdateVisual), e.Entity.Id.ToString());
     }
 
     private void CreateVisual(string entityIdStr)
@@ -176,6 +181,11 @@ public partial class AvatarRenderer : Node3D
         {
             visual.QueueFree();
             _visuals.Remove(entityId);
+        }
+        if (_attachmentNodes.TryGetValue(entityId, out var attachNode))
+        {
+            attachNode.QueueFree();
+            _attachmentNodes.Remove(entityId);
         }
     }
 
@@ -331,6 +341,121 @@ public partial class AvatarRenderer : Node3D
                     }
                 }
             }
+        }).CallDeferred();
+    }
+
+    private void UpdateAttachment(string entityIdStr)
+    {
+        if (!Guid.TryParse(entityIdStr, out var entityId)) return;
+        if (_world == null) return;
+
+        var entity = _world.GetEntity(entityId);
+        if (entity == null) return;
+
+        var attachment = entity.GetComponent<AttachmentComponent>();
+        if (attachment == null) return;
+
+        // HUD and unmapped points have no world bone.
+        var boneName = AttachmentPointMap.GetBoneName(attachment.AttachmentPoint);
+        if (boneName == null) return;
+
+        // Avatar must already be rendered.
+        if (!_visuals.TryGetValue(attachment.AvatarEntityId, out var avatarVisual)) return;
+        if (avatarVisual.Skeleton == null) return;
+
+        // Re-use existing node or create a new BoneAttachment3D on the avatar skeleton.
+        if (!_attachmentNodes.TryGetValue(entityId, out var boneAttach))
+        {
+            boneAttach = new BoneAttachment3D { Name = $"WornItem_{entityId:N}" };
+            int boneIdx = avatarVisual.Skeleton.FindBone(boneName);
+            if (boneIdx >= 0) boneAttach.BoneIdx = boneIdx;
+            boneAttach.BoneName = boneName;
+            avatarVisual.Skeleton.AddChild(boneAttach);
+            _attachmentNodes[entityId] = boneAttach;
+
+            // Kick off mesh/texture load for mesh attachments.
+            var prim = entity.GetComponent<PrimitiveComponent>();
+            if (prim != null)
+            {
+                if (prim.IsMesh && prim.MeshId != Guid.Empty)
+                {
+                    _ = LoadAndApplyAttachmentMeshAsync(boneAttach, prim.MeshId, prim.TextureId,
+                        new System.Numerics.Vector3(prim.Scale.X, prim.Scale.Y, prim.Scale.Z));
+                }
+                else
+                {
+                    // Prim attachment: show a scaled box placeholder.
+                    var color = new Color(prim.ColorTint.X, prim.ColorTint.Y, prim.ColorTint.Z, prim.ColorTint.W);
+                    var box = new MeshInstance3D
+                    {
+                        Name = "AttachBox",
+                        Mesh = new BoxMesh { Size = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y) },
+                        MaterialOverride = new StandardMaterial3D { AlbedoColor = color }
+                    };
+                    boneAttach.AddChild(box);
+                }
+            }
+        }
+    }
+
+    private async System.Threading.Tasks.Task LoadAndApplyAttachmentMeshAsync(
+        BoneAttachment3D boneAttach, Guid meshId, Guid textureId, System.Numerics.Vector3 slScale)
+    {
+        if (_assetService == null) return;
+
+        var meshData = await _assetService.GetMeshAsync(meshId).ConfigureAwait(false);
+        if (meshData == null) return;
+
+        Godot.Callable.From(() =>
+        {
+            if (!IsInstanceValid(boneAttach)) return;
+
+            var arrayMesh = new ArrayMesh();
+            foreach (var sub in meshData.Submeshes)
+            {
+                if (sub.Indices.Length == 0) continue;
+                var st = new SurfaceTool();
+                st.Begin(Mesh.PrimitiveType.Triangles);
+                foreach (int idx in sub.Indices)
+                {
+                    var p = sub.Positions[idx];
+                    var n = sub.Normals[idx];
+                    var uv = sub.UVs[idx];
+                    st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+                    st.SetUV(new Godot.Vector2(uv.X, uv.Y));
+                    st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
+                }
+                st.GenerateTangents();
+                st.Commit(arrayMesh);
+            }
+
+            var mi = new MeshInstance3D { Name = "AttachMesh", Mesh = arrayMesh };
+            boneAttach.AddChild(mi);
+
+            if (textureId != Guid.Empty)
+                _ = LoadAndApplyAttachmentTextureAsync(mi, textureId);
+        }).CallDeferred();
+    }
+
+    private async System.Threading.Tasks.Task LoadAndApplyAttachmentTextureAsync(MeshInstance3D mi, Guid textureId)
+    {
+        if (_assetService == null) return;
+
+        var textureData = await _assetService.GetTextureAsync(textureId).ConfigureAwait(false);
+        if (textureData == null) return;
+
+        Godot.Callable.From(() =>
+        {
+            if (!IsInstanceValid(mi)) return;
+            var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+            var tex = ImageTexture.CreateFromImage(image);
+            if (tex == null) return;
+
+            if (_gpuCache != null)
+                _gpuCache.Put(textureId, tex, (long)textureData.Width * textureData.Height * 4);
+
+            var mat = new StandardMaterial3D { AlbedoTexture = tex };
+            mi.MaterialOverride = mat;
         }).CallDeferred();
     }
 
