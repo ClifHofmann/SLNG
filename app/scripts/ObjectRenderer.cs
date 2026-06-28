@@ -52,6 +52,29 @@ public partial class ObjectRenderer : Node3D
         CallDeferred(nameof(UpdateVisual), e.Entity.Id.ToString());
     }
 
+    private double _cullAccum = 0;
+
+    public override void _Process(double delta)
+    {
+        // Draw-distance culling: hide objects beyond the configured radius from the local
+        // agent. Throttled to ~4 Hz; objects don't move often and the agent lookup scans
+        // all entities.
+        _cullAccum += delta;
+        if (_cullAccum < 0.25) return;
+        _cullAccum = 0;
+
+        if (_world == null) return;
+        if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
+
+        float maxSq = RenderConfig.DrawDistance * RenderConfig.DrawDistance;
+        foreach (var state in _visuals.Values)
+        {
+            if (!IsInstanceValid(state.MeshInstance)) continue;
+            bool visible = state.MeshInstance.Position.DistanceSquaredTo(agentPos) <= maxSq;
+            if (state.MeshInstance.Visible != visible) state.MeshInstance.Visible = visible;
+        }
+    }
+
     private void CreateVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;

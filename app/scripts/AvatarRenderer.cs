@@ -236,8 +236,6 @@ public partial class AvatarRenderer : Node3D
         // 3. Texture streaming / Bakes-on-Mesh
         if (avatar.BakedTextures != null && _assetService != null)
         {
-            if (avatar.BakedTextures.Count > 0)
-                GD.Print($"[AvatarRenderer] Appearance: {avatar.BakedTextures.Count} bake slots received");
             foreach (var kv in avatar.BakedTextures)
             {
                 int bakeIndex = kv.Key;
@@ -666,12 +664,35 @@ public partial class AvatarRenderer : Node3D
         }
     }
 
+    private double _cullAccum = 0;
+
     public override void _Process(double delta)
     {
         float dt = (float)delta;
+
+        // Recompute draw-distance visibility a few times a second (not every frame — the
+        // agent lookup scans all entities). Animation still advances every frame, but only
+        // for avatars currently inside the draw distance.
+        _cullAccum += delta;
+        bool doCull = _cullAccum >= 0.25;
+        Godot.Vector3 agentPos = Godot.Vector3.Zero;
+        bool haveAgent = false;
+        if (doCull)
+        {
+            _cullAccum = 0;
+            haveAgent = _world != null && RenderConfig.TryGetLocalAgentGodotPos(_world, out agentPos);
+        }
+
+        float maxSq = RenderConfig.DrawDistance * RenderConfig.DrawDistance;
         foreach (var visual in _visuals.Values)
         {
-            if (visual.AnimPlayer.IsPlaying)
+            if (doCull && haveAgent)
+            {
+                bool visible = visual.Root.Position.DistanceSquaredTo(agentPos) <= maxSq;
+                if (visual.Root.Visible != visible) visual.Root.Visible = visible;
+            }
+
+            if (visual.Root.Visible && visual.AnimPlayer.IsPlaying)
             {
                 visual.AnimPlayer.Advance(dt);
             }
