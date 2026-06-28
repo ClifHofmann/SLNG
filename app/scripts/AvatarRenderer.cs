@@ -656,7 +656,7 @@ public partial class AvatarRenderer : Node3D
                 var data = await _assetService.GetAnimationAsync(animId);
                 if (data != null)
                 {
-                    GD.Print($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints, {data.Length:F2}s");
+                    GD.Print($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints, {data.Length:F2}s  joints=[{string.Join(",", System.Linq.Enumerable.Select(data.Joints, j => j.JointName))}]");
                     loaded.Add((animId, data));
                 }
                 else
