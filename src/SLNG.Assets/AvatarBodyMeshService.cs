@@ -20,11 +20,29 @@ public static class AvatarBodyMeshService
         "avatar_eye", "avatar_eyelashes", "avatar_hair"
     };
 
+    // The base body mesh is identical for every avatar, so parse the .llm files once and
+    // cache the result. Without this, each avatar that appears re-reads and re-decodes six
+    // binary meshes — on a busy region (many avatars) that blocks whatever thread calls
+    // Load. Keyed by character directory; guarded for the (unlikely) multi-thread caller.
+    private static readonly Dictionary<string, AvatarBodyMeshData?> _cache = new();
+    private static readonly object _cacheLock = new();
+
     /// <summary>
-    /// Loads all core body-part meshes from <paramref name="characterDir"/>.
-    /// Returns null if the directory or skeleton file is missing.
+    /// Loads all core body-part meshes from <paramref name="characterDir"/>, caching the
+    /// parsed result. Returns null if the directory or skeleton file is missing.
     /// </summary>
     public static AvatarBodyMeshData? Load(string characterDir)
+    {
+        lock (_cacheLock)
+        {
+            if (_cache.TryGetValue(characterDir, out var cached)) return cached;
+            var result = LoadUncached(characterDir);
+            _cache[characterDir] = result;
+            return result;
+        }
+    }
+
+    private static AvatarBodyMeshData? LoadUncached(string characterDir)
     {
         var skelFile = System.IO.Path.Combine(characterDir, "avatar_skeleton.xml");
         if (!File.Exists(skelFile))

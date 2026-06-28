@@ -18,3 +18,8 @@ config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 [dotnet]
 
 project/assembly_name="SLNG.App"
+
+[debug]
+
+file_logging/enable_file_logging=true
+file_logging/max_log_files=10

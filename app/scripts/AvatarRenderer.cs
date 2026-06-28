@@ -219,13 +219,18 @@ public partial class AvatarRenderer : Node3D
         // 2. Apply Shape Morphs (Skeletal Distortions) — only when params actually changed.
         // ResetBonePoses() wipes all animation poses, so calling it every frame (via
         // frequent AvatarAnimationEvents) would keep the skeleton stuck in T-pose.
-        if (visual.Skeleton != null && _avatarSkeleton != null && avatar.VisualParams != null
-            && !avatar.VisualParams.SequenceEqual(visual.LastAppliedVisualParams ?? Array.Empty<byte>()))
+        if (visual.Skeleton != null && _avatarSkeleton != null && avatar.VisualParams != null)
         {
-            visual.LastAppliedVisualParams = avatar.VisualParams;
-            var distortions = AvatarShapeService.ComputeDistortions(avatar.VisualParams);
-            ApplyShape(visual.Skeleton, _avatarSkeleton, distortions);
-            visual.Skeleton.ResetBonePoses();
+            bool needsApply = visual.LastAppliedVisualParams == null ||
+                              !avatar.VisualParams.SequenceEqual(visual.LastAppliedVisualParams);
+            
+            if (needsApply)
+            {
+                visual.LastAppliedVisualParams = avatar.VisualParams;
+                var distortions = AvatarShapeService.ComputeDistortions(avatar.VisualParams);
+                ApplyShape(visual.Skeleton, _avatarSkeleton, distortions);
+                visual.Skeleton.ResetBonePoses();
+            }
         }
 
         // 3. Texture streaming / Bakes-on-Mesh
@@ -500,17 +505,46 @@ public partial class AvatarRenderer : Node3D
     // Skinned-mesh helpers
     // -------------------------------------------------------------------------
 
+    // The base body geometry and its skin binds are identical for every avatar: the same
+    // .llm files and the same skeleton rest pose. Build the (mesh, skin) once per body part
+    // and share the resources across all avatars. Without this, every avatar that appears on
+    // a busy region re-parses the meshes and rebuilds the skin on the main thread — which is
+    // what froze the client on OSGrid. Accessed only from the main thread (CallDeferred).
+    private static readonly Dictionary<string, (ArrayMesh Mesh, Skin Skin)> _builtPartCache = new();
+
     /// <summary>
-    /// Builds a <see cref="MeshInstance3D"/> with correct per-vertex bone indices and weights
-    /// for one SL body-part mesh. The instance must be added as a DIRECT child of the
-    /// <see cref="Skeleton3D"/> for Godot's built-in skinning to take effect.
+    /// Returns a <see cref="MeshInstance3D"/> for one SL body-part mesh, with correct
+    /// per-vertex bone indices and weights. The geometry and skin are cached and shared;
+    /// only the per-instance material is fresh. The instance must be added as a DIRECT child
+    /// of the <see cref="Skeleton3D"/> for Godot's built-in skinning to take effect.
     /// </summary>
     private MeshInstance3D? BuildSkinnedMeshInstance(
         AvatarBodyPartMesh part, Skeleton3D skeleton, Color baseColor)
     {
         if (part.Indices.Length == 0) return null;
 
-        // Build a Skin resource: one named bind per unique bone referenced in this part.
+        if (!_builtPartCache.TryGetValue(part.Name, out var built))
+        {
+            built = BuildPartResources(part, skeleton);
+            _builtPartCache[part.Name] = built;
+        }
+
+        return new MeshInstance3D
+        {
+            Mesh             = built.Mesh,
+            Skin             = built.Skin,
+            MaterialOverride = new StandardMaterial3D
+            {
+                AlbedoColor = baseColor,
+                CullMode    = BaseMaterial3D.CullModeEnum.Disabled
+            }
+        };
+    }
+
+    /// <summary>Builds the shared (mesh, skin) pair for one body part. Called once per part.</summary>
+    private static (ArrayMesh Mesh, Skin Skin) BuildPartResources(AvatarBodyPartMesh part, Skeleton3D skeleton)
+    {
+        // Build a Skin resource: one bind per unique bone referenced in this part.
         var skin = new Skin();
         var skinSlots = new Dictionary<string, int>(); // boneName → slot index in Skin
 
@@ -556,19 +590,7 @@ public partial class AvatarRenderer : Node3D
         }
 
         st.GenerateTangents();
-
-        var mat = new StandardMaterial3D
-        {
-            AlbedoColor = baseColor,
-            CullMode    = BaseMaterial3D.CullModeEnum.Disabled
-        };
-
-        return new MeshInstance3D
-        {
-            Mesh             = st.Commit(),
-            Skin             = skin,
-            MaterialOverride = mat
-        };
+        return (st.Commit(), skin);
     }
 
     /// <summary>
