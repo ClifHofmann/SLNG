@@ -5,7 +5,6 @@ using SLNG.Core.Components;
 using SLNG.Assets;
 using System.Collections.Generic;
 using System;
-using System.IO;
 
 namespace SLNG.App;
 
