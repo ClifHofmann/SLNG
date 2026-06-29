@@ -234,7 +234,7 @@ public class AssetService
 
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, bool isSculpt)
     {
-        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + ".j2c");
+        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v2.j2c");
 
         if (cacheFile != null && File.Exists(cacheFile))
         {
@@ -505,7 +505,83 @@ public class AssetService
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[AssetService] Magick.NET failed to decode texture ({ex.Message}), falling back to CoreJ2K...");
+            Console.WriteLine($"[AssetService] Magick.NET failed to decode texture ({ex.Message}). Trying padded recovery...");
+            
+            try 
+            {
+                // Second Life servers often return truncated J2C streams when busy.
+                // OpenJPEG strictly expects the stream to match the length declared in the SOT marker.
+                // By appending zeros to the stream, we can often satisfy OpenJPEG and recover the full image!
+                byte[] padded = new byte[bytes.Length + 65536];
+                Buffer.BlockCopy(bytes, 0, padded, 0, bytes.Length);
+                padded[padded.Length - 2] = 0xFF;
+                padded[padded.Length - 1] = 0xD9; // EOC marker
+
+                var settings = new ImageMagick.MagickReadSettings { Format = ImageMagick.MagickFormat.J2c };
+                using var image = new ImageMagick.MagickImage(padded, settings);
+                
+                int width = (int)image.Width;
+                int height = (int)image.Height;
+
+                // Check if padding still resulted in a low-res thumbnail. If so, fail and fallback to CoreJ2K!
+                int trueWidth = -1, trueHeight = -1;
+                for (int i = 0; i < padded.Length - 13; i++)
+                {
+                    if (padded[i] == 0xFF && padded[i + 1] == 0x51)
+                    {
+                        trueWidth = (padded[i + 6] << 24) | (padded[i + 7] << 16) | (padded[i + 8] << 8) | padded[i + 9];
+                        trueHeight = (padded[i + 10] << 24) | (padded[i + 11] << 16) | (padded[i + 12] << 8) | padded[i + 13];
+                        break;
+                    }
+                }
+                
+                if (trueWidth > 0 && trueHeight > 0 && (width * height < trueWidth * trueHeight))
+                {
+                    throw new Exception($"Padded recovery still returned thumbnail {width}x{height}");
+                }
+
+                if (image.HasAlpha) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
+                else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
+
+                byte[] rgba = Array.Empty<byte>();
+
+                using (var pixels = image.GetPixels())
+                {
+                    var raw = pixels.GetValues() ?? Array.Empty<byte>();
+                    if (image.ChannelCount == 4)
+                    {
+                        rgba = new byte[width * height * 4];
+                        for (int i = 0; i < raw.Length; i += 4)
+                        {
+                            rgba[i] = raw[i];
+                            rgba[i + 1] = raw[i + 1];
+                            rgba[i + 2] = raw[i + 2];
+                            rgba[i + 3] = raw[i + 3];
+                        }
+                    }
+                    else if (image.ChannelCount == 3)
+                    {
+                        rgba = new byte[width * height * 4];
+                        for (int i = 0, j = 0; i < raw.Length; i += 3, j += 4)
+                        {
+                            rgba[j] = raw[i];
+                            rgba[j + 1] = raw[i + 1];
+                            rgba[j + 2] = raw[i + 2];
+                            rgba[j + 3] = 255;
+                        }
+                    }
+                }
+
+                if (rgba.Length > 0)
+                {
+                    Console.WriteLine($"[AssetService] Padded Magick.NET decode successful: {width}x{height}");
+                    return new TextureData(width, height, rgba);
+                }
+            }
+            catch (Exception paddedEx)
+            {
+                Console.WriteLine($"[AssetService] Padded Magick.NET decode also failed ({paddedEx.Message}), falling back to CoreJ2K...");
+            }
             
             try
             {
