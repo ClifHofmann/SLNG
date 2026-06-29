@@ -234,7 +234,7 @@ public class AssetService
 
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, bool isSculpt)
     {
-        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v9.j2c");
+        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v10.j2c");
 
         if (cacheFile != null && File.Exists(cacheFile))
         {
@@ -421,9 +421,10 @@ public class AssetService
         if (isSculpt)
         {
             // Magick.NET blurs J2C data, which is fatal for sculpt maps (creates crumpled geometry).
-            // Skip Magick.NET and use the mathematically accurate CoreJ2K decoder directly.
-            Console.WriteLine("[AssetService] Bypassing Magick.NET for sculpt map (using CoreJ2K).");
-            return DecodeWithCoreJ2K(bytes, true);
+            // Try the mathematically accurate CoreJ2K decoder first.
+            var sculptData = DecodeWithCoreJ2K(bytes, true);
+            if (sculptData != null) return sculptData;
+            Console.WriteLine("[AssetService] CoreJ2K failed to decode sculpt map, falling back to Magick.NET.");
         }
 
         try
@@ -507,8 +508,7 @@ public class AssetService
                 }
                 else
                 {
-                    Console.WriteLine($"[AssetService] Magick loaded unsupported channel count: {image.ChannelCount}");
-                    return null;
+                    throw new Exception($"Unsupported channel count: {image.ChannelCount}");
                 }
             }
 
