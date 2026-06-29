@@ -430,8 +430,17 @@ public class AssetService
         try
         {
             // Magick.NET wraps OpenJPEG and seamlessly handles malformed J2C bitstreams (missing EOC, trailing padding, etc.) that crash CoreJ2K.
-            var settings = new ImageMagick.MagickReadSettings { Format = ImageMagick.MagickFormat.J2c };
-            using var image = new ImageMagick.MagickImage(bytes, settings);
+            using var image = new ImageMagick.MagickImage();
+            try
+            {
+                image.Read(bytes);
+            }
+            catch
+            {
+                // Many SL textures are raw J2C codestreams without a header, which Magick.NET might not auto-detect.
+                var settings = new ImageMagick.MagickReadSettings { Format = ImageMagick.MagickFormat.J2c };
+                image.Read(bytes, settings);
+            }
             
             int width = (int)image.Width;
             int height = (int)image.Height;
