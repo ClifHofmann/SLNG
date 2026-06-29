@@ -36,13 +36,43 @@ public partial class AvatarController : Camera3D
         _session = session;
     }
 
-    public override void _Ready()
-    {
-        // Default to visible mouse for UI interaction
-        Input.MouseMode = Input.MouseModeEnum.Visible;
-    }
+        private PopupMenu _contextMenu;
+        private string _lastClickedEntityId = "";
+        private string _lastClickedLocalId = "";
 
-    public override void _Input(InputEvent @event)
+        public override void _Ready()
+        {
+            // Default to visible mouse for UI interaction
+            Input.MouseMode = Input.MouseModeEnum.Visible;
+
+            _contextMenu = new PopupMenu();
+            _contextMenu.Name = "ContextMenu";
+            _contextMenu.AddItem("Inspect (Print IDs to Console)", 0);
+            _contextMenu.AddItem("Copy Entity ID", 1);
+            _contextMenu.AddItem("Touch / Interact", 2);
+            _contextMenu.IdPressed += OnContextMenuIdPressed;
+            AddChild(_contextMenu);
+        }
+
+        private void OnContextMenuIdPressed(long id)
+        {
+            if (id == 0)
+            {
+                GD.Print($"\n=== [Inspect Object] ===\nEntityId: {_lastClickedEntityId}\nLocalId: {_lastClickedLocalId}\n========================\n");
+            }
+            else if (id == 1)
+            {
+                DisplayServer.ClipboardSet(_lastClickedEntityId);
+                GD.Print($"Copied {_lastClickedEntityId} to clipboard!");
+            }
+            else if (id == 2)
+            {
+                GD.Print($"[Touch] Triggering touch on object {_lastClickedLocalId} (Not fully implemented yet)");
+                // _session.TouchObject(_lastClickedLocalId);
+            }
+        }
+
+        public override void _Input(InputEvent @event)
     {
         if (@event is InputEventKey keyEvt && keyEvt.Pressed && !keyEvt.Echo)
         {
@@ -66,12 +96,12 @@ public partial class AvatarController : Camera3D
             {
                 if (mouseBtn.Pressed)
                 {
-                    Input.MouseMode = Input.MouseModeEnum.Captured;
-                    
                     // Raycast to identify clicked object
                     var spaceState = GetWorld3D().DirectSpaceState;
-                    var from = _camera.ProjectRayOrigin(mouseBtn.Position);
-                    var to = from + _camera.ProjectRayNormal(mouseBtn.Position) * 1000f;
+                    var mpos = mouseBtn.Position;
+                    var from = ProjectRayOrigin(mpos);
+                    var to = from + ProjectRayNormal(mpos) * 1000f;
+                    
                     var query = PhysicsRayQueryParameters3D.Create(from, to);
                     var result = spaceState.IntersectRay(query);
                     
@@ -80,14 +110,18 @@ public partial class AvatarController : Camera3D
                         var collider = result["collider"].AsGodotObject();
                         if (collider is Node colliderNode)
                         {
-                            var entityId = colliderNode.HasMeta("EntityId") ? colliderNode.GetMeta("EntityId").AsString() : "None";
-                            var localId = colliderNode.HasMeta("LocalId") ? colliderNode.GetMeta("LocalId").AsString() : "None";
-                            GD.Print($"\n\n=== [Raycast] Hit ===\nNode: {colliderNode.Name}\nParent: {colliderNode.GetParent()?.Name}\nEntityId: {entityId}\nLocalId: {localId}\n=====================\n");
+                            _lastClickedEntityId = colliderNode.HasMeta("EntityId") ? colliderNode.GetMeta("EntityId").AsString() : "None";
+                            _lastClickedLocalId = colliderNode.HasMeta("LocalId") ? colliderNode.GetMeta("LocalId").AsString() : "None";
+                            
+                            // Uncapture mouse if we were orbiting
+                            Input.MouseMode = Input.MouseModeEnum.Visible;
+                            
+                            // Show popup menu at mouse position
+                            _contextMenu.Position = new Vector2I((int)mpos.X, (int)mpos.Y);
+                            _contextMenu.Popup();
                         }
                     }
                 }
-                else if (!_altOrbitActive)
-                    Input.MouseMode = Input.MouseModeEnum.Visible;
             }
             else if (mouseBtn.ButtonIndex == MouseButton.Left)
             {
