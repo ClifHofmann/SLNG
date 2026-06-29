@@ -24,14 +24,26 @@ public class RegionTerrain
     // The master heightmap (Y-up elevation).
     private float[] _heights;
 
-    public int Width { get; }
-    public int Height { get; }
+    public int Width { get; private set; }
+    public int Height { get; private set; }
 
     public RegionTerrain(int width = DefaultRegionSize, int height = DefaultRegionSize)
     {
         Width = width;
         Height = height;
         _heights = new float[Width * Height];
+    }
+
+    private void Resize(int newWidth, int newHeight)
+    {
+        float[] newHeights = new float[newWidth * newHeight];
+        for (int y = 0; y < Height; y++)
+        {
+            Array.Copy(_heights, y * Width, newHeights, y * newWidth, Width);
+        }
+        Width = newWidth;
+        Height = newHeight;
+        _heights = newHeights;
     }
 
     /// <summary>
@@ -42,13 +54,19 @@ public class RegionTerrain
         if (patchHeights == null || patchHeights.Length != PatchSize * PatchSize)
             return;
 
+        int requiredWidth = (patchX + 1) * PatchSize;
+        int requiredHeight = (patchY + 1) * PatchSize;
+
+        if (requiredWidth > Width || requiredHeight > Height)
+        {
+            // Snap to multiples of 256 for standard varregion sizes (256, 512, 1024, etc.)
+            int newW = (int)Math.Ceiling(requiredWidth / 256.0) * 256;
+            int newH = (int)Math.Ceiling(requiredHeight / 256.0) * 256;
+            Resize(Math.Max(Width, newW), Math.Max(Height, newH));
+        }
+
         int startX = patchX * PatchSize;
         int startY = patchY * PatchSize;
-
-        // If the patch exceeds our current terrain size, we ignore it for now.
-        // A dynamic resizing system could be implemented here for megaregions.
-        if (startX >= Width || startY >= Height)
-            return;
 
         for (int y = 0; y < PatchSize; y++)
         {

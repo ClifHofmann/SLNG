@@ -411,7 +411,8 @@ public partial class ObjectRenderer : Node3D
         var material = new StandardMaterial3D
         {
             AlbedoColor = colorTint,
-            TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest
+            TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest,
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled
         };
 
         if (ft.MaterialId != Guid.Empty && _assetService != null)
