@@ -123,6 +123,9 @@ public partial class AvatarController : Camera3D
     {
         if (_world == null || _session == null) return;
 
+        var focusOwner = GetViewport().GuiGetFocusOwner();
+        bool hasUiFocus = focusOwner is LineEdit || focusOwner is TextEdit;
+
         // 1. Follow the Avatar
         var localAgent = _world.GetAllEntities()
             .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
@@ -133,12 +136,12 @@ public partial class AvatarController : Camera3D
             if (transform != null)
             {
                 // Local movement prediction
-                bool isFwd = Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W);
-                bool isBack = Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S);
-                bool isLeft = Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A);
-                bool isRight = Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D);
-                bool isUp = Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up");
-                bool isDown = Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down");
+                bool isFwd = (Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W)) && !hasUiFocus;
+                bool isBack = (Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S)) && !hasUiFocus;
+                bool isLeft = (Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A)) && !hasUiFocus;
+                bool isRight = (Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D)) && !hasUiFocus;
+                bool isUp = (Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up")) && !hasUiFocus;
+                bool isDown = (Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
 
                 // Pressing up engages fly automatically (matches the "E = go up" instinct);
                 // Home toggles it off. See _Input.
@@ -244,12 +247,12 @@ public partial class AvatarController : Camera3D
         }
 
         // 2. Handle Movement Input
-        bool fwd = Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W);
-        bool back = Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S);
-        bool left = Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A);
-        bool right = Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D);
-        bool up = Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up");
-        bool down = Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down");
+        bool fwd = (Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W)) && !hasUiFocus;
+        bool back = (Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S)) && !hasUiFocus;
+        bool left = (Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A)) && !hasUiFocus;
+        bool right = (Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D)) && !hasUiFocus;
+        bool up = (Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up")) && !hasUiFocus;
+        bool down = (Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
 
         var curRot = Rotation;
         
