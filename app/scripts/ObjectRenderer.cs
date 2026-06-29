@@ -513,8 +513,9 @@ public partial class ObjectRenderer : Node3D
         
         Godot.Callable.From(() => {
             var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+            image.GenerateMipmaps(); // so LinearWithMipmaps actually filters — no shimmer/aliasing at distance
             var tex = ImageTexture.CreateFromImage(image);
-            
+
             if (tex != null && _gpuCache != null)
             {
                 long size = textureData.Width * textureData.Height * 4;
