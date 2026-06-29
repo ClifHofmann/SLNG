@@ -234,7 +234,7 @@ public class AssetService
 
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, bool isSculpt)
     {
-        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v6.j2c");
+        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v7.j2c");
 
         if (cacheFile != null && File.Exists(cacheFile))
         {
@@ -436,20 +436,22 @@ public class AssetService
             }
             bool isDegraded = false;
             
+            // For normal textures, verify if Magick.NET decoded a low-res thumbnail instead of the full image,
+            // or if it dropped the alpha channel (common bug with OpenJPEG and SL textures).
+            int trueWidth = -1, trueHeight = -1, trueComponents = -1;
+            for (int i = 0; i < bytes.Length - 40; i++)
+            {
+                if (bytes[i] == 0xFF && bytes[i + 1] == 0x51) // SIZ marker
+                {
+                    trueWidth = (bytes[i + 6] << 24) | (bytes[i + 7] << 16) | (bytes[i + 8] << 8) | bytes[i + 9];
+                    trueHeight = (bytes[i + 10] << 24) | (bytes[i + 11] << 16) | (bytes[i + 12] << 8) | bytes[i + 13];
+                    trueComponents = (bytes[i + 38] << 8) | bytes[i + 39];
+                    break;
+                }
+            }
+            
             if (!isSculpt)
             {
-                // For normal textures, verify if Magick.NET decoded a low-res thumbnail instead of the full image
-                int trueWidth = -1, trueHeight = -1;
-                for (int i = 0; i < bytes.Length - 13; i++)
-                {
-                    if (bytes[i] == 0xFF && bytes[i + 1] == 0x51) // SIZ marker
-                    {
-                        trueWidth = (bytes[i + 6] << 24) | (bytes[i + 7] << 16) | (bytes[i + 8] << 8) | bytes[i + 9];
-                        trueHeight = (bytes[i + 10] << 24) | (bytes[i + 11] << 16) | (bytes[i + 12] << 8) | bytes[i + 13];
-                        break;
-                    }
-                }
-                
                 if (trueWidth > 0 && trueHeight > 0 && (width * height < trueWidth * trueHeight))
                 {
                     // Accept the thumbnail but mark as degraded so it isn't cached
@@ -458,8 +460,14 @@ public class AssetService
                 }
             }
 
+            // If the image is supposed to have 4 components (RGBA) but Magick returned 3, it ate the alpha channel!
+            if (trueComponents == 4 && image.ChannelCount < 4)
+            {
+                throw new Exception($"Magick dropped alpha channel (returned {image.ChannelCount} channels but SIZ says 4). Falling back to CoreJ2K.");
+            }
+
             // Ensure we have RGBA output
-            if (image.HasAlpha) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
+            if (image.HasAlpha || image.ChannelCount == 4) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
             else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
 
             byte[] rgba = Array.Empty<byte>();
