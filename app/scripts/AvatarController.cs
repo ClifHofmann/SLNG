@@ -44,11 +44,20 @@ public partial class AvatarController : Camera3D
 
     public override void _Input(InputEvent @event)
     {
-        // Home toggles fly mode (SL convention).
-        if (@event is InputEventKey keyEvt && keyEvt.Pressed && !keyEvt.Echo && keyEvt.Keycode == Key.Home)
+        if (@event is InputEventKey keyEvt && keyEvt.Pressed && !keyEvt.Echo)
         {
-            _flying = !_flying;
-            GD.Print($"[AvatarController] Flying: {(_flying ? "ON" : "off")}");
+            if (keyEvt.Keycode == Key.Home)
+            {
+                _flying = !_flying;
+                GD.Print($"[AvatarController] Flying: {(_flying ? "ON" : "off")}");
+            }
+            else if (keyEvt.Keycode == Key.Escape)
+            {
+                _zoom = 4.0f;
+                _orbitYaw = 0f;
+                _orbitPitch = 0f;
+                GD.Print("[AvatarController] Camera reset");
+            }
         }
 
         if (@event is InputEventMouseButton mouseBtn)
@@ -95,12 +104,10 @@ public partial class AvatarController : Camera3D
             if (_altOrbitActive)
             {
                 // Stays active until the mouse button is released (handled on button-up).
-                // We deliberately don't re-check Alt here — motion events don't carry the
-                // modifier reliably, and that check was cancelling the orbit on the first move.
-                // Horizontal = orbit around the avatar, vertical = zoom (SL-style Alt drag).
+                // Horizontal = orbit yaw, vertical = orbit pitch
                 _orbitYaw -= mouseMotion.Relative.X * sensitivity;
-                _zoom += mouseMotion.Relative.Y * sensitivity * 50.0f;
-                _zoom = Mathf.Clamp(_zoom, 0.5f, 50.0f);
+                _orbitPitch -= mouseMotion.Relative.Y * sensitivity;
+                _orbitPitch = Mathf.Clamp(_orbitPitch, -1.5f, 1.5f);
             }
             else
             {

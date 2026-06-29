@@ -392,8 +392,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     };
                     var delegateObj = Delegate.CreateDelegate(callbackType, action.Target, action.Method);
 
-                    // RequestTexture(UUID imageID, ImageType type, float priority, int discardLevel, int packetNum, TextureDownloadCallback callback, bool progress)
-                    reqMethod.Invoke(pipeline, new object[] { new UUID(textureId), ImageType.Normal, 100000.0f, 0, 0, delegateObj, false });
+                    // RequestTexture(UUID imageID, ImageType type, float priority, int discardLevel, uint packetNum, TextureDownloadCallback callback, bool progress)
+                    reqMethod.Invoke(pipeline, new object[] { new UUID(textureId), ImageType.Normal, 100000.0f, 0, 0u, delegateObj, false });
                     return tcs.Task;
                 }
             }
