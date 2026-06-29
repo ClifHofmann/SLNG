@@ -102,7 +102,7 @@ Goal: Replace the placeholder capsule with a real Second Life avatar (Bento skel
 | ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
 |---|---|---|---|---|---|---|---|
 | M4-1 | Bento Skeleton & Base Mesh ✅ | render | gemini | graphics-engineer | | M3-4 | A static system avatar mesh with the SL skeleton is rendered instead of a capsule |
-| M4-2 | Animation decode & playback | assets | | asset-pipeline | | M4-1 | Server-sent animations (`.anim` / `.bvh`) play correctly on the skeleton |
+| M4-2 | Animation decode & playback ✅ | assets | gemini | asset-pipeline | | M4-1 | Server-sent animations (`.anim` / `.bvh`) play correctly on the skeleton |
 | M4-3 | Appearance & Bakes-on-Mesh (BoM) | net/render | gemini | graphics-engineer | | M4-1 | Avatar shape params and baked skin textures are downloaded and applied |
 | M4-4 | Mesh Attachments ✅ | assets/render | claude | graphics-engineer | | M4-1 | Equipped objects (hair, clothes) are attached to the correct skeleton bones |
 
