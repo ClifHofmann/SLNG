@@ -89,7 +89,7 @@ public class AssetService
         }
         return _inflightSculptMeshes.GetOrAdd(sculptId, async id => {
             try {
-                var map = await GetTextureAsync(id).ConfigureAwait(false);
+                var map = await GetTextureAsync(id, true).ConfigureAwait(false);
                 if (map == null) return null;
 
                 var result = await Task.Run(() =>
@@ -211,7 +211,7 @@ public class AssetService
     /// Fetches and decodes a texture (JPEG2000) by UUID into engine-neutral RGBA, or null
     /// if it cannot be decoded. Concurrent requests for the same id share one fetch/decode.
     /// </summary>
-    public Task<TextureData?> GetTextureAsync(Guid textureId)
+    public Task<TextureData?> GetTextureAsync(Guid textureId, bool isSculpt = false)
     {
         if (_memCache.TryGetValue(textureId, out TextureData? cached))
         {
@@ -219,7 +219,7 @@ public class AssetService
         }
         return _inflightTextures.GetOrAdd(textureId, async id => {
             try {
-                var result = await FetchAndDecodeTextureAsync(id).ConfigureAwait(false);
+                var result = await FetchAndDecodeTextureAsync(id, isSculpt).ConfigureAwait(false);
                 if (result != null) {
                     long size = result.Width * result.Height * 4;
                     if (size <= 0) size = 1024;
@@ -232,27 +232,22 @@ public class AssetService
         });
     }
 
-    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId)
+    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, bool isSculpt)
     {
         string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + ".j2c");
 
-        // 1. Try the on-disk bytes. If they decode, great; if not, the cache entry is
-        //    poisoned (a partial download from an earlier run) — drop it and re-fetch.
         if (cacheFile != null && File.Exists(cacheFile))
         {
             byte[]? cached = null;
             try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
             if (cached != null && cached.Length > 0)
             {
-                var decodedFromCache = await Task.Run(() => DecodeTexture(cached)).ConfigureAwait(false);
+                var decodedFromCache = await Task.Run(() => DecodeTexture(cached, isSculpt)).ConfigureAwait(false);
                 if (decodedFromCache != null) return decodedFromCache;
                 try { File.Delete(cacheFile); } catch { }
             }
         }
 
-        // 2. Fetch fresh and decode, with a few retries. On a busy region the first transfer
-        //    can come back truncated; a retry once congestion eases usually succeeds. We only
-        //    persist bytes that actually decode, so the cache is never poisoned.
         for (int attempt = 0; attempt < 3; attempt++)
         {
             if (!_session.IsConnected) return null;
@@ -260,7 +255,7 @@ public class AssetService
             var bytes = await _session.FetchTextureDataAsync(textureId).ConfigureAwait(false);
             if (bytes is { Length: > 0 })
             {
-                var result = await Task.Run(() => DecodeTexture(bytes)).ConfigureAwait(false);
+                var result = await Task.Run(() => DecodeTexture(bytes, isSculpt)).ConfigureAwait(false);
                 if (result != null)
                 {
                     if (cacheFile != null)
@@ -421,7 +416,7 @@ public class AssetService
         }
     }
 
-    private static TextureData? DecodeTexture(byte[] bytes)
+    private static TextureData? DecodeTexture(byte[] bytes, bool isSculpt = false)
     {
         // We completely bypass LibreMetaverse.Assets.AssetTexture (CoreJ2K).
         // CoreJ2K has severe bugs: it crashes on truncated streams, silently drops alpha 
@@ -436,15 +431,27 @@ public class AssetService
             int width = (int)image.Width;
             int height = (int)image.Height;
 
-            // Fix Magick.NET wrong dimensions for sculpt maps (e.g. 16x256 instead of 64x64)
-            if (isSculpt)
+            // Fix Magick.NET wrong dimensions (e.g. 16x256 instead of 64x64) by reading the true J2C header
+            int trueWidth = -1, trueHeight = -1;
+            for (int i = 0; i < bytes.Length - 13; i++)
             {
-                int totalPixels = width * height;
-                int sq = (int)Math.Sqrt(totalPixels);
-                if (sq * sq == totalPixels)
+                if (bytes[i] == 0xFF && bytes[i + 1] == 0x51) // SIZ marker
                 {
-                    width = sq;
-                    height = sq;
+                    trueWidth = (bytes[i + 6] << 24) | (bytes[i + 7] << 16) | (bytes[i + 8] << 8) | bytes[i + 9];
+                    trueHeight = (bytes[i + 10] << 24) | (bytes[i + 11] << 16) | (bytes[i + 12] << 8) | bytes[i + 13];
+                    break;
+                }
+            }
+
+            if (trueWidth > 0 && trueHeight > 0)
+            {
+                int totalMagickPixels = width * height;
+                int totalTruePixels = trueWidth * trueHeight;
+                // If Magick.NET scrambled the dimensions but preserved all pixels, use the true dimensions!
+                if (totalMagickPixels == totalTruePixels && (width != trueWidth || height != trueHeight))
+                {
+                    width = trueWidth;
+                    height = trueHeight;
                 }
             }
 
