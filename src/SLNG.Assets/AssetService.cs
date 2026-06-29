@@ -431,28 +431,16 @@ public class AssetService
             int width = (int)image.Width;
             int height = (int)image.Height;
 
-            // Fix Magick.NET wrong dimensions (e.g. 16x256 instead of 64x64) by reading the true J2C header
-            int trueWidth = -1, trueHeight = -1;
-            for (int i = 0; i < bytes.Length - 13; i++)
+            // Sculpt maps MUST be 64x64 for MeshFoundry to build the correct 3D topology.
+            // Creators sometimes upload 16x256 or 128x128 images. If we just reshape the 1D array, 
+            // we scramble the UV mapping (causing pixelated textures). If we leave it as 16x256,
+            // the 3D shape becomes jagged intersecting planes. Resizing the image to 64x64 is what 
+            // the SL viewer does internally.
+            if (isSculpt && (width != 64 || height != 64))
             {
-                if (bytes[i] == 0xFF && bytes[i + 1] == 0x51) // SIZ marker
-                {
-                    trueWidth = (bytes[i + 6] << 24) | (bytes[i + 7] << 16) | (bytes[i + 8] << 8) | bytes[i + 9];
-                    trueHeight = (bytes[i + 10] << 24) | (bytes[i + 11] << 16) | (bytes[i + 12] << 8) | bytes[i + 13];
-                    break;
-                }
-            }
-
-            if (trueWidth > 0 && trueHeight > 0)
-            {
-                int totalMagickPixels = width * height;
-                int totalTruePixels = trueWidth * trueHeight;
-                // If Magick.NET scrambled the dimensions but preserved all pixels, use the true dimensions!
-                if (totalMagickPixels == totalTruePixels && (width != trueWidth || height != trueHeight))
-                {
-                    width = trueWidth;
-                    height = trueHeight;
-                }
+                image.Resize(new ImageMagick.MagickGeometry("64x64!") { IgnoreAspectRatio = true });
+                width = (int)image.Width;
+                height = (int)image.Height;
             }
 
             byte[] rgba = Array.Empty<byte>();
