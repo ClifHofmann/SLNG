@@ -238,8 +238,14 @@ public partial class TerrainRenderer : Node3D
             regionTerrain.TerrainHeightRanges[0], regionTerrain.TerrainHeightRanges[1],
             regionTerrain.TerrainHeightRanges[2], regionTerrain.TerrainHeightRanges[3]));
 
+        mat.SetShaderParameter("region_size", (float)regionTerrain.Width);
+
         // Build water plane
         BuildWaterPlane(regionNode, regionTerrain);
+
+        // Fetch/apply textures in case RebuildTerrain runs after settings arrived,
+        // or if settings arrived very quickly and were missed before the mesh existed.
+        _ = FetchTerrainTexturesAsync(regionHandle);
     }
 
     private void BuildWaterPlane(RegionTerrainNode node, RegionTerrain regionTerrain)
