@@ -35,6 +35,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     public GridSession()
     {
+        // Quiet LibreMetaverse's own console logger (set before the client/logger initializes).
+        // On a busy grid it floods stdout with Info spam ("Received a resend of already
+        // processed packet", texture-pipeline chatter); warnings/errors still come through.
+        LibreMetaverse.Settings.LogLevel = Microsoft.Extensions.Logging.LogLevel.Warning;
+
         _client = new GridClient();
         _client.Settings.Agent.SendAppearance = false;
 
