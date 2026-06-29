@@ -471,18 +471,27 @@ public partial class ObjectRenderer : Node3D
         return (material, used);
     }
 
-    /// <summary>Enables alpha-cutout when the texture actually has transparency, so alpha-masked
-    /// foliage/fences are cut out instead of rendering as opaque white cards. Double-sided so
-    /// leaf cards show from both faces. Opaque textures are left unchanged.</summary>
+    /// <summary>Picks the right transparency mode from the texture's actual alpha:
+    /// binary alpha (foliage/fences) → alpha-scissor cutout; graded alpha (glass, soft edges)
+    /// → alpha blend; fully opaque → left unchanged. Alpha surfaces render double-sided.</summary>
     private static void ApplyAlphaCutout(StandardMaterial3D material, ImageTexture tex)
     {
         var img = tex.GetImage();
         if (img == null) return;
 
-        // Force AlphaScissor to see if DetectAlpha was failing on valid alpha channels
-        material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-        material.AlphaScissorThreshold = 0.5f;
+        var mode = img.DetectAlpha();
+        if (mode == Image.AlphaMode.None) return; // opaque — leave default settings
+
         material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+        if (mode == Image.AlphaMode.Bit)
+        {
+            material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+            material.AlphaScissorThreshold = 0.5f;
+        }
+        else // Blend: semi-transparent — keep the gradient instead of hard-cutting it
+        {
+            material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+        }
     }
 
     private async System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
