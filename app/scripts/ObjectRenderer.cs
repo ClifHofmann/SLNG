@@ -414,8 +414,14 @@ public partial class ObjectRenderer : Node3D
             // Linear + mipmaps: SL textures look smooth, not blocky/pixelated, and don't shimmer with distance.
             TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
             CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            // SL texture repeats scale from the center (0.5, 0.5), not top-left.
+            // u_godot = u * RepeatU + OffsetU_godot
+            // u_sl = (u - 0.5) * RepeatU + 0.5 + OffsetU_sl = u * RepeatU + (0.5 - 0.5 * RepeatU + OffsetU_sl)
             Uv1Scale = new Godot.Vector3(ft.RepeatU, ft.RepeatV, 1.0f),
-            Uv1Offset = new Godot.Vector3(ft.OffsetU, ft.OffsetV, 0.0f)
+            Uv1Offset = new Godot.Vector3(
+                0.5f - 0.5f * ft.RepeatU + ft.OffsetU,
+                0.5f - 0.5f * ft.RepeatV + ft.OffsetV,
+                0.0f)
         };
 
         if (ft.MaterialId != Guid.Empty && _assetService != null)
