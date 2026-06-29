@@ -225,6 +225,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <summary>The handle of the region the agent is currently in.</summary>
     public ulong CurrentRegionHandle => _client.Network.CurrentSim?.Handle ?? 0;
 
+    /// <summary>The name of the region the agent is currently in, or empty if not connected.</summary>
+    public string CurrentRegionName => _client.Network.CurrentSim?.Name ?? string.Empty;
+
     /// <summary>Agent UUID of the logged-in avatar, or empty until connected.</summary>
     public string AgentId => _client.Self.AgentID.ToString();
 

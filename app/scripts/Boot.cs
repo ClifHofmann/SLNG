@@ -1,7 +1,9 @@
 using Godot;
 using SLNG.Core;
+using SLNG.Core.Components;
 using SLNG.Net;
 using SLNG.App;
+using System.Linq;
 
 public partial class Boot : Control
 {
@@ -32,6 +34,9 @@ public partial class Boot : Control
     
     private WorldEnvironment? _worldEnvironment;
     private bool _postFxEnabled = true;
+
+    private Label _hudLabel = null!;
+    private double _hudAccum;
 
     public override void _Ready()
     {
@@ -65,8 +70,27 @@ public partial class Boot : Control
         AddChild(_avatarRenderer);
         
         SetupEnvironment();
+        SetupHud();
 
         LogMessage("Ready. Enter credentials and click Login.");
+    }
+
+    private void SetupHud()
+    {
+        // Position/altitude readout in the top-right corner, overlaying the 3D view.
+        _hudLabel = new Label
+        {
+            Name = "PositionHud",
+            HorizontalAlignment = HorizontalAlignment.Right,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        _hudLabel.SetAnchorsPreset(Control.LayoutPreset.TopWide);
+        _hudLabel.OffsetTop = 6;
+        _hudLabel.OffsetRight = -12;
+        // Dark outline so white text stays legible over bright sky or pale objects.
+        _hudLabel.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 0.8f));
+        _hudLabel.AddThemeConstantOverride("outline_size", 4);
+        AddChild(_hudLabel);
     }
 
     private void SetupEnvironment()
@@ -117,6 +141,30 @@ public partial class Boot : Control
     {
         // Drain queued world events on the main thread — the only place the world mutates.
         _worldSimulation?.Pump();
+
+        // Refresh the position HUD a few times a second (the agent lookup scans entities).
+        _hudAccum += delta;
+        if (_hudAccum >= 0.2)
+        {
+            _hudAccum = 0;
+            UpdateHud();
+        }
+    }
+
+    private void UpdateHud()
+    {
+        if (_world == null || _session == null) { return; }
+
+        var agent = _world.GetAllEntities()
+            .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+        var t = agent?.GetComponent<TransformComponent>();
+        if (t == null) { _hudLabel.Text = ""; return; }
+
+        string region = _session.CurrentRegionName;
+        _hudLabel.Text =
+            $"{region}\n" +
+            $"<{t.Position.X:0.0}, {t.Position.Y:0.0}, {t.Position.Z:0.0}>\n" +
+            $"Alt {t.Position.Z:0.0} m   ·   Draw {RenderConfig.DrawDistance:0} m";
     }
 
     private void LoadProfiles()
