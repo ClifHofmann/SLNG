@@ -17,6 +17,7 @@ public partial class ObjectRenderer : Node3D
 
     private class VisualState
     {
+        public Guid EntityId;
         public MeshInstance3D MeshInstance = null!;
         public List<Guid> UsedTextureIds = new();
 
@@ -45,6 +46,10 @@ public partial class ObjectRenderer : Node3D
     // asset id or by a stable id assigned per unique prim shape. Identical objects share one
     // upload; out-of-range objects release their ref so the cache can reclaim the VRAM.
     private readonly Dictionary<PrimShape, Guid> _primShapeKeys = new();
+
+    // Per shared-mesh key: the SL face number of each surface, so any instance can apply that
+    // face's texture via SetSurfaceOverrideMaterial.
+    private readonly Dictionary<Guid, int[]> _meshFaceIndices = new();
 
     private Mesh _boxMesh = new BoxMesh();
     private Mesh _sphereMesh = new SphereMesh();
@@ -149,7 +154,7 @@ public partial class ObjectRenderer : Node3D
         var meshInstance = new MeshInstance3D();
         meshInstance.Visible = false; // Prevent distant objects from briefly appearing
         AddChild(meshInstance);
-        _visuals[entityId] = new VisualState { MeshInstance = meshInstance, ResourcesReleased = true };
+        _visuals[entityId] = new VisualState { EntityId = entityId, MeshInstance = meshInstance, ResourcesReleased = true };
 
         UpdateVisual(entityIdStr);
     }
@@ -238,16 +243,16 @@ public partial class ObjectRenderer : Node3D
                 _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve);
             }
 
-            // Likewise, only rebuild the material when the texture/material id changes.
+            // Re-apply materials when the default texture/material changes (a proxy for "the
+            // object's appearance changed"). The mesh-assignment callback also re-applies once
+            // surfaces exist; here covers texture-only changes on an already-loaded mesh.
             if (_assetService != null
                 && (prim.TextureId != state.LoadedTextureId || prim.RenderMaterialId != state.LoadedMaterialId))
             {
                 state.LoadedTextureId = prim.TextureId;
                 state.LoadedMaterialId = prim.RenderMaterialId;
-                if (prim.TextureId != Guid.Empty || prim.RenderMaterialId != Guid.Empty)
-                {
-                    _ = LoadAndApplyMaterialAsync(state, prim.TextureId, prim.RenderMaterialId, new Godot.Color(prim.ColorTint.X, prim.ColorTint.Y, prim.ColorTint.Z, prim.ColorTint.W));
-                }
+                if (state.LoadedMeshKey != Guid.Empty)
+                    _ = ApplyFaceMaterialsAsync(state);
             }
             }
 
@@ -344,21 +349,80 @@ public partial class ObjectRenderer : Node3D
         }).CallDeferred();
     }
 
-    private async System.Threading.Tasks.Task LoadAndApplyMaterialAsync(VisualState state, Guid textureId, Guid renderMaterialId, Godot.Color colorTint)
+    /// <summary>Builds and applies a material per mesh surface from the prim's per-face textures
+    /// (falling back to the object's default texture for faces without their own).</summary>
+    private async System.Threading.Tasks.Task ApplyFaceMaterialsAsync(VisualState state)
     {
-        if (_assetService == null) return;
+        if (_assetService == null || _world == null) return;
+        var prim = _world.GetEntity(state.EntityId)?.GetComponent<PrimitiveComponent>();
+        if (prim == null) return;
 
-        StandardMaterial3D material = new StandardMaterial3D
+        var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint);
+
+        // Fallback solid / mesh without per-surface face info: one material for the whole node.
+        if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
+        {
+            var (mat, used) = await BuildFaceMaterialAsync(defaultFace);
+            ApplyOnMainThread(state, () => state.MeshInstance.MaterialOverride = mat, used);
+            return;
+        }
+
+        var allUsed = new List<Guid>();
+        for (int surface = 0; surface < faceIndices.Length; surface++)
+        {
+            int faceIdx = faceIndices[surface];
+            FaceTexture ft = (prim.Faces != null && faceIdx >= 0 && faceIdx < prim.Faces.Length)
+                ? prim.Faces[faceIdx] : defaultFace;
+
+            var (material, used) = await BuildFaceMaterialAsync(ft);
+            allUsed.AddRange(used);
+
+            int surf = surface; // capture
+            Godot.Callable.From(() =>
+            {
+                if (!IsInstanceValid(state.MeshInstance) || state.MeshInstance.Mesh == null) return;
+                if (surf >= state.MeshInstance.Mesh.GetSurfaceCount()) return;
+                state.MeshInstance.MaterialOverride = null; // per-surface overrides take effect
+                state.MeshInstance.SetSurfaceOverrideMaterial(surf, material);
+            }).CallDeferred();
+        }
+
+        ApplyOnMainThread(state, null, allUsed.Distinct().ToList());
+    }
+
+    /// <summary>Marshals texture ref-count bookkeeping (and an optional action) to the main thread,
+    /// releasing refs if the node was freed mid-load.</summary>
+    private void ApplyOnMainThread(VisualState state, Action? action, List<Guid> usedTextures)
+    {
+        Godot.Callable.From(() =>
+        {
+            if (IsInstanceValid(state.MeshInstance))
+            {
+                action?.Invoke();
+                SetTexturesForVisual(state, usedTextures);
+            }
+            else if (_gpuCache != null)
+            {
+                foreach (var id in usedTextures) _gpuCache.ReleaseRef(id);
+            }
+        }).CallDeferred();
+    }
+
+    /// <summary>Builds one face's material (classic texture or PBR) and returns the texture ids
+    /// it references. Texture/material application is marshalled to the main thread.</summary>
+    private async System.Threading.Tasks.Task<(StandardMaterial3D Material, List<Guid> Used)> BuildFaceMaterialAsync(FaceTexture ft)
+    {
+        var used = new List<Guid>();
+        var colorTint = new Godot.Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
+        var material = new StandardMaterial3D
         {
             AlbedoColor = colorTint,
             TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest
         };
 
-        var usedTextures = new List<Guid>();
-
-        if (renderMaterialId != Guid.Empty)
+        if (ft.MaterialId != Guid.Empty && _assetService != null)
         {
-            var pbr = await _assetService.GetMaterialAsync(renderMaterialId);
+            var pbr = await _assetService.GetMaterialAsync(ft.MaterialId);
             if (pbr != null)
             {
                 material.AlbedoColor = new Godot.Color(pbr.BaseColorFactor.X, pbr.BaseColorFactor.Y, pbr.BaseColorFactor.Z, pbr.BaseColorFactor.W) * colorTint;
@@ -368,45 +432,37 @@ public partial class ObjectRenderer : Node3D
                 material.Emission = new Godot.Color(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z);
 
                 var tasks = new List<System.Threading.Tasks.Task>();
-
                 if (pbr.BaseColorTextureId != Guid.Empty)
                 {
-                    usedTextures.Add(pbr.BaseColorTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId).ContinueWith(t => 
+                    used.Add(pbr.BaseColorTextureId);
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId).ContinueWith(t =>
                         Godot.Callable.From(() => material.AlbedoTexture = t.Result).CallDeferred()));
                 }
-
                 if (pbr.NormalTextureId != Guid.Empty)
                 {
-                    usedTextures.Add(pbr.NormalTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId).ContinueWith(t => 
-                        Godot.Callable.From(() => {
-                            material.NormalEnabled = true;
-                            material.NormalTexture = t.Result;
-                        }).CallDeferred()));
+                    used.Add(pbr.NormalTextureId);
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId).ContinueWith(t =>
+                        Godot.Callable.From(() => { material.NormalEnabled = true; material.NormalTexture = t.Result; }).CallDeferred()));
                 }
-
                 if (pbr.MetallicRoughnessTextureId != Guid.Empty)
                 {
-                    usedTextures.Add(pbr.MetallicRoughnessTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId).ContinueWith(t => 
+                    used.Add(pbr.MetallicRoughnessTextureId);
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId).ContinueWith(t =>
                         Godot.Callable.From(() => material.OrmTexture = t.Result).CallDeferred()));
                 }
-
                 if (pbr.EmissiveTextureId != Guid.Empty)
                 {
-                    usedTextures.Add(pbr.EmissiveTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId).ContinueWith(t => 
+                    used.Add(pbr.EmissiveTextureId);
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId).ContinueWith(t =>
                         Godot.Callable.From(() => material.EmissionTexture = t.Result).CallDeferred()));
                 }
-
                 await System.Threading.Tasks.Task.WhenAll(tasks);
             }
         }
-        else if (textureId != Guid.Empty)
+        else if (ft.TextureId != Guid.Empty)
         {
-            usedTextures.Add(textureId);
-            var tex = await GetOrCreateGpuTextureAsync(textureId);
+            used.Add(ft.TextureId);
+            var tex = await GetOrCreateGpuTextureAsync(ft.TextureId);
             if (tex != null)
             {
                 Godot.Callable.From(() =>
@@ -417,21 +473,7 @@ public partial class ObjectRenderer : Node3D
             }
         }
 
-        Godot.Callable.From(() => {
-            if (IsInstanceValid(state.MeshInstance))
-            {
-                SetTexturesForVisual(state, usedTextures);
-                state.MeshInstance.MaterialOverride = material;
-            }
-            else
-            {
-                // If it was destroyed while we were fetching, immediately release the refs we just intended to add
-                if (_gpuCache != null)
-                {
-                    foreach (var id in usedTextures) _gpuCache.ReleaseRef(id);
-                }
-            }
-        }).CallDeferred();
+        return (material, used);
     }
 
     /// <summary>Enables alpha-cutout when the texture actually has transparency, so alpha-masked
@@ -498,18 +540,22 @@ public partial class ObjectRenderer : Node3D
         ReleaseMeshRef(state);
 
         ArrayMesh? mesh = _gpuCache?.Get(key) as ArrayMesh;
-        if (mesh != null)
+        if (mesh != null && _meshFaceIndices.ContainsKey(key))
         {
             _gpuCache!.AddRef(key);
         }
         else
         {
-            mesh = BuildArrayMesh(data);
+            mesh = BuildArrayMesh(data, out var faceIndices);
+            _meshFaceIndices[key] = faceIndices;
             _gpuCache?.Put(key, mesh, EstimateMeshSize(data), initialRefCount: 1);
         }
 
         state.MeshInstance.Mesh = mesh;
         state.LoadedMeshKey = key;
+
+        // Geometry surfaces now exist — (re)apply per-face materials.
+        _ = ApplyFaceMaterialsAsync(state);
     }
 
     /// <summary>Drops this object's current shared-mesh reference (if any).</summary>
@@ -530,11 +576,12 @@ public partial class ObjectRenderer : Node3D
         return total > 0 ? total : 1;
     }
 
-    /// <summary>Builds a Godot <see cref="ArrayMesh"/> from neutral mesh data. The result is
-    /// cached and shared across all instances using the same shape/asset.</summary>
-    private static ArrayMesh BuildArrayMesh(MeshData mesh)
+    /// <summary>Builds a Godot <see cref="ArrayMesh"/> from neutral mesh data (one surface per
+    /// submesh) and returns the SL face number of each surface (parallel to surface order).</summary>
+    private static ArrayMesh BuildArrayMesh(MeshData mesh, out int[] faceIndices)
     {
         var arrayMesh = new ArrayMesh();
+        var indices = new List<int>(mesh.Submeshes.Count);
 
         foreach (var sub in mesh.Submeshes)
         {
@@ -556,8 +603,10 @@ public partial class ObjectRenderer : Node3D
 
             st.GenerateTangents();
             st.Commit(arrayMesh);
+            indices.Add(sub.FaceIndex);
         }
 
+        faceIndices = indices.ToArray();
         return arrayMesh;
     }
 

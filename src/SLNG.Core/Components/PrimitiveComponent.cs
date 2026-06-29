@@ -45,7 +45,11 @@ public class PrimitiveComponent : IComponent
     /// <summary>LibreMetaverse SculptType byte (Sphere/Torus/Plane/Cylinder).</summary>
     public byte SculptType { get; set; }
 
-    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0)
+    /// <summary>Per-face textures/colors, indexed by SL face number. Null = use the single
+    /// <see cref="TextureId"/>/<see cref="ColorTint"/> for the whole object.</summary>
+    public FaceTexture[]? Faces { get; set; }
+
+    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0, FaceTexture[]? faces = null)
     {
         Scale = scale;
         ProfileCurve = profileCurve;
@@ -58,5 +62,6 @@ public class PrimitiveComponent : IComponent
         IsSculpt = isSculpt;
         SculptId = sculptId;
         SculptType = sculptType;
+        Faces = faces;
     }
 }

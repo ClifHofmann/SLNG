@@ -101,34 +101,35 @@ public static class PrimMeshService
         }
     }
 
-    /// <summary>Flattens a LibreMetaverse FacetedMesh into one neutral, merged submesh.</summary>
+    /// <summary>Converts a LibreMetaverse FacetedMesh into neutral submeshes — one per prim
+    /// face, tagged with its face number so the renderer can texture each face independently.</summary>
     private static MeshData? Convert(FacetedMesh? faceted)
     {
         if (faceted?.Faces == null || faceted.Faces.Count == 0) return null;
 
-        // Merge all faces into one submesh (single surface = one draw call). Per-face
-        // texturing can split this later if needed.
-        var positions = new List<Vector3>();
-        var normals   = new List<Vector3>();
-        var uvs       = new List<Vector2>();
-        var indices   = new List<int>();
-
+        var submeshes = new List<MeshSubmesh>(faceted.Faces.Count);
         foreach (var face in faceted.Faces)
         {
-            int baseIndex = positions.Count;
-            foreach (var v in face.Vertices)
+            if (face.Vertices == null || face.Indices == null || face.Indices.Count == 0) continue;
+
+            int n = face.Vertices.Count;
+            var positions = new Vector3[n];
+            var normals   = new Vector3[n];
+            var uvs       = new Vector2[n];
+            for (int i = 0; i < n; i++)
             {
-                positions.Add(new Vector3(v.Position.X, v.Position.Y, v.Position.Z));
-                normals.Add(new Vector3(v.Normal.X, v.Normal.Y, v.Normal.Z));
-                uvs.Add(new Vector2(v.TexCoord.X, v.TexCoord.Y));
+                var v = face.Vertices[i];
+                positions[i] = new Vector3(v.Position.X, v.Position.Y, v.Position.Z);
+                normals[i]   = new Vector3(v.Normal.X, v.Normal.Y, v.Normal.Z);
+                uvs[i]       = new Vector2(v.TexCoord.X, v.TexCoord.Y);
             }
-            foreach (var idx in face.Indices)
-                indices.Add(baseIndex + idx);
+
+            var indices = new int[face.Indices.Count];
+            for (int i = 0; i < indices.Length; i++) indices[i] = face.Indices[i];
+
+            submeshes.Add(new MeshSubmesh(positions, normals, uvs, indices, face.ID));
         }
 
-        if (indices.Count == 0) return null;
-
-        var submesh = new MeshSubmesh(positions.ToArray(), normals.ToArray(), uvs.ToArray(), indices.ToArray());
-        return new MeshData(new[] { submesh });
+        return submeshes.Count == 0 ? null : new MeshData(submeshes);
     }
 }

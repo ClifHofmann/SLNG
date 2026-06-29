@@ -27,7 +27,8 @@ public record ObjectUpdateEvent(
     byte ProfileCurve, bool IsMesh, Guid MeshId, Guid TextureId, Guid RenderMaterialId, Vector4 ColorTint,
     uint ParentLocalId, byte AttachmentPoint,
     PrimShape Shape = default,
-    bool IsSculpt = false, Guid SculptId = default, byte SculptType = 0
+    bool IsSculpt = false, Guid SculptId = default, byte SculptType = 0,
+    FaceTexture[]? Faces = null
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar.</summary>

@@ -169,6 +169,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             colorTint = new System.Numerics.Vector4(defaultFace.RGBA.R, defaultFace.RGBA.G, defaultFace.RGBA.B, defaultFace.RGBA.A);
         }
 
+        // Per-face textures: each prim face can have its own texture/colour. Resolve each face
+        // (its own entry, or the default) to a neutral FaceTexture indexed by face number.
+        FaceTexture[]? faces = null;
+        var faceArr = e.Prim.Textures?.FaceTextures;
+        if (faceArr != null && faceArr.Length > 0 && defaultFace != null)
+        {
+            faces = new FaceTexture[faceArr.Length];
+            for (int i = 0; i < faceArr.Length; i++)
+            {
+                var f = faceArr[i] ?? defaultFace;
+                faces[i] = new FaceTexture(
+                    f.TextureID.Guid,
+                    f.RenderMaterialID.Guid,
+                    new System.Numerics.Vector4(f.RGBA.R, f.RGBA.G, f.RGBA.B, f.RGBA.A));
+            }
+        }
+
         // Convert the prim's construction data to a neutral PrimShape so the asset layer can
         // regenerate real geometry without seeing a LibreMetaverse type.
         var pd = e.Prim.PrimData;
@@ -198,7 +215,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             e.Prim.ParentID,
             (byte)e.Prim.PrimData.AttachmentPoint,
             shape,
-            isSculpt, sculptId, sculptType));
+            isSculpt, sculptId, sculptType,
+            faces));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)
