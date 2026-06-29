@@ -120,26 +120,46 @@ public sealed class WorldSimulation : IDisposable
         }
         _world.NotifyComponentUpdated(entity, prim);
 
-        // When the object has a parent, check if the parent is an avatar; if so mark
-        // this entity as an attachment so the renderer can wire it to the correct bone.
-        if (e.ParentLocalId != 0)
+        // An object worn on an avatar carries a non-zero AttachmentPoint. Mark it as an
+        // attachment right away — even if the wearer's avatar entity hasn't streamed in yet.
+        // (Worn mesh often arrives before the avatar; the old code required the avatar to
+        // already exist, so those attachments were dropped and never re-linked.) The
+        // AvatarEntityId is back-filled when the avatar appears — see LinkPendingAttachments.
+        if (e.AttachmentPoint != 0)
         {
-            var parentEntity = _world.GetEntity(e.RegionHandle, e.ParentLocalId);
-            if (parentEntity?.GetComponent<AvatarComponent>() != null)
+            var parentEntity = e.ParentLocalId != 0 ? _world.GetEntity(e.RegionHandle, e.ParentLocalId) : null;
+            var avatarId = parentEntity?.GetComponent<AvatarComponent>() != null ? parentEntity.Id : System.Guid.Empty;
+
+            var attachment = entity.GetComponent<AttachmentComponent>();
+            if (attachment == null)
             {
-                var attachment = entity.GetComponent<AttachmentComponent>();
-                if (attachment == null)
-                {
-                    attachment = new AttachmentComponent(parentEntity.Id, e.AttachmentPoint);
-                    entity.SetComponent(attachment);
-                }
-                else
-                {
-                    attachment.AvatarEntityId = parentEntity.Id;
-                    attachment.AttachmentPoint = e.AttachmentPoint;
-                }
-                _world.NotifyComponentUpdated(entity, attachment);
+                attachment = new AttachmentComponent(avatarId, e.AttachmentPoint);
+                entity.SetComponent(attachment);
             }
+            else
+            {
+                if (avatarId != System.Guid.Empty) attachment.AvatarEntityId = avatarId;
+                attachment.AttachmentPoint = e.AttachmentPoint;
+            }
+            _world.NotifyComponentUpdated(entity, attachment);
+        }
+    }
+
+    /// <summary>Back-fills the avatar link on any attachment that streamed in before its wearer's
+    /// avatar entity existed. Called when an avatar appears/updates.</summary>
+    private void LinkPendingAttachments(ulong region, uint avatarLocalId, System.Guid avatarEntityId)
+    {
+        if (!_children.TryGetValue((region, avatarLocalId), out var set) || set.Count == 0) return;
+
+        foreach (var childId in set.ToList())
+        {
+            var child = _world.GetEntity(childId);
+            var attachment = child?.GetComponent<AttachmentComponent>();
+            if (child == null || attachment == null || attachment.AvatarEntityId == avatarEntityId) continue;
+
+            attachment.AvatarEntityId = avatarEntityId;
+            child.SetComponent(attachment);
+            _world.NotifyComponentUpdated(child, attachment);
         }
     }
 
@@ -218,6 +238,9 @@ public sealed class WorldSimulation : IDisposable
             entity.SetComponent(avatar);
         }
         _world.NotifyComponentUpdated(entity, avatar);
+
+        // Link any worn mesh that arrived before this avatar entity existed.
+        LinkPendingAttachments(e.RegionHandle, e.LocalId, entity.Id);
     }
 
     private void ApplyAvatarAppearance(AvatarAppearanceEvent e)
