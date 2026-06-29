@@ -19,8 +19,10 @@ public partial class TerrainRenderer : Node3D
         {
             Root = new Node3D();
             MeshInstance = new MeshInstance3D();
-            StaticBody = new StaticBody3D();
-            CollisionShape = new CollisionShape3D();
+            StaticBody = new StaticBody3D { Name = "TerrainPhysics" };
+            StaticBody.SetMeta("EntityId", "TERRAIN");
+            StaticBody.SetMeta("LocalId", "TERRAIN");
+            CollisionShape = new CollisionShape3D { Name = "TerrainCollision" };
 
             Root.AddChild(MeshInstance);
             Root.AddChild(StaticBody);
