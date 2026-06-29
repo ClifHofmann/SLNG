@@ -53,6 +53,7 @@ public partial class AvatarController : Camera3D
 
         if (@event is InputEventMouseButton mouseBtn)
         {
+            GD.Print($"[Cam] btn={mouseBtn.ButtonIndex} pressed={mouseBtn.Pressed} alt={mouseBtn.AltPressed}/{Input.IsKeyPressed(Key.Alt)} mode={Input.MouseMode}");
             if (mouseBtn.ButtonIndex == MouseButton.Right)
             {
                 // RMB: orbit (existing behaviour)

@@ -411,7 +411,8 @@ public partial class ObjectRenderer : Node3D
         var material = new StandardMaterial3D
         {
             AlbedoColor = colorTint,
-            TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest,
+            // Linear + mipmaps: SL textures look smooth, not blocky/pixelated, and don't shimmer with distance.
+            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
             CullMode = BaseMaterial3D.CullModeEnum.Disabled
         };
 
