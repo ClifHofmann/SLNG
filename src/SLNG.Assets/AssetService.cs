@@ -234,7 +234,7 @@ public class AssetService
 
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, bool isSculpt)
     {
-        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v8.j2c");
+        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v9.j2c");
 
         if (cacheFile != null && File.Exists(cacheFile))
         {
@@ -516,10 +516,13 @@ public class AssetService
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[AssetService] Magick.NET failed to decode texture ({ex.Message}). Trying padded recovery...");
+            Console.WriteLine($"[AssetService] Magick.NET failed to decode texture ({ex.Message}).");
             
-            try 
+            if (!ex.Message.Contains("Magick dropped alpha"))
             {
+                Console.WriteLine("[AssetService] Trying padded recovery...");
+                try 
+                {
                 byte[] padded = new byte[bytes.Length + 65536];
                 Buffer.BlockCopy(bytes, 0, padded, 0, bytes.Length);
                 padded[padded.Length - 2] = 0xFF;
@@ -574,6 +577,7 @@ public class AssetService
             {
                 Console.WriteLine($"[AssetService] Padded Magick.NET decode also failed: {paddedEx.Message}");
             }
+            } // end if (!ex.Message.Contains(...))
             
             return DecodeWithCoreJ2K(bytes, isSculpt);
         }
