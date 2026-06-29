@@ -1,15 +1,15 @@
-﻿# Handover from Gemini to Claude
+# Handover from Gemini to Claude
 
 **What Gemini accomplished:**
-- Deep-dived into the J2C decoding pipeline and fixed severe visual artifacts (cyan textures, giant stretched planes, missing alpha).
-- **Root cause:** CoreJ2K (used via LibreMetaverse's AssetTexture) has critical bugs: it swaps Red and Blue channels internally, silently drops alpha channels if header flags are malformed, and crashes on truncated streams.
-- **Solution applied:** Completely removed the AssetTexture (CoreJ2K) dependency in AssetService.cs. Forced **every** J2C texture (including sculpt maps) to be decoded by Magick.NET.
-- Magick.NET's GetValues() byte layout correctly maps to RGB (3-channel) and RGBA (4-channel) internally, so direct byte-by-byte copies to Godot now perfectly preserve colors and alpha.
-- Fixed the Alt+Zoom camera bug in AvatarController.cs (vertical mouse motion now correctly zooms instead of pitching, matching SL/Firestorm).
+- Investigated the reason why foliage (trees, leaves, plants) was rendering as massive solid green shapes or incredibly pixelated, blocky cutouts.
+- **Root cause:** The newly added task-based `AssetManager.RequestImageAsync` method in LibreMetaverse bypasses the robust `TexturePipeline`. It fails to perform proper packet reassembly for UDP image transfers in busy regions, timing out and returning severely **truncated** `.j2c` streams. 
+- Because JPEG2000 is progressively encoded, a truncated stream loses the highest-resolution wavelets (and sharp alpha masks). OpenJPEG decodes the truncated stream into a full-size (e.g. 1024x1024) but horribly blurry/pixelated image, resulting in destroyed alpha-scissors and blocky edges.
+- **Solution applied:** Ripped out `RequestImageAsync` in `GridSession.FetchTextureDataAsync` and used reflection to inject the requests directly into LibreMetaverse's internal `TexturePipeline.RequestTexture` method. This delegates the download back to the battle-tested pipeline, restoring robust HTTP fetching and proper UDP packet reassembly.
+- Bumped the local asset cache extension to `_v5.j2c` to automatically invalidate and delete all the broken, truncated textures that were cached on disk.
 
 **Current Status & Pending Issues (for Claude):**
-- Colors, transparency, and terrain textures are now rendering beautifully. The terrain is back to normal!
-- **Corrupted Meshes:** There are still a few corrupted gray meshes generated in the world (e.g. a weird gray triangle sticking out of a wooden bridge, and some tall gray structures in the background). These are likely MeshFoundry (LibreMetaverse's Meshmerizer) bugs when generating specific primitive types (like paths/profiles) or edge cases where Magick.NET decodes sculpt maps slightly differently than System.Drawing.Bitmap did.
-- Claude should investigate why GenerateFacetedSculptMesh is emitting deformed primitive geometry in these specific spots.
+- Trees, textures, and alpha cutouts should now be streaming in sharply and correctly.
+- **Corrupted Meshes:** There are still a few corrupted gray meshes generated in the world (e.g. a weird gray triangle sticking out of a wooden bridge, and some tall gray structures in the background). These are likely `MeshFoundry` (LibreMetaverse's Meshmerizer) bugs when generating specific primitive types (like paths/profiles) or edge cases where `Magick.NET` decodes sculpt maps slightly differently.
+- Claude should investigate why `GenerateFacetedSculptMesh` or primitive generation is emitting deformed geometry in these specific spots.
 
 Next Roadmap Task: (M2-5) Mesh/Material cleanup or hand off to M3 (UI/HUD).
