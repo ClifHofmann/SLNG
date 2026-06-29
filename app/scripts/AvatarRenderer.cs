@@ -389,9 +389,18 @@ public partial class AvatarRenderer : Node3D
         var attachment = entity.GetComponent<AttachmentComponent>();
         if (attachment == null) return;
 
-        // HUD and unmapped points have no world bone.
+        var prim = entity.GetComponent<PrimitiveComponent>();
+
+        // The attachment-point bone only matters for STATIC attachments. A rigged mesh
+        // (mesh body, mesh clothing) carries its own skin weights and ignores the point — so
+        // never drop a mesh attachment just because its point is a HUD/unmapped slot.
         var boneName = AttachmentPointMap.GetBoneName(attachment.AttachmentPoint);
-        if (boneName == null) return;
+        bool isMeshAttachment = prim is { IsMesh: true } && prim.MeshId != Guid.Empty;
+        if (boneName == null && !isMeshAttachment) return;
+        boneName ??= "mPelvis";
+
+        GD.Print($"[Attachment] pt {attachment.AttachmentPoint} bone {boneName} " +
+                 $"mesh {(isMeshAttachment ? prim!.MeshId.ToString() : "no")} entity {entityId:N}");
 
         // Avatar must already be rendered.
         if (!_visuals.TryGetValue(attachment.AvatarEntityId, out var avatarVisual)) return;
@@ -408,7 +417,6 @@ public partial class AvatarRenderer : Node3D
             _attachmentNodes[entityId] = boneAttach;
 
             // Kick off mesh/texture load for mesh attachments.
-            var prim = entity.GetComponent<PrimitiveComponent>();
             if (prim != null)
             {
                 if (prim.IsMesh && prim.MeshId != Guid.Empty)
@@ -441,7 +449,12 @@ public partial class AvatarRenderer : Node3D
         if (_assetService == null) return;
 
         var meshData = await _assetService.GetMeshAsync(meshId).ConfigureAwait(false);
-        if (meshData == null) return;
+        if (meshData == null)
+        {
+            GD.PrintErr($"[Attachment] mesh {meshId} failed to fetch/decode — skipped");
+            return;
+        }
+        GD.Print($"[Attachment] mesh {meshId}: {meshData.Submeshes.Count} submeshes, rigged={meshData.Skin != null}");
 
         // Rigged / fitted mesh (worn mesh bodies and clothing) carries skin data: skin it to
         // the avatar skeleton so it deforms and animates with the body, instead of bolting it
