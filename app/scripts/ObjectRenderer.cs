@@ -480,19 +480,14 @@ public partial class ObjectRenderer : Node3D
         var img = tex.GetImage();
         if (img == null) return;
 
-        var mode = img.DetectAlpha();
-        if (mode == Image.AlphaMode.None) return; // opaque — leave default settings
+        if (img.DetectAlpha() == Image.AlphaMode.None) return; // fully opaque — leave default
 
+        // Use alpha-scissor (cutout) for any texture with alpha. Foliage uses soft-edged alpha
+        // masks that read as "Blend", but they're meant to be cut to a leaf shape — true
+        // alpha-blend turns them into big translucent cards. Cutout is the right SL default.
+        material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+        material.AlphaScissorThreshold = 0.5f;
         material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
-        if (mode == Image.AlphaMode.Bit)
-        {
-            material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-            material.AlphaScissorThreshold = 0.5f;
-        }
-        else // Blend: semi-transparent — keep the gradient instead of hard-cutting it
-        {
-            material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-        }
     }
 
     private async System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)

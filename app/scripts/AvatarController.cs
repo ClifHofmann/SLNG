@@ -80,10 +80,12 @@ public partial class AvatarController : Camera3D
             else if (mouseBtn.ButtonIndex == MouseButton.WheelUp)
             {
                 _zoom = Mathf.Max(0.5f, _zoom - 0.5f);
+                GD.Print($"[AvatarController] Zoom: {_zoom:F1} (WheelUp)");
             }
             else if (mouseBtn.ButtonIndex == MouseButton.WheelDown)
             {
-                _zoom = Mathf.Min(20.0f, _zoom + 0.5f);
+                _zoom = Mathf.Min(50.0f, _zoom + 0.5f);
+                GD.Print($"[AvatarController] Zoom: {_zoom:F1} (WheelDown)");
             }
         }
 
@@ -214,6 +216,16 @@ public partial class AvatarController : Camera3D
                 }
 
                 _world.NotifyComponentUpdated(localAgent, transform);
+
+                // Keyboard zoom polling (+ and - keys)
+                if (Input.IsKeyPressed(Key.Equal) || Input.IsKeyPressed(Key.KpAdd))
+                {
+                    _zoom = Mathf.Max(0.5f, _zoom - 15.0f * (float)delta);
+                }
+                if (Input.IsKeyPressed(Key.Minus) || Input.IsKeyPressed(Key.KpSubtract))
+                {
+                    _zoom = Mathf.Min(50.0f, _zoom + 15.0f * (float)delta);
+                }
 
                 // Floating-origin-relative world position (see RenderConfig), plus eye height.
                 var targetPos = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
