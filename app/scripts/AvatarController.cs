@@ -104,10 +104,10 @@ public partial class AvatarController : Camera3D
             if (_altOrbitActive)
             {
                 // Stays active until the mouse button is released (handled on button-up).
-                // Horizontal = orbit yaw, vertical = orbit pitch
+                // Horizontal = orbit yaw, vertical = zoom (SL standard)
                 _orbitYaw -= mouseMotion.Relative.X * sensitivity;
-                _orbitPitch -= mouseMotion.Relative.Y * sensitivity;
-                _orbitPitch = Mathf.Clamp(_orbitPitch, -1.5f, 1.5f);
+                _zoom += mouseMotion.Relative.Y * 0.05f;
+                _zoom = Mathf.Max(0.5f, _zoom);
             }
             else
             {
