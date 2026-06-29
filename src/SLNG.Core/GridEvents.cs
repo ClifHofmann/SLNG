@@ -25,7 +25,8 @@ public record ObjectUpdateEvent(
     ulong RegionHandle, uint LocalId,
     Vector3 Position, Quaternion Rotation, Vector3 Scale,
     byte ProfileCurve, bool IsMesh, Guid MeshId, Guid TextureId, Guid RenderMaterialId, Vector4 ColorTint,
-    uint ParentLocalId, byte AttachmentPoint,
+    float RepeatU = 1.0f, float RepeatV = 1.0f, float OffsetU = 0.0f, float OffsetV = 0.0f, float TextureRotation = 0.0f,
+    uint ParentLocalId = 0, byte AttachmentPoint = 0,
     PrimShape Shape = default,
     bool IsSculpt = false, Guid SculptId = default, byte SculptType = 0,
     FaceTexture[]? Faces = null

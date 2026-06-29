@@ -351,7 +351,7 @@ public partial class ObjectRenderer : Node3D
         var prim = _world.GetEntity(state.EntityId)?.GetComponent<PrimitiveComponent>();
         if (prim == null) return;
 
-        var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint);
+        var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint, prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation);
 
         // Fallback solid / mesh without per-surface face info: one material for the whole node.
         if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
@@ -413,7 +413,9 @@ public partial class ObjectRenderer : Node3D
             AlbedoColor = colorTint,
             // Linear + mipmaps: SL textures look smooth, not blocky/pixelated, and don't shimmer with distance.
             TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
-            CullMode = BaseMaterial3D.CullModeEnum.Disabled
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            Uv1Scale = new Godot.Vector3(ft.RepeatU, ft.RepeatV, 1.0f),
+            Uv1Offset = new Godot.Vector3(ft.OffsetU, ft.OffsetV, 0.0f)
         };
 
         if (ft.MaterialId != Guid.Empty && _assetService != null)
