@@ -49,6 +49,7 @@ public partial class AvatarController : Camera3D
             _contextMenu.Name = "ContextMenu";
             _contextMenu.AddItem("Inspect (Print IDs to Console)", 0);
             _contextMenu.AddItem("Copy Entity ID", 1);
+            _contextMenu.AddItem("Dump Object Data", 3);
             _contextMenu.AddItem("Touch / Interact", 2);
             _contextMenu.IdPressed += OnContextMenuIdPressed;
             AddChild(_contextMenu);
@@ -64,6 +65,36 @@ public partial class AvatarController : Camera3D
             {
                 DisplayServer.ClipboardSet(_lastClickedEntityId);
                 GD.Print($"Copied {_lastClickedEntityId} to clipboard!");
+            }
+            else if (id == 3)
+            {
+                if (System.Guid.TryParse(_lastClickedEntityId, out var guid))
+                {
+                    var entity = _world?.GetEntity(guid);
+                    if (entity != null)
+                    {
+                        var prim = entity.GetComponent<SLNG.Core.Components.PrimitiveComponent>();
+                        var transform = entity.GetComponent<SLNG.Core.Components.TransformComponent>();
+                        GD.Print($"\n=== [Dump Object Data] ===");
+                        GD.Print($"EntityId: {entity.Id}");
+                        if (transform != null)
+                        {
+                            GD.Print($"Position: {transform.Position}");
+                            GD.Print($"Rotation: {transform.Rotation}");
+                        }
+                        if (prim != null)
+                        {
+                            GD.Print($"Scale: {prim.Scale}");
+                            GD.Print($"TextureId: {prim.TextureId}");
+                            GD.Print($"MaterialId: {prim.RenderMaterialId}");
+                            GD.Print($"IsSculpt: {prim.IsSculpt}");
+                            GD.Print($"SculptId: {prim.SculptId}");
+                            GD.Print($"SculptType: {prim.SculptType}");
+                            GD.Print($"Shape: {prim.Shape}");
+                        }
+                        GD.Print($"==========================\n");
+                    }
+                }
             }
             else if (id == 2)
             {
