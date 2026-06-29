@@ -126,11 +126,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         bool isMesh = false;
         Guid meshId = Guid.Empty;
+        bool isSculpt = false;
+        Guid sculptId = Guid.Empty;
+        byte sculptType = 0;
 
-        if (e.Prim.Sculpt != null && e.Prim.Sculpt.Type == LibreMetaverse.SculptType.Mesh)
+        if (e.Prim.Sculpt != null && e.Prim.Sculpt.SculptTexture != LibreMetaverse.UUID.Zero)
         {
-            isMesh = true;
-            meshId = e.Prim.Sculpt.SculptTexture.Guid;
+            if (e.Prim.Sculpt.Type == LibreMetaverse.SculptType.Mesh)
+            {
+                isMesh = true;
+                meshId = e.Prim.Sculpt.SculptTexture.Guid;
+            }
+            else if (e.Prim.Sculpt.Type != LibreMetaverse.SculptType.None)
+            {
+                // Sphere/Torus/Plane/Cylinder sculpt: geometry comes from the sculpt-map texture.
+                isSculpt = true;
+                sculptId = e.Prim.Sculpt.SculptTexture.Guid;
+                sculptType = (byte)e.Prim.Sculpt.Type;
+            }
         }
 
         Guid textureId = Guid.Empty;
@@ -173,7 +186,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             colorTint,
             e.Prim.ParentID,
             (byte)e.Prim.PrimData.AttachmentPoint,
-            shape));
+            shape,
+            isSculpt, sculptId, sculptType));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)

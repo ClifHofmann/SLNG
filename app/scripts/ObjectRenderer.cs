@@ -218,7 +218,17 @@ public partial class ObjectRenderer : Node3D
                     _ = LoadAndApplyMeshAsync(state, prim.MeshId);
                 }
             }
-            else if (_assetService != null && state.LoadedPrimShape != prim.Shape)
+            else if (prim.IsSculpt && _assetService != null && prim.SculptId != Guid.Empty)
+            {
+                // Sculpted prim: geometry comes from the sculpt-map texture, not the profile/path.
+                if (state.LoadedMeshId != prim.SculptId)
+                {
+                    state.LoadedMeshId = prim.SculptId;
+                    state.LoadedPrimShape = null;
+                    _ = LoadAndApplySculptMeshAsync(state, prim.SculptId, prim.SculptType, prim.ProfileCurve);
+                }
+            }
+            else if (_assetService != null && !prim.IsSculpt && state.LoadedPrimShape != prim.Shape)
             {
                 // Procedural prim: generate its real geometry (profile/path/cut/hollow/twist)
                 // off-thread instead of a box placeholder. Re-requested only when the shape
@@ -272,6 +282,35 @@ public partial class ObjectRenderer : Node3D
             if (!IsInstanceValid(state.MeshInstance)) return;
             if (state.LoadedMeshId != meshId) return; // shape/asset changed while loading
             AssignSharedMesh(state, meshId, mesh);
+        }).CallDeferred();
+    }
+
+    private async System.Threading.Tasks.Task LoadAndApplySculptMeshAsync(VisualState state, Guid sculptId, byte sculptType, byte profileCurve)
+    {
+        if (_assetService == null) return;
+
+        var mesh = await _assetService.GetSculptMeshAsync(sculptId, sculptType);
+
+        Godot.Callable.From(() =>
+        {
+            if (!IsInstanceValid(state.MeshInstance)) return;
+            if (state.LoadedMeshId != sculptId) return; // changed while meshing
+
+            if (mesh != null && mesh.Submeshes.Count > 0)
+            {
+                AssignSharedMesh(state, sculptId, mesh);
+            }
+            else
+            {
+                // Sculpt map not ready / undecodable — show a placeholder solid for now.
+                ReleaseMeshRef(state);
+                state.MeshInstance.Mesh = profileCurve switch
+                {
+                    0 => _cylinderMesh,
+                    5 => _sphereMesh,
+                    _ => _boxMesh,
+                };
+            }
         }).CallDeferred();
     }
 

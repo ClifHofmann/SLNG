@@ -88,7 +88,7 @@ public sealed class WorldSimulation : IDisposable
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim == null)
         {
-            prim = new PrimitiveComponent(e.Scale, e.ProfileCurve, e.IsMesh, e.MeshId, e.TextureId, e.RenderMaterialId, e.ColorTint, e.Shape);
+            prim = new PrimitiveComponent(e.Scale, e.ProfileCurve, e.IsMesh, e.MeshId, e.TextureId, e.RenderMaterialId, e.ColorTint, e.Shape, e.IsSculpt, e.SculptId, e.SculptType);
             entity.SetComponent(prim);
         }
         else
@@ -101,6 +101,9 @@ public sealed class WorldSimulation : IDisposable
             prim.RenderMaterialId = e.RenderMaterialId;
             prim.ColorTint = e.ColorTint;
             prim.Shape = e.Shape;
+            prim.IsSculpt = e.IsSculpt;
+            prim.SculptId = e.SculptId;
+            prim.SculptType = e.SculptType;
             entity.SetComponent(prim);
         }
         _world.NotifyComponentUpdated(entity, prim);

@@ -28,6 +28,7 @@ public class AssetService
     private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _inflightMaterials = new();
     private readonly ConcurrentDictionary<Guid, Task<AnimationData?>> _inflightAnimations = new();
     private readonly ConcurrentDictionary<PrimShape, Task<MeshData?>> _inflightPrimMeshes = new();
+    private readonly ConcurrentDictionary<Guid, Task<MeshData?>> _inflightSculptMeshes = new();
 
     public AssetService(GridSession session, string cacheDirectory)
     {
@@ -70,6 +71,36 @@ public class AssetService
                 return result;
             } finally {
                 _inflightPrimMeshes.TryRemove(s, out _);
+            }
+        });
+    }
+
+    /// <summary>
+    /// Generates (and caches) geometry for a sculpted prim from its sculpt-map texture. The map
+    /// is fetched/decoded through the normal texture path; meshing runs on a worker thread.
+    /// Returns null if the map can't be fetched/decoded or meshed.
+    /// </summary>
+    public Task<MeshData?> GetSculptMeshAsync(Guid sculptId, byte sculptType)
+    {
+        object cacheKey = $"sculptmesh:{sculptId}:{sculptType}";
+        if (_memCache.TryGetValue(cacheKey, out MeshData? cached))
+        {
+            return Task.FromResult(cached);
+        }
+        return _inflightSculptMeshes.GetOrAdd(sculptId, async id => {
+            try {
+                var map = await GetTextureAsync(id).ConfigureAwait(false);
+                if (map == null) return null;
+
+                var result = await Task.Run(() =>
+                    PrimMeshService.GenerateSculpt(map.Rgba, map.Width, map.Height, sculptType)).ConfigureAwait(false);
+                if (result != null) {
+                    long size = EstimateMeshSize(result);
+                    _memCache.Set(cacheKey, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
+                }
+                return result;
+            } finally {
+                _inflightSculptMeshes.TryRemove(id, out _);
             }
         });
     }

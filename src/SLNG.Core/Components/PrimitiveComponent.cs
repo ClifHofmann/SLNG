@@ -35,7 +35,17 @@ public class PrimitiveComponent : IComponent
     /// </summary>
     public PrimShape Shape { get; set; }
 
-    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, PrimShape shape = default)
+    /// <summary>True if this is a sculpted prim (not a mesh asset): its geometry comes from a
+    /// sculpt-map texture (<see cref="SculptId"/>) interpreted per <see cref="SculptType"/>.</summary>
+    public bool IsSculpt { get; set; }
+
+    /// <summary>UUID of the sculpt-map texture, when <see cref="IsSculpt"/> is true.</summary>
+    public Guid SculptId { get; set; }
+
+    /// <summary>LibreMetaverse SculptType byte (Sphere/Torus/Plane/Cylinder).</summary>
+    public byte SculptType { get; set; }
+
+    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0)
     {
         Scale = scale;
         ProfileCurve = profileCurve;
@@ -45,5 +55,8 @@ public class PrimitiveComponent : IComponent
         RenderMaterialId = renderMaterialId;
         ColorTint = colorTint;
         Shape = shape;
+        IsSculpt = isSculpt;
+        SculptId = sculptId;
+        SculptType = sculptType;
     }
 }
