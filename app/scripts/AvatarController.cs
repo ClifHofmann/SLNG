@@ -183,10 +183,17 @@ public partial class AvatarController : Camera3D
 
                 // Terrain floor. Walking snaps to the ground and applies gravity; flying just
                 // refuses to sink below the ground (so it holds altitude instead of falling).
-                if (_world.Terrains.TryGetValue(localAgent.RegionHandle, out var terrain))
+                // Only when we actually have heightmap data under the avatar: on a varregion
+                // (coords > our 256 heightmap) there is no local ground, so applying gravity
+                // would yank the avatar to a clamped corner height — that was the "falling on
+                // landing". Outside the map we leave Z to the server / fly controls.
+                int rawX = (int)transform.Position.X;
+                int rawY = (int)transform.Position.Y;
+                if (_world.Terrains.TryGetValue(localAgent.RegionHandle, out var terrain)
+                    && rawX >= 0 && rawX < terrain.Width && rawY >= 0 && rawY < terrain.Height)
                 {
-                    int tx = (int)Mathf.Clamp(transform.Position.X, 0, terrain.Width - 1);
-                    int ty = (int)Mathf.Clamp(transform.Position.Y, 0, terrain.Height - 1);
+                    int tx = rawX;
+                    int ty = rawY;
                     float groundHeight = terrain.GetHeights()[ty * terrain.Width + tx];
 
                     if (_flying)
