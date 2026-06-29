@@ -89,7 +89,7 @@ public class AssetService
         }
         return _inflightSculptMeshes.GetOrAdd(sculptId, async id => {
             try {
-                var map = await GetTextureAsync(id, true).ConfigureAwait(false);
+                var map = await GetTextureAsync(id).ConfigureAwait(false);
                 if (map == null) return null;
 
                 var result = await Task.Run(() =>
@@ -211,7 +211,7 @@ public class AssetService
     /// Fetches and decodes a texture (JPEG2000) by UUID into engine-neutral RGBA, or null
     /// if it cannot be decoded. Concurrent requests for the same id share one fetch/decode.
     /// </summary>
-    public Task<TextureData?> GetTextureAsync(Guid textureId, bool isSculpt = false)
+    public Task<TextureData?> GetTextureAsync(Guid textureId)
     {
         if (_memCache.TryGetValue(textureId, out TextureData? cached))
         {
@@ -219,7 +219,7 @@ public class AssetService
         }
         return _inflightTextures.GetOrAdd(textureId, async id => {
             try {
-                var result = await FetchAndDecodeTextureAsync(id, isSculpt).ConfigureAwait(false);
+                var result = await FetchAndDecodeTextureAsync(id).ConfigureAwait(false);
                 if (result != null) {
                     long size = result.Width * result.Height * 4;
                     if (size <= 0) size = 1024;
@@ -232,7 +232,7 @@ public class AssetService
         });
     }
 
-    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, bool isSculpt)
+    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId)
     {
         string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + ".j2c");
 
@@ -244,7 +244,7 @@ public class AssetService
             try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
             if (cached != null && cached.Length > 0)
             {
-                var decodedFromCache = await Task.Run(() => DecodeTexture(cached, isSculpt)).ConfigureAwait(false);
+                var decodedFromCache = await Task.Run(() => DecodeTexture(cached)).ConfigureAwait(false);
                 if (decodedFromCache != null) return decodedFromCache;
                 try { File.Delete(cacheFile); } catch { }
             }
@@ -260,7 +260,7 @@ public class AssetService
             var bytes = await _session.FetchTextureDataAsync(textureId).ConfigureAwait(false);
             if (bytes is { Length: > 0 })
             {
-                var result = await Task.Run(() => DecodeTexture(bytes, isSculpt)).ConfigureAwait(false);
+                var result = await Task.Run(() => DecodeTexture(bytes)).ConfigureAwait(false);
                 if (result != null)
                 {
                     if (cacheFile != null)
@@ -421,53 +421,16 @@ public class AssetService
         }
     }
 
-    private static TextureData? DecodeTexture(byte[] bytes, bool isSculpt)
+    private static TextureData? DecodeTexture(byte[] bytes)
     {
-        // Sculpt maps MUST use CoreJ2K because Magick.NET often misinterprets their dimensions (e.g. 16x256 instead of 64x64)
-        // which completely corrupts the 3D geometry.
-        if (isSculpt)
-        {
-            try
-            {
-                var asset = new LibreMetaverse.Assets.AssetTexture(new LibreMetaverse.UUID(), bytes);
-                if (asset.Decode() && asset.Image != null)
-                {
-                    int width = asset.Image.Width;
-                    int height = asset.Image.Height;
-                    bool hasColor = asset.Image.Red != null && asset.Image.Green != null && asset.Image.Blue != null;
-                    
-                    if (hasColor)
-                    {
-                        var red = asset.Image.Red!;
-                        var green = asset.Image.Green!;
-                        var blue = asset.Image.Blue!;
-                        byte[] rgba = new byte[width * height * 4];
+        // We completely bypass LibreMetaverse.Assets.AssetTexture (CoreJ2K).
+        // CoreJ2K has severe bugs: it crashes on truncated streams, silently drops alpha 
+        // channels if header flags are missing, and swaps Red/Blue channels.
+        // Instead, we use Magick.NET for ALL J2C decoding.
 
-                        for (int i = 0; i < width * height; i++)
-                        {
-                            // CoreJ2K swaps Red and Blue channels internally. For sculpt maps, Red=X and Blue=Z.
-                            // If we don't swap them back, horizontal planes become vertical walls (and vice-versa).
-                            rgba[i * 4] = blue[i];
-                            rgba[i * 4 + 1] = green[i];
-                            rgba[i * 4 + 2] = red[i];
-                            rgba[i * 4 + 3] = 255; // Alpha doesn't matter for sculpt maps
-                        }
-                        
-                        Console.WriteLine($"[AssetService] SculptMap decoded via CoreJ2K: {width}x{height}");
-                        return new TextureData(width, height, rgba);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[AssetService] CoreJ2K failed to decode sculpt map: {ex.Message}");
-            }
-            return null;
-        }
-
-        // Normal textures MUST use Magick.NET because CoreJ2K drops alpha channels on malformed SL bitstreams.
         try
         {
+            // Magick.NET wraps OpenJPEG and seamlessly handles malformed J2C bitstreams (missing EOC, trailing padding, etc.) that crash CoreJ2K.
             using var image = new ImageMagick.MagickImage(bytes);
             
             int width = (int)image.Width;
@@ -480,6 +443,7 @@ public class AssetService
                 if (image.ChannelCount == 4)
                 {
                     rgba = new byte[width * height * 4];
+                    // GetValues returns RGBA for 4-channel sRGB images.
                     for (int i = 0; i < raw.Length; i += 4)
                     {
                         rgba[i] = raw[i];         // R
@@ -491,6 +455,7 @@ public class AssetService
                 else if (image.ChannelCount == 3)
                 {
                     rgba = new byte[width * height * 4];
+                    // GetValues returns RGB for 3-channel sRGB images.
                     for (int i = 0, j = 0; i < raw.Length; i += 3, j += 4)
                     {
                         rgba[j] = raw[i];         // R
@@ -511,6 +476,9 @@ public class AssetService
         }
         catch (Exception ex)
         {
+            // Return null (not a magenta placeholder): null is not cached, so the texture is
+            // re-fetched/re-decoded next time instead of being locked to a fallback, and the
+            // caller can drop a poisoned disk-cache entry. The surface keeps its base colour.
             Console.WriteLine($"[AssetService] Magick.NET failed to decode texture: {ex.Message}");
             return null;
         }
