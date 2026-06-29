@@ -418,29 +418,50 @@ public class AssetService
 
     private static TextureData? DecodeTexture(byte[] bytes, bool isSculpt = false)
     {
-        // We completely bypass LibreMetaverse.Assets.AssetTexture (CoreJ2K).
-        // CoreJ2K has severe bugs: it crashes on truncated streams, silently drops alpha 
-        // channels if header flags are missing, and swaps Red/Blue channels.
-        // Instead, we use Magick.NET for ALL J2C decoding.
-
         try
         {
             // Magick.NET wraps OpenJPEG and seamlessly handles malformed J2C bitstreams (missing EOC, trailing padding, etc.) that crash CoreJ2K.
-            using var image = new ImageMagick.MagickImage(bytes);
+            var settings = new ImageMagick.MagickReadSettings { Format = ImageMagick.MagickFormat.J2c };
+            using var image = new ImageMagick.MagickImage(bytes, settings);
             
             int width = (int)image.Width;
             int height = (int)image.Height;
 
             // Sculpt maps MUST be 64x64 for MeshFoundry to build the correct 3D topology.
-            // Creators sometimes upload 16x256 or 128x128 images. If we just reshape the 1D array, 
-            // we scramble the UV mapping (causing pixelated textures). If we leave it as 16x256,
-            // the 3D shape becomes jagged intersecting planes. Resizing the image to 64x64 is what 
-            // the SL viewer does internally.
             if (isSculpt && (width != 64 || height != 64))
             {
                 image.Resize(new ImageMagick.MagickGeometry("64x64!") { IgnoreAspectRatio = true });
                 width = (int)image.Width;
                 height = (int)image.Height;
+            }
+            else if (!isSculpt)
+            {
+                // For normal textures, verify if Magick.NET decoded a low-res thumbnail instead of the full image
+                int trueWidth = -1, trueHeight = -1;
+                for (int i = 0; i < bytes.Length - 13; i++)
+                {
+                    if (bytes[i] == 0xFF && bytes[i + 1] == 0x51) // SIZ marker
+                    {
+                        trueWidth = (bytes[i + 6] << 24) | (bytes[i + 7] << 16) | (bytes[i + 8] << 8) | bytes[i + 9];
+                        trueHeight = (bytes[i + 10] << 24) | (bytes[i + 11] << 16) | (bytes[i + 12] << 8) | bytes[i + 13];
+                        break;
+                    }
+                }
+                
+                if (trueWidth > 0 && trueHeight > 0 && (width * height < trueWidth * trueHeight))
+                {
+                    throw new Exception($"Decoded thumbnail {width}x{height}, expected {trueWidth}x{trueHeight}");
+                }
+            }
+
+            // Ensure we have RGBA output
+            if (image.HasAlpha)
+            {
+                image.ColorSpace = ImageMagick.ColorSpace.Transparent;
+            }
+            else
+            {
+                image.ColorSpace = ImageMagick.ColorSpace.sRGB;
             }
 
             byte[] rgba = Array.Empty<byte>();
@@ -469,7 +490,7 @@ public class AssetService
                         rgba[j] = raw[i];         // R
                         rgba[j + 1] = raw[i + 1]; // G
                         rgba[j + 2] = raw[i + 2]; // B
-                        rgba[j + 3] = 255;        // A (Opaque)
+                        rgba[j + 3] = 255;        // A
                     }
                 }
                 else
@@ -484,10 +505,43 @@ public class AssetService
         }
         catch (Exception ex)
         {
-            // Return null (not a magenta placeholder): null is not cached, so the texture is
-            // re-fetched/re-decoded next time instead of being locked to a fallback, and the
-            // caller can drop a poisoned disk-cache entry. The surface keeps its base colour.
-            Console.WriteLine($"[AssetService] Magick.NET failed to decode texture: {ex.Message}");
+            Console.WriteLine($"[AssetService] Magick.NET failed to decode texture ({ex.Message}), falling back to CoreJ2K...");
+            
+            try
+            {
+                var asset = new LibreMetaverse.Assets.AssetTexture(new LibreMetaverse.UUID(), bytes);
+                if (asset.Decode() && asset.Image != null)
+                {
+                    int width = asset.Image.Width;
+                    int height = asset.Image.Height;
+                    bool hasColor = asset.Image.Red != null && asset.Image.Green != null && asset.Image.Blue != null;
+                    
+                    if (hasColor)
+                    {
+                        var red = asset.Image.Red!;
+                        var green = asset.Image.Green!;
+                        var blue = asset.Image.Blue!;
+                        var alpha = asset.Image.Alpha;
+                        
+                        byte[] rgba = new byte[width * height * 4];
+
+                        for (int i = 0; i < width * height; i++)
+                        {
+                            rgba[i * 4] = red[i];
+                            rgba[i * 4 + 1] = green[i];
+                            rgba[i * 4 + 2] = blue[i];
+                            rgba[i * 4 + 3] = alpha != null ? alpha[i] : (byte)255;
+                        }
+                        
+                        Console.WriteLine($"[AssetService] Fallback CoreJ2K decode successful: {width}x{height}");
+                        return new TextureData(width, height, rgba);
+                    }
+                }
+            }
+            catch (Exception ex2)
+            {
+                Console.WriteLine($"[AssetService] CoreJ2K fallback also failed: {ex2.Message}");
+            }
             return null;
         }
     }
