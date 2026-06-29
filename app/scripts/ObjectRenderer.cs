@@ -1,11 +1,11 @@
-using Godot;
-using SLNG.Core;
-using SLNG.Core.ECS;
-using SLNG.Core.Components;
-using SLNG.Assets;
-using System.Collections.Generic;
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using Godot;
+using SLNG.Assets;
+using SLNG.Core;
+using SLNG.Core.Components;
+using SLNG.Core.ECS;
 
 namespace SLNG.App;
 
@@ -80,7 +80,15 @@ public partial class ObjectRenderer : Node3D
 
     private void OnComponentUpdated(object? sender, ComponentEventArgs e)
     {
-        CallDeferred(nameof(UpdateVisual), e.Entity.Id.ToString());
+        if (e.Component is PrimitiveComponent || e.Component is TransformComponent)
+        {
+            CallDeferred(nameof(UpdateVisual), e.Entity.Id.ToString());
+        }
+        else if (e.Component is AttachmentComponent)
+        {
+            // If an object becomes an attachment, remove its standalone visual.
+            CallDeferred(nameof(RemoveVisual), e.Entity.Id.ToString());
+        }
     }
 
     private double _cullAccum = 0;
@@ -156,6 +164,9 @@ public partial class ObjectRenderer : Node3D
         if (entity == null) return;
         if (_visuals.ContainsKey(entityId)) return;
 
+        // Do not render attachments as standalone objects.
+        if (entity.GetComponent<AttachmentComponent>() != null) return;
+
         var state = new VisualState
         {
             EntityId = entity.Id,
@@ -196,12 +207,12 @@ public partial class ObjectRenderer : Node3D
     private void SetTexturesForVisual(VisualState state, List<Guid> newTextureIds)
     {
         if (_gpuCache == null) return;
-        
+
         foreach (var old in state.UsedTextureIds)
         {
             if (!newTextureIds.Contains(old)) _gpuCache.ReleaseRef(old);
         }
-        
+
         foreach (var newTex in newTextureIds)
         {
             if (!state.UsedTextureIds.Contains(newTex)) _gpuCache.AddRef(newTex);
@@ -222,54 +233,57 @@ public partial class ObjectRenderer : Node3D
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim != null)
         {
+            // Do not render attachments as standalone objects. They are handled by AvatarRenderer.
+            if (entity.GetComponent<AttachmentComponent>() != null) return;
+
             // Skip all asset loading while the object is released (out of draw distance). The
             // cull pass clears ResourcesReleased and re-calls UpdateVisual when it returns; only
             // position/scale are kept current here so the distance check stays accurate.
             if (!state.ResourcesReleased)
             {
-            // Only (re)load the mesh when it actually changes — UpdateVisual fires on every
-            // ObjectUpdate (i.e. every position change), and rebuilding the mesh each time is
-            // what stalls the main thread on a busy region.
-            if (prim.IsMesh && _assetService != null && prim.MeshId != Guid.Empty)
-            {
-                if (state.LoadedMeshId != prim.MeshId)
+                // Only (re)load the mesh when it actually changes — UpdateVisual fires on every
+                // ObjectUpdate (i.e. every position change), and rebuilding the mesh each time is
+                // what stalls the main thread on a busy region.
+                if (prim.IsMesh && _assetService != null && prim.MeshId != Guid.Empty)
                 {
-                    state.LoadedMeshId = prim.MeshId;
-                    state.LoadedPrimShape = null;
-                    _ = LoadAndApplyMeshAsync(state, prim.MeshId);
+                    if (state.LoadedMeshId != prim.MeshId)
+                    {
+                        state.LoadedMeshId = prim.MeshId;
+                        state.LoadedPrimShape = null;
+                        _ = LoadAndApplyMeshAsync(state, prim.MeshId);
+                    }
                 }
-            }
-            else if (prim.IsSculpt && _assetService != null && prim.SculptId != Guid.Empty)
-            {
-                // Sculpted prim: geometry comes from the sculpt-map texture, not the profile/path.
-                if (state.LoadedMeshId != prim.SculptId)
+                else if (prim.IsSculpt && _assetService != null && prim.SculptId != Guid.Empty)
                 {
-                    state.LoadedMeshId = prim.SculptId;
-                    state.LoadedPrimShape = null;
-                    _ = LoadAndApplySculptMeshAsync(state, prim.SculptId, prim.SculptType, prim.ProfileCurve);
+                    // Sculpted prim: geometry comes from the sculpt-map texture, not the profile/path.
+                    if (state.LoadedMeshId != prim.SculptId)
+                    {
+                        state.LoadedMeshId = prim.SculptId;
+                        state.LoadedPrimShape = null;
+                        _ = LoadAndApplySculptMeshAsync(state, prim.SculptId, prim.SculptType, prim.ProfileCurve);
+                    }
                 }
-            }
-            else if (_assetService != null && !prim.IsSculpt && state.LoadedPrimShape != prim.Shape)
-            {
-                // Procedural prim: generate its real geometry (profile/path/cut/hollow/twist)
-                // off-thread instead of a box placeholder. Re-requested only when the shape
-                // changes. Falls back to a primitive solid if meshing fails.
-                state.LoadedPrimShape = prim.Shape;
-                state.LoadedMeshId = Guid.Empty;
-                _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve);
-            }
+                else if (_assetService != null && !prim.IsSculpt && state.LoadedPrimShape != prim.Shape)
+                {
+                    // Procedural prim: generate its real geometry (profile/path/cut/hollow/twist)
+                    // off-thread instead of a box placeholder. Re-requested only when the shape
+                    // changes. Falls back to a primitive solid if meshing fails.
+                    state.LoadedPrimShape = prim.Shape;
+                    state.LoadedMeshId = Guid.Empty;
+                    _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve);
+                }
 
-            // Re-apply materials when the default texture/material changes (a proxy for "the
-            // object's appearance changed"). The mesh-assignment callback also re-applies once
-            // surfaces exist; here covers texture-only changes on an already-loaded mesh.
-            if (_assetService != null
-                && (prim.TextureId != state.LoadedTextureId || prim.RenderMaterialId != state.LoadedMaterialId))
-            {
-                state.LoadedTextureId = prim.TextureId;
-                state.LoadedMaterialId = prim.RenderMaterialId;
-                if (state.LoadedMeshKey != Guid.Empty)
-                    _ = ApplyFaceMaterialsAsync(state);
-            }
+                // Re-apply materials when the default texture/material changes (a proxy for "the
+                // object's appearance changed"). The mesh-assignment callback also re-applies once
+                // surfaces exist; here covers texture-only changes on an already-loaded mesh.
+                if (_assetService != null
+                    && (prim.TextureId != state.LoadedTextureId || prim.RenderMaterialId != state.LoadedMaterialId))
+                {
+                    state.LoadedTextureId = prim.TextureId;
+                    state.LoadedMaterialId = prim.RenderMaterialId;
+                    if (state.LoadedMeshKey != Guid.Empty)
+                        _ = ApplyFaceMaterialsAsync(state);
+                }
             }
 
             state.MeshInstance.Scale = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y);
@@ -547,8 +561,9 @@ public partial class ObjectRenderer : Node3D
 
         // Create on main thread, but we can do it via CallDeferred and TaskCompletionSource
         var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
-        
-        Godot.Callable.From(() => {
+
+        Godot.Callable.From(() =>
+        {
             var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
             image.GenerateMipmaps(); // so LinearWithMipmaps actually filters — no shimmer/aliasing at distance
             var tex = ImageTexture.CreateFromImage(image);
@@ -597,7 +612,7 @@ public partial class ObjectRenderer : Node3D
 
         state.MeshInstance.Mesh = mesh;
         state.LoadedMeshKey = key;
-        
+
         if (mesh != null)
         {
             state.CollisionShape.Shape = mesh.CreateTrimeshShape();

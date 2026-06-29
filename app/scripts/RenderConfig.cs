@@ -1,6 +1,6 @@
 using Godot;
-using SLNG.Core.ECS;
 using SLNG.Core.Components;
+using SLNG.Core.ECS;
 
 namespace SLNG.App;
 

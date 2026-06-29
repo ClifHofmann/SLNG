@@ -125,26 +125,23 @@ public sealed class WorldSimulation : IDisposable
         }
         _world.NotifyComponentUpdated(entity, prim);
 
-        // When the object has a parent, check if the parent is an avatar; if so mark
-        // this entity as an attachment so the renderer can wire it to the correct bone.
-        if (e.ParentLocalId != 0)
+        // If the object has a non-zero attachment point, it is an attachment.
+        // Even if the parent (avatar) hasn't arrived yet, we can tag it.
+        if (e.AttachmentPoint != 0 && e.ParentLocalId != 0)
         {
-            var parentEntity = _world.GetEntity(e.RegionHandle, e.ParentLocalId);
-            if (parentEntity?.GetComponent<AvatarComponent>() != null)
+            var parentEntity = _world.GetOrCreateEntity(e.RegionHandle, e.ParentLocalId);
+            var attachment = entity.GetComponent<AttachmentComponent>();
+            if (attachment == null)
             {
-                var attachment = entity.GetComponent<AttachmentComponent>();
-                if (attachment == null)
-                {
-                    attachment = new AttachmentComponent(parentEntity.Id, e.AttachmentPoint);
-                    entity.SetComponent(attachment);
-                }
-                else
-                {
-                    attachment.AvatarEntityId = parentEntity.Id;
-                    attachment.AttachmentPoint = e.AttachmentPoint;
-                }
-                _world.NotifyComponentUpdated(entity, attachment);
+                attachment = new AttachmentComponent(parentEntity.Id, e.AttachmentPoint);
+                entity.SetComponent(attachment);
             }
+            else
+            {
+                attachment.AvatarEntityId = parentEntity.Id;
+                attachment.AttachmentPoint = e.AttachmentPoint;
+            }
+            _world.NotifyComponentUpdated(entity, attachment);
         }
     }
 
@@ -268,12 +265,12 @@ public sealed class WorldSimulation : IDisposable
         terrain.TerrainDetail1 = e.Detail1;
         terrain.TerrainDetail2 = e.Detail2;
         terrain.TerrainDetail3 = e.Detail3;
-        
+
         Array.Copy(e.StartHeights, terrain.TerrainStartHeights, 4);
         Array.Copy(e.HeightRanges, terrain.TerrainHeightRanges, 4);
-        
+
         terrain.WaterHeight = e.WaterHeight;
-        
+
         _world.NotifyTerrainSettingsUpdated(e.RegionHandle);
     }
 

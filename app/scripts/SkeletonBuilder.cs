@@ -1,6 +1,6 @@
+using System.Collections.Generic;
 using Godot;
 using SLNG.Core;
-using System.Collections.Generic;
 
 namespace SLNG.App;
 

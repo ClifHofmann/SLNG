@@ -1,7 +1,7 @@
-using Xunit;
-using SLNG.Core;
 using System.IO;
 using System.Linq;
+using SLNG.Core;
+using Xunit;
 
 namespace SLNG.Core.Tests;
 

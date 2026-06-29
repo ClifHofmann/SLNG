@@ -1,6 +1,6 @@
-using Godot;
 using System;
 using System.Collections.Generic;
+using Godot;
 
 namespace SLNG.App;
 
@@ -22,7 +22,7 @@ public class GpuCache
 
     private readonly Dictionary<Guid, CacheEntry> _cache = new();
     private readonly LinkedList<CacheEntry> _lruList = new();
-    
+
     private long _currentSize = 0;
     private readonly long _maxSize;
 

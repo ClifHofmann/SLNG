@@ -77,25 +77,25 @@ public static class AvatarBodyMeshService
 
                 int n = lmesh.Vertices.Length;
                 var positions = new Vector3[n];
-                var normals   = new Vector3[n];
-                var uvs       = new Vector2[n];
-                var b1Names   = new string?[n];
+                var normals = new Vector3[n];
+                var uvs = new Vector2[n];
+                var b1Names = new string?[n];
                 var b1Weights = new float[n];
-                var b2Names   = new string?[n];
+                var b2Names = new string?[n];
                 var b2Weights = new float[n];
 
                 for (int i = 0; i < n; i++)
                 {
                     var v = lmesh.Vertices[i];
                     positions[i] = new Vector3(v.Coord.X, v.Coord.Y, v.Coord.Z);
-                    normals[i]   = new Vector3(v.Normal.X, v.Normal.Y, v.Normal.Z);
-                    uvs[i]       = new Vector2(v.TexCoord.X, v.TexCoord.Y);
+                    normals[i] = new Vector3(v.Normal.X, v.Normal.Y, v.Normal.Z);
+                    uvs[i] = new Vector2(v.TexCoord.X, v.TexCoord.Y);
 
                     if (lmesh.SkinWeights != null && i < lmesh.SkinWeights.Count)
                     {
-                        b1Names[i]   = lmesh.SkinWeights[i].Bone1;
+                        b1Names[i] = lmesh.SkinWeights[i].Bone1;
                         b1Weights[i] = lmesh.SkinWeights[i].Weight1;
-                        b2Names[i]   = lmesh.SkinWeights[i].Bone2;
+                        b2Names[i] = lmesh.SkinWeights[i].Bone2;
                         b2Weights[i] = lmesh.SkinWeights[i].Weight2;
                     }
                     else
@@ -111,10 +111,35 @@ public static class AvatarBodyMeshService
                         foreach (var idx in face.Indices)
                             indices.Add(idx);
 
+                var morphTargets = new List<AvatarMorphTarget>();
+                if (lmesh.Morphs != null)
+                {
+                    foreach (var m in lmesh.Morphs)
+                    {
+                        int morphVertCount = m.NumVertices;
+                        if (morphVertCount == 0 || m.Vertices == null) continue;
+
+                        var mIndices = new int[morphVertCount];
+                        var mPos = new Vector3[morphVertCount];
+                        var mNorm = new Vector3[morphVertCount];
+
+                        for (int i = 0; i < morphVertCount; i++)
+                        {
+                            var mv = m.Vertices[i];
+                            mIndices[i] = (int)mv.VertexIndex;
+                            mPos[i] = new Vector3(mv.Coord.X, mv.Coord.Y, mv.Coord.Z);
+                            mNorm[i] = new Vector3(mv.Normal.X, mv.Normal.Y, mv.Normal.Z);
+                        }
+
+                        morphTargets.Add(new AvatarMorphTarget(m.Name, mIndices, mPos, mNorm));
+                    }
+                }
+
                 parts.Add(new AvatarBodyPartMesh(
                     partName.Replace("avatar_", ""),
                     positions, normals, uvs, indices.ToArray(),
-                    b1Names, b1Weights, b2Names, b2Weights));
+                    b1Names, b1Weights, b2Names, b2Weights,
+                    morphTargets.Count > 0 ? morphTargets : null));
 
                 Console.WriteLine($"[AvatarBodyMeshService] Loaded {partName}: {n} verts, {lmesh.NumFaces} tris");
             }

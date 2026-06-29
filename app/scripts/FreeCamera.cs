@@ -1,5 +1,5 @@
-using Godot;
 using System;
+using Godot;
 
 namespace SLNG.App
 {
@@ -57,7 +57,7 @@ namespace SLNG.App
         public override void _Process(double delta)
         {
             Vector3 direction = Vector3.Zero;
-            
+
             if (Input.IsKeyPressed(Key.W)) direction -= Transform.Basis.Z;
             if (Input.IsKeyPressed(Key.S)) direction += Transform.Basis.Z;
             if (Input.IsKeyPressed(Key.A)) direction -= Transform.Basis.X;
@@ -68,7 +68,7 @@ namespace SLNG.App
             if (direction != Vector3.Zero)
             {
                 direction = direction.Normalized();
-                
+
                 float speed = BaseSpeed;
                 if (Input.IsKeyPressed(Key.Shift))
                 {

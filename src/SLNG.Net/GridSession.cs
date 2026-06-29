@@ -344,7 +344,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // Map Godot/SLNG axes to LibreMetaverse (which uses OpenSim/SL axes: X forward, Y left, Z up)
         // For LibreMetaverse, we just pass the rotation directly.
         var slQuat = new LibreMetaverse.Quaternion(cameraRotation.X, cameraRotation.Y, cameraRotation.Z, cameraRotation.W);
-        
+
         // Update the agent's movement state
         _client.Self.Movement.Camera.LookDirection(LibreMetaverse.Vector3.UnitX * slQuat);
         _client.Self.Movement.HeadRotation = slQuat;
@@ -419,7 +419,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         // Fallback if reflection fails
         _client.Assets.RequestImageAsync(new UUID(textureId), ImageType.Normal, CancellationToken.None)
-            .ContinueWith(t => {
+            .ContinueWith(t =>
+            {
                 var data = t.Result?.AssetData;
                 tcs.TrySetResult(data is { Length: > 0 } ? data : null);
             });

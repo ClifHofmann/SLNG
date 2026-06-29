@@ -3,10 +3,10 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Caching.Memory;
 using LibreMetaverse;
 using LibreMetaverse.Assets;
 using LibreMetaverse.Rendering;
+using Microsoft.Extensions.Caching.Memory;
 using SLNG.Core;
 using SLNG.Net;
 
@@ -22,7 +22,7 @@ public class AssetService
     private readonly GridSession _session;
     private readonly string _cacheDir;
     private readonly MemoryCache _memCache;
-    
+
     private readonly ConcurrentDictionary<Guid, Task<MeshData?>> _inflightMeshes = new();
     private readonly ConcurrentDictionary<Guid, Task<TextureData?>> _inflightTextures = new();
     private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _inflightMaterials = new();
@@ -61,15 +61,20 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightPrimMeshes.GetOrAdd(shape, async s => {
-            try {
+        return _inflightPrimMeshes.GetOrAdd(shape, async s =>
+        {
+            try
+            {
                 var result = await Task.Run(() => PrimMeshService.Generate(s)).ConfigureAwait(false);
-                if (result != null) {
+                if (result != null)
+                {
                     long size = EstimateMeshSize(result);
                     _memCache.Set(s, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
                 }
                 return result;
-            } finally {
+            }
+            finally
+            {
                 _inflightPrimMeshes.TryRemove(s, out _);
             }
         });
@@ -87,19 +92,24 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightSculptMeshes.GetOrAdd(sculptId, async id => {
-            try {
+        return _inflightSculptMeshes.GetOrAdd(sculptId, async id =>
+        {
+            try
+            {
                 var map = await GetTextureAsync(id, true).ConfigureAwait(false);
                 if (map == null) return null;
 
                 var result = await Task.Run(() =>
                     PrimMeshService.GenerateSculpt(map.Rgba, map.Width, map.Height, sculptType)).ConfigureAwait(false);
-                if (result != null) {
+                if (result != null)
+                {
                     long size = EstimateMeshSize(result);
                     _memCache.Set(cacheKey, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
                 }
                 return result;
-            } finally {
+            }
+            finally
+            {
                 _inflightSculptMeshes.TryRemove(id, out _);
             }
         });
@@ -119,15 +129,20 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightMeshes.GetOrAdd(meshId, async id => {
-            try {
+        return _inflightMeshes.GetOrAdd(meshId, async id =>
+        {
+            try
+            {
                 var result = await FetchAndDecodeMeshAsync(id).ConfigureAwait(false);
-                if (result != null) {
+                if (result != null)
+                {
                     long size = 1024 * 10; // rough 10KB estimate per mesh
                     _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
                 }
                 return result;
-            } finally {
+            }
+            finally
+            {
                 _inflightMeshes.TryRemove(id, out _);
             }
         });
@@ -170,14 +185,38 @@ public class AssetService
     private static MeshData? Decode(Guid meshId, byte[] bytes)
     {
         var asset = new AssetMesh(new UUID(meshId), bytes);
-        if (!FacetedMesh.TryDecodeFromAsset(new Primitive(), asset, DetailLevel.Highest, out var faceted) || faceted is null)
+        var prim = new Primitive();
+        prim.Textures = new Primitive.TextureEntry(UUID.Zero); // Prevent nullref in TryDecodeFromAsset
+        if (!FacetedMesh.TryDecodeFromAsset(prim, asset, DetailLevel.Highest, out var faceted) || faceted is null)
         {
             return null;
         }
 
-        var submeshes = new List<MeshSubmesh>(faceted.Faces.Count);
-        foreach (var face in faceted.Faces)
+        string[]? jointNames = null;
+        LibreMetaverse.StructuredData.OSDArray? highLod = null;
+        if (asset.MeshData != null)
         {
+            if (asset.MeshData.TryGetValue("skin", out var skinOsd) && skinOsd is LibreMetaverse.StructuredData.OSDMap skinMap)
+            {
+                if (skinMap.TryGetValue("joint_names", out var jointNamesOsd) && jointNamesOsd is LibreMetaverse.StructuredData.OSDArray jNames)
+                {
+                    jointNames = new string[jNames.Count];
+                    for (int i = 0; i < jNames.Count; i++)
+                    {
+                        jointNames[i] = jNames[i].AsString();
+                    }
+                }
+            }
+            if (asset.MeshData.TryGetValue("high_lod", out var hlOsd))
+            {
+                highLod = hlOsd as LibreMetaverse.StructuredData.OSDArray;
+            }
+        }
+
+        var submeshes = new List<MeshSubmesh>(faceted.Faces.Count);
+        for (int faceIdx = 0; faceIdx < faceted.Faces.Count; faceIdx++)
+        {
+            var face = faceted.Faces[faceIdx];
             if (face.Vertices == null || face.Indices == null || face.Indices.Count == 0)
             {
                 continue;
@@ -201,10 +240,52 @@ public class AssetService
                 indices[i] = face.Indices[i];
             }
 
-            submeshes.Add(new MeshSubmesh(positions, normals, uvs, indices));
+            SkinWeight[][]? skinWeights = null;
+            if (jointNames != null && highLod != null && faceIdx < highLod.Count && highLod[faceIdx] is LibreMetaverse.StructuredData.OSDMap lodMap)
+            {
+                if (lodMap.TryGetValue("Weights", out var weightsOsd))
+                {
+                    skinWeights = ParseSkinWeights(weightsOsd.AsBinary(), vertexCount, jointNames);
+                }
+            }
+
+            submeshes.Add(new MeshSubmesh(positions, normals, uvs, indices, face.ID, skinWeights));
         }
 
         return submeshes.Count == 0 ? null : new MeshData(submeshes);
+    }
+
+    private static SkinWeight[][]? ParseSkinWeights(byte[] wBin, int vertexCount, string[] jointNames)
+    {
+        if (wBin == null || wBin.Length == 0 || jointNames == null || jointNames.Length == 0) return null;
+
+        var weights = new SkinWeight[vertexCount][];
+        int offset = 0;
+        for (int i = 0; i < vertexCount; i++)
+        {
+            var influences = new List<SkinWeight>(4);
+            int count = 0;
+            while (count < 4 && offset < wBin.Length)
+            {
+                byte jointIdx = wBin[offset++];
+                if (jointIdx == 0xFF)
+                {
+                    break;
+                }
+                if (offset + 1 >= wBin.Length) break;
+
+                ushort weight16 = BitConverter.ToUInt16(wBin, offset);
+                offset += 2;
+
+                float weight = weight16 / 65535.0f;
+                string boneName = jointIdx < jointNames.Length ? jointNames[jointIdx] : "unknown";
+
+                influences.Add(new SkinWeight(boneName, weight));
+                count++;
+            }
+            weights[i] = influences.ToArray();
+        }
+        return weights;
     }
 
     /// <summary>
@@ -217,16 +298,21 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightTextures.GetOrAdd(textureId, async id => {
-            try {
+        return _inflightTextures.GetOrAdd(textureId, async id =>
+        {
+            try
+            {
                 var result = await FetchAndDecodeTextureAsync(id, isSculpt).ConfigureAwait(false);
-                if (result != null) {
+                if (result != null)
+                {
                     long size = result.Width * result.Height * 4;
                     if (size <= 0) size = 1024;
                     _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(5) });
                 }
                 return result;
-            } finally {
+            }
+            finally
+            {
                 _inflightTextures.TryRemove(id, out _);
             }
         });
@@ -281,14 +367,19 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightMaterials.GetOrAdd(materialId, async id => {
-            try {
+        return _inflightMaterials.GetOrAdd(materialId, async id =>
+        {
+            try
+            {
                 var result = await FetchMaterialAsync(id).ConfigureAwait(false);
-                if (result != null) {
+                if (result != null)
+                {
                     _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = 1024, SlidingExpiration = TimeSpan.FromMinutes(10) });
                 }
                 return result;
-            } finally {
+            }
+            finally
+            {
                 _inflightMaterials.TryRemove(id, out _);
             }
         });
@@ -318,21 +409,21 @@ public class AssetService
             {
                 if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_BASE_COLOR)
                     baseColorTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_BASE_COLOR].Guid;
-                
+
                 if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_NORMAL)
                     normalTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_NORMAL].Guid;
-                
+
                 if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_METALLIC_ROUGHNESS)
                     ormTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_METALLIC_ROUGHNESS].Guid;
-                
+
                 if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_EMISSIVE)
                     emissiveTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_EMISSIVE].Guid;
             }
 
             var baseColor = new System.Numerics.Vector4(
-                asset.BaseColorFactor.R, 
-                asset.BaseColorFactor.G, 
-                asset.BaseColorFactor.B, 
+                asset.BaseColorFactor.R,
+                asset.BaseColorFactor.G,
+                asset.BaseColorFactor.B,
                 asset.BaseColorFactor.A);
 
             var emissive = new System.Numerics.Vector3(
@@ -369,14 +460,19 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightAnimations.GetOrAdd(animId, async id => {
-            try {
+        return _inflightAnimations.GetOrAdd(animId, async id =>
+        {
+            try
+            {
                 var result = await FetchAndDecodeAnimationAsync(id).ConfigureAwait(false);
-                if (result != null) {
+                if (result != null)
+                {
                     _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = 4096, SlidingExpiration = TimeSpan.FromMinutes(15) });
                 }
                 return result;
-            } finally {
+            }
+            finally
+            {
                 _inflightAnimations.TryRemove(id, out _);
             }
         });
@@ -441,7 +537,7 @@ public class AssetService
                 var settings = new ImageMagick.MagickReadSettings { Format = ImageMagick.MagickFormat.J2c };
                 image.Read(bytes, settings);
             }
-            
+
             int width = (int)image.Width;
             int height = (int)image.Height;
 
@@ -454,7 +550,7 @@ public class AssetService
                 height = (int)image.Height;
             }
             bool isDegraded = false;
-            
+
             // For normal textures, verify if Magick.NET decoded a low-res thumbnail instead of the full image,
             // or if it dropped the alpha channel (common bug with OpenJPEG and SL textures).
             int trueWidth = -1, trueHeight = -1, trueComponents = -1;
@@ -468,7 +564,7 @@ public class AssetService
                     break;
                 }
             }
-            
+
             if (!isSculpt)
             {
                 if (trueWidth > 0 && trueHeight > 0 && (width * height < trueWidth * trueHeight))
@@ -527,68 +623,68 @@ public class AssetService
         catch (Exception ex)
         {
             Console.WriteLine($"[AssetService] Magick.NET failed to decode texture ({ex.Message}).");
-            
+
             if (!ex.Message.Contains("Magick dropped alpha"))
             {
                 Console.WriteLine("[AssetService] Trying padded recovery...");
-                try 
+                try
                 {
-                byte[] padded = new byte[bytes.Length + 65536];
-                Buffer.BlockCopy(bytes, 0, padded, 0, bytes.Length);
-                padded[padded.Length - 2] = 0xFF;
-                padded[padded.Length - 1] = 0xD9; // EOC marker
+                    byte[] padded = new byte[bytes.Length + 65536];
+                    Buffer.BlockCopy(bytes, 0, padded, 0, bytes.Length);
+                    padded[padded.Length - 2] = 0xFF;
+                    padded[padded.Length - 1] = 0xD9; // EOC marker
 
-                var settings = new ImageMagick.MagickReadSettings { Format = ImageMagick.MagickFormat.J2c };
-                using var image = new ImageMagick.MagickImage(padded, settings);
-                
-                int width = (int)image.Width;
-                int height = (int)image.Height;
-                bool isDegraded = true; // Always treat padded recovery as degraded so we can try to get the real file later
+                    var settings = new ImageMagick.MagickReadSettings { Format = ImageMagick.MagickFormat.J2c };
+                    using var image = new ImageMagick.MagickImage(padded, settings);
 
-                if (image.HasAlpha) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
-                else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
+                    int width = (int)image.Width;
+                    int height = (int)image.Height;
+                    bool isDegraded = true; // Always treat padded recovery as degraded so we can try to get the real file later
 
-                byte[] rgba = Array.Empty<byte>();
+                    if (image.HasAlpha) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
+                    else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
 
-                using (var pixels = image.GetPixels())
-                {
-                    var raw = pixels.GetValues() ?? Array.Empty<byte>();
-                    if (image.ChannelCount == 4)
+                    byte[] rgba = Array.Empty<byte>();
+
+                    using (var pixels = image.GetPixels())
                     {
-                        rgba = new byte[width * height * 4];
-                        for (int i = 0; i < raw.Length; i += 4)
+                        var raw = pixels.GetValues() ?? Array.Empty<byte>();
+                        if (image.ChannelCount == 4)
                         {
-                            rgba[i] = raw[i];
-                            rgba[i + 1] = raw[i + 1];
-                            rgba[i + 2] = raw[i + 2];
-                            rgba[i + 3] = raw[i + 3];
+                            rgba = new byte[width * height * 4];
+                            for (int i = 0; i < raw.Length; i += 4)
+                            {
+                                rgba[i] = raw[i];
+                                rgba[i + 1] = raw[i + 1];
+                                rgba[i + 2] = raw[i + 2];
+                                rgba[i + 3] = raw[i + 3];
+                            }
+                        }
+                        else if (image.ChannelCount == 3)
+                        {
+                            rgba = new byte[width * height * 4];
+                            for (int i = 0, j = 0; i < raw.Length; i += 3, j += 4)
+                            {
+                                rgba[j] = raw[i];
+                                rgba[j + 1] = raw[i + 1];
+                                rgba[j + 2] = raw[i + 2];
+                                rgba[j + 3] = 255;
+                            }
                         }
                     }
-                    else if (image.ChannelCount == 3)
+
+                    if (rgba.Length > 0)
                     {
-                        rgba = new byte[width * height * 4];
-                        for (int i = 0, j = 0; i < raw.Length; i += 3, j += 4)
-                        {
-                            rgba[j] = raw[i];
-                            rgba[j + 1] = raw[i + 1];
-                            rgba[j + 2] = raw[i + 2];
-                            rgba[j + 3] = 255;
-                        }
+                        Console.WriteLine($"[AssetService] Padded Magick.NET decode successful: {width}x{height}");
+                        return new TextureData(width, height, rgba, isDegraded);
                     }
                 }
-
-                if (rgba.Length > 0)
+                catch (Exception paddedEx)
                 {
-                    Console.WriteLine($"[AssetService] Padded Magick.NET decode successful: {width}x{height}");
-                    return new TextureData(width, height, rgba, isDegraded);
+                    Console.WriteLine($"[AssetService] Padded Magick.NET decode also failed: {paddedEx.Message}");
                 }
-            }
-            catch (Exception paddedEx)
-            {
-                Console.WriteLine($"[AssetService] Padded Magick.NET decode also failed: {paddedEx.Message}");
-            }
             } // end if (!ex.Message.Contains(...))
-            
+
             return DecodeWithCoreJ2K(bytes, isSculpt);
         }
 
@@ -605,7 +701,7 @@ public class AssetService
                 int width = asset.Image.Width;
                 int height = asset.Image.Height;
                 bool hasColor = asset.Image.Red != null && asset.Image.Green != null && asset.Image.Blue != null;
-                
+
                 if (isSculpt && (width != 64 || height != 64))
                 {
                     // Cannot resize easily here without bringing in image processing library,
@@ -618,7 +714,7 @@ public class AssetService
                     var green = asset.Image.Green!;
                     var blue = asset.Image.Blue!;
                     var alpha = asset.Image.Alpha;
-                    
+
                     byte[] rgba = new byte[width * height * 4];
 
                     for (int i = 0; i < width * height; i++)
@@ -629,7 +725,7 @@ public class AssetService
                         rgba[i * 4 + 2] = red[i];
                         rgba[i * 4 + 3] = alpha != null ? alpha[i] : (byte)255;
                     }
-                    
+
                     Console.WriteLine($"[AssetService] CoreJ2K decode successful: {width}x{height}");
                     return new TextureData(width, height, rgba, true);
                 }

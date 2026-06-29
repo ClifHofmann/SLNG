@@ -1,8 +1,8 @@
+using System;
+using System.Collections.Generic;
 using Godot;
 using SLNG.Core;
 using SLNG.Core.ECS;
-using System;
-using System.Collections.Generic;
 
 namespace SLNG.App;
 
@@ -98,11 +98,12 @@ public partial class TerrainRenderer : Node3D
         if (textureData == null) return null;
 
         var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
-        
-        Godot.Callable.From(() => {
+
+        Godot.Callable.From(() =>
+        {
             var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
             var tex = ImageTexture.CreateFromImage(image);
-            
+
             if (tex != null && _gpuCache != null)
             {
                 long size = textureData.Width * textureData.Height * 4;
@@ -218,7 +219,7 @@ public partial class TerrainRenderer : Node3D
 
         regionNode.MeshInstance.Mesh = mesh;
         regionNode.CollisionShape.Shape = mesh.CreateTrimeshShape();
-        
+
         // Use a per-region material instance
         ShaderMaterial mat;
         if (regionNode.MeshInstance.MaterialOverride is ShaderMaterial existingMat)
@@ -230,12 +231,12 @@ public partial class TerrainRenderer : Node3D
             mat = (ShaderMaterial)_terrainMaterial.Duplicate();
             regionNode.MeshInstance.MaterialOverride = mat;
         }
-        
+
         // Pass height parameters to shader
         mat.SetShaderParameter("start_height", new Vector4(
             regionTerrain.TerrainStartHeights[0], regionTerrain.TerrainStartHeights[1],
             regionTerrain.TerrainStartHeights[2], regionTerrain.TerrainStartHeights[3]));
-            
+
         mat.SetShaderParameter("height_range", new Vector4(
             regionTerrain.TerrainHeightRanges[0], regionTerrain.TerrainHeightRanges[1],
             regionTerrain.TerrainHeightRanges[2], regionTerrain.TerrainHeightRanges[3]));

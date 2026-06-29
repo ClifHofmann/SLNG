@@ -1,9 +1,9 @@
+using System.Linq;
 using Godot;
+using SLNG.App;
 using SLNG.Core;
 using SLNG.Core.Components;
 using SLNG.Net;
-using SLNG.App;
-using System.Linq;
 
 public partial class Boot : Control
 {
@@ -18,7 +18,7 @@ public partial class Boot : Control
 
     private ConfigFile _loginsConfig = new ConfigFile();
     private Godot.Collections.Array<string> _savedProfiles = new();
-    
+
     private LineEdit _chatInput = null!;
     private Button _chatSendButton = null!;
 
@@ -31,7 +31,7 @@ public partial class Boot : Control
     private SLNG.Assets.AssetService? _assetService;
     private AvatarController? _avatarController;
     private VBoxContainer _vboxContainer = null!;
-    
+
     private WorldEnvironment? _worldEnvironment;
     private bool _postFxEnabled = true;
 
@@ -49,7 +49,7 @@ public partial class Boot : Control
         _saveLoginCheck = GetNode<CheckBox>("VBoxContainer/HBoxContainer/SaveLoginCheck");
         _loginButton = GetNode<Button>("VBoxContainer/HBoxContainer/LoginButton");
         _logPanel = GetNode<RichTextLabel>("VBoxContainer/LogPanel");
-        
+
         _chatInput = GetNode<LineEdit>("VBoxContainer/ChatBox/ChatInput");
         _chatSendButton = GetNode<Button>("VBoxContainer/ChatBox/ChatSendButton");
 
@@ -65,10 +65,10 @@ public partial class Boot : Control
 
         _objectRenderer = new ObjectRenderer();
         AddChild(_objectRenderer);
-        
+
         _avatarRenderer = new AvatarRenderer();
         AddChild(_avatarRenderer);
-        
+
         SetupEnvironment();
         SetupHud();
 
@@ -91,6 +91,11 @@ public partial class Boot : Control
         _hudLabel.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 0.8f));
         _hudLabel.AddThemeConstantOverride("outline_size", 4);
         AddChild(_hudLabel);
+
+        // Add the Camera HUD overlay
+        var cameraHud = new SLNG.App.UI.CameraHUD();
+        cameraHud.Name = "CameraHUD";
+        AddChild(cameraHud);
     }
 
     private void SetupEnvironment()
@@ -104,20 +109,20 @@ public partial class Boot : Control
             AmbientLightSource = Godot.Environment.AmbientSource.Sky,
             AmbientLightEnergy = 1.0f,
             TonemapMode = Godot.Environment.ToneMapper.Aces,
-            
+
             // Post-FX (M2-5)
             SsaoEnabled = true,
             SsaoRadius = 1.0f,
             SsaoIntensity = 2.0f,
-            
+
             SsilEnabled = true,
-            
+
             GlowEnabled = true,
             GlowNormalized = true,
             GlowIntensity = 1.0f,
             GlowBloom = 0.1f,
             GlowBlendMode = Godot.Environment.GlowBlendModeEnum.Additive,
-            
+
             VolumetricFogEnabled = true,
             VolumetricFogDensity = 0.005f,
         };
@@ -172,7 +177,7 @@ public partial class Boot : Control
         _profileDropdown.Clear();
         _savedProfiles.Clear();
         _profileDropdown.AddItem("--- Select Profile ---");
-        
+
         if (_loginsConfig.Load("user://logins.cfg") == Error.Ok)
         {
             var sections = _loginsConfig.GetSections();
@@ -187,7 +192,7 @@ public partial class Boot : Control
     private void OnProfileSelected(long index)
     {
         if (index == 0) return; // The "--- Select Profile ---" placeholder
-        
+
         string profile = _savedProfiles[(int)index - 1];
         _gridInput.Text = (string)_loginsConfig.GetValue(profile, "grid", "");
         _firstInput.Text = (string)_loginsConfig.GetValue(profile, "first", "");
@@ -280,14 +285,15 @@ public partial class Boot : Control
             {
                 LogMessage(result.Message);
             }
-            
+
             // Hide the login form but keep chat/logs visible
             GetNode<HBoxContainer>("VBoxContainer/HBoxContainer").Visible = false;
 
             // Spawn the avatar controller (camera)
             _avatarController = new AvatarController();
+            _avatarController.Name = "AvatarController";
             _avatarController.Initialize(_world, _session);
-            
+
             // Set the floating origin to this region so everything renders near 0 (OSGrid
             // global coordinates are in the millions and overflow float precision otherwise).
             ulong regionHandle = _session.CurrentRegionHandle;
@@ -295,7 +301,7 @@ public partial class Boot : Control
 
             // Start near the region centre at a reasonable height (before AvatarUpdate arrives).
             _avatarController.Position = RenderConfig.ToGodot(regionHandle, new System.Numerics.Vector3(128f, 128f, 50f));
-            
+
             // Assign the environment directly to the camera to ensure the sky renders
             var worldEnv = GetNodeOrNull<WorldEnvironment>("WorldEnvironment");
             if (worldEnv != null)
@@ -321,7 +327,7 @@ public partial class Boot : Control
     {
         var text = _chatInput.Text;
         if (string.IsNullOrWhiteSpace(text)) return;
-        
+
         _session?.SendChat(text);
         _chatInput.Text = "";
     }

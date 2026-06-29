@@ -1,7 +1,7 @@
-using Godot;
-using SLNG.Assets;
 using System;
 using System.Collections.Generic;
+using Godot;
+using SLNG.Assets;
 
 namespace SLNG.App;
 

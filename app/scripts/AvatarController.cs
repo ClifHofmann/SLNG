@@ -1,8 +1,8 @@
-using Godot;
-using SLNG.Core.ECS;
-using SLNG.Core.Components;
-using SLNG.Net;
 using System.Linq;
+using Godot;
+using SLNG.Core.Components;
+using SLNG.Core.ECS;
+using SLNG.Net;
 
 namespace SLNG.App;
 
@@ -18,6 +18,52 @@ public partial class AvatarController : Camera3D
     private bool _lastFwd, _lastBack, _lastLeft, _lastRight, _lastUp, _lastDown;
     private Vector3 _lastCameraRot;
     private float _zoom = 4.0f;
+    private Vector3 _panOffset = Vector3.Zero;
+
+    // Public API for CameraHUD
+    public void RotateCamera(Vector2 delta)
+    {
+        _orbitYaw -= delta.X;
+        _orbitPitch -= delta.Y;
+        _orbitPitch = Mathf.Clamp(_orbitPitch, -1.5f, 1.5f);
+    }
+
+    public void PanCamera(Vector2 delta)
+    {
+        _panOffset += new Vector3(delta.X, delta.Y, 0);
+    }
+
+    public void ZoomCamera(float delta)
+    {
+        _zoom += delta;
+        _zoom = Mathf.Clamp(_zoom, 0.5f, 50.0f);
+    }
+
+    public void ResetCamera()
+    {
+        _orbitYaw = 0f;
+        _orbitPitch = 0f;
+        _panOffset = Vector3.Zero;
+        _zoom = 4.0f;
+    }
+
+    public void SetPresetView(string preset)
+    {
+        ResetCamera();
+        switch (preset.ToLower())
+        {
+            case "front":
+                _orbitYaw = Mathf.Pi; // 180 degrees
+                break;
+            case "side":
+                _orbitYaw = Mathf.Pi / 2.0f; // 90 degrees
+                break;
+            case "rear":
+            default:
+                _orbitYaw = 0f;
+                break;
+        }
+    }
 
     // Alt+LMB orbit state. The orbit offsets rotate the CAMERA around the avatar
     // without changing the avatar's facing (_yaw/_pitch). They snap back to 0 when
@@ -36,75 +82,75 @@ public partial class AvatarController : Camera3D
         _session = session;
     }
 
-        private PopupMenu _contextMenu;
-        private string _lastClickedEntityId = "";
-        private string _lastClickedLocalId = "";
+    private PopupMenu _contextMenu;
+    private string _lastClickedEntityId = "";
+    private string _lastClickedLocalId = "";
 
-        public override void _Ready()
+    public override void _Ready()
+    {
+        // Default to visible mouse for UI interaction
+        Input.MouseMode = Input.MouseModeEnum.Visible;
+
+        _contextMenu = new PopupMenu();
+        _contextMenu.Name = "ContextMenu";
+        _contextMenu.AddItem("Inspect (Print IDs to Console)", 0);
+        _contextMenu.AddItem("Copy Entity ID", 1);
+        _contextMenu.AddItem("Dump Object Data", 3);
+        _contextMenu.AddItem("Touch / Interact", 2);
+        _contextMenu.IdPressed += OnContextMenuIdPressed;
+        AddChild(_contextMenu);
+    }
+
+    private void OnContextMenuIdPressed(long id)
+    {
+        if (id == 0)
         {
-            // Default to visible mouse for UI interaction
-            Input.MouseMode = Input.MouseModeEnum.Visible;
-
-            _contextMenu = new PopupMenu();
-            _contextMenu.Name = "ContextMenu";
-            _contextMenu.AddItem("Inspect (Print IDs to Console)", 0);
-            _contextMenu.AddItem("Copy Entity ID", 1);
-            _contextMenu.AddItem("Dump Object Data", 3);
-            _contextMenu.AddItem("Touch / Interact", 2);
-            _contextMenu.IdPressed += OnContextMenuIdPressed;
-            AddChild(_contextMenu);
+            GD.Print($"\n=== [Inspect Object] ===\nEntityId: {_lastClickedEntityId}\nLocalId: {_lastClickedLocalId}\n========================\n");
         }
-
-        private void OnContextMenuIdPressed(long id)
+        else if (id == 1)
         {
-            if (id == 0)
+            DisplayServer.ClipboardSet(_lastClickedEntityId);
+            GD.Print($"Copied {_lastClickedEntityId} to clipboard!");
+        }
+        else if (id == 3)
+        {
+            if (System.Guid.TryParse(_lastClickedEntityId, out var guid))
             {
-                GD.Print($"\n=== [Inspect Object] ===\nEntityId: {_lastClickedEntityId}\nLocalId: {_lastClickedLocalId}\n========================\n");
-            }
-            else if (id == 1)
-            {
-                DisplayServer.ClipboardSet(_lastClickedEntityId);
-                GD.Print($"Copied {_lastClickedEntityId} to clipboard!");
-            }
-            else if (id == 3)
-            {
-                if (System.Guid.TryParse(_lastClickedEntityId, out var guid))
+                var entity = _world?.GetEntity(guid);
+                if (entity != null)
                 {
-                    var entity = _world?.GetEntity(guid);
-                    if (entity != null)
+                    var prim = entity.GetComponent<SLNG.Core.Components.PrimitiveComponent>();
+                    var transform = entity.GetComponent<SLNG.Core.Components.TransformComponent>();
+                    GD.Print($"\n=== [Dump Object Data] ===");
+                    GD.Print($"EntityId: {entity.Id}");
+                    if (transform != null)
                     {
-                        var prim = entity.GetComponent<SLNG.Core.Components.PrimitiveComponent>();
-                        var transform = entity.GetComponent<SLNG.Core.Components.TransformComponent>();
-                        GD.Print($"\n=== [Dump Object Data] ===");
-                        GD.Print($"EntityId: {entity.Id}");
-                        if (transform != null)
-                        {
-                            GD.Print($"Position: {transform.Position}");
-                            GD.Print($"Rotation: {transform.Rotation}");
-                        }
-                        if (prim != null)
-                        {
-                            GD.Print($"Scale: {prim.Scale}");
-                            GD.Print($"TextureId: {prim.TextureId}");
-                            GD.Print($"MaterialId: {prim.RenderMaterialId}");
-                            GD.Print($"IsSculpt: {prim.IsSculpt}");
-                            GD.Print($"SculptId: {prim.SculptId}");
-                            GD.Print($"SculptType: {prim.SculptType}");
-                            GD.Print($"Shape: {prim.Shape}");
-
-                        }
-                        GD.Print($"==========================\n");
+                        GD.Print($"Position: {transform.Position}");
+                        GD.Print($"Rotation: {transform.Rotation}");
                     }
+                    if (prim != null)
+                    {
+                        GD.Print($"Scale: {prim.Scale}");
+                        GD.Print($"TextureId: {prim.TextureId}");
+                        GD.Print($"MaterialId: {prim.RenderMaterialId}");
+                        GD.Print($"IsSculpt: {prim.IsSculpt}");
+                        GD.Print($"SculptId: {prim.SculptId}");
+                        GD.Print($"SculptType: {prim.SculptType}");
+                        GD.Print($"Shape: {prim.Shape}");
+
+                    }
+                    GD.Print($"==========================\n");
                 }
             }
-            else if (id == 2)
-            {
-                GD.Print($"[Touch] Triggering touch on object {_lastClickedLocalId} (Not fully implemented yet)");
-                // _session.TouchObject(_lastClickedLocalId);
-            }
         }
+        else if (id == 2)
+        {
+            GD.Print($"[Touch] Triggering touch on object {_lastClickedLocalId} (Not fully implemented yet)");
+            // _session.TouchObject(_lastClickedLocalId);
+        }
+    }
 
-        public override void _Input(InputEvent @event)
+    public override void _Input(InputEvent @event)
     {
         if (@event is InputEventKey keyEvt && keyEvt.Pressed && !keyEvt.Echo)
         {
@@ -133,10 +179,10 @@ public partial class AvatarController : Camera3D
                     var mpos = mouseBtn.Position;
                     var from = ProjectRayOrigin(mpos);
                     var to = from + ProjectRayNormal(mpos) * 1000f;
-                    
+
                     var query = PhysicsRayQueryParameters3D.Create(from, to);
                     var result = spaceState.IntersectRay(query);
-                    
+
                     if (result.Count > 0)
                     {
                         var collider = result["collider"].AsGodotObject();
@@ -144,10 +190,10 @@ public partial class AvatarController : Camera3D
                         {
                             _lastClickedEntityId = colliderNode.HasMeta("EntityId") ? colliderNode.GetMeta("EntityId").AsString() : "None";
                             _lastClickedLocalId = colliderNode.HasMeta("LocalId") ? colliderNode.GetMeta("LocalId").AsString() : "None";
-                            
+
                             // Uncapture mouse if we were orbiting
                             Input.MouseMode = Input.MouseModeEnum.Visible;
-                            
+
                             // Show popup menu at mouse position
                             _contextMenu.Position = new Vector2I((int)mpos.X, (int)mpos.Y);
                             _contextMenu.Popup();
@@ -197,9 +243,9 @@ public partial class AvatarController : Camera3D
             else
             {
                 // RMB free-look: turns the avatar with the camera.
-                _yaw   -= mouseMotion.Relative.X * sensitivity;
+                _yaw -= mouseMotion.Relative.X * sensitivity;
                 _pitch -= mouseMotion.Relative.Y * sensitivity;
-                _pitch  = Mathf.Clamp(_pitch, -1.5f, 1.5f);
+                _pitch = Mathf.Clamp(_pitch, -1.5f, 1.5f);
             }
         }
     }
@@ -326,6 +372,10 @@ public partial class AvatarController : Camera3D
                 var targetPos = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
                 targetPos.Y += 1.8f;
 
+                // Apply pan offset relative to camera's orientation
+                targetPos += Transform.Basis.X * _panOffset.X;
+                targetPos += Transform.Basis.Y * _panOffset.Y;
+
                 // Third-person camera: pull back along the camera's Z axis
                 Position = targetPos + Transform.Basis.Z * _zoom;
             }
@@ -340,7 +390,7 @@ public partial class AvatarController : Camera3D
         bool down = (Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
 
         var curRot = Rotation;
-        
+
         _timeSinceLastUpdate += delta;
 
         // Send AgentUpdate at 10 Hz (every 0.1s)

@@ -6,6 +6,11 @@ using Vector3 = System.Numerics.Vector3;
 
 namespace SLNG.Assets;
 
+public record AvatarShapeData(
+    Dictionary<string, (Vector3 Scale, Vector3 Position)> BoneMods,
+    Dictionary<string, float> Morphs
+);
+
 /// <summary>
 /// Service that computes bone distortions (scale and position offsets) in SL coordinate space
 /// from a raw visual parameters byte array, using LibreMetaverse's VisualParam database.
@@ -13,18 +18,19 @@ namespace SLNG.Assets;
 /// </summary>
 public static class AvatarShapeService
 {
-    public static Dictionary<string, (Vector3 Scale, Vector3 Position)> ComputeDistortions(byte[]? visualParams)
+    public static AvatarShapeData ComputeDistortions(byte[]? visualParams)
     {
-        var distortions = new Dictionary<string, (Vector3 Scale, Vector3 Position)>();
+        var boneMods = new Dictionary<string, (Vector3 Scale, Vector3 Position)>();
+        var morphs = new Dictionary<string, float>();
 
         int[]? group0 = VisualParams.Group0ParamIds;
         if (group0 == null)
-            return distortions;
+            return new AvatarShapeData(boneMods, morphs);
 
         for (int i = 0; i < group0.Length; i++)
         {
             int paramId = group0[i];
-            
+
             float valFloat;
             if (visualParams != null && i < visualParams.Length)
             {
@@ -52,6 +58,17 @@ public static class AvatarShapeService
 
             if (VisualParams.Params.TryGetValue(paramId, out var param))
             {
+                // Morphs
+                // SL maps the parameter's Name directly to the Morph Target name.
+                // We add the weight computed above. Some parameters might map to the same morph target
+                // so we accumulate.
+                if (!morphs.TryGetValue(param.Name, out var mWeight))
+                {
+                    mWeight = 0f;
+                }
+                morphs[param.Name] = mWeight + valFloat;
+
+                // Skeletal Distortions
                 if (param.SkeletalDistortions == null || param.SkeletalDistortions.Length == 0)
                     continue;
 
@@ -61,7 +78,7 @@ public static class AvatarShapeService
                     var scaleDef = new Vector3(dist.ScaleDeformation.X, dist.ScaleDeformation.Y, dist.ScaleDeformation.Z);
                     var posDef = new Vector3(dist.PositionDeformation.X, dist.PositionDeformation.Y, dist.PositionDeformation.Z);
 
-                    if (!distortions.TryGetValue(boneName, out var current))
+                    if (!boneMods.TryGetValue(boneName, out var current))
                     {
                         current = (Vector3.Zero, Vector3.Zero);
                     }
@@ -72,11 +89,11 @@ public static class AvatarShapeService
                         current.Position += posDef * valFloat;
                     }
 
-                    distortions[boneName] = current;
+                    boneMods[boneName] = current;
                 }
             }
         }
 
-        return distortions;
+        return new AvatarShapeData(boneMods, morphs);
     }
 }

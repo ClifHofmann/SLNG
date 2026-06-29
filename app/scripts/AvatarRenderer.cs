@@ -1,11 +1,11 @@
-using Godot;
-using SLNG.Core;
-using SLNG.Core.ECS;
-using SLNG.Core.Components;
-using SLNG.Assets;
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using System;
+using Godot;
+using SLNG.Assets;
+using SLNG.Core;
+using SLNG.Core.Components;
+using SLNG.Core.ECS;
 
 namespace SLNG.App;
 
@@ -60,8 +60,7 @@ public partial class AvatarRenderer : Node3D
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[AvatarRenderer] Failed to load skeleton: {ex.Message}. Falling back to capsule.");
-            _avatarSkeleton = null;
+            GD.PrintErr($"[AvatarRenderer] failed to load avatar skeleton: {ex.Message}");
         }
 
         _world.EntityAdded += OnEntityAdded;
@@ -229,12 +228,12 @@ public partial class AvatarRenderer : Node3D
         {
             bool needsApply = visual.LastAppliedVisualParams == null ||
                               !avatar.VisualParams.SequenceEqual(visual.LastAppliedVisualParams);
-            
+
             if (needsApply)
             {
                 visual.LastAppliedVisualParams = avatar.VisualParams;
-                var distortions = AvatarShapeService.ComputeDistortions(avatar.VisualParams);
-                ApplyShape(visual.Skeleton, _avatarSkeleton, distortions);
+                var shapeData = AvatarShapeService.ComputeDistortions(avatar.VisualParams);
+                ApplyShape(visual, _avatarSkeleton, shapeData);
                 visual.Skeleton.ResetBonePoses();
             }
         }
@@ -284,8 +283,11 @@ public partial class AvatarRenderer : Node3D
         }
     }
 
-    private void ApplyShape(Skeleton3D skeleton, AvatarSkeleton avatarSkeleton, Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)> distortions)
+    private void ApplyShape(AvatarVisual visual, AvatarSkeleton avatarSkeleton, SLNG.Assets.AvatarShapeData shapeData)
     {
+        var skeleton = visual.Skeleton;
+        if (skeleton == null) return;
+
         for (int idx = 0; idx < skeleton.GetBoneCount(); idx++)
         {
             string name = skeleton.GetBoneName(idx);
@@ -295,14 +297,14 @@ public partial class AvatarRenderer : Node3D
             var slPos = bone.Position;
             var slScale = bone.Scale;
 
-            if (distortions.TryGetValue(name, out var dist))
+            if (shapeData.BoneMods.TryGetValue(name, out var dist))
             {
                 slScale += dist.Scale;
                 slPos += dist.Position;
             }
 
             var godotPos = new Godot.Vector3(slPos.X, slPos.Z, -slPos.Y);
-            
+
             var slRot = bone.Rotation;
             var godotRotDeg = new Godot.Vector3(slRot.X, slRot.Z, -slRot.Y);
             var godotRotRad = new Godot.Vector3(
@@ -315,6 +317,27 @@ public partial class AvatarRenderer : Node3D
 
             var rest = new Transform3D(basis, godotPos);
             skeleton.SetBoneRest(idx, rest);
+        }
+
+        // Apply morph targets
+        foreach (var kv in visual.Parts)
+        {
+            var mi = kv.Value;
+            var mesh = mi.Mesh as ArrayMesh;
+            if (mesh == null || mesh.GetBlendShapeCount() == 0) continue;
+
+            for (int i = 0; i < mesh.GetBlendShapeCount(); i++)
+            {
+                string shapeName = mesh.GetBlendShapeName(i);
+                if (shapeData.Morphs.TryGetValue(shapeName, out float val))
+                {
+                    mi.SetBlendShapeValue(i, val);
+                }
+                else
+                {
+                    mi.SetBlendShapeValue(i, 0f);
+                }
+            }
         }
     }
 
@@ -335,11 +358,12 @@ public partial class AvatarRenderer : Node3D
             if (textureData == null) return;
 
             var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
-            
-            Godot.Callable.From(() => {
+
+            Godot.Callable.From(() =>
+            {
                 var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
                 var tex = ImageTexture.CreateFromImage(image);
-                
+
                 if (tex != null && _gpuCache != null)
                 {
                     long size = textureData.Width * textureData.Height * 4;
@@ -358,16 +382,17 @@ public partial class AvatarRenderer : Node3D
         // Part names match AvatarBodyPartMesh.Name (after stripping "avatar_" prefix in AvatarBodyMeshService).
         var partsForBake = bakeIndex switch
         {
-            8  => new[] { "head", "eyelashes" },
-            9  => new[] { "upper_body" },
+            8 => new[] { "head", "eyelashes" },
+            9 => new[] { "upper_body" },
             10 => new[] { "lower_body" },
             11 => new[] { "eye" },
             12 => new[] { "lower_body" },
             13 => new[] { "hair" },
-            _  => (string[]?)null
+            _ => (string[]?)null
         };
 
-        Godot.Callable.From(() => {
+        Godot.Callable.From(() =>
+        {
             if (visual.Root == null || !IsInstanceValid(visual.Root)) return;
 
             var targets = partsForBake != null
@@ -455,8 +480,32 @@ public partial class AvatarRenderer : Node3D
         Godot.Callable.From(() =>
         {
             if (!IsInstanceValid(boneAttach)) return;
+            var skeleton = boneAttach.GetParent() as Skeleton3D;
 
             var arrayMesh = new ArrayMesh();
+            var skin = new Skin();
+            var skinSlots = new Dictionary<string, int>();
+            bool isRigged = false;
+
+            if (skeleton != null)
+            {
+                foreach (var sub in meshData.Submeshes)
+                {
+                    if (sub.SkinWeights != null)
+                    {
+                        isRigged = true;
+                        foreach (var swArray in sub.SkinWeights)
+                        {
+                            if (swArray == null) continue;
+                            foreach (var sw in swArray)
+                            {
+                                AddSkinSlot(sw.Bone, skin, skeleton, skinSlots);
+                            }
+                        }
+                    }
+                }
+            }
+
             foreach (var sub in meshData.Submeshes)
             {
                 if (sub.Indices.Length == 0) continue;
@@ -467,16 +516,64 @@ public partial class AvatarRenderer : Node3D
                     var p = sub.Positions[idx];
                     var n = sub.Normals[idx];
                     var uv = sub.UVs[idx];
+
+                    if (isRigged && sub.SkinWeights != null && sub.SkinWeights[idx] != null)
+                    {
+                        var swArray = sub.SkinWeights[idx];
+                        int[] b = new int[4];
+                        float[] w = new float[4];
+                        float totalW = 0f;
+                        for (int i = 0; i < 4; i++)
+                        {
+                            if (i < swArray.Length)
+                            {
+                                if (skinSlots.TryGetValue(swArray[i].Bone, out int slot))
+                                {
+                                    b[i] = slot;
+                                    w[i] = swArray[i].Weight;
+                                    totalW += w[i];
+                                }
+                            }
+                        }
+                        if (totalW > 0f)
+                        {
+                            for (int i = 0; i < 4; i++) w[i] /= totalW;
+                        }
+                        else
+                        {
+                            w[0] = 1f;
+                        }
+                        st.SetBones(b);
+                        st.SetWeights(w);
+                    }
+
                     st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
                     st.SetUV(new Godot.Vector2(uv.X, uv.Y));
-                    st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
+                    // Rigged meshes typically don't apply the prim scale to vertices since the skeleton scales them
+                    if (isRigged)
+                    {
+                        st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
+                    }
+                    else
+                    {
+                        st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
+                    }
                 }
                 st.GenerateTangents();
                 st.Commit(arrayMesh);
             }
 
             var mi = new MeshInstance3D { Name = "AttachMesh", Mesh = arrayMesh };
-            boneAttach.AddChild(mi);
+            if (isRigged && skeleton != null)
+            {
+                mi.Skin = skin;
+                skeleton.AddChild(mi);
+                mi.Skeleton = mi.GetPathTo(skeleton);
+            }
+            else
+            {
+                boneAttach.AddChild(mi);
+            }
 
             if (textureId != Guid.Empty)
                 _ = LoadAndApplyAttachmentTextureAsync(mi, textureId);
@@ -535,12 +632,12 @@ public partial class AvatarRenderer : Node3D
 
         return new MeshInstance3D
         {
-            Mesh             = built.Mesh,
-            Skin             = built.Skin,
+            Mesh = built.Mesh,
+            Skin = built.Skin,
             MaterialOverride = new StandardMaterial3D
             {
                 AlbedoColor = baseColor,
-                CullMode    = BaseMaterial3D.CullModeEnum.Disabled
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled
             }
         };
     }
@@ -558,17 +655,15 @@ public partial class AvatarRenderer : Node3D
             AddSkinSlot(part.Bone2Names[vi], skin, skeleton, skinSlots);
         }
 
-        // Non-indexed surface: expand each face into 3 unique vertex entries so
-        // GenerateTangents() works correctly and the approach mirrors the existing
-        // attachment-mesh builder.
+        // Generate arrays for the base mesh
         var st = new SurfaceTool();
         st.Begin(Mesh.PrimitiveType.Triangles);
 
         for (int fi = 0; fi < part.Indices.Length; fi++)
         {
             int vi = part.Indices[fi];
-            var p  = part.Positions[vi];
-            var n  = part.Normals[vi];
+            var p = part.Positions[vi];
+            var n = part.Normals[vi];
             var uv = part.UVs[vi];
 
             // Resolve skin slot indices
@@ -579,22 +674,77 @@ public partial class AvatarRenderer : Node3D
             float w1 = part.Bone1Weights[vi];
             float w2 = part.Bone2Weights[vi];
 
-            // Normalize the two SL weights so they sum to 1 — Godot expects normalized
-            // skin weights and a zero-sum vertex would not deform at all.
+            // Normalize the two SL weights so they sum to 1
             float wsum = w1 + w2;
             if (wsum > 0.0001f) { w1 /= wsum; w2 /= wsum; }
             else { w1 = 1f; w2 = 0f; }
 
             // SL is Z-up; Godot is Y-up: SL(X,Y,Z) → Godot(X,Z,−Y)
-            st.SetBones(new int[]   { s1,  s2,  0,   0   });
-            st.SetWeights(new float[]{ w1,  w2,  0f,  0f  });
+            st.SetBones(new int[] { s1, s2, 0, 0 });
+            st.SetWeights(new float[] { w1, w2, 0f, 0f });
             st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
             st.SetUV(new Godot.Vector2(uv.X, uv.Y));
             st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
         }
 
         st.GenerateTangents();
-        return (st.Commit(), skin);
+        var arrays = st.CommitToArrays();
+
+        var arrayMesh = new ArrayMesh();
+        var blendShapesArray = new Godot.Collections.Array<Godot.Collections.Array>();
+
+        if (part.Morphs != null && part.Morphs.Count > 0)
+        {
+            foreach (var morph in part.Morphs)
+            {
+                arrayMesh.AddBlendShape(morph.Name);
+
+                var bsVertices = new Godot.Vector3[part.Indices.Length];
+                var bsNormals = new Godot.Vector3[part.Indices.Length];
+                var bsTangents = new float[part.Indices.Length * 4];
+
+                // Create a fast lookup for Morph offsets by original vertex index
+                var offsetDict = new Dictionary<int, (Godot.Vector3 P, Godot.Vector3 N)>();
+                for (int i = 0; i < morph.VertexIndices.Length; i++)
+                {
+                    int vi = morph.VertexIndices[i];
+                    var posOffset = morph.PositionOffsets[i];
+                    var normOffset = morph.NormalOffsets[i];
+                    // SL(X,Y,Z) -> Godot(X,Z,-Y)
+                    var gp = new Godot.Vector3(posOffset.X, posOffset.Z, -posOffset.Y);
+                    var gn = new Godot.Vector3(normOffset.X, normOffset.Z, -normOffset.Y);
+                    offsetDict[vi] = (gp, gn);
+                }
+
+                for (int fi = 0; fi < part.Indices.Length; fi++)
+                {
+                    int vi = part.Indices[fi];
+                    if (offsetDict.TryGetValue(vi, out var diff))
+                    {
+                        bsVertices[fi] = diff.P;
+                        bsNormals[fi] = diff.N;
+                    }
+                }
+
+                var bsArray = new Godot.Collections.Array();
+                bsArray.Resize((int)Mesh.ArrayType.Max);
+                bsArray[(int)Mesh.ArrayType.Vertex] = bsVertices;
+                bsArray[(int)Mesh.ArrayType.Normal] = bsNormals;
+                bsArray[(int)Mesh.ArrayType.Tangent] = bsTangents; // blend shapes require tangents if base has them
+                blendShapesArray.Add(bsArray);
+            }
+        }
+
+        if (blendShapesArray.Count > 0)
+        {
+            arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, blendShapesArray);
+        }
+        else
+        {
+            arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        }
+
+        return (arrayMesh, skin);
     }
 
     /// <summary>
@@ -626,7 +776,7 @@ public partial class AvatarRenderer : Node3D
     private static Transform3D ComputeGlobalRestTransform(Skeleton3D skeleton, int boneIdx)
     {
         int parent = skeleton.GetBoneParent(boneIdx);
-        var local  = skeleton.GetBoneRest(boneIdx);
+        var local = skeleton.GetBoneRest(boneIdx);
         if (parent < 0) return local;
         return ComputeGlobalRestTransform(skeleton, parent) * local;
     }
@@ -645,14 +795,14 @@ public partial class AvatarRenderer : Node3D
 
             Mesh mesh = part.IsSphere
                 ? new SphereMesh { Radius = part.Size.X * 0.5f, Height = part.Size.Y }
-                : new BoxMesh    { Size   = part.Size };
+                : new BoxMesh { Size = part.Size };
 
             var mi = new MeshInstance3D
             {
-                Name             = part.BoneName + "_Mesh",
-                Mesh             = mesh,
+                Name = part.BoneName + "_Mesh",
+                Mesh = mesh,
                 MaterialOverride = new StandardMaterial3D { AlbedoColor = color, CullMode = BaseMaterial3D.CullModeEnum.Disabled },
-                Position         = part.Offset
+                Position = part.Offset
             };
 
             attachment.AddChild(mi);
@@ -736,7 +886,8 @@ public partial class AvatarRenderer : Node3D
         GD.Print($"[AvatarRenderer] Starting {loaded.Count}/{animIds.Count} animation(s)");
 
         // Apply on main thread via CallDeferred
-        Godot.Callable.From(() => {
+        Godot.Callable.From(() =>
+        {
             if (visual.Root == null || !IsInstanceValid(visual.Root)) return;
             visual.AnimPlayer.SetActiveAnimations(loaded);
         }).CallDeferred();

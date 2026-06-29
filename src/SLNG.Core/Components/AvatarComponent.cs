@@ -25,10 +25,19 @@ public enum AvatarBakeIndex
 public class AvatarComponent : IComponent
 {
     public Guid AgentId { get; set; }
-    public string FirstName { get; set; }
-    public string LastName { get; set; }
+    public string FirstName { get; set; } = string.Empty;
+    public string LastName { get; set; } = string.Empty;
     public bool IsLocalAgent { get; set; }
+
+    /// <summary>
+    /// The latest visual parameters received from AvatarAppearance.
+    /// Used to deform the skeleton and meshes.
+    /// </summary>
     public byte[]? VisualParams { get; set; }
+
+    /// <summary>
+    /// The latest baked textures received from AvatarAppearance.
+    /// </summary>
     public Dictionary<int, Guid>? BakedTextures { get; set; }
     public List<Guid>? ActiveAnimations { get; set; }
 

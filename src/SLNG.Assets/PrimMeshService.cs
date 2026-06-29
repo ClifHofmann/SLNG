@@ -5,9 +5,9 @@ using LibreMetaverse;
 using LibreMetaverse.Rendering;
 using SkiaSharp;
 using SLNG.Core;
-using Vector3 = System.Numerics.Vector3;
-using Vector2 = System.Numerics.Vector2;
 using LMVector3 = LibreMetaverse.Vector3;
+using Vector2 = System.Numerics.Vector2;
+using Vector3 = System.Numerics.Vector3;
 
 namespace SLNG.Assets;
 
@@ -36,25 +36,25 @@ public static class PrimMeshService
                 Scale = new LMVector3(1, 1, 1),
                 PrimData = new Primitive.ConstructionData
                 {
-                    profileCurve     = shape.ProfileCurve,
-                    PathCurve        = (PathCurve)shape.PathCurve,
-                    PathBegin        = shape.PathBegin,
-                    PathEnd          = shape.PathEnd,
-                    PathScaleX       = shape.PathScaleX,
-                    PathScaleY       = shape.PathScaleY,
-                    PathShearX       = shape.PathShearX,
-                    PathShearY       = shape.PathShearY,
-                    PathTaperX       = shape.PathTaperX,
-                    PathTaperY       = shape.PathTaperY,
-                    PathTwist        = shape.PathTwist,
-                    PathTwistBegin   = shape.PathTwistBegin,
+                    profileCurve = shape.ProfileCurve,
+                    PathCurve = (PathCurve)shape.PathCurve,
+                    PathBegin = shape.PathBegin,
+                    PathEnd = shape.PathEnd,
+                    PathScaleX = shape.PathScaleX,
+                    PathScaleY = shape.PathScaleY,
+                    PathShearX = shape.PathShearX,
+                    PathShearY = shape.PathShearY,
+                    PathTaperX = shape.PathTaperX,
+                    PathTaperY = shape.PathTaperY,
+                    PathTwist = shape.PathTwist,
+                    PathTwistBegin = shape.PathTwistBegin,
                     PathRadiusOffset = shape.PathRadiusOffset,
-                    PathSkew         = shape.PathSkew,
-                    PathRevolutions  = shape.PathRevolutions,
-                    ProfileBegin     = shape.ProfileBegin,
-                    ProfileEnd       = shape.ProfileEnd,
-                    ProfileHollow    = shape.ProfileHollow,
-                    PCode            = (PCode)shape.PCode,
+                    PathSkew = shape.PathSkew,
+                    PathRevolutions = shape.PathRevolutions,
+                    ProfileBegin = shape.ProfileBegin,
+                    ProfileEnd = shape.ProfileEnd,
+                    ProfileHollow = shape.ProfileHollow,
+                    PCode = (PCode)shape.PCode,
                 }
             };
 
@@ -119,14 +119,14 @@ public static class PrimMeshService
 
             int n = face.Vertices.Count;
             var positions = new Vector3[n];
-            var normals   = new Vector3[n];
-            var uvs       = new Vector2[n];
+            var normals = new Vector3[n];
+            var uvs = new Vector2[n];
             for (int i = 0; i < n; i++)
             {
                 var v = face.Vertices[i];
                 positions[i] = new Vector3(v.Position.X, v.Position.Y, v.Position.Z);
-                normals[i]   = new Vector3(v.Normal.X, v.Normal.Y, v.Normal.Z);
-                uvs[i]       = new Vector2(v.TexCoord.X, v.TexCoord.Y);
+                normals[i] = new Vector3(v.Normal.X, v.Normal.Y, v.Normal.Z);
+                uvs[i] = new Vector2(v.TexCoord.X, v.TexCoord.Y);
             }
 
             var indices = new int[face.Indices.Count];
@@ -144,7 +144,7 @@ public static class PrimMeshService
         // Plane 1: XZ plane, centered on Y (Y=0)
         // Plane 2: YZ plane, centered on X (X=0)
         // SL uses Z-up. Planes span X/Y from -0.5 to 0.5, and Z from -0.5 to 0.5.
-        
+
         var positions = new Vector3[8];
         var normals = new Vector3[8];
         var uvs = new Vector2[8];
@@ -153,10 +153,10 @@ public static class PrimMeshService
         // Plane 1 (XZ plane, Y=0)
         // vertices: bottom-left, bottom-right, top-right, top-left
         positions[0] = new Vector3(-0.5f, 0f, -0.5f); uvs[0] = new Vector2(0, 1);
-        positions[1] = new Vector3(0.5f, 0f, -0.5f);  uvs[1] = new Vector2(1, 1);
-        positions[2] = new Vector3(0.5f, 0f, 0.5f);   uvs[2] = new Vector2(1, 0);
-        positions[3] = new Vector3(-0.5f, 0f, 0.5f);  uvs[3] = new Vector2(0, 0);
-        
+        positions[1] = new Vector3(0.5f, 0f, -0.5f); uvs[1] = new Vector2(1, 1);
+        positions[2] = new Vector3(0.5f, 0f, 0.5f); uvs[2] = new Vector2(1, 0);
+        positions[3] = new Vector3(-0.5f, 0f, 0.5f); uvs[3] = new Vector2(0, 0);
+
         normals[0] = normals[1] = normals[2] = normals[3] = new Vector3(0, 1, 0);
 
         indices[0] = 0; indices[1] = 1; indices[2] = 2;
@@ -164,10 +164,10 @@ public static class PrimMeshService
 
         // Plane 2 (YZ plane, X=0)
         positions[4] = new Vector3(0f, -0.5f, -0.5f); uvs[4] = new Vector2(0, 1);
-        positions[5] = new Vector3(0f, 0.5f, -0.5f);  uvs[5] = new Vector2(1, 1);
-        positions[6] = new Vector3(0f, 0.5f, 0.5f);   uvs[6] = new Vector2(1, 0);
-        positions[7] = new Vector3(0f, -0.5f, 0.5f);  uvs[7] = new Vector2(0, 0);
-        
+        positions[5] = new Vector3(0f, 0.5f, -0.5f); uvs[5] = new Vector2(1, 1);
+        positions[6] = new Vector3(0f, 0.5f, 0.5f); uvs[6] = new Vector2(1, 0);
+        positions[7] = new Vector3(0f, -0.5f, 0.5f); uvs[7] = new Vector2(0, 0);
+
         normals[4] = normals[5] = normals[6] = normals[7] = new Vector3(1, 0, 0);
 
         indices[6] = 4; indices[7] = 5; indices[8] = 6;

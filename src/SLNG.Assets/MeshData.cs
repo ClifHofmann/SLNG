@@ -13,4 +13,9 @@ public sealed record MeshData(IReadOnlyList<MeshSubmesh> Submeshes);
 /// <summary>One submesh: per-vertex arrays addressed by <see cref="Indices"/>.
 /// <paramref name="FaceIndex"/> is the SL prim face number this submesh belongs to, so the
 /// renderer can apply that face's texture.</summary>
-public sealed record MeshSubmesh(Vector3[] Positions, Vector3[] Normals, Vector2[] UVs, int[] Indices, int FaceIndex = 0);
+public sealed record MeshSubmesh(Vector3[] Positions, Vector3[] Normals, Vector2[] UVs, int[] Indices, int FaceIndex = 0, SkinWeight[][]? SkinWeights = null);
+
+/// <summary>
+/// A weight influence mapping a vertex to a specific bone for rigged mesh animation.
+/// </summary>
+public sealed record SkinWeight(string Bone, float Weight);
