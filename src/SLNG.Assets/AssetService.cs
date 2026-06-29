@@ -425,11 +425,47 @@ public class AssetService
     {
         try
         {
+            // First try the native SL decoder which correctly handles SL alpha channels!
+            var asset = new LibreMetaverse.Assets.AssetTexture(new LibreMetaverse.UUID(), bytes);
+            if (asset.Decode())
+            {
+                if (asset.Image != null)
+                {
+                    int width = asset.Image.Width;
+                    int height = asset.Image.Height;
+                    byte[] raw = asset.Image.ExportRaw();
+                    
+                    Console.WriteLine($"[AssetService] AssetTexture decoded image: {width}x{height}, Channels: {asset.Image.Channels}");
+                    
+                    // ExportRaw returns RGB (3 bytes/pixel) or RGBA (4 bytes/pixel)
+                    // Godot expects Rgba8 (4 bytes/pixel)
+                    if ((asset.Image.Channels & LibreMetaverse.Imaging.ManagedImage.ImageChannels.Alpha) == 0)
+                    {
+                        // Convert RGB to RGBA
+                        byte[] padded = new byte[width * height * 4];
+                        for (int i = 0, j = 0; i < raw.Length; i += 3, j += 4)
+                        {
+                            padded[j] = raw[i];
+                            padded[j+1] = raw[i+1];
+                            padded[j+2] = raw[i+2];
+                            padded[j+3] = 255;
+                        }
+                        raw = padded;
+                    }
+                    
+                    return new TextureData(width, height, raw);
+                }
+            }
+        }
+        catch { }
+
+        try
+        {
             // Magick.NET wraps OpenJPEG and seamlessly handles malformed J2C 
             // bitstreams (missing EOC, trailing padding, etc.) that crash CoreJ2K.
             using var image = new ImageMagick.MagickImage(bytes);
             
-            Console.WriteLine($"[AssetService] Magick loaded image: {image.Width}x{image.Height}, Channels: {image.ChannelCount}, ColorSpace: {image.ColorSpace}, HasAlpha: {image.HasAlpha}");
+            Console.WriteLine($"[AssetService] Magick fallback decoded image: {image.Width}x{image.Height}, Channels: {image.ChannelCount}, ColorSpace: {image.ColorSpace}, HasAlpha: {image.HasAlpha}");
             
             // SL textures often have 4 channels for RGBA but don't explicitly mark themselves
             // as having an alpha channel in the J2K header.
