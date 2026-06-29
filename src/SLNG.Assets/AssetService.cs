@@ -435,6 +435,19 @@ public class AssetService
             
             int width = (int)image.Width;
             int height = (int)image.Height;
+
+            // Fix Magick.NET wrong dimensions for sculpt maps (e.g. 16x256 instead of 64x64)
+            if (isSculpt)
+            {
+                int totalPixels = width * height;
+                int sq = (int)Math.Sqrt(totalPixels);
+                if (sq * sq == totalPixels)
+                {
+                    width = sq;
+                    height = sq;
+                }
+            }
+
             byte[] rgba = Array.Empty<byte>();
 
             using (var pixels = image.GetPixels())
