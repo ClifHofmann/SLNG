@@ -477,8 +477,9 @@ public partial class ObjectRenderer : Node3D
     private static void ApplyAlphaCutout(StandardMaterial3D material, ImageTexture tex)
     {
         var img = tex.GetImage();
-        if (img == null || img.DetectAlpha() == Image.AlphaMode.None) return;
+        if (img == null) return;
 
+        // Force AlphaScissor to see if DetectAlpha was failing on valid alpha channels
         material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
         material.AlphaScissorThreshold = 0.5f;
         material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
