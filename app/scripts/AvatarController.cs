@@ -78,11 +78,11 @@ public partial class AvatarController : Camera3D
                     if (result.Count > 0)
                     {
                         var collider = result["collider"].AsGodotObject();
-                        if (collider is StaticBody3D sb)
+                        if (collider is Node colliderNode)
                         {
-                            var entityId = sb.HasMeta("EntityId") ? sb.GetMeta("EntityId").AsString() : "Unknown";
-                            var localId = sb.HasMeta("LocalId") ? sb.GetMeta("LocalId").AsString() : "Unknown";
-                            GD.Print($"\n\n=== [Raycast] Hit Object! ===\nEntityId: {entityId}\nLocalId: {localId}\n=============================\n");
+                            var entityId = colliderNode.HasMeta("EntityId") ? colliderNode.GetMeta("EntityId").AsString() : "None";
+                            var localId = colliderNode.HasMeta("LocalId") ? colliderNode.GetMeta("LocalId").AsString() : "None";
+                            GD.Print($"\n\n=== [Raycast] Hit ===\nNode: {colliderNode.Name}\nParent: {colliderNode.GetParent()?.Name}\nEntityId: {entityId}\nLocalId: {localId}\n=====================\n");
                         }
                     }
                 }
