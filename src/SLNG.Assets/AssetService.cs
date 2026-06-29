@@ -509,23 +509,33 @@ public class AssetService
             // Ensure we have RGBA output
             if (image.HasAlpha) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
             else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
-            // Ensure an alpha channel so the RGBA mapping below is always well defined.
-            if (!image.HasAlpha) image.Alpha(ImageMagick.AlphaOption.Opaque);
 
             byte[] rgba;
             using (var pixels = image.GetPixels())
             {
-                // Map whatever channel layout Magick decoded (3, 4, even 5 channels for some SL
-                // skin bakes) straight to RGBA — handles odd channel counts that the old manual
-                // stride loop rejected outright, leaving avatars with no skin texture.
-                var raw = pixels.ToByteArray(ImageMagick.PixelMapping.RGBA);
-                int need = width * height * 4;
-                if (raw == null || raw.Length < need)
+                var raw = pixels.GetValues() ?? Array.Empty<byte>();
+                int ch = (int)image.ChannelCount;
+                // Take the first three channels as RGB and the fourth (if any) as alpha, using
+                // the actual channel count as the stride. This keeps the proven 3/4-channel
+                // behaviour while also accepting odd layouts (e.g. 5-channel SL skin bakes)
+                // instead of rejecting them and leaving the surface untextured/black.
+                if (ch >= 3 && raw.Length >= width * height * ch)
                 {
-                    Console.WriteLine($"[AssetService] Could not map texture to RGBA (channels {image.ChannelCount}, got {raw?.Length ?? 0}/{need})");
+                    rgba = new byte[width * height * 4];
+                    for (int p = 0; p < width * height; p++)
+                    {
+                        int s = p * ch, d = p * 4;
+                        rgba[d]     = raw[s];
+                        rgba[d + 1] = raw[s + 1];
+                        rgba[d + 2] = raw[s + 2];
+                        rgba[d + 3] = ch >= 4 ? raw[s + 3] : (byte)255;
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"[AssetService] Unsupported texture layout: {ch} channels, {raw.Length} values for {width}x{height}");
                     return null;
                 }
-                rgba = raw.Length == need ? raw : raw[..need];
             }
 
             return new TextureData(width, height, rgba, isDegraded);
