@@ -1,20 +1,26 @@
-# Handoff → Claude (2026-06-29)
+# Handoff (2026-06-29) — OSGrid rendering
 
-The repository is now on the `main` branch. I have merged my recent work (`feat/login-profiles`) and the user's manual updates into `main`.
+Active branch: **`feat/sculpt-rendering`** → open PR **#17**. Build 0/0, tests 31/31.
+(PR #16 prim-shapes was closed — it's an ancestor of #17. #13/#14 closed earlier.)
 
-## Done this session (by Gemini)
-- **Login Profiles (UI)**: Added a dropdown and a "Save" checkbox to the boot screen (`Boot.tscn`, `Boot.cs`). It securely saves and restores login configurations using Godot's `ConfigFile` (`user://logins.cfg`).
-- **Fixed VRAM Exhaustion / Invisible Objects**: 
-  - **The Bug:** The Godot `GpuCache` was silently exhausting all VRAM on busy grids (like OSgrid). All objects in the region (10,000+) were eagerly triggering network requests and decoding meshes/textures *immediately* on spawn, regardless of distance. The VRAM release radius (`releaseSq`) was 192m (covering the entire region), so nothing was ever evicted. Once VRAM was full, Godot's Vulkan backend failed to allocate any new buffers, causing all new objects to be permanently invisible ("Nun sehe ich nix mehr").
-  - **The Fix:** In `ObjectRenderer.cs`, newly spawned `VisualState`s are now correctly initialized with `ResourcesReleased = true` and `Visible = false`. Heavy GPU assets (meshes, textures) are now *deferred* and only loaded into VRAM when the object actually moves into `showSq` (96m). 
-  - **Aggressive Culling:** Tightened `releaseSq` from `2.0 * draw` to `1.25 * draw` (120m). If an object moves out of this range, its mesh and textures are now aggressively released, dropping the ref count and allowing `GpuCache` to cleanly evict them.
+## Done this session
+World now renders OSGrid (`hg.osgrid.org`, "The Dangazi Forest") far more coherently:
+- **Sculpts**: real geometry via MeshFoundry `GenerateFacetedSculptMesh` (sculpt map → SKBitmap). Pkg `LibreMetaverse.Rendering.MeshFoundry` 3.0.0 + `SkiaSharp`.
+- **Linksets**: child prims composed to world space in `WorldSimulation` (`TransformComponent.Local*`/`ParentLocalId` + children index). Was the main "shattered builds".
+- **Floating origin** (`RenderConfig.SetRegionOrigin`/`ToGodot`): render relative to current region — OSGrid global coords are ~millions and overflow float32 → jitter/Z-fight. All renderers use `ToGodot` now.
+- **HTTP textures** (`Settings.TexturePipeline.UseHttpTextures`) — fixes truncated J2C / white objects. Texture cache self-heals + retries; `Settings.LogLevel=Warning` quiets console.
+- **Per-face textures**: `FaceTexture[]` per prim face → `SetSurfaceOverrideMaterial`; `MeshSubmesh.FaceIndex`; alpha-cutout for foliage.
+- **HUD** (top-right: region/coords/alt/draw), **fly** (E up/Q down/Home), draw-distance F3/F4, VRAM budget via GpuCache.
 
-## Current State & Health
-- `main` branch.
-- **Build / Tests**: `dotnet build` succeeds 0/0. `dotnet test` 25/25.
-- The avatar (Claude's M4-5 work) and animation fixes are present in `main`.
-- `Magick.NET failed to decode texture` logs still sporadically appear on OSgrid due to LibreMetaverse's UDP timeout passing truncated J2C streams; the code safely drops them and retries, but it clutters the Godot output.
+## Still broken (what the user sees)
+1. **No ground** beyond 256 m — region is a **varregion**; terrain is hardcoded 256×256. → spawned task **task_2cad84f0** "Varregion terrain": size to `Simulator.SizeX/SizeY`, chunk the mesh, then re-enable full collision (the in-bounds guard in `AvatarController._Process`, commit 77d870d).
+2. **Prims still look "kaputt"** even after floating origin. Unconfirmed cause — investigate next, likely candidates:
+   - **Back-face culling**: object materials cull back faces (avatar uses `CullMode.Disabled`); inside-out prims / viewing from inside look broken. Quick test: set `CullMode.Disabled` on prim materials.
+   - Specific sculpt/mesh assets decoding with bad geometry.
+   - Possible normal/winding issues from SurfaceTool.
 
-## Open / Next
-- Continue with **M4-3** (Bakes-on-Mesh) or whatever task is unblocked in the roadmap.
-- Keep an eye on avatar positioning (feet vs center) which might still be floating.
+## How to run / verify
+`. tools/dev-env.ps1` or `& $env:USERPROFILE\.dotnet\dotnet.exe`. Build `app/SLNG.App.csproj` (Godot uses `app/.godot/mono/temp/bin/Debug/`, NOT `dotnet build SLNG.sln`). Verify DLL fresh: read as UTF-8 for method names, UTF-16 for string literals. Log: `%APPDATA%\Godot\app_userdata\SLNG\logs`. Visual changes need a human login (headless can't render).
+
+## Next step
+Recommend: **varregion terrain** (task_2cad84f0) — brings the ground back + fixes landing everywhere. Then the prim back-face/culling check.
