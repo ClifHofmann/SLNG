@@ -463,52 +463,48 @@ public class AssetService
 
         try
         {
-            // Magick.NET wraps OpenJPEG and seamlessly handles malformed J2C 
-            // bitstreams (missing EOC, trailing padding, etc.) that crash CoreJ2K.
+            // Magick.NET wraps OpenJPEG and seamlessly handles malformed J2C bitstreams (missing EOC, trailing padding, etc.) that crash CoreJ2K.
             using var image = new ImageMagick.MagickImage(bytes);
             
-            Console.WriteLine($"[AssetService] Magick fallback decoded image: {image.Width}x{image.Height}, Channels: {image.ChannelCount}, ColorSpace: {image.ColorSpace}, HasAlpha: {image.HasAlpha}");
-            
-            // SL textures often have 4 channels for RGBA but don't explicitly mark themselves
-            // as having an alpha channel in the J2K header.
-            if (image.ChannelCount >= 4)
-            {
-                image.HasAlpha = true;
-            }
-
-            // In Magick.NET, ColorSpace.Transparent is required to properly export the alpha
-            // channel when mapping to RGBA, otherwise it may be flattened.
-            if (image.HasAlpha)
-            {
-                image.ColorSpace = ImageMagick.ColorSpace.Transparent;
-            }
-            else
-            {
-                image.ColorSpace = ImageMagick.ColorSpace.sRGB;
-            }
-
             int width = (int)image.Width;
             int height = (int)image.Height;
+            byte[] rgba = Array.Empty<byte>();
 
-            byte[] rgba;
-            
             using (var pixels = image.GetPixels())
             {
+                var raw = pixels.GetValues() ?? Array.Empty<byte>();
                 if (image.ChannelCount == 4)
                 {
-                    // For 4-channel SL textures, Magick.NET's ToByteArray("RGBA") mapping often
-                    // overwrites the unmapped 4th channel with opaque 255.
-                    // Using GetValues() retrieves the raw interleaved bytes (R, G, B, A) directly
-                    // as decoded by OpenJPEG, preserving the alpha channel.
-                    rgba = pixels.GetValues() ?? Array.Empty<byte>();
+                    rgba = new byte[width * height * 4];
+                    // GetValues returns BGRA for 4-channel sRGB images on Windows.
+                    for (int i = 0; i < raw.Length; i += 4)
+                    {
+                        rgba[i] = raw[i + 2];     // R <- B
+                        rgba[i + 1] = raw[i + 1]; // G <- G
+                        rgba[i + 2] = raw[i];     // B <- R
+                        rgba[i + 3] = raw[i + 3]; // A <- A
+                    }
+                }
+                else if (image.ChannelCount == 3)
+                {
+                    rgba = new byte[width * height * 4];
+                    // GetValues returns BGR for 3-channel sRGB images.
+                    for (int i = 0, j = 0; i < raw.Length; i += 3, j += 4)
+                    {
+                        rgba[j] = raw[i + 2];     // R <- B
+                        rgba[j + 1] = raw[i + 1]; // G <- G
+                        rgba[j + 2] = raw[i];     // B <- R
+                        rgba[j + 3] = 255;        // A (Opaque)
+                    }
                 }
                 else
                 {
-                    // For 3-channel images, use ToByteArray("RGBA") to safely pad the 4th byte with 255
-                    rgba = pixels.ToByteArray("RGBA") ?? Array.Empty<byte>();
+                    Console.WriteLine($"[AssetService] Magick loaded unsupported channel count: {image.ChannelCount}");
+                    return null;
                 }
             }
 
+            Console.WriteLine($"[AssetService] Magick fallback decoded image: {width}x{height}, Channels: {image.ChannelCount}");
             return new TextureData(width, height, rgba);
         }
         catch (Exception ex)
