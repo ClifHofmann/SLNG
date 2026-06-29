@@ -409,7 +409,11 @@ public partial class ObjectRenderer : Node3D
             var tex = await GetOrCreateGpuTextureAsync(textureId);
             if (tex != null)
             {
-                Godot.Callable.From(() => material.AlbedoTexture = tex).CallDeferred();
+                Godot.Callable.From(() =>
+                {
+                    material.AlbedoTexture = tex;
+                    ApplyAlphaCutout(material, tex);
+                }).CallDeferred();
             }
         }
 
@@ -428,6 +432,19 @@ public partial class ObjectRenderer : Node3D
                 }
             }
         }).CallDeferred();
+    }
+
+    /// <summary>Enables alpha-cutout when the texture actually has transparency, so alpha-masked
+    /// foliage/fences are cut out instead of rendering as opaque white cards. Double-sided so
+    /// leaf cards show from both faces. Opaque textures are left unchanged.</summary>
+    private static void ApplyAlphaCutout(StandardMaterial3D material, ImageTexture tex)
+    {
+        var img = tex.GetImage();
+        if (img == null || img.DetectAlpha() == Image.AlphaMode.None) return;
+
+        material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+        material.AlphaScissorThreshold = 0.5f;
+        material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
     }
 
     private async System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
