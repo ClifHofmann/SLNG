@@ -367,6 +367,31 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// </summary>
     public async Task<byte[]?> FetchTextureDataAsync(Guid textureId)
     {
+        // Attempt HTTP download first, as UDP is prone to packet loss and truncated streams
+        var sim = _client.Network.CurrentSim;
+        if (sim != null && sim.Caps != null)
+        {
+            var cap = sim.Caps.CapabilityURI("GetTexture");
+            if (cap != null)
+            {
+                try
+                {
+                    var url = $"{cap}/?texture_id={textureId}";
+                    using var http = new System.Net.Http.HttpClient();
+                    var bytes = await http.GetByteArrayAsync(url).ConfigureAwait(false);
+                    if (bytes is { Length: > 0 })
+                    {
+                        return bytes;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[GridSession] HTTP GetTexture failed for {textureId}: {ex.Message}");
+                }
+            }
+        }
+
+        // Fallback to legacy UDP
         var texture = await _client.Assets
             .RequestImageAsync(new UUID(textureId), ImageType.Normal, CancellationToken.None)
             .ConfigureAwait(false);
