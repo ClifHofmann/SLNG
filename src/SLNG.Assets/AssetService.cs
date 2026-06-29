@@ -258,7 +258,7 @@ public class AssetService
                 var result = await Task.Run(() => DecodeTexture(bytes, isSculpt)).ConfigureAwait(false);
                 if (result != null)
                 {
-                    if (cacheFile != null)
+                    if (cacheFile != null && !result.IsDegraded)
                     {
                         try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
                     }
@@ -434,7 +434,9 @@ public class AssetService
                 width = (int)image.Width;
                 height = (int)image.Height;
             }
-            else if (!isSculpt)
+            bool isDegraded = false;
+            
+            if (!isSculpt)
             {
                 // For normal textures, verify if Magick.NET decoded a low-res thumbnail instead of the full image
                 int trueWidth = -1, trueHeight = -1;
@@ -450,19 +452,15 @@ public class AssetService
                 
                 if (trueWidth > 0 && trueHeight > 0 && (width * height < trueWidth * trueHeight))
                 {
-                    throw new Exception($"Decoded thumbnail {width}x{height}, expected {trueWidth}x{trueHeight}");
+                    // Accept the thumbnail but mark as degraded so it isn't cached
+                    Console.WriteLine($"[AssetService] Magick decoded thumbnail {width}x{height}, expected {trueWidth}x{trueHeight}. Marked as degraded.");
+                    isDegraded = true;
                 }
             }
 
             // Ensure we have RGBA output
-            if (image.HasAlpha)
-            {
-                image.ColorSpace = ImageMagick.ColorSpace.Transparent;
-            }
-            else
-            {
-                image.ColorSpace = ImageMagick.ColorSpace.sRGB;
-            }
+            if (image.HasAlpha) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
+            else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
 
             byte[] rgba = Array.Empty<byte>();
 
@@ -472,25 +470,23 @@ public class AssetService
                 if (image.ChannelCount == 4)
                 {
                     rgba = new byte[width * height * 4];
-                    // GetValues returns RGBA for 4-channel sRGB images.
                     for (int i = 0; i < raw.Length; i += 4)
                     {
-                        rgba[i] = raw[i];         // R
-                        rgba[i + 1] = raw[i + 1]; // G
-                        rgba[i + 2] = raw[i + 2]; // B
-                        rgba[i + 3] = raw[i + 3]; // A
+                        rgba[i] = raw[i];
+                        rgba[i + 1] = raw[i + 1];
+                        rgba[i + 2] = raw[i + 2];
+                        rgba[i + 3] = raw[i + 3];
                     }
                 }
                 else if (image.ChannelCount == 3)
                 {
                     rgba = new byte[width * height * 4];
-                    // GetValues returns RGB for 3-channel sRGB images.
                     for (int i = 0, j = 0; i < raw.Length; i += 3, j += 4)
                     {
-                        rgba[j] = raw[i];         // R
-                        rgba[j + 1] = raw[i + 1]; // G
-                        rgba[j + 2] = raw[i + 2]; // B
-                        rgba[j + 3] = 255;        // A
+                        rgba[j] = raw[i];
+                        rgba[j + 1] = raw[i + 1];
+                        rgba[j + 2] = raw[i + 2];
+                        rgba[j + 3] = 255;
                     }
                 }
                 else
@@ -500,8 +496,7 @@ public class AssetService
                 }
             }
 
-            Console.WriteLine($"[AssetService] Magick fallback decoded image: {width}x{height}, Channels: {image.ChannelCount}");
-            return new TextureData(width, height, rgba);
+            return new TextureData(width, height, rgba, isDegraded);
         }
         catch (Exception ex)
         {
@@ -509,9 +504,6 @@ public class AssetService
             
             try 
             {
-                // Second Life servers often return truncated J2C streams when busy.
-                // OpenJPEG strictly expects the stream to match the length declared in the SOT marker.
-                // By appending zeros to the stream, we can often satisfy OpenJPEG and recover the full image!
                 byte[] padded = new byte[bytes.Length + 65536];
                 Buffer.BlockCopy(bytes, 0, padded, 0, bytes.Length);
                 padded[padded.Length - 2] = 0xFF;
@@ -522,23 +514,7 @@ public class AssetService
                 
                 int width = (int)image.Width;
                 int height = (int)image.Height;
-
-                // Check if padding still resulted in a low-res thumbnail. If so, fail and fallback to CoreJ2K!
-                int trueWidth = -1, trueHeight = -1;
-                for (int i = 0; i < padded.Length - 13; i++)
-                {
-                    if (padded[i] == 0xFF && padded[i + 1] == 0x51)
-                    {
-                        trueWidth = (padded[i + 6] << 24) | (padded[i + 7] << 16) | (padded[i + 8] << 8) | padded[i + 9];
-                        trueHeight = (padded[i + 10] << 24) | (padded[i + 11] << 16) | (padded[i + 12] << 8) | padded[i + 13];
-                        break;
-                    }
-                }
-                
-                if (trueWidth > 0 && trueHeight > 0 && (width * height < trueWidth * trueHeight))
-                {
-                    throw new Exception($"Padded recovery still returned thumbnail {width}x{height}");
-                }
+                bool isDegraded = true; // Always treat padded recovery as degraded so we can try to get the real file later
 
                 if (image.HasAlpha) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
                 else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
@@ -575,48 +551,12 @@ public class AssetService
                 if (rgba.Length > 0)
                 {
                     Console.WriteLine($"[AssetService] Padded Magick.NET decode successful: {width}x{height}");
-                    return new TextureData(width, height, rgba);
+                    return new TextureData(width, height, rgba, isDegraded);
                 }
             }
             catch (Exception paddedEx)
             {
-                Console.WriteLine($"[AssetService] Padded Magick.NET decode also failed ({paddedEx.Message}), falling back to CoreJ2K...");
-            }
-            
-            try
-            {
-                var asset = new LibreMetaverse.Assets.AssetTexture(new LibreMetaverse.UUID(), bytes);
-                if (asset.Decode() && asset.Image != null)
-                {
-                    int width = asset.Image.Width;
-                    int height = asset.Image.Height;
-                    bool hasColor = asset.Image.Red != null && asset.Image.Green != null && asset.Image.Blue != null;
-                    
-                    if (hasColor)
-                    {
-                        var red = asset.Image.Red!;
-                        var green = asset.Image.Green!;
-                        var blue = asset.Image.Blue!;
-                        var alpha = asset.Image.Alpha;
-                        
-                        byte[] rgba = new byte[width * height * 4];
-
-                        for (int i = 0; i < width * height; i++)
-                        {
-                            rgba[i * 4] = red[i];
-                            rgba[i * 4 + 1] = green[i];
-                            rgba[i * 4 + 2] = blue[i];
-                            rgba[i * 4 + 3] = alpha != null ? alpha[i] : (byte)255;
-                        }
-                        
-                        Console.WriteLine($"[AssetService] Fallback CoreJ2K decode successful: {width}x{height}");
-                        return new TextureData(width, height, rgba);
-                    }
-                }
-            }
-            catch (Exception ex2)
-            {
-                Console.WriteLine($"[AssetService] CoreJ2K fallback also failed: {ex2.Message}");
+                Console.WriteLine($"[AssetService] Padded Magick.NET decode also failed: {paddedEx.Message}");
             }
             return null;
         }
