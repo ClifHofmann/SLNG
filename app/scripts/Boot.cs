@@ -78,19 +78,27 @@ public partial class Boot : Control
     private void SetupHud()
     {
         // Position/altitude readout in the top-right corner, overlaying the 3D view.
+        // On its own CanvasLayer so it always draws on top of the world and the login/chat
+        // Controls, regardless of scene-tree order.
+        var hudLayer = new CanvasLayer { Name = "HudLayer", Layer = 10 };
+        AddChild(hudLayer);
+
         _hudLabel = new Label
         {
             Name = "PositionHud",
             HorizontalAlignment = HorizontalAlignment.Right,
             MouseFilter = Control.MouseFilterEnum.Ignore,
+            Text = "connecting…",
         };
         _hudLabel.SetAnchorsPreset(Control.LayoutPreset.TopWide);
         _hudLabel.OffsetTop = 6;
         _hudLabel.OffsetRight = -12;
-        // Dark outline so white text stays legible over bright sky or pale objects.
-        _hudLabel.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 0.8f));
-        _hudLabel.AddThemeConstantOverride("outline_size", 4);
-        AddChild(_hudLabel);
+        // Dark outline + larger font so white text stays legible over bright sky or pale objects.
+        _hudLabel.AddThemeColorOverride("font_color", new Color(1, 1, 1));
+        _hudLabel.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 0.85f));
+        _hudLabel.AddThemeConstantOverride("outline_size", 5);
+        _hudLabel.AddThemeFontSizeOverride("font_size", 18);
+        hudLayer.AddChild(_hudLabel);
     }
 
     private void SetupEnvironment()
@@ -155,12 +163,17 @@ public partial class Boot : Control
     {
         if (_world == null || _session == null) { return; }
 
+        string region = string.IsNullOrEmpty(_session.CurrentRegionName) ? "(connecting)" : _session.CurrentRegionName;
+
         var agent = _world.GetAllEntities()
             .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
         var t = agent?.GetComponent<TransformComponent>();
-        if (t == null) { _hudLabel.Text = ""; return; }
+        if (t == null)
+        {
+            _hudLabel.Text = $"{region}\nawaiting position…   ·   Draw {RenderConfig.DrawDistance:0} m";
+            return;
+        }
 
-        string region = _session.CurrentRegionName;
         _hudLabel.Text =
             $"{region}\n" +
             $"<{t.Position.X:0.0}, {t.Position.Y:0.0}, {t.Position.Z:0.0}>\n" +

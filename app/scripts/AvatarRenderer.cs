@@ -452,7 +452,8 @@ public partial class AvatarRenderer : Node3D
                 if (mi == null) return;
                 mi.Name = "RiggedMesh";
                 skeleton.AddChild(mi);
-                mi.Skin = mi.GetMeta("skin").As<Skin>();
+                // Skin is already assigned on the instance; the skeleton path must be set after
+                // the node is in the tree so Godot can resolve and drive the skinning.
                 mi.Skeleton = mi.GetPathTo(skeleton);
                 if (textureId != Guid.Empty)
                     _ = LoadAndApplyAttachmentTextureAsync(mi, textureId);
@@ -563,12 +564,20 @@ public partial class AvatarRenderer : Node3D
 
         if (arrayMesh.GetSurfaceCount() == 0) return null;
 
+        // One-shot diagnostic: how many joints resolved, and the mesh's local bounds. A huge
+        // AABB means broken skin weights / bind-shape (the "flying" artifact).
+        var aabb = arrayMesh.GetAabb();
+        int resolved = 0;
+        for (int j = 0; j < jointCount; j++) if (slotForJoint[j] >= 0) resolved++;
+        GD.Print($"[RiggedMesh] joints {resolved}/{jointCount} resolved, binds {skin.GetBindCount()}, " +
+                 $"aabb pos {aabb.Position} size {aabb.Size}");
+
         var mi = new MeshInstance3D
         {
             Mesh = arrayMesh,
+            Skin = skin,
             MaterialOverride = new StandardMaterial3D { CullMode = BaseMaterial3D.CullModeEnum.Disabled }
         };
-        mi.SetMeta("skin", skin);
         return mi;
     }
 
