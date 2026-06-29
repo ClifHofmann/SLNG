@@ -47,6 +47,53 @@ public class WorldSimulationTests
     }
 
     [Fact]
+    public void LinkedChild_IsComposedToWorldSpace_WhenRootArrivesFirst()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        // Root at world (100,200,30); child offset (5,0,0) relative to it.
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(1ul, 1, new Vector3(100, 200, 30), Quaternion.Identity, Vector3.One, 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One, 0, 0));
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(1ul, 2, new Vector3(5, 0, 0), Quaternion.Identity, Vector3.One, 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One, 1, 0));
+        simulation.Pump();
+
+        var child = world.GetEntity(1ul, 2)!.GetComponent<TransformComponent>()!;
+        Assert.Equal(new Vector3(105, 200, 30), child.Position);
+    }
+
+    [Fact]
+    public void LinkedChild_IsRecomposed_WhenRootArrivesAfterChild()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        // Child arrives before its root — it should be re-composed once the root shows up.
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(1ul, 2, new Vector3(5, 0, 0), Quaternion.Identity, Vector3.One, 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One, 1, 0));
+        simulation.Pump();
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(1ul, 1, new Vector3(100, 200, 30), Quaternion.Identity, Vector3.One, 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One, 0, 0));
+        simulation.Pump();
+
+        var child = world.GetEntity(1ul, 2)!.GetComponent<TransformComponent>()!;
+        Assert.Equal(new Vector3(105, 200, 30), child.Position);
+    }
+
+    [Fact]
+    public void RootPrim_KeepsWorldPosition()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(1ul, 1, new Vector3(100, 200, 30), Quaternion.Identity, Vector3.One, 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One, 0, 0));
+        simulation.Pump();
+
+        var root = world.GetEntity(1ul, 1)!.GetComponent<TransformComponent>()!;
+        Assert.Equal(new Vector3(100, 200, 30), root.Position);
+    }
+
+    [Fact]
     public void AvatarAppearanceEvent_UpdatesAvatarComponent()
     {
         var world = new World();

@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
+using System.Numerics;
 using SLNG.Core.Components;
 using SLNG.Core.ECS;
 
@@ -19,6 +21,10 @@ public sealed class WorldSimulation : IDisposable
     private readonly World _world;
     private readonly IWorldEventSource _source;
     private readonly ConcurrentQueue<IWorldEvent> _pending = new();
+
+    // (region, parentLocalId) -> child entity ids, so a linkset root's children can be
+    // re-composed when the root arrives or moves. Touched only on the pump thread.
+    private readonly Dictionary<(ulong, uint), HashSet<System.Guid>> _children = new();
 
     public WorldSimulation(World world, IWorldEventSource source)
     {
@@ -71,19 +77,24 @@ public sealed class WorldSimulation : IDisposable
     {
         var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
 
-        if (!entity.HasComponent<TransformComponent>())
+        var transform = entity.GetComponent<TransformComponent>() ?? new TransformComponent();
+        transform.LocalPosition = e.Position;
+        transform.LocalRotation = e.Rotation;
+        transform.ParentLocalId = e.ParentLocalId;
+        // Linked child prims send their transform relative to the root; compose to world space.
+        ResolveWorldTransform(transform, e.RegionHandle);
+        entity.SetComponent(transform);
+        _world.NotifyComponentUpdated(entity, transform);
+
+        // Index this entity under its parent so the parent can re-compose it later, and
+        // re-compose any children already waiting on this entity (handles either arrival order).
+        if (e.ParentLocalId != 0)
         {
-            var transform = new TransformComponent(e.Position, e.Rotation);
-            entity.SetComponent(transform);
-            _world.NotifyComponentUpdated(entity, transform);
+            var key = (e.RegionHandle, e.ParentLocalId);
+            if (!_children.TryGetValue(key, out var set)) _children[key] = set = new HashSet<System.Guid>();
+            set.Add(entity.Id);
         }
-        else
-        {
-            var transform = entity.GetComponent<TransformComponent>()!;
-            transform.Position = e.Position;
-            transform.Rotation = e.Rotation;
-            _world.NotifyComponentUpdated(entity, transform);
-        }
+        RecomposeChildren(e.RegionHandle, e.LocalId);
 
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim == null)
@@ -128,6 +139,48 @@ public sealed class WorldSimulation : IDisposable
                 }
                 _world.NotifyComponentUpdated(entity, attachment);
             }
+        }
+    }
+
+    /// <summary>Computes a transform's world-space Position/Rotation from its parent (linkset
+    /// root). Roots, avatar attachments, and orphans (parent not yet present) stay at their
+    /// local values.</summary>
+    private void ResolveWorldTransform(TransformComponent t, ulong region)
+    {
+        if (t.ParentLocalId == 0)
+        {
+            t.Position = t.LocalPosition;
+            t.Rotation = t.LocalRotation;
+            return;
+        }
+
+        var parent = _world.GetEntity(region, t.ParentLocalId);
+        var parentT = parent?.GetComponent<TransformComponent>();
+        if (parent == null || parentT == null || parent.GetComponent<AvatarComponent>() != null)
+        {
+            // No prim parent (yet) — leave local; avatar attachments are placed via bones.
+            t.Position = t.LocalPosition;
+            t.Rotation = t.LocalRotation;
+            return;
+        }
+
+        t.Rotation = parentT.Rotation * t.LocalRotation;
+        t.Position = parentT.Position + Vector3.Transform(t.LocalPosition, parentT.Rotation);
+    }
+
+    /// <summary>Re-composes the world transform of every child linked to <paramref name="localId"/>
+    /// — used when a linkset root arrives or moves so its children follow.</summary>
+    private void RecomposeChildren(ulong region, uint localId)
+    {
+        if (!_children.TryGetValue((region, localId), out var set) || set.Count == 0) return;
+
+        foreach (var childId in set.ToList())
+        {
+            var child = _world.GetEntity(childId);
+            var ct = child?.GetComponent<TransformComponent>();
+            if (child == null || ct == null) continue;
+            ResolveWorldTransform(ct, region);
+            _world.NotifyComponentUpdated(child, ct);
         }
     }
 
