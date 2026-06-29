@@ -476,24 +476,24 @@ public class AssetService
                 if (image.ChannelCount == 4)
                 {
                     rgba = new byte[width * height * 4];
-                    // GetValues returns BGRA for 4-channel sRGB images on Windows.
+                    // GetValues returns RGBA for 4-channel sRGB images.
                     for (int i = 0; i < raw.Length; i += 4)
                     {
-                        rgba[i] = raw[i + 2];     // R <- B
-                        rgba[i + 1] = raw[i + 1]; // G <- G
-                        rgba[i + 2] = raw[i];     // B <- R
-                        rgba[i + 3] = raw[i + 3]; // A <- A
+                        rgba[i] = raw[i];         // R
+                        rgba[i + 1] = raw[i + 1]; // G
+                        rgba[i + 2] = raw[i + 2]; // B
+                        rgba[i + 3] = raw[i + 3]; // A
                     }
                 }
                 else if (image.ChannelCount == 3)
                 {
                     rgba = new byte[width * height * 4];
-                    // GetValues returns BGR for 3-channel sRGB images.
+                    // GetValues returns RGB for 3-channel sRGB images.
                     for (int i = 0, j = 0; i < raw.Length; i += 3, j += 4)
                     {
-                        rgba[j] = raw[i + 2];     // R <- B
-                        rgba[j + 1] = raw[i + 1]; // G <- G
-                        rgba[j + 2] = raw[i];     // B <- R
+                        rgba[j] = raw[i];         // R
+                        rgba[j + 1] = raw[i + 1]; // G
+                        rgba[j + 2] = raw[i + 2]; // B
                         rgba[j + 3] = 255;        // A (Opaque)
                     }
                 }
