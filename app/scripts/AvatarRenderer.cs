@@ -201,14 +201,8 @@ public partial class AvatarRenderer : Node3D
         var transform = entity.GetComponent<TransformComponent>();
         if (transform != null)
         {
-            uint regionX = (uint)(entity.RegionHandle >> 32);
-            uint regionY = (uint)(entity.RegionHandle & 0xFFFFFFFF);
-
-            // Position the avatar root node
-            visual.Root.Position = new Godot.Vector3(
-                regionX + transform.Position.X,
-                transform.Position.Z,
-                -(regionY + transform.Position.Y));
+            // Position the avatar root node (floating-origin relative; see RenderConfig)
+            visual.Root.Position = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
 
             var slQuat = new Godot.Quaternion(
                 transform.Rotation.X, transform.Rotation.Z,

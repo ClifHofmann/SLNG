@@ -163,12 +163,9 @@ public partial class TerrainRenderer : Node3D
             AddChild(regionNode.Root);
             _regions[regionHandle] = regionNode;
 
-            // Position root node based on global coordinates
-            uint regionX = (uint)(regionHandle >> 32);
-            uint regionY = (uint)(regionHandle & 0xFFFFFFFF);
-            
-            // Godot X = SL X, Godot -Z = SL Y
-            regionNode.Root.Position = new Vector3(regionX, 0, -regionY);
+            // Position root node relative to the floating origin (see RenderConfig) so terrain
+            // lines up with objects/avatars without overflowing float precision on OSGrid.
+            regionNode.Root.Position = RenderConfig.ToGodot(regionHandle, System.Numerics.Vector3.Zero);
         }
 
         var heights = regionTerrain.GetHeights();

@@ -17,6 +17,29 @@ public static class RenderConfig
     /// </summary>
     public static float DrawDistance = 96f;
 
+    // Floating origin: the global metre coordinates of the region we render relative to.
+    // OSGrid regions sit at global coordinates in the millions; rendering at those raw
+    // coordinates blows float32 precision (objects jitter / Z-fight / look shattered). We
+    // subtract this origin so everything renders near 0. Set once the local region is known.
+    public static double OriginX;
+    public static double OriginY;
+
+    /// <summary>Sets the floating origin to the given region's global SW corner.</summary>
+    public static void SetRegionOrigin(ulong regionHandle)
+    {
+        OriginX = (uint)(regionHandle >> 32);
+        OriginY = (uint)(regionHandle & 0xFFFFFFFF);
+    }
+
+    /// <summary>Converts an SL region-local position to Godot world space, relative to the
+    /// floating origin. SL is Z-up; Godot is Y-up: SL(X,Y,Z) → Godot(X, Z, −Y).</summary>
+    public static Vector3 ToGodot(ulong regionHandle, System.Numerics.Vector3 slLocal)
+    {
+        double gx = (uint)(regionHandle >> 32) + (double)slLocal.X - OriginX;
+        double gy = (uint)(regionHandle & 0xFFFFFFFF) + (double)slLocal.Y - OriginY;
+        return new Vector3((float)gx, slLocal.Z, (float)-gy);
+    }
+
     /// <summary>
     /// Returns the local agent's position converted to Godot world space, or false if the
     /// agent (or its transform) isn't in the world yet.
@@ -32,9 +55,7 @@ public static class RenderConfig
             var t = e.GetComponent<TransformComponent>();
             if (t == null) return false;
 
-            uint regionX = (uint)(e.RegionHandle >> 32);
-            uint regionY = (uint)(e.RegionHandle & 0xFFFFFFFF);
-            pos = new Vector3(regionX + t.Position.X, t.Position.Z, -(regionY + t.Position.Y));
+            pos = ToGodot(e.RegionHandle, t.Position);
             return true;
         }
         return false;

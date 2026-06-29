@@ -288,13 +288,13 @@ public partial class Boot : Control
             _avatarController = new AvatarController();
             _avatarController.Initialize(_world, _session);
             
-            // Get current region global coordinates (only needed to start near the center before AvatarUpdate arrives)
+            // Set the floating origin to this region so everything renders near 0 (OSGrid
+            // global coordinates are in the millions and overflow float precision otherwise).
             ulong regionHandle = _session.CurrentRegionHandle;
-            uint regionX = (uint)(regionHandle >> 32);
-            uint regionY = (uint)(regionHandle & 0xFFFFFFFF);
+            RenderConfig.SetRegionOrigin(regionHandle);
 
-            // Start at a reasonable height in the middle of a 256x256 region
-            _avatarController.Position = new Godot.Vector3(regionX + 128f, 50f, -(regionY + 128f));
+            // Start near the region centre at a reasonable height (before AvatarUpdate arrives).
+            _avatarController.Position = RenderConfig.ToGodot(regionHandle, new System.Numerics.Vector3(128f, 128f, 50f));
             
             // Assign the environment directly to the camera to ensure the sky renders
             var worldEnv = GetNodeOrNull<WorldEnvironment>("WorldEnvironment");

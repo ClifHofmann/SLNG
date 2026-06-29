@@ -262,13 +262,7 @@ public partial class ObjectRenderer : Node3D
         var transform = entity.GetComponent<TransformComponent>();
         if (transform != null)
         {
-            uint regionX = (uint)(entity.RegionHandle >> 32);
-            uint regionY = (uint)(entity.RegionHandle & 0xFFFFFFFF);
-
-            state.MeshInstance.Position = new Godot.Vector3(
-                regionX + transform.Position.X, 
-                transform.Position.Z, 
-                -(regionY + transform.Position.Y));
+            state.MeshInstance.Position = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
 
             var slQuat = new Godot.Quaternion(transform.Rotation.X, transform.Rotation.Z, -transform.Rotation.Y, transform.Rotation.W);
             state.MeshInstance.Quaternion = slQuat;

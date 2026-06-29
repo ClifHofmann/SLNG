@@ -220,15 +220,9 @@ public partial class AvatarController : Camera3D
 
                 _world.NotifyComponentUpdated(localAgent, transform);
 
-                uint regionX = (uint)(localAgent.RegionHandle >> 32);
-                uint regionY = (uint)(localAgent.RegionHandle & 0xFFFFFFFF);
-
-                // OpenSim/Godot coordinate mapping
-                var targetPos = new Vector3(
-                    regionX + transform.Position.X,
-                    transform.Position.Z + 1.8f, // Eye height
-                    -(regionY + transform.Position.Y)
-                );
+                // Floating-origin-relative world position (see RenderConfig), plus eye height.
+                var targetPos = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
+                targetPos.Y += 1.8f;
 
                 // Third-person camera: pull back along the camera's Z axis
                 Position = targetPos + Transform.Basis.Z * _zoom;
