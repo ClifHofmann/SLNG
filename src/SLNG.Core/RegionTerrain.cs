@@ -46,27 +46,33 @@ public class RegionTerrain
         _heights = newHeights;
     }
 
+    /// <summary>Grows the heightmap to at least the given dimensions, preserving existing data.
+    /// Varregion size is learned from the terrain/settings events; growth happens here (driven by
+    /// the real region size) rather than in <see cref="ApplyPatch"/>, so a spurious out-of-bounds
+    /// patch can never silently enlarge — and corrupt — the map.</summary>
+    public void EnsureSize(int width, int height)
+    {
+        if (width > Width || height > Height)
+            Resize(Math.Max(Width, width), Math.Max(Height, height));
+    }
+
     /// <summary>
-    /// Applies a 16x16 patch to the master heightmap.
+    /// Applies a 16x16 patch to the master heightmap. Patches whose 16x16 block falls outside
+    /// the region are ignored — the terrain is already sized to the real region dimensions.
     /// </summary>
     public void ApplyPatch(int patchX, int patchY, float[] patchHeights)
     {
         if (patchHeights == null || patchHeights.Length != PatchSize * PatchSize)
             return;
-
-        int requiredWidth = (patchX + 1) * PatchSize;
-        int requiredHeight = (patchY + 1) * PatchSize;
-
-        if (requiredWidth > Width || requiredHeight > Height)
-        {
-            // Snap to multiples of 256 for standard varregion sizes (256, 512, 1024, etc.)
-            int newW = (int)Math.Ceiling(requiredWidth / 256.0) * 256;
-            int newH = (int)Math.Ceiling(requiredHeight / 256.0) * 256;
-            Resize(Math.Max(Width, newW), Math.Max(Height, newH));
-        }
+        if (patchX < 0 || patchY < 0)
+            return;
 
         int startX = patchX * PatchSize;
         int startY = patchY * PatchSize;
+
+        // Reject a patch whose full 16x16 block does not fit within the region.
+        if (startX + PatchSize > Width || startY + PatchSize > Height)
+            return;
 
         for (int y = 0; y < PatchSize; y++)
         {
@@ -74,11 +80,7 @@ public class RegionTerrain
             {
                 int localIndex = y * PatchSize + x;
                 int globalIndex = (startY + y) * Width + (startX + x);
-
-                if (globalIndex < _heights.Length)
-                {
-                    _heights[globalIndex] = patchHeights[localIndex];
-                }
+                _heights[globalIndex] = patchHeights[localIndex];
             }
         }
     }
