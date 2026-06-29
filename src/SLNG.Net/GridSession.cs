@@ -292,7 +292,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 credentials.Password,
                 credentials.Channel,
                 credentials.Version,
-                credentials.GridLoginUri);
+                credentials.GridLoginUri)
+            {
+                Start = credentials.StartLocation
+            };
 
             var response = await _client.Network
                 .LoginWithResponseAsync(login, ct)

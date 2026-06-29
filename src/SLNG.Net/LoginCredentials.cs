@@ -24,6 +24,9 @@ public sealed record LoginCredentials
     /// <summary>Viewer version reported to the grid.</summary>
     public string Version { get; init; } = "0.1.0";
 
+    /// <summary>Starting location (e.g. 'last', 'home', or 'RegionName/128/128/30').</summary>
+    public string StartLocation { get; init; } = "last";
+
     /// <summary>Second Life main grid login URI.</summary>
     public const string SecondLifeLoginUri = "https://login.agni.lindenlab.com/cgi-bin/login.cgi";
 
