@@ -413,7 +413,7 @@ public partial class AvatarRenderer : Node3D
             {
                 if (prim.IsMesh && prim.MeshId != Guid.Empty)
                 {
-                    _ = LoadAndApplyAttachmentMeshAsync(boneAttach, prim.MeshId, prim.TextureId,
+                    _ = LoadAndApplyAttachmentMeshAsync(boneAttach, avatarVisual.Skeleton, prim.MeshId, prim.TextureId,
                         new System.Numerics.Vector3(prim.Scale.X, prim.Scale.Y, prim.Scale.Z));
                 }
                 else
@@ -433,12 +433,32 @@ public partial class AvatarRenderer : Node3D
     }
 
     private async System.Threading.Tasks.Task LoadAndApplyAttachmentMeshAsync(
-        BoneAttachment3D boneAttach, Guid meshId, Guid textureId, System.Numerics.Vector3 slScale)
+        BoneAttachment3D boneAttach, Skeleton3D? skeleton, Guid meshId, Guid textureId, System.Numerics.Vector3 slScale)
     {
         if (_assetService == null) return;
 
         var meshData = await _assetService.GetMeshAsync(meshId).ConfigureAwait(false);
         if (meshData == null) return;
+
+        // Rigged / fitted mesh (worn mesh bodies and clothing) carries skin data: skin it to
+        // the avatar skeleton so it deforms and animates with the body, instead of bolting it
+        // statically to one bone (which collapses it into a blob).
+        if (meshData.Skin != null && skeleton != null)
+        {
+            Godot.Callable.From(() =>
+            {
+                if (!IsInstanceValid(skeleton)) return;
+                var mi = BuildRiggedMeshInstance(meshData, skeleton);
+                if (mi == null) return;
+                mi.Name = "RiggedMesh";
+                skeleton.AddChild(mi);
+                mi.Skin = mi.GetMeta("skin").As<Skin>();
+                mi.Skeleton = mi.GetPathTo(skeleton);
+                if (textureId != Guid.Empty)
+                    _ = LoadAndApplyAttachmentTextureAsync(mi, textureId);
+            }).CallDeferred();
+            return;
+        }
 
         Godot.Callable.From(() =>
         {
@@ -469,6 +489,99 @@ public partial class AvatarRenderer : Node3D
             if (textureId != Guid.Empty)
                 _ = LoadAndApplyAttachmentTextureAsync(mi, textureId);
         }).CallDeferred();
+    }
+
+    /// <summary>
+    /// Builds a skinned <see cref="MeshInstance3D"/> for a rigged/fitted mesh, bound to the
+    /// avatar <paramref name="skeleton"/>. Returns null if no joints resolve. The instance must
+    /// be added as a DIRECT child of the skeleton; its <see cref="Skin"/> is stashed in a node
+    /// meta ("skin") so the caller can assign it after AddChild. Main thread only.
+    /// </summary>
+    private MeshInstance3D? BuildRiggedMeshInstance(MeshData meshData, Skeleton3D skeleton)
+    {
+        var skinData = meshData.Skin!;
+        int jointCount = skinData.JointNames.Length;
+
+        // Bind every resolvable joint to its bone's global-rest inverse — same convention as
+        // the system body parts (robust against the asset's own bind pose). One bind per bone.
+        var skin = new Skin();
+        var slotForBone = new Dictionary<int, int>();
+        var slotForJoint = new int[jointCount];
+        for (int j = 0; j < jointCount; j++)
+        {
+            int bone = skeleton.FindBone(skinData.JointNames[j]);
+            if (bone < 0) { slotForJoint[j] = -1; continue; }
+            if (!slotForBone.TryGetValue(bone, out int slot))
+            {
+                slot = skin.GetBindCount();
+                skin.AddBind(bone, ComputeGlobalRestTransform(skeleton, bone).Inverse());
+                slotForBone[bone] = slot;
+            }
+            slotForJoint[j] = slot;
+        }
+        if (skin.GetBindCount() == 0) return null;
+
+        var bindShape = skinData.BindShapeMatrix;
+        var arrayMesh = new ArrayMesh();
+
+        foreach (var sub in meshData.Submeshes)
+        {
+            if (sub.Indices.Length == 0 || sub.Weights == null) continue;
+            var st = new SurfaceTool();
+            st.Begin(Mesh.PrimitiveType.Triangles);
+
+            foreach (int idx in sub.Indices)
+            {
+                // Mesh-local → bind pose (SL coords) via the bind-shape matrix, then SL→Godot.
+                var pSL = System.Numerics.Vector3.Transform(sub.Positions[idx], bindShape);
+                var nSL = System.Numerics.Vector3.TransformNormal(sub.Normals[idx], bindShape);
+                if (nSL.LengthSquared() > 1e-8f) nSL = System.Numerics.Vector3.Normalize(nSL);
+                var uv = sub.UVs[idx];
+                var w = sub.Weights[idx];
+
+                // Resolve up to four influences, dropping joints our skeleton lacks; renormalize.
+                var bones = new int[4];
+                var wts = new float[4];
+                int c = 0; float sum = 0f;
+                AddInfluence(w.Joint0, w.Weight0, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                AddInfluence(w.Joint1, w.Weight1, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                AddInfluence(w.Joint2, w.Weight2, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                AddInfluence(w.Joint3, w.Weight3, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                if (sum > 1e-5f) { for (int k = 0; k < 4; k++) wts[k] /= sum; }
+                else { bones[0] = 0; wts[0] = 1f; } // orphaned vertex — pin to first bound bone
+
+                st.SetBones(bones);
+                st.SetWeights(wts);
+                st.SetNormal(new Godot.Vector3(nSL.X, nSL.Z, -nSL.Y));
+                st.SetUV(new Godot.Vector2(uv.X, uv.Y));
+                st.AddVertex(new Godot.Vector3(pSL.X, pSL.Z, -pSL.Y));
+            }
+
+            st.GenerateTangents();
+            st.Commit(arrayMesh);
+        }
+
+        if (arrayMesh.GetSurfaceCount() == 0) return null;
+
+        var mi = new MeshInstance3D
+        {
+            Mesh = arrayMesh,
+            MaterialOverride = new StandardMaterial3D { CullMode = BaseMaterial3D.CullModeEnum.Disabled }
+        };
+        mi.SetMeta("skin", skin);
+        return mi;
+    }
+
+    private static void AddInfluence(int joint, float weight, int[] slotForJoint, int jointCount,
+        int[] bones, float[] wts, ref int count, ref float sum)
+    {
+        if (weight <= 0f || joint < 0 || joint >= jointCount || count >= 4) return;
+        int slot = slotForJoint[joint];
+        if (slot < 0) return;
+        bones[count] = slot;
+        wts[count] = weight;
+        sum += weight;
+        count++;
     }
 
     private async System.Threading.Tasks.Task LoadAndApplyAttachmentTextureAsync(MeshInstance3D mi, Guid textureId)

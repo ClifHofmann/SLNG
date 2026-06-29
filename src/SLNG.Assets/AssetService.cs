@@ -201,11 +201,59 @@ public class AssetService
                 indices[i] = face.Indices[i];
             }
 
-            submeshes.Add(new MeshSubmesh(positions, normals, uvs, indices));
+            // Per-vertex skin weights for rigged mesh. Parallel to Vertices; null on
+            // unrigged faces. Joint indices reference the mesh-wide SkinData.JointNames.
+            VertexBoneWeights[]? weights = null;
+            if (face.Weights != null && face.Weights.Count == vertexCount)
+            {
+                weights = new VertexBoneWeights[vertexCount];
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    var w = face.Weights[i];
+                    weights[i] = new VertexBoneWeights(
+                        w.Joint0, w.Joint1, w.Joint2, w.Joint3,
+                        w.Weight0, w.Weight1, w.Weight2, w.Weight3);
+                }
+            }
+
+            submeshes.Add(new MeshSubmesh(positions, normals, uvs, indices, 0, weights));
         }
 
-        return submeshes.Count == 0 ? null : new MeshData(submeshes);
+        if (submeshes.Count == 0) return null;
+
+        return new MeshData(submeshes, ConvertSkin(faceted.SkinData));
     }
+
+    /// <summary>Converts LibreMetaverse skin data into the neutral <see cref="MeshSkin"/>, or
+    /// null when the mesh is not rigged. LMV stores matrices as flat row-major float[16]
+    /// (row-vector convention), which maps directly onto <see cref="System.Numerics.Matrix4x4"/>.</summary>
+    private static MeshSkin? ConvertSkin(MeshSkinData? skin)
+    {
+        if (skin?.JointNames == null || skin.JointNames.Length == 0) return null;
+
+        int jointCount = skin.JointNames.Length;
+        var inverseBinds = new System.Numerics.Matrix4x4[jointCount];
+        var ibm = skin.InverseBindMatrices;
+        for (int j = 0; j < jointCount; j++)
+        {
+            int o = j * 16;
+            inverseBinds[j] = (ibm != null && ibm.Length >= o + 16)
+                ? ToMatrix(ibm, o)
+                : System.Numerics.Matrix4x4.Identity;
+        }
+
+        var bindShape = (skin.BindShapeMatrix != null && skin.BindShapeMatrix.Length >= 16)
+            ? ToMatrix(skin.BindShapeMatrix, 0)
+            : System.Numerics.Matrix4x4.Identity;
+
+        return new MeshSkin(skin.JointNames, inverseBinds, bindShape, skin.PelvisOffset);
+    }
+
+    private static System.Numerics.Matrix4x4 ToMatrix(float[] m, int o) => new(
+        m[o + 0],  m[o + 1],  m[o + 2],  m[o + 3],
+        m[o + 4],  m[o + 5],  m[o + 6],  m[o + 7],
+        m[o + 8],  m[o + 9],  m[o + 10], m[o + 11],
+        m[o + 12], m[o + 13], m[o + 14], m[o + 15]);
 
     /// <summary>
     /// Fetches and decodes a texture (JPEG2000) by UUID into engine-neutral RGBA, or null
