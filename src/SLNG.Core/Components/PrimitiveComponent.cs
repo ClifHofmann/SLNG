@@ -49,6 +49,10 @@ public class PrimitiveComponent : IComponent
     /// <see cref="TextureId"/>/<see cref="ColorTint"/> for the whole object.</summary>
     public FaceTexture[]? Faces { get; set; }
 
+    /// <summary>SL attachment-point byte (0 = not worn). Stored so a worn object can be linked
+    /// to its avatar even if the avatar entity streams in after this prim.</summary>
+    public byte AttachmentPoint { get; set; }
+
     public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0, FaceTexture[]? faces = null)
     {
         Scale = scale;

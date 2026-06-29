@@ -509,39 +509,23 @@ public class AssetService
             // Ensure we have RGBA output
             if (image.HasAlpha) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
             else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
+            // Ensure an alpha channel so the RGBA mapping below is always well defined.
+            if (!image.HasAlpha) image.Alpha(ImageMagick.AlphaOption.Opaque);
 
-            byte[] rgba = Array.Empty<byte>();
-
+            byte[] rgba;
             using (var pixels = image.GetPixels())
             {
-                var raw = pixels.GetValues() ?? Array.Empty<byte>();
-                if (image.ChannelCount == 4)
+                // Map whatever channel layout Magick decoded (3, 4, even 5 channels for some SL
+                // skin bakes) straight to RGBA — handles odd channel counts that the old manual
+                // stride loop rejected outright, leaving avatars with no skin texture.
+                var raw = pixels.ToByteArray(ImageMagick.PixelMapping.RGBA);
+                int need = width * height * 4;
+                if (raw == null || raw.Length < need)
                 {
-                    rgba = new byte[width * height * 4];
-                    for (int i = 0; i < raw.Length; i += 4)
-                    {
-                        rgba[i] = raw[i];
-                        rgba[i + 1] = raw[i + 1];
-                        rgba[i + 2] = raw[i + 2];
-                        rgba[i + 3] = raw[i + 3];
-                    }
-                }
-                else if (image.ChannelCount == 3)
-                {
-                    rgba = new byte[width * height * 4];
-                    for (int i = 0, j = 0; i < raw.Length; i += 3, j += 4)
-                    {
-                        rgba[j] = raw[i];
-                        rgba[j + 1] = raw[i + 1];
-                        rgba[j + 2] = raw[i + 2];
-                        rgba[j + 3] = 255;
-                    }
-                }
-                else
-                {
-                    Console.WriteLine($"[AssetService] Magick loaded unsupported channel count: {image.ChannelCount}");
+                    Console.WriteLine($"[AssetService] Could not map texture to RGBA (channels {image.ChannelCount}, got {raw?.Length ?? 0}/{need})");
                     return null;
                 }
+                rgba = raw.Length == need ? raw : raw[..need];
             }
 
             return new TextureData(width, height, rgba, isDegraded);

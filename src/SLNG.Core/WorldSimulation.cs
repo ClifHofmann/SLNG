@@ -118,35 +118,41 @@ public sealed class WorldSimulation : IDisposable
             prim.Faces = e.Faces;
             entity.SetComponent(prim);
         }
+        prim.AttachmentPoint = e.AttachmentPoint;
         _world.NotifyComponentUpdated(entity, prim);
 
-        // An object worn on an avatar carries a non-zero AttachmentPoint. Mark it as an
-        // attachment right away — even if the wearer's avatar entity hasn't streamed in yet.
-        // (Worn mesh often arrives before the avatar; the old code required the avatar to
-        // already exist, so those attachments were dropped and never re-linked.) The
-        // AvatarEntityId is back-filled when the avatar appears — see LinkPendingAttachments.
-        if (e.AttachmentPoint != 0)
+        // An attachment ROOT is an object whose parent is an avatar. (Child prims of a
+        // multi-prim attachment carry the same AttachmentPoint but parent to the root, not the
+        // avatar — they must NOT be treated as independent attachments.) If the avatar isn't
+        // here yet, LinkPendingAttachments wires this up when it arrives (it indexes children
+        // by parent local id, so the avatar's direct children = its attachment roots).
+        if (e.ParentLocalId != 0)
         {
-            var parentEntity = e.ParentLocalId != 0 ? _world.GetEntity(e.RegionHandle, e.ParentLocalId) : null;
-            var avatarId = parentEntity?.GetComponent<AvatarComponent>() != null ? parentEntity.Id : System.Guid.Empty;
-
-            var attachment = entity.GetComponent<AttachmentComponent>();
-            if (attachment == null)
-            {
-                attachment = new AttachmentComponent(avatarId, e.AttachmentPoint);
-                entity.SetComponent(attachment);
-            }
-            else
-            {
-                if (avatarId != System.Guid.Empty) attachment.AvatarEntityId = avatarId;
-                attachment.AttachmentPoint = e.AttachmentPoint;
-            }
-            _world.NotifyComponentUpdated(entity, attachment);
+            var parentEntity = _world.GetEntity(e.RegionHandle, e.ParentLocalId);
+            if (parentEntity?.GetComponent<AvatarComponent>() != null)
+                SetAttachment(entity, parentEntity.Id, e.AttachmentPoint);
         }
     }
 
-    /// <summary>Back-fills the avatar link on any attachment that streamed in before its wearer's
-    /// avatar entity existed. Called when an avatar appears/updates.</summary>
+    private void SetAttachment(Entity entity, System.Guid avatarEntityId, byte attachmentPoint)
+    {
+        var attachment = entity.GetComponent<AttachmentComponent>();
+        if (attachment == null)
+        {
+            attachment = new AttachmentComponent(avatarEntityId, attachmentPoint);
+            entity.SetComponent(attachment);
+        }
+        else
+        {
+            attachment.AvatarEntityId = avatarEntityId;
+            attachment.AttachmentPoint = attachmentPoint;
+        }
+        _world.NotifyComponentUpdated(entity, attachment);
+    }
+
+    /// <summary>Wires up attachment roots that streamed in before their wearer's avatar entity
+    /// existed. The avatar's direct children (indexed by parent local id) are exactly its
+    /// attachment roots. Called when an avatar appears/updates.</summary>
     private void LinkPendingAttachments(ulong region, uint avatarLocalId, System.Guid avatarEntityId)
     {
         if (!_children.TryGetValue((region, avatarLocalId), out var set) || set.Count == 0) return;
@@ -154,12 +160,11 @@ public sealed class WorldSimulation : IDisposable
         foreach (var childId in set.ToList())
         {
             var child = _world.GetEntity(childId);
-            var attachment = child?.GetComponent<AttachmentComponent>();
-            if (child == null || attachment == null || attachment.AvatarEntityId == avatarEntityId) continue;
+            if (child == null) continue;
+            if (child.GetComponent<AttachmentComponent>()?.AvatarEntityId == avatarEntityId) continue;
 
-            attachment.AvatarEntityId = avatarEntityId;
-            child.SetComponent(attachment);
-            _world.NotifyComponentUpdated(child, attachment);
+            byte point = child.GetComponent<PrimitiveComponent>()?.AttachmentPoint ?? 0;
+            SetAttachment(child, avatarEntityId, point);
         }
     }
 
