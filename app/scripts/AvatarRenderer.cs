@@ -503,22 +503,27 @@ public partial class AvatarRenderer : Node3D
         var skinData = meshData.Skin!;
         int jointCount = skinData.JointNames.Length;
 
-        // Bind every resolvable joint to its bone's global-rest inverse — same convention as
-        // the system body parts (robust against the asset's own bind pose). One bind per bone.
+        // Bind each joint using the mesh's OWN inverse-bind matrix (model→bone), converted
+        // from SL to Godot space. This is the correct, general rig: the garment was authored
+        // against its own bind pose, which need not equal our skeleton's rest. Binding to the
+        // skeleton rest instead (as the body parts do) only works for meshes whose bind pose
+        // matches exactly — these OpenSim meshes don't, and exploded into petals.
         var skin = new Skin();
-        var slotForBone = new Dictionary<int, int>();
         var slotForJoint = new int[jointCount];
         for (int j = 0; j < jointCount; j++)
         {
             int bone = skeleton.FindBone(skinData.JointNames[j]);
             if (bone < 0) { slotForJoint[j] = -1; continue; }
-            if (!slotForBone.TryGetValue(bone, out int slot))
-            {
-                slot = skin.GetBindCount();
-                skin.AddBind(bone, ComputeGlobalRestTransform(skeleton, bone).Inverse());
-                slotForBone[bone] = slot;
-            }
-            slotForJoint[j] = slot;
+
+            var ibm = skinData.InverseBindMatrices[j];
+            Transform3D bind = ibm == System.Numerics.Matrix4x4.Identity
+                // No usable inverse-bind in the asset → fall back to the skeleton's rest pose.
+                ? ComputeGlobalRestTransform(skeleton, bone).Inverse()
+                // Bind_godot = C⁻¹ · InverseBind_SL · C   (verified change-of-basis).
+                : RowMatrixToTransform(SlToGodotInv * ibm * SlToGodot);
+
+            slotForJoint[j] = skin.GetBindCount();
+            skin.AddBind(bone, bind);
         }
         if (skin.GetBindCount() == 0) return null;
 
@@ -529,8 +534,10 @@ public partial class AvatarRenderer : Node3D
         var bindTranslation = new System.Numerics.Vector3(bindShape.M41, bindShape.M42, bindShape.M43);
         if (bindTranslation.Length() > 5f)
         {
-            GD.Print($"[RiggedMesh] dropping broken bind-shape translation {bindTranslation}");
-            bindShape = System.Numerics.Matrix4x4.Identity;
+            // A real bind-shape is a small rotation/scale. A huge translation is a corrupt
+            // upload — the whole mesh is untrustworthy, so skip it rather than guess.
+            GD.Print($"[RiggedMesh] skipping mesh with broken bind-shape translation {bindTranslation}");
+            return null;
         }
 
         var arrayMesh = new ArrayMesh();
@@ -744,6 +751,30 @@ public partial class AvatarRenderer : Node3D
         int slot = skin.GetBindCount();
         skin.AddBind(boneIdx, globalRest.Inverse());
         skinSlots[boneName] = slot;
+    }
+
+    // SL→Godot basis change (row-vector convention, v·C): SL(x,y,z) → Godot(x, z, −y).
+    // Used to convert a mesh's inverse-bind matrices into the skeleton's coordinate space.
+    private static readonly System.Numerics.Matrix4x4 SlToGodot =
+        new(1, 0, 0, 0,  0, 0, -1, 0,  0, 1, 0, 0,  0, 0, 0, 1);
+    private static readonly System.Numerics.Matrix4x4 SlToGodotInv = Invert(SlToGodot);
+
+    private static System.Numerics.Matrix4x4 Invert(System.Numerics.Matrix4x4 m)
+    {
+        System.Numerics.Matrix4x4.Invert(m, out var inv);
+        return inv;
+    }
+
+    /// <summary>Converts a row-vector <see cref="System.Numerics.Matrix4x4"/> (v·M) into a
+    /// Godot <see cref="Transform3D"/> (column-vector, M·v) — the 3×3 is transposed and the
+    /// translation comes from the matrix's fourth row.</summary>
+    private static Transform3D RowMatrixToTransform(System.Numerics.Matrix4x4 m)
+    {
+        var basis = new Basis(
+            new Godot.Vector3(m.M11, m.M12, m.M13),
+            new Godot.Vector3(m.M21, m.M22, m.M23),
+            new Godot.Vector3(m.M31, m.M32, m.M33));
+        return new Transform3D(basis, new Godot.Vector3(m.M41, m.M42, m.M43));
     }
 
     /// <summary>
