@@ -64,9 +64,28 @@ public partial class AvatarController : Camera3D
         {
             if (mouseBtn.ButtonIndex == MouseButton.Right)
             {
-                // RMB: orbit (existing behaviour)
                 if (mouseBtn.Pressed)
+                {
                     Input.MouseMode = Input.MouseModeEnum.Captured;
+                    
+                    // Raycast to identify clicked object
+                    var spaceState = GetWorld3D().DirectSpaceState;
+                    var from = _camera.ProjectRayOrigin(mouseBtn.Position);
+                    var to = from + _camera.ProjectRayNormal(mouseBtn.Position) * 1000f;
+                    var query = PhysicsRayQueryParameters3D.Create(from, to);
+                    var result = spaceState.IntersectRay(query);
+                    
+                    if (result.Count > 0)
+                    {
+                        var collider = result["collider"].AsGodotObject();
+                        if (collider is StaticBody3D sb)
+                        {
+                            var entityId = sb.HasMeta("EntityId") ? sb.GetMeta("EntityId").AsString() : "Unknown";
+                            var localId = sb.HasMeta("LocalId") ? sb.GetMeta("LocalId").AsString() : "Unknown";
+                            GD.Print($"\n\n=== [Raycast] Hit Object! ===\nEntityId: {entityId}\nLocalId: {localId}\n=============================\n");
+                        }
+                    }
+                }
                 else if (!_altOrbitActive)
                     Input.MouseMode = Input.MouseModeEnum.Visible;
             }

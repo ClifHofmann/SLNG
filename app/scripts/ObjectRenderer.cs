@@ -164,6 +164,8 @@ public partial class ObjectRenderer : Node3D
             CollisionShape = new CollisionShape3D { Name = "Collision" },
             ResourcesReleased = true
         };
+        state.StaticBody.SetMeta("EntityId", entity.Id.ToString());
+        state.StaticBody.SetMeta("LocalId", entity.LocalId.ToString());
         state.StaticBody.AddChild(state.CollisionShape);
         state.MeshInstance.AddChild(state.StaticBody);
 
