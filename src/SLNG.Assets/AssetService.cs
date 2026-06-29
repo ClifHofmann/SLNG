@@ -456,9 +456,19 @@ public class AssetService
             
             using (var pixels = image.GetPixels())
             {
-                // ToByteArray returns pixels based on the channel mapping.
-                // We map exactly to "RGBA" (1 byte per channel)
-                rgba = pixels.ToByteArray("RGBA") ?? Array.Empty<byte>();
+                if (image.ChannelCount == 4)
+                {
+                    // For 4-channel SL textures, Magick.NET's ToByteArray("RGBA") mapping often
+                    // overwrites the unmapped 4th channel with opaque 255.
+                    // Using GetValues() retrieves the raw interleaved bytes (R, G, B, A) directly
+                    // as decoded by OpenJPEG, preserving the alpha channel.
+                    rgba = pixels.GetValues() ?? Array.Empty<byte>();
+                }
+                else
+                {
+                    // For 3-channel images, use ToByteArray("RGBA") to safely pad the 4th byte with 255
+                    rgba = pixels.ToByteArray("RGBA") ?? Array.Empty<byte>();
+                }
             }
 
             return new TextureData(width, height, rgba);
