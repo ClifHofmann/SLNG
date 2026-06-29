@@ -22,6 +22,10 @@ grow_vertical = 2
 [node name="HBoxContainer" type="HBoxContainer" parent="VBoxContainer"]
 layout_mode = 2
 
+[node name="ProfileDropdown" type="OptionButton" parent="VBoxContainer/HBoxContainer"]
+layout_mode = 2
+tooltip_text = "Select a saved profile"
+
 [node name="GridLabel" type="Label" parent="VBoxContainer/HBoxContainer"]
 layout_mode = 2
 text = "Grid URI:"
@@ -58,6 +62,10 @@ layout_mode = 2
 size_flags_horizontal = 3
 secret = true
 text = "secret"
+
+[node name="SaveLoginCheck" type="CheckBox" parent="VBoxContainer/HBoxContainer"]
+layout_mode = 2
+text = "Save"
 
 [node name="LoginButton" type="Button" parent="VBoxContainer/HBoxContainer"]
 layout_mode = 2

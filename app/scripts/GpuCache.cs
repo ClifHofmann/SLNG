@@ -76,13 +76,16 @@ public class GpuCache
         }
     }
 
-    public void Put(Guid id, Resource res, long size)
+    public void Put(Guid id, Resource res, long size, int initialRefCount = 0)
     {
         lock (_cache)
         {
             if (_cache.ContainsKey(id)) return;
 
-            var entry = new CacheEntry { Id = id, Res = res, Size = size, RefCount = 0 };
+            // initialRefCount lets a caller that immediately holds the resource (e.g. a mesh
+            // assigned to a node) pin it before EvictIfNeeded runs, so a tight budget can't
+            // evict the entry on the same call that added it.
+            var entry = new CacheEntry { Id = id, Res = res, Size = size, RefCount = initialRefCount };
             entry.Node = _lruList.AddLast(entry);
             _cache[id] = entry;
             _currentSize += size;

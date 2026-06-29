@@ -27,6 +27,9 @@ public partial class ObjectRenderer : Node3D
         public Guid LoadedMaterialId = NotLoaded;
         public PrimShape? LoadedPrimShape;
 
+        // GpuCache key of the mesh this object currently references (Guid.Empty = none).
+        public Guid LoadedMeshKey;
+
         // True while this object is beyond draw distance and we've dropped its mesh/texture
         // refs to free GPU memory. It reloads when it comes back into range.
         public bool ResourcesReleased;
@@ -38,11 +41,10 @@ public partial class ObjectRenderer : Node3D
 
     private readonly Dictionary<Guid, VisualState> _visuals = new();
 
-    // Share one GPU mesh resource across every object with the same prim shape / mesh asset.
-    // Without this, each of the (often thousands of) prims uploads its own ArrayMesh and the
-    // GPU runs out of memory (VkResult -2). Identical shapes/meshes now cost one upload.
-    private readonly Dictionary<PrimShape, ArrayMesh> _primMeshCache = new();
-    private readonly Dictionary<Guid, ArrayMesh> _assetMeshCache = new();
+    // Meshes are shared and budgeted through the GpuCache (LRU + refcount), keyed by mesh
+    // asset id or by a stable id assigned per unique prim shape. Identical objects share one
+    // upload; out-of-range objects release their ref so the cache can reclaim the VRAM.
+    private readonly Dictionary<PrimShape, Guid> _primShapeKeys = new();
 
     private Mesh _boxMesh = new BoxMesh();
     private Mesh _sphereMesh = new SphereMesh();
@@ -91,8 +93,9 @@ public partial class ObjectRenderer : Node3D
         if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
 
         float draw = RenderConfig.DrawDistance;
-        float drawSq = draw * draw;
-        float releaseSq = (draw * 1.25f) * (draw * 1.25f); // hysteresis: free a bit past the edge
+        float showSq = draw * draw;
+        float hideSq = (draw * 1.15f) * (draw * 1.15f);  // hide a bit past the edge (visibility hysteresis)
+        float releaseSq = (draw * 1.25f) * (draw * 1.25f); // only free GPU memory well beyond the edge
 
         foreach (var (id, state) in _visuals)
         {
@@ -100,19 +103,19 @@ public partial class ObjectRenderer : Node3D
 
             float dSq = state.MeshInstance.Position.DistanceSquaredTo(agentPos);
 
-            if (dSq <= drawSq)
+            // Visibility with hysteresis: show within draw distance, hide only past 1.15x, so
+            // objects sitting near the edge don't flicker on/off every tick while moving.
+            if (dSq <= showSq && !state.MeshInstance.Visible) state.MeshInstance.Visible = true;
+            else if (dSq > hideSq && state.MeshInstance.Visible) state.MeshInstance.Visible = false;
+
+            if (dSq <= showSq && state.ResourcesReleased)
             {
-                if (!state.MeshInstance.Visible) state.MeshInstance.Visible = true;
-                if (state.ResourcesReleased)
-                {
-                    state.ResourcesReleased = false;
-                    UpdateVisual(id.ToString()); // reload mesh + material now that it's near
-                }
+                state.ResourcesReleased = false;
+                UpdateVisual(id.ToString()); // reload mesh + material now that it's near again
             }
-            else
+            else if (dSq > releaseSq && !state.ResourcesReleased)
             {
-                if (state.MeshInstance.Visible) state.MeshInstance.Visible = false;
-                if (!state.ResourcesReleased && dSq > releaseSq) ReleaseResources(state);
+                ReleaseResources(state); // far enough that we reclaim its VRAM
             }
         }
     }
@@ -125,6 +128,7 @@ public partial class ObjectRenderer : Node3D
 
         state.MeshInstance.Mesh = null;
         state.MeshInstance.MaterialOverride = null;
+        ReleaseMeshRef(state);
 
         if (_gpuCache != null)
             foreach (var texId in state.UsedTextureIds) _gpuCache.ReleaseRef(texId);
@@ -143,8 +147,9 @@ public partial class ObjectRenderer : Node3D
         if (_visuals.ContainsKey(entityId)) return;
 
         var meshInstance = new MeshInstance3D();
+        meshInstance.Visible = false; // Prevent distant objects from briefly appearing
         AddChild(meshInstance);
-        _visuals[entityId] = new VisualState { MeshInstance = meshInstance };
+        _visuals[entityId] = new VisualState { MeshInstance = meshInstance, ResourcesReleased = true };
 
         UpdateVisual(entityIdStr);
     }
@@ -154,6 +159,7 @@ public partial class ObjectRenderer : Node3D
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
         if (_visuals.TryGetValue(entityId, out var state))
         {
+            ReleaseMeshRef(state);
             state.MeshInstance.QueueFree();
             if (_gpuCache != null)
             {
@@ -208,7 +214,8 @@ public partial class ObjectRenderer : Node3D
                 if (state.LoadedMeshId != prim.MeshId)
                 {
                     state.LoadedMeshId = prim.MeshId;
-                    _ = LoadAndApplyMeshAsync(state.MeshInstance, prim.MeshId);
+                    state.LoadedPrimShape = null;
+                    _ = LoadAndApplyMeshAsync(state, prim.MeshId);
                 }
             }
             else if (_assetService != null && state.LoadedPrimShape != prim.Shape)
@@ -253,7 +260,7 @@ public partial class ObjectRenderer : Node3D
         }
     }
 
-    private async System.Threading.Tasks.Task LoadAndApplyMeshAsync(MeshInstance3D meshInstance, Guid meshId)
+    private async System.Threading.Tasks.Task LoadAndApplyMeshAsync(VisualState state, Guid meshId)
     {
         if (_assetService == null) return;
 
@@ -262,13 +269,9 @@ public partial class ObjectRenderer : Node3D
 
         Godot.Callable.From(() =>
         {
-            if (!IsInstanceValid(meshInstance)) return;
-            if (!_assetMeshCache.TryGetValue(meshId, out var arrayMesh))
-            {
-                arrayMesh = BuildArrayMesh(mesh);
-                _assetMeshCache[meshId] = arrayMesh;
-            }
-            meshInstance.Mesh = arrayMesh;
+            if (!IsInstanceValid(state.MeshInstance)) return;
+            if (state.LoadedMeshId != meshId) return; // shape/asset changed while loading
+            AssignSharedMesh(state, meshId, mesh);
         }).CallDeferred();
     }
 
@@ -286,16 +289,12 @@ public partial class ObjectRenderer : Node3D
 
             if (mesh != null && mesh.Submeshes.Count > 0)
             {
-                if (!_primMeshCache.TryGetValue(shape, out var arrayMesh))
-                {
-                    arrayMesh = BuildArrayMesh(mesh);
-                    _primMeshCache[shape] = arrayMesh;
-                }
-                state.MeshInstance.Mesh = arrayMesh;
+                AssignSharedMesh(state, KeyForShape(shape), mesh);
             }
             else
             {
                 // Meshing failed (e.g. sculpt or odd shape) — fall back to a primitive solid.
+                ReleaseMeshRef(state);
                 state.MeshInstance.Mesh = profileCurve switch
                 {
                     0 => _cylinderMesh,
@@ -421,6 +420,58 @@ public partial class ObjectRenderer : Node3D
         }).CallDeferred();
 
         return await tcs.Task;
+    }
+
+    /// <summary>Returns a stable GpuCache key for a prim shape (one id per unique shape).</summary>
+    private Guid KeyForShape(PrimShape shape)
+    {
+        if (!_primShapeKeys.TryGetValue(shape, out var key))
+        {
+            key = Guid.NewGuid();
+            _primShapeKeys[shape] = key;
+        }
+        return key;
+    }
+
+    /// <summary>Assigns a shared, refcounted mesh to the object's node, building+caching it on
+    /// first use. Releases the previous mesh ref so the GpuCache can reclaim it.</summary>
+    private void AssignSharedMesh(VisualState state, Guid key, MeshData data)
+    {
+        if (state.LoadedMeshKey == key && state.MeshInstance.Mesh != null) return;
+
+        ReleaseMeshRef(state);
+
+        ArrayMesh? mesh = _gpuCache?.Get(key) as ArrayMesh;
+        if (mesh != null)
+        {
+            _gpuCache!.AddRef(key);
+        }
+        else
+        {
+            mesh = BuildArrayMesh(data);
+            _gpuCache?.Put(key, mesh, EstimateMeshSize(data), initialRefCount: 1);
+        }
+
+        state.MeshInstance.Mesh = mesh;
+        state.LoadedMeshKey = key;
+    }
+
+    /// <summary>Drops this object's current shared-mesh reference (if any).</summary>
+    private void ReleaseMeshRef(VisualState state)
+    {
+        if (state.LoadedMeshKey != Guid.Empty)
+        {
+            _gpuCache?.ReleaseRef(state.LoadedMeshKey);
+            state.LoadedMeshKey = Guid.Empty;
+        }
+    }
+
+    private static long EstimateMeshSize(MeshData mesh)
+    {
+        long total = 0;
+        foreach (var sub in mesh.Submeshes)
+            total += (long)sub.Positions.Length * 32 + (long)sub.Indices.Length * 4;
+        return total > 0 ? total : 1;
     }
 
     /// <summary>Builds a Godot <see cref="ArrayMesh"/> from neutral mesh data. The result is

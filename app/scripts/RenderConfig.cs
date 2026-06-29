@@ -15,7 +15,7 @@ public static class RenderConfig
     /// content than fits in a frame budget, so capping what we render keeps the client
     /// responsive. SL viewers default to ~64–128 m.
     /// </summary>
-    public static float DrawDistance = 128f;
+    public static float DrawDistance = 96f;
 
     /// <summary>
     /// Returns the local agent's position converted to Godot world space, or false if the

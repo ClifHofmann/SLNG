@@ -5,12 +5,17 @@ using SLNG.App;
 
 public partial class Boot : Control
 {
+    private OptionButton _profileDropdown = null!;
     private LineEdit _gridInput = null!;
     private LineEdit _firstInput = null!;
     private LineEdit _lastInput = null!;
     private LineEdit _passInput = null!;
+    private CheckBox _saveLoginCheck = null!;
     private Button _loginButton = null!;
     private RichTextLabel _logPanel = null!;
+
+    private ConfigFile _loginsConfig = new ConfigFile();
+    private Godot.Collections.Array<string> _savedProfiles = new();
     
     private LineEdit _chatInput = null!;
     private Button _chatSendButton = null!;
@@ -31,10 +36,12 @@ public partial class Boot : Control
     public override void _Ready()
     {
         _vboxContainer = GetNode<VBoxContainer>("VBoxContainer");
+        _profileDropdown = GetNode<OptionButton>("VBoxContainer/HBoxContainer/ProfileDropdown");
         _gridInput = GetNode<LineEdit>("VBoxContainer/HBoxContainer/GridInput");
         _firstInput = GetNode<LineEdit>("VBoxContainer/HBoxContainer/FirstInput");
         _lastInput = GetNode<LineEdit>("VBoxContainer/HBoxContainer/LastInput");
         _passInput = GetNode<LineEdit>("VBoxContainer/HBoxContainer/PassInput");
+        _saveLoginCheck = GetNode<CheckBox>("VBoxContainer/HBoxContainer/SaveLoginCheck");
         _loginButton = GetNode<Button>("VBoxContainer/HBoxContainer/LoginButton");
         _logPanel = GetNode<RichTextLabel>("VBoxContainer/LogPanel");
         
@@ -44,6 +51,9 @@ public partial class Boot : Control
         _loginButton.Pressed += OnLoginPressed;
         _chatSendButton.Pressed += OnChatSend;
         _chatInput.TextSubmitted += (text) => OnChatSend();
+        _profileDropdown.ItemSelected += OnProfileSelected;
+
+        LoadProfiles();
 
         _terrainRenderer = new TerrainRenderer();
         AddChild(_terrainRenderer);
@@ -109,6 +119,34 @@ public partial class Boot : Control
         _worldSimulation?.Pump();
     }
 
+    private void LoadProfiles()
+    {
+        _profileDropdown.Clear();
+        _savedProfiles.Clear();
+        _profileDropdown.AddItem("--- Select Profile ---");
+        
+        if (_loginsConfig.Load("user://logins.cfg") == Error.Ok)
+        {
+            var sections = _loginsConfig.GetSections();
+            foreach (var profile in sections)
+            {
+                _profileDropdown.AddItem(profile);
+                _savedProfiles.Add(profile);
+            }
+        }
+    }
+
+    private void OnProfileSelected(long index)
+    {
+        if (index == 0) return; // The "--- Select Profile ---" placeholder
+        
+        string profile = _savedProfiles[(int)index - 1];
+        _gridInput.Text = (string)_loginsConfig.GetValue(profile, "grid", "");
+        _firstInput.Text = (string)_loginsConfig.GetValue(profile, "first", "");
+        _lastInput.Text = (string)_loginsConfig.GetValue(profile, "last", "");
+        _passInput.Text = (string)_loginsConfig.GetValue(profile, "pass", "");
+    }
+
     public override void _Input(InputEvent @event)
     {
         if (@event is InputEventKey keyEvent && keyEvent.Pressed && !keyEvent.Echo)
@@ -156,7 +194,10 @@ public partial class Boot : Control
         string cacheDir = ProjectSettings.GlobalizePath("user://cache/assets");
         _assetService = new SLNG.Assets.AssetService(_session, cacheDir);
 
-        var gpuCache = new GpuCache();
+        // GPU budget shared by meshes and textures. Sized for the nearby working set on a
+        // 12 GB card with headroom for post-FX; out-of-range content is released so the LRU
+        // can reclaim under this cap.
+        var gpuCache = new GpuCache(1536L * 1024 * 1024);
 
         _terrainRenderer?.Initialize(_world, _assetService, gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, gpuCache);
@@ -176,6 +217,16 @@ public partial class Boot : Control
 
         if (result.Success)
         {
+            if (_saveLoginCheck.ButtonPressed)
+            {
+                string profileName = $"{creds.FirstName} {creds.LastName} @ {creds.GridLoginUri}";
+                _loginsConfig.SetValue(profileName, "grid", creds.GridLoginUri);
+                _loginsConfig.SetValue(profileName, "first", creds.FirstName);
+                _loginsConfig.SetValue(profileName, "last", creds.LastName);
+                _loginsConfig.SetValue(profileName, "pass", creds.Password);
+                _loginsConfig.Save("user://logins.cfg");
+            }
+
             LogMessage($"[color=green]Login SUCCESS[/color] - AgentID: {result.AgentId}");
             if (!string.IsNullOrEmpty(result.Message))
             {
