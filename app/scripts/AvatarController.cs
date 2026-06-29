@@ -92,15 +92,10 @@ public partial class AvatarController : Camera3D
             float sensitivity = 0.003f;
             if (_altOrbitActive)
             {
-                // Exit alt-orbit if Alt is no longer held during motion
-                if (!mouseMotion.AltPressed && !Input.IsKeyPressed(Key.Alt))
-                {
-                    _altOrbitActive = false;
-                    Input.MouseMode = Input.MouseModeEnum.Visible;
-                    return;
-                }
-                // Orbit the camera horizontally, but use vertical motion to zoom
-                // (SL-style Alt-Zoom).
+                // Stays active until the mouse button is released (handled on button-up).
+                // We deliberately don't re-check Alt here — motion events don't carry the
+                // modifier reliably, and that check was cancelling the orbit on the first move.
+                // Horizontal = orbit around the avatar, vertical = zoom (SL-style Alt drag).
                 _orbitYaw -= mouseMotion.Relative.X * sensitivity;
                 _zoom += mouseMotion.Relative.Y * sensitivity * 50.0f;
                 _zoom = Mathf.Clamp(_zoom, 0.5f, 50.0f);
