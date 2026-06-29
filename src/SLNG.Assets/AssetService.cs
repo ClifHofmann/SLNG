@@ -433,27 +433,29 @@ public class AssetService
                 {
                     int width = asset.Image.Width;
                     int height = asset.Image.Height;
-                    byte[] raw = asset.Image.ExportRaw();
                     
-                    Console.WriteLine($"[AssetService] AssetTexture decoded image: {width}x{height}, Channels: {asset.Image.Channels}");
+                    byte[] rgba = new byte[width * height * 4];
+                    bool hasAlpha = asset.Image.Alpha != null && asset.Image.Alpha.Length == width * height;
+                    bool hasColor = asset.Image.Red != null && asset.Image.Green != null && asset.Image.Blue != null;
                     
-                    // ExportRaw returns RGB (3 bytes/pixel) or RGBA (4 bytes/pixel)
-                    // Godot expects Rgba8 (4 bytes/pixel)
-                    if ((asset.Image.Channels & LibreMetaverse.Imaging.ManagedImage.ImageChannels.Alpha) == 0)
+                    if (hasColor)
                     {
-                        // Convert RGB to RGBA
-                        byte[] padded = new byte[width * height * 4];
-                        for (int i = 0, j = 0; i < raw.Length; i += 3, j += 4)
+                        var red = asset.Image.Red!;
+                        var green = asset.Image.Green!;
+                        var blue = asset.Image.Blue!;
+                        var alpha = asset.Image.Alpha;
+
+                        for (int i = 0; i < width * height; i++)
                         {
-                            padded[j] = raw[i];
-                            padded[j+1] = raw[i+1];
-                            padded[j+2] = raw[i+2];
-                            padded[j+3] = 255;
+                            rgba[i * 4] = red[i];
+                            rgba[i * 4 + 1] = green[i];
+                            rgba[i * 4 + 2] = blue[i];
+                            rgba[i * 4 + 3] = hasAlpha ? alpha![i] : (byte)255;
                         }
-                        raw = padded;
+                        
+                        Console.WriteLine($"[AssetService] AssetTexture decoded manually: {width}x{height}, HasAlpha: {hasAlpha}");
+                        return new TextureData(width, height, rgba);
                     }
-                    
-                    return new TextureData(width, height, raw);
                 }
             }
         }
