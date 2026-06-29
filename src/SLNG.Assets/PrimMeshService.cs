@@ -58,6 +58,11 @@ public static class PrimMeshService
                 }
             };
 
+            if (prim.PrimData.PCode == PCode.Tree || prim.PrimData.PCode == PCode.NewTree || prim.PrimData.PCode == PCode.Grass)
+            {
+                return GenerateCrossedPlanes();
+            }
+
             var renderer = _renderer ??= new MeshFoundry();
             var faceted = renderer.GenerateFacetedMesh(prim, lod);
             return Convert(faceted);
@@ -131,5 +136,44 @@ public static class PrimMeshService
         }
 
         return submeshes.Count == 0 ? null : new MeshData(submeshes);
+    }
+
+    private static MeshData GenerateCrossedPlanes()
+    {
+        // Two crossed planes (X shape) for generic SL trees.
+        // Plane 1: XZ plane, centered on Y (Y=0)
+        // Plane 2: YZ plane, centered on X (X=0)
+        // SL uses Z-up. Planes span X/Y from -0.5 to 0.5, and Z from -0.5 to 0.5.
+        
+        var positions = new Vector3[8];
+        var normals = new Vector3[8];
+        var uvs = new Vector2[8];
+        var indices = new int[12];
+
+        // Plane 1 (XZ plane, Y=0)
+        // vertices: bottom-left, bottom-right, top-right, top-left
+        positions[0] = new Vector3(-0.5f, 0f, -0.5f); uvs[0] = new Vector2(0, 1);
+        positions[1] = new Vector3(0.5f, 0f, -0.5f);  uvs[1] = new Vector2(1, 1);
+        positions[2] = new Vector3(0.5f, 0f, 0.5f);   uvs[2] = new Vector2(1, 0);
+        positions[3] = new Vector3(-0.5f, 0f, 0.5f);  uvs[3] = new Vector2(0, 0);
+        
+        normals[0] = normals[1] = normals[2] = normals[3] = new Vector3(0, 1, 0);
+
+        indices[0] = 0; indices[1] = 1; indices[2] = 2;
+        indices[3] = 0; indices[4] = 2; indices[5] = 3;
+
+        // Plane 2 (YZ plane, X=0)
+        positions[4] = new Vector3(0f, -0.5f, -0.5f); uvs[4] = new Vector2(0, 1);
+        positions[5] = new Vector3(0f, 0.5f, -0.5f);  uvs[5] = new Vector2(1, 1);
+        positions[6] = new Vector3(0f, 0.5f, 0.5f);   uvs[6] = new Vector2(1, 0);
+        positions[7] = new Vector3(0f, -0.5f, 0.5f);  uvs[7] = new Vector2(0, 0);
+        
+        normals[4] = normals[5] = normals[6] = normals[7] = new Vector3(1, 0, 0);
+
+        indices[6] = 4; indices[7] = 5; indices[8] = 6;
+        indices[9] = 4; indices[10] = 6; indices[11] = 7;
+
+        var submesh = new MeshSubmesh(positions, normals, uvs, indices, 0);
+        return new MeshData(new List<MeshSubmesh> { submesh });
     }
 }
