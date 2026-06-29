@@ -99,11 +99,11 @@ public partial class AvatarController : Camera3D
                     Input.MouseMode = Input.MouseModeEnum.Visible;
                     return;
                 }
-                // Orbit the camera only — do NOT touch _yaw/_pitch so the avatar
-                // keeps facing where it was.
-                _orbitYaw   -= mouseMotion.Relative.X * sensitivity;
-                _orbitPitch -= mouseMotion.Relative.Y * sensitivity;
-                _orbitPitch  = Mathf.Clamp(_orbitPitch, -1.4f, 1.4f);
+                // Orbit the camera horizontally, but use vertical motion to zoom
+                // (SL-style Alt-Zoom).
+                _orbitYaw -= mouseMotion.Relative.X * sensitivity;
+                _zoom += mouseMotion.Relative.Y * sensitivity * 10.0f;
+                _zoom = Mathf.Clamp(_zoom, 0.5f, 50.0f);
             }
             else
             {
