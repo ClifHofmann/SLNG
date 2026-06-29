@@ -216,7 +216,7 @@ public class AssetService
                 }
             }
 
-            submeshes.Add(new MeshSubmesh(positions, normals, uvs, indices, 0, weights));
+            submeshes.Add(new MeshSubmesh(positions, normals, uvs, indices, face.ID, weights));
         }
 
         if (submeshes.Count == 0) return null;

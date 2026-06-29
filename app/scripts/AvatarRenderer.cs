@@ -413,7 +413,9 @@ public partial class AvatarRenderer : Node3D
             {
                 if (prim.IsMesh && prim.MeshId != Guid.Empty)
                 {
-                    _ = LoadAndApplyAttachmentMeshAsync(boneAttach, avatarVisual.Skeleton, prim.MeshId, prim.TextureId,
+                    var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint);
+                    _ = LoadAndApplyAttachmentMeshAsync(boneAttach, avatarVisual.Skeleton, prim.MeshId,
+                        prim.Faces, defaultFace,
                         new System.Numerics.Vector3(prim.Scale.X, prim.Scale.Y, prim.Scale.Z));
                 }
                 else
@@ -433,7 +435,8 @@ public partial class AvatarRenderer : Node3D
     }
 
     private async System.Threading.Tasks.Task LoadAndApplyAttachmentMeshAsync(
-        BoneAttachment3D boneAttach, Skeleton3D? skeleton, Guid meshId, Guid textureId, System.Numerics.Vector3 slScale)
+        BoneAttachment3D boneAttach, Skeleton3D? skeleton, Guid meshId,
+        FaceTexture[]? faces, FaceTexture defaultFace, System.Numerics.Vector3 slScale)
     {
         if (_assetService == null) return;
 
@@ -448,15 +451,14 @@ public partial class AvatarRenderer : Node3D
             Godot.Callable.From(() =>
             {
                 if (!IsInstanceValid(skeleton)) return;
-                var mi = BuildRiggedMeshInstance(meshData, skeleton);
+                var mi = BuildRiggedMeshInstance(meshData, skeleton, out var faceIndices);
                 if (mi == null) return;
                 mi.Name = "RiggedMesh";
                 skeleton.AddChild(mi);
                 // Skin is already assigned on the instance; the skeleton path must be set after
                 // the node is in the tree so Godot can resolve and drive the skinning.
                 mi.Skeleton = mi.GetPathTo(skeleton);
-                if (textureId != Guid.Empty)
-                    _ = LoadAndApplyAttachmentTextureAsync(mi, textureId);
+                _ = ApplyFaceMaterialsAsync(mi, faceIndices, faces, defaultFace);
             }).CallDeferred();
             return;
         }
@@ -466,6 +468,7 @@ public partial class AvatarRenderer : Node3D
             if (!IsInstanceValid(boneAttach)) return;
 
             var arrayMesh = new ArrayMesh();
+            var faceIndices = new List<int>();
             foreach (var sub in meshData.Submeshes)
             {
                 if (sub.Indices.Length == 0) continue;
@@ -482,14 +485,86 @@ public partial class AvatarRenderer : Node3D
                 }
                 st.GenerateTangents();
                 st.Commit(arrayMesh);
+                faceIndices.Add(sub.FaceIndex);
             }
 
             var mi = new MeshInstance3D { Name = "AttachMesh", Mesh = arrayMesh };
             boneAttach.AddChild(mi);
-
-            if (textureId != Guid.Empty)
-                _ = LoadAndApplyAttachmentTextureAsync(mi, textureId);
+            _ = ApplyFaceMaterialsAsync(mi, faceIndices.ToArray(), faces, defaultFace);
         }).CallDeferred();
+    }
+
+    /// <summary>Applies one material per mesh surface, picking each surface's SL face texture
+    /// (texture id + colour tint) from <paramref name="faces"/> by its face index. Worn items
+    /// texture each face independently — many parts are flat colour tints with no texture.</summary>
+    private async System.Threading.Tasks.Task ApplyFaceMaterialsAsync(
+        MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace)
+    {
+        if (mi.Mesh is not ArrayMesh am) return;
+        int surfaceCount = am.GetSurfaceCount();
+
+        for (int surf = 0; surf < surfaceCount; surf++)
+        {
+            int faceIndex = surf < faceIndices.Length ? faceIndices[surf] : 0;
+            FaceTexture ft = (faces != null && faceIndex >= 0 && faceIndex < faces.Length)
+                ? faces[faceIndex] : defaultFace;
+
+            var material = await BuildFaceMaterialAsync(ft).ConfigureAwait(false);
+            int s = surf;
+            Godot.Callable.From(() =>
+            {
+                if (IsInstanceValid(mi) && s < ((ArrayMesh)mi.Mesh).GetSurfaceCount())
+                    mi.SetSurfaceOverrideMaterial(s, material);
+            }).CallDeferred();
+        }
+    }
+
+    /// <summary>Builds a material for one SL face: optional albedo texture modulated by the
+    /// face colour tint, with alpha-cutout when the texture has alpha. Texture decode runs off
+    /// the main thread; only the GPU upload is marshalled back.</summary>
+    private async System.Threading.Tasks.Task<StandardMaterial3D> BuildFaceMaterialAsync(FaceTexture ft)
+    {
+        var tint = ft.Color == default
+            ? new Color(1, 1, 1, 1)
+            : new Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
+
+        var material = new StandardMaterial3D
+        {
+            AlbedoColor = tint,
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
+        };
+
+        if (ft.TextureId == Guid.Empty || _assetService == null)
+            return material;
+
+        var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
+        ImageTexture? cached = _gpuCache?.Get(ft.TextureId) as ImageTexture;
+        if (cached != null) { material.AlbedoTexture = cached; return material; }
+
+        var textureData = await _assetService.GetTextureAsync(ft.TextureId).ConfigureAwait(false);
+        if (textureData == null) return material;
+
+        Godot.Callable.From(() =>
+        {
+            var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+            image.GenerateMipmaps();
+            var tex = ImageTexture.CreateFromImage(image);
+            if (tex != null)
+            {
+                _gpuCache?.Put(ft.TextureId, tex, (long)textureData.Width * textureData.Height * 4);
+                if (image.DetectAlpha() != Image.AlphaMode.None)
+                {
+                    material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+                    material.AlphaScissorThreshold = 0.5f;
+                }
+            }
+            tcs.SetResult(tex);
+        }).CallDeferred();
+
+        var built = await tcs.Task.ConfigureAwait(false);
+        if (built != null) material.AlbedoTexture = built;
+        return material;
     }
 
     /// <summary>
@@ -498,8 +573,9 @@ public partial class AvatarRenderer : Node3D
     /// be added as a DIRECT child of the skeleton; its <see cref="Skin"/> is stashed in a node
     /// meta ("skin") so the caller can assign it after AddChild. Main thread only.
     /// </summary>
-    private MeshInstance3D? BuildRiggedMeshInstance(MeshData meshData, Skeleton3D skeleton)
+    private MeshInstance3D? BuildRiggedMeshInstance(MeshData meshData, Skeleton3D skeleton, out int[] faceIndices)
     {
+        faceIndices = System.Array.Empty<int>();
         var skinData = meshData.Skin!;
         int jointCount = skinData.JointNames.Length;
 
@@ -541,6 +617,7 @@ public partial class AvatarRenderer : Node3D
         }
 
         var arrayMesh = new ArrayMesh();
+        var faceList = new List<int>();
 
         foreach (var sub in meshData.Submeshes)
         {
@@ -577,6 +654,7 @@ public partial class AvatarRenderer : Node3D
 
             st.GenerateTangents();
             st.Commit(arrayMesh);
+            faceList.Add(sub.FaceIndex);
         }
 
         if (arrayMesh.GetSurfaceCount() == 0) return null;
@@ -596,13 +674,12 @@ public partial class AvatarRenderer : Node3D
             return null;
         }
 
-        var mi = new MeshInstance3D
+        faceIndices = faceList.ToArray();
+        return new MeshInstance3D
         {
             Mesh = arrayMesh,
             Skin = skin,
-            MaterialOverride = new StandardMaterial3D { CullMode = BaseMaterial3D.CullModeEnum.Disabled }
         };
-        return mi;
     }
 
     private static void AddInfluence(int joint, float weight, int[] slotForJoint, int jointCount,
@@ -615,28 +692,6 @@ public partial class AvatarRenderer : Node3D
         wts[count] = weight;
         sum += weight;
         count++;
-    }
-
-    private async System.Threading.Tasks.Task LoadAndApplyAttachmentTextureAsync(MeshInstance3D mi, Guid textureId)
-    {
-        if (_assetService == null) return;
-
-        var textureData = await _assetService.GetTextureAsync(textureId).ConfigureAwait(false);
-        if (textureData == null) return;
-
-        Godot.Callable.From(() =>
-        {
-            if (!IsInstanceValid(mi)) return;
-            var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-            var tex = ImageTexture.CreateFromImage(image);
-            if (tex == null) return;
-
-            if (_gpuCache != null)
-                _gpuCache.Put(textureId, tex, (long)textureData.Width * textureData.Height * 4);
-
-            var mat = new StandardMaterial3D { AlbedoTexture = tex };
-            mi.MaterialOverride = mat;
-        }).CallDeferred();
     }
 
     // -------------------------------------------------------------------------
