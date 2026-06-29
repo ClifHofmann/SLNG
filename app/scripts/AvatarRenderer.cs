@@ -522,7 +522,17 @@ public partial class AvatarRenderer : Node3D
         }
         if (skin.GetBindCount() == 0) return null;
 
+        // Some OpenSim mesh uploads carry a broken bind-shape matrix with a huge translation
+        // that flings the whole garment hundreds of metres away. A real bind-shape is a small
+        // rotation/scale; reject an insane translation rather than render a flier.
         var bindShape = skinData.BindShapeMatrix;
+        var bindTranslation = new System.Numerics.Vector3(bindShape.M41, bindShape.M42, bindShape.M43);
+        if (bindTranslation.Length() > 5f)
+        {
+            GD.Print($"[RiggedMesh] dropping broken bind-shape translation {bindTranslation}");
+            bindShape = System.Numerics.Matrix4x4.Identity;
+        }
+
         var arrayMesh = new ArrayMesh();
 
         foreach (var sub in meshData.Submeshes)
@@ -564,13 +574,20 @@ public partial class AvatarRenderer : Node3D
 
         if (arrayMesh.GetSurfaceCount() == 0) return null;
 
-        // One-shot diagnostic: how many joints resolved, and the mesh's local bounds. A huge
-        // AABB means broken skin weights / bind-shape (the "flying" artifact).
+        // Diagnostic + sanity guard: a worn mesh should be roughly human-sized and near the
+        // body. A huge or far-flung AABB means broken weights/verts — skip it so it can't fly.
         var aabb = arrayMesh.GetAabb();
         int resolved = 0;
         for (int j = 0; j < jointCount; j++) if (slotForJoint[j] >= 0) resolved++;
+        float maxExtent = Mathf.Max(aabb.Size.X, Mathf.Max(aabb.Size.Y, aabb.Size.Z));
+        float centerDist = (aabb.Position + aabb.Size * 0.5f).Length();
         GD.Print($"[RiggedMesh] joints {resolved}/{jointCount} resolved, binds {skin.GetBindCount()}, " +
                  $"aabb pos {aabb.Position} size {aabb.Size}");
+        if (maxExtent > 8f || centerDist > 8f)
+        {
+            GD.Print($"[RiggedMesh] skipping absurd mesh (extent {maxExtent:0.0}, dist {centerDist:0.0})");
+            return null;
+        }
 
         var mi = new MeshInstance3D
         {

@@ -11,18 +11,21 @@ namespace SLNG.App;
 public static class SkeletonBuilder
 {
     /// <summary>
-    /// Creates a Skeleton3D with all real bones (excluding collision volumes)
-    /// from the given AvatarSkeleton.
+    /// Creates a Skeleton3D from the given AvatarSkeleton, including collision-volume
+    /// bones (BELLY, PELVIS, L_UPPER_LEG, …). Fitted / rigged mesh weights reference these
+    /// collision volumes; without them those vertices fail to bind and collapse. They are
+    /// children of standard bones, so they follow the body and add no animation cost.
     /// </summary>
     public static Skeleton3D Build(AvatarSkeleton avatarSkeleton)
     {
         var skeleton = new Skeleton3D();
 
         // We need to add bones in parent-first order. The XML is already parsed
-        // in depth-first order, so parents come before children.
+        // in depth-first order, so parents come before children (a collision volume
+        // always follows its enclosing bone).
         var boneIndices = new Dictionary<string, int>();
 
-        foreach (var bone in avatarSkeleton.RealBones)
+        foreach (var bone in avatarSkeleton.Bones)
         {
             int idx = skeleton.AddBone(bone.Name);
             boneIndices[bone.Name] = idx;
