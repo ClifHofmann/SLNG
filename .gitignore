@@ -50,3 +50,5 @@ tools/Probe/
 .DS_Store
 Thumbs.db
 tools/opensim/data/
+scratchpad*
+tools/ProbeTerrain/ProbeTerrain.cs
