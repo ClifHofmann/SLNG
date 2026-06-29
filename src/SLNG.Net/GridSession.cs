@@ -392,8 +392,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     };
                     var delegateObj = Delegate.CreateDelegate(callbackType, action.Target, action.Method);
 
-                    // RequestTexture(UUID imageID, ImageType type, float priority, int discardLevel, int packetNum, TextureDownloadCallback callback, bool progress)
-                    reqMethod.Invoke(pipeline, new object[] { new UUID(textureId), ImageType.Normal, 100000.0f, 0, 0, delegateObj, false });
+                    // RequestTexture(UUID textureID, ImageType imageType, float priority, int discardLevel,
+                    //                uint packetStart, TextureDownloadCallback callback, bool progressive).
+                    // packetStart is UInt32 — passing int 0 makes Invoke throw "Int32 cannot be
+                    // converted to UInt32", which silently fell back to the truncating RequestImageAsync.
+                    reqMethod.Invoke(pipeline, new object[] { new UUID(textureId), ImageType.Normal, 100000.0f, 0, 0u, delegateObj, false });
                     return tcs.Task;
                 }
             }
