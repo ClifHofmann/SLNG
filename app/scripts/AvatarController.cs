@@ -66,7 +66,7 @@ public partial class AvatarController : Camera3D
                 // Alt+LMB: orbit around avatar (SL-style).
                 // Use the event's AltPressed flag — Input.IsKeyPressed(Key.Alt) is
                 // unreliable inside _UnhandledInput on some platforms.
-                if (mouseBtn.Pressed && mouseBtn.AltPressed)
+                if (mouseBtn.Pressed && (mouseBtn.AltPressed || Input.IsKeyPressed(Key.Alt)))
                 {
                     _altOrbitActive = true;
                     Input.MouseMode = Input.MouseModeEnum.Captured;
@@ -93,7 +93,7 @@ public partial class AvatarController : Camera3D
             if (_altOrbitActive)
             {
                 // Exit alt-orbit if Alt is no longer held during motion
-                if (!mouseMotion.AltPressed)
+                if (!mouseMotion.AltPressed && !Input.IsKeyPressed(Key.Alt))
                 {
                     _altOrbitActive = false;
                     Input.MouseMode = Input.MouseModeEnum.Visible;
@@ -102,7 +102,7 @@ public partial class AvatarController : Camera3D
                 // Orbit the camera horizontally, but use vertical motion to zoom
                 // (SL-style Alt-Zoom).
                 _orbitYaw -= mouseMotion.Relative.X * sensitivity;
-                _zoom += mouseMotion.Relative.Y * sensitivity * 10.0f;
+                _zoom += mouseMotion.Relative.Y * sensitivity * 50.0f;
                 _zoom = Mathf.Clamp(_zoom, 0.5f, 50.0f);
             }
             else
