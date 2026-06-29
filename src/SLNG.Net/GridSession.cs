@@ -365,42 +365,52 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// Fetches the raw bytes of a texture asset (JPEG2000) from the simulator. Returns null
     /// if the fetch times out or fails.
     /// </summary>
-    public async Task<byte[]?> FetchTextureDataAsync(Guid textureId)
+    public Task<byte[]?> FetchTextureDataAsync(Guid textureId)
     {
-        // Attempt HTTP download first, as UDP is prone to packet loss and truncated streams
-        var sim = _client.Network.CurrentSim;
-        if (sim != null && sim.Caps != null)
+        var tcs = new TaskCompletionSource<byte[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        try
         {
-            var cap = sim.Caps.CapabilityURI("GetTexture");
-            if (cap != null)
+            var pipeline = typeof(AssetManager).GetField("Texture", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(_client.Assets);
+            if (pipeline != null)
             {
-                try
+                var reqMethod = pipeline.GetType().GetMethod("RequestTexture", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (reqMethod != null)
                 {
-                    var url = $"{cap}/?texture_id={textureId}";
-                    using var http = new System.Net.Http.HttpClient();
-                    var bytes = await http.GetByteArrayAsync(url).ConfigureAwait(false);
-                    if (bytes is { Length: > 0 })
+                    var callbackType = reqMethod.GetParameters()[5].ParameterType;
+                    Action<TextureRequestState, LibreMetaverse.Assets.AssetTexture> action = (state, assetTexture) =>
                     {
-                        return bytes;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[GridSession] HTTP GetTexture failed for {textureId}: {ex.Message}");
+                        if (state == TextureRequestState.Finished)
+                        {
+                            var data = assetTexture?.AssetData;
+                            tcs.TrySetResult(data is { Length: > 0 } ? data : null);
+                        }
+                        else if (state == TextureRequestState.NotFound || state == TextureRequestState.Aborted || state == TextureRequestState.Timeout)
+                        {
+                            tcs.TrySetResult(null);
+                        }
+                    };
+                    var delegateObj = Delegate.CreateDelegate(callbackType, action.Target, action.Method);
+
+                    // RequestTexture(UUID imageID, ImageType type, float priority, int discardLevel, int packetNum, TextureDownloadCallback callback, bool progress)
+                    reqMethod.Invoke(pipeline, new object[] { new UUID(textureId), ImageType.Normal, 100000.0f, 0, 0, delegateObj, false });
+                    return tcs.Task;
                 }
             }
         }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[GridSession] TexturePipeline reflection failed: {ex.Message}");
+        }
 
-        // Fallback to legacy UDP
-        var texture = await _client.Assets
-            .RequestImageAsync(new UUID(textureId), ImageType.Normal, CancellationToken.None)
-            .ConfigureAwait(false);
+        // Fallback if reflection fails
+        _client.Assets.RequestImageAsync(new UUID(textureId), ImageType.Normal, CancellationToken.None)
+            .ContinueWith(t => {
+                var data = t.Result?.AssetData;
+                tcs.TrySetResult(data is { Length: > 0 } ? data : null);
+            });
 
-        // AssetTexture has no completeness flag, so a busy-region timeout can hand back a
-        // truncated JPEG2000 stream. We don't trust it here; the asset layer validates by
-        // decoding and only caches data that actually decodes (see FetchAndDecodeTextureAsync).
-        var data = texture?.AssetData;
-        return data is { Length: > 0 } ? data : null;
+        return tcs.Task;
     }
 
     /// <summary>
