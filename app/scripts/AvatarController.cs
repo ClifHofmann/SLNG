@@ -91,6 +91,7 @@ public partial class AvatarController : Camera3D
                             GD.Print($"SculptId: {prim.SculptId}");
                             GD.Print($"SculptType: {prim.SculptType}");
                             GD.Print($"Shape: {prim.Shape}");
+
                         }
                         GD.Print($"==========================\n");
                     }

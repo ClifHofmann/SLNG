@@ -319,12 +319,21 @@ public partial class ObjectRenderer : Node3D
             {
                 // Sculpt map not ready / undecodable — show a placeholder solid for now.
                 ReleaseMeshRef(state);
-                state.MeshInstance.Mesh = profileCurve switch
+                if (profileCurve == 0)
                 {
-                    0 => _cylinderMesh,
-                    5 => _sphereMesh,
-                    _ => _boxMesh,
-                };
+                    state.MeshInstance.Mesh = _cylinderMesh;
+                    state.CollisionShape.Shape = new Godot.CylinderShape3D { Height = 1.0f, Radius = 0.5f };
+                }
+                else if (profileCurve == 5)
+                {
+                    state.MeshInstance.Mesh = _sphereMesh;
+                    state.CollisionShape.Shape = new Godot.SphereShape3D { Radius = 0.5f };
+                }
+                else
+                {
+                    state.MeshInstance.Mesh = _boxMesh;
+                    state.CollisionShape.Shape = new Godot.BoxShape3D { Size = new Godot.Vector3(1, 1, 1) };
+                }
             }
         }).CallDeferred();
     }
@@ -349,12 +358,21 @@ public partial class ObjectRenderer : Node3D
             {
                 // Meshing failed (e.g. sculpt or odd shape) — fall back to a primitive solid.
                 ReleaseMeshRef(state);
-                state.MeshInstance.Mesh = profileCurve switch
+                if (profileCurve == 0)
                 {
-                    0 => _cylinderMesh,
-                    5 => _sphereMesh,
-                    _ => _boxMesh,
-                };
+                    state.MeshInstance.Mesh = _cylinderMesh;
+                    state.CollisionShape.Shape = new Godot.CylinderShape3D { Height = 1.0f, Radius = 0.5f };
+                }
+                else if (profileCurve == 5)
+                {
+                    state.MeshInstance.Mesh = _sphereMesh;
+                    state.CollisionShape.Shape = new Godot.SphereShape3D { Radius = 0.5f };
+                }
+                else
+                {
+                    state.MeshInstance.Mesh = _boxMesh;
+                    state.CollisionShape.Shape = new Godot.BoxShape3D { Size = new Godot.Vector3(1, 1, 1) };
+                }
             }
         }).CallDeferred();
     }
@@ -429,7 +447,7 @@ public partial class ObjectRenderer : Node3D
             AlbedoColor = colorTint,
             // Linear + mipmaps: SL textures look smooth, not blocky/pixelated, and don't shimmer with distance.
             TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
-            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            CullMode = BaseMaterial3D.CullModeEnum.Back,
             // SL texture repeats scale from the center (0.5, 0.5), not top-left.
             // u_godot = u * RepeatU + OffsetU_godot
             // u_sl = (u - 0.5) * RepeatU + 0.5 + OffsetU_sl = u * RepeatU + (0.5 - 0.5 * RepeatU + OffsetU_sl)
@@ -625,8 +643,9 @@ public partial class ObjectRenderer : Node3D
             var st = new SurfaceTool();
             st.Begin(Mesh.PrimitiveType.Triangles);
 
-            foreach (int index in sub.Indices)
+            for (int i = sub.Indices.Length - 1; i >= 0; i--)
             {
+                int index = sub.Indices[i];
                 var p = sub.Positions[index];
                 var n = sub.Normals[index];
                 var uv = sub.UVs[index];
