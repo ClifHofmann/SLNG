@@ -423,43 +423,10 @@ public class AssetService
 
     private static TextureData? DecodeTexture(byte[] bytes)
     {
-        try
-        {
-            // First try the native SL decoder which correctly handles SL alpha channels!
-            var asset = new LibreMetaverse.Assets.AssetTexture(new LibreMetaverse.UUID(), bytes);
-            if (asset.Decode())
-            {
-                if (asset.Image != null)
-                {
-                    int width = asset.Image.Width;
-                    int height = asset.Image.Height;
-                    
-                    byte[] rgba = new byte[width * height * 4];
-                    bool hasAlpha = asset.Image.Alpha != null && asset.Image.Alpha.Length == width * height;
-                    bool hasColor = asset.Image.Red != null && asset.Image.Green != null && asset.Image.Blue != null;
-                    
-                    if (hasColor)
-                    {
-                        var red = asset.Image.Red!;
-                        var green = asset.Image.Green!;
-                        var blue = asset.Image.Blue!;
-                        var alpha = asset.Image.Alpha;
-
-                        for (int i = 0; i < width * height; i++)
-                        {
-                            rgba[i * 4] = red[i];
-                            rgba[i * 4 + 1] = green[i];
-                            rgba[i * 4 + 2] = blue[i];
-                            rgba[i * 4 + 3] = hasAlpha ? alpha![i] : (byte)255;
-                        }
-                        
-                        Console.WriteLine($"[AssetService] AssetTexture decoded manually: {width}x{height}, HasAlpha: {hasAlpha}");
-                        return new TextureData(width, height, rgba);
-                    }
-                }
-            }
-        }
-        catch { }
+        // We completely bypass LibreMetaverse.Assets.AssetTexture (CoreJ2K).
+        // CoreJ2K has severe bugs: it crashes on truncated streams, silently drops alpha 
+        // channels if header flags are missing, and swaps Red/Blue channels.
+        // Instead, we use Magick.NET for ALL J2C decoding.
 
         try
         {
