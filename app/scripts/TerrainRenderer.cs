@@ -261,6 +261,7 @@ public partial class TerrainRenderer : Node3D
             }
         }
 
+        PlaneMesh planeMesh;
         if (waterInstance == null)
         {
             waterInstance = new MeshInstance3D
@@ -269,15 +270,20 @@ public partial class TerrainRenderer : Node3D
             };
             node.Root.AddChild(waterInstance);
 
-            var planeMesh = new PlaneMesh
+            planeMesh = new PlaneMesh
             {
-                Size = new Vector2(regionTerrain.Width, regionTerrain.Height),
                 SubdivideWidth = 10,
                 SubdivideDepth = 10
             };
             waterInstance.Mesh = planeMesh;
             waterInstance.MaterialOverride = _waterMaterial;
         }
+        else
+        {
+            planeMesh = (PlaneMesh)waterInstance.Mesh;
+        }
+
+        planeMesh.Size = new Vector2(regionTerrain.Width, regionTerrain.Height);
 
         // SL origin for the region is 0,0 but PlaneMesh is centered
         // Also Godot Z is -Y in SL

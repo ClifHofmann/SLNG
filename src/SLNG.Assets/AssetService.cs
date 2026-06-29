@@ -429,15 +429,15 @@ public class AssetService
             // bitstreams (missing EOC, trailing padding, etc.) that crash CoreJ2K.
             using var image = new ImageMagick.MagickImage(bytes);
             
-            // Ensure we have RGBA output
-            if (image.HasAlpha)
+            // SL textures often have 4 channels for RGBA but don't explicitly mark themselves
+            // as having an alpha channel in the J2K header.
+            if (image.ChannelCount >= 4)
             {
-                image.ColorSpace = ImageMagick.ColorSpace.Transparent;
+                image.HasAlpha = true;
             }
-            else
-            {
-                image.ColorSpace = ImageMagick.ColorSpace.sRGB;
-            }
+
+            // Always use sRGB to ensure colors are preserved correctly during ToByteArray
+            image.ColorSpace = ImageMagick.ColorSpace.sRGB;
 
             int width = (int)image.Width;
             int height = (int)image.Height;
