@@ -251,14 +251,14 @@ public sealed class WorldSimulation : IDisposable
 
     private void ApplyTerrainPatch(TerrainPatchEvent e)
     {
-        var terrain = _world.GetOrCreateTerrain(e.RegionHandle);
+        var terrain = _world.GetOrCreateTerrain(e.RegionHandle, e.RegionSizeX, e.RegionSizeY);
         terrain.ApplyPatch(e.X, e.Y, e.HeightMap);
         _world.NotifyTerrainUpdated(e.RegionHandle);
     }
 
     private void ApplyTerrainSettings(TerrainSettingsEvent e)
     {
-        var terrain = _world.GetOrCreateTerrain(e.RegionHandle);
+        var terrain = _world.GetOrCreateTerrain(e.RegionHandle, e.RegionSizeX, e.RegionSizeY);
         terrain.TerrainDetail0 = e.Detail0;
         terrain.TerrainDetail1 = e.Detail1;
         terrain.TerrainDetail2 = e.Detail2;

@@ -131,9 +131,18 @@ public partial class TerrainRenderer : Node3D
         _dirtyRegions.Add(regionHandle);
     }
 
+    private double _rebuildAccum;
+
     public override void _Process(double delta)
     {
         if (_dirtyRegions.Count == 0) return;
+
+        // Rebuilding regenerates the whole region mesh + trimesh collider. A varregion
+        // (up to 1024x1024) is huge, and patches stream in over many frames, so coalesce
+        // into a rebuild at most every ~0.75s instead of once per frame.
+        _rebuildAccum += delta;
+        if (_rebuildAccum < 0.75) return;
+        _rebuildAccum = 0;
 
         foreach (var regionHandle in _dirtyRegions)
         {

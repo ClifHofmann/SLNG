@@ -37,13 +37,17 @@ public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, 
 /// <summary>Represents the removal of an object from the simulator's interest list.</summary>
 public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent;
 
-/// <summary>Represents a raw 16x16 chunk of terrain height data from the simulator.</summary>
-public record TerrainPatchEvent(ulong RegionHandle, int X, int Y, int PatchSize, float[] HeightMap) : IWorldEvent;
+/// <summary>Represents a raw 16x16 chunk of terrain height data from the simulator.
+/// <paramref name="RegionSizeX"/>/<paramref name="RegionSizeY"/> are the region's size in
+/// metres (256 for a classic region, larger for a varregion).</summary>
+public record TerrainPatchEvent(ulong RegionHandle, int X, int Y, int PatchSize, float[] HeightMap,
+    int RegionSizeX = 256, int RegionSizeY = 256) : IWorldEvent;
 public record TerrainSettingsEvent(
     ulong RegionHandle,
     Guid Detail0, Guid Detail1, Guid Detail2, Guid Detail3,
     float[] StartHeights, float[] HeightRanges,
-    float WaterHeight
+    float WaterHeight,
+    int RegionSizeX = 256, int RegionSizeY = 256
 ) : IWorldEvent;
 
 /// <summary>Represents a simulator disconnection or departure.</summary>

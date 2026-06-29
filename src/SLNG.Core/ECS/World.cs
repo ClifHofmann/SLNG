@@ -123,11 +123,14 @@ public class World
     /// <summary>
     /// Gets or creates a terrain object for the specified region.
     /// </summary>
-    public RegionTerrain GetOrCreateTerrain(ulong regionHandle)
+    public RegionTerrain GetOrCreateTerrain(ulong regionHandle,
+        int sizeX = RegionTerrain.DefaultRegionSize, int sizeY = RegionTerrain.DefaultRegionSize)
     {
         if (!_terrains.TryGetValue(regionHandle, out var terrain))
         {
-            terrain = new RegionTerrain();
+            // Size to the actual region (varregions are larger than 256). Both the terrain
+            // patch and settings events carry the size, so the first to arrive sizes it right.
+            terrain = new RegionTerrain(sizeX, sizeY);
             _terrains[regionHandle] = terrain;
         }
         return terrain;

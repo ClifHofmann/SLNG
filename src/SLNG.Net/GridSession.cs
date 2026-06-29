@@ -70,7 +70,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             sim.Handle,
             sim.TerrainDetail0.Guid, sim.TerrainDetail1.Guid, sim.TerrainDetail2.Guid, sim.TerrainDetail3.Guid,
             startHeights, heightRanges,
-            sim.WaterHeight
+            sim.WaterHeight,
+            (int)sim.SizeX, (int)sim.SizeY
         ));
     }
 
@@ -239,7 +240,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             e.X,
             e.Y,
             e.PatchSize,
-            e.HeightMap
+            e.HeightMap,
+            (int)e.Simulator.SizeX,
+            (int)e.Simulator.SizeY
         ));
     }
 
