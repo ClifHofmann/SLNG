@@ -234,7 +234,7 @@ public class AssetService
 
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, bool isSculpt)
     {
-        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v7.j2c");
+        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v8.j2c");
 
         if (cacheFile != null && File.Exists(cacheFile))
         {
@@ -416,8 +416,16 @@ public class AssetService
         }
     }
 
-    private static TextureData? DecodeTexture(byte[] bytes, bool isSculpt = false)
+    private TextureData? DecodeTexture(byte[] bytes, bool isSculpt)
     {
+        if (isSculpt)
+        {
+            // Magick.NET blurs J2C data, which is fatal for sculpt maps (creates crumpled geometry).
+            // Skip Magick.NET and use the mathematically accurate CoreJ2K decoder directly.
+            Console.WriteLine("[AssetService] Bypassing Magick.NET for sculpt map (using CoreJ2K).");
+            return DecodeWithCoreJ2K(bytes, true);
+        }
+
         try
         {
             // Magick.NET wraps OpenJPEG and seamlessly handles malformed J2C bitstreams (missing EOC, trailing padding, etc.) that crash CoreJ2K.
@@ -567,50 +575,57 @@ public class AssetService
                 Console.WriteLine($"[AssetService] Padded Magick.NET decode also failed: {paddedEx.Message}");
             }
             
-            try
+            return DecodeWithCoreJ2K(bytes, isSculpt);
+        }
+
+        return null;
+    }
+
+    private TextureData? DecodeWithCoreJ2K(byte[] bytes, bool isSculpt)
+    {
+        try
+        {
+            var asset = new LibreMetaverse.Assets.AssetTexture(new LibreMetaverse.UUID(), bytes);
+            if (asset.Decode() && asset.Image != null)
             {
-                var asset = new LibreMetaverse.Assets.AssetTexture(new LibreMetaverse.UUID(), bytes);
-                if (asset.Decode() && asset.Image != null)
+                int width = asset.Image.Width;
+                int height = asset.Image.Height;
+                bool hasColor = asset.Image.Red != null && asset.Image.Green != null && asset.Image.Blue != null;
+                
+                if (isSculpt && (width != 64 || height != 64))
                 {
-                    int width = asset.Image.Width;
-                    int height = asset.Image.Height;
-                    bool hasColor = asset.Image.Red != null && asset.Image.Green != null && asset.Image.Blue != null;
+                    // Cannot resize easily here without bringing in image processing library,
+                    // but CoreJ2K usually decodes the full sculpt map anyway.
+                }
+
+                if (hasColor)
+                {
+                    var red = asset.Image.Red!;
+                    var green = asset.Image.Green!;
+                    var blue = asset.Image.Blue!;
+                    var alpha = asset.Image.Alpha;
                     
-                    if (isSculpt && (width != 64 || height != 64))
-                    {
-                        // Cannot resize easily here without bringing in image processing library,
-                        // but CoreJ2K usually decodes the full sculpt map anyway.
-                    }
+                    byte[] rgba = new byte[width * height * 4];
 
-                    if (hasColor)
+                    for (int i = 0; i < width * height; i++)
                     {
-                        var red = asset.Image.Red!;
-                        var green = asset.Image.Green!;
-                        var blue = asset.Image.Blue!;
-                        var alpha = asset.Image.Alpha;
-                        
-                        byte[] rgba = new byte[width * height * 4];
-
-                        for (int i = 0; i < width * height; i++)
-                        {
-                            // CoreJ2K swaps Red and Blue channels in its output
-                            rgba[i * 4] = blue[i];
-                            rgba[i * 4 + 1] = green[i];
-                            rgba[i * 4 + 2] = red[i];
-                            rgba[i * 4 + 3] = alpha != null ? alpha[i] : (byte)255;
-                        }
-                        
-                        Console.WriteLine($"[AssetService] Fallback CoreJ2K decode successful: {width}x{height}");
-                        return new TextureData(width, height, rgba, true);
+                        // CoreJ2K swaps Red and Blue channels in its output
+                        rgba[i * 4] = blue[i];
+                        rgba[i * 4 + 1] = green[i];
+                        rgba[i * 4 + 2] = red[i];
+                        rgba[i * 4 + 3] = alpha != null ? alpha[i] : (byte)255;
                     }
+                    
+                    Console.WriteLine($"[AssetService] CoreJ2K decode successful: {width}x{height}");
+                    return new TextureData(width, height, rgba, true);
                 }
             }
-            catch (Exception ex2)
-            {
-                Console.WriteLine($"[AssetService] CoreJ2K fallback also failed: {ex2.Message}");
-            }
-            
-            return null;
         }
+        catch (Exception ex2)
+        {
+            Console.WriteLine($"[AssetService] CoreJ2K decode failed: {ex2.Message}");
+        }
+
+        return null;
     }
 }

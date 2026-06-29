@@ -54,7 +54,7 @@ public static class PrimMeshService
                     ProfileBegin     = shape.ProfileBegin,
                     ProfileEnd       = shape.ProfileEnd,
                     ProfileHollow    = shape.ProfileHollow,
-                    PCode            = PCode.Prim,
+                    PCode            = (PCode)shape.PCode,
                 }
             };
 

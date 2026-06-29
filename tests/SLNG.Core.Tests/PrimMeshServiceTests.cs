@@ -17,7 +17,7 @@ public class PrimMeshServiceTests
         PathTaperX: 0f, PathTaperY: 0f,
         PathTwist: 0f, PathTwistBegin: 0f,
         PathRadiusOffset: 0f, PathSkew: 0f, PathRevolutions: 1f,
-        ProfileBegin: 0f, ProfileEnd: 1f, ProfileHollow: 0f);
+        ProfileBegin: 0f, ProfileEnd: 1f, ProfileHollow: 0f, PCode: 9);
 
     [Fact]
     public void Generate_box_produces_a_unit_cube_mesh()

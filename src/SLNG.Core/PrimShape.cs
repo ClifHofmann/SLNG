@@ -27,4 +27,5 @@ public readonly record struct PrimShape(
     float PathRevolutions,
     float ProfileBegin,
     float ProfileEnd,
-    float ProfileHollow);
+    float ProfileHollow,
+    byte PCode);

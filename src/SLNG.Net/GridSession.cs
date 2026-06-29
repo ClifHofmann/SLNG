@@ -199,7 +199,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             pd.PathTaperX, pd.PathTaperY,
             pd.PathTwist, pd.PathTwistBegin,
             pd.PathRadiusOffset, pd.PathSkew, pd.PathRevolutions,
-            pd.ProfileBegin, pd.ProfileEnd, pd.ProfileHollow);
+            pd.ProfileBegin, pd.ProfileEnd, pd.ProfileHollow,
+            (byte)pd.PCode);
 
         ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
             e.Simulator.Handle,
