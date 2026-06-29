@@ -19,6 +19,8 @@ public partial class ObjectRenderer : Node3D
     {
         public Guid EntityId;
         public MeshInstance3D MeshInstance = null!;
+        public StaticBody3D StaticBody = null!;
+        public CollisionShape3D CollisionShape = null!;
         public List<Guid> UsedTextureIds = new();
 
         // What we've already loaded, so position/scale updates don't rebuild the mesh or
@@ -149,12 +151,24 @@ public partial class ObjectRenderer : Node3D
     private void CreateVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
+        if (_world == null) return;
+        var entity = _world.GetEntity(entityId);
+        if (entity == null) return;
         if (_visuals.ContainsKey(entityId)) return;
 
-        var meshInstance = new MeshInstance3D();
-        meshInstance.Visible = false; // Prevent distant objects from briefly appearing
-        AddChild(meshInstance);
-        _visuals[entityId] = new VisualState { EntityId = entityId, MeshInstance = meshInstance, ResourcesReleased = true };
+        var state = new VisualState
+        {
+            EntityId = entity.Id,
+            MeshInstance = new MeshInstance3D { Name = "Obj_" + entity.Id.ToString("N"), Visible = false },
+            StaticBody = new StaticBody3D { Name = "StaticBody" },
+            CollisionShape = new CollisionShape3D { Name = "Collision" },
+            ResourcesReleased = true
+        };
+        state.StaticBody.AddChild(state.CollisionShape);
+        state.MeshInstance.AddChild(state.StaticBody);
+
+        _visuals[entity.Id] = state;
+        AddChild(state.MeshInstance);
 
         UpdateVisual(entityIdStr);
     }
@@ -563,6 +577,15 @@ public partial class ObjectRenderer : Node3D
 
         state.MeshInstance.Mesh = mesh;
         state.LoadedMeshKey = key;
+        
+        if (mesh != null)
+        {
+            state.CollisionShape.Shape = mesh.CreateTrimeshShape();
+        }
+        else
+        {
+            state.CollisionShape.Shape = null;
+        }
 
         // Geometry surfaces now exist — (re)apply per-face materials.
         _ = ApplyFaceMaterialsAsync(state);

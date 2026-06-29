@@ -439,6 +439,7 @@ public class AssetService
             // Sculpt maps MUST be 64x64 for MeshFoundry to build the correct 3D topology.
             if (isSculpt && (width != 64 || height != 64))
             {
+                image.FilterType = ImageMagick.FilterType.Point; // NEVER interpolate sculpt data!
                 image.Resize(new ImageMagick.MagickGeometry("64x64!") { IgnoreAspectRatio = true });
                 width = (int)image.Width;
                 height = (int)image.Height;
