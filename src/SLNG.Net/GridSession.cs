@@ -37,6 +37,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         _client = new GridClient();
         _client.Settings.Agent.SendAppearance = false;
+
+        // Use the HTTP GetTexture CAP instead of the legacy UDP image transfer. UDP transfers
+        // time out and hand back truncated JPEG2000 streams on busy grids (the "Tile part
+        // length inconsistent" decode failures / white untextured objects); HTTP is reliable.
+        _client.Settings.TexturePipeline.Enabled = true;
+        _client.Settings.TexturePipeline.UseHttpTextures = true;
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
         _client.Objects.AvatarUpdate += OnAvatarUpdate;
