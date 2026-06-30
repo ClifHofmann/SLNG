@@ -18,6 +18,51 @@ public partial class AvatarController : Camera3D
     private bool _lastFwd, _lastBack, _lastLeft, _lastRight, _lastUp, _lastDown;
     private Vector3 _lastCameraRot;
     private float _zoom = 4.0f;
+    private Vector3 _panOffset = Vector3.Zero;
+
+    // Public API for CameraHUD
+    public void RotateCamera(Vector2 delta)
+    {
+        _orbitYaw -= delta.X;
+        _orbitPitch -= delta.Y;
+        _orbitPitch = Mathf.Clamp(_orbitPitch, -1.5f, 1.5f);
+    }
+
+    public void PanCamera(Vector2 delta)
+    {
+        _panOffset += new Vector3(delta.X, delta.Y, 0);
+    }
+
+    public void ZoomCamera(float delta)
+    {
+        _zoom += delta;
+        _zoom = Mathf.Clamp(_zoom, 0.5f, 50.0f);
+    }
+
+    public void ResetCamera()
+    {
+        _orbitYaw = 0f;
+        _orbitPitch = 0f;
+        _panOffset = Vector3.Zero;
+        _zoom = 4.0f;
+    }
+
+    public void SetPresetView(string preset)
+    {
+        ResetCamera();
+        switch (preset.ToLower())
+        {
+            case "front":
+                _orbitYaw = Mathf.Pi;
+                break;
+            case "side":
+                _orbitYaw = Mathf.Pi / 2;
+                break;
+            case "rear":
+                _orbitYaw = 0;
+                break;
+        }
+    }
 
     // Alt+LMB orbit state. The orbit offsets rotate the CAMERA around the avatar
     // without changing the avatar's facing (_yaw/_pitch). They snap back to 0 when
@@ -219,8 +264,8 @@ public partial class AvatarController : Camera3D
                 var targetPos = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
                 targetPos.Y += 1.8f;
 
-                // Third-person camera: pull back along the camera's Z axis
-                Position = targetPos + Transform.Basis.Z * _zoom;
+                // Third-person camera: pull back along the camera's Z axis and apply pan
+                Position = targetPos + Transform.Basis.Z * _zoom + Transform.Basis.X * _panOffset.X + Transform.Basis.Y * _panOffset.Y;
             }
         }
 

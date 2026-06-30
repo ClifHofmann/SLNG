@@ -506,19 +506,14 @@ public class AssetService
                 }
             }
 
-            // Ensure we have RGBA output
-            if (image.HasAlpha) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
+            // Force Magick to decode into usable colorspaces before grabbing pixel values.
+            if (image.HasAlpha || image.ChannelCount == 4) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
             else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
-
             byte[] rgba;
             using (var pixels = image.GetPixels())
             {
                 var raw = pixels.GetValues() ?? Array.Empty<byte>();
-                int ch = (int)image.ChannelCount;
-                // Take the first three channels as RGB and the fourth (if any) as alpha, using
-                // the actual channel count as the stride. This keeps the proven 3/4-channel
-                // behaviour while also accepting odd layouts (e.g. 5-channel SL skin bakes)
-                // instead of rejecting them and leaving the surface untextured/black.
+                int ch = width > 0 && height > 0 ? raw.Length / (width * height) : 0;
                 if (ch >= 3 && raw.Length >= width * height * ch)
                 {
                     rgba = new byte[width * height * 4];
@@ -557,36 +552,30 @@ public class AssetService
                 int width = (int)image.Width;
                 int height = (int)image.Height;
                 bool isDegraded = true; // Always treat padded recovery as degraded so we can try to get the real file later
-
-                if (image.HasAlpha) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
+                // Force Magick to decode into usable colorspaces before grabbing pixel values.
+                if (image.HasAlpha || image.ChannelCount == 4) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
                 else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
-
-                byte[] rgba = Array.Empty<byte>();
-
+                byte[] rgba;
                 using (var pixels = image.GetPixels())
                 {
                     var raw = pixels.GetValues() ?? Array.Empty<byte>();
-                    if (image.ChannelCount == 4)
+                    int ch = width > 0 && height > 0 ? raw.Length / (width * height) : 0;
+                    if (ch >= 3 && raw.Length >= width * height * ch)
                     {
                         rgba = new byte[width * height * 4];
-                        for (int i = 0; i < raw.Length; i += 4)
+                        for (int p = 0; p < width * height; p++)
                         {
-                            rgba[i] = raw[i];
-                            rgba[i + 1] = raw[i + 1];
-                            rgba[i + 2] = raw[i + 2];
-                            rgba[i + 3] = raw[i + 3];
+                            int s = p * ch, d = p * 4;
+                            rgba[d]     = raw[s];
+                            rgba[d + 1] = raw[s + 1];
+                            rgba[d + 2] = raw[s + 2];
+                            rgba[d + 3] = ch >= 4 ? raw[s + 3] : (byte)255;
                         }
                     }
-                    else if (image.ChannelCount == 3)
+                    else
                     {
-                        rgba = new byte[width * height * 4];
-                        for (int i = 0, j = 0; i < raw.Length; i += 3, j += 4)
-                        {
-                            rgba[j] = raw[i];
-                            rgba[j + 1] = raw[i + 1];
-                            rgba[j + 2] = raw[i + 2];
-                            rgba[j + 3] = 255;
-                        }
+                        Console.WriteLine($"[AssetService] Unsupported padded texture layout: {ch} channels, {raw.Length} values for {width}x{height}");
+                        return null;
                     }
                 }
 

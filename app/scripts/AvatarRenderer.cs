@@ -36,6 +36,8 @@ public partial class AvatarRenderer : Node3D
     private readonly Dictionary<Guid, AvatarVisual> _visuals = new();
     // attachment entity ID → BoneAttachment3D node parented to the avatar skeleton
     private readonly Dictionary<Guid, BoneAttachment3D> _attachmentNodes = new();
+    // attachment entity ID → Rigged mesh node parented to the avatar skeleton
+    private readonly Dictionary<Guid, MeshInstance3D> _riggedAttachments = new();
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache)
     {
@@ -81,9 +83,10 @@ public partial class AvatarRenderer : Node3D
 
     private void OnComponentUpdated(object? sender, ComponentEventArgs e)
     {
-        if (e.Component is AttachmentComponent)
+        if (e.Component is AttachmentComponent || e.Component is PrimitiveComponent)
             CallDeferred(nameof(UpdateAttachment), e.Entity.Id.ToString());
-        else
+        
+        if (e.Component is AvatarComponent || e.Component is TransformComponent)
             CallDeferred(nameof(UpdateVisual), e.Entity.Id.ToString());
     }
 
@@ -178,6 +181,11 @@ public partial class AvatarRenderer : Node3D
         {
             attachNode.QueueFree();
             _attachmentNodes.Remove(entityId);
+        }
+        if (_riggedAttachments.TryGetValue(entityId, out var riggedMesh))
+        {
+            riggedMesh.QueueFree();
+            _riggedAttachments.Remove(entityId);
         }
     }
 
@@ -319,13 +327,25 @@ public partial class AvatarRenderer : Node3D
 
         if (godotTexture == null)
         {
+            GD.Print($"[AvatarRenderer] Fetching bake {bakeIndex} (ID: {textureId}) from AssetService...");
             var textureData = await _assetService.GetTextureAsync(textureId);
-            if (textureData == null) return;
+            if (textureData == null)
+            {
+                GD.Print($"[AvatarRenderer] FAILED to fetch/decode bake {bakeIndex} (ID: {textureId})!");
+                return;
+            }
+            GD.Print($"[AvatarRenderer] Successfully fetched bake {bakeIndex} (ID: {textureId}), creating Godot image...");
 
             var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
             
             Godot.Callable.From(() => {
                 var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+                if (image == null)
+                {
+                    GD.Print($"[AvatarRenderer] Image.CreateFromData FAILED for bake {bakeIndex} (ID: {textureId})!");
+                    tcs.SetResult(null);
+                    return;
+                }
                 var tex = ImageTexture.CreateFromImage(image);
                 
                 if (tex != null && _gpuCache != null)
@@ -339,7 +359,11 @@ public partial class AvatarRenderer : Node3D
             godotTexture = await tcs.Task;
         }
 
-        if (godotTexture == null) return;
+        if (godotTexture == null)
+        {
+            GD.Print($"[AvatarRenderer] Final godotTexture was null for bake {bakeIndex} (ID: {textureId})!");
+            return;
+        }
 
         // Map SL bake indices (AvatarTextureIndex) to which mesh parts they cover.
         // 8=BakedHead, 9=BakedUpperBody, 10=BakedLowerBody, 11=BakedEyes, 12=BakedSkirt, 13=BakedHair
@@ -352,7 +376,7 @@ public partial class AvatarRenderer : Node3D
             11 => new[] { "eye" },
             12 => new[] { "lower_body" },
             13 => new[] { "hair" },
-            _  => (string[]?)null
+            _ => Array.Empty<string>()
         };
 
         Godot.Callable.From(() => {
@@ -364,6 +388,9 @@ public partial class AvatarRenderer : Node3D
                               .Cast<MeshInstance3D>()
                 : visual.Parts.Values.Cast<MeshInstance3D>();
 
+            var targetNames = string.Join(", ", targets.Select(m => m.Name));
+            GD.Print($"[AvatarRenderer] Applying bake {bakeIndex} (ID: {textureId}) to meshes: {targetNames}");
+
             foreach (var meshInstance in targets)
             {
                 if (!IsInstanceValid(meshInstance)) continue;
@@ -374,6 +401,13 @@ public partial class AvatarRenderer : Node3D
                     meshInstance.MaterialOverride = mat;
                 }
                 mat.AlbedoTexture = godotTexture;
+                mat.AlbedoColor = Godot.Colors.White; // Reset placeholder tint!
+                
+                // SL avatars use baked alpha to hide the system body when wearing mesh bodies.
+                // Always enable AlphaScissor because DetectAlpha can be unreliable or slow,
+                // and transparent pixels in SL textures are often black RGB.
+                mat.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+                mat.AlphaScissorThreshold = 0.5f;
             }
         }).CallDeferred();
     }
@@ -415,36 +449,49 @@ public partial class AvatarRenderer : Node3D
             boneAttach.BoneName = boneName;
             avatarVisual.Skeleton.AddChild(boneAttach);
             _attachmentNodes[entityId] = boneAttach;
+        }
 
-            // Kick off mesh/texture load for mesh attachments.
-            if (prim != null)
+        // Clear previous static attachment visuals
+        foreach (var child in boneAttach.GetChildren())
+        {
+            child.QueueFree();
+        }
+        
+        // Clear previous rigged attachment visuals
+        if (_riggedAttachments.TryGetValue(entityId, out var oldRigged))
+        {
+            oldRigged.QueueFree();
+            _riggedAttachments.Remove(entityId);
+        }
+
+        // Kick off mesh/texture load for mesh attachments.
+        if (prim != null)
+        {
+            if (prim.IsMesh && prim.MeshId != Guid.Empty)
             {
-                if (prim.IsMesh && prim.MeshId != Guid.Empty)
+                var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f);
+                _ = LoadAndApplyAttachmentMeshAsync(boneAttach, avatarVisual.Skeleton, prim.MeshId,
+                    prim.Faces, defaultFace,
+                    new System.Numerics.Vector3(prim.Scale.X, prim.Scale.Y, prim.Scale.Z), entityId);
+            }
+            else
+            {
+                // Prim attachment: show a scaled box placeholder.
+                var color = new Color(prim.ColorTint.X, prim.ColorTint.Y, prim.ColorTint.Z, prim.ColorTint.W);
+                var box = new MeshInstance3D
                 {
-                    var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint);
-                    _ = LoadAndApplyAttachmentMeshAsync(boneAttach, avatarVisual.Skeleton, prim.MeshId,
-                        prim.Faces, defaultFace,
-                        new System.Numerics.Vector3(prim.Scale.X, prim.Scale.Y, prim.Scale.Z));
-                }
-                else
-                {
-                    // Prim attachment: show a scaled box placeholder.
-                    var color = new Color(prim.ColorTint.X, prim.ColorTint.Y, prim.ColorTint.Z, prim.ColorTint.W);
-                    var box = new MeshInstance3D
-                    {
-                        Name = "AttachBox",
-                        Mesh = new BoxMesh { Size = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y) },
-                        MaterialOverride = new StandardMaterial3D { AlbedoColor = color }
-                    };
-                    boneAttach.AddChild(box);
-                }
+                    Name = "AttachBox",
+                    Mesh = new BoxMesh { Size = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y) },
+                    MaterialOverride = new StandardMaterial3D { AlbedoColor = color }
+                };
+                boneAttach.AddChild(box);
             }
         }
     }
 
     private async System.Threading.Tasks.Task LoadAndApplyAttachmentMeshAsync(
         BoneAttachment3D boneAttach, Skeleton3D? skeleton, Guid meshId,
-        FaceTexture[]? faces, FaceTexture defaultFace, System.Numerics.Vector3 slScale)
+        FaceTexture[]? faces, FaceTexture defaultFace, System.Numerics.Vector3 slScale, Guid entityId)
     {
         if (_assetService == null) return;
 
@@ -467,7 +514,13 @@ public partial class AvatarRenderer : Node3D
                 var mi = BuildRiggedMeshInstance(meshData, skeleton, out var faceIndices);
                 if (mi == null) return;
                 mi.Name = "RiggedMesh";
+                
+                // Set a generous CustomAabb to prevent Godot from culling the mesh if the bind pose is far away
+                mi.CustomAabb = new Aabb(new Godot.Vector3(-4, -4, -4), new Godot.Vector3(8, 8, 8));
+                
                 skeleton.AddChild(mi);
+                _riggedAttachments[entityId] = mi;
+                
                 // Skin is already assigned on the instance; the skeleton path must be set after
                 // the node is in the tree so Godot can resolve and drive the skinning.
                 mi.Skeleton = mi.GetPathTo(skeleton);
@@ -616,18 +669,7 @@ public partial class AvatarRenderer : Node3D
         }
         if (skin.GetBindCount() == 0) return null;
 
-        // Some OpenSim mesh uploads carry a broken bind-shape matrix with a huge translation
-        // that flings the whole garment hundreds of metres away. A real bind-shape is a small
-        // rotation/scale; reject an insane translation rather than render a flier.
         var bindShape = skinData.BindShapeMatrix;
-        var bindTranslation = new System.Numerics.Vector3(bindShape.M41, bindShape.M42, bindShape.M43);
-        if (bindTranslation.Length() > 5f)
-        {
-            // A real bind-shape is a small rotation/scale. A huge translation is a corrupt
-            // upload — the whole mesh is untrustworthy, so skip it rather than guess.
-            GD.Print($"[RiggedMesh] skipping mesh with broken bind-shape translation {bindTranslation}");
-            return null;
-        }
 
         var arrayMesh = new ArrayMesh();
         var faceList = new List<int>();
@@ -678,12 +720,13 @@ public partial class AvatarRenderer : Node3D
         int resolved = 0;
         for (int j = 0; j < jointCount; j++) if (slotForJoint[j] >= 0) resolved++;
         float maxExtent = Mathf.Max(aabb.Size.X, Mathf.Max(aabb.Size.Y, aabb.Size.Z));
-        float centerDist = (aabb.Position + aabb.Size * 0.5f).Length();
         GD.Print($"[RiggedMesh] joints {resolved}/{jointCount} resolved, binds {skin.GetBindCount()}, " +
                  $"aabb pos {aabb.Position} size {aabb.Size}");
-        if (maxExtent > 8f || centerDist > 8f)
+        
+        // Remove centerDist limit completely, as valid SL bind poses can be very far from origin.
+        if (maxExtent > 50f)
         {
-            GD.Print($"[RiggedMesh] skipping absurd mesh (extent {maxExtent:0.0}, dist {centerDist:0.0})");
+            GD.Print($"[RiggedMesh] skipping absurd mesh (extent {maxExtent:0.0})");
             return null;
         }
 
@@ -692,6 +735,8 @@ public partial class AvatarRenderer : Node3D
         {
             Mesh = arrayMesh,
             Skin = skin,
+            Skeleton = new NodePath(".."),
+            CustomAabb = new Aabb(new Godot.Vector3(-4, -4, -4), new Godot.Vector3(8, 8, 8))
         };
     }
 
@@ -791,7 +836,10 @@ public partial class AvatarRenderer : Node3D
             st.SetBones(new int[]   { s1,  s2,  0,   0   });
             st.SetWeights(new float[]{ w1,  w2,  0f,  0f  });
             st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-            st.SetUV(new Godot.Vector2(uv.X, uv.Y));
+            // SL/OpenGL texture origin is bottom-left (V grows up); Godot/Vulkan is top-left
+            // (V grows down) and Magick decodes row 0 = top. Flip V so the baked skin lands
+            // on the correct body parts instead of mirrored (front texture on the back, etc).
+            st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
             st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
         }
 
@@ -935,7 +983,7 @@ public partial class AvatarRenderer : Node3D
     {
         if (_assetService == null) return;
 
-        GD.Print($"[AvatarRenderer] Loading {animIds.Count} animation(s): {string.Join(", ", animIds)}");
+        // GD.Print($"[AvatarRenderer] Loading {animIds.Count} animation(s): {string.Join(", ", animIds)}");
 
         var loaded = new List<(Guid id, AnimationData data)>();
         foreach (var animId in animIds)
@@ -945,7 +993,7 @@ public partial class AvatarRenderer : Node3D
                 var data = await _assetService.GetAnimationAsync(animId);
                 if (data != null)
                 {
-                    GD.Print($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints, {data.Length:F2}s");
+                    // GD.Print($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints, {data.Length:F2}s");
                     loaded.Add((animId, data));
                 }
                 else
@@ -959,7 +1007,7 @@ public partial class AvatarRenderer : Node3D
             }
         }
 
-        GD.Print($"[AvatarRenderer] Starting {loaded.Count}/{animIds.Count} animation(s)");
+        // GD.Print($"[AvatarRenderer] Starting {loaded.Count}/{animIds.Count} animation(s)");
 
         // Apply on main thread via CallDeferred
         Godot.Callable.From(() => {

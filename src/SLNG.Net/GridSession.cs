@@ -183,7 +183,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 faces[i] = new FaceTexture(
                     f.TextureID.Guid,
                     f.RenderMaterialID.Guid,
-                    new System.Numerics.Vector4(f.RGBA.R, f.RGBA.G, f.RGBA.B, f.RGBA.A));
+                    new System.Numerics.Vector4(f.RGBA.R, f.RGBA.G, f.RGBA.B, f.RGBA.A),
+                    f.RepeatU,
+                    f.RepeatV,
+                    f.OffsetU,
+                    f.OffsetV,
+                    f.Rotation);
             }
         }
 

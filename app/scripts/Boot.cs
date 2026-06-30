@@ -90,13 +90,11 @@ public partial class Boot : Control
             MouseFilter = Control.MouseFilterEnum.Ignore,
             Text = "connecting…",
         };
-        // Anchor to the top-right corner and let the label keep its CONTENT size, growing left
-        // and down. TopWide pinned both top and bottom edges to y=0, collapsing the label to
-        // zero height so the text was never visible.
-        _hudLabel.SetAnchorsPreset(Control.LayoutPreset.TopRight);
+        // Anchor to the bottom-right corner to avoid overlapping the Login UI at the top.
+        _hudLabel.SetAnchorsPreset(Control.LayoutPreset.BottomRight);
         _hudLabel.GrowHorizontal = Control.GrowDirection.Begin;
-        _hudLabel.GrowVertical = Control.GrowDirection.End;
-        _hudLabel.OffsetTop = 8;
+        _hudLabel.GrowVertical = Control.GrowDirection.Begin;
+        _hudLabel.OffsetBottom = -12;
         _hudLabel.OffsetRight = -12;
         // Dark outline + larger font so white text stays legible over bright sky or pale objects.
         _hudLabel.AddThemeColorOverride("font_color", new Color(1, 1, 1));
@@ -105,6 +103,10 @@ public partial class Boot : Control
         _hudLabel.AddThemeFontSizeOverride("font_size", 18);
         hudLayer.AddChild(_hudLabel);
         GD.Print("[HUD] position label created on CanvasLayer");
+
+        var cameraHud = new SLNG.App.UI.CameraHUD();
+        cameraHud.Name = "CameraHUD";
+        hudLayer.AddChild(cameraHud);
     }
 
     private void SetupEnvironment()
@@ -305,6 +307,7 @@ public partial class Boot : Control
 
             // Spawn the avatar controller (camera)
             _avatarController = new AvatarController();
+            _avatarController.Name = "AvatarController";
             _avatarController.Initialize(_world, _session);
             
             // Set the floating origin to this region so everything renders near 0 (OSGrid
