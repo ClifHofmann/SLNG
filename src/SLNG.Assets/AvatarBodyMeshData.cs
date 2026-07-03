@@ -17,7 +17,8 @@ public sealed record AvatarBodyPartMesh(
     string?[] Bone1Names,
     float[] Bone1Weights,
     string?[] Bone2Names,
-    float[] Bone2Weights
+    float[] Bone2Weights,
+    IReadOnlyList<AvatarMorphTarget> Morphs
 );
 
 /// <summary>All body-part meshes needed to render a base avatar.</summary>
