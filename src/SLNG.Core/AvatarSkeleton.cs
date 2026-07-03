@@ -18,7 +18,8 @@ public record BoneDefinition(
     string? ParentName,
     string Support,  // "base" or "extended"
     string Group,
-    bool IsCollisionVolume
+    bool IsCollisionVolume,
+    string[] Aliases
 );
 
 /// <summary>
@@ -29,6 +30,7 @@ public class AvatarSkeleton
 {
     private readonly List<BoneDefinition> _bones = new();
     private readonly Dictionary<string, BoneDefinition> _bonesByName = new();
+    private readonly Dictionary<string, string> _aliasToName = new();
 
     public IReadOnlyList<BoneDefinition> Bones => _bones;
 
@@ -47,6 +49,12 @@ public class AvatarSkeleton
 
     public BoneDefinition? GetBone(string name) =>
         _bonesByName.TryGetValue(name, out var b) ? b : null;
+        
+    public string ResolveBoneName(string nameOrAlias)
+    {
+        if (_bonesByName.ContainsKey(nameOrAlias)) return nameOrAlias;
+        return _aliasToName.TryGetValue(nameOrAlias, out var canonical) ? canonical : nameOrAlias;
+    }
 
     /// <summary>
     /// Computes a bone's global rest position (SL space) by summing local positions up the
@@ -111,6 +119,17 @@ public class AvatarSkeleton
         if (string.IsNullOrEmpty(name))
             return;
 
+        string[] aliases = Array.Empty<string>();
+        string aliasesAttr = elem.GetAttribute("aliases");
+        if (!string.IsNullOrEmpty(aliasesAttr))
+        {
+            aliases = aliasesAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var alias in aliases)
+            {
+                skeleton._aliasToName[alias] = name;
+            }
+        }
+
         var pos = ParseVector3(elem.GetAttribute("pos"));
         var rot = ParseVector3(elem.GetAttribute("rot"));
         var scale = ParseVector3(elem.GetAttribute("scale"), Vector3.One);
@@ -119,7 +138,7 @@ public class AvatarSkeleton
         string group = elem.GetAttribute("group") ?? "";
 
         var bone = new BoneDefinition(
-            name, pos, rot, scale, end, parentName, support, group, isCollisionVolume
+            name, pos, rot, scale, end, parentName, support, group, isCollisionVolume, aliases
         );
 
         skeleton._bones.Add(bone);

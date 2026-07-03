@@ -35,6 +35,7 @@ public readonly record struct VertexBoneWeights(
 /// skeleton bones; the bind matrices position the mesh in the skeleton's rest pose.</summary>
 public sealed record MeshSkin(
     string[] JointNames,
-    Matrix4x4[] InverseBindMatrices,
-    Matrix4x4 BindShapeMatrix,
-    float PelvisOffset);
+    System.Numerics.Matrix4x4[] InverseBindMatrices,
+    System.Numerics.Matrix4x4 BindShapeMatrix,
+    float PelvisOffset,
+    System.Numerics.Matrix4x4[]? AltInverseBindMatrices = null);

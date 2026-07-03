@@ -36,32 +36,78 @@ public static class SkeletonBuilder
                 skeleton.SetBoneParent(idx, parentIdx);
             }
 
-            // Convert SL position to Godot position
-            // SL: X=East, Y=North, Z=Up
-            // Godot: X=Right, Y=Up, Z=Back (negative forward)
-            // Transform: Godot.X = SL.X, Godot.Y = SL.Z, Godot.Z = -SL.Y
-            var slPos = bone.Position;
-            var godotPos = new Vector3(slPos.X, slPos.Z, -slPos.Y);
-
-            // SL rotation is in degrees (euler), convert to Godot
-            var slRot = bone.Rotation;
-            var godotRotDeg = new Vector3(slRot.X, slRot.Z, -slRot.Y);
-            var godotRotRad = new Vector3(
-                Mathf.DegToRad(godotRotDeg.X),
-                Mathf.DegToRad(godotRotDeg.Y),
-                Mathf.DegToRad(godotRotDeg.Z)
-            );
-
-            var basis = Basis.FromEuler(godotRotRad);
-
-            // Scale
-            var slScale = bone.Scale;
-            basis = basis.Scaled(new Vector3(slScale.X, slScale.Z, slScale.Y));
-
-            var rest = new Transform3D(basis, godotPos);
-            skeleton.SetBoneRest(idx, rest);
+            skeleton.SetBoneRest(idx, SlBoneToGodotLocalTransform(bone));
         }
 
         return skeleton;
+    }
+
+    /// <summary>Converts one SL bone definition's own (position, rotation, scale) into a Godot
+    /// local <see cref="Transform3D"/> — no hierarchy involved, just this bone's own numbers.
+    /// Shared by <see cref="Build"/> (initial rest pose) and
+    /// <c>AvatarRenderer.BuildRiggedMeshInstance</c> (temporarily swaps a bone's rest to this
+    /// shape-free version, reads the resulting <see cref="Skeleton3D.GetBoneGlobalPose"/> — which
+    /// still correctly includes whatever animation pose is active — then restores the real rest;
+    /// see that call site for why: a worn mesh with no joint-position-override data of its own
+    /// was authored against this NEUTRAL skeleton, not this avatar's shape-distorted one, and an
+    /// extreme non-uniform bind-shape scale can amplify even a small shape offset into a wildly
+    /// stretched mesh).</summary>
+    internal static Transform3D SlBoneToGodotLocalTransform(BoneDefinition bone)
+    {
+        // Convert SL position to Godot position
+        // SL: X=East, Y=North, Z=Up
+        // Godot: X=Right, Y=Up, Z=Back (negative forward)
+        // Transform: Godot.X = SL.X, Godot.Y = SL.Z, Godot.Z = -SL.Y
+        var slPos = bone.Position;
+        var godotPos = new Vector3(slPos.X, slPos.Z, -slPos.Y);
+
+        var basis = SlEulerDegToGodotBasis(bone.Rotation);
+
+        var slScale = bone.Scale;
+        basis = basis.Scaled(new Vector3(slScale.X, slScale.Z, slScale.Y));
+
+        return new Transform3D(basis, godotPos);
+    }
+
+    /// <summary>
+    /// Converts an SL bone's Euler rotation (degrees, avatar_skeleton.xml "rot" attribute) into
+    /// a Godot <see cref="Basis"/>, in the SAME composed orientation the SL viewer actually
+    /// builds — this is NOT just relabeling XYZ components into a Godot axis order.
+    ///
+    /// The viewer's real runtime skeleton setup (<c>LLAvatarAppearance::setupBone</c>) calls
+    /// <c>joint-&gt;setRotation(mayaQ(rot.X, rot.Y, rot.Z, LLQuaternion::XYZ))</c>, and
+    /// <c>mayaQ</c>'s XYZ case computes <c>xQ * yQ * zQ</c> — under SL's row-vector convention
+    /// (<c>v * q</c>) that means: rotate about SL's X axis FIRST, then Y, then Z LAST.
+    /// (The OTHER rotation-building function in the viewer's own source,
+    /// <c>LLAvatarBoneInfo::getJointMatrix</c>, uses a different order — but that one is only
+    /// used by the mesh-upload preview tool, not real avatar rendering; don't be misled by it.)
+    ///
+    /// Godot's own <c>Basis.FromEuler(Vector3)</c> defaults to YXZ order (Z first, then X, then
+    /// Y), which is a DIFFERENT composition — silently using it here reproduces the wrong pose
+    /// for any bone with rotation on more than one axis. The base body/torso bones mostly have
+    /// single-axis (or zero) rotation, where composition order is irrelevant, so this stayed
+    /// hidden; the deeply-nested Bento face bones (eyebrows, lips, jaw, etc.) commonly rotate on
+    /// multiple axes at once, and the resulting error compounds down the (long) parent chain —
+    /// this is what made a small worn face-mesh render as a wildly stretched spike while the
+    /// body looked fine.
+    ///
+    /// Deriving the correct Godot-space composition: SL(x,y,z) → Godot(x,z,−y) is a proper
+    /// (orthogonal, determinant +1) axis conversion C. Conjugating the SL rotation
+    /// Rz_sl(c)∘Ry_sl(b)∘Rx_sl(a) (apply order: X first, Y, Z last) by C — i.e. C∘Ω∘C⁻¹, so it
+    /// acts correctly on already-converted Godot-space points/vertices — maps each axis-angle
+    /// factor to a DIFFERENT Godot axis (since C permutes axes) while preserving their order:
+    /// SL's X-rotation stays a Godot X-rotation (C leaves x̂ fixed); SL's Y-rotation becomes a
+    /// Godot Z-rotation with the angle NEGATED (C maps ŷ_sl to −ẑ_godot); SL's Z-rotation
+    /// becomes a Godot Y-rotation (C maps ẑ_sl to ŷ_godot). Composition order is preserved by
+    /// conjugation, so the correct result is: apply Godot-X(a) first, then Godot-Z(−b), then
+    /// Godot-Y(c) last — expressed as a Basis product (Godot's `*`, like GLM, applies the
+    /// RIGHTMOST factor first): <c>Ry(c) * Rz(-b) * Rx(a)</c>.
+    /// </summary>
+    internal static Basis SlEulerDegToGodotBasis(System.Numerics.Vector3 slRotDeg)
+    {
+        float a = Mathf.DegToRad(slRotDeg.X);
+        float b = Mathf.DegToRad(slRotDeg.Y);
+        float c = Mathf.DegToRad(slRotDeg.Z);
+        return new Basis(Vector3.Up, c) * new Basis(Vector3.Back, -b) * new Basis(Vector3.Right, a);
     }
 }
