@@ -170,12 +170,22 @@ public class AssetService
     private static MeshData? Decode(Guid meshId, byte[] bytes)
     {
         var asset = new AssetMesh(new UUID(meshId), bytes);
-        if (!FacetedMesh.TryDecodeFromAsset(new Primitive(), asset, DetailLevel.Highest, out var faceted) || faceted is null)
+        var prim = new Primitive { Scale = Vector3.One };
+        if (!FacetedMesh.TryDecodeFromAsset(prim, asset, DetailLevel.Highest, out var faceted) || faceted is null)
         {
             return null;
         }
 
+        // LibreMetaverse's own weight parser mis-reads vertices with exactly four influences
+        // (it keeps scanning for a 0xFF sentinel the SL writer only emits when count < 4 —
+        // verified against llmodel.cpp/llvolume.cpp), corrupting every following vertex's
+        // weights in that submesh. Re-decode each face's weights from the raw submesh binary
+        // with the viewer's exact reader semantics (see MeshSkinWeightDecoder). Faces are
+        // matched by Face.ID, which is the original index into the LOD's submesh array.
+        var lodArray = asset.MeshData["high_lod"] as LibreMetaverse.StructuredData.OSDArray;
+
         var submeshes = new List<MeshSubmesh>(faceted.Faces.Count);
+
         foreach (var face in faceted.Faces)
         {
             if (face.Vertices == null || face.Indices == null || face.Indices.Count == 0)
@@ -206,13 +216,31 @@ public class AssetService
             VertexBoneWeights[]? weights = null;
             if (face.Weights != null && face.Weights.Count == vertexCount)
             {
-                weights = new VertexBoneWeights[vertexCount];
-                for (int i = 0; i < vertexCount; i++)
+                // Prefer our viewer-exact re-decode of the raw Weights binary (see above);
+                // fall back to LibreMetaverse's parse only if the raw block isn't reachable.
+                byte[]? weightsBin = null;
+                if (lodArray != null && face.ID >= 0 && face.ID < lodArray.Count &&
+                    lodArray[face.ID] is LibreMetaverse.StructuredData.OSDMap subMap &&
+                    subMap.TryGetValue("Weights", out var wOsd) &&
+                    wOsd.Type == LibreMetaverse.StructuredData.OSDType.Binary)
                 {
-                    var w = face.Weights[i];
-                    weights[i] = new VertexBoneWeights(
-                        w.Joint0, w.Joint1, w.Joint2, w.Joint3,
-                        w.Weight0, w.Weight1, w.Weight2, w.Weight3);
+                    weightsBin = wOsd.AsBinary();
+                }
+
+                if (weightsBin != null)
+                {
+                    weights = MeshSkinWeightDecoder.Decode(weightsBin, vertexCount);
+                }
+                else
+                {
+                    weights = new VertexBoneWeights[vertexCount];
+                    for (int i = 0; i < vertexCount; i++)
+                    {
+                        var w = face.Weights[i];
+                        weights[i] = new VertexBoneWeights(
+                            w.Joint0, w.Joint1, w.Joint2, w.Joint3,
+                            w.Weight0, w.Weight1, w.Weight2, w.Weight3);
+                    }
                 }
             }
 
@@ -226,7 +254,9 @@ public class AssetService
 
     /// <summary>Converts LibreMetaverse skin data into the neutral <see cref="MeshSkin"/>, or
     /// null when the mesh is not rigged. LMV stores matrices as flat row-major float[16]
-    /// (row-vector convention), which maps directly onto <see cref="System.Numerics.Matrix4x4"/>.</summary>
+    /// (row-vector convention), which maps directly onto <see cref="System.Numerics.Matrix4x4"/>.
+    /// <c>AltInverseBindMatrices</c> carry the mesh's joint-position overrides (their translation
+    /// = the joint's overridden local position) — see the renderer's ApplyJointPositionOverrides.</summary>
     private static MeshSkin? ConvertSkin(MeshSkinData? skin)
     {
         if (skin?.JointNames == null || skin.JointNames.Length == 0) return null;
@@ -234,19 +264,29 @@ public class AssetService
         int jointCount = skin.JointNames.Length;
         var inverseBinds = new System.Numerics.Matrix4x4[jointCount];
         var ibm = skin.InverseBindMatrices;
+        var altIbm = skin.AltInverseBindMatrices;
+        System.Numerics.Matrix4x4[]? altInverseBinds = (altIbm != null && altIbm.Length > 0) ? new System.Numerics.Matrix4x4[jointCount] : null;
+
         for (int j = 0; j < jointCount; j++)
         {
             int o = j * 16;
             inverseBinds[j] = (ibm != null && ibm.Length >= o + 16)
                 ? ToMatrix(ibm, o)
                 : System.Numerics.Matrix4x4.Identity;
+            
+            if (altInverseBinds != null)
+            {
+                altInverseBinds[j] = (altIbm != null && altIbm.Length >= o + 16)
+                    ? ToMatrix(altIbm, o)
+                    : new System.Numerics.Matrix4x4(); // Uninitialized matrix (M44=0) so fallback logic triggers
+            }
         }
 
         var bindShape = (skin.BindShapeMatrix != null && skin.BindShapeMatrix.Length >= 16)
             ? ToMatrix(skin.BindShapeMatrix, 0)
             : System.Numerics.Matrix4x4.Identity;
 
-        return new MeshSkin(skin.JointNames, inverseBinds, bindShape, skin.PelvisOffset);
+        return new MeshSkin(skin.JointNames, inverseBinds, bindShape, skin.PelvisOffset, altInverseBinds);
     }
 
     private static System.Numerics.Matrix4x4 ToMatrix(float[] m, int o) => new(
