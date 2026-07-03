@@ -121,22 +121,35 @@ public sealed class WorldSimulation : IDisposable
         prim.AttachmentPoint = e.AttachmentPoint;
         _world.NotifyComponentUpdated(entity, prim);
 
-        // An attachment ROOT is an object whose parent is an avatar. (Child prims of a
-        // multi-prim attachment carry the same AttachmentPoint but parent to the root, not the
-        // avatar — they must NOT be treated as independent attachments.) If the avatar isn't
-        // here yet, LinkPendingAttachments wires this up when it arrives (it indexes children
-        // by parent local id, so the avatar's direct children = its attachment roots).
+        // An attachment is any object whose parent is EITHER an avatar directly, OR another
+        // object that is itself already an attachment (recursively). A detailed mesh product
+        // (e.g. a Bento mesh head) commonly ships as dozens of LINKED prims — one root plus many
+        // children — and every rigged child needs to be treated as its own independent
+        // attachment for rendering: a rigged mesh binds straight to the avatar skeleton via its
+        // own skin data, completely ignoring prim-hierarchy position, so there is no reason to
+        // exclude children the way a naive "only the root is an attachment" rule does. Excluding
+        // them (the previous rule here) silently dropped every child prim from rendering —
+        // for one real asset, 21 of 22 linked prims (the entire head shell, eyes, most of the
+        // teeth) never rendered, leaving only the root prim visible.
+        // If the parent isn't resolved yet (arrived out of order), PropagateAttachment (called
+        // from LinkPendingAttachments and from the two branches below) picks this up once
+        // whichever ancestor resolves the chain down to this entity.
         if (e.ParentLocalId != 0)
         {
             var parentEntity = _world.GetEntity(e.RegionHandle, e.ParentLocalId);
-            if (parentEntity?.GetComponent<AvatarComponent>() != null)
-                SetAttachment(entity, parentEntity.Id, e.AttachmentPoint);
+            var parentAvatar = parentEntity?.GetComponent<AvatarComponent>();
+            var parentAttachment = parentEntity?.GetComponent<AttachmentComponent>();
+            if (parentAvatar != null)
+                SetAttachment(entity, parentEntity!.Id, e.AttachmentPoint);
+            else if (parentAttachment != null)
+                SetAttachment(entity, parentAttachment.AvatarEntityId, parentAttachment.AttachmentPoint);
         }
     }
 
     private void SetAttachment(Entity entity, System.Guid avatarEntityId, byte attachmentPoint)
     {
         var attachment = entity.GetComponent<AttachmentComponent>();
+        bool changed = attachment == null || attachment.AvatarEntityId != avatarEntityId || attachment.AttachmentPoint != attachmentPoint;
         if (attachment == null)
         {
             attachment = new AttachmentComponent(avatarEntityId, attachmentPoint);
@@ -148,11 +161,36 @@ public sealed class WorldSimulation : IDisposable
             attachment.AttachmentPoint = attachmentPoint;
         }
         _world.NotifyComponentUpdated(entity, attachment);
+
+        // Cascade to any children already waiting on this entity — they may have streamed in
+        // before this entity itself became an attachment (out-of-order arrival is common: a
+        // linkset's prims and the avatar itself can each arrive in any order).
+        if (changed) PropagateAttachmentToChildren(entity.RegionHandle, entity.LocalId, avatarEntityId, attachmentPoint);
+    }
+
+    /// <summary>Pushes attachment status down to every child already indexed under
+    /// <paramref name="localId"/>, recursively — see the cascading-attachment comment in
+    /// <see cref="ApplyObjectUpdate"/> for why every level of a linked attachment needs this,
+    /// not just the immediate children of the avatar.</summary>
+    private void PropagateAttachmentToChildren(ulong region, uint localId, System.Guid avatarEntityId, byte attachmentPoint)
+    {
+        if (!_children.TryGetValue((region, localId), out var set) || set.Count == 0) return;
+
+        foreach (var childId in set.ToList())
+        {
+            var child = _world.GetEntity(childId);
+            if (child == null) continue;
+            var existing = child.GetComponent<AttachmentComponent>();
+            if (existing != null && existing.AvatarEntityId == avatarEntityId && existing.AttachmentPoint == attachmentPoint) continue;
+
+            SetAttachment(child, avatarEntityId, attachmentPoint);
+        }
     }
 
     /// <summary>Wires up attachment roots that streamed in before their wearer's avatar entity
     /// existed. The avatar's direct children (indexed by parent local id) are exactly its
-    /// attachment roots. Called when an avatar appears/updates.</summary>
+    /// attachment roots; each root's own children cascade via <see cref="SetAttachment"/>.
+    /// Called when an avatar appears/updates.</summary>
     private void LinkPendingAttachments(ulong region, uint avatarLocalId, System.Guid avatarEntityId)
     {
         if (!_children.TryGetValue((region, avatarLocalId), out var set) || set.Count == 0) return;
