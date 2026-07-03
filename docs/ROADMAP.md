@@ -105,6 +105,9 @@ Goal: Replace the placeholder capsule with a real Second Life avatar (Bento skel
 | M4-2 | Animation decode & playback | assets | | asset-pipeline | | M4-1 | Server-sent animations (`.anim` / `.bvh`) play correctly on the skeleton |
 | M4-3 | Appearance & Bakes-on-Mesh (BoM) | net/render | gemini | graphics-engineer | | M4-1 | Avatar shape params and baked skin textures are downloaded and applied |
 | M4-4 | Mesh Attachments ✅ | assets/render | claude | graphics-engineer | | M4-1 | Equipped objects (hair, clothes) are attached to the correct skeleton bones |
+| M4-5 | Vertex morphs (LLPolyMorphTarget) — engine-neutral pipeline ✅ | assets | claude | asset-pipeline | | M4-3 | `SLNG.Assets` exposes per-param effective weights + morphed body-part vertices (`pos += w·delta`, normals softened 0.65 + renormalized), verified against `llpolymorph.cpp` with unit tests |
+| M4-6 | Morphed-body rendering — rebuild on shape change | render | claude | graphics-engineer | | M4-5 | System body renders with the avatar's real proportions (male/muscle/breast sliders) matching Firestorm; morph rebuild off the main thread |
+| M4-7 | Base-mesh hiding under worn mesh (alpha/BoM correctness) | render | | graphics-engineer | | M4-3 | System head/body parts hidden exactly per worn alpha layers & BoM rules instead of the temporary hard-hide experiment |
 
 ## M5+ — Beyond the first shot
 
