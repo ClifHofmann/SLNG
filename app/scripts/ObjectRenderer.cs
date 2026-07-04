@@ -599,15 +599,29 @@ public partial class ObjectRenderer : Node3D
             var st = new SurfaceTool();
             st.Begin(Mesh.PrimitiveType.Triangles);
 
-            foreach (int index in sub.Indices)
+            // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front. Left as-is,
+            // every triangle here rasterizes as a backface — masked by CullMode.Disabled (needed
+            // just to make anything render at all), but Godot's double-sided handling flips the
+            // normal for perceived backfaces, inverting diffuse lighting on every SL-sourced mesh
+            // in the scene while leaving shadows (depth-only, no normals) unaffected — exactly the
+            // "shadow one way, shading the other way" bug reported and confirmed this session via
+            // a T-pose + a debug shader + a gizmo pointing at the actual light direction. Fix:
+            // reverse each triangle's own winding by swapping its last two indices, so each group
+            // of 3 becomes (i0, i2, i1) instead of (i0, i1, i2) — every other per-vertex step is
+            // unchanged, only the ORDER the 3 vertices of each triangle are submitted in.
+            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
             {
-                var p = sub.Positions[index];
-                var n = sub.Normals[index];
-                var uv = sub.UVs[index];
+                Span<int> tri = stackalloc[] { sub.Indices[t], sub.Indices[t + 2], sub.Indices[t + 1] };
+                foreach (int index in tri)
+                {
+                    var p = sub.Positions[index];
+                    var n = sub.Normals[index];
+                    var uv = sub.UVs[index];
 
-                st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-                st.SetUV(new Godot.Vector2(uv.X, uv.Y));
-                st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
+                    st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+                    st.SetUV(new Godot.Vector2(uv.X, uv.Y));
+                    st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
+                }
             }
 
             st.GenerateTangents();
