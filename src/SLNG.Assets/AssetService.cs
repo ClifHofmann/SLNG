@@ -547,7 +547,14 @@ public class AssetService
             }
 
             // Force Magick to decode into usable colorspaces before grabbing pixel values.
-            if (image.HasAlpha || image.ChannelCount == 4) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
+            // Some SL/OpenSim J2K assets report ChannelCount==5 (an extra component beyond RGBA
+            // that Magick.NET doesn't itself flag via HasAlpha) rather than a clean 4 — using
+            // "== 4" here missed those, forcing them down the no-alpha sRGB path. That collapses
+            // GetPixels() to 3 channels, and the fallback below then defaults alpha to 255
+            // (opaque) — so a genuinely blank/transparent placeholder (alpha≈0 everywhere, e.g. an
+            // unfilled applier slot or a bake for a channel with nothing worn) rendered as a solid
+            // opaque white patch instead of being invisible. ">= 4" catches both cases.
+            if (image.HasAlpha || image.ChannelCount >= 4) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
             else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
             byte[] rgba;
             using (var pixels = image.GetPixels())
