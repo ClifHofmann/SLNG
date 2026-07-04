@@ -34,6 +34,33 @@ public partial class AvatarRenderer : Node3D
         // meshes whose face materials must be re-resolved when a new server bake arrives.
         public HashSet<int> AttachmentBakeChannels { get; } = new();
         public List<(MeshInstance3D Mi, int[] FaceIndices, FaceTexture[]? Faces, FaceTexture DefaultFace)> BomAttachments { get; } = new();
+        // Per-bone OWN scale (base + shape distortion), keyed by bone name — deliberately NOT
+        // multiplied by any ancestor's scale. Verified against LLXformMatrix::update()/
+        // LLMatrix4::initAll (indra/llmath/xform.cpp, m4math.cpp): a real SL joint's world matrix
+        // uses ONLY its own local scale; Godot's Skeleton3D compounds scale down the hierarchy by
+        // default, which is wrong for SL avatars (measured: a rigged sleeve landed 1.2-2.7 m off
+        // its own joint and rendered 4-6x too large from this alone). ApplyShape keeps every
+        // bone's Rest as a PURE rotation (no scale) so Godot's native pose composition only
+        // inherits position/rotation, matching SL; this map supplies the scale each bone's own
+        // skinning bind needs to inject back in afterward (see SlJointComposer).
+        public Dictionary<string, System.Numerics.Vector3> BoneOwnScale { get; } = new();
+        // Per-avatar system-body-part Skin cache (bone binds + boneName->slot map), keyed by part
+        // name. Used to be a single static dictionary shared across every avatar because the bind
+        // matrices only depended on the neutral skeleton rest — true under the OLD (Godot-native
+        // scale-compounding) design. Now that each bind injects THIS avatar's own BoneOwnScale
+        // (see AddSkinSlot), sharing across avatars would bake one avatar's scale into every other
+        // avatar's mesh, so the cache moved here (per-AvatarVisual) and is invalidated/rebuilt in
+        // RebuildBodyMorphs whenever shape changes.
+        public Dictionary<string, (Skin Skin, Dictionary<string, int> Slots)> PartSkins { get; } = new();
+        // Worn RIGGED mesh attachments currently loaded on this avatar (append-only, like
+        // BomAttachments — stale entries whose Mi was freed on detach/replace are simply skipped
+        // via IsInstanceValid at read time rather than pruned). Needed to rebuild each attachment's
+        // Skin (see BuildRiggedMeshInstance's InjectOwnScale step) whenever this avatar's shape
+        // changes: a mesh that finished loading BEFORE shape/VisualParams first arrived was bound
+        // with an empty BoneOwnScale (no scale injected at all), and — unlike system body parts,
+        // which are vertex-morphed AND re-skinned every shape update via RebuildBodyMorphs — a worn
+        // mesh's own vertices never change with shape, so nothing else would ever revisit its Skin.
+        public List<(MeshInstance3D Mi, MeshData MeshData, Guid MeshId)> RiggedAttachments { get; } = new();
 
         public AvatarVisual()
         {
@@ -73,7 +100,7 @@ public partial class AvatarRenderer : Node3D
     // DLL timestamp. If this line is missing or shows an old tag, the client is NOT running
     // the code you think it is; close it fully (not just the window) and re-run
     // tools/run-client.ps1 before drawing any conclusion from the rest of the log.
-    private const string BuildMarker = "2026-07-03-session7d-viewer-exact-weight-decoder";
+    private const string BuildMarker = "2026-07-04-session8e-zoom-anchor-fix";
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache)
     {
@@ -152,6 +179,17 @@ public partial class AvatarRenderer : Node3D
             visual.Root.AddChild(skeleton);
             visual.Skeleton = skeleton;
 
+            // Establish SL-accurate Rest + BoneOwnScale (see ApplyShape's doc comment) from the
+            // very first frame, using each bone's BASE scale only (zero distortion — the real
+            // appearance packet may arrive later, or for some avatars never). Without this, an
+            // avatar whose VisualParams never arrives would keep SkeletonBuilder.Build's raw
+            // placeholder rest forever, which reintroduces the pre-M4-8 bug via each bone's own
+            // BASE scale alone (e.g. collision volumes' bounding-box scale) compounding down the
+            // chain instead of applying SL's one-level-only rule — measured on live avatars whose
+            // appearance never arrived: a 0.25-0.57 m skinning gap that never healed on its own.
+            ApplyShape(visual, skeleton, _avatarSkeleton,
+                new Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)>());
+
             // The LibreMetaverse NuGet package deploys .llm character files to the
             // assembly output directory (linden/character/*.llm). Use the assembly
             // location rather than AppContext.BaseDirectory — in the Godot editor the
@@ -168,7 +206,7 @@ public partial class AvatarRenderer : Node3D
                 {
                     // Base mesh here (no weights yet); morphs are applied by the UpdateVisual call
                     // at the end of CreateVisual once VisualParams are present (RebuildBodyMorphs).
-                    var mi = BuildSkinnedMeshInstance(part, skeleton, color, weights: null);
+                    var mi = BuildSkinnedMeshInstance(visual, part, skeleton, color, weights: null);
                     if (mi == null) continue;
                     mi.Name = part.Name + "_Mesh";
                     skeleton.AddChild(mi);
@@ -282,12 +320,18 @@ public partial class AvatarRenderer : Node3D
                 var weights = AvatarShapeService.ComputeEffectiveWeights(avatar.VisualParams, charDir);
 
                 var distortions = AvatarShapeService.ComputeDistortions(avatar.VisualParams, charDir);
-                ApplyShape(visual.Skeleton, _avatarSkeleton, distortions, visual.JointPosOverrides);
+                ApplyShape(visual, visual.Skeleton, _avatarSkeleton, distortions, visual.JointPosOverrides);
                 visual.Skeleton.ResetBonePoses();
+
+                LogJointParityCheck(visual, visual.Skeleton, _avatarSkeleton, distortions);
 
                 // Deform the system body into this avatar's real proportions (male/muscle/breast/…
                 // sliders are vertex morphs, not bone scales — see AvatarMorphService).
                 RebuildBodyMorphs(visual, weights);
+
+                // Worn rigged meshes (clothing/mesh body/head) don't re-morph, but their skin
+                // binds DO need this avatar's fresh BoneOwnScale — see RebuildRiggedAttachmentSkins.
+                RebuildRiggedAttachmentSkins(visual);
             }
         }
 
@@ -349,10 +393,33 @@ public partial class AvatarRenderer : Node3D
         }
     }
 
-    private void ApplyShape(Skeleton3D skeleton, AvatarSkeleton avatarSkeleton,
+    /// <summary>Rebuilds every bone's Godot Rest from this avatar's shape, SL-accurately: verified
+    /// against LLXformMatrix::update()/LLMatrix4::initAll (indra/llmath/xform.cpp, m4math.cpp),
+    /// scale does NOT inherit down the joint chain in the real viewer — a joint's own world matrix
+    /// uses ONLY its own local scale; a parent's scale offsets only how far the child's position
+    /// sits (one level), never the child's own scale. Godot's Skeleton3D, like any standard
+    /// hierarchical-transform system, compounds scale (and any shear from rotation mixed with
+    /// non-uniform scale) down the whole chain by default — measured on a real asset as a rigged
+    /// sleeve landing 1.2-2.7 m off its own dominant joint and rendering 4-6x too large, from
+    /// shape data that rendered correctly in the real viewer.
+    ///
+    /// Fix: keep every bone's Rest.Basis a PURE rotation (no scale at all) so Godot's native pose
+    /// composition only ever inherits position/rotation — exactly SL's rule — and separately bake
+    /// each bone's own scale into <see cref="AvatarVisual.BoneOwnScale"/> plus (pre-multiplied, SL
+    /// rule: mWorldPosition.scaleVec(parentScale)) into each CHILD's rest position, since Godot's
+    /// composition has no other way to reproduce that one-level offset once Rest carries no
+    /// scale. Skinning binds must inject BoneOwnScale back in afterward — see
+    /// ComputeSlAccurateGlobalRest / BuildRiggedMeshInstance / BuildPartResources.</summary>
+    private void ApplyShape(AvatarVisual visual, Skeleton3D skeleton, AvatarSkeleton avatarSkeleton,
         Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)> distortions,
         Dictionary<string, System.Numerics.Vector3>? posOverrides = null)
     {
+        visual.BoneOwnScale.Clear();
+
+        // Bone index order matches AvatarSkeleton.Bones order (SkeletonBuilder.Build adds bones
+        // in that exact sequence), which is guaranteed parent-before-child (XML depth-first parse,
+        // a bone element is added before its children are parsed) — so by the time we process a
+        // child, BoneOwnScale already has its parent's entry.
         for (int idx = 0; idx < skeleton.GetBoneCount(); idx++)
         {
             string name = skeleton.GetBoneName(idx);
@@ -369,23 +436,101 @@ public partial class AvatarRenderer : Node3D
             }
 
             // Joint-position override from a worn rigged mesh wins over base + shape
-            // distortion (viewer: LLJoint::updatePos — active override replaces the local
-            // position outright; rotation and scale are untouched).
+            // distortion (viewer: LLJoint::setPosition/updatePos — active override replaces the
+            // local position outright; rotation and scale are untouched). Verified this is NOT
+            // exempt from the parent-scale step below — LLJoint::setPosition stores the override
+            // as the same mPosition field LLXformMatrix::update() later scales by the parent.
             if (posOverrides != null && posOverrides.TryGetValue(name, out var ov))
                 slPos = ov;
+
+            // SL rule: this bone's position is scaled by its PARENT's OWN scale before being
+            // placed into the parent's frame (exactly one level — never compounded further).
+            if (bone.ParentName != null && visual.BoneOwnScale.TryGetValue(bone.ParentName, out var parentScale))
+                slPos *= parentScale;
+
+            visual.BoneOwnScale[name] = slScale;
 
             var godotPos = new Godot.Vector3(slPos.X, slPos.Z, -slPos.Y);
 
             // Same SL→Godot rotation-order conversion as SkeletonBuilder.Build — see
             // SlEulerDegToGodotBasis's doc comment for the full derivation. Must stay in sync;
             // this rebuilds EVERY bone's rest on each shape update, so any divergence between
-            // the two would silently undo one or the other.
+            // the two would silently undo one or the other. Deliberately NO .Scaled(...) here —
+            // see this method's own doc comment.
             var basis = SkeletonBuilder.SlEulerDegToGodotBasis(bone.Rotation);
-            basis = basis.Scaled(new Godot.Vector3(slScale.X, slScale.Z, slScale.Y));
 
             var rest = new Transform3D(basis, godotPos);
             skeleton.SetBoneRest(idx, rest);
         }
+    }
+
+    /// <summary>The world Rest transform of <paramref name="boneIdx"/> WITH its own SL-accurate
+    /// scale injected — Godot's native <see cref="ComputeGlobalRestTransform"/> composes only
+    /// position/rotation (see ApplyShape's doc comment for why); this adds back exactly the one
+    /// thing SL's own joint would have in its world matrix: this bone's OWN scale, applied to its
+    /// own basis, never compounded with any ancestor's.</summary>
+    private static Transform3D ComputeSlAccurateGlobalRest(Skeleton3D skeleton, int boneIdx, AvatarVisual visual)
+    {
+        var t = ComputeGlobalRestTransform(skeleton, boneIdx);
+        if (visual.BoneOwnScale.TryGetValue(skeleton.GetBoneName(boneIdx), out var s))
+            t.Basis = t.Basis.Scaled(new Godot.Vector3(s.X, s.Z, s.Y));
+        return t;
+    }
+
+    /// <summary>Pre-multiplies a scale-only transform into <paramref name="bind"/> so that Godot's
+    /// own per-frame skinning (which always computes <c>livePose * bind</c>, using a livePose that
+    /// — per ApplyShape's design — carries only rotation/position, never a bone's own scale) ends
+    /// up computing exactly <c>livePose * Diag(ownScale) * bind</c>: the one thing SL's joint world
+    /// matrix has that ours doesn't. Pose-independent (verified algebraically: for W = the
+    /// no-scale live pose and W' = W with ownScale injected into its own basis,
+    /// W.AffineInverse()*W' reduces to a pure Diag(ownScale) transform — the shared rotation and
+    /// position cancel out), so this only needs to run once, not every frame.</summary>
+    private static Transform3D InjectOwnScale(Transform3D bind, System.Numerics.Vector3 ownScaleSl)
+    {
+        var scaleXform = new Transform3D(Basis.Identity.Scaled(new Godot.Vector3(ownScaleSl.X, ownScaleSl.Z, ownScaleSl.Y)), Vector3.Zero);
+        return scaleXform * bind;
+    }
+
+    /// <summary>TEMPORARY DIAGNOSTIC (M4-8 acceptance check): compares Godot's own composed bone
+    /// poses — <see cref="Skeleton3D.GetBoneGlobalPose"/>, which after ApplyShape + ResetBonePoses
+    /// reflects ONLY the Rest tree this renderer built — against <see cref="SlJointComposer"/>'s
+    /// independent, engine-neutral reference implementation of the exact same SL rule. The two are
+    /// separate code paths computing the same thing; any divergence means ApplyShape's Godot-space
+    /// position pre-scaling or axis conversion has a bug the engine-neutral unit tests can't see
+    /// (they never touch Skeleton3D). Logs ONLY bones that exceed the M4-8 acceptance threshold
+    /// (1 cm position / 1% scale) — silence means every bone is within tolerance.</summary>
+    private void LogJointParityCheck(
+        AvatarVisual visual, Skeleton3D skeleton, AvatarSkeleton avatarSkeleton,
+        Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)> distortions)
+    {
+        var slPoses = SlJointComposer.ComputePoses(avatarSkeleton, distortions, visual.JointPosOverrides);
+        int checkedCount = 0, deviatedCount = 0;
+
+        for (int idx = 0; idx < skeleton.GetBoneCount(); idx++)
+        {
+            string name = skeleton.GetBoneName(idx);
+            if (!slPoses.TryGetValue(name, out var slPose)) continue;
+            checkedCount++;
+
+            var godotPose = skeleton.GetBoneGlobalPose(idx);
+            var slPosGodot = new Godot.Vector3(slPose.WorldPosition.X, slPose.WorldPosition.Z, -slPose.WorldPosition.Y);
+            float posGapM = (godotPose.Origin - slPosGodot).Length();
+
+            var ownScale = visual.BoneOwnScale.TryGetValue(name, out var s) ? s : System.Numerics.Vector3.One;
+            float maxAbsGap = System.MathF.Max(System.MathF.Abs(ownScale.X - slPose.OwnScale.X),
+                System.MathF.Max(System.MathF.Abs(ownScale.Y - slPose.OwnScale.Y), System.MathF.Abs(ownScale.Z - slPose.OwnScale.Z)));
+            float maxSlComponent = System.MathF.Max(0.0001f,
+                System.MathF.Max(slPose.OwnScale.X, System.MathF.Max(slPose.OwnScale.Y, slPose.OwnScale.Z)));
+            float scaleGapPct = 100f * maxAbsGap / maxSlComponent;
+
+            if (posGapM >= 0.01f || scaleGapPct >= 1f)
+            {
+                deviatedCount++;
+                GD.PrintErr($"[DBG-PARITY] {name}: posGap={posGapM:0.####}m godotPos={godotPose.Origin} slPos={slPosGodot} godotScale={ownScale} slScale={slPose.OwnScale} scaleGap={scaleGapPct:0.##}%");
+            }
+        }
+
+        GD.Print($"[DBG-PARITY] checked {checkedCount} bones, {deviatedCount} deviated beyond 1cm/1%");
     }
 
     private async System.Threading.Tasks.Task LoadAndApplyTextureAsync(AvatarVisual visual, int bakeIndex, Guid textureId)
@@ -501,9 +646,15 @@ public partial class AvatarRenderer : Node3D
         var prim = entity.GetComponent<PrimitiveComponent>();
         var transform = entity.GetComponent<TransformComponent>();
 
+        // HUD points (31–38) are screen-space overlays with no world bone — SLNG doesn't render
+        // HUDs yet (camera-locked 2D overlay), so skip these entirely rather than let them fall
+        // through to a default body bone below, which would render the HUD mesh as a small
+        // object floating in 3D world space on the avatar instead of on screen.
+        if (AttachmentPointMap.IsHudPoint(attachment.AttachmentPoint)) return;
+
         // The attachment-point bone only matters for STATIC attachments. A rigged mesh
         // (mesh body, mesh clothing) carries its own skin weights and ignores the point — so
-        // never drop a mesh attachment just because its point is a HUD/unmapped slot.
+        // never drop a mesh attachment just because its point is an unmapped BODY slot.
         var boneName = AttachmentPointMap.GetBoneName(attachment.AttachmentPoint);
         bool isMeshAttachment = prim is { IsMesh: true } && prim.MeshId != Guid.Empty;
         if (boneName == null && !isMeshAttachment) return;
@@ -626,7 +777,7 @@ public partial class AvatarRenderer : Node3D
                 // Apply its joint-position overrides to the skeleton BEFORE binding, like the
                 // viewer does, so invBind·jointWorld cancels at the intended pose.
                 ApplyJointPositionOverrides(avatarVisual, skeleton, meshData.Skin, meshId);
-                var mi = BuildRiggedMeshInstance(meshData, skeleton, meshId, out var faceIndices);
+                var mi = BuildRiggedMeshInstance(meshData, skeleton, meshId, avatarVisual, out var faceIndices);
                 if (mi == null) return;
                 mi.Name = "RiggedMesh";
                 
@@ -635,11 +786,12 @@ public partial class AvatarRenderer : Node3D
                 
                 skeleton.AddChild(mi);
                 _riggedAttachments[entityId] = mi;
+                avatarVisual.RiggedAttachments.Add((mi, meshData, meshId));
 
                 // Skin is already assigned on the instance; the skeleton path must be set after
                 // the node is in the tree so Godot can resolve and drive the skinning.
                 mi.Skeleton = mi.GetPathTo(skeleton);
-                RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices, faces, defaultFace);
+                RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices, faces, defaultFace, meshId);
                 _ = ApplyFaceMaterialsAsync(mi, faceIndices, faces, defaultFace, avatarVisual);
             }).CallDeferred();
             return;
@@ -675,7 +827,7 @@ public partial class AvatarRenderer : Node3D
             mi.Position = new Godot.Vector3(slPos.X, slPos.Z, -slPos.Y);
             mi.Quaternion = new Godot.Quaternion(slRot.X, slRot.Z, -slRot.Y, slRot.W);
             boneAttach.AddChild(mi);
-            RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices.ToArray(), faces, defaultFace);
+            RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices.ToArray(), faces, defaultFace, meshId);
             _ = ApplyFaceMaterialsAsync(mi, faceIndices.ToArray(), faces, defaultFace, avatarVisual);
         }).CallDeferred();
     }
@@ -725,6 +877,16 @@ public partial class AvatarRenderer : Node3D
             TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
         };
 
+        // SL's per-face colour alpha (LLTextureEntry::getColor()) is a genuine transparency/blend
+        // factor, independent of whatever alpha channel the texture image itself carries — many
+        // worn items set a face's tint alpha to 0 specifically to hide it while keeping the object
+        // structurally attached/rigged. Godot ignores AlbedoColor.A entirely while Transparency
+        // stays Disabled (its default), so such a face rendered fully opaque without this — a
+        // "makeup"/decoration mesh meant to be invisible showed up as an extra visible patch.
+        bool tintTranslucent = tint.A < 1f;
+        if (tintTranslucent)
+            material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+
         // Bakes-on-Mesh: a face carrying one of the IMG_USE_BAKED_* magic ids wants the AVATAR's
         // server-baked texture for that channel, not the magic id itself (which is just a red UV
         // placeholder asset). Viewer: LLViewerObject::getBakedTextureForMagicId. If the bake
@@ -736,6 +898,24 @@ public partial class AvatarRenderer : Node3D
 
         if (texId == Guid.Empty || _assetService == null)
             return material;
+
+        // Always enable AlphaScissor for texture-carried alpha (e.g. an alpha-punched skin bake,
+        // or a genuinely blank/all-transparent placeholder on an unfilled applier slot) — matching
+        // LoadAndApplyTextureAsync's own established rule: Image.DetectAlpha() is unreliable
+        // (confirmed here too: an all-zero-alpha 32x32 placeholder texture, with correct alpha=0
+        // data reaching this point, still rendered fully OPAQUE white instead of being cut out
+        // when this was gated behind DetectAlpha()). Applied here — BEFORE the cache check —
+        // rather than only inside the fresh-decode branch below: two faces sharing the same
+        // texture id (e.g. LOD-duplicate meshes) previously got this right only for whichever one
+        // decoded first, since the cache-hit path returned a material with no Transparency set at
+        // all, rendering that duplicate fully opaque. Only skip it when tint alpha is ALREADY
+        // driving real (possibly fractional/zero) blending — AlphaScissor would otherwise stomp a
+        // deliberately-invisible face back to a binary 0/1 cutout.
+        if (!tintTranslucent)
+        {
+            material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+            material.AlphaScissorThreshold = 0.5f;
+        }
 
         var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
         ImageTexture? cached = _gpuCache?.Get(texId) as ImageTexture;
@@ -750,14 +930,7 @@ public partial class AvatarRenderer : Node3D
             image.GenerateMipmaps();
             var tex = ImageTexture.CreateFromImage(image);
             if (tex != null)
-            {
                 _gpuCache?.Put(texId, tex, (long)textureData.Width * textureData.Height * 4);
-                if (image.DetectAlpha() != Image.AlphaMode.None)
-                {
-                    material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-                    material.AlphaScissorThreshold = 0.5f;
-                }
-            }
             tcs.SetResult(tex);
         }).CallDeferred();
 
@@ -770,7 +943,7 @@ public partial class AvatarRenderer : Node3D
     /// body parts whose bake channel the mesh consumes — the viewer's
     /// LLVOAvatar::updateMeshVisibility. Main thread only (mutates node visibility).</summary>
     private void RegisterBomAndUpdateVisibility(
-        AvatarVisual avatarVisual, MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace)
+        AvatarVisual avatarVisual, MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace, Guid meshId = default)
     {
         bool usesBom = false;
         void Scan(FaceTexture f)
@@ -861,7 +1034,7 @@ public partial class AvatarRenderer : Node3D
             GD.Print($"[JointOverride] mesh {meshId}: pelvis offset {skinData.PelvisOffset:0.###} m (not yet applied)");
     }
 
-    private MeshInstance3D? BuildRiggedMeshInstance(MeshData meshData, Skeleton3D skeleton, Guid meshId, out int[] faceIndices)
+    private MeshInstance3D? BuildRiggedMeshInstance(MeshData meshData, Skeleton3D skeleton, Guid meshId, AvatarVisual visual, out int[] faceIndices)
     {
         faceIndices = System.Array.Empty<int>();
         var skinData = meshData.Skin!;
@@ -932,6 +1105,17 @@ public partial class AvatarRenderer : Node3D
             Transform3D bind = ibm == System.Numerics.Matrix4x4.Identity
                 ? ComputeGlobalRestTransform(skeleton, bone).AffineInverse()
                 : RowMatrixToTransform(SlToGodotInv * ibm * SlToGodot);
+
+            // ApplyShape keeps every Rest a pure rotation (no scale — see its doc comment), so
+            // Godot's own live pose (used internally every frame for skinning: pose * bind) never
+            // carries any bone's own scale either. Inject it into the BIND instead — algebraically
+            // equivalent and pose-independent: for W = livePose (no scale) and W' = W with this
+            // bone's own scale injected into its basis, W.AffineInverse()*W' reduces to a pure
+            // Diag(ownScale) transform (the rotation/position cancel out), so pre-multiplying it
+            // once here reproduces exactly SL's invBind·jointWorld(with own scale) every frame
+            // without needing to recompute anything per-pose.
+            if (visual.BoneOwnScale.TryGetValue(skeleton.GetBoneName(bone), out var ownScale))
+                bind = InjectOwnScale(bind, ownScale);
 
             slotForJoint[j] = skin.GetBindCount();
             skin.AddBind(bone, bind);
@@ -1054,16 +1238,12 @@ public partial class AvatarRenderer : Node3D
     // Skinned-mesh helpers
     // -------------------------------------------------------------------------
 
-    // The base body geometry and its skin binds are identical for every avatar: the same
-    // .llm files and the same skeleton rest pose. Build the (mesh, skin) once per body part
-    // and share the resources across all avatars. Without this, every avatar that appears on
-    // a busy region re-parses the meshes and rebuilds the skin on the main thread — which is
-    // what froze the client on OSGrid. Accessed only from the main thread (CallDeferred).
-    // The Skin (bone binds) is shape-independent — it depends only on the neutral skeleton rest,
-    // which is identical for every avatar — so cache it (plus its boneName→slot map) per part name
-    // and share it. The MESH geometry, by contrast, bakes in the avatar's vertex morphs (male,
-    // muscle, breast, … sliders) and so is rebuilt per avatar / on every shape change.
-    private static readonly Dictionary<string, (Skin Skin, Dictionary<string, int> Slots)> _partSkinCache = new();
+    // The base body MESH geometry (positions/normals/UVs before morphing) is identical for every
+    // avatar — the same .llm files — but the skin's BIND MATRICES are not: each bind now injects
+    // this avatar's own BoneOwnScale (see AddSkinSlot), so binds must be built per avatar (cached
+    // on AvatarVisual.PartSkins, not shared statically — see that field's doc comment). The MESH
+    // geometry itself bakes in the avatar's vertex morphs (male, muscle, breast, … sliders) and so
+    // is rebuilt per avatar / on every shape change regardless (RebuildBodyMorphs).
 
     /// <summary>
     /// Returns a <see cref="MeshInstance3D"/> for one SL body-part mesh, with correct per-vertex
@@ -1073,11 +1253,11 @@ public partial class AvatarRenderer : Node3D
     /// built-in skinning to take effect.
     /// </summary>
     private MeshInstance3D? BuildSkinnedMeshInstance(
-        AvatarBodyPartMesh part, Skeleton3D skeleton, Color baseColor, IReadOnlyDictionary<int, float>? weights)
+        AvatarVisual visual, AvatarBodyPartMesh part, Skeleton3D skeleton, Color baseColor, IReadOnlyDictionary<int, float>? weights)
     {
         if (part.Indices.Length == 0) return null;
 
-        var (skin, slots) = GetPartSkin(part, skeleton);
+        var (skin, slots) = GetPartSkin(visual, part, skeleton);
 
         // Vertex morphs (LLPolyMorphTarget) deform the base mesh into this avatar's real shape.
         // With no weights yet, render the neutral base mesh.
@@ -1097,22 +1277,25 @@ public partial class AvatarRenderer : Node3D
         };
     }
 
-    /// <summary>Builds (once, then cached) the shared skin resource + boneName→slot map for one
-    /// body part. Shape-independent: safe to share across avatars and shape changes.</summary>
-    private static (Skin Skin, Dictionary<string, int> Slots) GetPartSkin(AvatarBodyPartMesh part, Skeleton3D skeleton)
+    /// <summary>Builds (once, then cached on <paramref name="visual"/>) this avatar's skin resource
+    /// + boneName→slot map for one body part. NOT shape-independent: each bind bakes in this
+    /// avatar's current <see cref="AvatarVisual.BoneOwnScale"/>, so callers must evict the cache
+    /// entry (<c>visual.PartSkins.Remove(part.Name)</c>) before calling again after a shape change —
+    /// see RebuildBodyMorphs.</summary>
+    private static (Skin Skin, Dictionary<string, int> Slots) GetPartSkin(AvatarVisual visual, AvatarBodyPartMesh part, Skeleton3D skeleton)
     {
-        if (_partSkinCache.TryGetValue(part.Name, out var cached)) return cached;
+        if (visual.PartSkins.TryGetValue(part.Name, out var cached)) return cached;
 
         var skin = new Skin();
         var slots = new Dictionary<string, int>(); // boneName → slot index in Skin
         for (int vi = 0; vi < part.Positions.Length; vi++)
         {
-            AddSkinSlot(part.Bone1Names[vi], skin, skeleton, slots);
-            AddSkinSlot(part.Bone2Names[vi], skin, skeleton, slots);
+            AddSkinSlot(part.Bone1Names[vi], skin, skeleton, slots, visual);
+            AddSkinSlot(part.Bone2Names[vi], skin, skeleton, slots, visual);
         }
 
         var result = (skin, slots);
-        _partSkinCache[part.Name] = result;
+        visual.PartSkins[part.Name] = result;
         return result;
     }
 
@@ -1175,74 +1358,66 @@ public partial class AvatarRenderer : Node3D
         {
             if (part.Morphs.Count == 0) continue;                       // nothing to morph
             if (!visual.Parts.TryGetValue(name, out var mi) || !IsInstanceValid(mi)) continue;
-            if (!_partSkinCache.TryGetValue(name, out var sk)) continue;
+            if (visual.Skeleton == null) continue;
+
+            // ApplyShape (called just before this, for the same shape update) just repopulated
+            // BoneOwnScale — evict this part's cached skin so GetPartSkin rebuilds its binds with
+            // the new scale instead of reusing stale ones from the previous shape.
+            visual.PartSkins.Remove(name);
+            var (skin, slots) = GetPartSkin(visual, part, visual.Skeleton);
+            mi.Skin = skin;
 
             var (positions, normals) = AvatarMorphService.Apply(part, weights);
-            mi.Mesh = BuildPartMesh(part, positions, normals, sk.Slots);
+            mi.Mesh = BuildPartMesh(part, positions, normals, slots);
+        }
+    }
 
-            // TEMPORARY DIAGNOSTIC: rank this part's morphs by actual contribution to THIS avatar
-            // (|weight| × max per-vertex delta magnitude) so an over-deforming or wrongly-applied
-            // morph (e.g. a clothing displacement firing on a nude body) is visible by name.
-            if (name is "upper_body" or "lower_body")
-            {
-                var ranked = new List<(string Name, int ParamId, float Weight, float MaxDelta)>();
-                foreach (var m in part.Morphs)
-                {
-                    if (!weights.TryGetValue(m.ParamId, out float w) || w == 0f) continue;
-                    float maxD = 0f;
-                    for (int k = 0; k < m.PositionDeltas.Length; k++)
-                    {
-                        float d = m.PositionDeltas[k].Length();
-                        if (d > maxD) maxD = d;
-                    }
-                    ranked.Add((m.Name, m.ParamId, w, maxD));
-                }
-                ranked.Sort((a, b) => (System.Math.Abs(b.Weight) * b.MaxDelta).CompareTo(System.Math.Abs(a.Weight) * a.MaxDelta));
-                GD.Print($"[DBG-MORPH] {name}: {ranked.Count} active morphs");
-                foreach (var r in ranked.GetRange(0, System.Math.Min(12, ranked.Count)))
-                    GD.Print($"[DBG-MORPH]   {r.Name} (id={r.ParamId}) weight={r.Weight:0.###} maxDelta={r.MaxDelta:0.####}m contrib={System.Math.Abs(r.Weight) * r.MaxDelta:0.####}");
-            }
-
-            // TEMPORARY DIAGNOSTIC: dump the SKELETAL proportion params' effective weights (arm/leg
-            // length are bone scales, not morphs). "Arm Length" (693) defaults to 0.6 = long arms;
-            // if we're stuck at the default instead of the avatar's transmitted value, arms render
-            // too long. Printed once (on upper_body pass) so it isn't repeated per part.
-            if (name == "upper_body")
-            {
-                (int Id, string N)[] proportionParams =
-                {
-                    (33, "Height"), (36, "Shoulders"), (37, "Hip Width"), (38, "Torso Length"),
-                    (842, "Hip Length"), (692, "Leg Length"), (693, "Arm Length"), (756, "Neck Length")
-                };
-                foreach (var (id, pn) in proportionParams)
-                {
-                    string wStr = weights.TryGetValue(id, out float pw) ? pw.ToString("0.###") : "ABSENT";
-                    string def = LibreMetaverse.VisualParams.Params.TryGetValue(id, out var vp) ? vp.DefaultValue.ToString("0.###") : "?";
-                    GD.Print($"[DBG-PROP] {pn} (id={id}) effWeight={wStr} default={def}");
-                }
-            }
+    /// <summary>Rebuilds the Skin (bind matrices only — a worn mesh's own vertices never change
+    /// with shape) of every currently-loaded rigged attachment on <paramref name="visual"/>, so
+    /// each bind picks up the avatar's just-recomputed <see cref="AvatarVisual.BoneOwnScale"/>.
+    /// Called right after ApplyShape, alongside RebuildBodyMorphs, whenever shape changes — see
+    /// <see cref="AvatarVisual.RiggedAttachments"/>'s doc comment for why this is needed: a mesh
+    /// that loaded before shape/VisualParams first arrived was bound with no scale injected at
+    /// all (an empty BoneOwnScale at that moment), and nothing else ever revisits it afterward.</summary>
+    private void RebuildRiggedAttachmentSkins(AvatarVisual visual)
+    {
+        if (visual.Skeleton == null) return;
+        foreach (var (mi, meshData, meshId) in visual.RiggedAttachments)
+        {
+            if (!IsInstanceValid(mi) || meshData.Skin == null) continue;
+            var rebuilt = BuildRiggedMeshInstance(meshData, visual.Skeleton, meshId, visual, out _);
+            if (rebuilt != null) mi.Skin = rebuilt.Skin;
         }
     }
 
     /// <summary>
     /// Adds a named bind to <paramref name="skin"/> for <paramref name="boneName"/> if not
-    /// already present. The bind transform is the INVERSE of the bone's global rest transform
-    /// so that the avatar mesh appears unchanged when the skeleton is in T-pose.
+    /// already present. The bind transform is the inverse of the bone's global rest transform,
+    /// WITH <paramref name="visual"/>'s own <see cref="AvatarVisual.BoneOwnScale"/> for that bone
+    /// injected back in (see <see cref="InjectOwnScale"/>'s doc comment — same reasoning as
+    /// BuildRiggedMeshInstance's bind computation), so the avatar mesh appears unchanged, at this
+    /// avatar's own shape, when the skeleton is in T-pose.
     /// </summary>
     private static void AddSkinSlot(
-        string? boneName, Skin skin, Skeleton3D skeleton, Dictionary<string, int> skinSlots)
+        string? boneName, Skin skin, Skeleton3D skeleton, Dictionary<string, int> skinSlots, AvatarVisual visual)
     {
         if (boneName == null || skinSlots.ContainsKey(boneName)) return;
 
         int boneIdx = skeleton.FindBone(boneName);
         if (boneIdx < 0) return;
 
-        var globalRest = ComputeGlobalRestTransform(skeleton, boneIdx);
+        // AffineInverse (not Inverse): Inverse() assumes an orthonormal basis and only transposes
+        // it, which is wrong once a bone's own scale is injected below (same reasoning as
+        // BuildRiggedMeshInstance's identical bind computation).
+        Transform3D bind = ComputeGlobalRestTransform(skeleton, boneIdx).AffineInverse();
+        if (visual.BoneOwnScale.TryGetValue(boneName, out var ownScale))
+            bind = InjectOwnScale(bind, ownScale);
+
         // Bind by explicit skeleton bone index rather than by name. Named binds rely on
         // a name-resolution pass that has proven unreliable here; AddBind ties the skin
         // slot directly to the bone that drives it. The slot index is the bind's position.
         int slot = skin.GetBindCount();
-        skin.AddBind(boneIdx, globalRest.Inverse());
+        skin.AddBind(boneIdx, bind);
         skinSlots[boneName] = slot;
     }
 

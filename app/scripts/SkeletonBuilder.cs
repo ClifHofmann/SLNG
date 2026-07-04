@@ -42,16 +42,18 @@ public static class SkeletonBuilder
         return skeleton;
     }
 
-    /// <summary>Converts one SL bone definition's own (position, rotation, scale) into a Godot
-    /// local <see cref="Transform3D"/> — no hierarchy involved, just this bone's own numbers.
-    /// Shared by <see cref="Build"/> (initial rest pose) and
-    /// <c>AvatarRenderer.BuildRiggedMeshInstance</c> (temporarily swaps a bone's rest to this
-    /// shape-free version, reads the resulting <see cref="Skeleton3D.GetBoneGlobalPose"/> — which
-    /// still correctly includes whatever animation pose is active — then restores the real rest;
-    /// see that call site for why: a worn mesh with no joint-position-override data of its own
-    /// was authored against this NEUTRAL skeleton, not this avatar's shape-distorted one, and an
-    /// extreme non-uniform bind-shape scale can amplify even a small shape offset into a wildly
-    /// stretched mesh).</summary>
+    /// <summary>Converts one SL bone definition's own (position, rotation) into a Godot local
+    /// <see cref="Transform3D"/> — no hierarchy involved, just this bone's own numbers, and
+    /// deliberately NO scale (see AvatarRenderer.ApplyShape's doc comment: a real SL joint's
+    /// world matrix uses only its OWN scale, never compounded with ancestors, which Godot's
+    /// Skeleton3D does by default unless Rest carries no scale at all). This is only ever a
+    /// transient placeholder: <see cref="Build"/>'s caller (AvatarRenderer.CreateVisual) always
+    /// immediately calls ApplyShape right after, which overwrites every bone's rest with the
+    /// SL-accurate version (parent-scale-offset position, own scale tracked separately in
+    /// AvatarVisual.BoneOwnScale for skinning binds to inject). Scale is intentionally dropped
+    /// here rather than computed "correctly," since any bone here that has a non-unit base scale
+    /// (e.g. collision volumes' bounding-box size) would otherwise compound down the hierarchy for
+    /// the brief window before ApplyShape runs.</summary>
     internal static Transform3D SlBoneToGodotLocalTransform(BoneDefinition bone)
     {
         // Convert SL position to Godot position
@@ -62,9 +64,6 @@ public static class SkeletonBuilder
         var godotPos = new Vector3(slPos.X, slPos.Z, -slPos.Y);
 
         var basis = SlEulerDegToGodotBasis(bone.Rotation);
-
-        var slScale = bone.Scale;
-        basis = basis.Scaled(new Vector3(slScale.X, slScale.Z, slScale.Y));
 
         return new Transform3D(basis, godotPos);
     }
