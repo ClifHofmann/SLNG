@@ -39,6 +39,43 @@ public partial class AvatarController : Camera3D
         _zoom = Mathf.Clamp(_zoom, 0.5f, 50.0f);
     }
 
+    /// <summary>Zooms by <paramref name="zoomDelta"/> while keeping whatever is currently under
+    /// the mouse cursor visually anchored on screen, instead of always re-centring on the avatar.
+    /// Approximates a raycast-based "zoom to point" without needing a physics query: projects the
+    /// cursor's screen offset onto the world-space plane at the pivot's current depth (using this
+    /// camera's own FOV/aspect — the same perspective math the renderer already applies) and shifts
+    /// _panOffset toward that point in proportion to how much closer the zoom just got. At
+    /// zoom-ratio 1 (no change) this is a no-op; it converges fully on the cursor's point as
+    /// zoom approaches 0, same as the classic "zoom to mouse position" editor convention.</summary>
+    private void ZoomTowardCursor(float zoomDelta, Vector2 mousePos)
+    {
+        float oldZoom = _zoom;
+        _zoom = Mathf.Clamp(_zoom + zoomDelta, 0.5f, 50.0f);
+        if (Mathf.IsEqualApprox(_zoom, oldZoom)) return;
+
+        var vpSize = GetViewport().GetVisibleRect().Size;
+        if (vpSize.X <= 0 || vpSize.Y <= 0) return;
+
+        // Cursor offset from screen centre, normalized to [-1, 1] per axis. Screen Y grows down;
+        // flip it so a cursor ABOVE centre maps to a positive camera-local Up offset.
+        var ndc = new Vector2(
+            (mousePos.X / vpSize.X) * 2f - 1f,
+            -((mousePos.Y / vpSize.Y) * 2f - 1f));
+
+        // World-space half-extent of the view frustum at the pivot's depth (oldZoom back from the
+        // avatar). Fov is vertical (Camera3D's default KeepHeight aspect mode).
+        float halfHeight = oldZoom * Mathf.Tan(Mathf.DegToRad(Fov) / 2f);
+        float halfWidth = halfHeight * (vpSize.X / vpSize.Y);
+
+        // The point under the cursor, in the pivot plane, as a camera-local X/Y offset — the same
+        // units _panOffset already uses (Transform.Basis.X/.Y are unit vectors).
+        var cursorOffset = new Vector2(ndc.X * halfWidth, ndc.Y * halfHeight);
+
+        float ratio = _zoom / oldZoom;
+        _panOffset.X += cursorOffset.X * (1f - ratio);
+        _panOffset.Y += cursorOffset.Y * (1f - ratio);
+    }
+
     public void ResetCamera()
     {
         _orbitYaw = 0f;
@@ -70,6 +107,14 @@ public partial class AvatarController : Camera3D
     private bool _altOrbitActive = false;
     private float _orbitYaw = 0f;
     private float _orbitPitch = 0f;
+
+    // The cursor's viewport position at the moment Alt+LMB was pressed, captured BEFORE
+    // Input.MouseMode switches to Captured. Captured mode hides and re-centres the cursor, so
+    // event.Position during the drag itself no longer reflects where the user actually clicked —
+    // reading it live made ZoomTowardCursor always converge on screen centre instead. Anchoring
+    // once at press-time and reusing it for the whole drag is what actually zooms toward the
+    // point the user aimed at.
+    private Vector2 _altZoomAnchorPos = Vector2.Zero;
 
     // Fly mode: Home toggles; pressing E (up) also engages it. While flying, gravity is
     // suspended and E/C move vertically. Landing on the ground leaves fly mode.
@@ -114,6 +159,7 @@ public partial class AvatarController : Camera3D
                 if (mouseBtn.Pressed && (mouseBtn.AltPressed || Input.IsKeyPressed(Key.Alt)))
                 {
                     _altOrbitActive = true;
+                    _altZoomAnchorPos = mouseBtn.Position;
                     Input.MouseMode = Input.MouseModeEnum.Captured;
                 }
                 else if (!mouseBtn.Pressed && _altOrbitActive)
@@ -124,11 +170,11 @@ public partial class AvatarController : Camera3D
             }
             else if (mouseBtn.ButtonIndex == MouseButton.WheelUp)
             {
-                _zoom = Mathf.Max(0.5f, _zoom - 0.5f);
+                ZoomTowardCursor(-0.5f, mouseBtn.Position);
             }
             else if (mouseBtn.ButtonIndex == MouseButton.WheelDown)
             {
-                _zoom = Mathf.Min(20.0f, _zoom + 0.5f);
+                ZoomTowardCursor(0.5f, mouseBtn.Position);
             }
         }
 
@@ -142,8 +188,7 @@ public partial class AvatarController : Camera3D
                 // modifier reliably, and that check was cancelling the orbit on the first move.
                 // Horizontal = orbit around the avatar, vertical = zoom (SL-style Alt drag).
                 _orbitYaw -= mouseMotion.Relative.X * sensitivity;
-                _zoom += mouseMotion.Relative.Y * sensitivity * 50.0f;
-                _zoom = Mathf.Clamp(_zoom, 0.5f, 50.0f);
+                ZoomTowardCursor(mouseMotion.Relative.Y * sensitivity * 50.0f, _altZoomAnchorPos);
             }
             else
             {
