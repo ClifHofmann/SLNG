@@ -68,9 +68,9 @@ public static class AttachmentPointMap
 
     /// <summary>True for the 8 HUD attachment points (31–38) — screen-space overlays with no
     /// world bone, distinct from an unmapped/unrecognised BODY point (which also has no bone,
-    /// but should still fall back to somewhere on the body rather than being dropped). SLNG does
-    /// not yet render HUDs (camera-locked 2D overlay); callers must skip these entirely rather
-    /// than let them fall through to a default body bone, which would render the HUD mesh as a
-    /// small object floating in 3D world space on the avatar instead of on screen.</summary>
+    /// but should still fall back to somewhere on the body rather than being dropped). Callers
+    /// must route these to the orthographic HUD overlay (AvatarRenderer.UpdateHudAttachment)
+    /// rather than let them fall through to a default body bone, which would render the HUD
+    /// mesh as a small object floating in 3D world space on the avatar instead of on screen.</summary>
     public static bool IsHudPoint(byte attachmentPoint) => attachmentPoint is >= 31 and <= 38;
 }

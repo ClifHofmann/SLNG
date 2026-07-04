@@ -100,7 +100,7 @@ public partial class AvatarRenderer : Node3D
     // DLL timestamp. If this line is missing or shows an old tag, the client is NOT running
     // the code you think it is; close it fully (not just the window) and re-run
     // tools/run-client.ps1 before drawing any conclusion from the rest of the log.
-    private const string BuildMarker = "2026-07-04-session8e-zoom-anchor-fix";
+    private const string BuildMarker = "2026-07-04-session8o-hud-overlay";
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache)
     {
@@ -266,6 +266,13 @@ public partial class AvatarRenderer : Node3D
             _riggedAttachments.Remove(entityId);
         }
         _attachmentMeshIds.Remove(entityId);
+        if (_hudNodes.TryGetValue(entityId, out var hudNode))
+        {
+            hudNode.QueueFree();
+            _hudNodes.Remove(entityId);
+        }
+        _hudPlacements.Remove(entityId);
+        _hudContent.Remove(entityId);
     }
 
     private void UpdateVisual(string entityIdStr)
@@ -491,14 +498,16 @@ public partial class AvatarRenderer : Node3D
         return scaleXform * bind;
     }
 
-    /// <summary>TEMPORARY DIAGNOSTIC (M4-8 acceptance check): compares Godot's own composed bone
-    /// poses — <see cref="Skeleton3D.GetBoneGlobalPose"/>, which after ApplyShape + ResetBonePoses
+    /// <summary>Standing regression check (M4-8): compares Godot's own composed bone poses —
+    /// <see cref="Skeleton3D.GetBoneGlobalPose"/>, which after ApplyShape + ResetBonePoses
     /// reflects ONLY the Rest tree this renderer built — against <see cref="SlJointComposer"/>'s
     /// independent, engine-neutral reference implementation of the exact same SL rule. The two are
     /// separate code paths computing the same thing; any divergence means ApplyShape's Godot-space
     /// position pre-scaling or axis conversion has a bug the engine-neutral unit tests can't see
-    /// (they never touch Skeleton3D). Logs ONLY bones that exceed the M4-8 acceptance threshold
-    /// (1 cm position / 1% scale) — silence means every bone is within tolerance.</summary>
+    /// (they never touch Skeleton3D). Runs on every shape update; logs ONLY bones that exceed the
+    /// M4-8 acceptance threshold (1 cm position / 1% scale) — silence means every bone is within
+    /// tolerance. Kept permanently (not removed after M4-8 shipped) as a cheap tripwire against
+    /// this exact class of bug recurring.</summary>
     private void LogJointParityCheck(
         AvatarVisual visual, Skeleton3D skeleton, AvatarSkeleton avatarSkeleton,
         Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)> distortions)
@@ -646,11 +655,23 @@ public partial class AvatarRenderer : Node3D
         var prim = entity.GetComponent<PrimitiveComponent>();
         var transform = entity.GetComponent<TransformComponent>();
 
-        // HUD points (31–38) are screen-space overlays with no world bone — SLNG doesn't render
-        // HUDs yet (camera-locked 2D overlay), so skip these entirely rather than let them fall
-        // through to a default body bone below, which would render the HUD mesh as a small
-        // object floating in 3D world space on the avatar instead of on screen.
-        if (AttachmentPointMap.IsHudPoint(attachment.AttachmentPoint)) return;
+        // HUD points (31–38) are screen-space overlays with no world bone — route them to the
+        // dedicated orthographic HUD overlay instead of the skeleton path below (which would
+        // render the HUD mesh as a small object floating in 3D world space on the avatar).
+        if (AttachmentPointMap.IsHudPoint(attachment.AttachmentPoint))
+        {
+            UpdateHudAttachment(entityId, attachment, prim, transform);
+            return;
+        }
+
+        // Entity moved from a HUD point back to a body point — drop its screen-overlay visuals.
+        if (_hudNodes.TryGetValue(entityId, out var staleHud))
+        {
+            staleHud.QueueFree();
+            _hudNodes.Remove(entityId);
+            _hudPlacements.Remove(entityId);
+            _hudContent.Remove(entityId);
+        }
 
         // The attachment-point bone only matters for STATIC attachments. A rigged mesh
         // (mesh body, mesh clothing) carries its own skin weights and ignores the point — so
@@ -808,15 +829,26 @@ public partial class AvatarRenderer : Node3D
                 if (sub.Indices.Length == 0) continue;
                 var st = new SurfaceTool();
                 st.Begin(Mesh.PrimitiveType.Triangles);
-                foreach (int idx in sub.Indices)
+                // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front — left
+                // uncorrected, every SL-sourced triangle rasterizes as a backface (masked by
+                // CullMode.Disabled, needed just to make anything render), and Godot's
+                // double-sided handling flips the normal for perceived backfaces, inverting
+                // diffuse lighting while leaving shadows (depth-only) unaffected. Confirmed this
+                // session via a T-pose + debug shader + a gizmo pointing at the real light
+                // direction. Fix: submit each triangle's 3 vertices in reversed order.
+                for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
                 {
-                    var p = sub.Positions[idx];
-                    var n = sub.Normals[idx];
-                    var uv = sub.UVs[idx];
-                    st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-                    // SL→Godot V-flip, same as the body parts and rigged meshes.
-                    st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
-                    st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
+                    Span<int> tri = stackalloc[] { sub.Indices[t], sub.Indices[t + 2], sub.Indices[t + 1] };
+                    foreach (int idx in tri)
+                    {
+                        var p = sub.Positions[idx];
+                        var n = sub.Normals[idx];
+                        var uv = sub.UVs[idx];
+                        st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+                        // SL→Godot V-flip, same as the body parts and rigged meshes.
+                        st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
+                        st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
+                    }
                 }
                 st.GenerateTangents();
                 st.Commit(arrayMesh);
@@ -974,6 +1006,270 @@ public partial class AvatarRenderer : Node3D
         SetPartVisible("lower_body", !ch.Contains(10));
         SetPartVisible("eye", !ch.Contains(11));
         SetPartVisible("hair", !ch.Contains(20));
+    }
+
+    // -------------------------------------------------------------------------
+    // SL HUD attachments (points 31–38) — screen-space orthographic overlay
+    // -------------------------------------------------------------------------
+    //
+    // Verified against secondlife/viewer @ develop (render_hud_attachments() in
+    // llviewerdisplay.cpp, mScreen joint setup in llvoavatarself.cpp, anchor table in
+    // character/avatar_lad.xml): HUD attachments are genuine 3D meshes hung off a virtual
+    // "mScreen" joint and rendered by a dedicated ORTHOGRAPHIC camera pass after the world —
+    // not 2D sprites. The ortho view volume is exactly 1 unit tall (±0.5 = top/bottom screen
+    // edge) and ±aspect/2 wide; the 8 attachment points are fixed anchors at the volume's
+    // corners/edges/center, and the object's own local position stacks on its anchor (runtime-
+    // clamped to MAX_ATTACHMENT_DIST = 3.5 in llviewerjointattachment.cpp — NOT the 2.0 that
+    // avatar_lad.xml advertises). mScreen carries scale (1, aspect, 1), and per SL's joint rule
+    // (see BoneOwnScale) a parent's scale offsets a child's POSITION one level without scaling
+    // the child itself — so anchors' horizontal coordinates are aspect-scaled to reach the
+    // screen edges while HUD geometry itself stays unstretched. The real viewer also has a HUD
+    // zoom (HUDScaleFactor * mHUDTargetZoom) — both default 1.0 and the latter only changes
+    // while EDITING a HUD, so v1 omits it.
+    //
+    // Godot realization: a transparent SubViewport with its OWN World3D (no scene lights/fog —
+    // materials are forced Unshaded, which is also how HUDs read in the real viewer: flat,
+    // environment-independent), an orthographic Camera3D with Size=1/KeepHeight (exactly SL's
+    // volume), composited on a CanvasLayer at Layer=-1: above the 3D world, below the viewer's
+    // own root-canvas UI (login/chat) and the Layer=1 position HUD. Mouse events pass through
+    // (clicking HUD buttons is not implemented yet — rendering only).
+    private SubViewport? _hudViewport;
+    private Node3D? _hudRoot;
+    // HUD entity id → its Node3D in the overlay, its (point, SL-local offset) placement (kept
+    // for aspect-ratio repositioning on window resize), and a content signature mirroring
+    // _attachmentMeshIds' duplicate-load guard (see that field's doc comment).
+    private readonly Dictionary<Guid, Node3D> _hudNodes = new();
+    private readonly Dictionary<Guid, (byte Point, System.Numerics.Vector3 SlOffset)> _hudPlacements = new();
+    private readonly Dictionary<Guid, (object ShapeKey, FaceTexture[]? Faces, FaceTexture DefaultFace)> _hudContent = new();
+
+    /// <summary>Anchor offset of one HUD attachment point in SL's HUD frame (X=depth,
+    /// Y=left(+)/right(−), Z=up(+)/down(−)) — the exact `position` attributes of points 31–38
+    /// in avatar_lad.xml. ±0.5 is exactly the screen edge of the 1-unit-tall HUD volume.</summary>
+    private static System.Numerics.Vector3 HudAnchorSl(byte point) => point switch
+    {
+        32 => new(0f, -0.5f, 0.5f),  // Top Right
+        33 => new(0f, 0f, 0.5f),     // Top
+        34 => new(0f, 0.5f, 0.5f),   // Top Left
+        36 => new(0f, 0.5f, -0.5f),  // Bottom Left
+        37 => new(0f, 0f, -0.5f),    // Bottom
+        38 => new(0f, -0.5f, -0.5f), // Bottom Right
+        _ => System.Numerics.Vector3.Zero, // 31 Center 2, 35 Center
+    };
+
+    private void EnsureHudViewport()
+    {
+        if (_hudViewport != null && IsInstanceValid(_hudViewport)) return;
+
+        var layer = new CanvasLayer { Name = "SlHudLayer", Layer = -1 };
+        AddChild(layer);
+
+        var container = new SubViewportContainer
+        {
+            Name = "SlHudContainer",
+            Stretch = true,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        container.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        layer.AddChild(container);
+
+        _hudViewport = new SubViewport { Name = "SlHudViewport", TransparentBg = true, OwnWorld3D = true };
+        container.AddChild(_hudViewport);
+        // Window resize changes the aspect ratio, which moves every horizontal anchor.
+        _hudViewport.SizeChanged += () =>
+        {
+            foreach (var id in _hudPlacements.Keys) PositionHudNode(id);
+        };
+
+        // SL's HUD camera sits on the -X side looking down +X with Z-up (llviewerdisplay.cpp)
+        // — under our standard SL→Godot map that is: look down world +X with +Y up, so screen
+        // right = world +Z and screen up = world +Y. Content sits near x≈0; ±3.5 m offsets stay
+        // comfortably inside Near/Far from x=-4.5.
+        _hudViewport.AddChild(new Camera3D
+        {
+            Projection = Camera3D.ProjectionType.Orthogonal,
+            Size = 1.0f,
+            KeepAspect = Camera3D.KeepAspectEnum.Height,
+            Position = new Godot.Vector3(-4.5f, 0f, 0f),
+            RotationDegrees = new Godot.Vector3(0f, -90f, 0f),
+            Near = 0.01f,
+            Far = 20f,
+        });
+
+        _hudRoot = new Node3D { Name = "SlHudRoot" };
+        _hudViewport.AddChild(_hudRoot);
+    }
+
+    private void UpdateHudAttachment(
+        Guid entityId, AttachmentComponent attachment, PrimitiveComponent? prim, TransformComponent? transform)
+    {
+        // Only the local agent's own HUDs. A HUD is a private screen overlay — grids only send
+        // HUD objects to their owner anyway, but guard defensively so another avatar's HUD can
+        // never paint over our screen.
+        var avatarEntity = _world?.GetEntity(attachment.AvatarEntityId);
+        if (avatarEntity?.GetComponent<AvatarComponent>()?.IsLocalAgent != true) return;
+
+        // Entity moved from a body point to a HUD point — drop its world-space visuals.
+        if (_attachmentNodes.TryGetValue(entityId, out var staleBone))
+        {
+            staleBone.QueueFree();
+            _attachmentNodes.Remove(entityId);
+        }
+        if (_riggedAttachments.TryGetValue(entityId, out var staleRigged))
+        {
+            staleRigged.QueueFree();
+            _riggedAttachments.Remove(entityId);
+        }
+        _attachmentMeshIds.Remove(entityId);
+
+        EnsureHudViewport();
+
+        if (!_hudNodes.TryGetValue(entityId, out var hudNode) || !IsInstanceValid(hudNode))
+        {
+            hudNode = new Node3D { Name = $"Hud_{entityId:N}" };
+            _hudRoot!.AddChild(hudNode);
+            _hudNodes[entityId] = hudNode;
+            GD.Print($"[HUD] pt {attachment.AttachmentPoint} entity {entityId:N} added to overlay");
+        }
+
+        var slOffset = transform?.Position ?? System.Numerics.Vector3.Zero;
+        // Viewer parity: LLViewerJointAttachment::clampObjectPosition, MAX_ATTACHMENT_DIST=3.5.
+        if (slOffset.Length() > 3.5f) slOffset = System.Numerics.Vector3.Normalize(slOffset) * 3.5f;
+        _hudPlacements[entityId] = (attachment.AttachmentPoint, slOffset);
+        PositionHudNode(entityId);
+        if (transform != null)
+            hudNode.Quaternion = new Godot.Quaternion(
+                transform.Rotation.X, transform.Rotation.Z, -transform.Rotation.Y, transform.Rotation.W);
+
+        if (prim == null) return;
+
+        // Duplicate-load guard, mirroring _attachmentMeshIds (see its doc comment): reload only
+        // when the geometry source or any face texture actually changed. ShapeKey is the mesh
+        // asset id for mesh HUDs, or the full PrimShape (equatable — ObjectRenderer keys a
+        // dictionary with it) for classic prim HUDs.
+        var defaultFace = new FaceTexture(
+            prim.TextureId, prim.RenderMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f);
+        object shapeKey = prim.IsMesh && prim.MeshId != Guid.Empty ? prim.MeshId : prim.Shape;
+        if (_hudContent.TryGetValue(entityId, out var cur)
+            && Equals(cur.ShapeKey, shapeKey)
+            && cur.DefaultFace == defaultFace
+            && (cur.Faces == prim.Faces || (cur.Faces != null && prim.Faces != null && cur.Faces.SequenceEqual(prim.Faces))))
+            return;
+        _hudContent[entityId] = (shapeKey, prim.Faces, defaultFace);
+
+        _ = LoadHudContentAsync(hudNode, prim, defaultFace);
+    }
+
+    /// <summary>Recomputes one HUD entity's overlay position from its anchor + SL-local offset.
+    /// Re-run for every HUD on viewport resize: the anchor's HORIZONTAL coordinate scales with
+    /// the aspect ratio (SL's mScreen joint scale (1, aspect, 1) offsetting child positions one
+    /// level), while the object's own offset below the anchor does not.</summary>
+    private void PositionHudNode(Guid entityId)
+    {
+        if (_hudViewport == null || !_hudPlacements.TryGetValue(entityId, out var p)) return;
+        if (!_hudNodes.TryGetValue(entityId, out var node) || !IsInstanceValid(node)) return;
+
+        var size = _hudViewport.Size;
+        float aspect = size.Y > 0 ? (float)size.X / size.Y : 1f;
+        var a = HudAnchorSl(p.Point);
+        // Standard SL→Godot map (X, Z, −Y): SL Y(left+) → Godot −Z (camera right = +Z world).
+        node.Position = new Godot.Vector3(
+            a.X + p.SlOffset.X,
+            a.Z + p.SlOffset.Z,
+            -(a.Y * aspect) - p.SlOffset.Y);
+    }
+
+    private async System.Threading.Tasks.Task LoadHudContentAsync(
+        Node3D hudNode, PrimitiveComponent prim, FaceTexture defaultFace)
+    {
+        if (_assetService == null) return;
+
+        bool isMeshAsset = prim.IsMesh && prim.MeshId != Guid.Empty;
+        var faces = prim.Faces;
+        var scale = new System.Numerics.Vector3(prim.Scale.X, prim.Scale.Y, prim.Scale.Z);
+
+        var meshData = isMeshAsset
+            ? await _assetService.GetMeshAsync(prim.MeshId).ConfigureAwait(false)
+            : await _assetService.GetPrimMeshAsync(prim.Shape).ConfigureAwait(false);
+        if (meshData == null || meshData.Submeshes.Count == 0)
+        {
+            GD.PrintErr($"[HUD] geometry failed to load/mesh ({(isMeshAsset ? prim.MeshId.ToString() : "prim shape")}) — skipped");
+            return;
+        }
+
+        Godot.Callable.From(() =>
+        {
+            if (!IsInstanceValid(hudNode)) return;
+            foreach (var child in hudNode.GetChildren()) child.QueueFree();
+
+            var arrayMesh = BuildHudArrayMesh(meshData, flipV: isMeshAsset, scale, out var faceIndices);
+            if (arrayMesh.GetSurfaceCount() == 0) return;
+
+            var mi = new MeshInstance3D { Name = "HudMesh", Mesh = arrayMesh };
+            hudNode.AddChild(mi);
+            _ = ApplyHudFaceMaterialsAsync(mi, faceIndices, faces, defaultFace);
+        }).CallDeferred();
+    }
+
+    /// <summary>Static (unskinned, unlit) ArrayMesh for HUD content, prim scale baked into the
+    /// vertices. UV V-flip only for LLMesh ASSETS (bottom-left origin, like the worn-mesh path);
+    /// PrimMesher output already matches Godot's convention (world prims render correctly
+    /// without a flip in ObjectRenderer.BuildArrayMesh). No normals/tangents — HUD materials are
+    /// forced Unshaded (the overlay's World3D has no lights). Winding is still reversed like
+    /// every other SL-mesh builder (see BuildPartMesh) for consistency, though it is visually
+    /// moot without lighting.</summary>
+    private static ArrayMesh BuildHudArrayMesh(
+        MeshData meshData, bool flipV, System.Numerics.Vector3 slScale, out int[] faceIndices)
+    {
+        var arrayMesh = new ArrayMesh();
+        var faceList = new List<int>();
+        foreach (var sub in meshData.Submeshes)
+        {
+            if (sub.Indices.Length == 0) continue;
+            var st = new SurfaceTool();
+            st.Begin(Mesh.PrimitiveType.Triangles);
+            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
+            {
+                Span<int> tri = stackalloc[] { sub.Indices[t], sub.Indices[t + 2], sub.Indices[t + 1] };
+                foreach (int idx in tri)
+                {
+                    var p = sub.Positions[idx];
+                    var uv = sub.UVs[idx];
+                    st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
+                    st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
+                }
+            }
+            st.Commit(arrayMesh);
+            faceList.Add(sub.FaceIndex);
+        }
+        faceIndices = faceList.ToArray();
+        return arrayMesh;
+    }
+
+    /// <summary>Per-surface face materials for a HUD mesh — same resolution as
+    /// <see cref="ApplyFaceMaterialsAsync"/> but forced Unshaded: the HUD SubViewport's own
+    /// World3D has no lights (shaded materials would render black), and HUDs read as flat/
+    /// environment-independent in the real viewer anyway.</summary>
+    private async System.Threading.Tasks.Task ApplyHudFaceMaterialsAsync(
+        MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace)
+    {
+        if (mi.Mesh is not ArrayMesh am) return;
+        int surfaceCount = am.GetSurfaceCount();
+
+        for (int surf = 0; surf < surfaceCount; surf++)
+        {
+            int faceIndex = surf < faceIndices.Length ? faceIndices[surf] : 0;
+            FaceTexture ft = (faces != null && faceIndex >= 0 && faceIndex < faces.Length)
+                ? faces[faceIndex] : defaultFace;
+
+            var material = await BuildFaceMaterialAsync(ft).ConfigureAwait(false);
+            material.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+            int s = surf;
+            Godot.Callable.From(() =>
+            {
+                if (IsInstanceValid(mi) && s < ((ArrayMesh)mi.Mesh).GetSurfaceCount())
+                    mi.SetSurfaceOverrideMaterial(s, material);
+            }).CallDeferred();
+        }
     }
 
     /// <summary>
@@ -1152,37 +1448,50 @@ public partial class AvatarRenderer : Node3D
             var st = new SurfaceTool();
             st.Begin(Mesh.PrimitiveType.Triangles);
 
-            foreach (int idx in sub.Indices)
+            // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front — left
+            // uncorrected, every SL-sourced triangle rasterizes as a backface (masked by
+            // CullMode.Disabled, needed just to make anything render), and Godot's double-sided
+            // handling flips the normal for perceived backfaces, inverting diffuse lighting while
+            // leaving shadows (depth-only) unaffected. Confirmed this session via a T-pose +
+            // debug shader + a gizmo pointing at the real light direction. Fix: submit each
+            // triangle's 3 vertices in reversed order — every per-vertex step below (weight
+            // resolution, bpMin/bpMax, slotWeightSum) is order-independent across the mesh, so
+            // only the ORDER the 3 indices of each triangle are visited changes.
+            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
             {
-                // Mesh-local → bind pose (SL coords) via the bind-shape matrix, then SL→Godot.
-                var pSL = System.Numerics.Vector3.Transform(sub.Positions[idx], bindShape);
-                var nSL = System.Numerics.Vector3.TransformNormal(sub.Normals[idx], bindShapeNormalMatrix);
-                if (nSL.LengthSquared() > 1e-8f) nSL = System.Numerics.Vector3.Normalize(nSL);
-                var uv = sub.UVs[idx];
-                var w = sub.Weights[idx];
+                Span<int> tri = stackalloc[] { sub.Indices[t], sub.Indices[t + 2], sub.Indices[t + 1] };
+                foreach (int idx in tri)
+                {
+                    // Mesh-local → bind pose (SL coords) via the bind-shape matrix, then SL→Godot.
+                    var pSL = System.Numerics.Vector3.Transform(sub.Positions[idx], bindShape);
+                    var nSL = System.Numerics.Vector3.TransformNormal(sub.Normals[idx], bindShapeNormalMatrix);
+                    if (nSL.LengthSquared() > 1e-8f) nSL = System.Numerics.Vector3.Normalize(nSL);
+                    var uv = sub.UVs[idx];
+                    var w = sub.Weights[idx];
 
-                bpMin = System.Numerics.Vector3.Min(bpMin, pSL);
-                bpMax = System.Numerics.Vector3.Max(bpMax, pSL);
+                    bpMin = System.Numerics.Vector3.Min(bpMin, pSL);
+                    bpMax = System.Numerics.Vector3.Max(bpMax, pSL);
 
-                var bones = new int[4];
-                var wts = new float[4];
-                int c = 0; float sum = 0f;
-                AddInfluence(w.Joint0, w.Weight0, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                AddInfluence(w.Joint1, w.Weight1, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                AddInfluence(w.Joint2, w.Weight2, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                AddInfluence(w.Joint3, w.Weight3, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                totalVerts++;
-                if (sum > 1e-5f) { for (int k = 0; k < 4; k++) wts[k] /= sum; }
-                else { bones[0] = 0; wts[0] = 1f; orphanedVerts++; } // orphaned vertex — pin to first bound bone
-                for (int k = 0; k < 4; k++) if (wts[k] > 0f) slotWeightSum[bones[k]] += wts[k];
+                    var bones = new int[4];
+                    var wts = new float[4];
+                    int c = 0; float sum = 0f;
+                    AddInfluence(w.Joint0, w.Weight0, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                    AddInfluence(w.Joint1, w.Weight1, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                    AddInfluence(w.Joint2, w.Weight2, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                    AddInfluence(w.Joint3, w.Weight3, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                    totalVerts++;
+                    if (sum > 1e-5f) { for (int k = 0; k < 4; k++) wts[k] /= sum; }
+                    else { bones[0] = 0; wts[0] = 1f; orphanedVerts++; } // orphaned vertex — pin to first bound bone
+                    for (int k = 0; k < 4; k++) if (wts[k] > 0f) slotWeightSum[bones[k]] += wts[k];
 
-                st.SetBones(bones);
-                st.SetWeights(wts);
-                st.SetNormal(new Godot.Vector3(nSL.X, nSL.Z, -nSL.Y));
-                // Same SL→Godot V-flip as the system body parts (see BuildPartResources):
-                // SL UVs are authored bottom-left origin; Godot samples top-left.
-                st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
-                st.AddVertex(new Godot.Vector3(pSL.X, pSL.Z, -pSL.Y));
+                    st.SetBones(bones);
+                    st.SetWeights(wts);
+                    st.SetNormal(new Godot.Vector3(nSL.X, nSL.Z, -nSL.Y));
+                    // Same SL→Godot V-flip as the system body parts (see BuildPartResources):
+                    // SL UVs are authored bottom-left origin; Godot samples top-left.
+                    st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
+                    st.AddVertex(new Godot.Vector3(pSL.X, pSL.Z, -pSL.Y));
+                }
             }
 
             st.GenerateTangents();
@@ -1312,36 +1621,47 @@ public partial class AvatarRenderer : Node3D
         var st = new SurfaceTool();
         st.Begin(Mesh.PrimitiveType.Triangles);
 
-        for (int fi = 0; fi < part.Indices.Length; fi++)
+        // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front — left
+        // uncorrected, every SL-sourced triangle rasterizes as a backface (masked by
+        // CullMode.Disabled, needed just to make anything render), and Godot's double-sided
+        // handling flips the normal for perceived backfaces, inverting diffuse lighting while
+        // leaving shadows (depth-only) unaffected. Confirmed this session via a T-pose + debug
+        // shader + a gizmo pointing at the real light direction. Fix: submit each triangle's 3
+        // vertices in reversed order — every per-vertex step below is order-independent, so only
+        // the ORDER the 3 indices of each triangle are visited changes.
+        for (int t = 0; t + 2 < part.Indices.Length; t += 3)
         {
-            int vi = part.Indices[fi];
-            var p  = positions[vi];
-            var n  = normals[vi];
-            var uv = part.UVs[vi];
+            Span<int> tri = stackalloc[] { part.Indices[t], part.Indices[t + 2], part.Indices[t + 1] };
+            foreach (int vi in tri)
+            {
+                var p  = positions[vi];
+                var n  = normals[vi];
+                var uv = part.UVs[vi];
 
-            // Resolve skin slot indices
-            int s1 = 0, s2 = 0;
-            if (part.Bone1Names[vi] != null && skinSlots.TryGetValue(part.Bone1Names[vi]!, out int ss1)) s1 = ss1;
-            if (part.Bone2Names[vi] != null && skinSlots.TryGetValue(part.Bone2Names[vi]!, out int ss2)) s2 = ss2;
+                // Resolve skin slot indices
+                int s1 = 0, s2 = 0;
+                if (part.Bone1Names[vi] != null && skinSlots.TryGetValue(part.Bone1Names[vi]!, out int ss1)) s1 = ss1;
+                if (part.Bone2Names[vi] != null && skinSlots.TryGetValue(part.Bone2Names[vi]!, out int ss2)) s2 = ss2;
 
-            float w1 = part.Bone1Weights[vi];
-            float w2 = part.Bone2Weights[vi];
+                float w1 = part.Bone1Weights[vi];
+                float w2 = part.Bone2Weights[vi];
 
-            // Normalize the two SL weights so they sum to 1 — Godot expects normalized
-            // skin weights and a zero-sum vertex would not deform at all.
-            float wsum = w1 + w2;
-            if (wsum > 0.0001f) { w1 /= wsum; w2 /= wsum; }
-            else { w1 = 1f; w2 = 0f; }
+                // Normalize the two SL weights so they sum to 1 — Godot expects normalized
+                // skin weights and a zero-sum vertex would not deform at all.
+                float wsum = w1 + w2;
+                if (wsum > 0.0001f) { w1 /= wsum; w2 /= wsum; }
+                else { w1 = 1f; w2 = 0f; }
 
-            // SL is Z-up; Godot is Y-up: SL(X,Y,Z) → Godot(X,Z,−Y)
-            st.SetBones(new int[]   { s1,  s2,  0,   0   });
-            st.SetWeights(new float[]{ w1,  w2,  0f,  0f  });
-            st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-            // SL/OpenGL texture origin is bottom-left (V grows up); Godot/Vulkan is top-left
-            // (V grows down) and Magick decodes row 0 = top. Flip V so the baked skin lands
-            // on the correct body parts instead of mirrored (front texture on the back, etc).
-            st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
-            st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
+                // SL is Z-up; Godot is Y-up: SL(X,Y,Z) → Godot(X,Z,−Y)
+                st.SetBones(new int[]   { s1,  s2,  0,   0   });
+                st.SetWeights(new float[]{ w1,  w2,  0f,  0f  });
+                st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+                // SL/OpenGL texture origin is bottom-left (V grows up); Godot/Vulkan is top-left
+                // (V grows down) and Magick decodes row 0 = top. Flip V so the baked skin lands
+                // on the correct body parts instead of mirrored (front texture on the back, etc).
+                st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
+                st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
+            }
         }
 
         st.GenerateTangents();
@@ -1496,6 +1816,140 @@ public partial class AvatarRenderer : Node3D
         }
     }
 
+    // Standing dev tools (F7/F8/F9) for diagnosing avatar rendering/lighting bugs — kept
+    // permanently rather than ripped out once the M4-8/winding-order investigations that
+    // motivated them concluded, since the same techniques generalize to any future rendering
+    // bug on this renderer. Pair with Boot.cs's sun gizmo (F5) and post-FX toggle (F2).
+    private bool _shadowsDisabled = false;
+    private bool _ndotlDebugActive = false;
+    private readonly Dictionary<MeshInstance3D, Material?> _ndotlOriginalMaterials = new();
+    private bool _tposeActive = false;
+
+    public override void _Input(InputEvent @event)
+    {
+        if (@event is not InputEventKey keyEvt || !keyEvt.Pressed || keyEvt.Echo) return;
+
+        if (keyEvt.Keycode == Key.F9)
+            ToggleNdotLDebugMaterial();
+        else if (keyEvt.Keycode == Key.F7)
+            ToggleAvatarShadowCasting();
+        else if (keyEvt.Keycode == Key.F8)
+            ToggleTPose();
+    }
+
+    /// <summary>F8: freeze every avatar in its rest (T-)pose and stop animation playback, so a
+    /// before/after comparison (e.g. F9's debug material) can be screenshotted from a pixel-
+    /// identical frame — idle-sway/breathing animation otherwise shifts the pose between two
+    /// shots taken moments apart, which reads as noise indistinguishable from a real bug.</summary>
+    private void ToggleTPose()
+    {
+        _tposeActive = !_tposeActive;
+        if (_tposeActive)
+        {
+            foreach (var visual in _visuals.Values)
+                visual.Skeleton?.ResetBonePoses();
+        }
+        GD.Print($"[DBG-LIGHT] T-pose freeze {(_tposeActive ? "ON — animations paused" : "OFF — animations resumed")}.");
+    }
+
+    /// <summary>Runs <paramref name="action"/> on every currently-loaded avatar's MeshInstance3D
+    /// nodes: direct children of the Skeleton3D (system body parts, rigged attachments) plus one
+    /// level of nesting (static/non-rigged attachment meshes and procedural box-man parts, which
+    /// sit under a BoneAttachment3D child of the skeleton). Returns how many were touched.</summary>
+    private int ForEachAvatarMeshInstance(System.Action<MeshInstance3D> action)
+    {
+        int count = 0;
+        foreach (var visual in _visuals.Values)
+        {
+            if (visual.Skeleton == null) continue;
+            foreach (var node in visual.Skeleton.GetChildren())
+            {
+                if (node is MeshInstance3D directMi) { action(directMi); count++; }
+                foreach (var grandchild in node.GetChildren())
+                    if (grandchild is MeshInstance3D nestedMi) { action(nestedMi); count++; }
+            }
+        }
+        return count;
+    }
+
+    /// <summary>Toggles GeometryInstance3D.CastShadow off/on for every avatar mesh, to isolate
+    /// whether a specific dark patch (e.g. a hand-shaped shadow on a coat) is a true shadow-map
+    /// self-shadow versus something else (lighting/AO — both already ruled out separately). If
+    /// the patch disappears with shadows off, it's a genuine self-shadow (likely a bias/precision
+    /// issue between two close skinned meshes); if it persists, the cause is elsewhere.</summary>
+    private void ToggleAvatarShadowCasting()
+    {
+        _shadowsDisabled = !_shadowsDisabled;
+        var setting = _shadowsDisabled ? GeometryInstance3D.ShadowCastingSetting.Off : GeometryInstance3D.ShadowCastingSetting.On;
+        int count = ForEachAvatarMeshInstance(mi => mi.CastShadow = setting);
+        GD.Print($"[DBG-LIGHT] avatar shadow-casting {(_shadowsDisabled ? "OFF" : "ON")} for {count} mesh instances.");
+    }
+
+    /// <summary>Toggles every currently-loaded avatar mesh's material between its real material
+    /// and an unshaded debug shader that colors each surface by N·L against the scene's actual
+    /// DirectionalLight3D direction (read live from that node — not hand-derived from its
+    /// RotationDegrees, to rule out a rotation-order mistake in the diagnostic itself): GREEN
+    /// where the surface faces the light (should look lit), RED where it faces away (should look
+    /// shadowed/dark). Toggling (rather than one-way) lets the SAME frozen camera angle be
+    /// screenshotted debug-on and debug-off back to back — comparing across two different poses/
+    /// angles isn't a valid pixel check. Each mesh's original MaterialOverride is remembered the
+    /// first time it's seen and restored on toggle-off (MaterialOverride takes priority over
+    /// per-surface materials, so touching only it is enough either way).</summary>
+    private void ToggleNdotLDebugMaterial()
+    {
+        _ndotlDebugActive = !_ndotlDebugActive;
+
+        if (!_ndotlDebugActive)
+        {
+            int restored = ForEachAvatarMeshInstance(mi =>
+            {
+                if (_ndotlOriginalMaterials.TryGetValue(mi, out var orig)) mi.MaterialOverride = orig;
+            });
+            GD.Print($"[DBG-LIGHT] NdotL debug OFF — restored {restored} mesh instances to their real materials.");
+            return;
+        }
+
+        var sun = GetTree().Root.FindChild("DirectionalLight3D", true, false) as DirectionalLight3D;
+        if (sun == null)
+        {
+            GD.PrintErr("[DBG-LIGHT] no DirectionalLight3D found — can't build NdotL debug material");
+            _ndotlDebugActive = false;
+            return;
+        }
+
+        // Godot convention: a light's local -Z is the direction it shines TOWARD; the direction
+        // FROM a lit surface TOWARD the light source is therefore +Z in its own world basis.
+        var towardLight = sun.GlobalTransform.Basis.Z;
+
+        var shader = new Shader
+        {
+            Code = @"
+shader_type spatial;
+render_mode unshaded, cull_disabled;
+
+uniform vec3 debug_light_to_dir = vec3(0.0, 1.0, 0.0);
+
+void fragment() {
+    vec3 n = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+    float ndotl = dot(n, normalize(debug_light_to_dir));
+    ALBEDO = vec3(max(-ndotl, 0.0), max(ndotl, 0.0), 0.0);
+}
+"
+        };
+        var mat = new ShaderMaterial { Shader = shader };
+        mat.SetShaderParameter("debug_light_to_dir", towardLight);
+
+        int swapped = ForEachAvatarMeshInstance(mi =>
+        {
+            if (!_ndotlOriginalMaterials.ContainsKey(mi)) _ndotlOriginalMaterials[mi] = mi.MaterialOverride;
+            mi.MaterialOverride = mat;
+        });
+
+        GD.Print($"[DBG-LIGHT] NdotL debug ON for {swapped} mesh instances. towardLight(world)={towardLight}. " +
+                 "GREEN = facing the light (should look lit), RED = facing away (should look shadowed). " +
+                 "Press F9 again (same camera angle!) to compare against the real materials.");
+    }
+
     private double _cullAccum = 0;
 
     public override void _Process(double delta)
@@ -1524,7 +1978,7 @@ public partial class AvatarRenderer : Node3D
                 if (visual.Root.Visible != visible) visual.Root.Visible = visible;
             }
 
-            if (visual.Root.Visible && visual.AnimPlayer.IsPlaying)
+            if (visual.Root.Visible && visual.AnimPlayer.IsPlaying && !_tposeActive)
             {
                 visual.AnimPlayer.Advance(dt);
             }

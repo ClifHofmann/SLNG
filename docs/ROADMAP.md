@@ -109,6 +109,7 @@ Goal: Replace the placeholder capsule with a real Second Life avatar (Bento skel
 | M4-6 | Morphed-body rendering — rebuild on shape change ✅ | render | claude | graphics-engineer | | M4-5 | System body renders with the avatar's real proportions (male/muscle/breast sliders) matching Firestorm; morph rebuild off the main thread |
 | M4-7 | Base-mesh hiding under worn mesh (alpha/BoM correctness) | render | | graphics-engineer | | M4-3 | System head/body parts hidden exactly per worn alpha layers & BoM rules instead of the temporary hard-hide experiment |
 | M4-8 | SL-faithful joint composition — scale does NOT inherit ✅ | render/core | claude | graphics-engineer | | M4-3 | Godot bone global poses match `LLXformMatrix::update` exactly (basis = own scale only; parent scale offsets children one level; rotation inherits): parity checker reports <1 cm/<1 % deviation on every bone for real avatars, coat-sleeve meshes land on their joints, proportions match Firestorm |
+| M4-9 | HUD attachments — screen-space ortho overlay | render/ui | claude | graphics-engineer | | M4-4 | Local avatar's HUD objects (points 31–38) render textured in their correct screen quadrants (SL ortho volume: 1 unit tall, anchors at ±0.5, aspect-scaled horizontals), camera-locked, independent of world lighting; other avatars' HUDs never shown |
 
 ## M5+ — Beyond the first shot
 
