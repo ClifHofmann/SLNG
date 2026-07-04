@@ -34,6 +34,8 @@ public partial class Boot : Control
     
     private WorldEnvironment? _worldEnvironment;
     private bool _postFxEnabled = true;
+    private DirectionalLight3D? _sun;
+    private Node3D? _sunGizmo;
 
     private Label _hudLabel = null!;
     private double _hudAccum;
@@ -142,6 +144,7 @@ public partial class Boot : Control
 
         var sun = new DirectionalLight3D
         {
+            Name = "DirectionalLight3D",
             RotationDegrees = new Godot.Vector3(-50f, -130f, 0f),
             ShadowEnabled = true,
             DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel4Splits,
@@ -151,6 +154,69 @@ public partial class Boot : Control
             ShadowOpacity = 0.9f,
         };
         AddChild(sun);
+        _sun = sun;
+    }
+
+    /// <summary>Standing dev tool (F5): renders the sun's actual direction into the scene as an
+    /// emissive beam + sphere anchored at the local avatar. Screen-space reasoning about "which
+    /// side should be lit" from a screenshot is unreliable — the light can sit well outside the
+    /// frame (e.g. ~50° elevation), and nothing in the sky necessarily marks its position (the
+    /// procedural sky's horizon glow doesn't move with the actual DirectionalLight3D). Cross-check
+    /// for any future lighting bug: lit surfaces (GREEN under AvatarRenderer's F9 debug material)
+    /// must face the sphere, and cast shadows must run exactly opposite the beam. Also a reminder
+    /// that the sun direction is hardcoded in SetupEnvironment, unrelated to the region's real
+    /// environment (Firestorm drives it from region WindLight/EEP, which SLNG doesn't fetch yet).</summary>
+    private void ToggleSunGizmo()
+    {
+        if (_sunGizmo != null)
+        {
+            _sunGizmo.QueueFree();
+            _sunGizmo = null;
+            LogMessage("Sun gizmo OFF");
+            return;
+        }
+        if (_sun == null) return;
+
+        // +Z of the light's basis = direction FROM a lit surface TOWARD the sun (a
+        // DirectionalLight3D shines along its local -Z, like all "forward" in Godot).
+        var towardLight = _sun.GlobalTransform.Basis.Z.Normalized();
+
+        var anchor = _avatarController?.Position ?? Godot.Vector3.Zero;
+        if (_world != null && RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos))
+            anchor = agentPos;
+
+        var mat = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = new Color(1f, 0.85f, 0.1f),
+        };
+
+        _sunGizmo = new Node3D { Name = "SunGizmo", Position = anchor };
+        AddChild(_sunGizmo);
+
+        const float beamLen = 25f;
+        var beam = new MeshInstance3D
+        {
+            Mesh = new CylinderMesh { TopRadius = 0.06f, BottomRadius = 0.06f, Height = beamLen },
+            MaterialOverride = mat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            // CylinderMesh's axis is local +Y — rotate +Y onto the sun direction (shortest arc),
+            // then push out by half the length so the beam starts at the avatar.
+            Quaternion = new Quaternion(Godot.Vector3.Up, towardLight),
+            Position = towardLight * (beamLen / 2f),
+        };
+        _sunGizmo.AddChild(beam);
+
+        var ball = new MeshInstance3D
+        {
+            Mesh = new SphereMesh { Radius = 1.2f, Height = 2.4f },
+            MaterialOverride = mat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            Position = towardLight * (beamLen + 1.5f),
+        };
+        _sunGizmo.AddChild(ball);
+
+        LogMessage($"Sun gizmo ON: beam/sphere point TOWARD the sun, dir={towardLight}");
     }
 
     public override void _Process(double delta)
@@ -241,6 +307,10 @@ public partial class Boot : Control
             {
                 RenderConfig.DrawDistance = Mathf.Min(512f, RenderConfig.DrawDistance + 16f);
                 LogMessage($"Draw distance: {RenderConfig.DrawDistance:0} m");
+            }
+            else if (keyEvent.Keycode == Key.F5)
+            {
+                ToggleSunGizmo();
             }
         }
     }
