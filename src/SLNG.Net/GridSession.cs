@@ -327,6 +327,33 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
+    /// <summary>Touches (clicks) an object — the SL grab/de-grab pair
+    /// <see cref="ObjectManager.ClickObjectAsync"/> sends 50ms apart, which is what fires
+    /// touch_start/touch_end on any touch script the object carries. <paramref name="localId"/>
+    /// is the SL scene-local id (<c>Entity.LocalId</c>), not the persistent asset/object UUID.
+    /// Surface hit details are optional (all-zero if omitted, like LibreMetaverse's own
+    /// no-detail overload) — a HUD button script rarely inspects them, but pass real ones (face
+    /// index, hit position/normal) when available for scripts that do.</summary>
+    public async System.Threading.Tasks.Task ClickObjectAsync(
+        uint localId,
+        int faceIndex = 0,
+        System.Numerics.Vector3 position = default,
+        System.Numerics.Vector3 normal = default,
+        System.Numerics.Vector3 uvCoord = default,
+        System.Numerics.Vector3 stCoord = default,
+        System.Numerics.Vector3 binormal = default)
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null) return;
+
+        await _client.Objects.ClickObjectAsync(
+            sim, localId,
+            ToOmv(uvCoord), ToOmv(stCoord), faceIndex,
+            ToOmv(position), ToOmv(normal), ToOmv(binormal));
+    }
+
+    private static LibreMetaverse.Vector3 ToOmv(System.Numerics.Vector3 v) => new(v.X, v.Y, v.Z);
+
     /// <summary>Sends an AgentUpdate to move the avatar.</summary>
     public void SetMovement(bool forward, bool backward, bool left, bool right, bool up, bool down, System.Numerics.Quaternion cameraRotation, bool fly = false)
     {

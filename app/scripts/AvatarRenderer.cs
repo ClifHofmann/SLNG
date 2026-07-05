@@ -73,6 +73,7 @@ public partial class AvatarRenderer : Node3D
     private World? _world;
     private AssetService? _assetService;
     private GpuCache? _gpuCache;
+    private SLNG.Net.GridSession? _session;
     private AvatarSkeleton? _avatarSkeleton;
     private readonly Dictionary<Guid, AvatarVisual> _visuals = new();
     // attachment entity ID → BoneAttachment3D node parented to the avatar skeleton
@@ -100,13 +101,14 @@ public partial class AvatarRenderer : Node3D
     // DLL timestamp. If this line is missing or shows an old tag, the client is NOT running
     // the code you think it is; close it fully (not just the window) and re-run
     // tools/run-client.ps1 before drawing any conclusion from the rest of the log.
-    private const string BuildMarker = "2026-07-04-session8o-hud-overlay";
+    private const string BuildMarker = "2026-07-04-session8r-hud-world3d-fix";
 
-    public void Initialize(World world, AssetService assetService, GpuCache gpuCache)
+    public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
     {
         GD.Print($"[AvatarRenderer] BUILD MARKER: {BuildMarker}");
         _world = world;
         _assetService = assetService;
+        _session = session;
         _gpuCache = gpuCache;
 
         // Load the SL Bento skeleton definition. Read via Godot's FileAccess so it works
@@ -1072,7 +1074,11 @@ public partial class AvatarRenderer : Node3D
         container.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         layer.AddChild(container);
 
-        _hudViewport = new SubViewport { Name = "SlHudViewport", TransparentBg = true, OwnWorld3D = true };
+        // OwnWorld3D alone only says "don't inherit the parent's World3D" — it does not itself
+        // instantiate one, so World3D reads back null (confirmed live: a click's DirectSpaceState
+        // query crashed on it) until something explicitly assigns a resource. Construct it
+        // ourselves so it's valid immediately, with no dependency on Godot's own lazy-init timing.
+        _hudViewport = new SubViewport { Name = "SlHudViewport", TransparentBg = true, OwnWorld3D = true, World3D = new World3D() };
         container.AddChild(_hudViewport);
         // Window resize changes the aspect ratio, which moves every horizontal anchor.
         _hudViewport.SizeChanged += () =>
@@ -1156,7 +1162,7 @@ public partial class AvatarRenderer : Node3D
             return;
         _hudContent[entityId] = (shapeKey, prim.Faces, defaultFace);
 
-        _ = LoadHudContentAsync(hudNode, prim, defaultFace);
+        _ = LoadHudContentAsync(hudNode, entityId, prim, defaultFace);
     }
 
     /// <summary>Recomputes one HUD entity's overlay position from its anchor + SL-local offset.
@@ -1179,7 +1185,7 @@ public partial class AvatarRenderer : Node3D
     }
 
     private async System.Threading.Tasks.Task LoadHudContentAsync(
-        Node3D hudNode, PrimitiveComponent prim, FaceTexture defaultFace)
+        Node3D hudNode, Guid entityId, PrimitiveComponent prim, FaceTexture defaultFace)
     {
         if (_assetService == null) return;
 
@@ -1207,6 +1213,16 @@ public partial class AvatarRenderer : Node3D
             var mi = new MeshInstance3D { Name = "HudMesh", Mesh = arrayMesh };
             hudNode.AddChild(mi);
             _ = ApplyHudFaceMaterialsAsync(mi, faceIndices, faces, defaultFace);
+
+            // Click detection: one combined trimesh collision shape per HUD prim (not per-face —
+            // ClickObjectAsync's simple no-surface-detail overload is a fully legitimate SL touch,
+            // and a HUD button script practically never inspects which face/UV was hit). Tagged
+            // with the owning entity id so TryClickHud can resolve a raycast hit back to a LocalId.
+            var body = new StaticBody3D { Name = "HudCollision" };
+            body.SetMeta("EntityId", entityId.ToString());
+            var shape = new CollisionShape3D { Shape = arrayMesh.CreateTrimeshShape() };
+            body.AddChild(shape);
+            hudNode.AddChild(body);
         }).CallDeferred();
     }
 
@@ -1827,14 +1843,61 @@ public partial class AvatarRenderer : Node3D
 
     public override void _Input(InputEvent @event)
     {
-        if (@event is not InputEventKey keyEvt || !keyEvt.Pressed || keyEvt.Echo) return;
+        if (@event is InputEventKey keyEvt && keyEvt.Pressed && !keyEvt.Echo)
+        {
+            if (keyEvt.Keycode == Key.F9)
+                ToggleNdotLDebugMaterial();
+            else if (keyEvt.Keycode == Key.F7)
+                ToggleAvatarShadowCasting();
+            else if (keyEvt.Keycode == Key.F8)
+                ToggleTPose();
+            return;
+        }
 
-        if (keyEvt.Keycode == Key.F9)
-            ToggleNdotLDebugMaterial();
-        else if (keyEvt.Keycode == Key.F7)
-            ToggleAvatarShadowCasting();
-        else if (keyEvt.Keycode == Key.F8)
-            ToggleTPose();
+        // Plain left-click (not Alt+LMB, which AvatarController reserves for camera orbit):
+        // touch whatever HUD prim is under the cursor, if any.
+        if (@event is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left && !mb.AltPressed)
+            TryClickHud(mb.Position);
+    }
+
+    /// <summary>Raycasts a screen click into the HUD overlay's own isolated World3D (via its own
+    /// orthographic camera) and, on a hit, sends an SL touch (GridSession.ClickObjectAsync — a
+    /// grab/de-grab pair, which is what fires touch_start/touch_end on the object's script) for
+    /// the entity the hit collision body is tagged with. A miss (empty overlay space, or no HUD
+    /// loaded) does nothing — the event is left unhandled so nothing else is blocked by it.</summary>
+    private void TryClickHud(Godot.Vector2 screenPos)
+    {
+        if (_hudViewport == null || _session == null || _world == null) return;
+        var cam = _hudViewport.GetCamera3D();
+        if (cam == null) return;
+
+        var world3d = _hudViewport.World3D;
+        if (world3d == null)
+        {
+            GD.PrintErr("[HUD] click: viewport has no World3D yet — ignoring");
+            return;
+        }
+        var spaceState = world3d.DirectSpaceState;
+        if (spaceState == null)
+        {
+            GD.PrintErr("[HUD] click: World3D has no DirectSpaceState yet — ignoring");
+            return;
+        }
+
+        var from = cam.ProjectRayOrigin(screenPos);
+        var dir = cam.ProjectRayNormal(screenPos);
+        var query = PhysicsRayQueryParameters3D.Create(from, from + dir * 20f);
+        var hit = spaceState.IntersectRay(query);
+        if (hit.Count == 0) return;
+
+        if (hit["collider"].As<Node>() is not { } collider || !collider.HasMeta("EntityId")) return;
+        if (!Guid.TryParse(collider.GetMeta("EntityId").AsString(), out var entityId)) return;
+
+        var entity = _world.GetEntity(entityId);
+        if (entity == null) return;
+
+        GD.Print($"[HUD] clicked entity {entityId:N} (LocalId {entity.LocalId})");
+        _ = _session.ClickObjectAsync(entity.LocalId);
     }
 
     /// <summary>F8: freeze every avatar in its rest (T-)pose and stop animation playback, so a
