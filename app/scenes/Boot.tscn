@@ -1,7 +1,7 @@
 [gd_scene load_steps=7 format=3 uid="uid://c8slng0bootui1"]
 
 [ext_resource type="Script" path="res://scripts/Boot.cs" id="1_script"]
-[ext_resource type="Texture2D" uid="uid://cxab3bootbg" path="res://assets/images/boot_bg.png" id="2_bg"]
+[ext_resource type="Texture2D" uid="uid://cxab3bootbg" path="res://assets/images/boot_bg.jpg" id="2_bg"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_glass"]
 bg_color = Color(0, 0, 0, 0.5)
