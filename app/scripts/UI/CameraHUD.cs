@@ -121,9 +121,9 @@ public partial class CameraHUD : Window
         // 4. Presets
         var presetsHBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
         mainVBox.AddChild(presetsHBox);
-        var btnFront = new Button { Text = "Front" };
-        var btnSide = new Button { Text = "Side" };
-        var btnRear = new Button { Text = "Rear" };
+        var btnFront = new Button { Text = "👤", TooltipText = "Front View", CustomMinimumSize = new Godot.Vector2(40, 32) };
+        var btnSide = new Button { Text = "◧", TooltipText = "Side View", CustomMinimumSize = new Godot.Vector2(40, 32) };
+        var btnRear = new Button { Text = "🔙", TooltipText = "Rear View", CustomMinimumSize = new Godot.Vector2(40, 32) };
         presetsHBox.AddChild(btnFront);
         presetsHBox.AddChild(btnSide);
         presetsHBox.AddChild(btnRear);
