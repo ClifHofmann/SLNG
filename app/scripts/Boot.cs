@@ -40,21 +40,34 @@ public partial class Boot : Control
 
     private Label _hudLabel = null!;
     private double _hudAccum;
+    
+    private SLNG.App.UI.TopMenu _topMenu = null!;
+
+    public const string AppVersion = "v0.1.0-alpha";
 
     public override void _Ready()
     {
-        _vboxContainer = GetNode<VBoxContainer>("VBoxContainer");
-        _profileDropdown = GetNode<OptionButton>("VBoxContainer/HBoxContainer/ProfileDropdown");
-        _gridInput = GetNode<LineEdit>("VBoxContainer/HBoxContainer/GridInput");
-        _firstInput = GetNode<LineEdit>("VBoxContainer/HBoxContainer/FirstInput");
-        _lastInput = GetNode<LineEdit>("VBoxContainer/HBoxContainer/LastInput");
-        _passInput = GetNode<LineEdit>("VBoxContainer/HBoxContainer/PassInput");
-        _saveLoginCheck = GetNode<CheckBox>("VBoxContainer/HBoxContainer/SaveLoginCheck");
-        _loginButton = GetNode<Button>("VBoxContainer/HBoxContainer/LoginButton");
-        _logPanel = GetNode<RichTextLabel>("VBoxContainer/LogPanel");
+        // Versioning in window title
+        DisplayServer.WindowSetTitle($"SLNG {AppVersion}");
+
+        _vboxContainer = GetNode<VBoxContainer>("%VBoxContainer");
+        _profileDropdown = GetNode<OptionButton>("%ProfileDropdown");
+        _gridInput = GetNode<LineEdit>("%GridInput");
+        _firstInput = GetNode<LineEdit>("%FirstInput");
+        _lastInput = GetNode<LineEdit>("%LastInput");
+        _passInput = GetNode<LineEdit>("%PassInput");
+        _saveLoginCheck = GetNode<CheckBox>("%SaveLoginCheck");
+        _loginButton = GetNode<Button>("%LoginButton");
+        _logPanel = GetNode<RichTextLabel>("%LogPanel");
         
-        _chatInput = GetNode<LineEdit>("VBoxContainer/ChatBox/ChatInput");
-        _chatSendButton = GetNode<Button>("VBoxContainer/ChatBox/ChatSendButton");
+        _chatInput = GetNode<LineEdit>("%ChatInput");
+        _chatSendButton = GetNode<Button>("%ChatSendButton");
+
+        var versionLabel = GetNode<Label>("%VersionLabel");
+        if (versionLabel != null)
+        {
+            versionLabel.Text = AppVersion;
+        }
 
         _loginButton.Pressed += OnLoginPressed;
         _chatSendButton.Pressed += OnChatSend;
@@ -74,8 +87,50 @@ public partial class Boot : Control
         
         SetupEnvironment();
         SetupHud();
+        SetupTopMenu();
 
         LogMessage("Ready. Enter credentials and click Login.");
+    }
+
+    private void SetupTopMenu()
+    {
+        _topMenu = new SLNG.App.UI.TopMenu();
+        _topMenu.Visible = false; // Hide until logged in
+        AddChild(_topMenu);
+
+        _topMenu.OnDisconnect = () => {
+            if (_session != null)
+            {
+                LogMessage("Disconnecting...");
+                _session.Dispose();
+                _session = null;
+                GetNode<Control>("%LoginPanel").Visible = true;
+                _topMenu.Visible = false;
+                if (_inventoryPanel != null) { _inventoryPanel.QueueFree(); _inventoryPanel = null; }
+                Input.MouseMode = Input.MouseModeEnum.Visible;
+            }
+        };
+
+        _topMenu.OnExit = () => {
+            GetTree().Quit();
+        };
+
+        _topMenu.OnToggleHud = () => {
+            var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+            if (hudLayer != null) hudLayer.Visible = !hudLayer.Visible;
+        };
+
+        _topMenu.OnCameraMode = (mode) => {
+            // Future integration with FreeCamera/AvatarController
+            LogMessage($"Camera mode changed to {mode}");
+        };
+
+        _topMenu.OnToggleWireframe = () => {
+            var vp = GetViewport();
+            vp.DebugDraw = vp.DebugDraw == Viewport.DebugDrawEnum.Wireframe 
+                ? Viewport.DebugDrawEnum.Disabled 
+                : Viewport.DebugDrawEnum.Wireframe;
+        };
     }
 
     private void SetupHud()
@@ -382,8 +437,9 @@ public partial class Boot : Control
                 LogMessage(result.Message);
             }
             
-            // Hide the login form but keep chat/logs visible
-            GetNode<HBoxContainer>("VBoxContainer/HBoxContainer").Visible = false;
+            // Hide the login form and show the top menu
+            GetNode<Control>("%LoginPanel").Visible = false;
+            _topMenu.Visible = true;
 
             // Spawn the avatar controller (camera)
             _avatarController = new AvatarController();

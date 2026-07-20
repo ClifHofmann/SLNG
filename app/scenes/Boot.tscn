@@ -1,6 +1,7 @@
-[gd_scene load_steps=2 format=3 uid="uid://c8slng0bootui1"]
+[gd_scene load_steps=3 format=3 uid="uid://c8slng0bootui1"]
 
 [ext_resource type="Script" path="res://scripts/Boot.cs" id="1_script"]
+[ext_resource type="Texture2D" uid="uid://cxab3bootbg" path="res://assets/images/boot_bg.png" id="2_bg"]
 
 [node name="Boot" type="Control"]
 layout_mode = 3
@@ -11,7 +12,28 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1_script")
 
+[node name="Background" type="TextureRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+texture = ExtResource("2_bg")
+expand_mode = 1
+stretch_mode = 6
+
+[node name="ColorRect" type="ColorRect" parent="Background"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0, 0, 0, 0.4)
+
 [node name="VBoxContainer" type="VBoxContainer" parent="."]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -19,73 +41,120 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 
-[node name="HBoxContainer" type="HBoxContainer" parent="VBoxContainer"]
+[node name="CenterContainer" type="CenterContainer" parent="VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="LoginPanel" type="PanelContainer" parent="VBoxContainer/CenterContainer"]
+custom_minimum_size = Vector2(400, 0)
 layout_mode = 2
 
-[node name="ProfileDropdown" type="OptionButton" parent="VBoxContainer/HBoxContainer"]
+[node name="MarginContainer" type="MarginContainer" parent="VBoxContainer/CenterContainer/LoginPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 20
+theme_override_constants/margin_top = 20
+theme_override_constants/margin_right = 20
+theme_override_constants/margin_bottom = 20
+
+[node name="VBoxContainer" type="VBoxContainer" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer"]
+layout_mode = 2
+theme_override_constants/separation = 15
+
+[node name="Title" type="Label" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 28
+text = "S L N G"
+horizontal_alignment = 1
+
+[node name="HSeparator" type="HSeparator" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+
+[node name="ProfileDropdown" type="OptionButton" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
+unique_name_in_owner = true
 layout_mode = 2
 tooltip_text = "Select a saved profile"
 
-[node name="GridLabel" type="Label" parent="VBoxContainer/HBoxContainer"]
+[node name="GridInput" type="LineEdit" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
+unique_name_in_owner = true
 layout_mode = 2
-text = "Grid URI:"
-
-[node name="GridInput" type="LineEdit" parent="VBoxContainer/HBoxContainer"]
-layout_mode = 2
-size_flags_horizontal = 3
 text = "http://127.0.0.1:9000/"
+placeholder_text = "Grid URI"
 
-[node name="FirstLabel" type="Label" parent="VBoxContainer/HBoxContainer"]
+[node name="NameBox" type="HBoxContainer" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
 layout_mode = 2
-text = "First:"
 
-[node name="FirstInput" type="LineEdit" parent="VBoxContainer/HBoxContainer"]
+[node name="FirstInput" type="LineEdit" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer/NameBox"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 text = "Test"
+placeholder_text = "First Name"
 
-[node name="LastLabel" type="Label" parent="VBoxContainer/HBoxContainer"]
-layout_mode = 2
-text = "Last:"
-
-[node name="LastInput" type="LineEdit" parent="VBoxContainer/HBoxContainer"]
+[node name="LastInput" type="LineEdit" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer/NameBox"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 text = "User"
+placeholder_text = "Last Name"
 
-[node name="PassLabel" type="Label" parent="VBoxContainer/HBoxContainer"]
+[node name="PassInput" type="LineEdit" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
+unique_name_in_owner = true
 layout_mode = 2
-text = "Pass:"
-
-[node name="PassInput" type="LineEdit" parent="VBoxContainer/HBoxContainer"]
-layout_mode = 2
-size_flags_horizontal = 3
 secret = true
 text = "secret"
+placeholder_text = "Password"
 
-[node name="SaveLoginCheck" type="CheckBox" parent="VBoxContainer/HBoxContainer"]
+[node name="LoginActions" type="HBoxContainer" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
 layout_mode = 2
-text = "Save"
+alignment = 2
 
-[node name="LoginButton" type="Button" parent="VBoxContainer/HBoxContainer"]
+[node name="SaveLoginCheck" type="CheckBox" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer/LoginActions"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Save Credentials"
+
+[node name="LoginButton" type="Button" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer/LoginActions"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(100, 0)
 layout_mode = 2
 text = "Login"
 
 [node name="LogPanel" type="RichTextLabel" parent="VBoxContainer"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 150)
 layout_mode = 2
-size_flags_vertical = 3
 scroll_following = true
 
 [node name="ChatBox" type="HBoxContainer" parent="VBoxContainer"]
 layout_mode = 2
 
 [node name="ChatInput" type="LineEdit" parent="VBoxContainer/ChatBox"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 placeholder_text = "Type your message here..."
 editable = false
 
 [node name="ChatSendButton" type="Button" parent="VBoxContainer/ChatBox"]
+unique_name_in_owner = true
 layout_mode = 2
 text = "Send"
 disabled = true
+
+[node name="VersionLabel" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -100.0
+offset_top = -26.0
+offset_right = -10.0
+offset_bottom = -10.0
+grow_horizontal = 0
+grow_vertical = 0
+text = "v0.0.0"
+horizontal_alignment = 2
