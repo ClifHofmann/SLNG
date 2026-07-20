@@ -35,6 +35,7 @@ public partial class Boot : Control
     private WorldEnvironment? _worldEnvironment;
     private bool _postFxEnabled = true;
     private DirectionalLight3D? _sun;
+    private SLNG.App.UI.InventoryPanel? _inventoryPanel;
     private Node3D? _sunGizmo;
 
     private Label _hudLabel = null!;
@@ -109,6 +110,9 @@ public partial class Boot : Control
         var cameraHud = new SLNG.App.UI.CameraHUD();
         cameraHud.Name = "CameraHUD";
         hudLayer.AddChild(cameraHud);
+
+        _inventoryPanel = new SLNG.App.UI.InventoryPanel { Name = "InventoryPanel" };
+        hudLayer.AddChild(_inventoryPanel);
     }
 
     private void SetupEnvironment()
@@ -312,6 +316,11 @@ public partial class Boot : Control
             {
                 ToggleSunGizmo();
             }
+            else if (keyEvent.Keycode == Key.I && keyEvent.CtrlPressed)
+            {
+                // Ctrl+I like the real viewers — plain I would fire while typing in chat.
+                _inventoryPanel?.Toggle();
+            }
         }
     }
 
@@ -341,6 +350,7 @@ public partial class Boot : Control
         _terrainRenderer?.Initialize(_world, _assetService, gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, gpuCache);
         _avatarRenderer?.Initialize(_world, _assetService, gpuCache, _session);
+        _inventoryPanel?.Initialize(_session);
 
         _session.ChatMessageReceived += OnChatMessage;
 
