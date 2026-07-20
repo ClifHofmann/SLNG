@@ -105,6 +105,7 @@ public partial class Boot : Control
                 _session.Dispose();
                 _session = null;
                 GetNode<Control>("%LoginPanel").Visible = true;
+                GetNode<Control>("%Background").Visible = true;
                 _topMenu.Visible = false;
                 if (_inventoryPanel != null) { _inventoryPanel.QueueFree(); _inventoryPanel = null; }
                 Input.MouseMode = Input.MouseModeEnum.Visible;
@@ -437,8 +438,9 @@ public partial class Boot : Control
                 LogMessage(result.Message);
             }
             
-            // Hide the login form and show the top menu
+            // Hide the login form, background, and show the top menu
             GetNode<Control>("%LoginPanel").Visible = false;
+            GetNode<Control>("%Background").Visible = false;
             _topMenu.Visible = true;
 
             // Spawn the avatar controller (camera)
