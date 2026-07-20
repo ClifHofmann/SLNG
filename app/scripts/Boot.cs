@@ -42,8 +42,11 @@ public partial class Boot : Control
     private double _hudAccum;
     
     private SLNG.App.UI.TopMenu _topMenu = null!;
+    private SLNG.App.UI.ButtonBar _buttonBar = null!;
+    private SLNG.App.UI.PreferencesWindow _preferencesWindow = null!;
+    private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
 
-    public const string AppVersion = "v0.1.3-alpha";
+    public const string AppVersion = "v0.1.4-alpha";
 
     public override void _Ready()
     {
@@ -159,6 +162,10 @@ public partial class Boot : Control
                 ? Viewport.DebugDrawEnum.Disabled 
                 : Viewport.DebugDrawEnum.Wireframe;
         };
+
+        _topMenu.OnOpenPreferences = () => {
+            _preferencesWindow.Visible = true;
+        };
     }
 
     private void SetupHud()
@@ -196,6 +203,37 @@ public partial class Boot : Control
 
         _inventoryPanel = new SLNG.App.UI.InventoryPanel { Name = "InventoryPanel" };
         hudLayer.AddChild(_inventoryPanel);
+
+        SetupButtonBarAndPreferences(hudLayer, cameraHud);
+    }
+
+    /// <summary>
+    /// Bottom button bar (Camera Controls / Inventory toggle icons) plus the Preferences
+    /// window that lets the user pick which buttons are enabled. ToolbarItemDefinition is
+    /// the single registry both widgets work from -- adding a third toggleable panel later
+    /// means adding one more entry to toolbarItems here, nothing else.
+    /// </summary>
+    private void SetupButtonBarAndPreferences(CanvasLayer hudLayer, SLNG.App.UI.CameraHUD cameraHud)
+    {
+        var toolbarItems = new System.Collections.Generic.List<SLNG.App.UI.ToolbarItemDefinition>
+        {
+            new("camera", "Camera Controls", "CAM", () => cameraHud.Toggle(), () => cameraHud.Visible),
+            new("inventory", "Inventory", "INV", () => _inventoryPanel?.Toggle(), () => _inventoryPanel?.Visible ?? false),
+        };
+
+        _toolbarSettings = new SLNG.App.UI.ToolbarSettings();
+        _toolbarSettings.EnsureDefaults(toolbarItems.ConvertAll(i => i.Id));
+        _toolbarSettings.Load();
+
+        _buttonBar = new SLNG.App.UI.ButtonBar { Name = "ButtonBar" };
+        hudLayer.AddChild(_buttonBar);
+        _buttonBar.Initialize(toolbarItems, _toolbarSettings);
+
+        _preferencesWindow = new SLNG.App.UI.PreferencesWindow { Name = "PreferencesWindow" };
+        hudLayer.AddChild(_preferencesWindow);
+        var toolbarPage = new SLNG.App.UI.ToolbarPreferencesPage();
+        _preferencesWindow.AddTab("Toolbar", toolbarPage);
+        toolbarPage.Initialize(toolbarItems, _toolbarSettings);
     }
 
     private void SetupEnvironment()

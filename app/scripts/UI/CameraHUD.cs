@@ -161,6 +161,10 @@ public partial class CameraHUD : SLNGWindow
         return btn;
     }
 
+    /// <summary>Flips visibility -- mirrors InventoryPanel.Toggle() so ButtonBar (and any
+    /// other future caller) has one consistent toggle entry point across SLNGWindow panels.</summary>
+    public void Toggle() => Visible = !Visible;
+
     public override void _Process(double delta)
     {
         if (_cameraController == null)

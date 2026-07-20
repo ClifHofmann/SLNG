@@ -11,6 +11,7 @@ namespace SLNG.App.UI
         public Action? OnToggleCameraHud;
         public Action<int>? OnCameraMode; // 0=First, 1=Third, 2=Free
         public Action? OnToggleWireframe;
+        public Action? OnOpenPreferences;
 
         public override void _Ready()
         {
@@ -55,11 +56,14 @@ namespace SLNG.App.UI
             // App Menu
             var appMenu = new PopupMenu();
             appMenu.Name = "App";
+            appMenu.AddItem("Preferences...", 2);
+            appMenu.AddSeparator();
             appMenu.AddItem("Disconnect", 0);
             appMenu.AddItem("Exit", 1);
             appMenu.IdPressed += (id) => {
                 if (id == 0) OnDisconnect?.Invoke();
                 if (id == 1) OnExit?.Invoke();
+                if (id == 2) OnOpenPreferences?.Invoke();
             };
             menuBar.AddChild(appMenu);
 
