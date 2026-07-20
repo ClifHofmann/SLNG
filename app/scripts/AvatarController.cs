@@ -194,7 +194,11 @@ public partial class AvatarController : Camera3D
         }
     }
 
-    public override void _Input(InputEvent @event)
+    // _UnhandledInput, not _Input: Control nodes (the inventory Tree, LineEdits, etc.) stop
+    // mouse/keyboard events from reaching this method once they've consumed them, whereas
+    // _Input fires unconditionally — that's why scrolling the inventory window used to also
+    // zoom the world camera (Tree's own scroll handling never got a chance to be "the" consumer).
+    public override void _UnhandledInput(InputEvent @event)
     {
         if (@event is InputEventKey keyEvt && keyEvt.Pressed && !keyEvt.Echo)
         {
