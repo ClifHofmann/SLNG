@@ -341,10 +341,10 @@ public partial class AvatarRenderer : Node3D
                 var weights = AvatarShapeService.ComputeEffectiveWeights(avatar.VisualParams, charDir);
 
                 var distortions = AvatarShapeService.ComputeDistortions(avatar.VisualParams, charDir);
-                ApplyShape(visual, visual.Skeleton, _avatarSkeleton, distortions, visual.JointPosOverrides);
+                ApplyShape(visual, visual.Skeleton, _avatarSkeleton, distortions.BoneMods, visual.JointPosOverrides);
                 visual.Skeleton.ResetBonePoses();
 
-                LogJointParityCheck(visual, visual.Skeleton, _avatarSkeleton, distortions);
+                LogJointParityCheck(visual, visual.Skeleton, _avatarSkeleton, distortions.BoneMods);
 
                 // Deform the system body into this avatar's real proportions (male/muscle/breast/…
                 // sliders are vertex morphs, not bone scales — see AvatarMorphService).
