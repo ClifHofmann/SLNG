@@ -372,6 +372,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// grid has no library).</summary>
     public Guid? LibraryRootId => _client.Inventory.Store?.LibraryFolder?.UUID.Guid;
 
+    /// <summary>Folder id of the Trash folder, or null until login.</summary>
+    public Guid? TrashFolderId => _client.Inventory.FindFolderForType(FolderType.Trash).Guid;
+
     /// <summary>
     /// Fetches one folder's direct children (subfolders + items) — the lazy per-folder expansion
     /// unit for an inventory UI. One CAPS request (FetchInventoryDescendents2 — supported by
@@ -442,6 +445,32 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// Moves an inventory item (or folder) to the Trash folder.
+    /// </summary>
+    public Task MoveToTrashAsync(Guid itemId, bool isFolder)
+    {
+        if (TrashFolderId is not { } trashId) return Task.CompletedTask;
+        
+        if (isFolder)
+            _client.Inventory.MoveFolder(new LibreMetaverse.UUID(itemId), new LibreMetaverse.UUID(trashId));
+        else
+            _client.Inventory.MoveItem(new LibreMetaverse.UUID(itemId), new LibreMetaverse.UUID(trashId));
+            
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Copies an inventory item to a new parent folder.
+    /// </summary>
+    public async Task CopyItemAsync(Guid itemId, Guid newParentId, string newName)
+    {
+        var itemUuid = new LibreMetaverse.UUID(itemId);
+        var parentUuid = new LibreMetaverse.UUID(newParentId);
+        
+        await _client.Inventory.RequestCopyItemAsync(itemUuid, parentUuid, newName, CancellationToken.None).ConfigureAwait(false);
     }
 
     /// <summary>Sends an AgentUpdate to move the avatar.</summary>

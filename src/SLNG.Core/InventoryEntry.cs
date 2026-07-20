@@ -40,4 +40,24 @@ public sealed record InventoryEntry(
     Guid LinkTargetId,
     bool CanCopy,
     bool CanModify,
-    bool CanTransfer);
+    bool CanTransfer)
+{
+    /// <summary>True if the owner has all permissions (Copy, Modify, Transfer).</summary>
+    public bool IsFullPerm => CanCopy && CanModify && CanTransfer;
+
+    /// <summary>
+    /// Returns the standard SL permission suffix string, e.g. " (no copy)(no modify)(no transfer)".
+    /// Returns an empty string if all permissions are granted.
+    /// </summary>
+    public string GetPermissionSuffix()
+    {
+        if (IsFolder || IsFullPerm) return string.Empty;
+
+        var suffix = new System.Text.StringBuilder();
+        if (!CanCopy) suffix.Append(" (no copy)");
+        if (!CanModify) suffix.Append(" (no modify)");
+        if (!CanTransfer) suffix.Append(" (no transfer)");
+
+        return suffix.ToString();
+    }
+}
