@@ -45,10 +45,14 @@ public class World
     public event EventHandler<ulong>? TerrainUpdated;
     public event EventHandler<ulong>? TerrainSettingsUpdated;
     
-    // Selection state
-    public Entity? SelectedEntity { get; private set; }
+    // Selection state -- a set, not a single slot: multiple objects can be selected (and
+    // edited via independent windows) at once without one selection silently evicting another.
+    private readonly HashSet<Guid> _selectedIds = new();
+    public IReadOnlyCollection<Guid> SelectedEntityIds => _selectedIds;
     public event EventHandler<EntityEventArgs>? EntitySelected;
     public event EventHandler<EntityEventArgs>? EntityDeselected;
+
+    public bool IsSelected(Entity entity) => _selectedIds.Contains(entity.Id);
 
     /// <summary>
     /// Gets or creates an entity with the specified RegionHandle and LocalId.
@@ -184,25 +188,19 @@ public class World
         TerrainSettingsUpdated?.Invoke(this, regionHandle);
     }
     
+    /// <summary>Adds entity to the selection set. Additive: selecting a new entity does NOT
+    /// deselect any other -- callers that want single-select semantics (e.g. "clicking a new
+    /// object replaces the highlight") must explicitly deselect the old one themselves.</summary>
     public void SelectEntity(Entity entity)
     {
-        if (SelectedEntity == entity) return;
-        
-        if (SelectedEntity != null)
-        {
-            EntityDeselected?.Invoke(this, new EntityEventArgs(SelectedEntity));
-        }
-        
-        SelectedEntity = entity;
+        if (!_selectedIds.Add(entity.Id)) return; // already selected
         EntitySelected?.Invoke(this, new EntityEventArgs(entity));
     }
-    
-    public void DeselectEntity()
+
+    /// <summary>Removes entity from the selection set.</summary>
+    public void DeselectEntity(Entity entity)
     {
-        if (SelectedEntity == null) return;
-        
-        var prev = SelectedEntity;
-        SelectedEntity = null;
-        EntityDeselected?.Invoke(this, new EntityEventArgs(prev));
+        if (!_selectedIds.Remove(entity.Id)) return;
+        EntityDeselected?.Invoke(this, new EntityEventArgs(entity));
     }
 }

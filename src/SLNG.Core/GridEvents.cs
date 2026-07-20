@@ -17,6 +17,16 @@ public interface IWorldEvent
 /// </summary>
 public record ChatMessageEvent(string FromName, string Message, byte ChatType);
 
+/// <summary>Resolves a user or group UUID (Creator, Owner, Group, ...) to a display name.
+/// Identity-cache data, not world simulation state, so intentionally not an
+/// <see cref="IWorldEvent"/> -- consumers (UI) subscribe directly on GridSession.</summary>
+public record NameResolvedEvent(Guid Id, string Name);
+
+/// <summary>The simulator's urgent-message channel -- e.g. "Object physics cancelled because
+/// it exceeds limits for physical prims" when an ObjectFlagUpdate is silently rejected server-
+/// side. Not world-state, so intentionally not an <see cref="IWorldEvent"/>.</summary>
+public record AlertMessageEvent(string Message);
+
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
 /// <param name="ParentLocalId">Local ID of the parent object, or 0 if unparented.</param>
 /// <param name="AttachmentPoint">SL AttachmentPoint enum byte value; non-zero when the object
@@ -29,7 +39,15 @@ public record ObjectUpdateEvent(
     uint ParentLocalId = 0, byte AttachmentPoint = 0,
     PrimShape Shape = default,
     bool IsSculpt = false, Guid SculptId = default, byte SculptType = 0,
-    FaceTexture[]? Faces = null
+    FaceTexture[]? Faces = null,
+    Guid ObjectId = default,
+    bool IsPhysical = false, bool IsTemporary = false, bool IsPhantom = false, bool CastsShadows = true,
+    // ImprovedTerseObjectUpdate (fast position/rotation streaming for moving objects) never
+    // carries flags on the wire -- LibreMetaverse leaves Primitive.Flags at whatever the last
+    // full update said, which is stale the moment a flag was just changed locally. IsPhysical/
+    // IsTemporary/IsPhantom/CastsShadows above are only trustworthy when this is true; a terse-
+    // sourced event must not be allowed to overwrite them (see WorldSimulation.ApplyObjectUpdate).
+    bool IsFullUpdate = true
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar.</summary>
@@ -46,7 +64,9 @@ public record ObjectPropertiesEvent(
     string Description,
     Guid CreatorId,
     Guid OwnerId,
-    Guid GroupId
+    Guid GroupId,
+    bool OwnerCanMove = true,
+    bool OwnerCanModify = true, bool OwnerCanCopy = true, bool OwnerCanTransfer = true
 ) : IWorldEvent;
 
 /// <summary>Represents a raw 16x16 chunk of terrain height data from the simulator.

@@ -40,6 +40,17 @@ public static class RenderConfig
         return new Vector3((float)gx, slLocal.Z, (float)-gy);
     }
 
+    /// <summary>Inverse of <see cref="ToGodot"/>: converts a Godot world-space position (e.g. a
+    /// raycast hit point) back to SL region-local coordinates for the given region.</summary>
+    public static System.Numerics.Vector3 FromGodot(ulong regionHandle, Vector3 godotPos)
+    {
+        double regionX = (uint)(regionHandle >> 32);
+        double regionY = (uint)(regionHandle & 0xFFFFFFFF);
+        float slX = (float)(godotPos.X - regionX + OriginX);
+        float slY = (float)(-godotPos.Z - regionY + OriginY);
+        return new System.Numerics.Vector3(slX, slY, godotPos.Y);
+    }
+
     /// <summary>
     /// Returns the local agent's position converted to Godot world space, or false if the
     /// agent (or its transform) isn't in the world yet.

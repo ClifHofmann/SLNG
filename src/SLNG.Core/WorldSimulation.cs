@@ -127,7 +127,33 @@ public sealed class WorldSimulation : IDisposable
             entity.SetComponent(prim);
         }
         prim.AttachmentPoint = e.AttachmentPoint;
+        // Terse-sourced events (ImprovedTerseObjectUpdate -- fast position streaming for moving
+        // objects) never carry real flags on the wire; LibreMetaverse leaves Primitive.Flags at
+        // whatever the last full update said. Applying that here would repeatedly stomp a flag
+        // just changed locally (e.g. Physical/Temporary) back to its stale pre-change value on
+        // every subsequent terse ping, which arrive constantly while the object is moving.
+        if (e.IsFullUpdate)
+        {
+            prim.IsPhysical = e.IsPhysical;
+            prim.IsTemporary = e.IsTemporary;
+            prim.IsPhantom = e.IsPhantom;
+            prim.CastsShadows = e.CastsShadows;
+        }
         _world.NotifyComponentUpdated(entity, prim);
+
+        // Seed the entity's real simulator object UUID (distinct from Entity.Id, which is an
+        // internal ECS identity) so ApplyObjectProperties can later resolve the ObjectPropertiesFamily
+        // response back to this entity. Never overwrite Name/Description/etc. here -- those only
+        // ever come from ApplyObjectProperties.
+        var meta = entity.GetComponent<MetadataComponent>();
+        if (meta == null)
+        {
+            entity.SetComponent(new MetadataComponent(e.ObjectId));
+        }
+        else if (meta.Id == System.Guid.Empty && e.ObjectId != System.Guid.Empty)
+        {
+            meta.Id = e.ObjectId;
+        }
 
         // An attachment is any object whose parent is EITHER an avatar directly, OR another
         // object that is itself already an attachment (recursively). A detailed mesh product
@@ -348,7 +374,11 @@ public sealed class WorldSimulation : IDisposable
 
     private void ApplyObjectProperties(ObjectPropertiesEvent e)
     {
-        var entity = _world.GetEntity(e.ObjectId);
+        // e.ObjectId is the simulator's real object UUID, not Entity.Id (an internal ECS
+        // identity generated per-entity) -- resolve via the MetadataComponent seeded from
+        // ObjectUpdateEvent, the same way avatar entities are resolved by AgentId.
+        var entity = _world.Query<MetadataComponent>()
+            .FirstOrDefault(ent => ent.GetComponent<MetadataComponent>()?.Id == e.ObjectId);
         if (entity == null) return;
 
         var meta = entity.GetComponent<MetadataComponent>();
@@ -360,9 +390,16 @@ public sealed class WorldSimulation : IDisposable
 
         meta.Name = e.Name;
         meta.Description = e.Description;
-        meta.CreatorId = e.CreatorId;
+        // ObjectPropertiesFamily never carries CreatorID (always System.Guid.Empty there) -- only
+        // the full ObjectProperties message does. Don't let a family response that arrives after
+        // the full one blank out a CreatorID we already learned.
+        if (e.CreatorId != System.Guid.Empty) meta.CreatorId = e.CreatorId;
         meta.OwnerId = e.OwnerId;
         meta.GroupId = e.GroupId;
+        meta.Locked = !e.OwnerCanMove;
+        meta.OwnerCanModify = e.OwnerCanModify;
+        meta.OwnerCanCopy = e.OwnerCanCopy;
+        meta.OwnerCanTransfer = e.OwnerCanTransfer;
 
         _world.NotifyComponentUpdated(entity, meta);
     }

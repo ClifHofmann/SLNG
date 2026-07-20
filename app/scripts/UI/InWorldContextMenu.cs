@@ -7,14 +7,27 @@ namespace SLNG.App.UI
 {
     public partial class InWorldContextMenu : PanelContainer
     {
-        private VBoxContainer _btnContainer = null!;
         public Action<Entity, uint>? OnEditClicked;
         public Action<Entity, uint>? OnTouchClicked;
         public Action<Entity, uint>? OnDeleteClicked;
         public Action<Entity, uint>? OnInspectClicked;
 
+        /// <summary>Fired for a ground-context "Create" pick: the world position that was
+        /// right-clicked (already Godot-space; caller converts via RenderConfig.FromGodot) and
+        /// the chosen basic shape.</summary>
+        public Action<Vector3, BasicPrimType>? OnCreatePrimClicked;
+
         private Entity? _currentEntity;
         private uint _currentLocalId;
+        private Vector3 _pendingGroundPosition;
+
+        private VBoxContainer _objectButtons = null!;
+        private VBoxContainer _createRoot = null!;
+        private Button _createHeader = null!;
+        private VBoxContainer _createShapes = null!;
+
+        private const string CreateHeaderCollapsed = "📦 Create ▶";
+        private const string CreateHeaderExpanded = "📦 Create ▼";
 
         public override void _Ready()
         {
@@ -43,27 +56,76 @@ namespace SLNG.App.UI
             margin.AddThemeConstantOverride("margin_bottom", 8);
             AddChild(margin);
 
-            _btnContainer = new VBoxContainer();
-            margin.AddChild(_btnContainer);
+            var root = new VBoxContainer();
+            margin.AddChild(root);
 
-            AddMenuButton("✏️ Edit", () => OnEditClicked?.Invoke(_currentEntity!, _currentLocalId));
-            AddMenuButton("✋ Touch", () => OnTouchClicked?.Invoke(_currentEntity!, _currentLocalId));
-            AddMenuButton("🔍 Inspect", () => OnInspectClicked?.Invoke(_currentEntity!, _currentLocalId));
-            AddMenuButton("🗑️ Delete", () => OnDeleteClicked?.Invoke(_currentEntity!, _currentLocalId));
+            _objectButtons = new VBoxContainer();
+            root.AddChild(_objectButtons);
+            AddMenuButton(_objectButtons, "✏️ Edit", () => OnEditClicked?.Invoke(_currentEntity!, _currentLocalId));
+            AddMenuButton(_objectButtons, "✋ Touch", () => OnTouchClicked?.Invoke(_currentEntity!, _currentLocalId));
+            AddMenuButton(_objectButtons, "🔍 Inspect", () => OnInspectClicked?.Invoke(_currentEntity!, _currentLocalId));
+            AddMenuButton(_objectButtons, "🗑️ Delete", () => OnDeleteClicked?.Invoke(_currentEntity!, _currentLocalId));
+
+            // Right-clicking empty ground shows this set instead (see ShowGroundMenu): a single
+            // "Create" entry that expands into the basic-shape list, rather than dumping all 7
+            // shapes directly into the menu. Material/torus-etc. fine-tuning happens afterward in
+            // the Build/Inspector window like any other object.
+            _createRoot = new VBoxContainer { Visible = false };
+            root.AddChild(_createRoot);
+
+            _createHeader = new Button { Text = CreateHeaderCollapsed, Flat = true, Alignment = HorizontalAlignment.Left };
+            _createRoot.AddChild(_createHeader);
+
+            var indent = new MarginContainer();
+            indent.AddThemeConstantOverride("margin_left", 16);
+            _createRoot.AddChild(indent);
+
+            _createShapes = new VBoxContainer { Visible = false };
+            indent.AddChild(_createShapes);
+
+            _createHeader.Pressed += () =>
+            {
+                _createShapes.Visible = !_createShapes.Visible;
+                _createHeader.Text = _createShapes.Visible ? CreateHeaderExpanded : CreateHeaderCollapsed;
+            };
+            AddMenuButton(_createShapes, "📦 Box", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Box));
+            AddMenuButton(_createShapes, "🔵 Sphere", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Sphere));
+            AddMenuButton(_createShapes, "🥫 Cylinder", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Cylinder));
+            AddMenuButton(_createShapes, "🔺 Prism", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Prism));
+            AddMenuButton(_createShapes, "🍩 Torus", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Torus));
+            AddMenuButton(_createShapes, "🛞 Tube", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Tube));
+            AddMenuButton(_createShapes, "💍 Ring", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Ring));
         }
 
-        private void AddMenuButton(string text, Action onClick)
+        private void AddMenuButton(VBoxContainer container, string text, Action onClick)
         {
             var btn = new Button { Text = text, Flat = true, Alignment = HorizontalAlignment.Left };
             btn.Pressed += () => { onClick(); Hide(); };
-            _btnContainer.AddChild(btn);
+            container.AddChild(btn);
         }
 
         public void ShowMenu(Vector2 position, Entity entity, uint localId)
         {
             _currentEntity = entity;
             _currentLocalId = localId;
+            _objectButtons.Visible = true;
+            _createRoot.Visible = false;
             Position = position;
+            Visible = true;
+            MoveToFront();
+        }
+
+        /// <summary>Right-click on terrain (or anything else without an entity to edit) --
+        /// shows the "Create" shape picker instead of Edit/Touch/Inspect/Delete. Always starts
+        /// collapsed so repeated right-clicks behave predictably.</summary>
+        public void ShowGroundMenu(Vector2 screenPosition, Vector3 worldPosition)
+        {
+            _pendingGroundPosition = worldPosition;
+            _objectButtons.Visible = false;
+            _createRoot.Visible = true;
+            _createShapes.Visible = false;
+            _createHeader.Text = CreateHeaderCollapsed;
+            Position = screenPosition;
             Visible = true;
             MoveToFront();
         }

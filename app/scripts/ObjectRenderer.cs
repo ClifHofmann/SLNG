@@ -11,6 +11,13 @@ namespace SLNG.App;
 
 public partial class ObjectRenderer : Node3D
 {
+    // Physics layers: 1 = terrain/objects (AvatarController's ground-detection ray masks to just
+    // this), 2 = avatar (AvatarRenderer). Phantom objects move to their own layer instead of
+    // disabling their CollisionShape3D outright -- Disabled would also block the object-selection
+    // raycast (ObjectSelectionController), which queries all layers by default, so a phantom
+    // object would become unclickable/un-editable, not just un-standable-on.
+    private const uint PhantomLayer = 1u << 2;
+
     private World? _world;
     private SLNG.Assets.AssetService? _assetService;
     private GpuCache? _gpuCache;
@@ -336,6 +343,11 @@ public partial class ObjectRenderer : Node3D
             }
 
             state.MeshInstance.Scale = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y);
+
+            // Phantom means "no collision" in SL: move off the terrain/objects layer so
+            // AvatarController's ground ray (masked to layer 1) passes through, while staying
+            // selectable/editable (the object-selection raycast queries all layers).
+            state.StaticBody.CollisionLayer = prim.IsPhantom ? PhantomLayer : 1u;
         }
 
         var transform = entity.GetComponent<TransformComponent>();

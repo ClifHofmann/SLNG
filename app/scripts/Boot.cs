@@ -49,9 +49,12 @@ public partial class Boot : Control
     // M5-2 Object Editing UI
     private ObjectSelectionController _objectSelectionController = null!;
     private SLNG.App.UI.InWorldContextMenu _inWorldContextMenu = null!;
-    private SLNG.App.UI.ObjectEditWindow _objectEditWindow = null!;
 
-    public const string AppVersion = "v0.1.7-alpha";
+    // One independent ObjectEditWindow per edited object (keyed by its ECS Entity.Id) so
+    // multiple objects can be open and edited at the same time instead of sharing one floater.
+    private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
+
+    public const string AppVersion = "v0.1.8-alpha";
 
     public override void _Ready()
     {
@@ -214,15 +217,45 @@ public partial class Boot : Control
         _inWorldContextMenu = new SLNG.App.UI.InWorldContextMenu();
         hudLayer.AddChild(_inWorldContextMenu);
 
-        _objectEditWindow = new SLNG.App.UI.ObjectEditWindow();
-        hudLayer.AddChild(_objectEditWindow);
-
-        _inWorldContextMenu.OnEditClicked = (entity, localId) => _objectEditWindow.EditObject(entity, localId, _world);
+        _inWorldContextMenu.OnEditClicked = (entity, localId) => OpenObjectEditWindow(hudLayer, entity, localId);
         _inWorldContextMenu.OnTouchClicked = (entity, localId) => { /* Touch logic later */ };
         _inWorldContextMenu.OnInspectClicked = (entity, localId) => { /* Inspect logic later */ };
         _inWorldContextMenu.OnDeleteClicked = (entity, localId) => { /* Delete logic later */ };
+        _inWorldContextMenu.OnCreatePrimClicked = (godotPos, type) =>
+        {
+            if (_session == null) return;
+            _session.CreatePrim(type, RenderConfig.FromGodot(_session.CurrentRegionHandle, godotPos));
+        };
 
         SetupButtonBarAndPreferences(hudLayer, cameraHud);
+    }
+
+    /// <summary>
+    /// Opens (or refocuses) the Build/Inspector window for one object. Each object gets its own
+    /// independent window instance -- keyed by ECS Entity.Id, not a single shared floater -- so
+    /// several objects can be open and edited at the same time without one click stealing the
+    /// window another object was using.
+    /// </summary>
+    private void OpenObjectEditWindow(CanvasLayer hudLayer, SLNG.Core.ECS.Entity entity, uint localId)
+    {
+        if (_session == null || _world == null) return; // only reachable post-login, where both are set
+
+        if (_objectEditWindows.TryGetValue(entity.Id, out var existing))
+        {
+            existing.MoveToFront();
+            return;
+        }
+
+        var win = new SLNG.App.UI.ObjectEditWindow();
+        hudLayer.AddChild(win);
+        win.Initialize(_session, _world);
+        // Cascade new windows diagonally so opening several doesn't stack them exactly on top
+        // of each other -- wraps every 8 so it doesn't walk off-screen over a long session.
+        win.CascadeIndex = _objectEditWindows.Count % 8;
+        win.Closed += () => _objectEditWindows.Remove(entity.Id);
+        _objectEditWindows[entity.Id] = win;
+
+        win.EditObject(entity, localId, _world);
     }
 
     /// <summary>
@@ -545,9 +578,21 @@ public partial class Boot : Control
         }
         if (_worldSimulation != null) _worldSimulation.Dispose();
 
+        // Any ObjectEditWindows still open are bound to the session/world we're about to replace
+        // (Initialize() is called once at creation, not re-bindable) -- free them rather than
+        // leave them holding references to a disposed GridSession.
+        foreach (var win in _objectEditWindows.Values) win.QueueFree();
+        _objectEditWindows.Clear();
+
         _world = new SLNG.Core.ECS.World();
         _session = new GridSession();
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
+
+        // Server-side deselect (M5-2 acceptance criterion): fires on any client-side
+        // deselect path -- clicking empty space, selecting a different object, or
+        // closing the edit window -- so ObjectSelectionController and ObjectEditWindow
+        // don't each need to remember to notify the sim.
+        _world.EntityDeselected += (s, e) => _session?.DeselectObject(e.Entity.LocalId);
 
         string cacheDir = ProjectSettings.GlobalizePath("user://cache/assets");
         _assetService = new SLNG.Assets.AssetService(_session, cacheDir);
@@ -563,6 +608,9 @@ public partial class Boot : Control
         _inventoryPanel?.Initialize(_session);
 
         _session.ChatMessageReceived += OnChatMessage;
+        // Surfaces sim-side rejections that otherwise fail silently, e.g. "Object physics
+        // cancelled because it exceeds limits for physical prims" when a Physical toggle is denied.
+        _session.AlertMessageReceived += (s, e) => CallDeferred(MethodName.LogMessage, $"[color=orange][Alert] {e.Message}[/color]");
 
         var creds = new LoginCredentials
         {
@@ -622,8 +670,6 @@ public partial class Boot : Control
             _objectSelectionController = new ObjectSelectionController();
             AddChild(_objectSelectionController);
             _objectSelectionController.Initialize(_world, _session, _avatarController, _inWorldContextMenu);
-            
-            _objectEditWindow.Initialize(_session, _world);
 
             ulong regionHandle = _session.CurrentRegionHandle;
             

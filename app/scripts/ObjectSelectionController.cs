@@ -13,6 +13,12 @@ namespace SLNG.App
         private Camera3D _camera = null!;
         private UI.InWorldContextMenu _contextMenu = null!;
 
+        // World.SelectEntity is additive (multiple objects can be selected/edited independently
+        // at once, one per open ObjectEditWindow) -- this tracks only what THIS controller most
+        // recently raycast-clicked, so "click empty space to deselect" clears just that, not
+        // every object some other window still has pinned open.
+        private Entity? _lastClicked;
+
         public void Initialize(World world, GridSession session, Camera3D camera, UI.InWorldContextMenu contextMenu)
         {
             _world = world;
@@ -24,10 +30,6 @@ namespace SLNG.App
 
         public override void _UnhandledInput(InputEvent @event)
         {
-            if (@event is InputEventMouseButton mb) 
-            {
-                GD.Print($"[ObjectSelectionController] MouseButton event received. Index: {mb.ButtonIndex}, Pressed: {mb.Pressed}, Alt: {mb.AltPressed}");
-            }
             if (_world == null || _session == null || _camera == null) return;
 
             if (@event is InputEventMouseButton mouseBtn && mouseBtn.Pressed && !mouseBtn.AltPressed)
@@ -35,13 +37,27 @@ namespace SLNG.App
                 if (mouseBtn.ButtonIndex == MouseButton.Right || mouseBtn.ButtonIndex == MouseButton.Left)
                 {
                     var result = RaycastFromMouse(mouseBtn.Position);
-                    
-                    GD.Print($"[ObjectSelectionController] Raycast returned {result.Count} results.");
 
                     if (result.Count > 0)
                     {
                         var collider = result["collider"].As<Node>();
-                        GD.Print($"[ObjectSelectionController] Collider: {collider?.Name}, IsStaticBody: {collider is StaticBody3D}");
+                        // TerrainRenderer's StaticBody also carries a "LocalId" meta (literal
+                        // string "TERRAIN", not a real prim local ID) so it renders/highlights
+                        // through the same object-tagging convention -- HasMeta alone can't tell
+                        // it apart from a real object, so require the value to actually parse as
+                        // the uint every real prim LocalId is.
+                        bool isTaggedObject = collider is StaticBody3D taggedBody && taggedBody.HasMeta("LocalId")
+                            && uint.TryParse(taggedBody.GetMeta("LocalId").AsString(), out _);
+
+                        // Right-click on terrain (or anything untagged) offers "Create" instead
+                        // of the object menu -- there's no entity here to Edit/Touch/Inspect.
+                        if (!isTaggedObject && mouseBtn.ButtonIndex == MouseButton.Right)
+                        {
+                            _contextMenu.ShowGroundMenu(mouseBtn.Position, result["position"].AsVector3());
+                            GetViewport().SetInputAsHandled();
+                            return;
+                        }
+
                         if (collider is StaticBody3D staticBody && staticBody.HasMeta("LocalId"))
                         {
                             var localIdStr = staticBody.GetMeta("LocalId").AsString();
@@ -67,6 +83,7 @@ namespace SLNG.App
 
                                         _world.SelectEntity(entity);
                                         _session.SelectObject(localId);
+                                        _lastClicked = entity;
 
                                         if (mouseBtn.ButtonIndex == MouseButton.Right)
                                         {
@@ -82,10 +99,12 @@ namespace SLNG.App
                     }
                     else
                     {
-                        // Clicked on nothing, deselect
-                        if (_world.SelectedEntity != null && mouseBtn.ButtonIndex == MouseButton.Left)
+                        // Clicked on nothing: deselect only what this controller last clicked --
+                        // other objects pinned open in their own ObjectEditWindow are untouched.
+                        if (_lastClicked != null && mouseBtn.ButtonIndex == MouseButton.Left)
                         {
-                            _world.DeselectEntity();
+                            _world.DeselectEntity(_lastClicked);
+                            _lastClicked = null;
                         }
                     }
                 }

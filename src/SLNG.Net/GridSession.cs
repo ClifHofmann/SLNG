@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using LibreMetaverse;
 using SLNG.Core;
 
@@ -13,11 +14,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 {
     private readonly GridClient _client;
 
+    // Shared cache for both avatar (Creator/Owner/...) and group names -- both are keyed by
+    // UUID and populated via the same resolve-and-notify flow, so one cache/event pair covers
+    // both instead of duplicating the plumbing per name kind.
+    private readonly ConcurrentDictionary<Guid, string> _nameCache = new();
+
     public event EventHandler<ChatMessageEvent>? ChatMessageReceived;
     public event EventHandler<ObjectUpdateEvent>? ObjectUpdateReceived;
     public event EventHandler<AvatarUpdateEvent>? AvatarUpdateReceived;
     public event EventHandler<ObjectRemovedEvent>? ObjectRemovedReceived;
     public event EventHandler<ObjectPropertiesEvent>? ObjectPropertiesReceived;
+    public event EventHandler<NameResolvedEvent>? NameResolved;
+    public event EventHandler<AlertMessageEvent>? AlertMessageReceived;
     public event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
     public event EventHandler<TerrainSettingsEvent>? TerrainSettingsReceived;
     public event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
@@ -51,8 +59,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Settings.TexturePipeline.UseHttpTextures = true;
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
+        _client.Objects.TerseObjectUpdate += OnTerseObjectUpdate;
         _client.Objects.AvatarUpdate += OnAvatarUpdate;
         _client.Objects.ObjectPropertiesFamily += OnObjectPropertiesFamily;
+        _client.Objects.ObjectProperties += OnObjectPropertiesFull;
+        _client.Avatars.UUIDNameReply += OnUUIDNameReply;
+        _client.Groups.GroupNamesReply += OnGroupNamesReply;
+        _client.Self.AlertMessage += OnAlertMessage;
         _client.Objects.KillObject += OnKillObject;
         _client.Objects.KillObjects += OnKillObjects;
         _client.Terrain.LandPatchReceived += OnLandPatchReceived;
@@ -101,6 +114,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private void OnObjectPropertiesFamily(object? sender, ObjectPropertiesFamilyEventArgs e)
     {
+        // ObjectPropertiesFamily never carries CreatorID (LibreMetaverse leaves
+        // Primitive.ObjectProperties.CreatorID unset for this message type) -- only the full
+        // ObjectProperties message below has it. WorldSimulation.ApplyObjectProperties knows not
+        // to let this empty value stomp a CreatorID already learned from the full message.
         ObjectPropertiesReceived?.Invoke(this, new ObjectPropertiesEvent(
             e.Simulator.Handle,
             e.Properties.ObjectID.Guid,
@@ -108,8 +125,89 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             e.Properties.Description ?? "",
             e.Properties.CreatorID.Guid,
             e.Properties.OwnerID.Guid,
-            e.Properties.GroupID.Guid
+            e.Properties.GroupID.Guid,
+            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Move),
+            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Modify),
+            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Copy),
+            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Transfer)
         ));
+    }
+
+    /// <summary>The full ObjectProperties message, sent automatically by the simulator when an
+    /// object is selected (see GridSession.SelectObject). Unlike the family variant, this one
+    /// includes CreatorID.</summary>
+    private void OnObjectPropertiesFull(object? sender, ObjectPropertiesEventArgs e)
+    {
+        ObjectPropertiesReceived?.Invoke(this, new ObjectPropertiesEvent(
+            e.Simulator.Handle,
+            e.Properties.ObjectID.Guid,
+            e.Properties.Name ?? "",
+            e.Properties.Description ?? "",
+            e.Properties.CreatorID.Guid,
+            e.Properties.OwnerID.Guid,
+            e.Properties.GroupID.Guid,
+            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Move),
+            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Modify),
+            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Copy),
+            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Transfer)
+        ));
+    }
+
+    private void OnUUIDNameReply(object? sender, UUIDNameReplyEventArgs e)
+    {
+        foreach (var kvp in e.Names)
+        {
+            var id = kvp.Key.Guid;
+            _nameCache[id] = kvp.Value;
+            NameResolved?.Invoke(this, new NameResolvedEvent(id, kvp.Value));
+        }
+    }
+
+    private void OnGroupNamesReply(object? sender, GroupNamesEventArgs e)
+    {
+        foreach (var kvp in e.GroupNames)
+        {
+            var id = kvp.Key.Guid;
+            var name = string.IsNullOrEmpty(kvp.Value) ? "(unknown group)" : kvp.Value;
+            _nameCache[id] = name;
+            NameResolved?.Invoke(this, new NameResolvedEvent(id, name));
+        }
+    }
+
+    /// <summary>The sim's urgent-message channel -- covers rejections that otherwise fail
+    /// completely silently, e.g. OpenSim's SceneGraph.UpdatePrimFlags sending "Object physics
+    /// cancelled because it exceeds limits for physical prims" when a Physical toggle is denied
+    /// (size/linkset physics-capacity limits) instead of an ObjectFlagUpdate ever coming back.</summary>
+    private void OnAlertMessage(object? sender, AlertMessageEventArgs e)
+    {
+        AlertMessageReceived?.Invoke(this, new AlertMessageEvent(e.Message));
+    }
+
+    /// <summary>Looks up an already-resolved user/group name from the local cache. Returns
+    /// false (with the raw id's string form) if it hasn't been fetched yet -- call
+    /// <see cref="RequestAvatarName"/>/<see cref="RequestGroupName"/> and wait for
+    /// <see cref="NameResolved"/> in that case.</summary>
+    public bool TryGetCachedName(Guid id, out string name)
+    {
+        if (_nameCache.TryGetValue(id, out var cached))
+        {
+            name = cached;
+            return true;
+        }
+        name = id.ToString();
+        return false;
+    }
+
+    public void RequestAvatarName(Guid agentId)
+    {
+        if (agentId == Guid.Empty || _nameCache.ContainsKey(agentId) || !_client.Network.Connected) return;
+        _client.Avatars.RequestAvatarName(new UUID(agentId));
+    }
+
+    public void RequestGroupName(Guid groupId)
+    {
+        if (groupId == Guid.Empty || _nameCache.ContainsKey(groupId) || !_client.Network.Connected) return;
+        _client.Groups.RequestGroupName(new UUID(groupId));
     }
 
     private void OnAvatarAppearance(object? sender, AvatarAppearanceEventArgs e)
@@ -149,7 +247,22 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         ));
     }
 
-    private void OnObjectUpdate(object? sender, PrimEventArgs e)
+    private void OnObjectUpdate(object? sender, PrimEventArgs e) => RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: true);
+
+    /// <summary>ImprovedTerseObjectUpdate -- the lightweight packet a physically-moving object
+    /// (falling, rolling, pushed) streams position/rotation/velocity through while it's actually
+    /// in motion. Without this subscription, only full ObjectUpdate packets reach our pipeline,
+    /// which the sim sends on state changes (select, flag/property edits) but NOT continuously
+    /// while an object is just physically moving -- so a physical object's position only ever
+    /// visibly updated here when something else incidentally forced a full resync, never smoothly
+    /// while actually falling/rolling.</summary>
+    private void OnTerseObjectUpdate(object? sender, TerseObjectUpdateEventArgs e)
+    {
+        if (e.Update.Avatar) return; // avatar terse updates: not covered by this event pipeline
+        RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: false);
+    }
+
+    private void RaiseObjectUpdate(LibreMetaverse.Simulator simulator, Primitive prim, bool isFullUpdate)
     {
         bool isMesh = false;
         Guid meshId = Guid.Empty;
@@ -157,19 +270,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         Guid sculptId = Guid.Empty;
         byte sculptType = 0;
 
-        if (e.Prim.Sculpt != null && e.Prim.Sculpt.SculptTexture != LibreMetaverse.UUID.Zero)
+        if (prim.Sculpt != null && prim.Sculpt.SculptTexture != LibreMetaverse.UUID.Zero)
         {
-            if (e.Prim.Sculpt.Type == LibreMetaverse.SculptType.Mesh)
+            if (prim.Sculpt.Type == LibreMetaverse.SculptType.Mesh)
             {
                 isMesh = true;
-                meshId = e.Prim.Sculpt.SculptTexture.Guid;
+                meshId = prim.Sculpt.SculptTexture.Guid;
             }
-            else if (e.Prim.Sculpt.Type != LibreMetaverse.SculptType.None)
+            else if (prim.Sculpt.Type != LibreMetaverse.SculptType.None)
             {
                 // Sphere/Torus/Plane/Cylinder sculpt: geometry comes from the sculpt-map texture.
                 isSculpt = true;
-                sculptId = e.Prim.Sculpt.SculptTexture.Guid;
-                sculptType = (byte)e.Prim.Sculpt.Type;
+                sculptId = prim.Sculpt.SculptTexture.Guid;
+                sculptType = (byte)prim.Sculpt.Type;
             }
         }
 
@@ -177,7 +290,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         Guid renderMaterialId = Guid.Empty;
         System.Numerics.Vector4 colorTint = new System.Numerics.Vector4(1, 1, 1, 1);
 
-        var defaultFace = e.Prim.Textures?.DefaultTexture;
+        var defaultFace = prim.Textures?.DefaultTexture;
         if (defaultFace != null)
         {
             textureId = defaultFace.TextureID.Guid;
@@ -188,7 +301,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // Per-face textures: each prim face can have its own texture/colour. Resolve each face
         // (its own entry, or the default) to a neutral FaceTexture indexed by face number.
         FaceTexture[]? faces = null;
-        var faceArr = e.Prim.Textures?.FaceTextures;
+        var faceArr = prim.Textures?.FaceTextures;
         if (faceArr != null && faceArr.Length > 0 && defaultFace != null)
         {
             faces = new FaceTexture[faceArr.Length];
@@ -209,7 +322,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         // Convert the prim's construction data to a neutral PrimShape so the asset layer can
         // regenerate real geometry without seeing a LibreMetaverse type.
-        var pd = e.Prim.PrimData;
+        var pd = prim.PrimData;
         var shape = new PrimShape(
             (byte)pd.ProfileCurve,
             (byte)pd.PathCurve,
@@ -223,12 +336,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             (byte)pd.PCode);
 
         ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
-            e.Simulator.Handle,
-            e.Prim.LocalID,
-            new System.Numerics.Vector3(e.Prim.Position.X, e.Prim.Position.Y, e.Prim.Position.Z),
-            new System.Numerics.Quaternion(e.Prim.Rotation.X, e.Prim.Rotation.Y, e.Prim.Rotation.Z, e.Prim.Rotation.W),
-            new System.Numerics.Vector3(e.Prim.Scale.X, e.Prim.Scale.Y, e.Prim.Scale.Z),
-            (byte)e.Prim.PrimData.ProfileCurve,
+            simulator.Handle,
+            prim.LocalID,
+            new System.Numerics.Vector3(prim.Position.X, prim.Position.Y, prim.Position.Z),
+            new System.Numerics.Quaternion(prim.Rotation.X, prim.Rotation.Y, prim.Rotation.Z, prim.Rotation.W),
+            new System.Numerics.Vector3(prim.Scale.X, prim.Scale.Y, prim.Scale.Z),
+            (byte)prim.PrimData.ProfileCurve,
             isMesh,
             meshId,
             textureId,
@@ -239,11 +352,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             defaultFace?.OffsetU ?? 0.0f,
             defaultFace?.OffsetV ?? 0.0f,
             defaultFace?.Rotation ?? 0.0f,
-            e.Prim.ParentID,
-            (byte)e.Prim.PrimData.AttachmentPoint,
+            prim.ParentID,
+            (byte)prim.PrimData.AttachmentPoint,
             shape,
             isSculpt, sculptId, sculptType,
-            faces));
+            faces,
+            prim.ID.Guid,
+            prim.Flags.HasFlag(PrimFlags.Physics),
+            prim.Flags.HasFlag(PrimFlags.Temporary),
+            prim.Flags.HasFlag(PrimFlags.Phantom),
+            prim.Flags.HasFlag(PrimFlags.CastShadows),
+            isFullUpdate));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)
@@ -569,6 +688,61 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Objects.SetScale(_client.Network.CurrentSim, localId, slScale, true, false);
     }
 
+    /// <summary>Sets Physical/Temporary/Phantom/CastShadows together in one ObjectFlagUpdate --
+    /// the wire message replaces all four at once, so callers must pass the object's full
+    /// current state, not just the one flag being toggled.
+    ///
+    /// Must send OpenSim's PhysShapeType.invalid (255) as the extra-physics shape type, NOT
+    /// LibreMetaverse's default PhysicsShapeType.Prim (0, a real value on the wire). OpenSim's
+    /// SceneGraph.UpdatePrimFlags branches on this byte: anything other than invalid is treated
+    /// as "also apply extra physics data" (density/friction/shape), and THAT branch never calls
+    /// group.UpdateFlags(...) at all -- so a Prim-shape request silently never touches
+    /// Physical/Temporary/Phantom no matter how good the object's permissions are. LMV's
+    /// simplified 6-arg SetFlags() overload hardcodes Prim, which is why every flag toggle from
+    /// this client was being swallowed (confirmed: a full-perm object the same agent already
+    /// edits fine in Firestorm still silently rejected our ObjectFlagUpdate).</summary>
+    public void SetObjectFlags(uint localId, bool physical, bool temporary, bool phantom, bool castsShadows)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+        const PhysicsShapeType noExtraPhysicsData = (PhysicsShapeType)255;
+        _client.Objects.SetFlags(_client.Network.CurrentSim, localId, physical, temporary, phantom, castsShadows,
+            noExtraPhysicsData, 1000f, 0.6f, 0.5f, 1f);
+    }
+
+    /// <summary>SL's "Locked" build-floater checkbox isn't a wire flag -- it's expressed by
+    /// removing/restoring the owner's Move permission.</summary>
+    public void SetObjectLocked(uint localId, bool locked)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+        _client.Objects.SetPermissions(_client.Network.CurrentSim, new List<uint> { localId }, PermissionWho.Owner, PermissionMask.Move, !locked);
+    }
+
+    /// <summary>Rezzes a new basic-shape prim at the given region-local position. The sim only
+    /// treats this as an approximate placement (see ObjectManager.AddPrim's remarks) -- the
+    /// object streams back in shortly after via the normal ObjectUpdate path, same as any other
+    /// object.</summary>
+    public void CreatePrim(SLNG.Core.BasicPrimType type, System.Numerics.Vector3 position)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+
+        var lmvType = type switch
+        {
+            SLNG.Core.BasicPrimType.Box => PrimType.Box,
+            SLNG.Core.BasicPrimType.Cylinder => PrimType.Cylinder,
+            SLNG.Core.BasicPrimType.Prism => PrimType.Prism,
+            SLNG.Core.BasicPrimType.Sphere => PrimType.Sphere,
+            SLNG.Core.BasicPrimType.Torus => PrimType.Torus,
+            SLNG.Core.BasicPrimType.Tube => PrimType.Tube,
+            SLNG.Core.BasicPrimType.Ring => PrimType.Ring,
+            _ => PrimType.Box
+        };
+
+        var constructionData = ObjectManager.BuildBasicShape(lmvType);
+        var slPos = new LibreMetaverse.Vector3(position.X, position.Y, position.Z);
+        _client.Objects.AddPrim(_client.Network.CurrentSim, constructionData, UUID.Zero, slPos,
+            new LibreMetaverse.Vector3(0.5f, 0.5f, 0.5f), LibreMetaverse.Quaternion.Identity);
+    }
+
     /// <summary>Sends an AgentUpdate to move the avatar.</summary>
     public void SetMovement(bool forward, bool backward, bool left, bool right, bool up, bool down, System.Numerics.Quaternion cameraRotation, bool fly = false)
     {
@@ -690,7 +864,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         _client.Self.ChatFromSimulator -= OnChatFromSimulator;
         _client.Objects.ObjectUpdate -= OnObjectUpdate;
+        _client.Objects.TerseObjectUpdate -= OnTerseObjectUpdate;
         _client.Objects.ObjectPropertiesFamily -= OnObjectPropertiesFamily;
+        _client.Objects.ObjectProperties -= OnObjectPropertiesFull;
+        _client.Avatars.UUIDNameReply -= OnUUIDNameReply;
+        _client.Groups.GroupNamesReply -= OnGroupNamesReply;
+        _client.Self.AlertMessage -= OnAlertMessage;
         _client.Objects.KillObject -= OnKillObject;
         _client.Objects.KillObjects -= OnKillObjects;
         _client.Terrain.LandPatchReceived -= OnLandPatchReceived;
