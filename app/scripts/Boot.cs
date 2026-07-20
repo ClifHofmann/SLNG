@@ -63,11 +63,14 @@ public partial class Boot : Control
         _chatInput = GetNode<LineEdit>("%ChatInput");
         _chatSendButton = GetNode<Button>("%ChatSendButton");
 
-        var versionLabel = GetNode<Label>("%VersionLabel");
-        if (versionLabel != null)
-        {
-            versionLabel.Text = AppVersion;
-        }
+        var versionLabel = GetNodeOrNull<Label>("%VersionLabel");
+        if (versionLabel != null) versionLabel.Text = AppVersion;
+
+        var loginVersionText = GetNodeOrNull<Label>("%VersionText");
+        if (loginVersionText != null) loginVersionText.Text = AppVersion;
+
+        var loadingVersionText = GetNodeOrNull<Label>("%LoadingVersionText");
+        if (loadingVersionText != null) loadingVersionText.Text = AppVersion;
 
         _loginButton.Pressed += OnLoginPressed;
         _chatSendButton.Pressed += OnChatSend;

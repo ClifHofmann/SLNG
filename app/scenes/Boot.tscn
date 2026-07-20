@@ -121,6 +121,14 @@ theme_override_font_sizes/font_size = 36
 text = "S L N G"
 horizontal_alignment = 1
 
+[node name="VersionText" type="Label" parent="LoginScreen/Panel/Margin/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.6, 0.6, 0.6, 1)
+theme_override_font_sizes/font_size = 14
+text = "v0.0.0"
+horizontal_alignment = 1
+
 [node name="Spacer" type="Control" parent="LoginScreen/Panel/Margin/VBox"]
 custom_minimum_size = Vector2(0, 8)
 layout_mode = 2
@@ -219,27 +227,35 @@ theme_override_font_sizes/font_size = 14
 text = "SECOND LIFE NEXT GENERATION"
 horizontal_alignment = 1
 
+[node name="LoadingVersionText" type="Label" parent="LoadingScreen/VBox/TitleBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.4, 0.4, 0.4, 1)
+theme_override_font_sizes/font_size = 12
+text = "v0.0.0"
+horizontal_alignment = 1
+
 [node name="HBox" type="HBoxContainer" parent="LoadingScreen/VBox"]
 layout_mode = 2
 theme_override_constants/separation = 48
 alignment = 1
 
 [node name="SpinnerBox" type="CenterContainer" parent="LoadingScreen/VBox/HBox"]
-custom_minimum_size = Vector2(120, 120)
+custom_minimum_size = Vector2(160, 160)
 layout_mode = 2
 
 [node name="SpinnerLabel" type="Label" parent="LoadingScreen/VBox/HBox/SpinnerBox"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.4, 0.8, 1, 1)
-theme_override_font_sizes/font_size = 64
+theme_override_font_sizes/font_size = 120
 text = "O"
 
 [node name="ProgressLabel" type="Label" parent="LoadingScreen/VBox/HBox/SpinnerBox"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.4, 0.8, 1, 1)
-theme_override_font_sizes/font_size = 20
+theme_override_font_sizes/font_size = 24
 text = "0%"
 
 [node name="TasksBox" type="VBoxContainer" parent="LoadingScreen/VBox/HBox"]
