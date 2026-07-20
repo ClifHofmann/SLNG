@@ -32,9 +32,3 @@ Invoke proactively. Example: when starting a networking task, hand the spec to
 - Prefer test-first for protocol and asset code.
 - When you finish a task, run `dotnet build` + `dotnet test`, then commit with the
   task id in the message.
-
-## Model notes
-
-The `architect` and `protocol-re` agents are set to Opus (hard reasoning). The
-implementer agents default to Sonnet to keep iteration cheap and fast. Override per
-task if needed.

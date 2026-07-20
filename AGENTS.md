@@ -17,33 +17,11 @@ Read alongside this file:
 - `docs/AI_WORKFLOW.md` — how Claude Code and Gemini work the repo in parallel
 - `docs/adr/` — architecture decision records
 
-## Tech stack (do not change without an ADR)
+## Tech stack (do not change without an ADR — versions/build config are in the .csproj files and project.godot)
 
-- **Language:** C# / .NET 8.
-- **Engine:** Godot 4, .NET build, Vulkan renderer.
 - **Protocol:** LibreMetaverse (login via LLSD, legacy UDP message system, HTTP CAPS).
-- **Physics:** Godot Jolt.
 - **Test framework:** xUnit. Integration tests run against a local OpenSim grid.
 - **Targets:** Windows first; Linux/macOS kept buildable. Mobile is a later goal.
-
-## Repository layout
-
-```
-app/                       Godot 4 .NET project (project.godot, scenes, UI, render adapters)
-src/
-  SLNG.Core/               World state (ECS), session lifecycle, orchestration. Engine-agnostic.
-  SLNG.Net/                LibreMetaverse wrapper: login, region connect, UDP, CAPS, EventQueue.
-  SLNG.Assets/             J2K decode, mesh/LOD, glTF PBR materials, avatar bake, caching.
-tests/
-  SLNG.Core.Tests/         Unit tests.
-  SLNG.Integration.Tests/  OpenSim-backed integration tests.
-docs/                      Architecture, roadmap, workflow, ADRs.
-tools/                     Dev scripts, OpenSim test-grid helpers, packet-capture utilities.
-```
-
-**Layering rule:** `src/` is engine-agnostic and must **not** reference Godot.
-Only `app/` references both Godot and `src/`. This is what lets one agent work
-rendering while another works the protocol without colliding. Enforce it in reviews.
 
 ## Build & run
 
@@ -64,8 +42,8 @@ Verified toolchain: **.NET SDK 8** and **Godot 4.7-stable (.NET/mono)**.
 
 ## Coding conventions
 
-- **C#:** `dotnet format` clean. Nullable reference types **on**. `async`/`await`
-  for all I/O; never block the Godot main thread.
+- **C#:** `dotnet format` clean. `async`/`await` for all I/O; never block the
+  Godot main thread.
 - **Naming:** `PascalCase` types/methods, `_camelCase` private fields, one public
   type per file named after the file.
 - **No magic UUIDs / endpoints** in code — constants in config.
@@ -145,5 +123,5 @@ change is committed on its own branch with a Conventional-Commit message.
 
 - **Always update the version number**: When implementing a new feature, a fix, or significant UI change, you MUST update the AppVersion constant in pp/scripts/Boot.cs (e.g. from 0.1.0-alpha to 0.1.1-alpha or 0.2.0-alpha) to reflect the new state. This ensures the version is visible on the login screen and title bar.
 
-## UI Standards (enforced � from code review)
+## UI Standards (enforced � from code review)
 - **Unified Window System:** All floating, draggable UI windows (such as Camera HUD, Inventory, Properties) MUST inherit from SLNG.App.UI.SLNGWindow. Do not use native Godot Window nodes or bare PanelContainers for popups. This ensures a consistent dark glassmorphism style, dragging behavior, and uniform title bars across the entire client.
