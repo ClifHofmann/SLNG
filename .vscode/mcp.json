@@ -1,10 +1,10 @@
 {
   "mcpServers": {
-    "code-index": {
+    "codebase-memory": {
       "command": "npx",
       "args": [
         "-y",
-        "@code-indexer/mcp"
+        "codebase-memory-mcp"
       ]
     }
   }
