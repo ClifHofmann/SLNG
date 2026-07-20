@@ -44,6 +44,11 @@ public class World
     public event EventHandler<ComponentEventArgs>? ComponentUpdated;
     public event EventHandler<ulong>? TerrainUpdated;
     public event EventHandler<ulong>? TerrainSettingsUpdated;
+    
+    // Selection state
+    public Entity? SelectedEntity { get; private set; }
+    public event EventHandler<EntityEventArgs>? EntitySelected;
+    public event EventHandler<EntityEventArgs>? EntityDeselected;
 
     /// <summary>
     /// Gets or creates an entity with the specified RegionHandle and LocalId.
@@ -177,5 +182,27 @@ public class World
     public void NotifyTerrainSettingsUpdated(ulong regionHandle)
     {
         TerrainSettingsUpdated?.Invoke(this, regionHandle);
+    }
+    
+    public void SelectEntity(Entity entity)
+    {
+        if (SelectedEntity == entity) return;
+        
+        if (SelectedEntity != null)
+        {
+            EntityDeselected?.Invoke(this, new EntityEventArgs(SelectedEntity));
+        }
+        
+        SelectedEntity = entity;
+        EntitySelected?.Invoke(this, new EntityEventArgs(entity));
+    }
+    
+    public void DeselectEntity()
+    {
+        if (SelectedEntity == null) return;
+        
+        var prev = SelectedEntity;
+        SelectedEntity = null;
+        EntityDeselected?.Invoke(this, new EntityEventArgs(prev));
     }
 }

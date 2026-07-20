@@ -1,12 +1,16 @@
-# Feature Specification: In-World Object Selection & Editing
+# [M5-2] In-World Object Selection & Editing
 
-**Status:** Draft / Initial Spec  
-**Branch:** `feat/object-editing`  
-**Target Milestone:** M5 (Viewer Features - In-World Interactions & Editing)
+- **Feature ID:** `M5-2`
+- **Track:** `render` / `ui` / `net`
+- **Status:** `🚧 In Progress`
+- **Owner:** `gemini`
+- **Branch:** `feature/M5-2-object-editing`
+- **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md#L123)
 
 ---
 
 ## 1. Goal & Scope
+
 
 Enable users to interact with and edit 3D objects directly within the rendered viewport. Right-clicking an object in the world displays a context menu (e.g., *Touch*, *Edit*, *Inspect*, *Delete*). Selecting **Edit** opens a floating Object Editing window (*Build / Inspector*) allowing users to view and modify transform parameters, object properties, textures, and prim parameters, syncing changes back to the Second Life / OpenSim simulator via `SLNG.Net`.
 
@@ -25,7 +29,8 @@ Enable users to interact with and edit 3D objects directly within the rendered v
      - ✏️ **Edit**: Opens the Object Edit Inspector Window.
      - ✋ **Touch / Use**: Triggers a touch action on the object (sends `ObjectSelect` / `ObjectGrab` / script touch event).
      - 🔍 **Inspect**: Opens object properties (Owner, Creator, Group, Prim Count, Script Info).
-     - 🗑️ **Delete / Take**: Deletes or moves the object to inventory if permissions allow.
+     - 🗑️ **Delete**: Deletes the object if permissions allow.
+     - 📦 **Take / Take Copy**: Takes the object to inventory if permissions allow.     
 
 3. **Object Edit Inspector Window:**
    - Inherits from `SLNG.App.UI.SLNGWindow` to maintain dark glassmorphism styling and window behavior.

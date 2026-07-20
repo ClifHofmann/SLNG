@@ -57,6 +57,14 @@ public partial class ObjectRenderer : Node3D
     private Mesh _sphereMesh = new SphereMesh();
     private Mesh _cylinderMesh = new CylinderMesh();
 
+    private StandardMaterial3D _highlightMaterial = new StandardMaterial3D
+    {
+        AlbedoColor = new Color(1.0f, 0.8f, 0.0f, 0.3f), // Yellowish tint
+        Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+        ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+        NoDepthTest = true, // See through walls slightly
+    };
+
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
         _world = world;
@@ -66,6 +74,18 @@ public partial class ObjectRenderer : Node3D
         _world.EntityAdded += OnEntityAdded;
         _world.EntityRemoved += OnEntityRemoved;
         _world.ComponentUpdated += OnComponentUpdated;
+        _world.EntitySelected += OnEntitySelected;
+        _world.EntityDeselected += OnEntityDeselected;
+    }
+
+    private void OnEntitySelected(object? sender, EntityEventArgs e)
+    {
+        CallDeferred(nameof(HighlightVisual), e.Entity.Id.ToString(), true);
+    }
+
+    private void OnEntityDeselected(object? sender, EntityEventArgs e)
+    {
+        CallDeferred(nameof(HighlightVisual), e.Entity.Id.ToString(), false);
     }
 
     private void OnEntityAdded(object? sender, EntityEventArgs e)
@@ -184,6 +204,17 @@ public partial class ObjectRenderer : Node3D
         AddChild(state.MeshInstance);
 
         UpdateVisual(entityIdStr);
+    }
+
+    private void HighlightVisual(string idStr, bool isSelected)
+    {
+        if (Guid.TryParse(idStr, out var id) && _visuals.TryGetValue(id, out var state))
+        {
+            if (state.MeshInstance != null)
+            {
+                state.MeshInstance.MaterialOverlay = isSelected ? _highlightMaterial : null;
+            }
+        }
     }
 
     private void RemoveVisual(string entityIdStr)

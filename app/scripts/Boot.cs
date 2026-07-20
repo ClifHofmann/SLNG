@@ -45,6 +45,11 @@ public partial class Boot : Control
     private SLNG.App.UI.ButtonBar _buttonBar = null!;
     private SLNG.App.UI.PreferencesWindow _preferencesWindow = null!;
     private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
+    
+    // M5-2 Object Editing UI
+    private ObjectSelectionController _objectSelectionController = null!;
+    private SLNG.App.UI.InWorldContextMenu _inWorldContextMenu = null!;
+    private SLNG.App.UI.ObjectEditWindow _objectEditWindow = null!;
 
     public const string AppVersion = "v0.1.7-alpha";
 
@@ -203,6 +208,17 @@ public partial class Boot : Control
 
         _inventoryPanel = new SLNG.App.UI.InventoryPanel { Name = "InventoryPanel" };
         hudLayer.AddChild(_inventoryPanel);
+
+        _inWorldContextMenu = new SLNG.App.UI.InWorldContextMenu();
+        hudLayer.AddChild(_inWorldContextMenu);
+
+        _objectEditWindow = new SLNG.App.UI.ObjectEditWindow();
+        hudLayer.AddChild(_objectEditWindow);
+
+        _inWorldContextMenu.OnEditClicked = (entity, localId) => _objectEditWindow.EditObject(entity, localId);
+        _inWorldContextMenu.OnTouchClicked = (entity, localId) => { /* Touch logic later */ };
+        _inWorldContextMenu.OnInspectClicked = (entity, localId) => { /* Inspect logic later */ };
+        _inWorldContextMenu.OnDeleteClicked = (entity, localId) => { /* Delete logic later */ };
 
         SetupButtonBarAndPreferences(hudLayer, cameraHud);
     }
@@ -595,11 +611,18 @@ public partial class Boot : Control
             if (hudLayer != null) hudLayer.Visible = true;
             _chatInput.GetParent<Control>().Visible = true;
 
-            // Spawn the avatar controller (camera)
             _avatarController = new AvatarController();
             _avatarController.Name = "AvatarController";
-            _avatarController.Initialize(_world, _session);
+            AddChild(_avatarController);
+            if (_avatarRenderer != null)
+                _avatarController.Initialize(_world, _session);
+
+            _objectSelectionController = new ObjectSelectionController();
+            AddChild(_objectSelectionController);
+            _objectSelectionController.Initialize(_world, _session, _avatarController, _inWorldContextMenu);
             
+            _objectEditWindow.Initialize(_session);
+
             ulong regionHandle = _session.CurrentRegionHandle;
             
             // Start near the region centre at a reasonable height (before AvatarUpdate arrives).

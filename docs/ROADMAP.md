@@ -29,12 +29,15 @@ Tasks are grouped so two agents rarely touch the same files. Default split:
 | `ui` | HUD, chat, login screen | `app/` |
 | `infra` | Build, CI, test grid | root / `tools/` |
 
-### Columns
+### Columns & Status
 
-- **Owner** — set to `claude` or `gemini` when you start (claim it on your branch).
+- **ID** — Unique Feature ID (e.g. `M4-7`). Used in branch names, commit messages `[M4-7]`, and spec files under `docs/specs/<ID>-<name>.md`.
+- **Status** — `✅` Done, `🚧` In Progress, `🧪` Review/Testing, `⏸️` Pending.
+- **Owner** — set to `claude`, `gemini`, or user when claimed.
 - **Agent** — the `.claude/agents/` role best suited to the task.
 - **Tool** — suggested assistant for load-balancing parallel work (a hint, not a rule).
 - **Dep** — task ids that must finish first.
+
 
 ---
 
@@ -119,6 +122,10 @@ other in-flight work made it cheap to start.
 | ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
 |---|---|---|---|---|---|---|---|
 | M5-1 | Inventory browser v1 — read-only, lazy folder fetch ✅ | net/ui | claude | ux-designer | | M0-2 | Ctrl+I opens a tree showing "My Inventory" + "Library"; each folder's children are fetched on first expand (no recursive/whole-tree fetch); folders and items both render with correct names; inventory links are marked as links. Wearing/moving/deleting items is out of scope for v1. |
+| M5-2 | In-World Object Selection & Editing 🚧 | render/ui/net | gemini | graphics-engineer | gemini | M1-3 | 3D Raycast selection, context menu, SLNGWindow inspector tabbed window, transform sync over network. [Spec](file:///E:/Git/SLNG/docs/specs/M5-2-object-editing.md) |
+| M5-3 | Tabbed Chat, Friends & Groups Window ⏸️ | ui/net | gemini | ux-designer | gemini | M3-2 | Multi-tabbed window (vertical: Chat, Friends, Groups; horizontal: Main & dynamic per-user IMs) inheriting from SLNGWindow. [Spec](file:///E:/Git/SLNG/docs/specs/M5-3-tabbed-chat-window.md) |
+
+
 
 ## M5+ — Beyond the first shot
 

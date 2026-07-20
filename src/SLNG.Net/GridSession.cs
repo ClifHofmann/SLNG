@@ -500,25 +500,58 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// </summary>
     public void UpdateItemProperties(Guid itemId, string newName, string newDescription, bool nextCopy, bool nextModify, bool nextTransfer)
     {
+        if (!_client.Network.Connected) return;
+
         var node = _client.Inventory.Store?.GetNodeFor(new LibreMetaverse.UUID(itemId));
         if (node?.Data is LibreMetaverse.InventoryItem item)
         {
             item.Name = newName;
             item.Description = newDescription;
 
-            var next = LibreMetaverse.PermissionMask.None;
-            if (nextCopy) next |= LibreMetaverse.PermissionMask.Copy;
-            if (nextModify) next |= LibreMetaverse.PermissionMask.Modify;
-            if (nextTransfer) next |= LibreMetaverse.PermissionMask.Transfer;
+            // Build new next-owner mask
+            uint nextOwnerMask = 0;
+            if (nextCopy) nextOwnerMask |= (uint)LibreMetaverse.PermissionMask.Copy;
+            if (nextModify) nextOwnerMask |= (uint)LibreMetaverse.PermissionMask.Modify;
+            if (nextTransfer) nextOwnerMask |= (uint)LibreMetaverse.PermissionMask.Transfer;
             
-            // Cannot elevate NextOwnerMask beyond what the server allows, but we can send it.
-            // The viewer only ever toggles Copy/Modify/Transfer.
+            // Only update next-owner permissions; others shouldn't be touched by UI directly yet
             var perms = item.Permissions;
-            perms.NextOwnerMask = next;
+            perms.NextOwnerMask = (LibreMetaverse.PermissionMask)nextOwnerMask;
             item.Permissions = perms;
 
             _client.Inventory.RequestUpdateItem(item);
         }
+    }
+
+    public void SelectObject(uint localId)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+        _client.Objects.SelectObject(_client.Network.CurrentSim, localId);
+    }
+
+    public void DeselectObject(uint localId)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+        _client.Objects.DeselectObject(_client.Network.CurrentSim, localId);
+    }
+
+    public void RequestObjectProperties(Guid objectId)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+        _client.Objects.RequestObjectPropertiesFamily(_client.Network.CurrentSim, new LibreMetaverse.UUID(objectId));
+    }
+
+    public void UpdateObjectTransform(uint localId, System.Numerics.Vector3 position, System.Numerics.Quaternion rotation, System.Numerics.Vector3 scale)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+        
+        var slPos = new LibreMetaverse.Vector3(position.X, position.Y, position.Z);
+        var slRot = new LibreMetaverse.Quaternion(rotation.X, rotation.Y, rotation.Z, rotation.W);
+        var slScale = new LibreMetaverse.Vector3(scale.X, scale.Y, scale.Z);
+        
+        _client.Objects.SetPosition(_client.Network.CurrentSim, localId, slPos);
+        _client.Objects.SetRotation(_client.Network.CurrentSim, localId, slRot);
+        _client.Objects.SetScale(_client.Network.CurrentSim, localId, slScale, true, false);
     }
 
     /// <summary>Sends an AgentUpdate to move the avatar.</summary>
