@@ -45,13 +45,15 @@ public partial class CameraHUD : Window
         margin.AddThemeConstantOverride("margin_right", 12);
         panel.AddChild(margin);
 
-        var mainVBox = new VBoxContainer { ThemeConstants = { { "separation", 8 } } };
+        var mainVBox = new VBoxContainer();
+        mainVBox.AddThemeConstantOverride("separation", 8);
         margin.AddChild(mainVBox);
 
         _statusLabel = new Label { Text = "HUD Init...", HorizontalAlignment = HorizontalAlignment.Center };
         mainVBox.AddChild(_statusLabel);
 
-        var hbox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center, ThemeConstants = { { "separation", 20 } } };
+        var hbox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+        hbox.AddThemeConstantOverride("separation", 20);
         mainVBox.AddChild(hbox);
 
         // 1. Rotation Pad
