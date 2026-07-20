@@ -2113,7 +2113,7 @@ void fragment() {
     {
         if (_assetService == null) return;
 
-        GD.Print($"[AvatarRenderer] Loading {animIds.Count} animation(s): {string.Join(", ", animIds)}");
+        // GD.Print($"[AvatarRenderer] Loading {animIds.Count} animation(s): {string.Join(", ", animIds)}");
 
         var loaded = new List<(Guid id, AnimationData data)>();
         foreach (var animId in animIds)
@@ -2124,7 +2124,7 @@ void fragment() {
                 if (data != null)
                 {
                     var jointNames = string.Join(", ", System.Linq.Enumerable.Select(data.Joints, j => j.JointName));
-                    GD.Print($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints ({jointNames}), {data.Length:F2}s");
+                    // GD.Print($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints ({jointNames}), {data.Length:F2}s");
                     loaded.Add((animId, data));
                 }
                 else
@@ -2138,7 +2138,7 @@ void fragment() {
             }
         }
 
-        GD.Print($"[AvatarRenderer] Starting {loaded.Count}/{animIds.Count} animation(s)");
+        // GD.Print($"[AvatarRenderer] Starting {loaded.Count}/{animIds.Count} animation(s)");
 
         // Apply on main thread via CallDeferred
         Godot.Callable.From(() => {
