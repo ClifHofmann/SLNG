@@ -1189,7 +1189,7 @@ public partial class AvatarRenderer : Node3D
             hudNode = new Node3D { Name = $"Hud_{entityId:N}" };
             _hudRoot!.AddChild(hudNode);
             _hudNodes[entityId] = hudNode;
-            GD.Print($"[HUD] pt {attachment.AttachmentPoint} entity {entityId:N} added to overlay");
+            Logger.Debug($"[HUD] pt {attachment.AttachmentPoint} entity {entityId:N} added to overlay");
         }
 
         var slOffset = transform?.Position ?? System.Numerics.Vector3.Zero;
