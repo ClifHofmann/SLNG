@@ -3,75 +3,98 @@ using Godot;
 
 namespace SLNG.App.UI;
 
-public partial class CameraHUD : Control
+public partial class CameraHUD : Window
 {
     private AvatarController? _cameraController;
     private string _activeAction = "";
     private Label _statusLabel;
-    private VBoxContainer _mainVBox;
 
     public override void _Ready()
     {
-        SetAnchorsPreset(LayoutPreset.FullRect);
-        MouseFilter = MouseFilterEnum.Ignore;
+        Title = "Camera Controls";
+        Size = new Vector2I(320, 220);
+        MinSize = new Vector2I(300, 200);
+        WrapControls = true;
+        Unresizable = false;
         
-        _mainVBox = new VBoxContainer();
-        AddChild(_mainVBox);
+        CloseRequested += Hide;
 
-        _statusLabel = new Label { Text = "HUD Init..." };
-        _mainVBox.AddChild(_statusLabel);
+        // Dark theme panel
+        var panel = new PanelContainer();
+        panel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        var styleBox = new StyleBoxFlat
+        {
+            BgColor = new Color(0.12f, 0.12f, 0.12f, 0.95f),
+            BorderWidthBottom = 1,
+            BorderWidthTop = 1,
+            BorderWidthLeft = 1,
+            BorderWidthRight = 1,
+            BorderColor = new Color(0.3f, 0.3f, 0.3f, 0.8f),
+            CornerRadiusTopLeft = 4,
+            CornerRadiusTopRight = 4,
+            CornerRadiusBottomLeft = 4,
+            CornerRadiusBottomRight = 4
+        };
+        panel.AddThemeStyleboxOverride("panel", styleBox);
+        AddChild(panel);
 
-        var hbox = new HBoxContainer();
-        _mainVBox.AddChild(hbox);
+        var margin = new MarginContainer();
+        margin.AddThemeConstantOverride("margin_top", 12);
+        margin.AddThemeConstantOverride("margin_bottom", 12);
+        margin.AddThemeConstantOverride("margin_left", 12);
+        margin.AddThemeConstantOverride("margin_right", 12);
+        panel.AddChild(margin);
+
+        var mainVBox = new VBoxContainer { ThemeConstants = { { "separation", 8 } } };
+        margin.AddChild(mainVBox);
+
+        _statusLabel = new Label { Text = "HUD Init...", HorizontalAlignment = HorizontalAlignment.Center };
+        mainVBox.AddChild(_statusLabel);
+
+        var hbox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center, ThemeConstants = { { "separation", 20 } } };
+        mainVBox.AddChild(hbox);
 
         // 1. Rotation Pad
         var rotGrid = new GridContainer { Columns = 3 };
         hbox.AddChild(rotGrid);
-        rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(40, 40) });
-        rotGrid.AddChild(CreateHoldButton("^", "rot_up"));
-        rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(40, 40) });
-        rotGrid.AddChild(CreateHoldButton("<", "rot_left"));
+        rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(32, 32) });
+        rotGrid.AddChild(CreateHoldButton("^", "rot_up", new Godot.Vector2(32, 32)));
+        rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(32, 32) });
+        rotGrid.AddChild(CreateHoldButton("<", "rot_left", new Godot.Vector2(32, 32)));
         rotGrid.AddChild(new Label { Text = "ROT", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
-        rotGrid.AddChild(CreateHoldButton(">", "rot_right"));
-        rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(40, 40) });
-        rotGrid.AddChild(CreateHoldButton("v", "rot_down"));
-        rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(40, 40) });
-
-        hbox.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(20, 0) });
+        rotGrid.AddChild(CreateHoldButton(">", "rot_right", new Godot.Vector2(32, 32)));
+        rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(32, 32) });
+        rotGrid.AddChild(CreateHoldButton("v", "rot_down", new Godot.Vector2(32, 32)));
+        rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(32, 32) });
 
         // 2. Zoom Buttons
         var zoomVBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
         hbox.AddChild(zoomVBox);
-        zoomVBox.AddChild(CreateHoldButton("+", "zoom_in", new Godot.Vector2(40, 40)));
-        zoomVBox.AddChild(new Label { Text = "ZOOM", HorizontalAlignment = HorizontalAlignment.Center });
-        zoomVBox.AddChild(CreateHoldButton("-", "zoom_out", new Godot.Vector2(40, 40)));
-
-        hbox.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(20, 0) });
+        zoomVBox.AddChild(CreateHoldButton("+", "zoom_in", new Godot.Vector2(32, 44)));
+        zoomVBox.AddChild(CreateHoldButton("-", "zoom_out", new Godot.Vector2(32, 44)));
 
         // 3. Pan Pad
         var panGrid = new GridContainer { Columns = 3 };
         hbox.AddChild(panGrid);
-        panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(40, 40) });
-        panGrid.AddChild(CreateHoldButton("^", "pan_up"));
-        panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(40, 40) });
-        panGrid.AddChild(CreateHoldButton("<", "pan_left"));
+        panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(32, 32) });
+        panGrid.AddChild(CreateHoldButton("^", "pan_up", new Godot.Vector2(32, 32)));
+        panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(32, 32) });
+        panGrid.AddChild(CreateHoldButton("<", "pan_left", new Godot.Vector2(32, 32)));
         panGrid.AddChild(new Label { Text = "PAN", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
-        panGrid.AddChild(CreateHoldButton(">", "pan_right"));
-        panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(40, 40) });
-        panGrid.AddChild(CreateHoldButton("v", "pan_down"));
-        panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(40, 40) });
-
-        hbox.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(20, 0) });
+        panGrid.AddChild(CreateHoldButton(">", "pan_right", new Godot.Vector2(32, 32)));
+        panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(32, 32) });
+        panGrid.AddChild(CreateHoldButton("v", "pan_down", new Godot.Vector2(32, 32)));
+        panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(32, 32) });
 
         // 4. Presets
-        var presetsVBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
-        hbox.AddChild(presetsVBox);
+        var presetsHBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+        mainVBox.AddChild(presetsHBox);
         var btnFront = new Button { Text = "Front" };
         var btnSide = new Button { Text = "Side" };
         var btnRear = new Button { Text = "Rear" };
-        presetsVBox.AddChild(btnFront);
-        presetsVBox.AddChild(btnSide);
-        presetsVBox.AddChild(btnRear);
+        presetsHBox.AddChild(btnFront);
+        presetsHBox.AddChild(btnSide);
+        presetsHBox.AddChild(btnRear);
 
         btnFront.Pressed += () => _cameraController?.SetPresetView("Front");
         btnSide.Pressed += () => _cameraController?.SetPresetView("Side");
@@ -89,11 +112,6 @@ public partial class CameraHUD : Control
 
     public override void _Process(double delta)
     {
-        var vpSize = GetViewportRect().Size;
-        var mySize = _mainVBox.Size;
-        // Absolute foolproof bottom-left positioning!
-        _mainVBox.Position = new Godot.Vector2(20, vpSize.Y - mySize.Y - 20);
-
         if (_cameraController == null)
         {
             _cameraController = GetTree().Root.FindChild("AvatarController", true, false) as AvatarController;

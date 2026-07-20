@@ -128,6 +128,15 @@ public partial class Boot : Control
             if (hudLayer != null) hudLayer.Visible = !hudLayer.Visible;
         };
 
+        _topMenu.OnToggleCameraHud = () => {
+            var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+            if (hudLayer != null)
+            {
+                var cameraHud = hudLayer.GetNodeOrNull<Godot.Window>("CameraHUD");
+                if (cameraHud != null) cameraHud.Visible = !cameraHud.Visible;
+            }
+        };
+
         _topMenu.OnCameraMode = (mode) => {
             // Future integration with FreeCamera/AvatarController
             LogMessage($"Camera mode changed to {mode}");

@@ -8,6 +8,7 @@ namespace SLNG.App.UI
         public Action? OnDisconnect;
         public Action? OnExit;
         public Action? OnToggleHud;
+        public Action? OnToggleCameraHud;
         public Action<int>? OnCameraMode; // 0=First, 1=Third, 2=Free
         public Action? OnToggleWireframe;
 
@@ -66,12 +67,14 @@ namespace SLNG.App.UI
             var viewMenu = new PopupMenu();
             viewMenu.Name = "View";
             viewMenu.AddItem("Toggle HUD", 0);
+            viewMenu.AddItem("Camera Controls", 4);
             viewMenu.AddSeparator();
             viewMenu.AddItem("First Person", 1);
             viewMenu.AddItem("Third Person", 2);
             viewMenu.AddItem("Free Camera", 3);
             viewMenu.IdPressed += (id) => {
                 if (id == 0) OnToggleHud?.Invoke();
+                if (id == 4) OnToggleCameraHud?.Invoke();
                 if (id >= 1 && id <= 3) OnCameraMode?.Invoke((int)id - 1);
             };
             menuBar.AddChild(viewMenu);
