@@ -43,7 +43,7 @@ public partial class Boot : Control
     
     private SLNG.App.UI.TopMenu _topMenu = null!;
 
-    public const string AppVersion = "v0.1.2-alpha";
+    public const string AppVersion = "v0.1.3-alpha";
 
     public override void _Ready()
     {

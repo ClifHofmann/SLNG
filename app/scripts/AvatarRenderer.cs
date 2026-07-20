@@ -169,7 +169,12 @@ public partial class AvatarRenderer : Node3D
         var visual = new AvatarVisual();
 
         // Add a collision capsule so raycasts can identify the avatar
-        var staticBody = new Godot.StaticBody3D { Name = "AvatarPhysics" };
+        var staticBody = new Godot.StaticBody3D 
+        { 
+            Name = "AvatarPhysics",
+            CollisionLayer = 2,
+            CollisionMask = 2
+        };
         var capsuleShape = new Godot.CollisionShape3D
         {
             Shape = new Godot.CapsuleShape3D { Radius = 0.45f, Height = 1.9f },

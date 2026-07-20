@@ -363,21 +363,43 @@ public partial class AvatarController : Camera3D
                         transform.Position.X, transform.Position.Y, transform.Position.Z + dz * (float)delta);
                 }
 
-                // Terrain floor. Walking snaps to the ground and applies gravity; flying just
-                // refuses to sink below the ground (so it holds altitude instead of falling).
-                // Only when we actually have heightmap data under the avatar: on a varregion
-                // (coords > our 256 heightmap) there is no local ground, so applying gravity
-                // would yank the avatar to a clamped corner height — that was the "falling on
-                // landing". Outside the map we leave Z to the server / fly controls.
-                int rawX = (int)transform.Position.X;
-                int rawY = (int)transform.Position.Y;
-                if (_world.Terrains.TryGetValue(localAgent.RegionHandle, out var terrain)
-                    && rawX >= 0 && rawX < terrain.Width && rawY >= 0 && rawY < terrain.Height)
+                // Physics-based floor detection. We cast a ray straight down from above the avatar
+                // to find the highest floor point (terrain or object) on Layer 1.
+                var spaceState = GetWorld3D().DirectSpaceState;
+                var godotPos = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
+                
+                // Cast from 2 meters above the avatar's feet, down to 100 meters below
+                var rayFrom = godotPos + new Godot.Vector3(0, 2.0f, 0);
+                var rayTo = godotPos - new Godot.Vector3(0, 100.0f, 0);
+                
+                var query = PhysicsRayQueryParameters3D.Create(rayFrom, rayTo);
+                query.CollisionMask = 1; // Only hit Layer 1 (terrain/objects), ignore Layer 2 (avatar)
+                
+                var result = spaceState.IntersectRay(query);
+                
+                float groundHeight = 0;
+                bool hasGround = false;
+                
+                if (result.Count > 0)
                 {
-                    int tx = rawX;
-                    int ty = rawY;
-                    float groundHeight = terrain.GetHeights()[ty * terrain.Width + tx];
+                    groundHeight = result["position"].AsVector3().Y;
+                    hasGround = true;
+                }
+                else
+                {
+                    // Fallback to terrain heightmap if raycast misses
+                    int rawX = (int)transform.Position.X;
+                    int rawY = (int)transform.Position.Y;
+                    if (_world.Terrains.TryGetValue(localAgent.RegionHandle, out var terrain)
+                        && rawX >= 0 && rawX < terrain.Width && rawY >= 0 && rawY < terrain.Height)
+                    {
+                        groundHeight = terrain.GetHeights()[rawY * terrain.Width + rawX];
+                        hasGround = true;
+                    }
+                }
 
+                if (hasGround)
+                {
                     if (_flying)
                     {
                         if (transform.Position.Z < groundHeight)
@@ -389,12 +411,12 @@ public partial class AvatarController : Camera3D
                     }
                     else if (transform.Position.Z < groundHeight)
                     {
-                        // Push up out of terrain
+                        // Push up out of terrain/object
                         transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, groundHeight);
                     }
                     else if (transform.Position.Z > groundHeight)
                     {
-                        // Fall down to terrain
+                        // Fall down to terrain/object
                         float fallSpeed = 9.81f * (float)delta;
                         transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, System.Math.Max(groundHeight, transform.Position.Z - fallSpeed));
                     }
