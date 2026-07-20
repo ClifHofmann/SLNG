@@ -104,7 +104,7 @@ public partial class Boot : Control
                 LogMessage("Disconnecting...");
                 _session.Dispose();
                 _session = null;
-                GetNode<Control>("%LoginPanel").Visible = true;
+                GetNode<Control>("%LoginScreen").Visible = true;
                 GetNode<Control>("%Background").Visible = true;
                 _topMenu.Visible = false;
                 if (_inventoryPanel != null) { _inventoryPanel.QueueFree(); _inventoryPanel = null; }
@@ -380,6 +380,73 @@ public partial class Boot : Control
         }
     }
 
+    private async System.Threading.Tasks.Task SimulateLoadingAnimation()
+    {
+        GetNode<Control>("%LoginScreen").Visible = false;
+        var loadingScreen = GetNode<Control>("%LoadingScreen");
+        loadingScreen.Visible = true;
+        
+        var spinnerLabel = GetNode<Label>("%SpinnerLabel");
+        var progressLabel = GetNode<Label>("%ProgressLabel");
+        var tasksBox = GetNode<VBoxContainer>("%TasksBox");
+        
+        string[] tasks = {
+            "Stelle Grid-Verbindung her...",
+            "Lade Welt-Assets herunter...",
+            "Initialisiere Physik-Engine...",
+            "Synchronisiere Profildaten...",
+            "Optimiere visuelle Darstellung..."
+        };
+        
+        // Clear tasksBox and add new labels
+        foreach (Node child in tasksBox.GetChildren()) child.QueueFree();
+        var taskLabels = new System.Collections.Generic.List<Label>();
+        foreach (var t in tasks)
+        {
+            var lbl = new Label { Text = t + " [-]", Modulate = new Color(0.5f, 0.5f, 0.5f) };
+            lbl.AddThemeFontSizeOverride("font_size", 14);
+            tasksBox.AddChild(lbl);
+            taskLabels.Add(lbl);
+        }
+        
+        int totalMs = 3000;
+        int steps = 60;
+        int interval = totalMs / steps;
+        
+        for (int i = 0; i <= steps; i++)
+        {
+            float progress = (float)i / steps;
+            progressLabel.Text = $"{Mathf.FloorToInt(progress * 100)}%";
+            
+            spinnerLabel.PivotOffset = spinnerLabel.Size / 2;
+            spinnerLabel.RotationDegrees += 15;
+            
+            int currentTaskIndex = Mathf.FloorToInt(progress * tasks.Length);
+            currentTaskIndex = Mathf.Min(currentTaskIndex, tasks.Length - 1);
+            
+            for (int j = 0; j < taskLabels.Count; j++)
+            {
+                if (j < currentTaskIndex)
+                {
+                    taskLabels[j].Text = tasks[j] + " [✓]";
+                    taskLabels[j].Modulate = new Color(0.4f, 1f, 0.4f);
+                }
+                else if (j == currentTaskIndex)
+                {
+                    taskLabels[j].Text = tasks[j] + " [...]";
+                    taskLabels[j].Modulate = new Color(0.4f, 0.8f, 1f);
+                }
+                else
+                {
+                    taskLabels[j].Text = tasks[j] + " [-]";
+                    taskLabels[j].Modulate = new Color(0.5f, 0.5f, 0.5f);
+                }
+            }
+            
+            await ToSignal(GetTree().CreateTimer(interval / 1000f), SceneTreeTimer.SignalName.Timeout);
+        }
+    }
+
     private async void OnLoginPressed()
     {
         _loginButton.Disabled = true;
@@ -417,8 +484,12 @@ public partial class Boot : Control
             LastName = _lastInput.Text,
             Password = _passInput.Text
         };
+        
+        var animTask = SimulateLoadingAnimation();
 
         var result = await _session.LoginAsync(creds);
+        
+        await animTask;
 
         if (result.Success)
         {
@@ -438,8 +509,8 @@ public partial class Boot : Control
                 LogMessage(result.Message);
             }
             
-            // Hide the login form, background, and show the top menu
-            GetNode<Control>("%LoginPanel").Visible = false;
+            // Hide the loading screen, background, and show the top menu
+            GetNode<Control>("%LoadingScreen").Visible = false;
             GetNode<Control>("%Background").Visible = false;
             _topMenu.Visible = true;
 
@@ -473,6 +544,8 @@ public partial class Boot : Control
         else
         {
             LogMessage($"[System] Login failed: {result.Message}");
+            GetNode<Control>("%LoadingScreen").Visible = false;
+            GetNode<Control>("%LoginScreen").Visible = true;
             _loginButton.Disabled = false;
         }
     }

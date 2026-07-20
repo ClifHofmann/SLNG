@@ -1,7 +1,63 @@
-[gd_scene load_steps=3 format=3 uid="uid://c8slng0bootui1"]
+[gd_scene load_steps=7 format=3 uid="uid://c8slng0bootui1"]
 
 [ext_resource type="Script" path="res://scripts/Boot.cs" id="1_script"]
 [ext_resource type="Texture2D" uid="uid://cxab3bootbg" path="res://assets/images/boot_bg.png" id="2_bg"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_glass"]
+bg_color = Color(0, 0, 0, 0.5)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(1, 1, 1, 0.1)
+corner_radius_top_left = 16
+corner_radius_top_right = 16
+corner_radius_bottom_right = 16
+corner_radius_bottom_left = 16
+shadow_color = Color(0, 0, 0, 0.5)
+shadow_size = 30
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_input"]
+bg_color = Color(1, 1, 1, 0.05)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(1, 1, 1, 0.1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+content_margin_left = 12
+content_margin_top = 10
+content_margin_right = 12
+content_margin_bottom = 10
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_button"]
+bg_color = Color(0.1, 0.5, 0.8, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+content_margin_left = 20
+content_margin_top = 10
+content_margin_right = 20
+content_margin_bottom = 10
+shadow_color = Color(0.2, 0.7, 1, 0.3)
+shadow_size = 15
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_button_hover"]
+bg_color = Color(0.15, 0.6, 0.9, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+content_margin_left = 20
+content_margin_top = 10
+content_margin_right = 20
+content_margin_bottom = 10
+shadow_color = Color(0.2, 0.7, 1, 0.5)
+shadow_size = 25
 
 [node name="Boot" type="Control"]
 layout_mode = 3
@@ -24,103 +80,184 @@ texture = ExtResource("2_bg")
 expand_mode = 1
 stretch_mode = 6
 
-[node name="ColorRect" type="ColorRect" parent="Background"]
+[node name="Overlay" type="ColorRect" parent="Background"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-color = Color(0, 0, 0, 0.4)
+color = Color(0.02, 0.03, 0.05, 0.7)
+
+[node name="LoginScreen" type="CenterContainer" parent="."]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Panel" type="PanelContainer" parent="LoginScreen"]
+custom_minimum_size = Vector2(420, 0)
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_glass")
+
+[node name="Margin" type="MarginContainer" parent="LoginScreen/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 32
+theme_override_constants/margin_top = 32
+theme_override_constants/margin_right = 32
+theme_override_constants/margin_bottom = 32
+
+[node name="VBox" type="VBoxContainer" parent="LoginScreen/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="Title" type="Label" parent="LoginScreen/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.4, 0.8, 1, 1)
+theme_override_font_sizes/font_size = 36
+text = "S L N G"
+horizontal_alignment = 1
+
+[node name="Spacer" type="Control" parent="LoginScreen/Panel/Margin/VBox"]
+custom_minimum_size = Vector2(0, 8)
+layout_mode = 2
+
+[node name="ProfileDropdown" type="OptionButton" parent="LoginScreen/Panel/Margin/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_styles/normal = SubResource("StyleBoxFlat_input")
+tooltip_text = "Select a saved profile"
+
+[node name="GridInput" type="LineEdit" parent="LoginScreen/Panel/Margin/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_styles/normal = SubResource("StyleBoxFlat_input")
+text = "http://127.0.0.1:9000/"
+placeholder_text = "Grid URL"
+
+[node name="HBox" type="HBoxContainer" parent="LoginScreen/Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="FirstInput" type="LineEdit" parent="LoginScreen/Panel/Margin/VBox/HBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/normal = SubResource("StyleBoxFlat_input")
+text = "Test"
+placeholder_text = "Vorname"
+
+[node name="LastInput" type="LineEdit" parent="LoginScreen/Panel/Margin/VBox/HBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/normal = SubResource("StyleBoxFlat_input")
+text = "User"
+placeholder_text = "Nachname"
+
+[node name="PassInput" type="LineEdit" parent="LoginScreen/Panel/Margin/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_styles/normal = SubResource("StyleBoxFlat_input")
+secret = true
+text = "secret"
+placeholder_text = "Passwort"
+
+[node name="Spacer2" type="Control" parent="LoginScreen/Panel/Margin/VBox"]
+custom_minimum_size = Vector2(0, 8)
+layout_mode = 2
+
+[node name="Actions" type="HBoxContainer" parent="LoginScreen/Panel/Margin/VBox"]
+layout_mode = 2
+alignment = 1
+
+[node name="SaveLoginCheck" type="CheckBox" parent="LoginScreen/Panel/Margin/VBox/Actions"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Login merken"
+
+[node name="LoginButton" type="Button" parent="LoginScreen/Panel/Margin/VBox/Actions"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_styles/normal = SubResource("StyleBoxFlat_button")
+theme_override_styles/hover = SubResource("StyleBoxFlat_button_hover")
+theme_override_styles/pressed = SubResource("StyleBoxFlat_button")
+text = "Verbinden"
+
+[node name="LoadingScreen" type="CenterContainer" parent="."]
+unique_name_in_owner = true
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="VBox" type="VBoxContainer" parent="LoadingScreen"]
+layout_mode = 2
+theme_override_constants/separation = 32
+
+[node name="TitleBox" type="VBoxContainer" parent="LoadingScreen/VBox"]
+layout_mode = 2
+
+[node name="Title" type="Label" parent="LoadingScreen/VBox/TitleBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.4, 0.8, 1, 1)
+theme_override_font_sizes/font_size = 64
+text = "S L N G"
+horizontal_alignment = 1
+
+[node name="SubTitle" type="Label" parent="LoadingScreen/VBox/TitleBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.6, 0.6, 0.6, 1)
+theme_override_font_sizes/font_size = 14
+text = "SECOND LIFE NEXT GENERATION"
+horizontal_alignment = 1
+
+[node name="HBox" type="HBoxContainer" parent="LoadingScreen/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 48
+alignment = 1
+
+[node name="SpinnerBox" type="CenterContainer" parent="LoadingScreen/VBox/HBox"]
+custom_minimum_size = Vector2(120, 120)
+layout_mode = 2
+
+[node name="SpinnerLabel" type="Label" parent="LoadingScreen/VBox/HBox/SpinnerBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.4, 0.8, 1, 1)
+theme_override_font_sizes/font_size = 64
+text = "O"
+
+[node name="ProgressLabel" type="Label" parent="LoadingScreen/VBox/HBox/SpinnerBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.4, 0.8, 1, 1)
+theme_override_font_sizes/font_size = 20
+text = "0%"
+
+[node name="TasksBox" type="VBoxContainer" parent="LoadingScreen/VBox/HBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 1
 
 [node name="VBoxContainer" type="VBoxContainer" parent="."]
 unique_name_in_owner = true
 layout_mode = 1
-anchors_preset = 15
+anchors_preset = 12
+anchor_top = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0
+offset_top = -180.0
 grow_horizontal = 2
-grow_vertical = 2
-
-[node name="CenterContainer" type="CenterContainer" parent="VBoxContainer"]
-layout_mode = 2
-size_flags_vertical = 3
-
-[node name="LoginPanel" type="PanelContainer" parent="VBoxContainer/CenterContainer"]
-unique_name_in_owner = true
-custom_minimum_size = Vector2(400, 0)
-layout_mode = 2
-
-[node name="MarginContainer" type="MarginContainer" parent="VBoxContainer/CenterContainer/LoginPanel"]
-layout_mode = 2
-theme_override_constants/margin_left = 20
-theme_override_constants/margin_top = 20
-theme_override_constants/margin_right = 20
-theme_override_constants/margin_bottom = 20
-
-[node name="VBoxContainer" type="VBoxContainer" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer"]
-layout_mode = 2
-theme_override_constants/separation = 15
-
-[node name="Title" type="Label" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 28
-text = "S L N G"
-horizontal_alignment = 1
-
-[node name="HSeparator" type="HSeparator" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
-layout_mode = 2
-
-[node name="ProfileDropdown" type="OptionButton" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
-unique_name_in_owner = true
-layout_mode = 2
-tooltip_text = "Select a saved profile"
-
-[node name="GridInput" type="LineEdit" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
-unique_name_in_owner = true
-layout_mode = 2
-text = "http://127.0.0.1:9000/"
-placeholder_text = "Grid URI"
-
-[node name="NameBox" type="HBoxContainer" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
-layout_mode = 2
-
-[node name="FirstInput" type="LineEdit" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer/NameBox"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-text = "Test"
-placeholder_text = "First Name"
-
-[node name="LastInput" type="LineEdit" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer/NameBox"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-text = "User"
-placeholder_text = "Last Name"
-
-[node name="PassInput" type="LineEdit" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
-unique_name_in_owner = true
-layout_mode = 2
-secret = true
-text = "secret"
-placeholder_text = "Password"
-
-[node name="LoginActions" type="HBoxContainer" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer"]
-layout_mode = 2
-alignment = 2
-
-[node name="SaveLoginCheck" type="CheckBox" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer/LoginActions"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-text = "Save Credentials"
-
-[node name="LoginButton" type="Button" parent="VBoxContainer/CenterContainer/LoginPanel/MarginContainer/VBoxContainer/LoginActions"]
-unique_name_in_owner = true
-custom_minimum_size = Vector2(100, 0)
-layout_mode = 2
-text = "Login"
+grow_vertical = 0
 
 [node name="LogPanel" type="RichTextLabel" parent="VBoxContainer"]
 unique_name_in_owner = true
