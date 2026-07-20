@@ -17,15 +17,39 @@ namespace SLNG.App.UI
 
             var panel = new PanelContainer();
             panel.SetAnchorsPreset(Control.LayoutPreset.TopWide);
+            
+            var styleBox = new StyleBoxFlat
+            {
+                BgColor = new Color(0.05f, 0.08f, 0.12f, 0.85f),
+                BorderWidthBottom = 1,
+                BorderColor = new Color(0.15f, 0.6f, 0.9f, 0.3f),
+                ContentMarginBottom = 4,
+                ContentMarginTop = 4
+            };
+            panel.AddThemeStyleboxOverride("panel", styleBox);
             AddChild(panel);
 
             var margin = new MarginContainer();
-            margin.AddThemeConstantOverride("margin_left", 10);
-            margin.AddThemeConstantOverride("margin_right", 10);
+            margin.AddThemeConstantOverride("margin_left", 16);
+            margin.AddThemeConstantOverride("margin_right", 16);
             panel.AddChild(margin);
+            
+            var hbox = new HBoxContainer();
+            margin.AddChild(hbox);
 
             var menuBar = new MenuBar();
-            margin.AddChild(menuBar);
+            menuBar.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+            hbox.AddChild(menuBar);
+
+            var versionLabel = new Label
+            {
+                Text = $"SLNG {Boot.AppVersion}",
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            versionLabel.AddThemeColorOverride("font_color", new Color(0.4f, 0.8f, 1f, 0.6f));
+            versionLabel.AddThemeFontSizeOverride("font_size", 13);
+            hbox.AddChild(versionLabel);
 
             // App Menu
             var appMenu = new PopupMenu();
