@@ -473,6 +473,54 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         await _client.Inventory.RequestCopyItemAsync(itemUuid, parentUuid, newName, CancellationToken.None).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Gets the detailed properties of an inventory item from the local store cache.
+    /// Returns null if not found or if the item is a folder.
+    /// </summary>
+    public InventoryItemProperties? GetItemProperties(Guid itemId)
+    {
+        var node = _client.Inventory.Store?.GetNodeFor(new LibreMetaverse.UUID(itemId));
+        if (node?.Data is LibreMetaverse.InventoryItem item)
+        {
+            var next = item.Permissions.NextOwnerMask;
+            return new InventoryItemProperties(
+                itemId,
+                item.Name,
+                item.Description,
+                next.HasFlag(LibreMetaverse.PermissionMask.Copy),
+                next.HasFlag(LibreMetaverse.PermissionMask.Modify),
+                next.HasFlag(LibreMetaverse.PermissionMask.Transfer)
+            );
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Updates an inventory item's name, description, and next owner permissions.
+    /// </summary>
+    public void UpdateItemProperties(Guid itemId, string newName, string newDescription, bool nextCopy, bool nextModify, bool nextTransfer)
+    {
+        var node = _client.Inventory.Store?.GetNodeFor(new LibreMetaverse.UUID(itemId));
+        if (node?.Data is LibreMetaverse.InventoryItem item)
+        {
+            item.Name = newName;
+            item.Description = newDescription;
+
+            var next = LibreMetaverse.PermissionMask.None;
+            if (nextCopy) next |= LibreMetaverse.PermissionMask.Copy;
+            if (nextModify) next |= LibreMetaverse.PermissionMask.Modify;
+            if (nextTransfer) next |= LibreMetaverse.PermissionMask.Transfer;
+            
+            // Cannot elevate NextOwnerMask beyond what the server allows, but we can send it.
+            // The viewer only ever toggles Copy/Modify/Transfer.
+            var perms = item.Permissions;
+            perms.NextOwnerMask = next;
+            item.Permissions = perms;
+
+            _client.Inventory.RequestUpdateItem(item);
+        }
+    }
+
     /// <summary>Sends an AgentUpdate to move the avatar.</summary>
     public void SetMovement(bool forward, bool backward, bool left, bool right, bool up, bool down, System.Numerics.Quaternion cameraRotation, bool fly = false)
     {

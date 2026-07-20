@@ -61,3 +61,15 @@ public sealed record InventoryEntry(
         return suffix.ToString();
     }
 }
+
+/// <summary>
+/// Detailed properties for an inventory item, used by the properties window.
+/// </summary>
+public sealed record InventoryItemProperties(
+    Guid Id,
+    string Name,
+    string Description,
+    bool NextOwnerCanCopy,
+    bool NextOwnerCanModify,
+    bool NextOwnerCanTransfer
+);

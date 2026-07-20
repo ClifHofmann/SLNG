@@ -183,6 +183,25 @@ public partial class InventoryPanel : PanelContainer
             // Trigger a refresh of the parent folder to show the new item
             LoadFolder(parentItem, parentId, force: true); 
         }
+        else if (id == 2) // Edit
+        {
+            if (isFolder) return;
+            
+            var win = new ItemPropertiesWindow();
+            AddChild(win);
+            win.Initialize(_session, itemId, () => {
+                // On save, reload the folder to update name/permissions in the tree
+                var parentItem = item.GetParent();
+                if (parentItem == null) return;
+                var parentMetaStr = parentItem.GetMetadata(0).AsString();
+                var parentIdStr = parentMetaStr.Contains(',') ? parentMetaStr.Split(',')[0] : parentMetaStr;
+                if (Guid.TryParse(parentIdStr, out var parentId))
+                {
+                    LoadFolder(parentItem, parentId, force: true);
+                }
+            });
+            win.PopupCentered();
+        }
     }
 
     private void LoadFolder(TreeItem item, Guid folderId, bool force = false)
