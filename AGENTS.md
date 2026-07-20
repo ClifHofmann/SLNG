@@ -144,3 +144,6 @@ change is committed on its own branch with a Conventional-Commit message.
 ## Versioning rule
 
 - **Always update the version number**: When implementing a new feature, a fix, or significant UI change, you MUST update the AppVersion constant in pp/scripts/Boot.cs (e.g. from 0.1.0-alpha to 0.1.1-alpha or 0.2.0-alpha) to reflect the new state. This ensures the version is visible on the login screen and title bar.
+
+## UI Standards (enforced — from code review)
+- **Unified Window System:** All floating, draggable UI windows (such as Camera HUD, Inventory, Properties) MUST inherit from SLNG.App.UI.SLNGWindow. Do not use native Godot Window nodes or bare PanelContainers for popups. This ensures a consistent dark glassmorphism style, dragging behavior, and uniform title bars across the entire client.

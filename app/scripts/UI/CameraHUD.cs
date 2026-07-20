@@ -3,7 +3,7 @@ using Godot;
 
 namespace SLNG.App.UI;
 
-public partial class CameraHUD : Window
+public partial class CameraHUD : SLNGWindow
 {
     private AvatarController? _cameraController;
     private string _activeAction = "";
@@ -12,35 +12,21 @@ public partial class CameraHUD : Window
 
     public override void _Ready()
     {
-        Title = "Camera";
-        Visible = false;
-        Size = new Vector2I(280, 180);
-        MinSize = new Vector2I(240, 160);
-        Position = new Vector2I(100, 100);
-        WrapControls = true;
-        Unresizable = false;
-        
-        CloseRequested += Hide;
+        base._Ready(); // Set up SLNGWindow styling
 
-        // Modern dark glass panel
-        var panel = new PanelContainer();
-        panel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-        var styleBox = new StyleBoxFlat
-        {
-            BgColor = new Color(0.08f, 0.08f, 0.09f, 0.95f),
-            BorderWidthBottom = 1, BorderWidthTop = 1, BorderWidthLeft = 1, BorderWidthRight = 1,
-            BorderColor = new Color(0.2f, 0.2f, 0.25f, 0.8f),
-            CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8
-        };
-        panel.AddThemeStyleboxOverride("panel", styleBox);
-        AddChild(panel);
+        Title = "CAMERA";
+        Visible = false;
+        CustomMinimumSize = new Vector2(240, 160);
+        Position = new Vector2(100, 100);
+        
+        OnCloseRequested = Hide;
 
         var margin = new MarginContainer();
         margin.AddThemeConstantOverride("margin_top", 12);
         margin.AddThemeConstantOverride("margin_bottom", 12);
         margin.AddThemeConstantOverride("margin_left", 12);
         margin.AddThemeConstantOverride("margin_right", 12);
-        panel.AddChild(margin);
+        ContentContainer.AddChild(margin);
 
         var mainVBox = new VBoxContainer();
         mainVBox.AddThemeConstantOverride("separation", 12);
@@ -186,7 +172,7 @@ public partial class CameraHUD : Window
                 {
                     _isLinked = true;
                     _statusLabel.Visible = false; // Hide label to save space once connected
-                    Size = MinSize; // Shrink window to fit tightly
+                    CustomMinimumSize = new Vector2(240, 160); // Shrink window to fit tightly
                     Logger.Debug("[CameraHUD] AvatarController found and linked!");
                 }
             }

@@ -132,7 +132,7 @@ public partial class Boot : Control
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null)
             {
-                var cameraHud = hudLayer.GetNodeOrNull<Godot.Window>("CameraHUD");
+                var cameraHud = hudLayer.GetNodeOrNull<Control>("CameraHUD");
                 if (cameraHud != null) cameraHud.Visible = !cameraHud.Visible;
             }
         };

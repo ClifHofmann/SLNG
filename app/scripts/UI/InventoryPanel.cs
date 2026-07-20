@@ -13,7 +13,7 @@ namespace SLNG.App.UI;
 /// threads; every Tree mutation is marshalled back to the main thread (CallDeferred), per the
 /// project threading rule. Wearing/attaching/moving items is not implemented yet — browsing only.
 /// </summary>
-public partial class InventoryPanel : PanelContainer
+public partial class InventoryPanel : SLNGWindow
 {
     private GridSession? _session;
     private Tree _tree = null!;
@@ -23,32 +23,67 @@ public partial class InventoryPanel : PanelContainer
     private readonly HashSet<Guid> _loadedFolders = new();
     private bool _rootsPopulated;
     private PopupMenu _contextMenu = null!;
+    private LineEdit _searchBox = null!;
 
     public override void _Ready()
     {
+        base._Ready(); // Setup SLNGWindow styling
+
+        Title = "INVENTORY";
         Visible = false;
-        // Right-docked column, clear of the top log overlay and the bottom camera pad.
-        AnchorLeft = 1f;
-        AnchorRight = 1f;
-        AnchorTop = 0f;
-        AnchorBottom = 1f;
-        OffsetLeft = -370f;
-        OffsetRight = -10f;
-        OffsetTop = 64f;
-        OffsetBottom = -90f;
+        
+        CustomMinimumSize = new Vector2(360, 500);
+        Size = new Vector2(360, 500);
+        
+        // Try to position it on the right side
+        // GetViewportRect().Size is not ready in _Ready usually if not in tree, but we can set a decent default position
+        Position = new Vector2(800, 100); 
+
+        OnCloseRequested = Hide;
 
         var vbox = new VBoxContainer();
-        AddChild(vbox);
+        vbox.AddThemeConstantOverride("separation", 0);
+        ContentContainer.AddChild(vbox);
 
-        var header = new HBoxContainer();
-        vbox.AddChild(header);
-        header.AddChild(new Label { Text = "Inventory", SizeFlagsHorizontal = SizeFlags.ExpandFill });
-        var close = new Button { Text = "×" };
-        close.Pressed += () => Visible = false;
-        header.AddChild(close);
+        var searchContainer = new MarginContainer();
+        searchContainer.AddThemeConstantOverride("margin_left", 12);
+        searchContainer.AddThemeConstantOverride("margin_right", 12);
+        searchContainer.AddThemeConstantOverride("margin_top", 12);
+        searchContainer.AddThemeConstantOverride("margin_bottom", 12);
+        
+        _searchBox = new LineEdit
+        {
+            PlaceholderText = "Suchen / Filtern...",
+            ClearButtonEnabled = true
+        };
+        var searchStyle = new StyleBoxFlat
+        {
+            BgColor = new Color(1, 1, 1, 0.05f),
+            CornerRadiusTopLeft = 16,
+            CornerRadiusTopRight = 16,
+            CornerRadiusBottomLeft = 16,
+            CornerRadiusBottomRight = 16,
+            BorderWidthBottom = 1, BorderWidthTop = 1, BorderWidthLeft = 1, BorderWidthRight = 1,
+            BorderColor = new Color(1, 1, 1, 0.1f),
+            ContentMarginLeft = 12,
+            ContentMarginRight = 12,
+            ContentMarginTop = 6,
+            ContentMarginBottom = 6
+        };
+        _searchBox.AddThemeStyleboxOverride("normal", searchStyle);
+        _searchBox.AddThemeStyleboxOverride("focus", searchStyle);
+        _searchBox.AddThemeColorOverride("font_color", new Color(0.9f, 0.9f, 0.9f));
+        _searchBox.AddThemeColorOverride("font_placeholder_color", new Color(0.5f, 0.5f, 0.5f));
+        _searchBox.TextChanged += OnSearchTextChanged;
+        
+        searchContainer.AddChild(_searchBox);
+        vbox.AddChild(searchContainer);
 
         _status = new Label();
-        vbox.AddChild(_status);
+        var statusMargin = new MarginContainer();
+        statusMargin.AddThemeConstantOverride("margin_left", 12);
+        statusMargin.AddChild(_status);
+        vbox.AddChild(statusMargin);
 
         _contextMenu = new PopupMenu();
         _contextMenu.AddItem("Wear", 0);
@@ -100,6 +135,33 @@ public partial class InventoryPanel : PanelContainer
 
         if (_session.LibraryRootId is { } libraryId)
             AddFolderItem(hidden, libraryId, "Library");
+    }
+
+    private void OnSearchTextChanged(string newText)
+    {
+        var root = _tree.GetRoot();
+        if (root == null) return;
+        FilterTree(root, newText.ToLowerInvariant());
+    }
+
+    private bool FilterTree(TreeItem item, string query)
+    {
+        bool anyChildVisible = false;
+        var children = item.GetChildren();
+        foreach (var child in children)
+        {
+            bool childVisible = FilterTree(child, query);
+            anyChildVisible |= childVisible;
+        }
+
+        bool match = string.IsNullOrEmpty(query) || item.GetText(0).ToLowerInvariant().Contains(query);
+        bool isVisible = match || anyChildVisible;
+        item.Visible = isVisible;
+        
+        if (anyChildVisible && !string.IsNullOrEmpty(query))
+            item.Collapsed = false;
+
+        return isVisible;
     }
 
     /// <summary>Adds a folder row with a "…" placeholder child, so the expander arrow shows
@@ -200,7 +262,7 @@ public partial class InventoryPanel : PanelContainer
                     LoadFolder(parentItem, parentId, force: true);
                 }
             });
-            win.PopupCentered();
+            win.Show();
         }
     }
 

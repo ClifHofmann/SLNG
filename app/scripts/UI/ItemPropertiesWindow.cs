@@ -6,7 +6,7 @@ using static Godot.Control;
 
 namespace SLNG.App.UI;
 
-public partial class ItemPropertiesWindow : Window
+public partial class ItemPropertiesWindow : SLNGWindow
 {
     private GridSession _session = null!;
     private Guid _itemId;
@@ -43,23 +43,20 @@ public partial class ItemPropertiesWindow : Window
 
     public override void _Ready()
     {
-        // Window properties
-        Size = new Vector2I(400, 300);
-        MinSize = new Vector2I(300, 200);
-        Exclusive = false;
-        CloseRequested += QueueFree;
-
-        var panel = new PanelContainer();
-        panel.SetAnchorsPreset(LayoutPreset.FullRect);
-        AddChild(panel);
+        base._Ready();
+        
+        CustomMinimumSize = new Vector2(400, 300);
+        Size = new Vector2(400, 300);
+        Position = new Vector2(200, 200);
+        
+        OnCloseRequested = QueueFree;
 
         var margin = new MarginContainer(); 
-        margin.SetAnchorsPreset(LayoutPreset.FullRect);
         margin.AddThemeConstantOverride("margin_left", 10);
         margin.AddThemeConstantOverride("margin_right", 10);
         margin.AddThemeConstantOverride("margin_top", 10);
         margin.AddThemeConstantOverride("margin_bottom", 10);
-        panel.AddChild(margin);
+        ContentContainer.AddChild(margin);
 
         var vbox = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill };
         margin.AddChild(vbox);
