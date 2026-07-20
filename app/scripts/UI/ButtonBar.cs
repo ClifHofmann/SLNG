@@ -30,46 +30,79 @@ public partial class ButtonBar : Control
     private HBoxContainer _hbox = null!;
 
     private Button? _draggingButton;
+    private Vector2 _dragStartPos;
+    private bool _isDragging;
 
     private const string MetaKey = "toolbar_item_id";
 
+    private Font _iconFont = null!;
+
     public override void _Ready()
     {
-        SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        _iconFont = GD.Load<Font>("res://assets/fonts/MaterialSymbolsOutlined.ttf");
         MouseFilter = Control.MouseFilterEnum.Ignore; // avoid blocking world/camera clicks outside the pill
 
+        var margin = new MarginContainer();
+        margin.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        margin.AddThemeConstantOverride("margin_bottom", 0);
+        margin.MouseFilter = Control.MouseFilterEnum.Ignore;
+        AddChild(margin);
+
+        var vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
+        vbox.MouseFilter = Control.MouseFilterEnum.Ignore;
+        margin.AddChild(vbox);
+
         var barPanel = new PanelContainer();
-        barPanel.SetAnchorsPreset(Control.LayoutPreset.CenterBottom);
-        barPanel.GrowHorizontal = Control.GrowDirection.Both;
-        barPanel.GrowVertical = Control.GrowDirection.Begin;
-        barPanel.OffsetBottom = -16; // float above the true screen edge, matching the SLNGWindow shadow margin feel
         barPanel.MouseFilter = Control.MouseFilterEnum.Stop;
+        barPanel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        vbox.AddChild(barPanel);
 
         var styleBox = new StyleBoxFlat
         {
-            BgColor = new Color(0, 0, 0, 0.5f),
-            CornerRadiusTopLeft = 20,
-            CornerRadiusTopRight = 20,
-            CornerRadiusBottomLeft = 20,
-            CornerRadiusBottomRight = 20,
-            BorderWidthBottom = 1,
+            BgColor = new Color(0.12f, 0.12f, 0.12f, 0.95f),
+            CornerRadiusTopLeft = 0,
+            CornerRadiusTopRight = 0,
+            CornerRadiusBottomLeft = 0,
+            CornerRadiusBottomRight = 0,
             BorderWidthTop = 1,
-            BorderWidthLeft = 1,
-            BorderWidthRight = 1,
-            BorderColor = new Color(1, 1, 1, 0.1f),
+            BorderColor = new Color(0.3f, 0.3f, 0.3f, 0.5f),
             ShadowColor = new Color(0, 0, 0, 0.25f),
-            ShadowSize = 12,
-            ContentMarginLeft = 10,
-            ContentMarginRight = 10,
-            ContentMarginTop = 8,
-            ContentMarginBottom = 8,
+            ShadowSize = 4,
+            ContentMarginLeft = 4,
+            ContentMarginRight = 4,
+            ContentMarginTop = 2,
+            ContentMarginBottom = 2,
         };
         barPanel.AddThemeStyleboxOverride("panel", styleBox);
-        AddChild(barPanel);
+
+        var split = new HSplitContainer();
+        barPanel.AddChild(split);
+
+        _chatContainer = new MarginContainer();
+        _chatContainer.CustomMinimumSize = new Vector2(100, 0);
+        _chatContainer.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        _chatContainer.SizeFlagsStretchRatio = 0.25f; // ~20% width
+        split.AddChild(_chatContainer);
+
+        var rightBox = new HBoxContainer();
+        rightBox.Alignment = BoxContainer.AlignmentMode.End;
+        rightBox.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        rightBox.SizeFlagsStretchRatio = 0.75f; // ~80% width
+        split.AddChild(rightBox);
 
         _hbox = new HBoxContainer();
-        _hbox.AddThemeConstantOverride("separation", 6);
-        barPanel.AddChild(_hbox);
+        _hbox.AddThemeConstantOverride("separation", 2);
+        rightBox.AddChild(_hbox);
+    }
+
+    private MarginContainer _chatContainer = null!;
+
+    public void AttachChatBox(Control chatBox)
+    {
+        chatBox.GetParent()?.RemoveChild(chatBox);
+        _chatContainer.AddChild(chatBox);
+        chatBox.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        chatBox.SizeFlagsVertical = Control.SizeFlags.Fill;
     }
 
     /// <summary>Wires the bar to the full item registry and its persisted enabled/order state.
@@ -108,18 +141,19 @@ public partial class ButtonBar : Control
             Text = def.IconGlyph,
             ToggleMode = true,
             FocusMode = Control.FocusModeEnum.None,
-            CustomMinimumSize = new Vector2(44, 44),
+            CustomMinimumSize = new Vector2(48, 32),
             TooltipText = def.Label,
             MouseFilter = Control.MouseFilterEnum.Stop,
         };
         btn.SetMeta(MetaKey, def.Id);
-        btn.AddThemeFontSizeOverride("font_size", 14);
+        btn.AddThemeFontOverride("font", _iconFont);
+        btn.AddThemeFontSizeOverride("font_size", 24);
         btn.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 0.85f));
         btn.AddThemeColorOverride("font_pressed_color", new Color(1f, 1f, 1f));
 
-        var normalStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.05f), CornerRadiusTopLeft = 12, CornerRadiusTopRight = 12, CornerRadiusBottomLeft = 12, CornerRadiusBottomRight = 12 };
-        var hoverStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.15f), CornerRadiusTopLeft = 12, CornerRadiusTopRight = 12, CornerRadiusBottomLeft = 12, CornerRadiusBottomRight = 12 };
-        var pressedStyle = new StyleBoxFlat { BgColor = new Color(0.3f, 0.6f, 0.9f, 0.4f), CornerRadiusTopLeft = 12, CornerRadiusTopRight = 12, CornerRadiusBottomLeft = 12, CornerRadiusBottomRight = 12 };
+        var normalStyle = new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0), CornerRadiusTopLeft = 0, CornerRadiusTopRight = 0, CornerRadiusBottomLeft = 0, CornerRadiusBottomRight = 0 };
+        var hoverStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.1f), CornerRadiusTopLeft = 0, CornerRadiusTopRight = 0, CornerRadiusBottomLeft = 0, CornerRadiusBottomRight = 0 };
+        var pressedStyle = new StyleBoxFlat { BgColor = new Color(0.2f, 0.4f, 0.6f, 0.6f), CornerRadiusTopLeft = 0, CornerRadiusTopRight = 0, CornerRadiusBottomLeft = 0, CornerRadiusBottomRight = 0 };
         btn.AddThemeStyleboxOverride("normal", normalStyle);
         btn.AddThemeStyleboxOverride("hover", hoverStyle);
         btn.AddThemeStyleboxOverride("pressed", pressedStyle);
@@ -137,16 +171,32 @@ public partial class ButtonBar : Control
             if (mb.Pressed)
             {
                 _draggingButton = btn;
-                btn.Modulate = new Color(1, 1, 1, 0.6f);
+                _dragStartPos = mb.GlobalPosition;
+                _isDragging = false;
             }
             else if (_draggingButton == btn)
             {
-                EndDrag(btn);
+                btn.Modulate = Colors.White;
+                if (_isDragging)
+                {
+                    EndDrag(btn);
+                }
+                _draggingButton = null;
+                _isDragging = false;
             }
         }
         else if (@event is InputEventMouseMotion mm && _draggingButton == btn)
         {
-            TryReorder(btn, mm.GlobalPosition.X);
+            if (!_isDragging && mm.GlobalPosition.DistanceTo(_dragStartPos) > 4f)
+            {
+                _isDragging = true;
+                btn.Modulate = new Color(1, 1, 1, 0.6f);
+            }
+
+            if (_isDragging)
+            {
+                TryReorder(btn, mm.GlobalPosition.X);
+            }
         }
     }
 
@@ -174,9 +224,6 @@ public partial class ButtonBar : Control
 
     private void EndDrag(Button btn)
     {
-        btn.Modulate = Colors.White;
-        _draggingButton = null;
-
         var newEnabledOrder = new List<string>();
         foreach (Node child in _hbox.GetChildren())
             if (child.HasMeta(MetaKey))
@@ -193,7 +240,13 @@ public partial class ButtonBar : Control
         // window mid-drag), avoid leaving the bar permanently stuck thinking it is still dragging.
         if (_draggingButton != null && !Input.IsMouseButtonPressed(MouseButton.Left))
         {
-            EndDrag(_draggingButton);
+            if (_isDragging)
+            {
+                EndDrag(_draggingButton);
+            }
+            _draggingButton.Modulate = Colors.White;
+            _draggingButton = null;
+            _isDragging = false;
         }
 
         // Sync the pressed look of every button with the target panel visibility -- the panel

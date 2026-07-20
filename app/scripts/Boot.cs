@@ -46,7 +46,7 @@ public partial class Boot : Control
     private SLNG.App.UI.PreferencesWindow _preferencesWindow = null!;
     private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
 
-    public const string AppVersion = "v0.1.4-alpha";
+    public const string AppVersion = "v0.1.7-alpha";
 
     public override void _Ready()
     {
@@ -217,8 +217,9 @@ public partial class Boot : Control
     {
         var toolbarItems = new System.Collections.Generic.List<SLNG.App.UI.ToolbarItemDefinition>
         {
-            new("camera", "Camera Controls", "CAM", () => cameraHud.Toggle(), () => cameraHud.Visible),
-            new("inventory", "Inventory", "INV", () => _inventoryPanel?.Toggle(), () => _inventoryPanel?.Visible ?? false),
+            new("chat", "Chat", "chat", () => { var p = _chatInput.GetParent<Control>(); p.Visible = !p.Visible; }, () => _chatInput.GetParent<Control>().Visible),
+            new("camera", "Camera Controls", "photo_camera", () => cameraHud.Toggle(), () => cameraHud.Visible),
+            new("inventory", "Inventory", "inventory_2", () => _inventoryPanel?.Toggle(), () => _inventoryPanel?.Visible ?? false),
         };
 
         _toolbarSettings = new SLNG.App.UI.ToolbarSettings();
@@ -226,8 +227,11 @@ public partial class Boot : Control
         _toolbarSettings.Load();
 
         _buttonBar = new SLNG.App.UI.ButtonBar { Name = "ButtonBar" };
+        _buttonBar.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         hudLayer.AddChild(_buttonBar);
         _buttonBar.Initialize(toolbarItems, _toolbarSettings);
+        
+        _buttonBar.AttachChatBox(_chatInput.GetParent<Control>());
 
         _preferencesWindow = new SLNG.App.UI.PreferencesWindow { Name = "PreferencesWindow" };
         hudLayer.AddChild(_preferencesWindow);
