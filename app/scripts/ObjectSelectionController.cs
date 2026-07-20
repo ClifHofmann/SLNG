@@ -18,21 +18,29 @@ namespace SLNG.App
             _session = session;
             _camera = camera;
             _contextMenu = contextMenu;
+            SetProcessUnhandledInput(true);
         }
 
         public override void _UnhandledInput(InputEvent @event)
         {
+            if (@event is InputEventMouseButton mb) 
+            {
+                GD.Print($"[ObjectSelectionController] MouseButton event received. Index: {mb.ButtonIndex}, Pressed: {mb.Pressed}, Alt: {mb.AltPressed}");
+            }
             if (_world == null || _session == null || _camera == null) return;
 
-            if (@event is InputEventMouseButton mouseBtn && !mouseBtn.Pressed)
+            if (@event is InputEventMouseButton mouseBtn && mouseBtn.Pressed && !mouseBtn.AltPressed)
             {
                 if (mouseBtn.ButtonIndex == MouseButton.Right || mouseBtn.ButtonIndex == MouseButton.Left)
                 {
                     var result = RaycastFromMouse(mouseBtn.Position);
                     
+                    GD.Print($"[ObjectSelectionController] Raycast returned {result.Count} results.");
+
                     if (result.Count > 0)
                     {
                         var collider = result["collider"].As<Node>();
+                        GD.Print($"[ObjectSelectionController] Collider: {collider?.Name}, IsStaticBody: {collider is StaticBody3D}");
                         if (collider is StaticBody3D staticBody && staticBody.HasMeta("LocalId"))
                         {
                             uint localId = uint.Parse(staticBody.GetMeta("LocalId").AsString());
@@ -49,9 +57,9 @@ namespace SLNG.App
                                     if (mouseBtn.ButtonIndex == MouseButton.Right)
                                     {
                                         _contextMenu.ShowMenu(mouseBtn.Position, entity, localId);
+                                        GetViewport().SetInputAsHandled();
                                     }
                                     
-                                    GetViewport().SetInputAsHandled();
                                     return;
                                 }
                             }

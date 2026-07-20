@@ -26,6 +26,7 @@ namespace SLNG.App.UI
             base._Ready(); // set up SLNGWindow styling
             Title = "Build / Inspector";
             Visible = false;
+            CustomMinimumSize = new Vector2(320, 400);
 
             var tabContainer = new TabContainer();
             ContentContainer.AddChild(tabContainer);
@@ -115,6 +116,7 @@ namespace SLNG.App.UI
             Title = $"Build / Inspector (LocalID: {localId})";
             Visible = true;
             MoveToFront();
+            CallDeferred(MethodName.CenterWindow);
         }
 
         private void ApplyTransform()
@@ -147,6 +149,18 @@ namespace SLNG.App.UI
                     primComp.Scale = scale;
                 }
             }
+        }
+
+        private void CenterWindow()
+        {
+            var viewportSize = GetViewportRect().Size;
+            var windowSize = Size;
+            if (windowSize.X < CustomMinimumSize.X) windowSize = CustomMinimumSize;
+            
+            Position = new Godot.Vector2(
+                Mathf.Max(0, (viewportSize.X - windowSize.X) / 2),
+                Mathf.Max(0, (viewportSize.Y - windowSize.Y) / 2)
+            );
         }
     }
 }

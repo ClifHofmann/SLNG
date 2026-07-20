@@ -55,6 +55,8 @@ public partial class Boot : Control
 
     public override void _Ready()
     {
+        MouseFilter = MouseFilterEnum.Ignore;
+
         // Godot debug builds hard-code an "(DEBUG)" window-title suffix that gets applied
         // AFTER _Ready() runs, silently overwriting whatever title we set here a moment later
         // — a known engine behavior (godotengine/godot#104321), not an SLNG bug. Re-asserting
@@ -635,7 +637,6 @@ public partial class Boot : Control
                 _avatarController.Environment = worldEnv.Environment;
             }
 
-            AddChild(_avatarController);
             _avatarController.MakeCurrent();
 
             LogMessage($"[System] Login succeeded! Agent: {result.AgentId}");

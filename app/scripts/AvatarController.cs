@@ -126,74 +126,10 @@ public partial class AvatarController : Camera3D
         _session = session;
     }
 
-    private PopupMenu _contextMenu = null!;
-    private string _lastClickedEntityId = "";
-    private string _lastClickedLocalId = "";
-
     public override void _Ready()
     {
-        // Default to visible mouse for UI interaction
         Input.MouseMode = Input.MouseModeEnum.Visible;
-
-        _contextMenu = new PopupMenu();
-        _contextMenu.Name = "ContextMenu";
-        _contextMenu.AddItem("Inspect (Print IDs to Console)", 0);
-        _contextMenu.AddItem("Copy Entity ID", 1);
-        _contextMenu.AddItem("Dump Object Data", 3);
-        _contextMenu.AddItem("Touch / Interact", 2);
-        _contextMenu.IdPressed += OnContextMenuIdPressed;
-        AddChild(_contextMenu);
     }
-
-    private void OnContextMenuIdPressed(long id)
-    {
-        if (id == 0)
-        {
-            GD.Print($"\n=== [Inspect Object] ===\nEntityId: {_lastClickedEntityId}\nLocalId: {_lastClickedLocalId}\n========================\n");
-        }
-        else if (id == 1)
-        {
-            DisplayServer.ClipboardSet(_lastClickedEntityId);
-            GD.Print($"Copied {_lastClickedEntityId} to clipboard!");
-        }
-        else if (id == 3)
-        {
-            if (System.Guid.TryParse(_lastClickedEntityId, out var guid))
-            {
-                var entity = _world?.GetEntity(guid);
-                if (entity != null)
-                {
-                    var prim = entity.GetComponent<SLNG.Core.Components.PrimitiveComponent>();
-                    var transform = entity.GetComponent<SLNG.Core.Components.TransformComponent>();
-                    GD.Print($"\n=== [Dump Object Data] ===");
-                    GD.Print($"EntityId: {entity.Id}");
-                    if (transform != null)
-                    {
-                        GD.Print($"Position: {transform.Position}");
-                        GD.Print($"Rotation: {transform.Rotation}");
-                    }
-                    if (prim != null)
-                    {
-                        GD.Print($"Scale: {prim.Scale}");
-                        GD.Print($"TextureId: {prim.TextureId}");
-                        GD.Print($"MaterialId: {prim.RenderMaterialId}");
-                        GD.Print($"IsSculpt: {prim.IsSculpt}");
-                        GD.Print($"SculptId: {prim.SculptId}");
-                        GD.Print($"SculptType: {prim.SculptType}");
-                        GD.Print($"Shape: {prim.Shape}");
-
-                    }
-                    GD.Print($"==========================\n");
-                }
-            }
-        }
-        else if (id == 2)
-        {
-            GD.Print($"[Touch] Triggering touch on object {_lastClickedLocalId} (Not fully implemented yet)");
-            // _session.TouchObject(_lastClickedLocalId);
-        }
-    }
-
     // _UnhandledInput, not _Input: Control nodes (the inventory Tree, LineEdits, etc.) stop
     // mouse/keyboard events from reaching this method once they've consumed them, whereas
     // _Input fires unconditionally — that's why scrolling the inventory window used to also
@@ -218,38 +154,7 @@ public partial class AvatarController : Camera3D
 
         if (@event is InputEventMouseButton mouseBtn)
         {
-            if (mouseBtn.ButtonIndex == MouseButton.Right)
-            {
-                if (mouseBtn.Pressed)
-                {
-                    // Raycast to identify clicked object
-                    var spaceState = GetWorld3D().DirectSpaceState;
-                    var mpos = mouseBtn.Position;
-                    var from = ProjectRayOrigin(mpos);
-                    var to = from + ProjectRayNormal(mpos) * 1000f;
-
-                    var query = PhysicsRayQueryParameters3D.Create(from, to);
-                    var result = spaceState.IntersectRay(query);
-
-                    if (result.Count > 0)
-                    {
-                        var collider = result["collider"].AsGodotObject();
-                        if (collider is Node colliderNode)
-                        {
-                            _lastClickedEntityId = colliderNode.HasMeta("EntityId") ? colliderNode.GetMeta("EntityId").AsString() : "None";
-                            _lastClickedLocalId = colliderNode.HasMeta("LocalId") ? colliderNode.GetMeta("LocalId").AsString() : "None";
-
-                            // Uncapture mouse if we were orbiting
-                            Input.MouseMode = Input.MouseModeEnum.Visible;
-
-                            // Show popup menu at mouse position
-                            _contextMenu.Position = new Vector2I((int)mpos.X, (int)mpos.Y);
-                            _contextMenu.Popup();
-                        }
-                    }
-                }
-            }
-            else if (mouseBtn.ButtonIndex == MouseButton.Left)
+            if (mouseBtn.ButtonIndex == MouseButton.Left)
             {
                 // Alt+LMB: orbit around avatar (SL-style).
                 // Use the event's AltPressed flag — Input.IsKeyPressed(Key.Alt) is
