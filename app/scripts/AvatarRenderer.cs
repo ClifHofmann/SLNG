@@ -101,7 +101,7 @@ public partial class AvatarRenderer : Node3D
     // DLL timestamp. If this line is missing or shows an old tag, the client is NOT running
     // the code you think it is; close it fully (not just the window) and re-run
     // tools/run-client.ps1 before drawing any conclusion from the rest of the log.
-    private const string BuildMarker = "2026-07-04-session8r-hud-world3d-fix";
+    private const string BuildMarker = "2026-07-05-session9o-prim-vflip-fix";
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
     {
@@ -904,11 +904,42 @@ public partial class AvatarRenderer : Node3D
             ? new Color(1, 1, 1, 1)
             : new Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
 
+        // SL face-texture rotation: a StandardMaterial3D's UV transform has scale/offset but no
+        // rotation, so only 0 and ±π (a half-turn) are representable — π is a point-mirror,
+        // i.e. negating both repeats around the face center. Half-turn rotated faces are common
+        // (the POLLO HUD's background renders 180° off without this); other angles (90° etc.)
+        // would need per-face UV baking or a shader — log them so real content tells us when
+        // that investment is due.
+        float effRepeatU = ft.RepeatU, effRepeatV = ft.RepeatV;
+        float wrappedRot = Mathf.Wrap(ft.Rotation, -Mathf.Pi, Mathf.Pi);
+        if (Mathf.Abs(wrappedRot) > Mathf.Pi * 0.75f)
+        {
+            effRepeatU = -effRepeatU;
+            effRepeatV = -effRepeatV;
+        }
+        else if (Mathf.Abs(wrappedRot) > 0.05f)
+        {
+            GD.Print($"[FaceTex] unsupported face rotation {ft.Rotation:0.##} rad (tex {ft.TextureId.ToString()[..8]}) — rendered unrotated");
+        }
+
         var material = new StandardMaterial3D
         {
             AlbedoColor = tint,
             CullMode = BaseMaterial3D.CullModeEnum.Disabled,
             TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
+            // Per-face UV repeats/offsets, same as ObjectRenderer's world-prim materials — HUD
+            // buttons in particular are classically ONE texture atlas with per-face repeat/offset
+            // picking out each icon; without this every face shows the whole atlas.
+            Uv1Scale = new Godot.Vector3(effRepeatU, effRepeatV, 1.0f),
+            // SL scales a face's texture around the FACE CENTER (u' = (u-0.5)*repeat + 0.5 + off);
+            // Godot's Uv1 transform scales from the corner — without the 0.5-0.5*repeat term any
+            // repeat != 1 shifts the image off-center (a "scaling issue" on tiled faces). Negative
+            // repeats (SL's mirror, and the half-turn above) also land correctly with this, via
+            // texture wrap.
+            Uv1Offset = new Godot.Vector3(
+                0.5f - 0.5f * effRepeatU + ft.OffsetU,
+                0.5f - 0.5f * effRepeatV + ft.OffsetV,
+                0.0f),
         };
 
         // SL's per-face colour alpha (LLTextureEntry::getColor()) is a genuine transparency/blend
@@ -956,7 +987,14 @@ public partial class AvatarRenderer : Node3D
         if (cached != null) { material.AlbedoTexture = cached; return material; }
 
         var textureData = await _assetService.GetTextureAsync(texId).ConfigureAwait(false);
-        if (textureData == null) return material;
+        if (textureData == null)
+        {
+            // Not silent: an untextured face renders as flat AlbedoColor (usually white), which
+            // is visually indistinguishable from a face-index mapping bug — that ambiguity cost a
+            // whole diagnostic round on the HUD-texture investigation. One line per failed id.
+            GD.PrintErr($"[FaceTex] texture {texId} fetch/decode returned null — face renders untextured");
+            return material;
+        }
 
         Godot.Callable.From(() =>
         {
@@ -1074,11 +1112,16 @@ public partial class AvatarRenderer : Node3D
         container.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         layer.AddChild(container);
 
-        // OwnWorld3D alone only says "don't inherit the parent's World3D" — it does not itself
-        // instantiate one, so World3D reads back null (confirmed live: a click's DirectSpaceState
-        // query crashed on it) until something explicitly assigns a resource. Construct it
-        // ourselves so it's valid immediately, with no dependency on Godot's own lazy-init timing.
-        _hudViewport = new SubViewport { Name = "SlHudViewport", TransparentBg = true, OwnWorld3D = true, World3D = new World3D() };
+        // OwnWorld3D gives the viewport "a unique COPY of the World3D defined in world_3d"
+        // (Godot docs, confirmed live the hard way): the World3D property itself stays whatever
+        // you set it to — null by default (a click's DirectSpaceState query crashed on that), or
+        // a template instance whose physics space stays forever EMPTY because the viewport's
+        // children actually register in the internal copy, not in it (confirmed live: a
+        // hand-verified-correct ray through 345 present bodies missed everything, both before
+        // and after force-activating the template's space). Anything that needs the world the
+        // viewport ACTUALLY uses — ray queries in TryClickHud above all — must go through
+        // Viewport.FindWorld3D(), never the World3D property.
+        _hudViewport = new SubViewport { Name = "SlHudViewport", TransparentBg = true, OwnWorld3D = true };
         container.AddChild(_hudViewport);
         // Window resize changes the aspect ratio, which moves every horizontal anchor.
         _hudViewport.SizeChanged += () =>
@@ -1207,7 +1250,10 @@ public partial class AvatarRenderer : Node3D
             if (!IsInstanceValid(hudNode)) return;
             foreach (var child in hudNode.GetChildren()) child.QueueFree();
 
-            var arrayMesh = BuildHudArrayMesh(meshData, flipV: isMeshAsset, scale, out var faceIndices);
+            // flipV:true for BOTH mesh assets and prims — MeshFoundry's prim UVs are vertically
+            // inverted vs the real viewer (see ObjectRenderer's prim path for the llvolume.cpp
+            // verification); mesh assets need the flip too (SL bottom-left origin → Godot top-left).
+            var arrayMesh = BuildHudArrayMesh(meshData, flipV: true, scale, out var faceIndices);
             if (arrayMesh.GetSurfaceCount() == 0) return;
 
             var mi = new MeshInstance3D { Name = "HudMesh", Mesh = arrayMesh };
@@ -1871,10 +1917,13 @@ public partial class AvatarRenderer : Node3D
         var cam = _hudViewport.GetCamera3D();
         if (cam == null) return;
 
-        var world3d = _hudViewport.World3D;
+        // FindWorld3D(), NOT the World3D property: with OwnWorld3D the viewport's children live
+        // in an internal COPY of the world, and only FindWorld3D returns that copy — see the
+        // comment where the viewport is created for the two dead ends this replaced.
+        var world3d = _hudViewport.FindWorld3D();
         if (world3d == null)
         {
-            GD.PrintErr("[HUD] click: viewport has no World3D yet — ignoring");
+            GD.PrintErr("[HUD] click: viewport has no effective World3D yet — ignoring");
             return;
         }
         var spaceState = world3d.DirectSpaceState;

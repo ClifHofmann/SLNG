@@ -280,7 +280,7 @@ public partial class ObjectRenderer : Node3D
         {
             if (!IsInstanceValid(state.MeshInstance)) return;
             if (state.LoadedMeshId != meshId) return; // shape/asset changed while loading
-            AssignSharedMesh(state, meshId, mesh);
+            AssignSharedMesh(state, meshId, mesh, flipV: true);
         }).CallDeferred();
     }
 
@@ -297,7 +297,10 @@ public partial class ObjectRenderer : Node3D
 
             if (mesh != null && mesh.Submeshes.Count > 0)
             {
-                AssignSharedMesh(state, sculptId, mesh);
+                // LMV's SCULPT meshing path emits raw (bottom-left) UVs — unlike its prim path,
+                // which pre-flips; scenery sculpts (rocks etc.) rarely make the difference
+                // visible, so this leans on the SL-convention default rather than hard proof.
+                AssignSharedMesh(state, sculptId, mesh, flipV: true);
             }
             else
             {
@@ -327,7 +330,14 @@ public partial class ObjectRenderer : Node3D
 
             if (mesh != null && mesh.Submeshes.Count > 0)
             {
-                AssignSharedMesh(state, KeyForShape(shape), mesh);
+                // flipV:true — verified against the real viewer (llvolume.cpp
+                // LLVolumeFace::createSide): SL sets a box side face's V directly from
+                // path_data[t].mTexT with NO flip, but LibreMetaverse's MeshFoundry applies an
+                // extra 1-V (GenerateFacetedMesh) that leaves prim faces vertically inverted —
+                // invisible on tiled/symmetric textures, but upside-down on anything oriented
+                // (a HUD's logo/text). This is the SAME flip mesh assets already use; prims were
+                // wrongly exempted on the assumption MeshFoundry's internal flip cancelled out.
+                AssignSharedMesh(state, KeyForShape(shape), mesh, flipV: true);
             }
             else
             {
@@ -408,14 +418,37 @@ public partial class ObjectRenderer : Node3D
     {
         var used = new List<Guid>();
         var colorTint = new Godot.Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
+
+        // SL face rotation: only 0 and ±π are representable in a StandardMaterial3D UV transform
+        // (no rotation, just scale/offset) — π is a point-mirror, i.e. negated repeats around the
+        // face center. Other angles logged, rendered unrotated. Same handling as
+        // AvatarRenderer.BuildFaceMaterialAsync — keep in sync.
+        float effRepeatU = ft.RepeatU, effRepeatV = ft.RepeatV;
+        float wrappedRot = Mathf.Wrap(ft.Rotation, -Mathf.Pi, Mathf.Pi);
+        if (Mathf.Abs(wrappedRot) > Mathf.Pi * 0.75f)
+        {
+            effRepeatU = -effRepeatU;
+            effRepeatV = -effRepeatV;
+        }
+        else if (Mathf.Abs(wrappedRot) > 0.05f)
+        {
+            GD.Print($"[FaceTex] unsupported face rotation {ft.Rotation:0.##} rad (tex {ft.TextureId.ToString()[..8]}) — rendered unrotated");
+        }
+
         var material = new StandardMaterial3D
         {
             AlbedoColor = colorTint,
             // Linear + mipmaps: SL textures look smooth, not blocky/pixelated, and don't shimmer with distance.
             TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
             CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-            Uv1Scale = new Godot.Vector3(ft.RepeatU, ft.RepeatV, 1.0f),
-            Uv1Offset = new Godot.Vector3(ft.OffsetU, ft.OffsetV, 0.0f)
+            Uv1Scale = new Godot.Vector3(effRepeatU, effRepeatV, 1.0f),
+            // Centered like SL (u' = (u-0.5)*repeat + 0.5 + off) — Godot scales UVs from the
+            // corner, so without the 0.5-0.5*repeat correction any repeat != 1 shifts the
+            // texture off-center.
+            Uv1Offset = new Godot.Vector3(
+                0.5f - 0.5f * effRepeatU + ft.OffsetU,
+                0.5f - 0.5f * effRepeatV + ft.OffsetV,
+                0.0f)
         };
 
         if (ft.MaterialId != Guid.Empty && _assetService != null)
@@ -541,8 +574,14 @@ public partial class ObjectRenderer : Node3D
     }
 
     /// <summary>Assigns a shared, refcounted mesh to the object's node, building+caching it on
-    /// first use. Releases the previous mesh ref so the GpuCache can reclaim it.</summary>
-    private void AssignSharedMesh(VisualState state, Guid key, MeshData data)
+    /// first use. Releases the previous mesh ref so the GpuCache can reclaim it.
+    /// <paramref name="flipV"/>: true for geometry whose UVs are in SL's bottom-left-origin
+    /// convention and must be flipped for Godot's top-left sampling. Currently true for every
+    /// caller — LLMesh assets, sculpt meshing, AND MeshFoundry prim output all need it (see the
+    /// llvolume.cpp verification at the prim call site) — but it stays a parameter rather than a
+    /// constant since sculpt meshing's flip is inferred from SL convention, not proven the same
+    /// way.</summary>
+    private void AssignSharedMesh(VisualState state, Guid key, MeshData data, bool flipV)
     {
         if (state.LoadedMeshKey == key && state.MeshInstance.Mesh != null) return;
 
@@ -555,7 +594,7 @@ public partial class ObjectRenderer : Node3D
         }
         else
         {
-            mesh = BuildArrayMesh(data, out var faceIndices);
+            mesh = BuildArrayMesh(data, flipV, out var faceIndices);
             _meshFaceIndices[key] = faceIndices;
             _gpuCache?.Put(key, mesh, EstimateMeshSize(data), initialRefCount: 1);
         }
@@ -587,7 +626,7 @@ public partial class ObjectRenderer : Node3D
 
     /// <summary>Builds a Godot <see cref="ArrayMesh"/> from neutral mesh data (one surface per
     /// submesh) and returns the SL face number of each surface (parallel to surface order).</summary>
-    private static ArrayMesh BuildArrayMesh(MeshData mesh, out int[] faceIndices)
+    private static ArrayMesh BuildArrayMesh(MeshData mesh, bool flipV, out int[] faceIndices)
     {
         var arrayMesh = new ArrayMesh();
         var indices = new List<int>(mesh.Submeshes.Count);
@@ -619,7 +658,7 @@ public partial class ObjectRenderer : Node3D
                     var uv = sub.UVs[index];
 
                     st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-                    st.SetUV(new Godot.Vector2(uv.X, uv.Y));
+                    st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
                     st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
                 }
             }
