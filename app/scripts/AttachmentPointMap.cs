@@ -65,4 +65,12 @@ public static class AttachmentPointMap
     /// or null for HUD/unknown points.</summary>
     public static string? GetBoneName(byte attachmentPoint) =>
         _map.TryGetValue(attachmentPoint, out var bone) ? bone : null;
+
+    /// <summary>True for the 8 HUD attachment points (31–38) — screen-space overlays with no
+    /// world bone, distinct from an unmapped/unrecognised BODY point (which also has no bone,
+    /// but should still fall back to somewhere on the body rather than being dropped). Callers
+    /// must route these to the orthographic HUD overlay (AvatarRenderer.UpdateHudAttachment)
+    /// rather than let them fall through to a default body bone, which would render the HUD
+    /// mesh as a small object floating in 3D world space on the avatar instead of on screen.</summary>
+    public static bool IsHudPoint(byte attachmentPoint) => attachmentPoint is >= 31 and <= 38;
 }

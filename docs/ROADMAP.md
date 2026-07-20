@@ -105,12 +105,26 @@ Goal: Replace the placeholder capsule with a real Second Life avatar (Bento skel
 | M4-2 | Animation decode & playback ✅ | assets | gemini | asset-pipeline | | M4-1 | Server-sent animations (`.anim` / `.bvh`) play correctly on the skeleton |
 | M4-3 | Appearance & Bakes-on-Mesh (BoM) ✅ | net/render | gemini | graphics-engineer | | M4-1 | Avatar shape params and baked skin textures are downloaded and applied |
 | M4-4 | Mesh Attachments ✅ | assets/render | claude | graphics-engineer | | M4-1 | Equipped objects (hair, clothes) are attached to the correct skeleton bones |
+| M4-5 | Vertex morphs (LLPolyMorphTarget) — engine-neutral pipeline ✅ | assets | claude | asset-pipeline | | M4-3 | `SLNG.Assets` exposes per-param effective weights + morphed body-part vertices (`pos += w·delta`, normals softened 0.65 + renormalized), verified against `llpolymorph.cpp` with unit tests |
+| M4-6 | Morphed-body rendering — rebuild on shape change ✅ | render | claude | graphics-engineer | | M4-5 | System body renders with the avatar's real proportions (male/muscle/breast sliders) matching Firestorm; morph rebuild off the main thread |
+| M4-7 | Base-mesh hiding under worn mesh (alpha/BoM correctness) | render | | graphics-engineer | | M4-3 | System head/body parts hidden exactly per worn alpha layers & BoM rules instead of the temporary hard-hide experiment |
+| M4-8 | SL-faithful joint composition — scale does NOT inherit ✅ | render/core | claude | graphics-engineer | | M4-3 | Godot bone global poses match `LLXformMatrix::update` exactly (basis = own scale only; parent scale offsets children one level; rotation inherits): parity checker reports <1 cm/<1 % deviation on every bone for real avatars, coat-sleeve meshes land on their joints, proportions match Firestorm |
+| M4-9 | HUD attachments — screen-space ortho overlay ✅ | render/ui | claude | graphics-engineer | | M4-4 | Local avatar's HUD objects (points 31–38) render textured in their correct screen quadrants (SL ortho volume: 1 unit tall, anchors at ±0.5, aspect-scaled horizontals), camera-locked, independent of world lighting; other avatars' HUDs never shown |
+
+## M5 — Viewer features
+
+Pulled forward opportunistically from the M5+ list below when a natural pairing with
+other in-flight work made it cheap to start.
+
+| ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
+|---|---|---|---|---|---|---|---|
+| M5-1 | Inventory browser v1 — read-only, lazy folder fetch ✅ | net/ui | claude | ux-designer | | M0-2 | Ctrl+I opens a tree showing "My Inventory" + "Library"; each folder's children are fetched on first expand (no recursive/whole-tree fetch); folders and items both render with correct names; inventory links are marked as links. Wearing/moving/deleting items is out of scope for v1. |
 
 ## M5+ — Beyond the first shot
 
 The hard, long-tail work. Not part of the first shot; sequence later.
 
-- **Viewer features:** inventory, world map, IM, friends, groups, teleport.
+- **Viewer features:** world map, IM, friends, groups, teleport; inventory v2 (wear/attach/move/delete, drag-drop).
 - **Performance hardening:** profiling on overloaded real sims; impostors; draw-call
   reduction; aggressive culling.
 - **TPV compliance pass + registration** before any public SL build.

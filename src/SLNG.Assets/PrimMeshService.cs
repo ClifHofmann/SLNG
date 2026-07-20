@@ -107,14 +107,23 @@ public static class PrimMeshService
     }
 
     /// <summary>Converts a LibreMetaverse FacetedMesh into neutral submeshes — one per prim
-    /// face, tagged with its face number so the renderer can texture each face independently.</summary>
+    /// face, tagged with its face number so the renderer can texture each face independently.
+    /// The face number is the face's POSITION in the list, NOT <c>face.ID</c>:
+    /// MeshFoundry.GenerateFacetedMesh never assigns ID (it defaults to 0 on every face), which
+    /// textured every surface of a multi-face prim with face 0's entry — a prim with its real
+    /// texture on face 4 and blank white (or fully transparent) elsewhere rendered all-white
+    /// (or invisible), which is exactly how the HUD's Reset button / logo / icons broke while
+    /// single-texture prims looked fine. GenerateFacetedMesh emits faces in SL face order
+    /// (<c>for i in 0..numPrimFaces</c>, each picking <c>Textures.GetFace(i)</c>), so the list
+    /// index is the true SL face number.</summary>
     private static MeshData? Convert(FacetedMesh? faceted)
     {
         if (faceted?.Faces == null || faceted.Faces.Count == 0) return null;
 
         var submeshes = new List<MeshSubmesh>(faceted.Faces.Count);
-        foreach (var face in faceted.Faces)
+        for (int faceNumber = 0; faceNumber < faceted.Faces.Count; faceNumber++)
         {
+            var face = faceted.Faces[faceNumber];
             if (face.Vertices == null || face.Indices == null || face.Indices.Count == 0) continue;
 
             int n = face.Vertices.Count;
@@ -132,7 +141,7 @@ public static class PrimMeshService
             var indices = new int[face.Indices.Count];
             for (int i = 0; i < indices.Length; i++) indices[i] = face.Indices[i];
 
-            submeshes.Add(new MeshSubmesh(positions, normals, uvs, indices, face.ID));
+            submeshes.Add(new MeshSubmesh(positions, normals, uvs, indices, faceNumber));
         }
 
         return submeshes.Count == 0 ? null : new MeshData(submeshes);

@@ -1,9 +1,9 @@
-using System.Linq;
 using Godot;
-using SLNG.App;
 using SLNG.Core;
 using SLNG.Core.Components;
 using SLNG.Net;
+using SLNG.App;
+using System.Linq;
 
 public partial class Boot : Control
 {
@@ -18,7 +18,7 @@ public partial class Boot : Control
 
     private ConfigFile _loginsConfig = new ConfigFile();
     private Godot.Collections.Array<string> _savedProfiles = new();
-
+    
     private LineEdit _chatInput = null!;
     private Button _chatSendButton = null!;
 
@@ -31,9 +31,12 @@ public partial class Boot : Control
     private SLNG.Assets.AssetService? _assetService;
     private AvatarController? _avatarController;
     private VBoxContainer _vboxContainer = null!;
-
+    
     private WorldEnvironment? _worldEnvironment;
     private bool _postFxEnabled = true;
+    private DirectionalLight3D? _sun;
+    private SLNG.App.UI.InventoryPanel? _inventoryPanel;
+    private Node3D? _sunGizmo;
 
     private Label _hudLabel = null!;
     private double _hudAccum;
@@ -49,7 +52,7 @@ public partial class Boot : Control
         _saveLoginCheck = GetNode<CheckBox>("VBoxContainer/HBoxContainer/SaveLoginCheck");
         _loginButton = GetNode<Button>("VBoxContainer/HBoxContainer/LoginButton");
         _logPanel = GetNode<RichTextLabel>("VBoxContainer/LogPanel");
-
+        
         _chatInput = GetNode<LineEdit>("VBoxContainer/ChatBox/ChatInput");
         _chatSendButton = GetNode<Button>("VBoxContainer/ChatBox/ChatSendButton");
 
@@ -65,10 +68,10 @@ public partial class Boot : Control
 
         _objectRenderer = new ObjectRenderer();
         AddChild(_objectRenderer);
-
+        
         _avatarRenderer = new AvatarRenderer();
         AddChild(_avatarRenderer);
-
+        
         SetupEnvironment();
         SetupHud();
 
@@ -78,24 +81,38 @@ public partial class Boot : Control
     private void SetupHud()
     {
         // Position/altitude readout in the top-right corner, overlaying the 3D view.
+        // On its own CanvasLayer so it always draws on top of the world and the login/chat
+        // Controls, regardless of scene-tree order.
+        var hudLayer = new CanvasLayer { Name = "HudLayer", Layer = 10 };
+        AddChild(hudLayer);
+
         _hudLabel = new Label
         {
             Name = "PositionHud",
             HorizontalAlignment = HorizontalAlignment.Right,
             MouseFilter = Control.MouseFilterEnum.Ignore,
+            Text = "connecting…",
         };
-        _hudLabel.SetAnchorsPreset(Control.LayoutPreset.TopWide);
-        _hudLabel.OffsetTop = 6;
+        // Anchor to the bottom-right corner to avoid overlapping the Login UI at the top.
+        _hudLabel.SetAnchorsPreset(Control.LayoutPreset.BottomRight);
+        _hudLabel.GrowHorizontal = Control.GrowDirection.Begin;
+        _hudLabel.GrowVertical = Control.GrowDirection.Begin;
+        _hudLabel.OffsetBottom = -12;
         _hudLabel.OffsetRight = -12;
-        // Dark outline so white text stays legible over bright sky or pale objects.
-        _hudLabel.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 0.8f));
-        _hudLabel.AddThemeConstantOverride("outline_size", 4);
-        AddChild(_hudLabel);
+        // Dark outline + larger font so white text stays legible over bright sky or pale objects.
+        _hudLabel.AddThemeColorOverride("font_color", new Color(1, 1, 1));
+        _hudLabel.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 0.85f));
+        _hudLabel.AddThemeConstantOverride("outline_size", 5);
+        _hudLabel.AddThemeFontSizeOverride("font_size", 18);
+        hudLayer.AddChild(_hudLabel);
+        GD.Print("[HUD] position label created on CanvasLayer");
 
-        // Add the Camera HUD overlay
         var cameraHud = new SLNG.App.UI.CameraHUD();
         cameraHud.Name = "CameraHUD";
-        AddChild(cameraHud);
+        hudLayer.AddChild(cameraHud);
+
+        _inventoryPanel = new SLNG.App.UI.InventoryPanel { Name = "InventoryPanel" };
+        hudLayer.AddChild(_inventoryPanel);
     }
 
     private void SetupEnvironment()
@@ -109,20 +126,20 @@ public partial class Boot : Control
             AmbientLightSource = Godot.Environment.AmbientSource.Sky,
             AmbientLightEnergy = 1.0f,
             TonemapMode = Godot.Environment.ToneMapper.Aces,
-
+            
             // Post-FX (M2-5)
             SsaoEnabled = true,
             SsaoRadius = 1.0f,
             SsaoIntensity = 2.0f,
-
+            
             SsilEnabled = true,
-
+            
             GlowEnabled = true,
             GlowNormalized = true,
             GlowIntensity = 1.0f,
             GlowBloom = 0.1f,
             GlowBlendMode = Godot.Environment.GlowBlendModeEnum.Additive,
-
+            
             VolumetricFogEnabled = true,
             VolumetricFogDensity = 0.005f,
         };
@@ -131,6 +148,7 @@ public partial class Boot : Control
 
         var sun = new DirectionalLight3D
         {
+            Name = "DirectionalLight3D",
             RotationDegrees = new Godot.Vector3(-50f, -130f, 0f),
             ShadowEnabled = true,
             DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel4Splits,
@@ -140,6 +158,69 @@ public partial class Boot : Control
             ShadowOpacity = 0.9f,
         };
         AddChild(sun);
+        _sun = sun;
+    }
+
+    /// <summary>Standing dev tool (F5): renders the sun's actual direction into the scene as an
+    /// emissive beam + sphere anchored at the local avatar. Screen-space reasoning about "which
+    /// side should be lit" from a screenshot is unreliable — the light can sit well outside the
+    /// frame (e.g. ~50° elevation), and nothing in the sky necessarily marks its position (the
+    /// procedural sky's horizon glow doesn't move with the actual DirectionalLight3D). Cross-check
+    /// for any future lighting bug: lit surfaces (GREEN under AvatarRenderer's F9 debug material)
+    /// must face the sphere, and cast shadows must run exactly opposite the beam. Also a reminder
+    /// that the sun direction is hardcoded in SetupEnvironment, unrelated to the region's real
+    /// environment (Firestorm drives it from region WindLight/EEP, which SLNG doesn't fetch yet).</summary>
+    private void ToggleSunGizmo()
+    {
+        if (_sunGizmo != null)
+        {
+            _sunGizmo.QueueFree();
+            _sunGizmo = null;
+            LogMessage("Sun gizmo OFF");
+            return;
+        }
+        if (_sun == null) return;
+
+        // +Z of the light's basis = direction FROM a lit surface TOWARD the sun (a
+        // DirectionalLight3D shines along its local -Z, like all "forward" in Godot).
+        var towardLight = _sun.GlobalTransform.Basis.Z.Normalized();
+
+        var anchor = _avatarController?.Position ?? Godot.Vector3.Zero;
+        if (_world != null && RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos))
+            anchor = agentPos;
+
+        var mat = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = new Color(1f, 0.85f, 0.1f),
+        };
+
+        _sunGizmo = new Node3D { Name = "SunGizmo", Position = anchor };
+        AddChild(_sunGizmo);
+
+        const float beamLen = 25f;
+        var beam = new MeshInstance3D
+        {
+            Mesh = new CylinderMesh { TopRadius = 0.06f, BottomRadius = 0.06f, Height = beamLen },
+            MaterialOverride = mat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            // CylinderMesh's axis is local +Y — rotate +Y onto the sun direction (shortest arc),
+            // then push out by half the length so the beam starts at the avatar.
+            Quaternion = new Quaternion(Godot.Vector3.Up, towardLight),
+            Position = towardLight * (beamLen / 2f),
+        };
+        _sunGizmo.AddChild(beam);
+
+        var ball = new MeshInstance3D
+        {
+            Mesh = new SphereMesh { Radius = 1.2f, Height = 2.4f },
+            MaterialOverride = mat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            Position = towardLight * (beamLen + 1.5f),
+        };
+        _sunGizmo.AddChild(ball);
+
+        LogMessage($"Sun gizmo ON: beam/sphere point TOWARD the sun, dir={towardLight}");
     }
 
     public override void _Process(double delta)
@@ -160,12 +241,17 @@ public partial class Boot : Control
     {
         if (_world == null || _session == null) { return; }
 
+        string region = string.IsNullOrEmpty(_session.CurrentRegionName) ? "(connecting)" : _session.CurrentRegionName;
+
         var agent = _world.GetAllEntities()
             .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
         var t = agent?.GetComponent<TransformComponent>();
-        if (t == null) { _hudLabel.Text = ""; return; }
+        if (t == null)
+        {
+            _hudLabel.Text = $"{region}\nawaiting position…   ·   Draw {RenderConfig.DrawDistance:0} m";
+            return;
+        }
 
-        string region = _session.CurrentRegionName;
         _hudLabel.Text =
             $"{region}\n" +
             $"<{t.Position.X:0.0}, {t.Position.Y:0.0}, {t.Position.Z:0.0}>\n" +
@@ -177,7 +263,7 @@ public partial class Boot : Control
         _profileDropdown.Clear();
         _savedProfiles.Clear();
         _profileDropdown.AddItem("--- Select Profile ---");
-
+        
         if (_loginsConfig.Load("user://logins.cfg") == Error.Ok)
         {
             var sections = _loginsConfig.GetSections();
@@ -192,7 +278,7 @@ public partial class Boot : Control
     private void OnProfileSelected(long index)
     {
         if (index == 0) return; // The "--- Select Profile ---" placeholder
-
+        
         string profile = _savedProfiles[(int)index - 1];
         _gridInput.Text = (string)_loginsConfig.GetValue(profile, "grid", "");
         _firstInput.Text = (string)_loginsConfig.GetValue(profile, "first", "");
@@ -226,6 +312,15 @@ public partial class Boot : Control
                 RenderConfig.DrawDistance = Mathf.Min(512f, RenderConfig.DrawDistance + 16f);
                 LogMessage($"Draw distance: {RenderConfig.DrawDistance:0} m");
             }
+            else if (keyEvent.Keycode == Key.F5)
+            {
+                ToggleSunGizmo();
+            }
+            else if (keyEvent.Keycode == Key.I && keyEvent.CtrlPressed)
+            {
+                // Ctrl+I like the real viewers — plain I would fire while typing in chat.
+                _inventoryPanel?.Toggle();
+            }
         }
     }
 
@@ -254,7 +349,8 @@ public partial class Boot : Control
 
         _terrainRenderer?.Initialize(_world, _assetService, gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, gpuCache);
-        _avatarRenderer?.Initialize(_world, _assetService, gpuCache);
+        _avatarRenderer?.Initialize(_world, _assetService, gpuCache, _session);
+        _inventoryPanel?.Initialize(_session);
 
         _session.ChatMessageReceived += OnChatMessage;
 
@@ -285,7 +381,7 @@ public partial class Boot : Control
             {
                 LogMessage(result.Message);
             }
-
+            
             // Hide the login form but keep chat/logs visible
             GetNode<HBoxContainer>("VBoxContainer/HBoxContainer").Visible = false;
 
@@ -293,7 +389,7 @@ public partial class Boot : Control
             _avatarController = new AvatarController();
             _avatarController.Name = "AvatarController";
             _avatarController.Initialize(_world, _session);
-
+            
             // Set the floating origin to this region so everything renders near 0 (OSGrid
             // global coordinates are in the millions and overflow float precision otherwise).
             ulong regionHandle = _session.CurrentRegionHandle;
@@ -301,7 +397,7 @@ public partial class Boot : Control
 
             // Start near the region centre at a reasonable height (before AvatarUpdate arrives).
             _avatarController.Position = RenderConfig.ToGodot(regionHandle, new System.Numerics.Vector3(128f, 128f, 50f));
-
+            
             // Assign the environment directly to the camera to ensure the sky renders
             var worldEnv = GetNodeOrNull<WorldEnvironment>("WorldEnvironment");
             if (worldEnv != null)
@@ -327,7 +423,7 @@ public partial class Boot : Control
     {
         var text = _chatInput.Text;
         if (string.IsNullOrWhiteSpace(text)) return;
-
+        
         _session?.SendChat(text);
         _chatInput.Text = "";
     }

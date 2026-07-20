@@ -336,6 +336,114 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
+    /// <summary>Touches (clicks) an object — the SL grab/de-grab pair
+    /// <see cref="ObjectManager.ClickObjectAsync"/> sends 50ms apart, which is what fires
+    /// touch_start/touch_end on any touch script the object carries. <paramref name="localId"/>
+    /// is the SL scene-local id (<c>Entity.LocalId</c>), not the persistent asset/object UUID.
+    /// Surface hit details are optional (all-zero if omitted, like LibreMetaverse's own
+    /// no-detail overload) — a HUD button script rarely inspects them, but pass real ones (face
+    /// index, hit position/normal) when available for scripts that do.</summary>
+    public async System.Threading.Tasks.Task ClickObjectAsync(
+        uint localId,
+        int faceIndex = 0,
+        System.Numerics.Vector3 position = default,
+        System.Numerics.Vector3 normal = default,
+        System.Numerics.Vector3 uvCoord = default,
+        System.Numerics.Vector3 stCoord = default,
+        System.Numerics.Vector3 binormal = default)
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null) return;
+
+        await _client.Objects.ClickObjectAsync(
+            sim, localId,
+            ToOmv(uvCoord), ToOmv(stCoord), faceIndex,
+            ToOmv(position), ToOmv(normal), ToOmv(binormal));
+    }
+
+    private static LibreMetaverse.Vector3 ToOmv(System.Numerics.Vector3 v) => new(v.X, v.Y, v.Z);
+
+    /// <summary>Root folder id of the agent's own inventory, or null until login has completed
+    /// (LibreMetaverse builds the store — folders only, no items — from the login response's
+    /// inventory skeleton; there is no way to opt out and nothing extra to request).</summary>
+    public Guid? InventoryRootId => _client.Inventory.Store?.RootFolder?.UUID.Guid;
+
+    /// <summary>Root folder id of the grid-provided Library tree, or null until login (or if the
+    /// grid has no library).</summary>
+    public Guid? LibraryRootId => _client.Inventory.Store?.LibraryFolder?.UUID.Guid;
+
+    /// <summary>
+    /// Fetches one folder's direct children (subfolders + items) — the lazy per-folder expansion
+    /// unit for an inventory UI. One CAPS request (FetchInventoryDescendents2 — supported by
+    /// modern OpenSim; AIS3 is SL-only and mutation-only in LibreMetaverse anyway) per call, no
+    /// recursion: recursing the whole tree hammers the grid and is never needed for a browser.
+    /// Returns an empty list before login or when the fetch fails (LibreMetaverse's
+    /// FolderContentsAsync falls back to its own cache on failure rather than surfacing an
+    /// error — acceptable for a UI tree, where the user just re-expands).
+    /// </summary>
+    public async Task<IReadOnlyList<InventoryEntry>> FetchInventoryChildrenAsync(
+        Guid folderId, CancellationToken ct = default)
+    {
+        var store = _client.Inventory.Store;
+        if (store == null) return Array.Empty<InventoryEntry>();
+
+        var folderUuid = new LibreMetaverse.UUID(folderId);
+        // Library folders are owned by the library owner, not the agent — but do NOT trust the
+        // stored node's own OwnerID for this: LibreMetaverse's descendents-reply parser creates
+        // folders with OwnerID unset (UUID.Zero) — only login-SKELETON folders carry an owner.
+        // Passing Zero as the owner makes OpenSim return nothing, which rendered every folder
+        // below the root as "(empty)" on the first live test. Membership in the Library subtree
+        // (walk the store's parent chain) is the reliable signal.
+        var owner = _client.Self.AgentID;
+        var libraryRoot = store.LibraryFolder;
+        if (libraryRoot != null)
+        {
+            for (var n = store.GetNodeOrDefault(folderUuid); n != null; n = n.Parent)
+            {
+                if (n.Data?.UUID != libraryRoot.UUID) continue;
+                owner = libraryRoot.OwnerID;
+                break;
+            }
+        }
+
+        var contents = await _client.Inventory.FolderContentsAsync(
+            folderUuid, owner, fetchFolders: true, fetchItems: true,
+            LibreMetaverse.InventorySortOrder.ByName, ct).ConfigureAwait(false);
+        if (contents == null) return Array.Empty<InventoryEntry>();
+
+        var result = new List<InventoryEntry>(contents.Count);
+        foreach (var entry in contents)
+        {
+            switch (entry)
+            {
+                case LibreMetaverse.InventoryFolder f:
+                    result.Add(new InventoryEntry(
+                        f.UUID.Guid, f.ParentUUID.Guid, f.OwnerID.Guid, f.Name,
+                        IsFolder: true, (int)f.PreferredType,
+                        AssetId: Guid.Empty, AssetType: -1, InventoryType: -1,
+                        IsLink: false, LinkTargetId: Guid.Empty,
+                        CanCopy: true, CanModify: true, CanTransfer: true));
+                    break;
+                case LibreMetaverse.InventoryItem i:
+                    var owned = i.Permissions.OwnerMask;
+                    result.Add(new InventoryEntry(
+                        i.UUID.Guid, i.ParentUUID.Guid, i.OwnerID.Guid, i.Name,
+                        IsFolder: false, PreferredFolderType: -1,
+                        // For links the "asset" id actually points at the linked inventory item —
+                        // report it as the link target and leave AssetId empty (resolving the
+                        // target's real asset takes a second fetch the UI doesn't need yet).
+                        AssetId: i.ResolvedAssetID.Guid,
+                        (int)i.AssetType, (int)i.InventoryType,
+                        i.IsLink(), i.IsLink() ? i.ResolvedItemID.Guid : Guid.Empty,
+                        owned.HasFlag(LibreMetaverse.PermissionMask.Copy),
+                        owned.HasFlag(LibreMetaverse.PermissionMask.Modify),
+                        owned.HasFlag(LibreMetaverse.PermissionMask.Transfer)));
+                    break;
+            }
+        }
+        return result;
+    }
+
     /// <summary>Sends an AgentUpdate to move the avatar.</summary>
     public void SetMovement(bool forward, bool backward, bool left, bool right, bool up, bool down, System.Numerics.Quaternion cameraRotation, bool fly = false)
     {
@@ -406,7 +514,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     };
                     var delegateObj = Delegate.CreateDelegate(callbackType, action.Target, action.Method);
 
-                    // RequestTexture(UUID imageID, ImageType type, float priority, int discardLevel, uint packetNum, TextureDownloadCallback callback, bool progress)
+                    // RequestTexture(UUID textureID, ImageType imageType, float priority, int discardLevel,
+                    //                uint packetStart, TextureDownloadCallback callback, bool progressive).
+                    // packetStart is UInt32 — passing int 0 makes Invoke throw "Int32 cannot be
+                    // converted to UInt32", which silently fell back to the truncating RequestImageAsync.
                     reqMethod.Invoke(pipeline, new object[] { new UUID(textureId), ImageType.Normal, 100000.0f, 0, 0u, delegateObj, false });
                     return tcs.Task;
                 }

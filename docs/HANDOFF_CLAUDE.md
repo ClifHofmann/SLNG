@@ -24,5 +24,13 @@ World now renders OSGrid (`hg.osgrid.org`, "The Dangazi Forest") far more cohere
 ## How to run / verify
 `. tools/dev-env.ps1` or `& $env:USERPROFILE\.dotnet\dotnet.exe`. Build `app/SLNG.App.csproj` (Godot uses `app/.godot/mono/temp/bin/Debug/`, NOT `dotnet build SLNG.sln`). Verify DLL fresh: read as UTF-8 for method names, UTF-16 for string literals. Log: `%APPDATA%\Godot\app_userdata\SLNG\logs`. Visual changes need a human login (headless can't render).
 
+## Rigged mesh (commit 1360db2) — NEEDS IN-WORLD TEST
+Worn mesh (mesh bodies/clothing) was rendered as a static blob bolted to one bone (the "yellow blob" at the avatar's legs). Now: `AssetService.Decode` extracts the LLMesh skin section (`FacetedMesh.SkinData`, `Face.Weights`) into neutral `MeshSkin`/`VertexBoneWeights` (MeshData.cs). `AvatarRenderer.BuildRiggedMeshInstance` skins worn mesh to the avatar `Skeleton3D` (joint name → bone global-rest inverse, bind-shape matrix applied to verts), parented as a direct child of the skeleton. Static attachments unchanged.
+- If rigged mesh is mis-scaled/offset: suspect bind-shape handling or fitted-mesh collision-volume joints (BUTT/PELVIS/BELLY etc.) missing from `avatar_skeleton.xml` → their weights get dropped+renormalized (fallback may distort). Next refinement: use the asset's own `InverseBindMatrices` (decoded, currently unused) instead of skeleton rest, and/or add collision-volume bones.
+- Per-face textures on rigged mesh not done — uses single `prim.TextureId`.
+
+## Known failing test (pre-existing, not mine)
+`RegionTerrainTests.RegionTerrain_ApplyPatch_IgnoresOutOfBounds` — out-of-bounds patch leaks one 16×16 block. Spawned task task_4da63285.
+
 ## Next step
 **Prim "kaputt" investigation** — start with the back-face culling test (set `CullMode.Disabled` on object prim materials in `ObjectRenderer.BuildFaceMaterialAsync`). If that doesn't fix it, add a one-shot diagnostic logging a sample prim's submesh/vertex/normal counts to find bad geometry.

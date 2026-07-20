@@ -34,6 +34,7 @@ mono_crash.*.json
 # Local caches, logs, scratch
 *.log
 /scratch/
+/scratchpad/
 /captures/
 asset-cache/
 # LibreMetaverse runtime cache + bundled static assets

@@ -3,17 +3,7 @@ using System.Numerics;
 
 namespace SLNG.Assets;
 
-/// <summary>
-/// A single body-part mesh loaded from an SL .llm file. Coordinates are in SL space (Z-up);
-/// the renderer applies the SL→Godot axis swap. Bone names use Bento naming (mHead, mNeck, …).
-/// This record is the only type that crosses the SLNG.Assets boundary — no LibreMetaverse types.
-/// </summary>
-public record AvatarMorphTarget(
-    string Name,
-    int[] VertexIndices,
-    Vector3[] PositionOffsets,
-    Vector3[] NormalOffsets
-);
+
 
 /// <summary>
 /// A single body-part mesh loaded from an SL .llm file. Coordinates are in SL space (Z-up);

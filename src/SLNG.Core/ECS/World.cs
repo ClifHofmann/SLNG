@@ -133,6 +133,12 @@ public class World
             terrain = new RegionTerrain(sizeX, sizeY);
             _terrains[regionHandle] = terrain;
         }
+        else
+        {
+            // If a later event reports a larger region, grow to fit (size is only learned from
+            // these events, never from raw patch coordinates).
+            terrain.EnsureSize(sizeX, sizeY);
+        }
         return terrain;
     }
 
