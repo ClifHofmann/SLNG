@@ -47,8 +47,13 @@ public partial class Boot : Control
 
     public override void _Ready()
     {
-        // Versioning in window title
+        // Godot debug builds hard-code an "(DEBUG)" window-title suffix that gets applied
+        // AFTER _Ready() runs, silently overwriting whatever title we set here a moment later
+        // — a known engine behavior (godotengine/godot#104321), not an SLNG bug. Re-asserting
+        // the title once more after the next frame renders lands after that internal logic and
+        // sticks; the immediate call below just avoids a flash of the wrong title before then.
         DisplayServer.WindowSetTitle($"SLNG {AppVersion}");
+        RenderingServer.FramePostDraw += ReassertWindowTitleOnce;
 
         _vboxContainer = GetNode<VBoxContainer>("%VBoxContainer");
         _profileDropdown = GetNode<OptionButton>("%ProfileDropdown");
@@ -94,6 +99,12 @@ public partial class Boot : Control
         SetupTopMenu();
 
         LogMessage("Ready. Enter credentials and click Login.");
+    }
+
+    private void ReassertWindowTitleOnce()
+    {
+        RenderingServer.FramePostDraw -= ReassertWindowTitleOnce;
+        DisplayServer.WindowSetTitle($"SLNG {AppVersion}", GetWindow().GetWindowId());
     }
 
     private void SetupTopMenu()
