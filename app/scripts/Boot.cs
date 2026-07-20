@@ -489,6 +489,14 @@ public partial class Boot : Control
 
         var result = await _session.LoginAsync(creds);
         
+        if (result.Success)
+        {
+            // Set the floating origin to this region so everything renders near 0 (OSGrid
+            // global coordinates are in the millions and overflow float precision otherwise).
+            ulong regionHandle = _session.CurrentRegionHandle;
+            RenderConfig.SetRegionOrigin(regionHandle);
+        }
+
         await animTask;
 
         if (result.Success)
@@ -519,11 +527,8 @@ public partial class Boot : Control
             _avatarController.Name = "AvatarController";
             _avatarController.Initialize(_world, _session);
             
-            // Set the floating origin to this region so everything renders near 0 (OSGrid
-            // global coordinates are in the millions and overflow float precision otherwise).
             ulong regionHandle = _session.CurrentRegionHandle;
-            RenderConfig.SetRegionOrigin(regionHandle);
-
+            
             // Start near the region centre at a reasonable height (before AvatarUpdate arrives).
             _avatarController.Position = RenderConfig.ToGodot(regionHandle, new System.Numerics.Vector3(128f, 128f, 50f));
             
