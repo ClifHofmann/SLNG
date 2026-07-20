@@ -12,6 +12,7 @@ public partial class CameraHUD : Window
     public override void _Ready()
     {
         Title = "Camera Controls";
+        Visible = false;
         Size = new Vector2I(320, 220);
         MinSize = new Vector2I(300, 200);
         WrapControls = true;
