@@ -1,0 +1,32 @@
+# Antigravity IDE Local RAG & AST Indexer Exclusions
+
+# Build & Binary outputs
+bin/
+obj/
+build/
+builds/
+export/
+.mono/
+.godot/
+.import/
+
+# Asset caches & heavy data
+app/linden/
+asset-cache/
+tools/opensim/data/
+scratch/
+scratchpad*
+
+# Compiled / Large binaries
+*.dll
+*.exe
+*.pck
+*.pdb
+*.so
+*.dylib
+*.log
+
+# Git & IDE internal files
+.git/
+.vs/
+.idea/
