@@ -140,3 +140,7 @@ change is committed on its own branch with a Conventional-Commit message.
   so two agents rarely touch the same files. If you must edit a shared file
   (`AGENTS.md`, `SLNG.sln`), do it in a tiny dedicated commit and rebase often.
 - Integrate through `main` via small PRs, not long-lived branches.
+
+## Versioning rule
+
+- **Always update the version number**: When implementing a new feature, a fix, or significant UI change, you MUST update the AppVersion constant in pp/scripts/Boot.cs (e.g. from 0.1.0-alpha to 0.1.1-alpha or 0.2.0-alpha) to reflect the new state. This ensures the version is visible on the login screen and title bar.

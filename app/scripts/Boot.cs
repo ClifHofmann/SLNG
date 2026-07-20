@@ -43,7 +43,7 @@ public partial class Boot : Control
     
     private SLNG.App.UI.TopMenu _topMenu = null!;
 
-    public const string AppVersion = "v0.1.0-alpha";
+    public const string AppVersion = "v0.1.1-alpha";
 
     public override void _Ready()
     {
@@ -62,6 +62,7 @@ public partial class Boot : Control
         
         _chatInput = GetNode<LineEdit>("%ChatInput");
         _chatSendButton = GetNode<Button>("%ChatSendButton");
+        _chatInput.GetParent<Control>().Visible = false;
 
         var versionLabel = GetNodeOrNull<Label>("%VersionLabel");
         if (versionLabel != null) versionLabel.Text = AppVersion;
@@ -110,6 +111,9 @@ public partial class Boot : Control
                 GetNode<Control>("%LoginScreen").Visible = true;
                 GetNode<Control>("%Background").Visible = true;
                 _topMenu.Visible = false;
+                var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+                if (hudLayer != null) hudLayer.Visible = false;
+                _chatInput.GetParent<Control>().Visible = false;
                 if (_inventoryPanel != null) { _inventoryPanel.QueueFree(); _inventoryPanel = null; }
                 Input.MouseMode = Input.MouseModeEnum.Visible;
             }
@@ -142,7 +146,7 @@ public partial class Boot : Control
         // Position/altitude readout in the top-right corner, overlaying the 3D view.
         // On its own CanvasLayer so it always draws on top of the world and the login/chat
         // Controls, regardless of scene-tree order.
-        var hudLayer = new CanvasLayer { Name = "HudLayer", Layer = 10 };
+        var hudLayer = new CanvasLayer { Name = "HudLayer", Layer = 10, Visible = false };
         AddChild(hudLayer);
 
         _hudLabel = new Label
@@ -524,6 +528,10 @@ public partial class Boot : Control
             GetNode<Control>("%LoadingScreen").Visible = false;
             GetNode<Control>("%Background").Visible = false;
             _topMenu.Visible = true;
+            
+            var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+            if (hudLayer != null) hudLayer.Visible = true;
+            _chatInput.GetParent<Control>().Visible = true;
 
             // Spawn the avatar controller (camera)
             _avatarController = new AvatarController();
