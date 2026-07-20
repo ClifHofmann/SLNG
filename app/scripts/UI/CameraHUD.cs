@@ -187,7 +187,7 @@ public partial class CameraHUD : Window
                     _isLinked = true;
                     _statusLabel.Visible = false; // Hide label to save space once connected
                     Size = MinSize; // Shrink window to fit tightly
-                    GD.Print("[CameraHUD] AvatarController found and linked!");
+                    Logger.Debug("[CameraHUD] AvatarController found and linked!");
                 }
             }
         }

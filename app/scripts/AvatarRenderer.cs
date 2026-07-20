@@ -695,7 +695,7 @@ public partial class AvatarRenderer : Node3D
         if (boneName == null && !isMeshAttachment) return;
         boneName ??= "mPelvis";
 
-        GD.Print($"[Attachment] pt {attachment.AttachmentPoint} bone {boneName} " +
+        Logger.Debug($"[Attachment] pt {attachment.AttachmentPoint} bone {boneName} " +
                  $"mesh {(isMeshAttachment ? prim!.MeshId.ToString() : "no")} entity {entityId:N}");
 
         // Avatar must already be rendered.
@@ -756,7 +756,7 @@ public partial class AvatarRenderer : Node3D
                 // it immediately and hits the early-return guard above instead of starting an
                 // overlapping duplicate load.
                 _attachmentMeshIds[entityId] = (prim.MeshId, prim.Faces, defaultFace);
-                GD.Print($"[Attachment] REQUESTING MESH {prim.MeshId} for entity {entityId}");
+                Logger.Debug($"[Attachment] REQUESTING MESH {prim.MeshId} for entity {entityId}");
                 _ = LoadAndApplyAttachmentMeshAsync(boneAttach, avatarVisual, prim.MeshId,
                     prim.Faces, defaultFace,
                     new System.Numerics.Vector3(prim.Scale.X, prim.Scale.Y, prim.Scale.Z),
@@ -795,10 +795,10 @@ public partial class AvatarRenderer : Node3D
         var meshData = await _assetService.GetMeshAsync(meshId).ConfigureAwait(false);
         if (meshData == null)
         {
-            GD.PrintErr($"[Attachment] mesh {meshId} failed to fetch/decode — skipped");
+            Logger.Warn($"[Attachment] mesh {meshId} failed to fetch/decode — skipped");
             return;
         }
-        GD.Print($"[Attachment] mesh {meshId}: {meshData.Submeshes.Count} submeshes, rigged={meshData.Skin != null}");
+        Logger.Debug($"[Attachment] mesh {meshId}: {meshData.Submeshes.Count} submeshes, rigged={meshData.Skin != null}");
 
         // Rigged / fitted mesh (worn mesh bodies and clothing) carries skin data: skin it to
         // the avatar skeleton so it deforms and animates with the body, instead of bolting it
