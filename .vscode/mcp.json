@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "code-index": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@code-indexer/mcp"
+      ]
+    }
+  }
+}

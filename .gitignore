@@ -21,6 +21,7 @@ mono_crash.*.json
 .idea/
 .vscode/*
 !.vscode/extensions.json
+!.vscode/mcp.json
 *.swp
 
 # Build / export artifacts
