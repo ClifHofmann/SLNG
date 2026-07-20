@@ -7,7 +7,7 @@ public partial class CameraHUD : Window
 {
     private AvatarController? _cameraController;
     private string _activeAction = "";
-    private Label _statusLabel;
+    private Label _statusLabel = null!;
     private bool _isLinked = false;
 
     public override void _Ready()

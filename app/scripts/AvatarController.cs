@@ -126,7 +126,7 @@ public partial class AvatarController : Camera3D
         _session = session;
     }
 
-    private PopupMenu _contextMenu;
+    private PopupMenu _contextMenu = null!;
     private string _lastClickedEntityId = "";
     private string _lastClickedLocalId = "";
 

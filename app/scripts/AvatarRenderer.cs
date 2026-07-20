@@ -1750,7 +1750,7 @@ public partial class AvatarRenderer : Node3D
     {
         foreach (var (name, part) in visual.BodyPartData)
         {
-            if (part.Morphs.Count == 0) continue;                       // nothing to morph
+            if (part == null || part.Morphs == null || part.Morphs.Count == 0) continue;                       // nothing to morph
             if (!visual.Parts.TryGetValue(name, out var mi) || !IsInstanceValid(mi)) continue;
             if (visual.Skeleton == null) continue;
 

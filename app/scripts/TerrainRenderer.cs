@@ -79,7 +79,7 @@ public partial class TerrainRenderer : Node3D
 
         await System.Threading.Tasks.Task.WhenAll(t0, t1, t2, t3);
 
-        CallDeferred(MethodName.ApplyTerrainTextures, regionHandle, t0.Result, t1.Result, t2.Result, t3.Result);
+        CallDeferred(MethodName.ApplyTerrainTextures, regionHandle, t0.Result!, t1.Result!, t2.Result!, t3.Result!);
     }
 
     private async System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
