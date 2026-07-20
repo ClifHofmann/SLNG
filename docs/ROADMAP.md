@@ -122,7 +122,7 @@ other in-flight work made it cheap to start.
 | ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
 |---|---|---|---|---|---|---|---|
 | M5-1 | Inventory browser v1 — read-only, lazy folder fetch ✅ | net/ui | claude | ux-designer | | M0-2 | Ctrl+I opens a tree showing "My Inventory" + "Library"; each folder's children are fetched on first expand (no recursive/whole-tree fetch); folders and items both render with correct names; inventory links are marked as links. Wearing/moving/deleting items is out of scope for v1. |
-| M5-2 | In-World Object Selection & Editing 🚧 | render/ui/net | gemini | graphics-engineer | gemini | M1-3 | 3D Raycast selection, context menu, SLNGWindow inspector tabbed window, transform sync over network. [Spec](file:///E:/Git/SLNG/docs/specs/M5-2-object-editing.md) |
+| M5-2 | In-World Object Selection & Editing 🚧 | render/ui/net | claude | graphics-engineer | claude | M1-3 | 3D Raycast selection, context menu, SLNGWindow inspector tabbed window, transform sync over network. [Spec](file:///E:/Git/SLNG/docs/specs/M5-2-object-editing.md) |
 | M5-3 | Tabbed Chat, Friends & Groups Window ⏸️ | ui/net | gemini | ux-designer | gemini | M3-2 | Multi-tabbed window (vertical: Chat, Friends, Groups; horizontal: Main & dynamic per-user IMs) inheriting from SLNGWindow. [Spec](file:///E:/Git/SLNG/docs/specs/M5-3-tabbed-chat-window.md) |
 | M5-4 | LSL / SLS Script Dialog System (llDialog) ⏸️ | ui/net | gemini | ux-designer | gemini | M0-3 | Modal UI popups inheriting from SLNGWindow triggered by LSL llDialog packets with dynamic 3x4 button grid & channel reply. [Spec](file:///E:/Git/SLNG/docs/specs/M5-4-script-dialogs.md) |
 
@@ -133,7 +133,9 @@ other in-flight work made it cheap to start.
 
 The hard, long-tail work. Not part of the first shot; sequence later.
 
-- **Viewer features:** world map, IM, friends, groups, teleport; inventory v2 (wear/attach/move/delete, drag-drop); contextual cursor feedback ([FEAT-UI-01](file:///E:/Git/SLNG/docs/specs/FEAT-UI-01-cursor-interaction-states.md)).
+- **Viewer features:** world map, IM, friends, groups, teleport; inventory v2 (wear/attach/move/delete, drag-drop); contextual cursor feedback ([FEAT-UI-01](file:///E:/Git/SLNG/docs/specs/FEAT-UI-01-cursor-interaction-states.md)); client localization & multi-language support ([FEAT-UI-02](file:///E:/Git/SLNG/docs/specs/FEAT-UI-02-localization-i18n.md)); boot window size & profile persistence ([FEAT-UI-03](file:///E:/Git/SLNG/docs/specs/FEAT-UI-03-boot-window-persistence.md)).
+
+
 
 - **Performance hardening:** profiling on overloaded real sims; impostors; draw-call
   reduction; aggressive culling.

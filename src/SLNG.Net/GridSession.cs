@@ -17,6 +17,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<ObjectUpdateEvent>? ObjectUpdateReceived;
     public event EventHandler<AvatarUpdateEvent>? AvatarUpdateReceived;
     public event EventHandler<ObjectRemovedEvent>? ObjectRemovedReceived;
+    public event EventHandler<ObjectPropertiesEvent>? ObjectPropertiesReceived;
     public event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
     public event EventHandler<TerrainSettingsEvent>? TerrainSettingsReceived;
     public event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
@@ -51,6 +52,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
         _client.Objects.AvatarUpdate += OnAvatarUpdate;
+        _client.Objects.ObjectPropertiesFamily += OnObjectPropertiesFamily;
         _client.Objects.KillObject += OnKillObject;
         _client.Objects.KillObjects += OnKillObjects;
         _client.Terrain.LandPatchReceived += OnLandPatchReceived;
@@ -95,6 +97,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             e.Avatar.FirstName,
             e.Avatar.LastName,
             isLocalAgent));
+    }
+
+    private void OnObjectPropertiesFamily(object? sender, ObjectPropertiesFamilyEventArgs e)
+    {
+        ObjectPropertiesReceived?.Invoke(this, new ObjectPropertiesEvent(
+            e.Simulator.Handle,
+            e.Properties.ObjectID.Guid,
+            e.Properties.Name ?? "",
+            e.Properties.Description ?? "",
+            e.Properties.CreatorID.Guid,
+            e.Properties.OwnerID.Guid,
+            e.Properties.GroupID.Guid
+        ));
     }
 
     private void OnAvatarAppearance(object? sender, AvatarAppearanceEventArgs e)
@@ -675,6 +690,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         _client.Self.ChatFromSimulator -= OnChatFromSimulator;
         _client.Objects.ObjectUpdate -= OnObjectUpdate;
+        _client.Objects.ObjectPropertiesFamily -= OnObjectPropertiesFamily;
         _client.Objects.KillObject -= OnKillObject;
         _client.Objects.KillObjects -= OnKillObjects;
         _client.Terrain.LandPatchReceived -= OnLandPatchReceived;

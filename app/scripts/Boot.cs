@@ -217,7 +217,7 @@ public partial class Boot : Control
         _objectEditWindow = new SLNG.App.UI.ObjectEditWindow();
         hudLayer.AddChild(_objectEditWindow);
 
-        _inWorldContextMenu.OnEditClicked = (entity, localId) => _objectEditWindow.EditObject(entity, localId);
+        _inWorldContextMenu.OnEditClicked = (entity, localId) => _objectEditWindow.EditObject(entity, localId, _world);
         _inWorldContextMenu.OnTouchClicked = (entity, localId) => { /* Touch logic later */ };
         _inWorldContextMenu.OnInspectClicked = (entity, localId) => { /* Inspect logic later */ };
         _inWorldContextMenu.OnDeleteClicked = (entity, localId) => { /* Delete logic later */ };
@@ -623,7 +623,7 @@ public partial class Boot : Control
             AddChild(_objectSelectionController);
             _objectSelectionController.Initialize(_world, _session, _avatarController, _inWorldContextMenu);
             
-            _objectEditWindow.Initialize(_session);
+            _objectEditWindow.Initialize(_session, _world);
 
             ulong regionHandle = _session.CurrentRegionHandle;
             

@@ -1,5 +1,6 @@
 using Godot;
 using SLNG.Core;
+using SLNG.Core.Components;
 using SLNG.Core.ECS;
 using SLNG.Net;
 
@@ -43,24 +44,38 @@ namespace SLNG.App
                         GD.Print($"[ObjectSelectionController] Collider: {collider?.Name}, IsStaticBody: {collider is StaticBody3D}");
                         if (collider is StaticBody3D staticBody && staticBody.HasMeta("LocalId"))
                         {
-                            uint localId = uint.Parse(staticBody.GetMeta("LocalId").AsString());
-                            var entityIdStr = staticBody.GetMeta("EntityId").AsString();
-                            
-                            if (System.Guid.TryParse(entityIdStr, out var guid))
+                            var localIdStr = staticBody.GetMeta("LocalId").AsString();
+                            if (uint.TryParse(localIdStr, out uint localId))
                             {
-                                var entity = _world.GetEntity(guid);
-                                if (entity != null)
+                                var entityIdStr = staticBody.GetMeta("EntityId").AsString();
+                                
+                                if (System.Guid.TryParse(entityIdStr, out var guid))
                                 {
-                                    _world.SelectEntity(entity);
-                                    _session.SelectObject(localId);
-
-                                    if (mouseBtn.ButtonIndex == MouseButton.Right)
+                                    var entity = _world.GetEntity(guid);
+                                    if (entity != null)
                                     {
-                                        _contextMenu.ShowMenu(mouseBtn.Position, entity, localId);
-                                        GetViewport().SetInputAsHandled();
+                                        var transform = entity.GetComponent<TransformComponent>();
+                                        if (transform != null && transform.ParentLocalId != 0)
+                                        {
+                                            var parent = _world.GetEntity(entity.RegionHandle, transform.ParentLocalId);
+                                            if (parent != null)
+                                            {
+                                                entity = parent;
+                                                localId = transform.ParentLocalId;
+                                            }
+                                        }
+
+                                        _world.SelectEntity(entity);
+                                        _session.SelectObject(localId);
+
+                                        if (mouseBtn.ButtonIndex == MouseButton.Right)
+                                        {
+                                            _contextMenu.ShowMenu(mouseBtn.Position, entity, localId);
+                                            GetViewport().SetInputAsHandled();
+                                        }
+                                        
+                                        return;
                                     }
-                                    
-                                    return;
                                 }
                             }
                         }

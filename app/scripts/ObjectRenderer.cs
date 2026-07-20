@@ -208,11 +208,29 @@ public partial class ObjectRenderer : Node3D
 
     private void HighlightVisual(string idStr, bool isSelected)
     {
-        if (Guid.TryParse(idStr, out var id) && _visuals.TryGetValue(id, out var state))
+        if (_world == null) return;
+        if (!Guid.TryParse(idStr, out var id)) return;
+        
+        var entity = _world.GetEntity(id);
+        if (entity == null) return;
+        
+        var transform = entity.GetComponent<TransformComponent>();
+        if (transform == null) return;
+        
+        uint rootLocalId = transform.ParentLocalId != 0 ? transform.ParentLocalId : entity.LocalId;
+        
+        foreach (var kvp in _visuals)
         {
-            if (state.MeshInstance != null)
+            var visEntity = _world.GetEntity(kvp.Key);
+            if (visEntity == null) continue;
+            
+            var visTransform = visEntity.GetComponent<TransformComponent>();
+            if (visTransform == null) continue;
+            
+            uint visRootLocalId = visTransform.ParentLocalId != 0 ? visTransform.ParentLocalId : visEntity.LocalId;
+            if (visRootLocalId == rootLocalId && kvp.Value.MeshInstance != null)
             {
-                state.MeshInstance.MaterialOverlay = isSelected ? _highlightMaterial : null;
+                kvp.Value.MeshInstance.MaterialOverlay = isSelected ? _highlightMaterial : null;
             }
         }
     }

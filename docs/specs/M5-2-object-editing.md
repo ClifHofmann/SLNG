@@ -32,14 +32,30 @@ Enable users to interact with and edit 3D objects directly within the rendered v
      - 🗑️ **Delete**: Deletes the object if permissions allow.
      - 📦 **Take / Take Copy**: Takes the object to inventory if permissions allow.     
 
-3. **Object Edit Inspector Window:**
+3. **Object Edit Inspector Window (Based on Firestorm/SL Standard):**
    - Inherits from `SLNG.App.UI.SLNGWindow` to maintain dark glassmorphism styling and window behavior.
-   - **Tabs:**
-     - **General**: Name, Description, Creator, Owner, Group, Permissions (Next Owner / Anyone Copy/Mod/Trans).
-     - **Object (Transform)**: Position (X, Y, Z), Rotation (Pitch, Roll, Yaw), Scale / Size (X, Y, Z). Live input fields + step increments.
-     - **Features & Prim Params**: Prim type (Box, Sphere, Cylinder, Prism, Sculpt, Mesh), Cut, Hollow, Twist, Taper, Shear parameters.
-     - **Texture & Material**: Texture UUID / Diffuse map selector, Color tint, Transparency / Alpha, Repeats/Offset/Rotation.
-     - **Contents**: List of scripts, inventory items inside the prim.
+   - **Tabs & Prioritization:**
+     - **General (Allgemein) - [High Priority]**:
+       - Basic Object Info: Name (Editable), Description (Editable).
+       - Read-only IDs: Creator, Owner, Previous Owner, Group.
+       - *Low Priority / Later:* On-Click Action, Permissions (Modify/Copy/Transfer), For Sale / Price.
+     - **Object (Objekt) - [High Priority]**:
+       - State Checkboxes: Locked, Physical, Temporary, Phantom (Read/Write).
+       - Transform Inputs (Spinboxes): Position (X, Y, Z), Size/Scale (X, Y, Z), Rotation (X, Y, Z in Euler degrees).
+       - *Low Priority / Later:* Mesh-Information (LOD triangle counts), Object-LOD-Behavior settings.
+     - **Features (Eigensch.) - [Medium Priority]**:
+       - Material dropdown (Wood, Metal, Glass, etc.).
+       - Light properties (Checkbox + Intensity, Radius, Falloff, Color) - *Important for engine testing*.
+       - Physics Shape Type (Prim, Convex Hull, None).
+       - *Low Priority / Later:* Flexiprim (Flexible Path) parameters, advanced physics (Gravity, Friction, Restitution).
+     - **Texture (Textur) - [High Priority for rendering]**:
+       - Support for PBR / Blinn-Phong sub-tabs.
+       - Base Color / Diffuse map viewer, Normal map, ORM/Specular map, Emissive map.
+       - Texture mapping: Scale (U, V), Offset (U, V), Rotation.
+       - Alpha, Transparency modes (Opaque, Alpha Blending, Alpha Masking).
+     - **Content (Inhalt) - [Medium Priority]**:
+       - Fetch and display the inventory tree of items inside the prim (Scripts, animations, etc.).
+       - Buttons: New Script, Permissions.
 
 4. **Transform Gizmos (3D Handles):**
    - 3-axis translation, rotation, and scaling gizmos rendered in 3D around the selected object in the Godot scene.

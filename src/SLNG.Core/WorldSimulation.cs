@@ -39,12 +39,14 @@ public sealed class WorldSimulation : IDisposable
         _source.RegionDisconnectedReceived += OnRegionDisconnected;
         _source.AvatarAppearanceReceived += OnAvatarAppearance;
         _source.AvatarAnimationReceived += OnAvatarAnimation;
+        _source.ObjectPropertiesReceived += OnObjectProperties;
     }
 
     // These run on background network threads: enqueue only, never touch the world.
     private void OnObjectUpdate(object? sender, ObjectUpdateEvent e) => _pending.Enqueue(e);
     private void OnAvatarUpdate(object? sender, AvatarUpdateEvent e) => _pending.Enqueue(e);
     private void OnObjectRemoved(object? sender, ObjectRemovedEvent e) => _pending.Enqueue(e);
+    private void OnObjectProperties(object? sender, ObjectPropertiesEvent e) => _pending.Enqueue(e);
     private void OnTerrainPatch(object? sender, TerrainPatchEvent e) => _pending.Enqueue(e);
     private void OnTerrainSettings(object? sender, TerrainSettingsEvent e) => _pending.Enqueue(e);
     private void OnRegionDisconnected(object? sender, RegionDisconnectedEvent e) => _pending.Enqueue(e);
@@ -64,6 +66,7 @@ public sealed class WorldSimulation : IDisposable
                 case ObjectUpdateEvent e: ApplyObjectUpdate(e); break;
                 case AvatarUpdateEvent e: ApplyAvatarUpdate(e); break;
                 case ObjectRemovedEvent e: _world.RemoveEntity(e.RegionHandle, e.LocalId); break;
+                case ObjectPropertiesEvent e: ApplyObjectProperties(e); break;
                 case TerrainPatchEvent e: ApplyTerrainPatch(e); break;
                 case TerrainSettingsEvent e: ApplyTerrainSettings(e); break;
                 case RegionDisconnectedEvent e: _world.RemoveRegion(e.RegionHandle); break;
@@ -343,13 +346,37 @@ public sealed class WorldSimulation : IDisposable
         _world.NotifyTerrainSettingsUpdated(e.RegionHandle);
     }
 
+    private void ApplyObjectProperties(ObjectPropertiesEvent e)
+    {
+        var entity = _world.GetEntity(e.ObjectId);
+        if (entity == null) return;
+
+        var meta = entity.GetComponent<MetadataComponent>();
+        if (meta == null)
+        {
+            meta = new MetadataComponent(e.ObjectId);
+            entity.SetComponent(meta);
+        }
+
+        meta.Name = e.Name;
+        meta.Description = e.Description;
+        meta.CreatorId = e.CreatorId;
+        meta.OwnerId = e.OwnerId;
+        meta.GroupId = e.GroupId;
+
+        _world.NotifyComponentUpdated(entity, meta);
+    }
+
     public void Dispose()
     {
         _source.ObjectUpdateReceived -= OnObjectUpdate;
+        _source.AvatarUpdateReceived -= OnAvatarUpdate;
         _source.ObjectRemovedReceived -= OnObjectRemoved;
+        _source.ObjectPropertiesReceived -= OnObjectProperties;
         _source.TerrainPatchReceived -= OnTerrainPatch;
         _source.TerrainSettingsReceived -= OnTerrainSettings;
         _source.RegionDisconnectedReceived -= OnRegionDisconnected;
+        _source.AvatarAppearanceReceived -= OnAvatarAppearance;
         _source.AvatarAnimationReceived -= OnAvatarAnimation;
     }
 }

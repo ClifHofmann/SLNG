@@ -38,6 +38,17 @@ public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, 
 /// <summary>Represents the removal of an object from the simulator's interest list.</summary>
 public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent;
 
+/// <summary>Represents the properties of an object (name, description, creator, owner, etc.).</summary>
+public record ObjectPropertiesEvent(
+    ulong RegionHandle,
+    Guid ObjectId,
+    string Name,
+    string Description,
+    Guid CreatorId,
+    Guid OwnerId,
+    Guid GroupId
+) : IWorldEvent;
+
 /// <summary>Represents a raw 16x16 chunk of terrain height data from the simulator.
 /// <paramref name="RegionSizeX"/>/<paramref name="RegionSizeY"/> are the region's size in
 /// metres (256 for a classic region, larger for a varregion).</summary>
