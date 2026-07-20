@@ -1590,7 +1590,7 @@ public partial class AvatarRenderer : Node3D
         for (int s = 1; s < slotWeightSum.Length; s++) if (slotWeightSum[s] > slotWeightSum[topSlot]) topSlot = s;
         string topBoneName = slotWeightSum.Length > 0 ? skeleton.GetBoneName(skin.GetBindBone(topSlot)) : "?";
         float topShare = totalVerts > 0 && slotWeightSum.Length > 0 ? slotWeightSum[topSlot] / totalVerts : 0f;
-        GD.Print($"[RiggedMesh] mesh {meshId} joints {resolved}/{jointCount} resolved, binds {skin.GetBindCount()}, " +
+        Logger.Debug($"[RiggedMesh] mesh {meshId} joints {resolved}/{jointCount} resolved, binds {skin.GetBindCount()}, " +
                  $"bind-pose size ({bpSize.X:0.##}, {bpSize.Y:0.##}, {bpSize.Z:0.##}) at ({bpCenter.X:0.#}, {bpCenter.Y:0.#}, {bpCenter.Z:0.#}), " +
                  $"dominant joint \"{topBoneName}\" ({topShare:P0}), orphaned verts {orphanedVerts}/{totalVerts}" +
                  (orphanedVerts > 0 ? $" [PINNED TO SKIN SLOT 0 = bone \"{skeleton.GetBoneName(skin.GetBindBone(0))}\"]" : ""));
@@ -2113,7 +2113,7 @@ void fragment() {
     {
         if (_assetService == null) return;
 
-        // GD.Print($"[AvatarRenderer] Loading {animIds.Count} animation(s): {string.Join(", ", animIds)}");
+        Logger.Debug($"[AvatarRenderer] Loading {animIds.Count} animation(s): {string.Join(", ", animIds)}");
 
         var loaded = new List<(Guid id, AnimationData data)>();
         foreach (var animId in animIds)
@@ -2124,7 +2124,7 @@ void fragment() {
                 if (data != null)
                 {
                     var jointNames = string.Join(", ", System.Linq.Enumerable.Select(data.Joints, j => j.JointName));
-                    // GD.Print($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints ({jointNames}), {data.Length:F2}s");
+                    Logger.Debug($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints ({jointNames}), {data.Length:F2}s");
                     loaded.Add((animId, data));
                 }
                 else
@@ -2138,7 +2138,7 @@ void fragment() {
             }
         }
 
-        // GD.Print($"[AvatarRenderer] Starting {loaded.Count}/{animIds.Count} animation(s)");
+        Logger.Debug($"[AvatarRenderer] Starting {loaded.Count}/{animIds.Count} animation(s)");
 
         // Apply on main thread via CallDeferred
         Godot.Callable.From(() => {
