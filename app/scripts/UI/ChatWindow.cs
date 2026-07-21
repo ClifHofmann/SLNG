@@ -160,7 +160,14 @@ public partial class ChatWindow : SLNGWindow
         var listScroll = new ScrollContainer { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
         listPanel.AddChild(listScroll);
 
-        _conversationList = new VBoxContainer();
+        _conversationList = new VBoxContainer
+        {
+            // A ScrollContainer sizes its child to its own *natural* minimum size even with
+            // horizontal scrolling disabled -- without ExpandFill here the row pills only ever
+            // stretch as wide as their text, leaving a dead strip down the right side of the
+            // sidebar instead of filling the column.
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+        };
         _conversationList.AddThemeConstantOverride("separation", 2);
         listScroll.AddChild(_conversationList);
 
@@ -295,7 +302,10 @@ public partial class ChatWindow : SLNGWindow
 
     // ---- Conversation list (inner vertical axis: Main + dynamic IM rows) --------------------
 
-    private ChatTab AddChatTab(string id, string displayName, ChatLogKind kind, bool closeable)
+    /// <param name="isOnline">Presence dot next to the name -- green/grey like FriendsPanel's,
+    /// omitted entirely when null (e.g. "Main" isn't a person, so it gets no dot). IM rows pass
+    /// a value once Phase 1c wires them up to a friend/contact's live status.</param>
+    private ChatTab AddChatTab(string id, string displayName, ChatLogKind kind, bool closeable, bool? isOnline = null)
     {
         var row = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         _conversationList.AddChild(row);
@@ -303,6 +313,17 @@ public partial class ChatWindow : SLNGWindow
         var inner = new HBoxContainer();
         inner.AddThemeConstantOverride("separation", 4);
         row.AddChild(inner);
+
+        if (isOnline.HasValue)
+        {
+            var dot = new ColorRect
+            {
+                CustomMinimumSize = new Vector2(6, 6),
+                Color = isOnline.Value ? new Color(0.3f, 0.85f, 0.3f) : new Color(0.4f, 0.4f, 0.4f),
+                SizeFlagsVertical = SizeFlags.ShrinkCenter,
+            };
+            inner.AddChild(dot);
+        }
 
         var label = new Button
         {
