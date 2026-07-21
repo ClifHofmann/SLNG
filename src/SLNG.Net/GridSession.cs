@@ -624,26 +624,59 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>Teleports to the region/position encoded in a landmark asset. LibreMetaverse
-    /// resolves the landmark server-side from its asset UUID (the landmark's <c>RegionID</c> +
-    /// local position payload never needs to be fetched/decoded client-side for this). Listens
-    /// to <c>Self.TeleportProgress</c> only for the duration of this call to capture the grid's
-    /// final status message (e.g. a failure reason) without exposing LibreMetaverse's
-    /// <c>TeleportEventArgs</c>/<c>TeleportStatus</c> across the SLNG.Net boundary.</summary>
+    /// resolves the landmark server-side from its asset UUID. If direct landmark teleport fails
+    /// (e.g. server-side asset indexing delay on newly created landmarks), fetches the landmark
+    /// asset bytes, decodes its region UUID and position, and teleports via region handle.</summary>
     public async Task<TeleportResult> TeleportToLandmarkAsync(Guid landmarkAssetId, CancellationToken ct = default)
     {
         if (!_client.Network.Connected)
             return new TeleportResult(false, "Not connected.");
 
         string lastMessage = string.Empty;
-        void OnProgress(object? sender, TeleportEventArgs e) => lastMessage = e.Message;
+        void OnProgress(object? sender, TeleportEventArgs e)
+        {
+            if (!string.IsNullOrEmpty(e.Message))
+                lastMessage = e.Message;
+        }
 
         _client.Self.TeleportProgress += OnProgress;
         try
         {
+            // Attempt 1: Direct landmark teleport request
             bool success = await _client.Self
                 .TeleportAsync(new UUID(landmarkAssetId), ct)
                 .ConfigureAwait(false);
-            return new TeleportResult(success, lastMessage);
+
+            string msg = !string.IsNullOrWhiteSpace(lastMessage) ? lastMessage : _client.Self.TeleportMessage;
+            if (success)
+            {
+                return new TeleportResult(true, msg);
+            }
+
+            // Attempt 2: Fallback — fetch landmark asset, parse region ID & position, teleport by region handle
+            var asset = await _client.Assets
+                .RequestAssetAsync(new UUID(landmarkAssetId), AssetType.Landmark, priority: true, ct)
+                .ConfigureAwait(false);
+
+            if (asset is LibreMetaverse.Assets.AssetLandmark landmark)
+            {
+                landmark.Decode();
+                if (landmark.RegionID != UUID.Zero)
+                {
+                    ulong? handle = await ResolveRegionHandleAsync(landmark.RegionID, ct).ConfigureAwait(false);
+                    if (handle.HasValue)
+                    {
+                        bool fallbackSuccess = await _client.Self
+                            .TeleportAsync(handle.Value, landmark.Position, ct)
+                            .ConfigureAwait(false);
+
+                        string fallbackMsg = !string.IsNullOrWhiteSpace(lastMessage) ? lastMessage : _client.Self.TeleportMessage;
+                        return new TeleportResult(fallbackSuccess, fallbackSuccess ? string.Empty : fallbackMsg);
+                    }
+                }
+            }
+
+            return new TeleportResult(false, msg);
         }
         catch (Exception ex)
         {
@@ -652,6 +685,47 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         finally
         {
             _client.Self.TeleportProgress -= OnProgress;
+        }
+    }
+
+    private async Task<ulong?> ResolveRegionHandleAsync(UUID regionId, CancellationToken ct)
+    {
+        if (_client.Network.CurrentSim != null && _client.Network.CurrentSim.ID == regionId)
+        {
+            return _client.Network.CurrentSim.Handle;
+        }
+
+        if (_client.Grid.RegionsByUUIDReadOnly.TryGetValue(regionId, out var cachedHandle))
+        {
+            return cachedHandle;
+        }
+
+        var tcs = new TaskCompletionSource<ulong>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnRegionHandleReply(object? sender, RegionHandleReplyEventArgs e)
+        {
+            if (e.RegionID == regionId)
+            {
+                tcs.TrySetResult(e.RegionHandle);
+            }
+        }
+
+        _client.Grid.RegionHandleReply += OnRegionHandleReply;
+        try
+        {
+            _client.Grid.RequestRegionHandle(regionId);
+            using var regCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            regCts.CancelAfter(TimeSpan.FromSeconds(5));
+            using var reg = regCts.Token.Register(() => tcs.TrySetCanceled());
+
+            return await tcs.Task.ConfigureAwait(false);
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            _client.Grid.RegionHandleReply -= OnRegionHandleReply;
         }
     }
 

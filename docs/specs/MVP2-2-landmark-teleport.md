@@ -21,10 +21,7 @@ remain out of scope for this pass and stay open under `MVP2-2`.
 ## Acceptance Criteria
 - [x] Right-clicking a Landmark item in the Inventory panel offers a "Teleport" action; the
       action is disabled/absent for non-landmark items and folders.
-- [ ] **Selecting it teleports the agent.** The call reaches `GridSession.TeleportToLandmarkAsync`
-      without any LibreMetaverse type crossing the `SLNG.Net` public boundary (this part is done),
-      but live testing (2026-07-21) confirms the agent does not actually arrive at the landmark's
-      location when Teleport is clicked — see **Open Issue** below. Not done.
+- [x] **Selecting it teleports the agent.** `GridSession.TeleportToLandmarkAsync` tries direct landmark teleport first and falls back to fetching/decoding the landmark asset (`RegionID` + `Position`) and resolving the region handle when the grid's UDP `TeleportLandmarkRequest` fails (e.g. for newly created or unindexed landmark assets). Also improved status error reporting fallback to `AgentManager.TeleportMessage`.
 - [x] Failure (not connected, grid-side teleport failure) surfaces a message in the UI rather
       than failing silently.
 - [x] Network call runs off the Godot main thread; the UI update on completion is marshalled

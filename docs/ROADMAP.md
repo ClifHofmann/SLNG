@@ -86,7 +86,7 @@ Each task follows a **spec → test → implement → review** loop:
 | M5-4 | LSL / SLS Script Dialog System (`llDialog`) ⏸️ | ui/net | gemini | ux-designer | gemini | M0-3 | Modal UI popups inheriting from `SLNGWindow` with 3x4 button grid & channel reply. [Spec](file:///E:/Git/SLNG/docs/specs/M5-4-script-dialogs.md) |
 | FEAT-UI-01 | Contextual Cursor Interaction States | ui/render | | ux-designer | gemini | M1-3 | Viewport mouse cursor dynamically changes based on target object state (Touch, Sit, Inspect, Media). [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-01-cursor-interaction-states.md) |
 | MVP2-1 | Object Interaction & Sit / Touch | render/net | | protocol-re | gemini | M1-3 | Touch objects, sit on prims/anim-seats, stand up |
-| MVP2-2 | World Map, Minimap & Teleport 🚧 | ui/net | gemini | protocol-re | gemini | M0-2 | Minimap overlay, full grid map, search regions & teleport to landmark/coords. Create Landmark + Teleport UI done (incl. live-tested window/input fixes); the actual `TeleportToLandmarkAsync` protocol call still doesn't complete a real teleport — handed off to gemini, see [HANDOFF.md](file:///E:/Git/SLNG/docs/HANDOFF.md). [Spec](file:///E:/Git/SLNG/docs/specs/MVP2-2-landmark-teleport.md) |
+| MVP2-2 | World Map, Minimap & Teleport 🚧 | ui/net | gemini | protocol-re | gemini | M0-2 | Minimap overlay, full grid map, search regions & teleport to landmark/coords. Create Landmark + Teleport UI & execution fallback fixed (direct packet + asset-decode fallback). [Spec](file:///E:/Git/SLNG/docs/specs/MVP2-2-landmark-teleport.md) |
 
 ---
 
