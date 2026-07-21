@@ -12,6 +12,7 @@ namespace SLNG.App.UI
         public Action<int>? OnCameraMode; // 0=First, 1=Third, 2=Free
         public Action? OnToggleWireframe;
         public Action? OnOpenPreferences;
+        public Action? OnCreateLandmark;
 
         public override void _Ready()
         {
@@ -82,6 +83,15 @@ namespace SLNG.App.UI
                 if (id >= 1 && id <= 3) OnCameraMode?.Invoke((int)id - 1);
             };
             menuBar.AddChild(viewMenu);
+
+            // World Menu
+            var worldMenu = new PopupMenu();
+            worldMenu.Name = "World";
+            worldMenu.AddItem("Create Landmark...", 0);
+            worldMenu.IdPressed += (id) => {
+                if (id == 0) OnCreateLandmark?.Invoke();
+            };
+            menuBar.AddChild(worldMenu);
 
             // Developer Menu
             var devMenu = new PopupMenu();

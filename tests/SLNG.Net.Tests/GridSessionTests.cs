@@ -38,4 +38,16 @@ public class GridSessionTests
         Assert.False(result.Success);
         Assert.False(string.IsNullOrWhiteSpace(result.Message));
     }
+
+    [Fact]
+    public async Task CreateLandmarkHereAsync_without_connection_fails_gracefully()
+    {
+        using var session = new GridSession();
+
+        var result = await session.CreateLandmarkHereAsync("Test Landmark", "notes", Guid.NewGuid());
+
+        Assert.False(result.Success);
+        Assert.Null(result.ItemId);
+        Assert.False(string.IsNullOrWhiteSpace(result.Message));
+    }
 }

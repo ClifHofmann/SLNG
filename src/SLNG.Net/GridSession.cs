@@ -694,6 +694,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <summary>Folder id of the Trash folder, or null until login.</summary>
     public Guid? TrashFolderId => _client.Inventory.FindFolderForType(FolderType.Trash).Guid;
 
+    /// <summary>Folder id of the Landmarks system folder, or null until login. Falls back to
+    /// the inventory root (LibreMetaverse's own FindFolderForType behavior) if the grid never
+    /// sent one — same fallback shape as <see cref="TrashFolderId"/>.</summary>
+    public Guid? LandmarksFolderId => _client.Inventory.FindFolderForType(FolderType.Landmark).Guid;
+
     /// <summary>
     /// Fetches one folder's direct children (subfolders + items) — the lazy per-folder expansion
     /// unit for an inventory UI. One CAPS request (FetchInventoryDescendents2 — supported by
@@ -790,6 +795,53 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var parentUuid = new LibreMetaverse.UUID(newParentId);
         
         await _client.Inventory.RequestCopyItemAsync(itemUuid, parentUuid, newName, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <summary>Creates a new inventory subfolder — used for the Create Landmark dialog's
+    /// "new folder" affordance, but generic. Note: the 3-arg <c>CreateFolder</c> overload that
+    /// takes a <c>FolderType</c> de-dupes on preferred type and would hand back the *existing*
+    /// system folder of that type instead of creating a new one, so this always uses the
+    /// 2-arg (plain, <c>FolderType.None</c>) overload.</summary>
+    public Guid CreateInventoryFolder(Guid parentId, string name) =>
+        _client.Inventory.CreateFolder(new LibreMetaverse.UUID(parentId), name).Guid;
+
+    /// <summary>Creates a landmark asset for the agent's current region + position and uploads
+    /// it as a new inventory item in <paramref name="folderId"/> (typically <see
+    /// cref="LandmarksFolderId"/> or a subfolder of it). Requires the grid's
+    /// <c>NewFileAgentInventory</c> CAP — present on modern OpenSim/SL, but reported as a
+    /// neutral failure rather than thrown if missing, same as <see cref="LoginAsync"/>.</summary>
+    public async Task<LandmarkCreateResult> CreateLandmarkHereAsync(
+        string name, string description, Guid folderId, CancellationToken ct = default)
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null) return new LandmarkCreateResult(false, null, "Not connected.");
+
+        try
+        {
+            var landmark = new LibreMetaverse.Assets.AssetLandmark
+            {
+                RegionID = sim.RegionID,
+                Position = _client.Self.SimPosition,
+            };
+            landmark.Encode();
+
+            // FullPermissions, not NoPermissions -- Permissions.NoPermissions leaves every mask
+            // (including OwnerMask) at zero, which would hand the agent back a landmark it
+            // can't even modify/copy itself. You always own full rights over your own freshly
+            // created landmark.
+            var (success, status, itemId, _) = await _client.Inventory.RequestCreateItemFromAssetAsync(
+                landmark.AssetData, name, description,
+                AssetType.Landmark, InventoryType.Landmark,
+                new LibreMetaverse.UUID(folderId), Permissions.FullPermissions, ct).ConfigureAwait(false);
+
+            return success
+                ? new LandmarkCreateResult(true, itemId.Guid, status)
+                : new LandmarkCreateResult(false, null, status);
+        }
+        catch (Exception ex)
+        {
+            return new LandmarkCreateResult(false, null, ex.Message);
+        }
     }
 
     /// <summary>

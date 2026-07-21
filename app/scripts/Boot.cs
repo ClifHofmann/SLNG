@@ -56,7 +56,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.1.29-alpha";
+    public const string AppVersion = "v0.1.30-alpha";
 
     public override void _Ready()
     {
@@ -172,6 +172,11 @@ public partial class Boot : Control
         _topMenu.OnOpenPreferences = () => {
             _preferencesWindow.Visible = true;
         };
+
+        _topMenu.OnCreateLandmark = () => {
+            var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+            if (hudLayer != null) OpenCreateLandmarkWindow(hudLayer);
+        };
     }
 
     private void SetupHud()
@@ -274,6 +279,25 @@ public partial class Boot : Control
         _objectEditWindows[entity.Id] = win;
 
         win.EditObject(entity, localId, _world);
+    }
+
+    /// <summary>
+    /// Opens a fresh "Create Landmark" dialog for the agent's current location. Each press gets
+    /// its own instance (freed on close) rather than a persisted one, same one-shot pattern as
+    /// <see cref="OpenObjectEditWindow"/> -- there's no state to keep between uses, and re-reading
+    /// <c>_session</c> here (not captured at toolbar-wiring time) keeps this working across
+    /// re-login, same reasoning as the OnCreatePrimClicked wiring above.
+    /// </summary>
+    private void OpenCreateLandmarkWindow(CanvasLayer hudLayer)
+    {
+        var win = new SLNG.App.UI.CreateLandmarkWindow();
+        hudLayer.AddChild(win);
+        win.Initialize(_session);
+        // If the Landmarks folder (or the subfolder just created into) happens to already be
+        // expanded in the Inventory panel, refresh it so the new item shows up immediately --
+        // otherwise it's invisible until the user manually collapses/re-expands that folder.
+        win.OnLandmarkCreated = (folderId) => _inventoryPanel?.RefreshFolder(folderId);
+        win.OpenForCurrentLocation();
     }
 
     /// <summary>

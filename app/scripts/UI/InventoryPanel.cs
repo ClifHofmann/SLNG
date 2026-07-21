@@ -21,6 +21,10 @@ public partial class InventoryPanel : SLNGWindow
     // Folders already fetched (or currently fetching) — the expand signal fires on every
     // re-expand, and a re-fetch would duplicate the subtree under the item.
     private readonly HashSet<Guid> _loadedFolders = new();
+    // Every folder row currently in the tree, keyed by folder id -- lets an external caller
+    // (e.g. CreateLandmarkWindow after saving) refresh a specific already-expanded folder
+    // without needing to walk the Tree itself. Cleared alongside the tree in PopulateRoots.
+    private readonly Dictionary<Guid, TreeItem> _folderItems = new();
     private bool _rootsPopulated;
     private PopupMenu _contextMenu = null!;
     private LineEdit _searchBox = null!;
@@ -128,6 +132,7 @@ public partial class InventoryPanel : SLNGWindow
         _status.Text = "";
 
         _tree.Clear();
+        _folderItems.Clear();
         var hidden = _tree.CreateItem();
 
         var myInv = AddFolderItem(hidden, rootId, "My Inventory");
@@ -173,9 +178,21 @@ public partial class InventoryPanel : SLNGWindow
         item.SetText(0, name);
         item.SetMetadata(0, folderId.ToString());
         item.Collapsed = true;
+        _folderItems[folderId] = item;
         var placeholder = _tree.CreateItem(item);
         placeholder.SetText(0, "…");
         return item;
+    }
+
+    /// <summary>Re-fetches a folder's contents if it's currently present (and already loaded) in
+    /// the tree -- a no-op otherwise (the folder isn't open, so there's nothing stale to show;
+    /// the next manual expand fetches fresh anyway). Used to reflect an item created elsewhere
+    /// (e.g. Create Landmark) without requiring the user to collapse/re-expand by hand.</summary>
+    public void RefreshFolder(Guid folderId)
+    {
+        if (!_folderItems.TryGetValue(folderId, out var item) || !IsInstanceValid(item)) return;
+        if (!_loadedFolders.Contains(folderId)) return; // never expanded -- nothing to refresh
+        LoadFolder(item, folderId, force: true);
     }
 
     private void OnItemCollapsed(TreeItem item)
