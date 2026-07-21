@@ -577,7 +577,7 @@ public partial class ObjectRenderer : Node3D
         }
         else if (Mathf.Abs(wrappedRot) > 0.05f)
         {
-            GD.Print($"[FaceTex] unsupported face rotation {ft.Rotation:0.##} rad (tex {ft.TextureId.ToString()[..8]}) — rendered unrotated");
+            Logger.Debug($"[FaceTex] unsupported face rotation {ft.Rotation:0.##} rad (tex {ft.TextureId.ToString()[..8]}) — rendered unrotated");
         }
 
         var material = new StandardMaterial3D

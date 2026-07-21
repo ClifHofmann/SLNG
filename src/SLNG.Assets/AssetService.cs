@@ -575,67 +575,37 @@ public class AssetService
                     }
                 }
                 else
-                {
-                    Console.WriteLine($"[AssetService] Unsupported texture layout: {ch} channels, {raw.Length} values for {width}x{height}");
+                    // Suppress verbose unsupported layout warnings
                     return null;
-                }
             }
 
             return new TextureData(width, height, rgba, isDegraded);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[AssetService] Magick.NET failed to decode texture ({ex.Message}). Trying padded recovery...");
-            
+            // Magick.NET (OpenJP2) is very strict and fails on missing EOC markers or bad header lengths
+            // common in older SL/OpenSim assets. Fall back to CoreJ2K, which is much more forgiving.
             try 
             {
-                byte[] padded = new byte[bytes.Length + 65536];
-                Buffer.BlockCopy(bytes, 0, padded, 0, bytes.Length);
-                padded[padded.Length - 2] = 0xFF;
-                padded[padded.Length - 1] = 0xD9; // EOC marker
-
-                var settings = new ImageMagick.MagickReadSettings { Format = ImageMagick.MagickFormat.J2c };
-                using var image = new ImageMagick.MagickImage(padded, settings);
-                
-                int width = (int)image.Width;
-                int height = (int)image.Height;
-                bool isDegraded = true; // Always treat padded recovery as degraded so we can try to get the real file later
-                // Force Magick to decode into usable colorspaces before grabbing pixel values.
-                if (image.HasAlpha || image.ChannelCount == 4) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
-                else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
-                byte[] rgba;
-                using (var pixels = image.GetPixels())
+                using var bitmap = CoreJ2K.J2kImage.DecodeToImage<SkiaSharp.SKBitmap>(bytes);
+                if (bitmap != null && bitmap.Width > 0 && bitmap.Height > 0)
                 {
-                    var raw = pixels.GetValues() ?? Array.Empty<byte>();
-                    int ch = width > 0 && height > 0 ? raw.Length / (width * height) : 0;
-                    if (ch >= 3 && raw.Length >= width * height * ch)
+                    // Ensure the bitmap is converted to Rgba8888 for Godot's Image.CreateFromData
+                    using var rgbaBitmap = bitmap.ColorType == SkiaSharp.SKColorType.Rgba8888 
+                        ? bitmap 
+                        : bitmap.Copy(SkiaSharp.SKColorType.Rgba8888);
+                    
+                    byte[] rgba = rgbaBitmap.Bytes;
+                    if (rgba.Length >= bitmap.Width * bitmap.Height * 4)
                     {
-                        rgba = new byte[width * height * 4];
-                        for (int p = 0; p < width * height; p++)
-                        {
-                            int s = p * ch, d = p * 4;
-                            rgba[d]     = raw[s];
-                            rgba[d + 1] = raw[s + 1];
-                            rgba[d + 2] = raw[s + 2];
-                            rgba[d + 3] = ch >= 4 ? raw[s + 3] : (byte)255;
-                        }
+                        return new TextureData(bitmap.Width, bitmap.Height, rgba, true); // Mark as degraded so we know it used the fallback
                     }
-                    else
-                    {
-                        Console.WriteLine($"[AssetService] Unsupported padded texture layout: {ch} channels, {raw.Length} values for {width}x{height}");
-                        return null;
-                    }
-                }
-
-                if (rgba.Length > 0)
-                {
-                    Console.WriteLine($"[AssetService] Padded Magick.NET decode successful: {width}x{height}");
-                    return new TextureData(width, height, rgba, isDegraded);
                 }
             }
-            catch (Exception paddedEx)
+            catch (Exception j2kEx)
             {
-                Console.WriteLine($"[AssetService] Padded Magick.NET decode also failed: {paddedEx.Message}");
+                // Both standard and CoreJ2K decode failed. This is a truly corrupt asset.
+                // We intentionally suppress the error logs here to avoid console spam during region crossings.
             }
             return null;
         }

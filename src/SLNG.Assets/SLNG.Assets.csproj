@@ -8,6 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="CoreJ2K" Version="2.3.3.91" />
+    <PackageReference Include="CoreJ2K.Skia" Version="2.3.3.91" />
     <PackageReference Include="LibreMetaverse" Version="3.0.0" />
     <PackageReference Include="LibreMetaverse.Rendering.MeshFoundry" Version="3.0.0" />
     <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.14.0" />
