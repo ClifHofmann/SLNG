@@ -511,7 +511,11 @@ public class AssetService
         try
         {
             // Magick.NET wraps OpenJPEG and seamlessly handles malformed J2C bitstreams (missing EOC, trailing padding, etc.) that crash CoreJ2K.
-            var settings = new ImageMagick.MagickReadSettings { Format = ImageMagick.MagickFormat.J2c };
+            var settings = new ImageMagick.MagickReadSettings();
+            if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F)
+            {
+                settings.Format = ImageMagick.MagickFormat.J2c;
+            }
             using var image = new ImageMagick.MagickImage(bytes, settings);
             
             int width = (int)image.Width;
@@ -530,13 +534,17 @@ public class AssetService
             {
                 // For normal textures, verify if Magick.NET decoded a low-res thumbnail instead of the full image
                 int trueWidth = -1, trueHeight = -1;
-                for (int i = 0; i < bytes.Length - 13; i++)
+                
+                if (settings.Format == ImageMagick.MagickFormat.J2c)
                 {
-                    if (bytes[i] == 0xFF && bytes[i + 1] == 0x51) // SIZ marker
+                    for (int i = 0; i < bytes.Length - 13; i++)
                     {
-                        trueWidth = (bytes[i + 6] << 24) | (bytes[i + 7] << 16) | (bytes[i + 8] << 8) | bytes[i + 9];
-                        trueHeight = (bytes[i + 10] << 24) | (bytes[i + 11] << 16) | (bytes[i + 12] << 8) | bytes[i + 13];
-                        break;
+                        if (bytes[i] == 0xFF && bytes[i + 1] == 0x51) // SIZ marker
+                        {
+                            trueWidth = (bytes[i + 6] << 24) | (bytes[i + 7] << 16) | (bytes[i + 8] << 8) | bytes[i + 9];
+                            trueHeight = (bytes[i + 10] << 24) | (bytes[i + 11] << 16) | (bytes[i + 12] << 8) | bytes[i + 13];
+                            break;
+                        }
                     }
                 }
                 
