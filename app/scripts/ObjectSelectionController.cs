@@ -106,6 +106,17 @@ namespace SLNG.App
                                             }
                                         }
 
+                                        if (mouseBtn.ButtonIndex == MouseButton.Left)
+                                        {
+                                            if (_lastClicked != null && !_pinnedEntityIds.Contains(_lastClicked.Id))
+                                            {
+                                                _world.DeselectEntity(_lastClicked);
+                                                // We don't have localId for deselect here easily, but LibreMetaverse handles it
+                                                _lastClicked = null;
+                                            }
+                                            return;
+                                        }
+
                                         // Replace the previous plain-click highlight -- but never
                                         // an entity pinned by its own open Edit window; that stays
                                         // selected independently until the window itself closes.
