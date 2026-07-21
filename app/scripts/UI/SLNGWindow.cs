@@ -207,7 +207,17 @@ public partial class SLNGWindow : MarginContainer
     {
         if (@event is not InputEventMouseButton { Pressed: true }) return;
         var hovered = GetViewport().GuiGetHoveredControl();
-        if (hovered == this || (hovered != null && IsAncestorOf(hovered))) MoveToFront();
+        if (hovered != this && (hovered == null || !IsAncestorOf(hovered))) return;
+
+        // Raise this window AND every ancestor Control up to the CanvasLayer -- a window nested
+        // inside another SLNGWindow (e.g. ItemPropertiesWindow, added as a child of InventoryPanel
+        // rather than a top-level hudLayer sibling) would otherwise only reorder itself among its
+        // immediate parent's children, never actually bringing InventoryPanel itself above its
+        // own top-level siblings (ChatWindow, PreferencesWindow, ...). MoveToFront() on a Control
+        // that's already frontmost among its siblings is a cheap no-op, so walking the whole
+        // chain unconditionally costs nothing extra in the common (non-nested) case.
+        for (Node? n = this; n is Control c; n = n.GetParent())
+            c.MoveToFront();
     }
 
     private void OnGlobalUiScaleChanged(float scale) => Scale = new Vector2(scale, scale);
