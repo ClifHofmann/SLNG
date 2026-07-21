@@ -296,6 +296,16 @@ public sealed class WorldSimulation : IDisposable
 
     private void ApplyAvatarUpdate(AvatarUpdateEvent e)
     {
+        if (e.IsLocalAgent)
+        {
+            // Ensure no other entity is marked as the local agent (e.g. leftover from a previous region after teleport)
+            var oldAgent = _world.GetAllEntities().FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+            if (oldAgent != null && (oldAgent.RegionHandle != e.RegionHandle || oldAgent.LocalId != e.LocalId))
+            {
+                _world.RemoveEntity(oldAgent.RegionHandle, oldAgent.LocalId);
+            }
+        }
+
         var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
 
         var transform = entity.GetComponent<TransformComponent>();

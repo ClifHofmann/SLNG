@@ -703,7 +703,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var rot = _client.Self.SimRotation;
         AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
             sim.Handle,
-            0,
+            _client.Self.LocalID,
             _client.Self.AgentID.Guid,
             new System.Numerics.Vector3(pos.X, pos.Y, pos.Z),
             new System.Numerics.Quaternion(rot.X, rot.Y, rot.Z, rot.W),
