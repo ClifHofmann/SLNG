@@ -1225,7 +1225,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         // Fallback if reflection fails
         var fallbackTcs = new TaskCompletionSource<byte[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _client.Assets.RequestImageAsync(new UUID(textureId), ImageType.Normal, CancellationToken.None)
+        _ = _client.Assets.RequestImageAsync(new UUID(textureId), ImageType.Normal, CancellationToken.None)
             .ContinueWith(t =>
             {
                 var data = t.Result?.AssetData;
