@@ -1209,12 +1209,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
                     // RequestTexture(UUID textureID, ImageType imageType, float priority, int discardLevel,
                     //                uint packetStart, TextureDownloadCallback callback, bool progressive).
-                    // packetStart is UInt32 — passing int 0 makes Invoke throw "Int32 cannot be
-                    // converted to UInt32", which silently fell back to the truncating RequestImageAsync.
                     reqMethod.Invoke(pipeline, new object[] { new UUID(textureId), ImageType.Normal, 100000.0f, 0, 0u, delegateObj, false });
-                    
-                    var delayTask = Task.Delay(TimeSpan.FromSeconds(30));
-                    return await Task.WhenAny(tcs.Task, delayTask) == tcs.Task ? tcs.Task.Result : null;
+                    return await tcs.Task;
                 }
             }
         }
@@ -1232,8 +1228,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 fallbackTcs.TrySetResult(data is { Length: > 0 } ? data : null);
             });
             
-        var fallbackDelay = Task.Delay(TimeSpan.FromSeconds(30));
-        return await Task.WhenAny(fallbackTcs.Task, fallbackDelay) == fallbackTcs.Task ? fallbackTcs.Task.Result : null;
+        return await fallbackTcs.Task;
     }
 
     /// <summary>

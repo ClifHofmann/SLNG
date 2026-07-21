@@ -632,21 +632,24 @@ public partial class ObjectRenderer : Node3D
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId).ContinueWith(t =>
                         Godot.Callable.From(() => material.EmissionTexture = t.Result).CallDeferred()));
                 }
-                await System.Threading.Tasks.Task.WhenAll(tasks);
+                // No await Task.WhenAll(tasks) here! Let the textures populate asynchronously so the mesh renders immediately.
             }
         }
         else if (ft.TextureId != Guid.Empty)
         {
             used.Add(ft.TextureId);
-            var tex = await GetOrCreateGpuTextureAsync(ft.TextureId);
-            if (tex != null)
+            _ = GetOrCreateGpuTextureAsync(ft.TextureId).ContinueWith(t =>
             {
-                Godot.Callable.From(() =>
+                var tex = t.Result;
+                if (tex != null)
                 {
-                    material.AlbedoTexture = tex;
-                    ApplyAlphaCutout(material, tex);
-                }).CallDeferred();
-            }
+                    Godot.Callable.From(() =>
+                    {
+                        material.AlbedoTexture = tex;
+                        ApplyAlphaCutout(material, tex);
+                    }).CallDeferred();
+                }
+            });
         }
 
         return (material, used);
