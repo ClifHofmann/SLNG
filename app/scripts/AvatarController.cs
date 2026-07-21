@@ -104,6 +104,8 @@ public partial class AvatarController : Camera3D
     // Alt+LMB orbit state. The orbit offsets rotate the CAMERA around the avatar
     // without changing the avatar's facing (_yaw/_pitch). They snap back to 0 when
     // the avatar moves, so the camera returns behind the avatar — SL-style.
+    // Set by polling in _Process (Input.IsKeyPressed/IsMouseButtonPressed), NOT by this
+    // button's own press/release events -- see the comment at that poll site for why.
     private bool _altOrbitActive = false;
     private float _orbitYaw = 0f;
     private float _orbitPitch = 0f;
@@ -115,6 +117,10 @@ public partial class AvatarController : Camera3D
     // once at press-time and reusing it for the whole drag is what actually zooms toward the
     // point the user aimed at.
     private Vector2 _altZoomAnchorPos = Vector2.Zero;
+
+    // Reference point for the manual position-polling "capture" in _Process -- see there for why
+    // this replaces MouseMode.Captured's native relative-motion deltas (broken over RDP/VM).
+    private Vector2 _orbitLastMousePos = Vector2.Zero;
 
     // Fly mode: Home toggles; pressing E (up) also engages it. While flying, gravity is
     // suspended and E/C move vertically. Landing on the ground leaves fly mode.
@@ -154,24 +160,7 @@ public partial class AvatarController : Camera3D
 
         if (@event is InputEventMouseButton mouseBtn)
         {
-            if (mouseBtn.ButtonIndex == MouseButton.Left)
-            {
-                // Alt+LMB: orbit around avatar (SL-style).
-                // Use the event's AltPressed flag — Input.IsKeyPressed(Key.Alt) is
-                // unreliable inside _UnhandledInput on some platforms.
-                if (mouseBtn.Pressed && (mouseBtn.AltPressed || Input.IsKeyPressed(Key.Alt)))
-                {
-                    _altOrbitActive = true;
-                    _altZoomAnchorPos = mouseBtn.Position;
-                    Input.MouseMode = Input.MouseModeEnum.Captured;
-                }
-                else if (!mouseBtn.Pressed && _altOrbitActive)
-                {
-                    _altOrbitActive = false;
-                    Input.MouseMode = Input.MouseModeEnum.Visible;
-                }
-            }
-            else if (mouseBtn.ButtonIndex == MouseButton.WheelUp)
+            if (mouseBtn.ButtonIndex == MouseButton.WheelUp)
             {
                 ZoomTowardCursor(-0.5f, mouseBtn.Position);
                 GD.Print($"[AvatarController] Zoom: {_zoom:F1} (WheelUp)");
@@ -183,24 +172,10 @@ public partial class AvatarController : Camera3D
             }
         }
 
-        if (@event is InputEventMouseMotion mouseMotion && Input.MouseMode == Input.MouseModeEnum.Captured)
-        {
-            float sensitivity = 0.003f;
-            if (_altOrbitActive)
-            {
-                // Stays active until the mouse button is released (handled on button-up).
-                // Horizontal = orbit yaw, vertical = zoom (SL standard)
-                _orbitYaw -= mouseMotion.Relative.X * sensitivity;
-                ZoomTowardCursor(mouseMotion.Relative.Y * sensitivity * 50.0f, _altZoomAnchorPos);
-            }
-            else
-            {
-                // RMB free-look: turns the avatar with the camera.
-                _yaw -= mouseMotion.Relative.X * sensitivity;
-                _pitch -= mouseMotion.Relative.Y * sensitivity;
-                _pitch = Mathf.Clamp(_pitch, -1.5f, 1.5f);
-            }
-        }
+        // Orbit rotation itself is handled by position-polling in _Process, not by
+        // InputEventMouseMotion -- see the comment at that poll site for why (MouseMode.Captured's
+        // native relative-motion deltas don't arrive at all over RDP/VM, confirmed live: zero
+        // motion events during an entire Alt+LMB hold, then one big backlog jump on release).
     }
 
     public override void _Process(double delta)
@@ -209,6 +184,60 @@ public partial class AvatarController : Camera3D
 
         var focusOwner = GetViewport().GuiGetFocusOwner();
         bool hasUiFocus = focusOwner is LineEdit || focusOwner is TextEdit;
+
+        // Alt+LMB orbit engagement, polled every frame instead of driven by the button's own
+        // discrete press/release events. Live-tested proof this was needed: holding Alt+LMB
+        // produced a rapid, alternating pressed=True/False/True/False... event stream instead of
+        // one press followed by a held state -- the OLD event-driven toggle treated every spurious
+        // "release" as the real button-up and immediately cancelled orbit before a drag could ever
+        // register, so the feature looked completely dead. Polling the actual current physical
+        // state each frame is self-correcting regardless of how noisy the underlying event stream
+        // is -- same reasoning as why WASD movement below is polled, not event-driven.
+        bool wantOrbit = !hasUiFocus && Input.IsKeyPressed(Key.Alt) && Input.IsMouseButtonPressed(MouseButton.Left);
+
+        if (wantOrbit && !_altOrbitActive)
+        {
+            _altOrbitActive = true;
+            _altZoomAnchorPos = GetViewport().GetMousePosition();
+            // Hidden, not Captured: Captured relies on the OS's raw-input relative-motion
+            // capture, which live testing proved does not deliver ANY motion events over RDP/VM
+            // (confirmed: zero InputEventMouseMotion for the entire duration of a held Alt+LMB,
+            // then one large backlog jump the instant MouseMode left Captured). Hidden just hides
+            // the cursor without that OS-level lock, so ordinary absolute-position polling below
+            // still works everywhere Captured's relative deltas silently didn't.
+            Input.MouseMode = Input.MouseModeEnum.Hidden;
+            // Start tracking from wherever the cursor already is -- no warp on entry. An earlier
+            // version warped to screen centre here and used that as the reference point, but
+            // WarpMouse's effect on GetMousePosition() does not land synchronously (worse over
+            // RDP, where it can lag by an unpredictable number of frames), so whichever LATER
+            // frame the warp actually took effect on produced one huge, unpredictably-timed false
+            // delta -- live-tested as a sudden jump to max zoom-out with no clear trigger.
+            _orbitLastMousePos = _altZoomAnchorPos;
+        }
+        else if (!wantOrbit && _altOrbitActive)
+        {
+            _altOrbitActive = false;
+            Input.MouseMode = Input.MouseModeEnum.Visible;
+            Input.WarpMouse(_altZoomAnchorPos); // SL-style: cursor reappears where the drag started
+            // No delta is computed again until re-engagement, so this warp's landing latency
+            // (see above) can never be misread as a drag -- safe here specifically because it is.
+        }
+        else if (_altOrbitActive)
+        {
+            // Manual "capture": read the real cursor position (works over RDP, unlike
+            // MouseMode.Captured's relative deltas) and derive our own delta from the last
+            // OBSERVED position -- never from a hypothetical post-warp position (see above for
+            // why). No periodic re-centring: the (hidden) cursor may reach the physical screen
+            // edge on a long drag and simply stop contributing further delta in that direction
+            // until reversed -- a minor UX limit, but a fully predictable one, unlike fighting
+            // WarpMouse's landing latency.
+            var currentPos = GetViewport().GetMousePosition();
+            var orbitDelta = currentPos - _orbitLastMousePos;
+            const float sensitivity = 0.003f;
+            _orbitYaw -= orbitDelta.X * sensitivity;
+            ZoomTowardCursor(orbitDelta.Y * sensitivity * 50.0f, _altZoomAnchorPos);
+            _orbitLastMousePos = currentPos;
+        }
 
         // 1. Follow the Avatar
         var localAgent = _world.GetAllEntities()

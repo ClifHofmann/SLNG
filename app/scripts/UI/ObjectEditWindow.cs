@@ -41,6 +41,22 @@ namespace SLNG.App.UI
         // whatever shows up next.
         private bool? _pendingPhysical, _pendingTemporary, _pendingPhantom;
 
+        // Same dirty-check role as _knownPhysical/_pendingPhysical above, for the Light
+        // ExtraParams block (Features tab). Each sub-field gets its OWN pending guard, not one
+        // shared flag -- SetObjectLight sends the whole block together, but a routine full
+        // ObjectUpdate can arrive between the send and the simulator's real echo still carrying
+        // the OLD color/intensity/radius/falloff while Enabled happens to already match (it
+        // didn't change), so gating everything on _pendingLightEnabled alone let that stale
+        // update sail through and snap the color picker back the instant a color was applied.
+        // Wire-format color is byte-quantized (~1/255 max error), so matching uses a tolerance,
+        // not exact float equality -- see ApproxEqual.
+        private bool _knownLightEnabled;
+        private System.Numerics.Vector3 _knownLightColor = System.Numerics.Vector3.One;
+        private float _knownLightIntensity = 1.0f, _knownLightRadius = 10.0f, _knownLightFalloff = 1.0f;
+        private bool? _pendingLightEnabled;
+        private System.Numerics.Vector3? _pendingLightColor;
+        private float? _pendingLightIntensity, _pendingLightRadius, _pendingLightFalloff;
+
         // See ApplyTransform: true while this window is firing its own optimistic
         // NotifyComponentUpdated calls, so OnComponentUpdated (below) can tell "this is my own
         // write echoing back" apart from a genuine incoming update from the simulator.
@@ -54,6 +70,10 @@ namespace SLNG.App.UI
         private Label _creatorLabel = null!, _ownerLabel = null!, _groupLabel = null!, _isOwnerLabel = null!;
         private CheckBox _lockedCheck = null!, _physicalCheck = null!, _tempCheck = null!, _phantomCheck = null!;
         private CheckBox _permModifyCheck = null!, _permCopyCheck = null!, _permTransferCheck = null!, _permMoveCheck = null!;
+
+        private CheckBox _lightCheck = null!;
+        private ColorPickerButton _lightColorPicker = null!;
+        private LineEdit _lightIntensityInput = null!, _lightRadiusInput = null!, _lightFalloffInput = null!;
 
         public void Initialize(GridSession session, World world)
         {
@@ -179,11 +199,25 @@ namespace SLNG.App.UI
             featuresTab.AddChild(featVBox);
             tabContainer.AddChild(featuresTab);
             
-            featVBox.AddChild(new CheckBox { Text = "Light" });
+            _lightCheck = new CheckBox { Text = "Light" };
+            _lightCheck.Toggled += _ => SendObjectLight();
+            featVBox.AddChild(_lightCheck);
+
+            _lightColorPicker = new ColorPickerButton { Text = "Color", Color = Colors.White, CustomMinimumSize = new Vector2(0, 30) };
+            _lightIntensityInput = new LineEdit { CustomMinimumSize = new Vector2(60, 0), SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            _lightRadiusInput = new LineEdit { CustomMinimumSize = new Vector2(60, 0), SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            _lightFalloffInput = new LineEdit { CustomMinimumSize = new Vector2(60, 0), SizeFlagsHorizontal = SizeFlags.ExpandFill };
+
             var lightGrid = new GridContainer { Columns = 2 };
-            lightGrid.AddChild(new Label { Text = "Intensity:" }); lightGrid.AddChild(new LineEdit { CustomMinimumSize = new Vector2(60, 0) });
-            lightGrid.AddChild(new Label { Text = "Radius:" }); lightGrid.AddChild(new LineEdit { CustomMinimumSize = new Vector2(60, 0) });
+            lightGrid.AddChild(new Label { Text = "Color:" }); lightGrid.AddChild(_lightColorPicker);
+            lightGrid.AddChild(new Label { Text = "Intensity:" }); lightGrid.AddChild(_lightIntensityInput);
+            lightGrid.AddChild(new Label { Text = "Radius:" }); lightGrid.AddChild(_lightRadiusInput);
+            lightGrid.AddChild(new Label { Text = "Falloff:" }); lightGrid.AddChild(_lightFalloffInput);
             featVBox.AddChild(lightGrid);
+
+            var lightApplyBtn = new Button { Text = "Apply Light", CustomMinimumSize = new Vector2(0, 30) };
+            lightApplyBtn.Pressed += SendObjectLight;
+            featVBox.AddChild(lightApplyBtn);
 
             // Texture Tab
             var textureTab = new MarginContainer { Name = "Texture" };
@@ -256,6 +290,9 @@ namespace SLNG.App.UI
             // Opening (possibly a different) object drops any pending flag-change state from
             // whatever was previously loaded here.
             _pendingPhysical = _pendingTemporary = _pendingPhantom = null;
+            _pendingLightEnabled = null;
+            _pendingLightColor = null;
+            _pendingLightIntensity = _pendingLightRadius = _pendingLightFalloff = null;
 
             var primitive = entity.GetComponent<PrimitiveComponent>();
             if (primitive != null)
@@ -269,6 +306,17 @@ namespace SLNG.App.UI
                 _physicalCheck.SetPressedNoSignal(primitive.IsPhysical);
                 _tempCheck.SetPressedNoSignal(primitive.IsTemporary);
                 _phantomCheck.SetPressedNoSignal(primitive.IsPhantom);
+
+                _knownLightEnabled = primitive.LightEnabled;
+                _knownLightColor = primitive.LightColor;
+                _knownLightIntensity = primitive.LightIntensity;
+                _knownLightRadius = primitive.LightRadius;
+                _knownLightFalloff = primitive.LightFalloff;
+                _lightCheck.SetPressedNoSignal(primitive.LightEnabled);
+                _lightColorPicker.Color = new Color(primitive.LightColor.X, primitive.LightColor.Y, primitive.LightColor.Z);
+                _lightIntensityInput.Text = primitive.LightIntensity.ToString("F2");
+                _lightRadiusInput.Text = primitive.LightRadius.ToString("F2");
+                _lightFalloffInput.Text = primitive.LightFalloff.ToString("F2");
             }
 
             var meta = entity.GetComponent<MetadataComponent>();
@@ -445,6 +493,63 @@ namespace SLNG.App.UI
             if (phantom.HasValue) _pendingPhantom = ph;
         }
 
+        /// <summary>Sends the Light checkbox + color/intensity/radius/falloff fields as one
+        /// ExtraParams block (SetObjectLight always sends the whole block, not a delta) -- shared
+        /// by the Light checkbox toggle and the "Apply Light" button. Same self-confirm and
+        /// dirty-check reasoning as SendObjectFlags: no NotifyComponentUpdated call here, and a
+        /// pending flag guards UpdatePrimStateUI against a stale echo reverting the change.</summary>
+        private void SendObjectLight()
+        {
+            if (_currentLocalId == 0 || _session == null) return;
+
+            bool enabled = _lightCheck.ButtonPressed;
+            var c = _lightColorPicker.Color;
+            var color = new System.Numerics.Vector3(c.R, c.G, c.B);
+            if (!float.TryParse(_lightIntensityInput.Text, out float intensity)) intensity = _knownLightIntensity;
+            if (!float.TryParse(_lightRadiusInput.Text, out float radius)) radius = _knownLightRadius;
+            if (!float.TryParse(_lightFalloffInput.Text, out float falloff)) falloff = _knownLightFalloff;
+
+            // SL's wire protocol has no separate "light enabled" bit -- ObjectManager.SetLight
+            // sends ParamInUse = Intensity != 0, so Intensity IS the enabled signal. An object
+            // that was never lit correctly shows Intensity 0.00 here (its real prior server
+            // state); checking "Light" without also raising Intensity off zero would silently
+            // send OpenSim a disable request, indistinguishable from doing nothing -- exactly
+            // the "change doesn't save" symptom reported. Seed sane defaults whenever enabling
+            // from a zeroed-out field so the checkbox alone is enough to produce a visible light.
+            if (enabled && intensity <= 0f) { intensity = 1.0f; _lightIntensityInput.Text = intensity.ToString("F2"); }
+            if (enabled && radius <= 0f) { radius = 10.0f; _lightRadiusInput.Text = radius.ToString("F2"); }
+            if (enabled && falloff <= 0f) { falloff = 1.0f; _lightFalloffInput.Text = falloff.ToString("F2"); }
+
+            GD.Print($"[ObjectEditWindow] SendObjectLight -> localId={_currentLocalId} enabled={enabled} color={color} intensity={intensity} radius={radius} falloff={falloff}");
+            _session.SetObjectLight(_currentLocalId, enabled, color, intensity, radius, falloff);
+
+            var prim = _currentEntity?.GetComponent<PrimitiveComponent>();
+            if (prim != null)
+            {
+                prim.LightEnabled = enabled;
+                prim.LightColor = color;
+                prim.LightIntensity = intensity;
+                prim.LightRadius = radius;
+                prim.LightFalloff = falloff;
+            }
+
+            _knownLightEnabled = enabled;
+            _knownLightColor = color;
+            _knownLightIntensity = intensity;
+            _knownLightRadius = radius;
+            _knownLightFalloff = falloff;
+
+            _pendingLightEnabled = enabled;
+            _pendingLightColor = color;
+            _pendingLightIntensity = intensity;
+            _pendingLightRadius = radius;
+            _pendingLightFalloff = falloff;
+        }
+
+        private static bool ApproxEqual(float a, float b, float eps = 0.05f) => System.Math.Abs(a - b) <= eps;
+        private static bool ApproxEqual(System.Numerics.Vector3 a, System.Numerics.Vector3 b, float eps = 0.02f) =>
+            ApproxEqual(a.X, b.X, eps) && ApproxEqual(a.Y, b.Y, eps) && ApproxEqual(a.Z, b.Z, eps);
+
         /// <summary>Set by the owner (Boot.cs) before the first EditObject call so multiple
         /// simultaneously-open windows cascade instead of spawning exactly on top of each other.</summary>
         public int CascadeIndex { get; set; }
@@ -475,12 +580,16 @@ namespace SLNG.App.UI
             }
             else if (e.Component is PrimitiveComponent prim)
             {
-                CallDeferred(MethodName.UpdatePrimStateUI, prim.IsPhysical, prim.IsTemporary, prim.IsPhantom);
+                CallDeferred(MethodName.UpdatePrimStateUI, prim.IsPhysical, prim.IsTemporary, prim.IsPhantom,
+                    prim.LightEnabled, prim.LightColor.X, prim.LightColor.Y, prim.LightColor.Z,
+                    prim.LightIntensity, prim.LightRadius, prim.LightFalloff);
             }
         }
 
-        private void UpdatePrimStateUI(bool physical, bool temporary, bool phantom)
+        private void UpdatePrimStateUI(bool physical, bool temporary, bool phantom,
+            bool lightEnabled, float lightR, float lightG, float lightB, float lightIntensity, float lightRadius, float lightFalloff)
         {
+            GD.Print($"[ObjectEditWindow] UpdatePrimStateUI <- lightEnabled={lightEnabled} color=({lightR:F2},{lightG:F2},{lightB:F2}) intensity={lightIntensity} radius={lightRadius} falloff={lightFalloff} | pendingEnabled={_pendingLightEnabled} pendingColor={_pendingLightColor} pendingIntensity={_pendingLightIntensity} pendingRadius={_pendingLightRadius} pendingFalloff={_pendingLightFalloff}");
             // While a flag change is pending, only accept a live value that actually confirms
             // it -- otherwise a stale/late echo would un-toggle what the user just set before the
             // simulator's real confirmation has arrived. No timeout: see the field comment on
@@ -502,6 +611,38 @@ namespace SLNG.App.UI
                 _phantomCheck.SetPressedNoSignal(phantom);
                 _knownPhantom = phantom;
                 _pendingPhantom = null;
+            }
+            if (_pendingLightEnabled is null || _pendingLightEnabled == lightEnabled)
+            {
+                _lightCheck.SetPressedNoSignal(lightEnabled);
+                _knownLightEnabled = lightEnabled;
+                _pendingLightEnabled = null;
+            }
+
+            var incomingColor = new System.Numerics.Vector3(lightR, lightG, lightB);
+            if (_pendingLightColor is null || ApproxEqual(_pendingLightColor.Value, incomingColor))
+            {
+                _lightColorPicker.Color = new Color(lightR, lightG, lightB);
+                _knownLightColor = incomingColor;
+                _pendingLightColor = null;
+            }
+            if (_pendingLightIntensity is null || ApproxEqual(_pendingLightIntensity.Value, lightIntensity))
+            {
+                _lightIntensityInput.Text = lightIntensity.ToString("F2");
+                _knownLightIntensity = lightIntensity;
+                _pendingLightIntensity = null;
+            }
+            if (_pendingLightRadius is null || ApproxEqual(_pendingLightRadius.Value, lightRadius))
+            {
+                _lightRadiusInput.Text = lightRadius.ToString("F2");
+                _knownLightRadius = lightRadius;
+                _pendingLightRadius = null;
+            }
+            if (_pendingLightFalloff is null || ApproxEqual(_pendingLightFalloff.Value, lightFalloff))
+            {
+                _lightFalloffInput.Text = lightFalloff.ToString("F2");
+                _knownLightFalloff = lightFalloff;
+                _pendingLightFalloff = null;
             }
         }
 

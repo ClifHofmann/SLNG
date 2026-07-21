@@ -54,7 +54,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.1.8-alpha";
+    public const string AppVersion = "v0.1.10-alpha";
 
     public override void _Ready()
     {
@@ -252,7 +252,15 @@ public partial class Boot : Control
         // Cascade new windows diagonally so opening several doesn't stack them exactly on top
         // of each other -- wraps every 8 so it doesn't walk off-screen over a long session.
         win.CascadeIndex = _objectEditWindows.Count % 8;
-        win.Closed += () => _objectEditWindows.Remove(entity.Id);
+        // Pinned so ObjectSelectionController won't drop this entity's selection/highlight just
+        // because the user clicked a different object elsewhere -- see ObjectSelectionController
+        // for why plain clicks otherwise replace the previous highlight.
+        _objectSelectionController.Pin(entity.Id);
+        win.Closed += () =>
+        {
+            _objectEditWindows.Remove(entity.Id);
+            _objectSelectionController.Unpin(entity.Id);
+        };
         _objectEditWindows[entity.Id] = win;
 
         win.EditObject(entity, localId, _world);

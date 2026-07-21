@@ -138,6 +138,11 @@ public sealed class WorldSimulation : IDisposable
             prim.IsTemporary = e.IsTemporary;
             prim.IsPhantom = e.IsPhantom;
             prim.CastsShadows = e.CastsShadows;
+            prim.LightEnabled = e.LightEnabled;
+            prim.LightColor = e.LightColor;
+            prim.LightIntensity = e.LightIntensity;
+            prim.LightRadius = e.LightRadius;
+            prim.LightFalloff = e.LightFalloff;
         }
         _world.NotifyComponentUpdated(entity, prim);
 

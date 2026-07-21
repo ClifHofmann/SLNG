@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using LibreMetaverse;
+using LibreMetaverse.Packets;
 using SLNG.Core;
 
 namespace SLNG.Net;
@@ -18,6 +19,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     // UUID and populated via the same resolve-and-notify flow, so one cache/event pair covers
     // both instead of duplicating the plumbing per name kind.
     private readonly ConcurrentDictionary<Guid, string> _nameCache = new();
+
+    // Whether the most recently seen raw ObjectUpdate packet for a given LocalID carried a
+    // Light (0x20) ExtraParams block. Needed because Primitive.Light is a latch, not a live
+    // value: LibreMetaverse only ever WRITES it inside SetExtraParamsFromBytes' Light case, and
+    // OpenSim omits the block entirely (no explicit "off" marker) once a light is disabled --
+    // so Primitive.Light keeps reporting the last-enabled state forever, even after the real
+    // light is turned off server-side and even across a relog. Populated by a raw packet
+    // callback (see OnRawObjectUpdatePacket) registered alongside ObjectManager's own internal
+    // handler, since the high-level Primitive/PrimEventArgs API exposes no such signal.
+    private readonly ConcurrentDictionary<uint, bool> _lightPresentByLocalId = new();
 
     public event EventHandler<ChatMessageEvent>? ChatMessageReceived;
     public event EventHandler<ObjectUpdateEvent>? ObjectUpdateReceived;
@@ -73,6 +84,42 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Network.SimDisconnected += OnSimDisconnected;
         _client.Avatars.AvatarAppearance += OnAvatarAppearance;
         _client.Avatars.AvatarAnimation += OnAvatarAnimation;
+
+        // Coexists with ObjectManager's own internal ObjectUpdate handler (packet callbacks are
+        // multicast) -- see _lightPresentByLocalId for why this is needed.
+        _client.Network.RegisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
+    }
+
+    /// <summary>Scans each object's raw ExtraParams bytes for a Light (0x20) block, independent
+    /// of LibreMetaverse's own parsing -- see <see cref="_lightPresentByLocalId"/> for why this
+    /// can't be read back from the high-level Primitive object. Byte layout matches
+    /// Primitive.SetExtraParamsFromBytes: 1 count byte, then per entry a UInt16 type + UInt32
+    /// length + that many payload bytes.</summary>
+    private void OnRawObjectUpdatePacket(object? sender, PacketReceivedEventArgs e)
+    {
+        if (e.Packet is not ObjectUpdatePacket update) return;
+
+        foreach (var block in update.ObjectData)
+        {
+            _lightPresentByLocalId[block.ID] = ExtraParamsContainsLight(block.ExtraParams);
+        }
+    }
+
+    private static bool ExtraParamsContainsLight(byte[]? data)
+    {
+        if (data == null || data.Length < 1) return false;
+
+        int i = 0;
+        byte count = data[i++];
+        for (int k = 0; k < count; k++)
+        {
+            if (i + 6 > data.Length) break;
+            ushort type = Utils.BytesToUInt16(data, i); i += 2;
+            uint len = Utils.BytesToUInt(data, i); i += 4;
+            if (type == 0x20) return true; // ExtraParamType.Light
+            i += (int)len;
+        }
+        return false;
     }
 
     private void OnSimConnected(object? sender, LibreMetaverse.SimConnectedEventArgs e)
@@ -335,6 +382,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             pd.ProfileBegin, pd.ProfileEnd, pd.ProfileHollow,
             (byte)pd.PCode);
 
+        // Primitive.Light never resets itself when a light is disabled (see
+        // _lightPresentByLocalId) -- if our own raw-packet scan positively saw this update's
+        // ExtraParams WITHOUT a Light block, trust that over the stale Primitive.Light, and
+        // correct the shared Primitive object too so any other code reading prim.Light directly
+        // (not just this event) also sees the fix from here on.
+        bool lightEnabled = prim.Light.Intensity > 0f;
+        if (_lightPresentByLocalId.TryGetValue(prim.LocalID, out bool lightBlockPresent) && !lightBlockPresent && lightEnabled)
+        {
+            prim.Light = new Primitive.LightData();
+            lightEnabled = false;
+        }
+
         ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
             simulator.Handle,
             prim.LocalID,
@@ -362,6 +421,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             prim.Flags.HasFlag(PrimFlags.Temporary),
             prim.Flags.HasFlag(PrimFlags.Phantom),
             prim.Flags.HasFlag(PrimFlags.CastShadows),
+            // Light is an ExtraParams block, not a PrimFlags bit -- LibreMetaverse's own
+            // convention (mirrored in SetObjectLight below) is Intensity>0 means "the block is
+            // active"; Primitive.Light is never null (ObjectManager always constructs a default).
+            // lightEnabled (computed above) is prim.Light.Intensity>0f corrected for the
+            // never-resets-on-disable bug -- prim.Light itself is also corrected by then, so the
+            // fields below are consistent with it either way.
+            lightEnabled,
+            new System.Numerics.Vector3(prim.Light.Color.R, prim.Light.Color.G, prim.Light.Color.B),
+            prim.Light.Intensity,
+            prim.Light.Radius,
+            prim.Light.Falloff,
             isFullUpdate));
     }
 
@@ -717,6 +787,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Objects.SetPermissions(_client.Network.CurrentSim, new List<uint> { localId }, PermissionWho.Owner, PermissionMask.Move, !locked);
     }
 
+    /// <summary>SL's point-light ("Light") prim property -- an ExtraParams block, not a
+    /// PrimFlags bit (see ObjectManager.SetLight). Disabling sends the block with Intensity 0
+    /// rather than omitting it, matching LibreMetaverse's own enabled/disabled convention.</summary>
+    public void SetObjectLight(uint localId, bool enabled, System.Numerics.Vector3 color, float intensity, float radius, float falloff)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+        var light = new Primitive.LightData
+        {
+            Color = new Color4(color.X, color.Y, color.Z, 1f),
+            Intensity = enabled ? intensity : 0f,
+            Radius = radius,
+            Falloff = falloff,
+            Cutoff = 0f
+        };
+        _client.Objects.SetLight(_client.Network.CurrentSim, localId, light);
+    }
+
     /// <summary>Rezzes a new basic-shape prim at the given region-local position. The sim only
     /// treats this as an approximate placement (see ObjectManager.AddPrim's remarks) -- the
     /// object streams back in shortly after via the normal ObjectUpdate path, same as any other
@@ -875,6 +962,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Terrain.LandPatchReceived -= OnLandPatchReceived;
         _client.Network.SimConnected -= OnSimConnected;
         _client.Network.SimDisconnected -= OnSimDisconnected;
+        _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
         Logout();
     }
 }

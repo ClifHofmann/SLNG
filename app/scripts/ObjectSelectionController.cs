@@ -19,6 +19,18 @@ namespace SLNG.App
         // every object some other window still has pinned open.
         private Entity? _lastClicked;
 
+        // Entities with an open ObjectEditWindow (see Boot.cs Pin/Unpin calls) -- these stay
+        // selected/highlighted no matter what else gets clicked, since deselecting them would
+        // auto-hide their window (ObjectEditWindow.OnEntityDeselected). Anything NOT in this set
+        // is just a plain click-highlight, which a click elsewhere should replace -- without this
+        // distinction, every plain click left the previous object's highlight stuck forever
+        // (_lastClicked only remembers the ONE most recent click, so the one before it was never
+        // deselected again).
+        private readonly System.Collections.Generic.HashSet<System.Guid> _pinnedEntityIds = new();
+
+        public void Pin(System.Guid entityId) => _pinnedEntityIds.Add(entityId);
+        public void Unpin(System.Guid entityId) => _pinnedEntityIds.Remove(entityId);
+
         public void Initialize(World world, GridSession session, Camera3D camera, UI.InWorldContextMenu contextMenu)
         {
             _world = world;
@@ -81,6 +93,15 @@ namespace SLNG.App
                                             }
                                         }
 
+                                        // Replace the previous plain-click highlight -- but never
+                                        // an entity pinned by its own open Edit window; that stays
+                                        // selected independently until the window itself closes.
+                                        if (_lastClicked != null && _lastClicked.Id != entity.Id
+                                            && !_pinnedEntityIds.Contains(_lastClicked.Id))
+                                        {
+                                            _world.DeselectEntity(_lastClicked);
+                                        }
+
                                         _world.SelectEntity(entity);
                                         _session.SelectObject(localId);
                                         _lastClicked = entity;
@@ -103,7 +124,10 @@ namespace SLNG.App
                         // other objects pinned open in their own ObjectEditWindow are untouched.
                         if (_lastClicked != null && mouseBtn.ButtonIndex == MouseButton.Left)
                         {
-                            _world.DeselectEntity(_lastClicked);
+                            if (!_pinnedEntityIds.Contains(_lastClicked.Id))
+                            {
+                                _world.DeselectEntity(_lastClicked);
+                            }
                             _lastClicked = null;
                         }
                     }

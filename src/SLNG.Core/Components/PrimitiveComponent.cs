@@ -66,6 +66,15 @@ public class PrimitiveComponent : IComponent
     public bool IsPhantom { get; set; }
     public bool CastsShadows { get; set; } = true;
 
+    /// <summary>SL's point-light ("Light") prim property. Mirrors LibreMetaverse's
+    /// Primitive.LightData ExtraParams block, which the wire protocol has no separate enable
+    /// bit for -- Intensity == 0 means "off" by convention (see GridSession.SetObjectLight).</summary>
+    public bool LightEnabled { get; set; }
+    public Vector3 LightColor { get; set; } = Vector3.One;
+    public float LightIntensity { get; set; } = 1.0f;
+    public float LightRadius { get; set; } = 10.0f;
+    public float LightFalloff { get; set; } = 1.0f;
+
     public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, float repeatU = 1.0f, float repeatV = 1.0f, float offsetU = 0.0f, float offsetV = 0.0f, float rotation = 0.0f, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0, FaceTexture[]? faces = null)
     {
         Scale = scale;

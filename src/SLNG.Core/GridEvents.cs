@@ -42,6 +42,9 @@ public record ObjectUpdateEvent(
     FaceTexture[]? Faces = null,
     Guid ObjectId = default,
     bool IsPhysical = false, bool IsTemporary = false, bool IsPhantom = false, bool CastsShadows = true,
+    // SL's point-light ("Light") prim property -- an ExtraParams block, not a PrimFlags bit.
+    // Subject to the same terse-update staleness as the flags above (see IsFullUpdate).
+    bool LightEnabled = false, Vector3 LightColor = default, float LightIntensity = 0f, float LightRadius = 0f, float LightFalloff = 0f,
     // ImprovedTerseObjectUpdate (fast position/rotation streaming for moving objects) never
     // carries flags on the wire -- LibreMetaverse leaves Primitive.Flags at whatever the last
     // full update said, which is stale the moment a flag was just changed locally. IsPhysical/

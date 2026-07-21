@@ -28,6 +28,7 @@ public partial class ObjectRenderer : Node3D
         public MeshInstance3D MeshInstance = null!;
         public StaticBody3D StaticBody = null!;
         public CollisionShape3D CollisionShape = null!;
+        public OmniLight3D? LightNode;
         public List<Guid> UsedTextureIds = new();
 
         // What we've already loaded, so position/scale updates don't rebuild the mesh or
@@ -348,6 +349,29 @@ public partial class ObjectRenderer : Node3D
             // AvatarController's ground ray (masked to layer 1) passes through, while staying
             // selectable/editable (the object-selection raycast queries all layers).
             state.StaticBody.CollisionLayer = prim.IsPhantom ? PhantomLayer : 1u;
+
+            if (prim.LightEnabled)
+            {
+                if (state.LightNode == null)
+                {
+                    state.LightNode = new OmniLight3D { Name = "Light" };
+                    state.MeshInstance.AddChild(state.LightNode);
+                }
+                state.LightNode.LightColor = new Godot.Color(prim.LightColor.X, prim.LightColor.Y, prim.LightColor.Z);
+                // SL's Intensity has no direct Godot equivalent unit -- scaled up so a default
+                // (Intensity 1) reads as a visible light rather than a near-invisible dim glow.
+                state.LightNode.LightEnergy = prim.LightIntensity * 2.0f;
+                state.LightNode.OmniRange = prim.LightRadius;
+                // OmniAttenuation of 0 is a degenerate/invalid falloff in Godot; SL's own default
+                // Falloff is 1.0, well inside Godot's valid range, but a user-set 0 shouldn't zero
+                // the light out entirely.
+                state.LightNode.OmniAttenuation = Mathf.Max(0.1f, prim.LightFalloff);
+            }
+            else if (state.LightNode != null)
+            {
+                state.LightNode.QueueFree();
+                state.LightNode = null;
+            }
         }
 
         var transform = entity.GetComponent<TransformComponent>();
