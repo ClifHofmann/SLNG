@@ -27,4 +27,15 @@ public class GridSessionTests
             !string.IsNullOrWhiteSpace(result.Message) || !string.IsNullOrWhiteSpace(result.ErrorKey),
             "A failed login must report a message or an error key.");
     }
+
+    [Fact]
+    public async Task TeleportToLandmarkAsync_without_connection_fails_gracefully()
+    {
+        using var session = new GridSession();
+
+        var result = await session.TeleportToLandmarkAsync(Guid.NewGuid());
+
+        Assert.False(result.Success);
+        Assert.False(string.IsNullOrWhiteSpace(result.Message));
+    }
 }

@@ -623,6 +623,38 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
+    /// <summary>Teleports to the region/position encoded in a landmark asset. LibreMetaverse
+    /// resolves the landmark server-side from its asset UUID (the landmark's <c>RegionID</c> +
+    /// local position payload never needs to be fetched/decoded client-side for this). Listens
+    /// to <c>Self.TeleportProgress</c> only for the duration of this call to capture the grid's
+    /// final status message (e.g. a failure reason) without exposing LibreMetaverse's
+    /// <c>TeleportEventArgs</c>/<c>TeleportStatus</c> across the SLNG.Net boundary.</summary>
+    public async Task<TeleportResult> TeleportToLandmarkAsync(Guid landmarkAssetId, CancellationToken ct = default)
+    {
+        if (!_client.Network.Connected)
+            return new TeleportResult(false, "Not connected.");
+
+        string lastMessage = string.Empty;
+        void OnProgress(object? sender, TeleportEventArgs e) => lastMessage = e.Message;
+
+        _client.Self.TeleportProgress += OnProgress;
+        try
+        {
+            bool success = await _client.Self
+                .TeleportAsync(new UUID(landmarkAssetId), ct)
+                .ConfigureAwait(false);
+            return new TeleportResult(success, lastMessage);
+        }
+        catch (Exception ex)
+        {
+            return new TeleportResult(false, ex.Message);
+        }
+        finally
+        {
+            _client.Self.TeleportProgress -= OnProgress;
+        }
+    }
+
     /// <summary>Touches (clicks) an object — the SL grab/de-grab pair
     /// <see cref="ObjectManager.ClickObjectAsync"/> sends 50ms apart, which is what fires
     /// touch_start/touch_end on any touch script the object carries. <paramref name="localId"/>

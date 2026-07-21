@@ -62,6 +62,14 @@ public sealed record InventoryEntry(
     }
 }
 
+/// <summary>SL AssetType wire values that UI code branches on by name instead of a magic
+/// number. Deliberately not the full SL enum -- see the <see cref="InventoryEntry.AssetType"/>
+/// doc comment; add more members only when a consumer actually needs them.</summary>
+public static class AssetTypeIds
+{
+    public const int Landmark = 3;
+}
+
 /// <summary>
 /// Detailed properties for an inventory item, used by the properties window.
 /// </summary>

@@ -91,6 +91,7 @@ public partial class InventoryPanel : SLNGWindow
         _contextMenu.AddItem("Edit", 2);
         _contextMenu.AddItem("Export (Full Perm)", 3);
         _contextMenu.AddItem("Delete", 4);
+        _contextMenu.AddItem("Teleport", 5);
         _contextMenu.IdPressed += OnContextMenuIdPressed;
         
         _tree = new Tree 
@@ -195,17 +196,19 @@ public partial class InventoryPanel : SLNGWindow
             {
                 var metaStr = item.GetMetadata(0).AsString();
                 var parts = metaStr.Split(',');
-                if (parts.Length == 4)
+                if (parts.Length == 6)
                 {
                     bool canCopy = bool.Parse(parts[1]);
                     bool canModify = bool.Parse(parts[2]);
                     bool canTransfer = bool.Parse(parts[3]);
+                    int assetType = int.Parse(parts[4]);
 
                     _contextMenu.SetItemDisabled(0, false); // Wear
                     _contextMenu.SetItemDisabled(1, !canCopy); // Copy
                     _contextMenu.SetItemDisabled(2, !canModify); // Edit
                     _contextMenu.SetItemDisabled(3, !(canCopy && canModify && canTransfer)); // Export
                     _contextMenu.SetItemDisabled(4, false); // Delete
+                    _contextMenu.SetItemDisabled(5, assetType != SLNG.Core.AssetTypeIds.Landmark); // Teleport
 
                     _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
                     _contextMenu.Popup();
@@ -264,6 +267,28 @@ public partial class InventoryPanel : SLNGWindow
             });
             win.Show();
         }
+        else if (id == 5) // Teleport (landmark items only -- context menu already disables this otherwise)
+        {
+            if (isFolder) return;
+
+            var parts = metaStr.Split(',');
+            if (parts.Length != 6 || !Guid.TryParse(parts[5], out var assetId)) return;
+
+            _status.Text = "Teleporting…";
+            _ = TeleportAsync(assetId);
+        }
+    }
+
+    private async System.Threading.Tasks.Task TeleportAsync(Guid landmarkAssetId)
+    {
+        var result = await _session!.TeleportToLandmarkAsync(landmarkAssetId).ConfigureAwait(false);
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            _status.Text = result.Success
+                ? string.Empty
+                : $"Teleport failed{(string.IsNullOrEmpty(result.Message) ? "." : $": {result.Message}")}";
+        }).CallDeferred();
     }
 
     private void LoadFolder(TreeItem item, Guid folderId, bool force = false)
@@ -317,7 +342,7 @@ public partial class InventoryPanel : SLNGWindow
             string text = entry.IsLink ? entry.Name + "  ⇢" : entry.Name;
             text += entry.GetPermissionSuffix();
             row.SetText(0, text);
-            row.SetMetadata(0, $"{entry.Id},{entry.CanCopy},{entry.CanModify},{entry.CanTransfer}");
+            row.SetMetadata(0, $"{entry.Id},{entry.CanCopy},{entry.CanModify},{entry.CanTransfer},{entry.AssetType},{entry.AssetId}");
         }
 
         if (children.Count == 0)
