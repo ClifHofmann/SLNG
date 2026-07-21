@@ -306,8 +306,8 @@ item under M5+ rather than being silently dropped because it didn't fit the curr
 - [ ] Connect Chat Logger & Chat Window options to Preferences *(deferred — sane default log path ships now, no toggle UI yet; not blocking per §6)*
 
 **Phase 1b — Friends (net + UI, sequenced immediately after shell, not deferred):**
-- [ ] `SLNG.Net`: `FriendsManager` wiring (online/offline status) — new net sub-task
-- [ ] Implement `Friends` panel with status indicators, wired to the above
+- [x] `SLNG.Net`: `FriendsManager` wiring (online/offline status) — new net sub-task
+- [x] Implement `Friends` panel with status indicators, wired to the above *(double-click-to-IM deferred to Phase 1c alongside real IM send/receive — see FriendsPanel.cs doc comment)*
 
 **Phase 1c — IM (net + UI, needed soon per product priority):**
 - [ ] `SLNG.Net`: IM send/receive plumbing — new net sub-task

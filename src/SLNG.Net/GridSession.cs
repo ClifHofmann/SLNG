@@ -43,6 +43,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
     public event EventHandler<AvatarAppearanceEvent>? AvatarAppearanceReceived;
     public event EventHandler<AvatarAnimationEvent>? AvatarAnimationReceived;
+    public event EventHandler<FriendStatusEvent>? FriendStatusChanged;
 
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
@@ -86,6 +87,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Network.SimDisconnected += OnSimDisconnected;
         _client.Avatars.AvatarAppearance += OnAvatarAppearance;
         _client.Avatars.AvatarAnimation += OnAvatarAnimation;
+        _client.Friends.FriendOnline += OnFriendOnline;
+        _client.Friends.FriendOffline += OnFriendOffline;
 
         // Coexists with ObjectManager's own internal ObjectUpdate handler (packet callbacks are
         // multicast) -- see _lightPresentByLocalId for why this is needed.
@@ -275,6 +278,34 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         if (groupId == Guid.Empty || _nameCache.ContainsKey(groupId) || !_client.Network.Connected) return;
         _client.Groups.RequestGroupName(new UUID(groupId));
+    }
+
+    private void OnFriendOnline(object? sender, FriendInfoEventArgs e) =>
+        FriendStatusChanged?.Invoke(this, new FriendStatusEvent(e.Friend.UUID.Guid, true));
+
+    private void OnFriendOffline(object? sender, FriendInfoEventArgs e) =>
+        FriendStatusChanged?.Invoke(this, new FriendStatusEvent(e.Friend.UUID.Guid, false));
+
+    /// <summary>Snapshot of the logged-in agent's friends list. LibreMetaverse's FriendInfo
+    /// usually already carries a resolved Name; when it doesn't, this falls back to the shared
+    /// name cache (see <see cref="TryGetCachedName"/>) and kicks off a resolve via
+    /// <see cref="RequestAvatarName"/> so a later call (e.g. after <see cref="NameResolved"/>
+    /// fires) picks it up -- same pattern as every other UUID-keyed name in this class.</summary>
+    public IReadOnlyList<FriendEntry> GetFriends()
+    {
+        var result = new List<FriendEntry>();
+        foreach (var friend in _client.Friends.FriendList.Values)
+        {
+            var id = friend.UUID.Guid;
+            string name = friend.Name;
+            if (string.IsNullOrEmpty(name) && !TryGetCachedName(id, out name))
+            {
+                name = "";
+                RequestAvatarName(id);
+            }
+            result.Add(new FriendEntry(id, name, friend.IsOnline));
+        }
+        return result;
     }
 
     private void OnAvatarAppearance(object? sender, AvatarAppearanceEventArgs e)
@@ -1004,6 +1035,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Terrain.LandPatchReceived -= OnLandPatchReceived;
         _client.Network.SimConnected -= OnSimConnected;
         _client.Network.SimDisconnected -= OnSimDisconnected;
+        _client.Friends.FriendOnline -= OnFriendOnline;
+        _client.Friends.FriendOffline -= OnFriendOffline;
         _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
         Logout();
     }

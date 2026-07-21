@@ -27,6 +27,11 @@ public record NameResolvedEvent(Guid Id, string Name);
 /// side. Not world-state, so intentionally not an <see cref="IWorldEvent"/>.</summary>
 public record AlertMessageEvent(string Message);
 
+/// <summary>A friend's online/offline presence changed. Identity/social state, not world
+/// simulation state, so intentionally not an <see cref="IWorldEvent"/> -- consumers (UI)
+/// subscribe directly on GridSession, same as <see cref="NameResolvedEvent"/>.</summary>
+public record FriendStatusEvent(Guid FriendId, bool IsOnline);
+
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
 /// <param name="ParentLocalId">Local ID of the parent object, or 0 if unparented.</param>
 /// <param name="AttachmentPoint">SL AttachmentPoint enum byte value; non-zero when the object

@@ -2,6 +2,7 @@ using Godot;
 using System;
 using System.Collections.Generic;
 using SLNG.Core.Services;
+using SLNG.Net;
 
 namespace SLNG.App.UI;
 
@@ -30,6 +31,7 @@ public partial class ChatWindow : SLNGWindow
     private LineEdit _inputEdit = null!;
     private Button _sendButton = null!;
     private Font _iconFont = null!;
+    private FriendsPanel _friendsPanel = null!;
 
     private sealed class ChatTab
     {
@@ -58,6 +60,14 @@ public partial class ChatWindow : SLNGWindow
         _logger = logger;
     }
 
+    /// <summary>Called by Boot after each successful login (session is a fresh instance per
+    /// login, unlike ChatLogger/OnSendLocalChat which are wired once). Currently only the
+    /// Friends tab needs it; Groups/IM will call in here too once their net plumbing lands.</summary>
+    public void BindSession(GridSession session)
+    {
+        _friendsPanel.Initialize(session);
+    }
+
     public override void _Ready()
     {
         base._Ready(); // SLNGWindow styling
@@ -78,8 +88,8 @@ public partial class ChatWindow : SLNGWindow
         BuildOuterTabStrip(vbox);
 
         AddOuterTab("Chat", BuildChatPage());
-        AddOuterTab("Friends", BuildPlaceholderPage(
-            "No friends yet.", "Friend status needs the FriendsManager net task (planned next)."));
+        _friendsPanel = new FriendsPanel();
+        AddOuterTab("Friends", _friendsPanel);
         AddOuterTab("Groups", BuildPlaceholderPage(
             "You haven't joined any groups yet.", "Group support is planned for a follow-up pass."));
 

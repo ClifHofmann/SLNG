@@ -55,7 +55,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.1.14-alpha";
+    public const string AppVersion = "v0.1.15-alpha";
 
     public override void _Ready()
     {
@@ -615,6 +615,7 @@ public partial class Boot : Control
         _objectRenderer?.Initialize(_world, _assetService, gpuCache);
         _avatarRenderer?.Initialize(_world, _assetService, gpuCache, _session);
         _inventoryPanel?.Initialize(_session);
+        _chatWindow.BindSession(_session);
 
         _session.ChatMessageReceived += OnChatMessage;
         // Surfaces sim-side rejections that otherwise fail silently, e.g. "Object physics
