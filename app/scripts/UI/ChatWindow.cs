@@ -2,6 +2,7 @@ using Godot;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using SLNG.Core.Services;
 using SLNG.Net;
 
@@ -450,19 +451,19 @@ public partial class ChatWindow : SLNGWindow
         win.Open(_logger, _activeChatTab.LogKind, _activeChatTab.DisplayName, _activeChatTab.DisplayName);
     }
 
-    // Deferred: RichTextLabel doesn't recompute its VScrollBar's max_value synchronously inside
-    // AppendText/Clear -- that happens during the control's own layout pass, later in the same
-    // frame at the earliest. Reading MaxValue right after appending text was returning a stale
-    // (too-small, sometimes still-zero) value, so the "scroll to bottom" landed short of the
-    // actual bottom -- the newest line was cut off, and a freshly (re)built log (tab switch,
-    // history preload) stayed wherever the RichTextLabel's default scroll position happened to
-    // be instead of jumping down. CallDeferred pushes this past that layout pass.
-    private void ScrollLogToBottom() => CallDeferred(nameof(DoScrollLogToBottom));
+    // RichTextLabel's word-wrapped line count / VScrollBar.MaxValue isn't final synchronously
+    // inside AppendText/Clear, and a same-frame CallDeferred still isn't reliably late enough --
+    // live-tested proof: a CallDeferred'd scroll after a multi-line bulk load (history preload)
+    // landed partway down the log, not at the true bottom, because RichTextLabel hadn't finished
+    // reflowing yet when the deferred call ran. Awaiting an actual ProcessFrame guarantees at
+    // least one full render/layout pass has completed first; ScrollToLine (line-index based)
+    // over the VScrollBar's pixel MaxValue sidesteps needing that value to be correct at all.
+    private void ScrollLogToBottom() => _ = ScrollLogToBottomAsync();
 
-    private void DoScrollLogToBottom()
+    private async Task ScrollLogToBottomAsync()
     {
-        var vscroll = _logView.GetVScrollBar();
-        if (vscroll != null) vscroll.Value = vscroll.MaxValue;
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        _logView.ScrollToLine(Math.Max(0, _logView.GetLineCount() - 1));
     }
 
     private void ShowJumpToLatest(bool show) => _jumpToLatestButton.Visible = show;
