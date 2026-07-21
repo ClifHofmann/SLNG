@@ -6,10 +6,10 @@ using SLNG.Core.Services;
 namespace SLNG.App.UI;
 
 /// <summary>
-/// Unified communication window (M5-3): dual-axis tabs -- an outer vertical Chat/Friends/Groups
-/// strip (same hand-built pattern as <see cref="PreferencesWindow"/>, since Godot's TabContainer
-/// only offers horizontal tabs) and, inside the Chat page, an inner horizontal strip of chips
-/// (a static "Main" local-chat chip plus dynamic per-avatar IM chips added later by Phase 1c).
+/// Unified communication window (M5-3): dual-axis tabs -- an outer horizontal Chat/Friends/Groups
+/// strip along the top (a classic top tab bar) and, inside the Chat page, an inner vertical
+/// sidebar list of conversations (a static "Main" local-chat entry plus dynamic per-avatar IM
+/// entries added later by Phase 1c), with the message log to its right.
 ///
 /// Phase 1 (this pass) wires up the shell and migrates local chat off the old inline
 /// ChatBox/LogPanel row in Boot.tscn. Friends/Groups are placeholder pages until their net-layer
@@ -21,10 +21,10 @@ public partial class ChatWindow : SLNGWindow
     private const int UnreadCap = 9;
 
     private readonly List<(Button TabButton, Control Page)> _outerTabs = new();
-    private VBoxContainer _outerTabList = null!;
+    private HBoxContainer _outerTabStrip = null!;
     private Control _outerPageHost = null!;
 
-    private HBoxContainer _chipStrip = null!;
+    private VBoxContainer _conversationList = null!;
     private RichTextLabel _logView = null!;
     private Button _jumpToLatestButton = null!;
     private LineEdit _inputEdit = null!;
@@ -35,7 +35,7 @@ public partial class ChatWindow : SLNGWindow
     {
         public string Id = "";
         public string DisplayName = "";
-        public PanelContainer ChipPanel = null!;
+        public PanelContainer RowPanel = null!;
         public Label UnreadLabel = null!;
         public ChatLogKind LogKind;
         public bool Closeable;
@@ -69,11 +69,11 @@ public partial class ChatWindow : SLNGWindow
         Position = new Vector2(16, 220);
         OnCloseRequested = Hide;
 
-        var hbox = new HBoxContainer();
-        hbox.AddThemeConstantOverride("separation", 0);
-        ContentContainer.AddChild(hbox);
+        var vbox = new VBoxContainer();
+        vbox.AddThemeConstantOverride("separation", 0);
+        ContentContainer.AddChild(vbox);
 
-        BuildOuterTabStrip(hbox);
+        BuildOuterTabStrip(vbox);
 
         AddOuterTab("Chat", BuildChatPage());
         AddOuterTab("Friends", BuildPlaceholderPage(
@@ -124,23 +124,52 @@ public partial class ChatWindow : SLNGWindow
 
     private static string BbEscape(string s) => s.Replace("[", "[lb]");
 
-    // ---- Chat page (message log + chip strip + input row) ----------------------------------
+    // ---- Chat page: vertical conversation list (left) + message log/input (right) ----------
 
     private Control BuildChatPage()
     {
-        var page = new VBoxContainer();
-        page.AddThemeConstantOverride("separation", 6);
+        var hbox = new HBoxContainer();
+        hbox.AddThemeConstantOverride("separation", 0);
 
-        var chipScroll = new ScrollContainer
+        var listPanel = new PanelContainer { CustomMinimumSize = new Vector2(120, 0) };
+        var listStyle = new StyleBoxFlat
         {
-            VerticalScrollMode = ScrollContainer.ScrollMode.Disabled,
-            CustomMinimumSize = new Vector2(0, 32),
+            BgColor = new Color(1, 1, 1, 0.03f),
+            BorderWidthRight = 1,
+            BorderColor = new Color(1, 1, 1, 0.08f),
+            ContentMarginTop = 6,
+            ContentMarginBottom = 6,
+            ContentMarginLeft = 4,
+            ContentMarginRight = 4,
         };
-        page.AddChild(chipScroll);
+        listPanel.AddThemeStyleboxOverride("panel", listStyle);
+        hbox.AddChild(listPanel);
 
-        _chipStrip = new HBoxContainer();
-        _chipStrip.AddThemeConstantOverride("separation", 4);
-        chipScroll.AddChild(_chipStrip);
+        var listScroll = new ScrollContainer { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
+        listPanel.AddChild(listScroll);
+
+        _conversationList = new VBoxContainer();
+        _conversationList.AddThemeConstantOverride("separation", 2);
+        listScroll.AddChild(_conversationList);
+
+        var rightMargin = new MarginContainer
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+        };
+        rightMargin.AddThemeConstantOverride("margin_left", 10);
+        rightMargin.AddThemeConstantOverride("margin_right", 6);
+        rightMargin.AddThemeConstantOverride("margin_top", 6);
+        rightMargin.AddThemeConstantOverride("margin_bottom", 6);
+        hbox.AddChild(rightMargin);
+
+        var rightVBox = new VBoxContainer
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+        };
+        rightVBox.AddThemeConstantOverride("separation", 6);
+        rightMargin.AddChild(rightVBox);
 
         _logView = new RichTextLabel
         {
@@ -148,7 +177,7 @@ public partial class ChatWindow : SLNGWindow
             ScrollFollowing = false, // manual pause/follow control -- see _Process
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
-        page.AddChild(_logView);
+        rightVBox.AddChild(_logView);
 
         _jumpToLatestButton = new Button
         {
@@ -163,11 +192,11 @@ public partial class ChatWindow : SLNGWindow
             ScrollLogToBottom();
             ShowJumpToLatest(false);
         };
-        page.AddChild(_jumpToLatestButton);
+        rightVBox.AddChild(_jumpToLatestButton);
 
         var inputRow = new HBoxContainer();
         inputRow.AddThemeConstantOverride("separation", 6);
-        page.AddChild(inputRow);
+        rightVBox.AddChild(inputRow);
 
         _historyButton = new Button { Text = "History", FocusMode = FocusModeEnum.None };
         _historyButton.Pressed += OnHistoryPressed;
@@ -185,7 +214,7 @@ public partial class ChatWindow : SLNGWindow
         _sendButton.Pressed += OnSendPressed;
         inputRow.AddChild(_sendButton);
 
-        return page;
+        return hbox;
     }
 
     private void OnSendPressed()
@@ -217,23 +246,25 @@ public partial class ChatWindow : SLNGWindow
 
     private void ShowJumpToLatest(bool show) => _jumpToLatestButton.Visible = show;
 
-    // ---- Chip strip (inner horizontal axis) -------------------------------------------------
+    // ---- Conversation list (inner vertical axis: Main + dynamic IM rows) --------------------
 
     private ChatTab AddChatTab(string id, string displayName, ChatLogKind kind, bool closeable)
     {
-        var pill = new PanelContainer();
-        _chipStrip.AddChild(pill);
+        var row = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        _conversationList.AddChild(row);
 
         var inner = new HBoxContainer();
         inner.AddThemeConstantOverride("separation", 4);
-        pill.AddChild(inner);
+        row.AddChild(inner);
 
         var label = new Button
         {
             Text = displayName,
             Flat = true,
             FocusMode = FocusModeEnum.None,
-            CustomMinimumSize = new Vector2(50, 24),
+            Alignment = HorizontalAlignment.Left,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 26),
         };
         label.AddThemeColorOverride("font_color", new Color(0.75f, 0.75f, 0.75f));
         label.AddThemeColorOverride("font_hover_color", new Color(1, 1, 1));
@@ -248,7 +279,7 @@ public partial class ChatWindow : SLNGWindow
         {
             Id = id,
             DisplayName = displayName,
-            ChipPanel = pill,
+            RowPanel = row,
             UnreadLabel = unreadLabel,
             LogKind = kind,
             Closeable = closeable,
@@ -273,7 +304,7 @@ public partial class ChatWindow : SLNGWindow
             inner.AddChild(closeBtn);
         }
 
-        ApplyChipStyle(tab, selected: false);
+        ApplyRowStyle(tab, selected: false);
         return tab;
     }
 
@@ -282,31 +313,31 @@ public partial class ChatWindow : SLNGWindow
         if (!tab.Closeable) return;
         bool wasActive = tab == _activeChatTab;
         _chatTabs.Remove(tab);
-        tab.ChipPanel.QueueFree();
+        tab.RowPanel.QueueFree();
         if (wasActive) SelectChatTab(_chatTabs[0]); // "Main" is never closeable, always index-safe
     }
 
-    private static void ApplyChipStyle(ChatTab tab, bool selected)
+    private static void ApplyRowStyle(ChatTab tab, bool selected)
     {
         var style = new StyleBoxFlat
         {
-            BgColor = selected ? new Color(0.3f, 0.6f, 0.9f, 0.25f) : new Color(1, 1, 1, 0.03f),
+            BgColor = selected ? new Color(0.3f, 0.6f, 0.9f, 0.25f) : new Color(0, 0, 0, 0),
             CornerRadiusTopLeft = 6,
-            CornerRadiusTopRight = 6,
+            CornerRadiusBottomLeft = 6,
             ContentMarginLeft = 8,
             ContentMarginRight = 6,
-            ContentMarginTop = 2,
-            ContentMarginBottom = 2,
+            ContentMarginTop = 4,
+            ContentMarginBottom = 4,
         };
-        tab.ChipPanel.AddThemeStyleboxOverride("panel", style);
+        tab.RowPanel.AddThemeStyleboxOverride("panel", style);
     }
 
     private void SelectChatTab(ChatTab tab)
     {
         if (_activeChatTab == tab) return;
-        if (_activeChatTab != null) ApplyChipStyle(_activeChatTab, selected: false);
+        if (_activeChatTab != null) ApplyRowStyle(_activeChatTab, selected: false);
         _activeChatTab = tab;
-        ApplyChipStyle(tab, selected: true);
+        ApplyRowStyle(tab, selected: true);
 
         tab.UnreadCount = 0;
         UpdateUnreadBadge(tab);
@@ -355,45 +386,33 @@ public partial class ChatWindow : SLNGWindow
         tab.UnreadLabel.Text = tab.UnreadCount > UnreadCap ? "9+" : tab.UnreadCount.ToString();
     }
 
-    // ---- Outer tab strip (Chat / Friends / Groups) ------------------------------------------
+    // ---- Outer tab strip (Chat / Friends / Groups, horizontal along the top) ----------------
 
     private void BuildOuterTabStrip(Control parent)
     {
-        var tabListPanel = new PanelContainer { CustomMinimumSize = new Vector2(140, 0) };
-        var tabListStyle = new StyleBoxFlat
+        var stripPanel = new PanelContainer { CustomMinimumSize = new Vector2(0, 34) };
+        var stripStyle = new StyleBoxFlat
         {
             BgColor = new Color(1, 1, 1, 0.03f),
-            BorderWidthRight = 1,
+            BorderWidthBottom = 1,
             BorderColor = new Color(1, 1, 1, 0.08f),
-            ContentMarginTop = 8,
-            ContentMarginBottom = 8,
             ContentMarginLeft = 6,
             ContentMarginRight = 6,
+            ContentMarginTop = 4,
         };
-        tabListPanel.AddThemeStyleboxOverride("panel", tabListStyle);
-        parent.AddChild(tabListPanel);
+        stripPanel.AddThemeStyleboxOverride("panel", stripStyle);
+        parent.AddChild(stripPanel);
 
-        _outerTabList = new VBoxContainer();
-        _outerTabList.AddThemeConstantOverride("separation", 4);
-        tabListPanel.AddChild(_outerTabList);
-
-        var pageMargin = new MarginContainer
-        {
-            SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            SizeFlagsVertical = SizeFlags.ExpandFill,
-        };
-        pageMargin.AddThemeConstantOverride("margin_left", 12);
-        pageMargin.AddThemeConstantOverride("margin_right", 12);
-        pageMargin.AddThemeConstantOverride("margin_top", 10);
-        pageMargin.AddThemeConstantOverride("margin_bottom", 10);
-        parent.AddChild(pageMargin);
+        _outerTabStrip = new HBoxContainer();
+        _outerTabStrip.AddThemeConstantOverride("separation", 4);
+        stripPanel.AddChild(_outerTabStrip);
 
         _outerPageHost = new Control
         {
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
-        pageMargin.AddChild(_outerPageHost);
+        parent.AddChild(_outerPageHost);
     }
 
     private void AddOuterTab(string tabName, Control page)
@@ -409,24 +428,22 @@ public partial class ChatWindow : SLNGWindow
             ToggleMode = true,
             ButtonPressed = isFirst,
             FocusMode = FocusModeEnum.None,
-            Alignment = HorizontalAlignment.Left,
-            SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            CustomMinimumSize = new Vector2(0, 32),
+            CustomMinimumSize = new Vector2(70, 30),
         };
         StyleOuterTabButton(tabButton);
         tabButton.Pressed += () => SelectOuterTab(page);
-        _outerTabList.AddChild(tabButton);
+        _outerTabStrip.AddChild(tabButton);
 
         _outerTabs.Add((tabButton, page));
     }
 
-    // Same visual language as PreferencesWindow's tab strip -- one look for "which tab am I on"
-    // across every SLNGWindow, per the M5-3 UX proposal.
+    // Rounded-top "pill" tabs -- the classic top tab bar look, distinct from the conversation
+    // list's rounded-left rows so the two axes read as visually different kinds of navigation.
     private static void StyleOuterTabButton(Button btn)
     {
-        var normalStyle = new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0), ContentMarginLeft = 12 };
-        var hoverStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.06f), ContentMarginLeft = 12, CornerRadiusTopLeft = 8, CornerRadiusBottomLeft = 8 };
-        var pressedStyle = new StyleBoxFlat { BgColor = new Color(0.3f, 0.6f, 0.9f, 0.25f), ContentMarginLeft = 12, CornerRadiusTopLeft = 8, CornerRadiusBottomLeft = 8 };
+        var normalStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.03f), CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, ContentMarginTop = 6, ContentMarginBottom = 6 };
+        var hoverStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.08f), CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, ContentMarginTop = 6, ContentMarginBottom = 6 };
+        var pressedStyle = new StyleBoxFlat { BgColor = new Color(0.3f, 0.6f, 0.9f, 0.25f), CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, ContentMarginTop = 6, ContentMarginBottom = 6 };
         btn.AddThemeStyleboxOverride("normal", normalStyle);
         btn.AddThemeStyleboxOverride("hover", hoverStyle);
         btn.AddThemeStyleboxOverride("pressed", pressedStyle);
