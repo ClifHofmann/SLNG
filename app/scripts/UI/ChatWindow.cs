@@ -89,7 +89,9 @@ public partial class ChatWindow : SLNGWindow
         var mainTab = _chatTabs.Find(t => t.Id == "main");
         if (mainTab == null) return;
         PreloadRecentHistory(mainTab);
-        if (mainTab == _activeChatTab) RebuildLogContent(mainTab);
+        if (mainTab != _activeChatTab) return;
+        RebuildLogContent(mainTab);
+        ScrollLogToBottom(); // was missing -- left the log sitting at the top after preload
     }
 
     /// <summary>Called by Boot after each successful login (session is a fresh instance per
@@ -448,7 +450,16 @@ public partial class ChatWindow : SLNGWindow
         win.Open(_logger, _activeChatTab.LogKind, _activeChatTab.DisplayName, _activeChatTab.DisplayName);
     }
 
-    private void ScrollLogToBottom()
+    // Deferred: RichTextLabel doesn't recompute its VScrollBar's max_value synchronously inside
+    // AppendText/Clear -- that happens during the control's own layout pass, later in the same
+    // frame at the earliest. Reading MaxValue right after appending text was returning a stale
+    // (too-small, sometimes still-zero) value, so the "scroll to bottom" landed short of the
+    // actual bottom -- the newest line was cut off, and a freshly (re)built log (tab switch,
+    // history preload) stayed wherever the RichTextLabel's default scroll position happened to
+    // be instead of jumping down. CallDeferred pushes this past that layout pass.
+    private void ScrollLogToBottom() => CallDeferred(nameof(DoScrollLogToBottom));
+
+    private void DoScrollLogToBottom()
     {
         var vscroll = _logView.GetVScrollBar();
         if (vscroll != null) vscroll.Value = vscroll.MaxValue;
