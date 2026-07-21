@@ -27,10 +27,11 @@ remain out of scope for this pass and stay open under `MVP2-2`.
       via `CallDeferred`.
 - [x] Unit test covering the disconnected-session failure path.
 - [x] **World** top-menu entry ("Create Landmark...") opens a dialog matching Firestorm's
-      "Landmarken-Details" layout: Name (pre-filled with the current region name), Speicherort
-      (destination folder, defaulting to the Landmarks system folder), "Neuen Ordner erstellen"
-      (create + select a new subfolder inline), Eigene Notizen (multi-line, becomes the item
-      description), OK/Abbrechen.
+      "Landmark Details" layout (translated to English for consistency with the rest of the
+      client -- the rest of the UI has no i18n framework and is English-only): Name (pre-filled
+      with the current region name), Location (destination folder, defaulting to the Landmarks
+      system folder), "New Folder" (create + select a new subfolder inline), Notes (multi-line,
+      becomes the item description), OK/Cancel.
 - [x] OK creates a real landmark asset (region id + local position) and uploads it as a new
       inventory item in the chosen folder via LibreMetaverse's `NewFileAgentInventory` CAP; the
       owner gets full permissions on their own new item (not `Permissions.NoPermissions`, which

@@ -825,14 +825,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             };
             landmark.Encode();
 
-            // FullPermissions, not NoPermissions -- Permissions.NoPermissions leaves every mask
-            // (including OwnerMask) at zero, which would hand the agent back a landmark it
-            // can't even modify/copy itself. You always own full rights over your own freshly
-            // created landmark.
+            // The NewFileAgentInventory CAP only puts base/everyone/group/next-owner masks on
+            // the wire (owner_mask is server-decided, not client-supplied) -- so Permissions.
+            // FullPermissions would grant Everyone and Group full rights on a personal landmark
+            // nobody else should be able to touch just by it existing. Base/NextOwner stay at
+            // Copy+Transfer (ordinary landmark defaults, so handing one to someone else works);
+            // Everyone/Group stay at None (private).
+            var permissions = new Permissions(
+                baseMask: (uint)(PermissionMask.Copy | PermissionMask.Transfer),
+                everyoneMask: (uint)PermissionMask.None,
+                groupMask: (uint)PermissionMask.None,
+                nextOwnerMask: (uint)(PermissionMask.Copy | PermissionMask.Transfer),
+                ownerMask: (uint)PermissionMask.All);
+
             var (success, status, itemId, _) = await _client.Inventory.RequestCreateItemFromAssetAsync(
                 landmark.AssetData, name, description,
                 AssetType.Landmark, InventoryType.Landmark,
-                new LibreMetaverse.UUID(folderId), Permissions.FullPermissions, ct).ConfigureAwait(false);
+                new LibreMetaverse.UUID(folderId), permissions, ct).ConfigureAwait(false);
 
             return success
                 ? new LandmarkCreateResult(true, itemId.Guid, status)

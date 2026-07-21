@@ -32,6 +32,12 @@ public partial class CreateLandmarkWindow : SLNGWindow
     private readonly List<Guid> _folderIds = new();
     private Guid _landmarksFolderId;
 
+    // "Neuen Ordner erstellen" and OK stay disabled until the initial folder fetch lands --
+    // otherwise a folder created via OnCreateFolderConfirmed while PopulateFoldersAsync is still
+    // in flight gets silently wiped out (and the selection reset to "Landmarks") the moment that
+    // fetch's deferred callback runs and unconditionally rebuilds the list from its own snapshot.
+    private bool _foldersLoaded;
+
     // Fired after a successful save with the destination folder id, so the caller (Boot) can
     // refresh an already-open Inventory panel -- otherwise the new item is invisible until the
     // user manually collapses/re-expands that folder.
@@ -43,7 +49,7 @@ public partial class CreateLandmarkWindow : SLNGWindow
     {
         base._Ready();
 
-        Title = "Landmark erstellen";
+        Title = "Create Landmark";
         CustomMinimumSize = new Vector2(360, 420);
         Size = new Vector2(360, 420);
         Position = new Vector2(420, 200);
@@ -61,7 +67,7 @@ public partial class CreateLandmarkWindow : SLNGWindow
         vbox.AddThemeConstantOverride("separation", 6);
         margin.AddChild(vbox);
 
-        var heading = new Label { Text = "Landmarken-Details" };
+        var heading = new Label { Text = "Landmark Details" };
         heading.AddThemeFontSizeOverride("font_size", 16);
         vbox.AddChild(heading);
         vbox.AddChild(new Control { CustomMinimumSize = new Vector2(0, 4) });
@@ -70,28 +76,28 @@ public partial class CreateLandmarkWindow : SLNGWindow
         _nameEdit = new LineEdit { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         vbox.AddChild(_nameEdit);
 
-        vbox.AddChild(new Label { Text = "Speicherort:" });
+        vbox.AddChild(new Label { Text = "Location:" });
         _folderOption = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         vbox.AddChild(_folderOption);
 
-        _newFolderLink = new LinkButton { Text = "Neuen Ordner erstellen" };
+        _newFolderLink = new LinkButton { Text = "New Folder", Disabled = true };
         _newFolderLink.Pressed += () => _newFolderRow.Visible = !_newFolderRow.Visible;
         vbox.AddChild(_newFolderLink);
 
         _newFolderRow = new HBoxContainer { Visible = false };
         _newFolderNameEdit = new LineEdit
         {
-            PlaceholderText = "Ordnername",
+            PlaceholderText = "Folder name",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         _newFolderRow.AddChild(_newFolderNameEdit);
-        var createFolderBtn = new Button { Text = "Erstellen" };
+        var createFolderBtn = new Button { Text = "Create" };
         createFolderBtn.Pressed += OnCreateFolderConfirmed;
         _newFolderRow.AddChild(createFolderBtn);
         vbox.AddChild(_newFolderRow);
 
         vbox.AddChild(new Control { CustomMinimumSize = new Vector2(0, 4) });
-        vbox.AddChild(new Label { Text = "Eigene Notizen:" });
+        vbox.AddChild(new Label { Text = "Notes:" });
         _notesEdit = new TextEdit
         {
             SizeFlagsVertical = SizeFlags.ExpandFill,
@@ -105,10 +111,10 @@ public partial class CreateLandmarkWindow : SLNGWindow
         vbox.AddChild(_status);
 
         var buttonsBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
-        var cancelBtn = new Button { Text = "Abbrechen", CustomMinimumSize = new Vector2(90, 0) };
+        var cancelBtn = new Button { Text = "Cancel", CustomMinimumSize = new Vector2(90, 0) };
         cancelBtn.Pressed += QueueFree;
         buttonsBox.AddChild(cancelBtn);
-        _okButton = new Button { Text = "OK", CustomMinimumSize = new Vector2(90, 0) };
+        _okButton = new Button { Text = "OK", CustomMinimumSize = new Vector2(90, 0), Disabled = true };
         _okButton.Pressed += OnOkPressed;
         buttonsBox.AddChild(_okButton);
         vbox.AddChild(buttonsBox);
@@ -122,6 +128,9 @@ public partial class CreateLandmarkWindow : SLNGWindow
         _nameEdit.Text = _session?.CurrentRegionName ?? "";
         _notesEdit.Text = "";
         _status.Text = "";
+        _foldersLoaded = false;
+        _newFolderLink.Disabled = true;
+        _okButton.Disabled = true;
         Visible = true;
         _ = PopulateFoldersAsync();
     }
@@ -155,11 +164,21 @@ public partial class CreateLandmarkWindow : SLNGWindow
                 _folderIds.Add(f.Id);
             }
             _folderOption.Selected = 0;
+
+            _foldersLoaded = true;
+            _newFolderLink.Disabled = false;
+            _okButton.Disabled = false;
         }).CallDeferred();
     }
 
     private void OnCreateFolderConfirmed()
     {
+        // Guarded by _newFolderLink being disabled until this is true, but double-check: the
+        // link can't be pressed while disabled, yet nothing stops Enter from re-firing this via
+        // the name field in principle, so keep the check explicit rather than relying only on
+        // the button's disabled state.
+        if (!_foldersLoaded) return;
+
         var name = _newFolderNameEdit.Text.Trim();
         if (string.IsNullOrEmpty(name) || _session == null) return;
 
@@ -174,12 +193,13 @@ public partial class CreateLandmarkWindow : SLNGWindow
 
     private void OnOkPressed()
     {
-        if (_session == null || _folderOption.Selected < 0 || _folderOption.Selected >= _folderIds.Count) return;
+        if (!_foldersLoaded || _session == null) return;
+        if (_folderOption.Selected < 0 || _folderOption.Selected >= _folderIds.Count) return;
 
         var name = _nameEdit.Text.Trim();
         if (string.IsNullOrEmpty(name))
         {
-            _status.Text = "Name darf nicht leer sein.";
+            _status.Text = "Name must not be empty.";
             return;
         }
 
@@ -208,8 +228,8 @@ public partial class CreateLandmarkWindow : SLNGWindow
                 if (!IsInstanceValid(this)) return;
                 _okButton.Disabled = false;
                 _status.Text = string.IsNullOrEmpty(result.Message)
-                    ? "Fehlgeschlagen."
-                    : $"Fehlgeschlagen: {result.Message}";
+                    ? "Failed."
+                    : $"Failed: {result.Message}";
             }
         }).CallDeferred();
     }
