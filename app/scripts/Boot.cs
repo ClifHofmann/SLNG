@@ -56,7 +56,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.1.30-alpha";
+    public const string AppVersion = "v0.1.31-alpha";
 
     public override void _Ready()
     {
@@ -296,7 +296,7 @@ public partial class Boot : Control
         // If the Landmarks folder (or the subfolder just created into) happens to already be
         // expanded in the Inventory panel, refresh it so the new item shows up immediately --
         // otherwise it's invisible until the user manually collapses/re-expands that folder.
-        win.OnLandmarkCreated = (folderId) => _inventoryPanel?.RefreshFolder(folderId);
+        win.OnLandmarkCreated = (folderId, itemId, assetId) => _inventoryPanel?.RefreshFolder(folderId, itemId, assetId);
         win.OpenForCurrentLocation();
     }
 

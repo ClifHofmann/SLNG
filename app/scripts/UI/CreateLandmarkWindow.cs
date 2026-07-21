@@ -38,10 +38,14 @@ public partial class CreateLandmarkWindow : SLNGWindow
     // fetch's deferred callback runs and unconditionally rebuilds the list from its own snapshot.
     private bool _foldersLoaded;
 
-    // Fired after a successful save with the destination folder id, so the caller (Boot) can
+    // Fired after a successful save with (folderId, itemId, assetId) so the caller (Boot) can
     // refresh an already-open Inventory panel -- otherwise the new item is invisible until the
-    // user manually collapses/re-expands that folder.
-    public Action<Guid>? OnLandmarkCreated;
+    // user manually collapses/re-expands that folder. The asset id comes straight from the
+    // create response (see GridSession.CreateLandmarkHereAsync's doc comment) rather than a
+    // later folder-contents re-fetch, which can briefly report it as empty for a just-created
+    // item -- passing it through here lets the Inventory panel show a "Teleport"-ready row
+    // immediately instead of one that's greyed out until a second manual refresh.
+    public Action<Guid, Guid, Guid>? OnLandmarkCreated;
 
     public void Initialize(GridSession? session) => _session = session;
 
@@ -218,8 +222,9 @@ public partial class CreateLandmarkWindow : SLNGWindow
         {
             if (result.Success)
             {
-                GD.Print($"[Landmark] created '{name}' ({result.ItemId}) in folder {folderId}");
-                OnLandmarkCreated?.Invoke(folderId);
+                GD.Print($"[Landmark] created '{name}' ({result.ItemId}, asset {result.AssetId}) in folder {folderId}");
+                if (result.ItemId is { } itemId && result.AssetId is { } assetId)
+                    OnLandmarkCreated?.Invoke(folderId, itemId, assetId);
                 if (IsInstanceValid(this)) QueueFree();
             }
             else

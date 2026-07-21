@@ -814,7 +814,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         string name, string description, Guid folderId, CancellationToken ct = default)
     {
         var sim = _client.Network.CurrentSim;
-        if (sim == null) return new LandmarkCreateResult(false, null, "Not connected.");
+        if (sim == null) return new LandmarkCreateResult(false, null, null, "Not connected.");
 
         try
         {
@@ -838,18 +838,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 nextOwnerMask: (uint)(PermissionMask.Copy | PermissionMask.Transfer),
                 ownerMask: (uint)PermissionMask.All);
 
-            var (success, status, itemId, _) = await _client.Inventory.RequestCreateItemFromAssetAsync(
+            var (success, status, itemId, assetId) = await _client.Inventory.RequestCreateItemFromAssetAsync(
                 landmark.AssetData, name, description,
                 AssetType.Landmark, InventoryType.Landmark,
                 new LibreMetaverse.UUID(folderId), permissions, ct).ConfigureAwait(false);
 
+            // Report the asset id straight from this response, not from a later folder-contents
+            // re-fetch: FetchInventoryChildrenAsync's server-side descendants listing can briefly
+            // report asset_id as empty for an item created moments earlier (an indexing lag on
+            // the grid side), whereas this CAP response is authoritative immediately -- callers
+            // that need to act on the new item right away (e.g. enabling "Teleport" on it) should
+            // use this id, not whatever a subsequent fetch of the same item reports.
             return success
-                ? new LandmarkCreateResult(true, itemId.Guid, status)
-                : new LandmarkCreateResult(false, null, status);
+                ? new LandmarkCreateResult(true, itemId.Guid, assetId.Guid, status)
+                : new LandmarkCreateResult(false, null, null, status);
         }
         catch (Exception ex)
         {
-            return new LandmarkCreateResult(false, null, ex.Message);
+            return new LandmarkCreateResult(false, null, null, ex.Message);
         }
     }
 

@@ -48,6 +48,7 @@ public class GridSessionTests
 
         Assert.False(result.Success);
         Assert.Null(result.ItemId);
+        Assert.Null(result.AssetId);
         Assert.False(string.IsNullOrWhiteSpace(result.Message));
     }
 }

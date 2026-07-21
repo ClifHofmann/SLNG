@@ -40,6 +40,16 @@ remain out of scope for this pass and stay open under `MVP2-2`.
       success refreshes an already-expanded Landmarks folder in the Inventory panel so the new
       item is visible immediately, not just after a manual collapse/re-expand.
 - [x] Unit test covering the disconnected-session failure path for creation too.
+- [x] **Live-test fix (2026-07-21):** the freshly created landmark showed up in the Inventory
+      panel but "Teleport" stayed disabled on it. Root cause: `FolderContentsAsync`'s server-side
+      descendants listing can briefly report a just-created item's `asset_id` as `Guid.Empty`
+      (an indexing lag, confirmed against real LibreMetaverse 3.0.0 source), and the empty-guid
+      guard on "Teleport" is load-bearing, not cosmetic -- `TeleportLandmarkRequest`'s `LandmarkID`
+      field is documented server-side as "use LLUUID::null for home", so relaxing that guard
+      would silently teleport home instead of failing safely. Fixed by threading the asset id
+      already known from `CreateLandmarkHereAsync`'s own response (never subject to the fetch's
+      lag) through `RefreshFolder` → `Populate`, overriding just that one row's asset id instead
+      of trusting the immediate re-fetch for it.
 
 ## Technical Specs & Affected Files
 - `src/SLNG.Net/GridSession.cs` — `TeleportToLandmarkAsync(Guid landmarkAssetId, CancellationToken)`,

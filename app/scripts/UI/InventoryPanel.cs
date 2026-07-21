@@ -187,12 +187,20 @@ public partial class InventoryPanel : SLNGWindow
     /// <summary>Re-fetches a folder's contents if it's currently present (and already loaded) in
     /// the tree -- a no-op otherwise (the folder isn't open, so there's nothing stale to show;
     /// the next manual expand fetches fresh anyway). Used to reflect an item created elsewhere
-    /// (e.g. Create Landmark) without requiring the user to collapse/re-expand by hand.</summary>
-    public void RefreshFolder(Guid folderId)
+    /// (e.g. Create Landmark) without requiring the user to collapse/re-expand by hand.
+    ///
+    /// <paramref name="knownItemId"/>/<paramref name="knownAssetId"/> patch that one row's asset
+    /// id with a value already known to be correct (e.g. straight from a create call's response),
+    /// overriding whatever the fresh fetch reports for it: the server's own folder-contents
+    /// listing can briefly report a just-created item's asset id as empty (an indexing lag), and
+    /// InventoryPanel's context menu refuses to enable "Teleport" on an empty asset id (that's
+    /// not a UI nicety -- LandmarkID==null/zero in the SL teleport wire protocol means "teleport
+    /// home", so treating an unresolved id as "no landmark" is the only safe default).</summary>
+    public void RefreshFolder(Guid folderId, Guid? knownItemId = null, Guid? knownAssetId = null)
     {
         if (!_folderItems.TryGetValue(folderId, out var item) || !IsInstanceValid(item)) return;
         if (!_loadedFolders.Contains(folderId)) return; // never expanded -- nothing to refresh
-        LoadFolder(item, folderId, force: true);
+        LoadFolder(item, folderId, force: true, knownItemId, knownAssetId);
     }
 
     private void OnItemCollapsed(TreeItem item)
@@ -313,19 +321,19 @@ public partial class InventoryPanel : SLNGWindow
         }).CallDeferred();
     }
 
-    private void LoadFolder(TreeItem item, Guid folderId, bool force = false)
+    private void LoadFolder(TreeItem item, Guid folderId, bool force = false, Guid? knownItemId = null, Guid? knownAssetId = null)
     {
         if (_session == null || (!_loadedFolders.Add(folderId) && !force)) return;
         _status.Text = "Loading…";
-        _ = FetchAsync(item, folderId);
+        _ = FetchAsync(item, folderId, knownItemId, knownAssetId);
     }
 
-    private async System.Threading.Tasks.Task FetchAsync(TreeItem item, Guid folderId)
+    private async System.Threading.Tasks.Task FetchAsync(TreeItem item, Guid folderId, Guid? knownItemId = null, Guid? knownAssetId = null)
     {
         try
         {
             var children = await _session!.FetchInventoryChildrenAsync(folderId).ConfigureAwait(false);
-            Callable.From(() => Populate(item, children)).CallDeferred();
+            Callable.From(() => Populate(item, children, knownItemId, knownAssetId)).CallDeferred();
         }
         catch (Exception ex)
         {
@@ -338,7 +346,7 @@ public partial class InventoryPanel : SLNGWindow
         }
     }
 
-    private void Populate(TreeItem item, IReadOnlyList<SLNG.Core.InventoryEntry> children)
+    private void Populate(TreeItem item, IReadOnlyList<SLNG.Core.InventoryEntry> children, Guid? knownItemId = null, Guid? knownAssetId = null)
     {
         if (!IsInstanceValid(_tree) || !IsInstanceValid(this)) return;
 
@@ -364,7 +372,10 @@ public partial class InventoryPanel : SLNGWindow
             string text = entry.IsLink ? entry.Name + "  ⇢" : entry.Name;
             text += entry.GetPermissionSuffix();
             row.SetText(0, text);
-            row.SetMetadata(0, $"{entry.Id},{entry.CanCopy},{entry.CanModify},{entry.CanTransfer},{entry.AssetType},{entry.AssetId}");
+            // See RefreshFolder's doc comment: a just-created item's own known-good asset id
+            // (from the create response, not this fetch) wins over whatever this listing reports.
+            var assetId = entry.Id == knownItemId && knownAssetId is { } known ? known : entry.AssetId;
+            row.SetMetadata(0, $"{entry.Id},{entry.CanCopy},{entry.CanModify},{entry.CanTransfer},{entry.AssetType},{assetId}");
         }
 
         if (children.Count == 0)
