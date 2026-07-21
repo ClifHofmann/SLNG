@@ -21,6 +21,14 @@ public partial class ChatWindow : SLNGWindow
     private const int MaxLogLines = 200;
     private const int UnreadCap = 9;
 
+    // Shared type scale for this window and its sub-components (FriendsPanel, ChatHistoryWindow)
+    // -- every text element used to pick its own font size ad hoc and they'd drifted all over the
+    // place (list items rendering at the ~16px theme default right next to 10-12px labels).
+    // Centralizing it here is what keeps that from silently happening again.
+    public const int BodyFontSize = 13;  // primary content: chat log, list item names, input fields
+    public const int LabelFontSize = 12; // tab labels, action buttons
+    public const int MetaFontSize = 10;  // section headers, counts, unread badges
+
     private sealed class OuterTab
     {
         public PanelContainer Pill = null!;
@@ -179,8 +187,8 @@ public partial class ChatWindow : SLNGWindow
         listPanel.AddChild(listVBox);
 
         var sectionLabel = new Label { Text = "CONTACTS" };
-        sectionLabel.AddThemeFontSizeOverride("font_size", 10);
-        sectionLabel.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
+        sectionLabel.AddThemeFontSizeOverride("font_size", MetaFontSize);
+        sectionLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
         listVBox.AddChild(sectionLabel);
 
         var listScroll = new ScrollContainer
@@ -228,6 +236,8 @@ public partial class ChatWindow : SLNGWindow
             ScrollFollowing = false, // manual pause/follow control -- see _Process
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
+        _logView.AddThemeFontSizeOverride("normal_font_size", BodyFontSize);
+        _logView.AddThemeFontSizeOverride("bold_font_size", BodyFontSize);
         rightVBox.AddChild(_logView);
 
         _jumpToLatestButton = new Button
@@ -236,6 +246,7 @@ public partial class ChatWindow : SLNGWindow
             Visible = false,
             FocusMode = FocusModeEnum.None,
         };
+        _jumpToLatestButton.AddThemeFontSizeOverride("font_size", LabelFontSize);
         _jumpToLatestButton.Pressed += () =>
         {
             if (_activeChatTab == null) return;
@@ -256,6 +267,7 @@ public partial class ChatWindow : SLNGWindow
             PlaceholderText = "Write a message...",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
+        _inputEdit.AddThemeFontSizeOverride("font_size", BodyFontSize);
         _inputEdit.TextSubmitted += (_) => OnSendPressed();
         inputRow.AddChild(_inputEdit);
 
@@ -300,7 +312,7 @@ public partial class ChatWindow : SLNGWindow
         };
         btn.AddThemeFontOverride("font", _iconFont);
         btn.AddThemeFontSizeOverride("font_size", 18);
-        btn.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+        btn.AddThemeColorOverride("font_color", new Color(0.78f, 0.78f, 0.78f));
         btn.AddThemeColorOverride("font_hover_color", new Color(1, 1, 1));
         if (onPressed != null) btn.Pressed += onPressed;
         return btn;
@@ -368,14 +380,14 @@ public partial class ChatWindow : SLNGWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             CustomMinimumSize = new Vector2(0, 18),
         };
-        label.AddThemeFontSizeOverride("font_size", 12);
-        label.AddThemeColorOverride("font_color", new Color(0.75f, 0.75f, 0.75f));
+        label.AddThemeFontSizeOverride("font_size", BodyFontSize);
+        label.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 0.85f));
         label.AddThemeColorOverride("font_hover_color", new Color(1, 1, 1));
         inner.AddChild(label);
 
         var unreadLabel = new Label { Visible = false };
         unreadLabel.AddThemeColorOverride("font_color", new Color(0.85f, 0.25f, 0.2f, 0.9f));
-        unreadLabel.AddThemeFontSizeOverride("font_size", 10);
+        unreadLabel.AddThemeFontSizeOverride("font_size", MetaFontSize);
         inner.AddChild(unreadLabel);
 
         var tab = new ChatTab
@@ -400,7 +412,7 @@ public partial class ChatWindow : SLNGWindow
                 FocusMode = FocusModeEnum.None,
                 CustomMinimumSize = new Vector2(14, 14),
             };
-            closeBtn.AddThemeFontSizeOverride("font_size", 12);
+            closeBtn.AddThemeFontSizeOverride("font_size", LabelFontSize);
             closeBtn.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
             closeBtn.AddThemeColorOverride("font_hover_color", new Color(1f, 0.4f, 0.4f));
             closeBtn.Pressed += () => CloseChatTab(tab);
@@ -559,7 +571,7 @@ public partial class ChatWindow : SLNGWindow
             FocusMode = FocusModeEnum.None,
             CustomMinimumSize = new Vector2(0, 24),
         };
-        label.AddThemeFontSizeOverride("font_size", 12);
+        label.AddThemeFontSizeOverride("font_size", LabelFontSize);
         inner.AddChild(label);
 
         var tab = new OuterTab { Pill = pill, Icon = icon, Label = label, Page = page };
@@ -587,7 +599,7 @@ public partial class ChatWindow : SLNGWindow
         };
         tab.Pill.AddThemeStyleboxOverride("panel", style);
 
-        var fg = selected ? new Color(1, 1, 1) : new Color(0.65f, 0.65f, 0.65f);
+        var fg = selected ? new Color(1, 1, 1) : new Color(0.72f, 0.72f, 0.72f);
         tab.Icon.AddThemeColorOverride("font_color", fg);
         tab.Label.AddThemeColorOverride("font_color", fg);
         tab.Label.AddThemeColorOverride("font_hover_color", new Color(1, 1, 1));
@@ -618,7 +630,8 @@ public partial class ChatWindow : SLNGWindow
             HorizontalAlignment = HorizontalAlignment.Center,
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         };
-        headlineLabel.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
+        headlineLabel.AddThemeFontSizeOverride("font_size", BodyFontSize);
+        headlineLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
         box.AddChild(headlineLabel);
 
         var subLabel = new Label
@@ -627,8 +640,8 @@ public partial class ChatWindow : SLNGWindow
             HorizontalAlignment = HorizontalAlignment.Center,
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         };
-        subLabel.AddThemeFontSizeOverride("font_size", 11);
-        subLabel.AddThemeColorOverride("font_color", new Color(0.4f, 0.4f, 0.4f));
+        subLabel.AddThemeFontSizeOverride("font_size", MetaFontSize);
+        subLabel.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
         box.AddChild(subLabel);
 
         return box;

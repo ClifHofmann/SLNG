@@ -43,6 +43,7 @@ public partial class FriendsPanel : Control
         hbox.AddChild(leftVBox);
 
         _filterEdit = new LineEdit { PlaceholderText = "Filter friends..." };
+        _filterEdit.AddThemeFontSizeOverride("font_size", ChatWindow.BodyFontSize);
         _filterEdit.TextChanged += (_) => Refresh();
         leftVBox.AddChild(_filterEdit);
 
@@ -52,7 +53,8 @@ public partial class FriendsPanel : Control
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
             Visible = false,
         };
-        _emptyLabel.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
+        _emptyLabel.AddThemeFontSizeOverride("font_size", ChatWindow.BodyFontSize);
+        _emptyLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
         leftVBox.AddChild(_emptyLabel);
 
         var scroll = new ScrollContainer
@@ -163,8 +165,9 @@ public partial class FriendsPanel : Control
             Alignment = HorizontalAlignment.Left,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
+        nameBtn.AddThemeFontSizeOverride("font_size", ChatWindow.BodyFontSize);
         nameBtn.AddThemeColorOverride("font_color",
-            friend.IsOnline ? new Color(0.9f, 0.9f, 0.9f) : new Color(0.55f, 0.55f, 0.55f));
+            friend.IsOnline ? new Color(0.92f, 0.92f, 0.92f) : new Color(0.62f, 0.62f, 0.62f));
         var friendId = friend.Id;
         nameBtn.Pressed += () => { _selectedFriendId = friendId; Refresh(); };
         inner.AddChild(nameBtn);
@@ -203,8 +206,8 @@ public partial class FriendsPanel : Control
         panel.AddChild(new Control { SizeFlagsVertical = SizeFlags.ExpandFill }); // pushes the count to the bottom
 
         _countLabel = new Label { HorizontalAlignment = HorizontalAlignment.Right, Text = "Friends: 0" };
-        _countLabel.AddThemeFontSizeOverride("font_size", 10);
-        _countLabel.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
+        _countLabel.AddThemeFontSizeOverride("font_size", ChatWindow.MetaFontSize);
+        _countLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
         panel.AddChild(_countLabel);
 
         return panel;
@@ -222,7 +225,7 @@ public partial class FriendsPanel : Control
             FocusMode = FocusModeEnum.None,
             CustomMinimumSize = new Vector2(0, 26),
         };
-        btn.AddThemeFontSizeOverride("font_size", 11);
+        btn.AddThemeFontSizeOverride("font_size", ChatWindow.LabelFontSize);
 
         var style = new StyleBoxFlat
         {
@@ -233,7 +236,7 @@ public partial class FriendsPanel : Control
             CornerRadiusBottomRight = 4,
         };
         btn.AddThemeStyleboxOverride("normal", style);
-        btn.AddThemeColorOverride("font_color", warn ? new Color(0.9f, 0.4f, 0.4f, 0.9f) : new Color(0.85f, 0.85f, 0.85f));
+        btn.AddThemeColorOverride("font_color", warn ? new Color(0.95f, 0.45f, 0.45f, 0.95f) : new Color(0.9f, 0.9f, 0.9f));
 
         return btn;
     }

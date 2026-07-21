@@ -45,7 +45,9 @@ public partial class SLNGWindow : MarginContainer
 
         var styleBox = new StyleBoxFlat
         {
-            BgColor = new Color(0, 0, 0, 0.5f),
+            // Darker than the original 0.5 -- text contrast against a bright in-world background
+            // (sky, snow, a light-colored build) was reported too low across every SLNGWindow.
+            BgColor = new Color(0, 0, 0, 0.65f),
             CornerRadiusTopLeft = 16,
             CornerRadiusTopRight = 16,
             CornerRadiusBottomLeft = 16,
@@ -97,7 +99,7 @@ public partial class SLNGWindow : MarginContainer
             MouseFilter = MouseFilterEnum.Pass
         };
         _titleLabel.AddThemeFontSizeOverride("font_size", 12);
-        _titleLabel.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
+        _titleLabel.AddThemeColorOverride("font_color", new Color(0.88f, 0.88f, 0.88f));
         headerHBox.AddChild(_titleLabel);
 
         _closeButton = new Button

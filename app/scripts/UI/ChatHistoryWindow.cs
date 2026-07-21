@@ -42,12 +42,14 @@ public partial class ChatHistoryWindow : SLNGWindow
             ScrollFollowing = false,
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
+        _log.AddThemeFontSizeOverride("normal_font_size", ChatWindow.BodyFontSize);
         vbox.AddChild(_log);
 
         var nav = new HBoxContainer();
         vbox.AddChild(nav);
 
         _prevButton = new Button { Text = "< Prev", FocusMode = FocusModeEnum.None };
+        _prevButton.AddThemeFontSizeOverride("font_size", ChatWindow.LabelFontSize);
         _prevButton.Pressed += () => GoToPage(_pageIndex - 1);
         nav.AddChild(_prevButton);
 
@@ -56,9 +58,12 @@ public partial class ChatHistoryWindow : SLNGWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             HorizontalAlignment = HorizontalAlignment.Center,
         };
+        _pageLabel.AddThemeFontSizeOverride("font_size", ChatWindow.MetaFontSize);
+        _pageLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
         nav.AddChild(_pageLabel);
 
         _nextButton = new Button { Text = "Next >", FocusMode = FocusModeEnum.None };
+        _nextButton.AddThemeFontSizeOverride("font_size", ChatWindow.LabelFontSize);
         _nextButton.Pressed += () => GoToPage(_pageIndex + 1);
         nav.AddChild(_nextButton);
     }
