@@ -51,4 +51,11 @@ public class GridSessionTests
         Assert.Null(result.AssetId);
         Assert.False(string.IsNullOrWhiteSpace(result.Message));
     }
+
+    [Fact]
+    public void IsInLandmarksSubtree_returns_false_when_not_connected()
+    {
+        using var session = new GridSession();
+        Assert.False(session.IsInLandmarksSubtree(Guid.NewGuid()));
+    }
 }

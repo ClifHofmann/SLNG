@@ -419,8 +419,9 @@ public partial class InventoryPanel : SLNGWindow
             // same indexing-lag fetch -- so AssetType gets the same known-good override here,
             // hardcoded to Landmark since that's the only case this override path is used for.
             bool isKnownItem = entry.Id == knownItemId && knownAssetId.HasValue;
+            bool isLandmarkSubtree = _session != null && _session.IsInLandmarksSubtree(entry.ParentId);
             var assetId = isKnownItem ? knownAssetId!.Value : entry.AssetId;
-            int assetType = isKnownItem ? SLNG.Core.AssetTypeIds.Landmark : entry.AssetType;
+            int assetType = (isKnownItem || isLandmarkSubtree) ? SLNG.Core.AssetTypeIds.Landmark : entry.AssetType;
             row.SetMetadata(0, $"{entry.Id},{entry.CanCopy},{entry.CanModify},{entry.CanTransfer},{assetType},{assetId},{entry.IsLink}");
         }
 

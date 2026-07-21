@@ -797,6 +797,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// sent one — same fallback shape as <see cref="TrashFolderId"/>.</summary>
     public Guid? LandmarksFolderId => _client.Inventory.FindFolderForType(FolderType.Landmark).Guid;
 
+    /// <summary>Checks if a folder is the Landmarks system folder or any descendant subfolder of it.</summary>
+    public bool IsInLandmarksSubtree(Guid folderId)
+    {
+        var store = _client.Inventory.Store;
+        if (store == null) return false;
+        var landmarkFolderUuid = _client.Inventory.FindFolderForType(FolderType.Landmark);
+        if (landmarkFolderUuid == UUID.Zero) return false;
+
+        var folderUuid = new LibreMetaverse.UUID(folderId);
+        if (folderUuid == landmarkFolderUuid) return true;
+
+        for (var n = store.GetNodeOrDefault(folderUuid); n != null; n = n.Parent)
+        {
+            if (n.Data?.UUID == landmarkFolderUuid) return true;
+        }
+        return false;
+    }
+
     /// <summary>
     /// Fetches one folder's direct children (subfolders + items) — the lazy per-folder expansion
     /// unit for an inventory UI. One CAPS request (FetchInventoryDescendents2 — supported by
@@ -836,6 +854,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             LibreMetaverse.InventorySortOrder.ByName, ct).ConfigureAwait(false);
         if (contents == null) return Array.Empty<InventoryEntry>();
 
+        bool isLandmarksFolder = IsInLandmarksSubtree(folderId);
+
         var result = new List<InventoryEntry>(contents.Count);
         foreach (var entry in contents)
         {
@@ -852,7 +872,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 case LibreMetaverse.InventoryItem i:
                     var owned = i.Permissions.OwnerMask;
                     int assetType = (int)i.AssetType;
-                    if (assetType <= 0 && (i.InventoryType == LibreMetaverse.InventoryType.Landmark || i is LibreMetaverse.InventoryLandmark))
+                    if (assetType <= 0 && (i.InventoryType == LibreMetaverse.InventoryType.Landmark || i is LibreMetaverse.InventoryLandmark || isLandmarksFolder))
                     {
                         assetType = (int)LibreMetaverse.AssetType.Landmark;
                     }
