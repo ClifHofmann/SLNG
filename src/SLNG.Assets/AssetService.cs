@@ -25,6 +25,7 @@ public class AssetService
     
     private readonly ConcurrentDictionary<Guid, Task<MeshData?>> _inflightMeshes = new();
     private readonly ConcurrentDictionary<Guid, Task<TextureData?>> _inflightTextures = new();
+    private static readonly object _coreJ2kLogLock = new();
     private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _inflightMaterials = new();
     private readonly ConcurrentDictionary<Guid, Task<AnimationData?>> _inflightAnimations = new();
     private readonly ConcurrentDictionary<PrimShape, Task<MeshData?>> _inflightPrimMeshes = new();
@@ -587,18 +588,41 @@ public class AssetService
             // common in older SL/OpenSim assets. Fall back to CoreJ2K, which is much more forgiving.
             try 
             {
-                using var bitmap = CoreJ2K.J2kImage.DecodeToImage<SkiaSharp.SKBitmap>(bytes);
-                if (bitmap != null && bitmap.Width > 0 && bitmap.Height > 0)
+                SkiaSharp.SKBitmap? bitmap = null;
+                lock (_coreJ2kLogLock)
                 {
-                    // Ensure the bitmap is converted to Rgba8888 for Godot's Image.CreateFromData
-                    using var rgbaBitmap = bitmap.ColorType == SkiaSharp.SKColorType.Rgba8888 
-                        ? bitmap 
-                        : bitmap.Copy(SkiaSharp.SKColorType.Rgba8888);
-                    
-                    byte[] rgba = rgbaBitmap.Bytes;
-                    if (rgba.Length >= bitmap.Width * bitmap.Height * 4)
+                    var originalOut = Console.Out;
+                    var originalError = Console.Error;
+                    try
                     {
-                        return new TextureData(bitmap.Width, bitmap.Height, rgba, true); // Mark as degraded so we know it used the fallback
+                        Console.SetOut(System.IO.TextWriter.Null);
+                        Console.SetError(System.IO.TextWriter.Null);
+                        bitmap = CoreJ2K.J2kImage.DecodeToImage<SkiaSharp.SKBitmap>(bytes);
+                    }
+                    finally
+                    {
+                        Console.SetOut(originalOut);
+                        Console.SetError(originalError);
+                    }
+                }
+
+                if (bitmap != null)
+                {
+                    using (bitmap)
+                    {
+                        if (bitmap.Width > 0 && bitmap.Height > 0)
+                        {
+                            // Ensure the bitmap is converted to Rgba8888 for Godot's Image.CreateFromData
+                            using var rgbaBitmap = bitmap.ColorType == SkiaSharp.SKColorType.Rgba8888 
+                                ? bitmap 
+                                : bitmap.Copy(SkiaSharp.SKColorType.Rgba8888);
+                            
+                            byte[] rgba = rgbaBitmap.Bytes;
+                            if (rgba.Length >= bitmap.Width * bitmap.Height * 4)
+                            {
+                                return new TextureData(bitmap.Width, bitmap.Height, rgba, true); // Mark as degraded so we know it used the fallback
+                            }
+                        }
                     }
                 }
             }
