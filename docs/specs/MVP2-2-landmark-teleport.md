@@ -2,8 +2,10 @@
 
 - **Feature ID:** `MVP2-2`
 - **Track:** `net` / `ui`
-- **Status:** `✅ Done`
-- **Owner:** `claude`
+- **Status:** `🚧 In Progress` — Create Landmark + Teleport UI are done and live-tested; the
+  actual `TeleportToLandmarkAsync` protocol call still doesn't complete a real teleport. Handed
+  off from claude to gemini — see [HANDOFF.md](file:///E:/Git/SLNG/docs/HANDOFF.md).
+- **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
 ## Overview & Goal
@@ -19,8 +21,10 @@ remain out of scope for this pass and stay open under `MVP2-2`.
 ## Acceptance Criteria
 - [x] Right-clicking a Landmark item in the Inventory panel offers a "Teleport" action; the
       action is disabled/absent for non-landmark items and folders.
-- [x] Selecting it teleports the agent via LibreMetaverse's landmark teleport API without any
-      LibreMetaverse type crossing the `SLNG.Net` public boundary.
+- [ ] **Selecting it teleports the agent.** The call reaches `GridSession.TeleportToLandmarkAsync`
+      without any LibreMetaverse type crossing the `SLNG.Net` public boundary (this part is done),
+      but live testing (2026-07-21) confirms the agent does not actually arrive at the landmark's
+      location when Teleport is clicked — see **Open Issue** below. Not done.
 - [x] Failure (not connected, grid-side teleport failure) surfaces a message in the UI rather
       than failing silently.
 - [x] Network call runs off the Godot main thread; the UI update on completion is marshalled
@@ -40,16 +44,111 @@ remain out of scope for this pass and stay open under `MVP2-2`.
       success refreshes an already-expanded Landmarks folder in the Inventory panel so the new
       item is visible immediately, not just after a manual collapse/re-expand.
 - [x] Unit test covering the disconnected-session failure path for creation too.
-- [x] **Live-test fix (2026-07-21):** the freshly created landmark showed up in the Inventory
-      panel but "Teleport" stayed disabled on it. Root cause: `FolderContentsAsync`'s server-side
-      descendants listing can briefly report a just-created item's `asset_id` as `Guid.Empty`
-      (an indexing lag, confirmed against real LibreMetaverse 3.0.0 source), and the empty-guid
-      guard on "Teleport" is load-bearing, not cosmetic -- `TeleportLandmarkRequest`'s `LandmarkID`
-      field is documented server-side as "use LLUUID::null for home", so relaxing that guard
-      would silently teleport home instead of failing safely. Fixed by threading the asset id
-      already known from `CreateLandmarkHereAsync`'s own response (never subject to the fetch's
-      lag) through `RefreshFolder` → `Populate`, overriding just that one row's asset id instead
-      of trusting the immediate re-fetch for it.
+- [x] **Live-test fix round 1 (2026-07-21):** the freshly created landmark showed up in the
+      Inventory panel but "Teleport" stayed disabled on it. Root cause: `FolderContentsAsync`'s
+      server-side descendants listing can briefly report a just-created item's `asset_id` as
+      `Guid.Empty` (an indexing lag, confirmed against real LibreMetaverse 3.0.0 source), and the
+      empty-guid guard on "Teleport" is load-bearing, not cosmetic -- `TeleportLandmarkRequest`'s
+      `LandmarkID` field is documented server-side as "use LLUUID::null for home", so relaxing
+      that guard would silently teleport home instead of failing safely. Fixed by threading the
+      asset id already known from `CreateLandmarkHereAsync`'s own response (never subject to the
+      fetch's lag) through `RefreshFolder` → `Populate`, overriding just that one row's asset id
+      instead of trusting the immediate re-fetch for it.
+- [x] **Live-test fix round 2:** that fix only helped if the Landmarks folder was already expanded
+      at creation time (`RefreshFolder` no-ops otherwise). Split the concerns: "Teleport" is now
+      gated on `AssetType == Landmark && !IsLink` alone (added `IsLink` to the row's metadata,
+      instead of inferring "is a link" from asset-id emptiness), so a landmark with a momentarily
+      unresolved asset id is still clickable; the actual empty-guid safety check moved to
+      click-time in `InventoryPanel.TeleportAsync`, which re-fetches the parent folder fresh and
+      looks the item up again if its stored asset id is empty, self-healing instead of requiring
+      a manual folder refresh.
+- [x] **Live-test fix round 2 (same pass), unrelated UI bugs also reported and fixed:** windows
+      didn't raise above each other on click, and clicks/wheel-scroll on blank window areas leaked
+      through to whatever was rendered behind (CameraHUD, 3D viewport). Added `SLNGWindow._Input`
+      raise-to-front (using `GuiGetHoveredControl()`, walking the ancestor chain so a window
+      nested inside another, like `ItemPropertiesWindow` inside `InventoryPanel`, also raises its
+      true top-level parent) and `MouseFilter = Stop` on the window root/background panel.
+- [x] **Live-test fix round 3:** the round-2 `MouseFilter.Stop` change did NOT actually stop
+      wheel-zoom-while-scrolling-Inventory or click-through to world-object-selection in practice
+      — rather than continuing to guess at Godot's Control consumption/propagation semantics,
+      switched to a direct, unambiguous check: `AvatarController`'s wheel-zoom handler and
+      `ObjectSelectionController._UnhandledInput` (which had NO ui-guard at all) now both bail out
+      whenever `GetViewport().GuiGetHoveredControl() != null`. Also added `GD.Print`/`GD.PrintErr`
+      diagnostics around the Teleport gating/self-heal path, since the underlying bug was still
+      reproducing after two rounds and needed real console data instead of a third blind guess.
+- [x] **Live-test fix round 4 (data-driven from round 3's diagnostics):** console output showed
+      the freshly-created landmark's row had the *correct* patched asset id but `AssetType == 0`
+      (not 3/Landmark) — proving the same server-side indexing lag that affected `asset_id` in
+      round 1 ALSO affects `AssetType`, which had never been patched the same way. Fixed by also
+      overriding `AssetType` (hardcoded to `Landmark`) in `Populate()`'s known-item branch.
+      Also found a third, previously-unaudited click handler explaining "clicks affect HUDs":
+      `AvatarRenderer.TryClickHud` (touches whatever worn HUD-attachment prim, e.g. a body-shape
+      HUD, sits under a left-click) runs off `_Input` — which fires regardless of GUI consumption,
+      so no `MouseFilter` change could ever have stopped it — and had zero ui-guard. Added the
+      same `GuiGetHoveredControl()` check.
+- [x] **Confirmed by live test (2026-07-21, after round 4):** all UI/window/input bugs above are
+      fixed, and "Teleport" now correctly enables on a freshly created landmark. **Still broken:**
+      clicking the now-enabled "Teleport" action does not actually teleport the agent. This is the
+      open issue this spec hands off — see **Open Issue** below.
+
+## Open Issue (handed off to gemini, 2026-07-21)
+
+**Symptom:** "Teleport" is enabled and clickable on a landmark (freshly created or pre-existing —
+not yet determined which), the click is registered (no exception, no obviously-stuck UI), but the
+agent does not arrive at the landmark's location. Not yet confirmed whether:
+- `GridSession.TeleportToLandmarkAsync` returns `Success = false` with a message (check the
+  `[Teleport] result success=... message='...'` console line — diagnostics are already in place,
+  see `app/scripts/UI/InventoryPanel.cs` `TeleportAsync`), or
+- it returns `Success = true` but nothing actually happens in-world (a false positive from
+  LibreMetaverse's `TeleportAsync`/`TeleportProgress` handling), or
+- the call hangs/times out silently (no `CancellationToken` is passed from the UI layer today —
+  `GridSession.TeleportToLandmarkAsync`'s `ct` parameter defaults to `default`, so a sim that never
+  raises `TeleportProgress` with a terminal status would leave the awaited `Task<bool>` pending
+  indefinitely with no user-visible failure).
+
+**First step: get the actual console output.** The next live test should capture the three
+`[Teleport]` log lines (`item=... assetId=... parentFolder=...`, the re-resolve line if it fires,
+and `result success=... message='...'`) and the `[Inventory] context menu for ...` line, from
+either stdout or `%APPDATA%\Godot\app_userdata\SLNG\logs\`. That alone should distinguish "grid
+rejected it" (message tells you why) from "grid never responded" (hangs) from "reported success
+but nothing happened" (LibreMetaverse/protocol bug).
+
+**Hypotheses not yet ruled out, roughly in order of likelihood:**
+1. **Grid-specific rejection.** This was tested against what looks like the real Second Life main
+   grid (landmark names like "LBSA Plaza" seen in an earlier screenshot). SL's teleport handling
+   may have server-side checks LibreMetaverse's `TeleportAsync(UUID, ct)` doesn't account for
+   (e.g. a cooldown, a permission/ban check, region capacity) that surface as a `TeleportProgress`
+   `Failed` status with a message — which the current code already captures and surfaces, so check
+   that message first.
+2. **The asset upload itself may not be fully "real."** `CreateLandmarkHereAsync` builds the
+   landmark asset client-side (`AssetLandmark.Encode()`) from the agent's *current* region+position
+   at the moment of creation and uploads the raw bytes — this was never independently verified
+   against a real SL-created landmark's asset bytes (only against LibreMetaverse's own `Encode()`
+   implementation, which was trusted at face value). If `RegionID`/`Position` are wrong, stale, or
+   the format doesn't match what the sim expects for `TeleportLandmarkRequest.LandmarkID` to
+   resolve, teleport could legitimately fail server-side even with a well-formed asset id.
+3. **`TeleportAsync`'s `TeleportProgress` correlation may be unreliable in this codebase's usage.**
+   `GridSession.TeleportToLandmarkAsync` subscribes/unsubscribes `Self.TeleportProgress` around a
+   single call, but if two teleport attempts (or a teleport plus some unrelated `TeleportProgress`-
+   raising event) overlap, `lastMessage` could reflect the wrong attempt. Unlikely on a single
+   click, but worth ruling out if retrying doesn't reproduce consistently.
+4. **Not actually reaching the network call at all.** Re-verify (with the diagnostics) that
+   `OnContextMenuIdPressed`'s `id == 5` branch in `InventoryPanel.cs` is really being hit and that
+   `_session` is non-null at that point — low probability given the enable/disable gating already
+   confirmed correct, but cheap to rule out first.
+
+**Where to look:**
+- `src/SLNG.Net/GridSession.cs` — `TeleportToLandmarkAsync` (~line 632) and `CreateLandmarkHereAsync`
+  (~line 808).
+- `app/scripts/UI/InventoryPanel.cs` — `OnContextMenuIdPressed`'s `id == 5` branch and `TeleportAsync`.
+- LibreMetaverse 3.0.0 source (`gh api repos/cinderblocks/LibreMetaverse`, tag `v3.0.0`) —
+  `LibreMetaverse/Agent/AgentManager.Teleporting.cs` (`TeleportAsync(UUID, ct)`,
+  `RequestTeleport(UUID)`) and `LibreMetaverse/Agent/AgentManager.PacketHandlers.cs` (how
+  `TeleportProgress`/`TeleportFinish` packets actually resolve the awaited Task) — this file was
+  read for the `LandmarkID` semantics (see round-1 note above) but not for the full success/finish
+  packet-handling path, which is where this bug most likely lives.
+- `data/message_template.msg` in the same repo — the raw wire definitions for
+  `TeleportLandmarkRequest` / `TeleportFinish` / `TeleportFailed`, if a lower-level look is needed.
 
 ## Technical Specs & Affected Files
 - `src/SLNG.Net/GridSession.cs` — `TeleportToLandmarkAsync(Guid landmarkAssetId, CancellationToken)`,
@@ -76,6 +175,16 @@ remain out of scope for this pass and stay open under `MVP2-2`.
   folder without the caller needing to walk the `Tree` itself.
 - `tests/SLNG.Net.Tests/GridSessionTests.cs` — `TeleportToLandmarkAsync_without_connection_fails_gracefully`,
   `CreateLandmarkHereAsync_without_connection_fails_gracefully`.
+- `app/scripts/UI/SLNGWindow.cs` — raise-to-front (`_Input` + `GuiGetHoveredControl()`, walks the
+  ancestor chain) and `MouseFilter = Stop` on the window root/background panel. Shared base class
+  for every floating window, not landmark-specific, but the fixes landed in this same live-test
+  cycle.
+- `app/scripts/AvatarController.cs` — wheel-zoom handler's ui-guard now also checks
+  `GuiGetHoveredControl()`, not just LineEdit/TextEdit focus.
+- `app/scripts/ObjectSelectionController.cs` — world click/raycast (`_UnhandledInput`) gained the
+  same `GuiGetHoveredControl()` guard (had none before).
+- `app/scripts/AvatarRenderer.cs` — `TryClickHud` (worn HUD-attachment touch, driven by `_Input`)
+  gained the same guard.
 
 ## Sub-tasks / Progress
 - [x] `GridSession.TeleportToLandmarkAsync` + `TeleportResult`
@@ -88,6 +197,9 @@ remain out of scope for this pass and stay open under `MVP2-2`.
 - [x] `CreateLandmarkWindow` dialog + **World** menu entry
 - [x] Inventory panel auto-refresh on successful creation
 - [x] Unit test for the creation disconnected path
+- [x] Live-test rounds 1–4: asset-id lag, asset-type lag, window raise-to-front, window/world/HUD
+      click-through and wheel-zoom-through-Inventory — all confirmed fixed by live test
+- [ ] **Open, handed to gemini:** actual teleport execution — see **Open Issue** above
 - [ ] Deferred to a later `MVP2-2` pass: minimap overlay, full grid map, region search,
       teleport-by-region-name/coordinates, "arrived in new region" UI feedback (no
       `RegionConnected`-style event exists on `GridSession` yet — today's `CurrentRegionName`
