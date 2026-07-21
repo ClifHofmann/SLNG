@@ -941,40 +941,27 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         try
         {
-            var landmark = new LibreMetaverse.Assets.AssetLandmark
+            // The official viewer sends a CreateInventoryItem UDP request (wrapped here by CreateItemAsync)
+            // for landmarks. It does NOT upload an AssetLandmark via CAPS. When the grid receives
+            // a CreateInventoryItem request for AssetType.Landmark, it automatically generates the
+            // landmark asset using the agent's current region and position, then creates the item.
+            var item = await _client.Inventory.CreateItemAsync(
+                new LibreMetaverse.UUID(folderId),
+                name,
+                description,
+                AssetType.Landmark,
+                LibreMetaverse.UUID.Zero, // No asset upload transaction
+                InventoryType.Landmark,
+                PermissionMask.Copy | PermissionMask.Transfer,
+                ct).ConfigureAwait(false);
+
+            if (item != null)
             {
-                RegionID = sim.RegionID,
-                Position = _client.Self.SimPosition,
-            };
-            landmark.Encode();
-
-            // The NewFileAgentInventory CAP only puts base/everyone/group/next-owner masks on
-            // the wire (owner_mask is server-decided, not client-supplied) -- so Permissions.
-            // FullPermissions would grant Everyone and Group full rights on a personal landmark
-            // nobody else should be able to touch just by it existing. Base/NextOwner stay at
-            // Copy+Transfer (ordinary landmark defaults, so handing one to someone else works);
-            // Everyone/Group stay at None (private).
-            var permissions = new Permissions(
-                baseMask: (uint)(PermissionMask.Copy | PermissionMask.Transfer),
-                everyoneMask: (uint)PermissionMask.None,
-                groupMask: (uint)PermissionMask.None,
-                nextOwnerMask: (uint)(PermissionMask.Copy | PermissionMask.Transfer),
-                ownerMask: (uint)PermissionMask.All);
-
-            var (success, status, itemId, assetId) = await _client.Inventory.RequestCreateItemFromAssetAsync(
-                landmark.AssetData, name, description,
-                AssetType.Landmark, InventoryType.Landmark,
-                new LibreMetaverse.UUID(folderId), permissions, ct).ConfigureAwait(false);
-
-            // Report the asset id straight from this response, not from a later folder-contents
-            // re-fetch: FetchInventoryChildrenAsync's server-side descendants listing can briefly
-            // report asset_id as empty for an item created moments earlier (an indexing lag on
-            // the grid side), whereas this CAP response is authoritative immediately -- callers
-            // that need to act on the new item right away (e.g. enabling "Teleport" on it) should
-            // use this id, not whatever a subsequent fetch of the same item reports.
-            return success
-                ? new LandmarkCreateResult(true, itemId.Guid, assetId.Guid, status)
-                : new LandmarkCreateResult(false, null, null, status);
+                // The item created via UDP is immediately valid and carries the correct AssetType/InventoryType
+                // on the server, avoiding CAPS asset-type corruption.
+                return new LandmarkCreateResult(true, item.UUID.Guid, item.AssetUUID.Guid, "Success");
+            }
+            return new LandmarkCreateResult(false, null, null, "Failed to create landmark (no response).");
         }
         catch (Exception ex)
         {
