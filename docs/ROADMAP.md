@@ -71,7 +71,7 @@ Each task follows a **spec → test → implement → review** loop:
 | M1.5-1 | Godot Headless Export Script | infra | | DevOps | claude | M0-1 | PowerShell script exports Windows binary (.exe + .pck + .NET assemblies) headlessly |
 | M1.5-2 | InnoSetup / Installer Spec & Script | infra | | DevOps | claude | M1.5-1 | InnoSetup script bundles client build into single-click installer executable |
 | M1.5-3 | GitHub Actions Continuous Delivery | infra | | DevOps | claude | M1.5-2 | GitHub Workflow builds installer on `main` push & attaches artifact/release for testers |
-| FEAT-UI-03 | Boot Window Size & Profile Persistence 🚧 | ui/infra | claude | ux-designer | gemini | M0-4 | Client window resolution, grid profiles & user preferences persist across sessions. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-03-boot-window-persistence.md) |
+| FEAT-UI-03 | Boot Window Size & Profile Persistence ⏸️ | ui/infra | claude | ux-designer | gemini | M0-4 | Client window resolution, grid profiles & user preferences persist across sessions. Not started — no persistence code in `Boot.cs` yet. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-03-boot-window-persistence.md) |
 
 ---
 
@@ -110,10 +110,10 @@ Each task follows a **spec → test → implement → review** loop:
 
 | ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
 |---|---|---|---|---|---|---|---|
-| M5-2 | In-World Object Selection & Editing 🚧 | render/ui/net | claude | graphics-engineer | claude | M1-3 | Raycast selection, context menu, inspector tabbed window. [Spec](file:///E:/Git/SLNG/docs/specs/M5-2-object-editing.md) |
-| FEAT-UI-04 | In-World 3D Transform Gizmos | render/ui | | graphics-engineer | claude | M5-2 | Interactive 3D translation/rotation/scale handles in viewport. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-04-transform-gizmos.md) |
+| M5-2 | In-World Object Selection & Editing 🚧 | render/ui/net | claude | graphics-engineer | claude | M1-3 | Raycast selection, context menu, inspector tabbed window (General/Object/Features/Texture/Content) — implemented on `feature/M5-2-object-editing`, not yet merged; 3D transform gizmos still outstanding (tracked as FEAT-UI-04). [Spec](file:///E:/Git/SLNG/docs/specs/M5-2-object-editing.md) |
+| FEAT-UI-04 | In-World 3D Transform Gizmos | render/ui | | graphics-engineer | claude | M5-2 | Interactive 3D translation/rotation/scale handles in viewport. Not started — no `SelectionGizmo3D` yet; transform edits currently spinbox-only in the inspector. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-04-transform-gizmos.md) |
 | FEAT-UI-05 | Multi-Select & Prim Linking/Unlinking | render/ui/net | | graphics-engineer | claude | M5-2 | Box-select/Shift-select multiple prims, link/unlink root & child objects. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-05-multi-select-linking.md) |
-| FEAT-UI-06 | Edit Linked Parts & Child Prims | render/ui/net | | graphics-engineer | claude | M5-2 | "Edit linked" checkbox mode to transform individual child prims inside a linkset. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-06-edit-linked-parts.md) |
+| FEAT-UI-06 | Edit Linked Parts & Child Prims 🚧 | render/ui/net | | graphics-engineer | claude | M5-2 | "Edit linked" checkbox mode to transform individual child prims inside a linkset. Groundwork landed on `feature/M5-2-object-editing` (`SelectionSettings.EditLinkedParts`). [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-06-edit-linked-parts.md) |
 | MVP4-1 | Prim Rezzing & Mesh Import | render/net | | graphics-engineer | claude | M5-2 | Create new prim shapes in-world, upload/import custom meshes |
 | MVP4-2 | Land & Terrain Sculpting | render/core | | graphics-engineer | gemini | M1-2 | In-world raise/lower/flatten terrain tools |
 
