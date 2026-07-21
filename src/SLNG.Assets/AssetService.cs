@@ -617,11 +617,26 @@ public class AssetService
                                 ? bitmap 
                                 : bitmap.Copy(SkiaSharp.SKColorType.Rgba8888);
                             
-                            byte[] rgba = rgbaBitmap.Bytes;
-                            if (rgba.Length >= bitmap.Width * bitmap.Height * 4)
+                            int width = bitmap.Width;
+                            int height = bitmap.Height;
+                            byte[] exactRgba = new byte[width * height * 4];
+                            
+                            if (rgbaBitmap.RowBytes == width * 4)
                             {
-                                return new TextureData(bitmap.Width, bitmap.Height, rgba, true); // Mark as degraded so we know it used the fallback
+                                System.Runtime.InteropServices.Marshal.Copy(rgbaBitmap.GetPixels(), exactRgba, 0, exactRgba.Length);
                             }
+                            else
+                            {
+                                IntPtr ptr = rgbaBitmap.GetPixels();
+                                for (int y = 0; y < height; y++)
+                                {
+                                    System.Runtime.InteropServices.Marshal.Copy(ptr + y * rgbaBitmap.RowBytes, exactRgba, y * width * 4, width * 4);
+                                }
+                            }
+
+                            // We intentionally use System.Diagnostics.Trace.Listeners to suppress CoreJ2K's internal Trace logs?
+                            // Actually, just returning the exact array fixes the "sim looks weird" bug (skewed/failed textures).
+                            return new TextureData(width, height, exactRgba, true); // Mark as degraded so we know it used the fallback
                         }
                     }
                 }
