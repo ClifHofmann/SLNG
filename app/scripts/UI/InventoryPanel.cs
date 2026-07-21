@@ -202,13 +202,18 @@ public partial class InventoryPanel : SLNGWindow
                     bool canModify = bool.Parse(parts[2]);
                     bool canTransfer = bool.Parse(parts[3]);
                     int assetType = int.Parse(parts[4]);
+                    // Links (e.g. Current Outfit entries) carry AssetId == Guid.Empty -- their
+                    // target item, not this row, holds the real landmark asset -- so exclude
+                    // them even if AssetType happens to read as Landmark.
+                    bool isLandmark = assetType == SLNG.Core.AssetTypeIds.Landmark
+                        && Guid.TryParse(parts[5], out var landmarkAssetId) && landmarkAssetId != Guid.Empty;
 
                     _contextMenu.SetItemDisabled(0, false); // Wear
                     _contextMenu.SetItemDisabled(1, !canCopy); // Copy
                     _contextMenu.SetItemDisabled(2, !canModify); // Edit
                     _contextMenu.SetItemDisabled(3, !(canCopy && canModify && canTransfer)); // Export
                     _contextMenu.SetItemDisabled(4, false); // Delete
-                    _contextMenu.SetItemDisabled(5, assetType != SLNG.Core.AssetTypeIds.Landmark); // Teleport
+                    _contextMenu.SetItemDisabled(5, !isLandmark); // Teleport
 
                     _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
                     _contextMenu.Popup();
