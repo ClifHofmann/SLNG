@@ -177,6 +177,17 @@ replaced by the mockup's icon.
   rather than inventing a new empty-state illustration pattern this codebase doesn't have
   elsewhere yet.
 
+**Layout update (2026-07-21, Friends-tab mockup review):** replaced the single-column list with a
+two-pane layout matching the reviewed screenshot — a filter box (functional, live-filters by
+name) above the list on the left, and a fixed ~92px action panel on the right with per-friend
+buttons: `IM / Call` (accent-highlighted, the mockup's default action), `Profile`, `Teleport...`,
+`Pay...`, `Remove...` (warning-colored text), `Add...`, and a `Friends: N` count pinned to the
+bottom. Clicking a row selects it (blue highlight, same accent as everywhere else) but every
+action button stays disabled with a "(not implemented)" tooltip — each one needs net-layer work
+that doesn't exist yet (IM/voice, teleport requests, payments, friendship management via
+LibreMetaverse's `FriendsManager.TerminateFriendship`/`OfferFriendship`) — captured here rather
+than silently added later, same reasoning as §9's action-icon row.
+
 ### 4. Groups tab
 
 - **List item:** same row shape as Friends minus the presence dot — a 24px placeholder badge
