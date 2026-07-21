@@ -29,7 +29,7 @@ public partial class ChatWindow : SLNGWindow
     private Button _jumpToLatestButton = null!;
     private LineEdit _inputEdit = null!;
     private Button _sendButton = null!;
-    private Button _historyButton = null!;
+    private Font _iconFont = null!;
 
     private sealed class ChatTab
     {
@@ -61,6 +61,8 @@ public partial class ChatWindow : SLNGWindow
     public override void _Ready()
     {
         base._Ready(); // SLNGWindow styling
+
+        _iconFont = GD.Load<Font>("res://assets/fonts/MaterialSymbolsOutlined.ttf");
 
         Title = "CHAT";
         Visible = false;
@@ -171,6 +173,8 @@ public partial class ChatWindow : SLNGWindow
         rightVBox.AddThemeConstantOverride("separation", 6);
         rightMargin.AddChild(rightVBox);
 
+        rightVBox.AddChild(BuildActionIconRow());
+
         _logView = new RichTextLabel
         {
             BbcodeEnabled = true,
@@ -198,10 +202,6 @@ public partial class ChatWindow : SLNGWindow
         inputRow.AddThemeConstantOverride("separation", 6);
         rightVBox.AddChild(inputRow);
 
-        _historyButton = new Button { Text = "History", FocusMode = FocusModeEnum.None };
-        _historyButton.Pressed += OnHistoryPressed;
-        inputRow.AddChild(_historyButton);
-
         _inputEdit = new LineEdit
         {
             PlaceholderText = "Type your message here...",
@@ -215,6 +215,43 @@ public partial class ChatWindow : SLNGWindow
         inputRow.AddChild(_sendButton);
 
         return hbox;
+    }
+
+    /// <summary>Per-conversation action icons above the message log. Only History is wired up
+    /// today; Give Item / Voice Call / Search are placeholders captured from the M5-3 UX
+    /// proposal §9 (Gemini Canvas mockup review) -- shown now with a "(not implemented)" tooltip
+    /// so the intended affordance isn't lost, rather than added silently later.</summary>
+    private Control BuildActionIconRow()
+    {
+        var row = new HBoxContainer();
+        row.AddThemeConstantOverride("separation", 2);
+
+        row.AddChild(BuildIconButton("history", "History", OnHistoryPressed));
+        row.AddChild(BuildIconButton("card_giftcard", "Give Item (not implemented)", null));
+        row.AddChild(BuildIconButton("call", "Voice Call (not implemented)", null));
+        row.AddChild(BuildIconButton("search", "Search (not implemented)", null));
+
+        return row;
+    }
+
+    private Button BuildIconButton(string glyph, string tooltip, Action? onPressed)
+    {
+        var btn = new Button
+        {
+            Text = glyph,
+            Flat = true,
+            FocusMode = FocusModeEnum.None,
+            TooltipText = tooltip,
+            Disabled = onPressed == null,
+            CustomMinimumSize = new Vector2(28, 28),
+        };
+        btn.AddThemeFontOverride("font", _iconFont);
+        btn.AddThemeFontSizeOverride("font_size", 18);
+        btn.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+        btn.AddThemeColorOverride("font_hover_color", new Color(1, 1, 1));
+        btn.AddThemeColorOverride("font_disabled_color", new Color(0.4f, 0.4f, 0.4f));
+        if (onPressed != null) btn.Pressed += onPressed;
+        return btn;
     }
 
     private void OnSendPressed()
