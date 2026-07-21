@@ -13,15 +13,16 @@ Implement a unified communication and social hub window inheriting from `SLNGWin
 
 ### 1. Window Architecture & Styling
 - Must derive from `SLNG.App.UI.SLNGWindow` to maintain SLNG glassmorphism aesthetics, dragging, and title bar behavior.
-- **Vertical Navigation Tabs (Left Sidebar):**
+- **Horizontal Navigation Tabs (Top Bar):** *(swapped from the original vertical-sidebar plan per
+  user feedback after seeing Phase 1 built — see the axis-swap note in the UX Design Proposal §1)*
   - `Chat`: Primary chat interface.
   - `Friends`: Social contact management.
   - `Groups`: Joined group listing and management.
 
-### 2. Vertical Tab: `Chat`
-- **Horizontal Tabs (Top Bar inside Chat view):**
-  - **`Main`**: Fixed, non-closeable tab representing Local Region Chat (`ChatFromSimulator` packets). Always present as the first horizontal tab.
-  - **Dynamic User IM Tabs**: Individual horizontal tabs created dynamically per active direct message conversation with another avatar. Each tab displays the avatar name and an option to close `(x)`.
+### 2. Tab: `Chat`
+- **Vertical Conversation List (Left Sidebar inside Chat view):**
+  - **`Main`**: Fixed, non-closeable entry representing Local Region Chat (`ChatFromSimulator` packets). Always present as the first entry.
+  - **Dynamic User IM Entries**: Individual rows created dynamically per active direct message conversation with another avatar. Each entry displays the avatar name and an option to close `(x)`.
 - **Chat Body:**
   - Rich text message log (timestamps, sender names, message content, system notices), showing
     only the most recent lines of the active conversation (SL/Firestorm-style rolling window, not
@@ -32,7 +33,7 @@ Implement a unified communication and social hub window inheriting from `SLNGWin
   - **History** control (button/link in the chat body) opens a small paginated history window
     (see §2a) backed by the on-disk log file for the active tab.
   - Message input text box with `Send` button (or `Enter` key trigger).
-  - Unread message indicators on inactive horizontal tabs.
+  - Unread message indicators on inactive conversation-list entries.
 
 ### 2a. Chat History Viewer
 - A separate small window (inherits `SLNGWindow`) opened via the **History** control in the Chat
@@ -45,14 +46,14 @@ Implement a unified communication and social hub window inheriting from `SLNGWin
   independent of what's currently buffered in memory.
 - Read-only — no sending from this window.
 
-### 3. Vertical Tab: `Friends`
+### 3. Tab: `Friends`
 - Displays the user's friend list retrieved via `GridSession` / LibreMetaverse `FriendsManager`.
 - **Status Indicators:**
   - Clear visual badges/icons marking each friend as `Online` (green indicator / highlighted text) or `Offline` (greyed out).
 - **Interactions:**
-  - Double-clicking a friend or selecting "IM" opens a dynamic user chat tab in the `Chat` vertical view and switches to it.
+  - Double-clicking a friend or selecting "IM" opens a dynamic conversation-list entry in the `Chat` tab and switches to it.
 
-### 4. Vertical Tab: `Groups`
+### 4. Tab: `Groups`
 - Displays all Second Life / OpenSim groups in which the avatar holds membership (`GroupManager`).
 - Displays group name, group badge/icon placeholder, and role/status.
 - Allows opening group chat sessions or viewing group profiles.
@@ -84,13 +85,19 @@ integration anywhere in `src/` yet. That gap directly shapes the phasing recomme
 
 ### 1. Window shell & dual-axis tab composition
 
-`ChatWindow : SLNGWindow`, registered as a new `ButtonBar` toolbar item (glyph `"chat"`,
-replacing the current inline toggle — see §5 Migration). Reuses `PreferencesWindow`'s
-left-column pattern verbatim for the outer axis, and adds a new horizontal chip-strip pattern
-(no precedent yet) for the inner axis:
+**Axis swap (2026-07-21, post-Phase-1-build):** the original plan below had the outer
+Chat/Friends/Groups switch as a vertical left sidebar and the inner Main/IM switch as a
+horizontal strip. After seeing Phase 1 built, the user's actual mental model was the opposite —
+Chat/Friends/Groups as a horizontal top tab bar (Discord/Slack-style), conversations as a
+vertical list on the left within the Chat tab. Implemented as such; the rest of this section
+describes the current (swapped) layout, not the original one.
 
-- **Default size:** 460 × 420, `CustomMinimumSize` 380 × 320 (small enough that the vertical
-  strip + a horizontal chip row + a 3-line message log all still fit without crushing).
+`ChatWindow : SLNGWindow`, registered as a new `ButtonBar` toolbar item (glyph `"chat"`,
+replacing the current inline toggle — see §5 Migration).
+
+- **Default size:** 460 × 420, `CustomMinimumSize` 380 × 320 (small enough that the top tab
+  strip + a conversation-list sidebar + a few lines of message log all still fit without
+  crushing).
 - **Default position:** `(16, 220)` — bottom-left quadrant, clear of `CameraHUD` (100,100,
   240×160 → ends at y=260, x=340) and `PreferencesWindow` (260,160, 520×360). At (16,220) the
   window's footprint is x:16–476, y:220–640, which doesn't overlap either. It sits low and left
@@ -98,22 +105,19 @@ left-column pattern verbatim for the outer axis, and adds a new horizontal chip-
   SL/Firestorm muscle memory generally — keep chat's spatial "home" stable across the redesign.
   It's independent of `InventoryPanel` (800,100, 360×500) on the right side of a typical
   1920×1080 canvas.
-- **Outer axis (vertical, left sidebar):** identical structural pattern to
-  `PreferencesWindow._tabList` — a 140px-wide `PanelContainer` with the same
-  `BgColor(1,1,1,0.03)` / right border `Color(1,1,1,0.08)` styling, a `VBoxContainer` of
-  `ToggleMode` buttons using `PreferencesWindow.StyleTabButton`'s exact normal/hover/pressed
-  StyleBoxFlats (rather than re-deriving new colors — one visual language for "which tab am I
-  on" across every SLNGWindow). Three entries: Chat, Friends, Groups. `AddTab`-style API,
-  mirrored 1:1 from `PreferencesWindow` so both windows are maintainable the same way.
-- **Inner axis (horizontal, top of the Chat page only):** a new `ChatTabStrip` control — a
-  fixed-height (30px) row living above the message log, *inside* the Chat page's content area
-  only (Friends/Groups pages don't have one). Each tab is a chip: `ToggleMode` `Button` with
-  `Text = displayName`, min-width ~90px, using the same three StyleBoxFlat states as the
-  vertical strip but with `CornerRadiusTop*` only (rounded top, flat bottom, tab-like) instead
-  of left-only rounding. `Main` is not closeable (no `(x)`); dynamic IM chips append a small
-  `×` sub-button (14px, same styling as `SLNGWindow._closeButton`) at their right edge.
-  Structurally: `HBoxContainer` of chips wrapped in a horizontal-only `ScrollContainer`
-  (`vertical_scroll_mode = Disabled`) so it never fights the page's own vertical layout.
+- **Outer axis (horizontal, top tab bar):** a fixed-height (34px) `PanelContainer` +
+  `HBoxContainer` row along the top of the window, below the `SLNGWindow` title bar. Each tab is
+  a `ToggleMode` `Button` styled as a rounded-top "pill" (`CornerRadiusTop*` only) — visually
+  distinct from the conversation list's rounded-left rows so the two axes read as different kinds
+  of navigation at a glance. Three entries: Chat, Friends, Groups; the selected page fills the
+  remaining space below the strip.
+- **Inner axis (vertical, left sidebar inside the Chat tab only):** a 120px-wide `PanelContainer`
+  + `VBoxContainer` of rows (Friends/Groups pages don't have one), scrollable vertically once
+  many IM conversations are open. Each row is a `PanelContainer` "pill" (rounded-left corners,
+  matching `PreferencesWindow`'s tab-list visual language) containing a flat, left-aligned
+  `Button` for the display name plus an unread-count `Label`. `Main` is not closeable (no `(x)`);
+  dynamic IM rows append a small `×` sub-button (14px, same styling as `SLNGWindow._closeButton`)
+  at their right edge. The message log and input row live to the right of this sidebar.
 
 ### 2. Chat tab
 
@@ -130,14 +134,14 @@ left-column pattern verbatim for the outer axis, and adds a new horizontal chip-
 - **Input row:** `LineEdit` + `Send` `Button`, docked at the bottom of the Chat page,
   `SizeFlagsVertical = ShrinkEnd`; `Enter` submits (mirrors the existing `_chatInput.TextSubmitted`
   wiring exactly, just re-pointed at whichever tab is active).
-- **Unread badge:** small circular badge, `BgColor(0.85, 0.25, 0.2, 0.9)` (matches the existing
-  alert/red accent already used elsewhere for `[Alert]` lines), anchored to the chip's top-right
-  corner, showing a count (`"9+"` past 9). Rendered only on *inactive* chips with unread > 0 —
-  no badge, not even "0", when a chip is caught up. Clears the instant its chip becomes active.
-- **Many IM tabs:** MVP is scroll-only (mouse wheel + drag on the chip strip) — no dropdown/
-  overflow menu yet. This is the simplest thing that works and matches how the chip strip
+- **Unread badge:** small text badge, `font_color(0.85, 0.25, 0.2, 0.9)` (matches the existing
+  alert/red accent already used elsewhere for `[Alert]` lines), shown inline at the row's right
+  edge with a count (`"9+"` past 9). Rendered only on *inactive* rows with unread > 0 — no badge,
+  not even "0", when a row is caught up. Clears the instant its row becomes active.
+- **Many IM conversations:** MVP is scroll-only (mouse wheel + drag in the vertical sidebar) — no
+  dropdown/overflow menu yet. This is the simplest thing that works and matches how the sidebar
   degrades gracefully; a "recent conversations" dropdown is a reasonable Phase 2 add if scrolling
-  through a long row proves annoying in practice, but it's new UI with no precedent in this
+  through a long list proves annoying in practice, but it's new UI with no precedent in this
   codebase and isn't needed for the near-term goal, so it's deliberately deferred (see §6).
 
 ### 3. Friends tab
@@ -168,7 +172,7 @@ left-column pattern verbatim for the outer axis, and adds a new horizontal chip-
 ### 5. Concrete states & migration
 
 - **0 vs. many unread:** covered in §2 — no badge at 0, capped display at "9+".
-- **Resize behavior:** the vertical tab strip (140px) and the horizontal chip strip (30px) are
+- **Resize behavior:** the top tab bar (34px) and the conversation-list sidebar (120px) are
   both fixed-size chrome; only the message log (`SizeFlagsVertical = ExpandFill`) grows/shrinks
   with the window. `CustomMinimumSize` (380×320) is the floor where that stops looking cramped.
 - **Docked-next-to-other-windows default:** see §1 — (16,220) at 460×420 doesn't overlap
@@ -187,8 +191,8 @@ today and *nothing else* — no IM, no `FriendsManager`, no `GroupManager` wirin
 codebase yet. That's the real gating factor, more than UI complexity.
 
 **Phase 1 (this pass — serves "see avatars, chat" directly):**
-- Window shell: `SLNGWindow` subclass, vertical Chat/Friends/Groups strip, horizontal chip strip
-  (structural only — Main tab is enough to prove it).
+- Window shell: `SLNGWindow` subclass, horizontal Chat/Friends/Groups top tab bar, vertical
+  conversation-list sidebar (structural only — Main entry is enough to prove it).
 - Chat → Main: full local-chat parity with today's inline box, migrated in (this alone closes
   the M3-2 replacement gap and is a strict win even before IM exists).
 - Chat → dynamic IM tabs: buildable once `SLNG.Net` grows an IM send/receive path (net-layer
@@ -206,7 +210,7 @@ codebase yet. That's the real gating factor, more than UI complexity.
   which the spec itself already marks Phase 2.
 - Preferences integration for the log path/format settings (functional, but not blocking — a
   sane default path is enough until someone asks to change it).
-- Horizontal chip-strip overflow dropdown (§2) — ship scroll-only first.
+- Conversation-list overflow dropdown (§2) — ship vertical-scroll-only first.
 
 Nothing above removes anything from the Acceptance Criteria below; this is sequencing, not
 scope-cutting — the full spec is still the target for `M5-3` overall.
@@ -251,8 +255,8 @@ check once built) are resolved:
 
 ## Acceptance Criteria
 - [ ] Window inherits from `SLNGWindow` and opens via shortcut or UI button.
-- [ ] Vertical tabs (`Chat`, `Friends`, `Groups`) switch active panel cleanly.
-- [ ] Horizontal tabs under `Chat` show `Main` as static default, with new IM tabs opening on message receipt or manual IM initiate.
+- [ ] Horizontal top tabs (`Chat`, `Friends`, `Groups`) switch active panel cleanly.
+- [ ] Vertical conversation-list entries under `Chat` show `Main` as static default, with new IM entries opening on message receipt or manual IM initiate.
 - [ ] Friends list correctly renders online vs. offline status indicators.
 - [ ] Group list displays user's joined groups.
 - [ ] Group chat mute/ignore toggle supported per group (prevents notifications/auto-tab popups).
@@ -277,7 +281,7 @@ check once built) are resolved:
 
 **Phase 1 — window shell + Main chat (this pass, no net-layer prerequisites):**
 - [x] Create `M5-3` spec & update `ROADMAP.md`
-- [x] Implement `ChatWindow` UI shell with vertical tab container (Chat/Friends/Groups) + horizontal chip strip
+- [x] Implement `ChatWindow` UI shell with horizontal top tab bar (Chat/Friends/Groups) + vertical conversation-list sidebar
 - [x] Migrate `Main` local chat from the M3-2 inline `ChatBox`/`LogPanel` into the new window (retire the inline UI)
 - [x] Implement rolling recent-lines log with pause-on-scroll-up + "jump to latest"
 - [x] Implement `ChatLogger` service (SL format, user-space default path, async append + paginated read-back)
@@ -290,7 +294,7 @@ check once built) are resolved:
 
 **Phase 1c — IM (net + UI, needed soon per product priority):**
 - [ ] `SLNG.Net`: IM send/receive plumbing — new net sub-task
-- [ ] Implement dynamic horizontal IM tabs in `Chat` view, wired to the above
+- [ ] Implement dynamic IM entries in the `Chat` conversation-list sidebar, wired to the above
 
 **Deferred follow-up pass:**
 - [ ] `SLNG.Net`: `GroupManager` wiring
