@@ -65,6 +65,8 @@ public partial class ChatWindow : SLNGWindow
         // Set for IM tabs only -- who OnSendPressed routes to via GridSession.SendInstantMessage.
         // Null for "Main" (routes through OnSendLocalChat instead).
         public Guid? TargetAgentId;
+        // Shown once per tab per session -- see WarnIfTargetOffline.
+        public bool OfflineNoticeShown;
     }
 
     private readonly List<ChatTab> _chatTabs = new();
@@ -188,6 +190,25 @@ public partial class ChatWindow : SLNGWindow
         var now = DateTime.Now;
         AppendLineToTab(tab, FormatChatLine(now, sender, message));
         _ = _logger.AppendAsync(tab.LogKind, tab.DisplayName, sender, message, now);
+    }
+
+    /// <summary>Client-side "they're offline" notice, shown once per tab per session right after
+    /// sending. There's no reliable wire-protocol signal for this to key off -- OpenSim only
+    /// stores/forwards offline IMs if the grid runs an offline-message module, which most test
+    /// grids don't, so a real server round trip can't be trusted either way. Presence from
+    /// GetFriends() (already tracked for the Friends tab) is the one thing we always know
+    /// locally, so that's what this checks -- silently does nothing for a non-friend target,
+    /// since their online status isn't known at all in that case.</summary>
+    private void WarnIfTargetOffline(ChatTab tab, Guid targetId)
+    {
+        if (tab.OfflineNoticeShown) return;
+        bool? isOnline = _session?.GetFriends().FirstOrDefault(f => f.Id == targetId)?.IsOnline;
+        if (isOnline != false) return;
+
+        tab.OfflineNoticeShown = true;
+        string notice = $"{tab.DisplayName} is offline. They'll see this message next time they log in.";
+        AppendLineToTab(tab, $"[color=#E0A030][i]{BbEscape(notice)}[/i][/color]");
+        _ = _logger.AppendAsync(tab.LogKind, tab.DisplayName, "System", notice, DateTime.Now);
     }
 
     // Own messages get the same blue accent used for "selected" elsewhere in this window, so a
@@ -374,6 +395,7 @@ public partial class ChatWindow : SLNGWindow
             // The sim doesn't echo your own outgoing IM back through InstantMessageReceived --
             // every other viewer locally echoes what it just sent, so match that here.
             AppendMessageToTab(_activeChatTab, _session?.AgentName ?? "You", text);
+            WarnIfTargetOffline(_activeChatTab, targetId);
         }
 
         _inputEdit.Text = "";
