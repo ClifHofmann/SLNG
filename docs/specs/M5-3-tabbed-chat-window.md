@@ -271,6 +271,11 @@ check once built) are resolved:
    question too — the authoritative record is the log file, not the in-memory buffer, so buffer
    lifetime in memory is an implementation detail (cheap to keep, cheap to discard) rather than a
    product decision.
+   **Clarified (2026-07-21):** "current buffer" means the live view seeds itself from the tail of
+   the on-disk log (last `PreloadHistoryLines` = 50 lines) the moment a tab opens — Main at
+   `ChatWindow.Initialize`, an IM tab at creation (`GetOrCreateImTab`) — not that it starts blank
+   until new messages arrive. Preloaded lines render dim/italic so they read as "from before" vs.
+   anything sent/received live this session; the full log beyond that tail still needs History.
 4. **No cross-restart state.** `ChatWindow` always opens clean to Chat/Main on app launch — no
    persisted tab selection, no restored IM tabs. Simpler, and consistent with decision 3 (anything
    a user needs from before this session is one History click away, not resurrected automatically).

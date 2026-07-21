@@ -21,6 +21,7 @@ public partial class ChatWindow : SLNGWindow
 {
     private const int MaxLogLines = 200;
     private const int UnreadCap = 9;
+    private const int PreloadHistoryLines = 50; // "recent chat" tail loaded from disk when a tab opens
 
     // Shared type scale for this window and its sub-components (FriendsPanel, ChatHistoryWindow)
     // -- every text element used to pick its own font size ad hoc and they'd drifted all over the
@@ -82,6 +83,13 @@ public partial class ChatWindow : SLNGWindow
     public void Initialize(ChatLogger logger)
     {
         _logger = logger;
+
+        // "Main" was already created in _Ready(), before _logger existed -- preload its recent
+        // history now that logging is available, same as every IM tab does at creation time.
+        var mainTab = _chatTabs.Find(t => t.Id == "main");
+        if (mainTab == null) return;
+        PreloadRecentHistory(mainTab);
+        if (mainTab == _activeChatTab) RebuildLogContent(mainTab);
     }
 
     /// <summary>Called by Boot after each successful login (session is a fresh instance per
@@ -182,7 +190,21 @@ public partial class ChatWindow : SLNGWindow
         bool? isOnline = _session?.GetFriends().FirstOrDefault(f => f.Id == agentId)?.IsOnline;
         var tab = AddChatTab(agentId.ToString(), displayName, ChatLogKind.Im, closeable: true, isOnline);
         tab.TargetAgentId = agentId;
+        PreloadRecentHistory(tab);
         return tab;
+    }
+
+    /// <summary>Seeds a freshly (re-)opened tab with the tail of its on-disk log, so opening a
+    /// conversation that already has history shows it immediately instead of starting blank --
+    /// the live view is a rolling window, not a from-scratch buffer, per the M5-3 UX decision.
+    /// Rendered dim/italic so it visually reads as "loaded from before", distinct from anything
+    /// sent/received live in this session. The full log (beyond this tail) is one History click
+    /// away rather than preloaded in full, to keep tab-open cheap.</summary>
+    private void PreloadRecentHistory(ChatTab tab)
+    {
+        var lines = _logger.GetPage(tab.LogKind, tab.DisplayName, int.MaxValue, PreloadHistoryLines, out _);
+        foreach (var line in lines)
+            tab.Lines.Add($"[color=#777777][i]{BbEscape(line)}[/i][/color]");
     }
 
     private void AppendMessageToTab(ChatTab tab, string sender, string message)
