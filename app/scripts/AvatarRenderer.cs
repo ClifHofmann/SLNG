@@ -1918,8 +1918,14 @@ public partial class AvatarRenderer : Node3D
         }
 
         // Plain left-click (not Alt+LMB, which AvatarController reserves for camera orbit):
-        // touch whatever HUD prim is under the cursor, if any.
-        if (@event is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left && !mb.AltPressed)
+        // touch whatever HUD prim is under the cursor, if any. This uses _Input (fires for every
+        // event regardless of GUI consumption), so it had NO guard against clicking a window that
+        // happens to render over the same screen area as a worn HUD attachment (e.g. a body-shape
+        // HUD) -- live-tested: clicking inside the Inventory panel also sent a touch to whatever
+        // HUD prim sat behind it on screen. GuiGetHoveredControl() is the same direct check used
+        // for the analogous world-click leak in ObjectSelectionController.
+        if (@event is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left && !mb.AltPressed
+            && GetViewport().GuiGetHoveredControl() == null)
             TryClickHud(mb.Position);
     }
 

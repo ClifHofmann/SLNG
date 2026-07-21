@@ -414,8 +414,14 @@ public partial class InventoryPanel : SLNGWindow
             row.SetText(0, text);
             // See RefreshFolder's doc comment: a just-created item's own known-good asset id
             // (from the create response, not this fetch) wins over whatever this listing reports.
-            var assetId = entry.Id == knownItemId && knownAssetId is { } known ? known : entry.AssetId;
-            row.SetMetadata(0, $"{entry.Id},{entry.CanCopy},{entry.CanModify},{entry.CanTransfer},{entry.AssetType},{assetId},{entry.IsLink}");
+            // Live-tested proof the lag isn't limited to asset_id: a landmark refreshed right
+            // after creation came back with AssetType == 0 (not 3/Landmark) too, from the exact
+            // same indexing-lag fetch -- so AssetType gets the same known-good override here,
+            // hardcoded to Landmark since that's the only case this override path is used for.
+            bool isKnownItem = entry.Id == knownItemId && knownAssetId.HasValue;
+            var assetId = isKnownItem ? knownAssetId!.Value : entry.AssetId;
+            int assetType = isKnownItem ? SLNG.Core.AssetTypeIds.Landmark : entry.AssetType;
+            row.SetMetadata(0, $"{entry.Id},{entry.CanCopy},{entry.CanModify},{entry.CanTransfer},{assetType},{assetId},{entry.IsLink}");
         }
 
         if (children.Count == 0)
