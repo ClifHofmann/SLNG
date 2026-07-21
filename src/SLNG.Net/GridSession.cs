@@ -1180,7 +1180,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// Fetches the raw bytes of a texture asset (JPEG2000) from the simulator. Returns null
     /// if the fetch times out or fails.
     /// </summary>
-    public Task<byte[]?> FetchTextureDataAsync(Guid textureId)
+    public async Task<byte[]?> FetchTextureDataAsync(Guid textureId)
     {
         var tcs = new TaskCompletionSource<byte[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1212,7 +1212,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     // packetStart is UInt32 — passing int 0 makes Invoke throw "Int32 cannot be
                     // converted to UInt32", which silently fell back to the truncating RequestImageAsync.
                     reqMethod.Invoke(pipeline, new object[] { new UUID(textureId), ImageType.Normal, 100000.0f, 0, 0u, delegateObj, false });
-                    return tcs.Task;
+                    
+                    var delayTask = Task.Delay(TimeSpan.FromSeconds(30));
+                    return await Task.WhenAny(tcs.Task, delayTask) == tcs.Task ? tcs.Task.Result : null;
                 }
             }
         }
@@ -1222,14 +1224,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
 
         // Fallback if reflection fails
+        var fallbackTcs = new TaskCompletionSource<byte[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
         _client.Assets.RequestImageAsync(new UUID(textureId), ImageType.Normal, CancellationToken.None)
             .ContinueWith(t =>
             {
                 var data = t.Result?.AssetData;
-                tcs.TrySetResult(data is { Length: > 0 } ? data : null);
+                fallbackTcs.TrySetResult(data is { Length: > 0 } ? data : null);
             });
-
-        return tcs.Task;
+            
+        var fallbackDelay = Task.Delay(TimeSpan.FromSeconds(30));
+        return await Task.WhenAny(fallbackTcs.Task, fallbackDelay) == fallbackTcs.Task ? fallbackTcs.Task.Result : null;
     }
 
     /// <summary>
