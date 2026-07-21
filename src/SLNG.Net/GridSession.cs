@@ -535,6 +535,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <summary>Agent UUID of the logged-in avatar, or empty until connected.</summary>
     public string AgentId => _client.Self.AgentID.ToString();
 
+    /// <summary>Display name ("First Last") of the logged-in avatar -- used to tell the local
+    /// user's own chat lines apart from everyone else's without threading a separate flag
+    /// through ChatMessageEvent.</summary>
+    public string AgentName => _client.Self.Name;
+
     /// <summary>
     /// Attempts to log in to the grid described by <paramref name="credentials"/>.
     /// Uses LibreMetaverse's async login API; failures (including unreachable grids)

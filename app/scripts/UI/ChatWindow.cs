@@ -21,7 +21,15 @@ public partial class ChatWindow : SLNGWindow
     private const int MaxLogLines = 200;
     private const int UnreadCap = 9;
 
-    private readonly List<(Button TabButton, Control Page)> _outerTabs = new();
+    private sealed class OuterTab
+    {
+        public PanelContainer Pill = null!;
+        public Label Icon = null!;
+        public Button Label = null!;
+        public Control Page = null!;
+    }
+
+    private readonly List<OuterTab> _outerTabs = new();
     private HBoxContainer _outerTabStrip = null!;
     private Control _outerPageHost = null!;
 
@@ -50,6 +58,7 @@ public partial class ChatWindow : SLNGWindow
     private ChatTab? _activeChatTab;
 
     private ChatLogger _logger = null!;
+    private GridSession? _session;
 
     /// <summary>Wired by Boot to GridSession.SendChat -- the Main tab's send path. IM tabs get
     /// their own send routing once Phase 1c's net plumbing exists.</summary>
@@ -61,10 +70,11 @@ public partial class ChatWindow : SLNGWindow
     }
 
     /// <summary>Called by Boot after each successful login (session is a fresh instance per
-    /// login, unlike ChatLogger/OnSendLocalChat which are wired once). Currently only the
-    /// Friends tab needs it; Groups/IM will call in here too once their net plumbing lands.</summary>
+    /// login, unlike ChatLogger/OnSendLocalChat which are wired once). Also used to tell the
+    /// local agent's own chat lines apart by name (see FormatChatLine).</summary>
     public void BindSession(GridSession session)
     {
+        _session = session;
         _friendsPanel.Initialize(session);
     }
 
@@ -74,10 +84,10 @@ public partial class ChatWindow : SLNGWindow
 
         _iconFont = GD.Load<Font>("res://assets/fonts/MaterialSymbolsOutlined.ttf");
 
-        Title = "CHAT";
+        Title = "COMMUNICATION";
         Visible = false;
-        CustomMinimumSize = new Vector2(380, 320);
-        Size = new Vector2(460, 420);
+        CustomMinimumSize = new Vector2(400, 340);
+        Size = new Vector2(480, 430);
         Position = new Vector2(16, 220);
         OnCloseRequested = Hide;
 
@@ -87,10 +97,10 @@ public partial class ChatWindow : SLNGWindow
 
         BuildOuterTabStrip(vbox);
 
-        AddOuterTab("Chat", BuildChatPage());
+        AddOuterTab("Chat", "forum", BuildChatPage());
         _friendsPanel = new FriendsPanel();
-        AddOuterTab("Friends", _friendsPanel);
-        AddOuterTab("Groups", BuildPlaceholderPage(
+        AddOuterTab("Friends", "person", _friendsPanel);
+        AddOuterTab("Groups", "group", BuildPlaceholderPage(
             "You haven't joined any groups yet.", "Group support is planned for a follow-up pass."));
 
         AddChatTab("main", "Main", ChatLogKind.Local, closeable: false);
@@ -131,8 +141,15 @@ public partial class ChatWindow : SLNGWindow
         _ = _logger.AppendAsync(ChatLogKind.Local, tab.DisplayName, sender, message, now);
     }
 
-    private static string FormatChatLine(DateTime timestamp, string sender, string message) =>
-        $"[color=#888888]{timestamp:HH:mm}[/color] [b]{BbEscape(sender)}[/b]: {BbEscape(message)}";
+    // Own messages get the same blue accent used for "selected" elsewhere in this window, so a
+    // glance at the sender-name color tells the two apart -- matches the reviewed mockup's own-
+    // vs-others distinction, without introducing a new accent color to the rest of the UI.
+    private string FormatChatLine(DateTime timestamp, string sender, string message)
+    {
+        bool isOwn = !string.IsNullOrEmpty(_session?.AgentName) && sender == _session!.AgentName;
+        string senderColor = isOwn ? "#79B8F0" : "#E0E0E0";
+        return $"[color=#888888]{timestamp:HH:mm}[/color] [color={senderColor}][b]{BbEscape(sender)}[/b][/color]: {BbEscape(message)}";
+    }
 
     private static string BbEscape(string s) => s.Replace("[", "[lb]");
 
@@ -157,8 +174,21 @@ public partial class ChatWindow : SLNGWindow
         listPanel.AddThemeStyleboxOverride("panel", listStyle);
         hbox.AddChild(listPanel);
 
-        var listScroll = new ScrollContainer { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
-        listPanel.AddChild(listScroll);
+        var listVBox = new VBoxContainer();
+        listVBox.AddThemeConstantOverride("separation", 4);
+        listPanel.AddChild(listVBox);
+
+        var sectionLabel = new Label { Text = "CONTACTS" };
+        sectionLabel.AddThemeFontSizeOverride("font_size", 10);
+        sectionLabel.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
+        listVBox.AddChild(sectionLabel);
+
+        var listScroll = new ScrollContainer
+        {
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+        };
+        listVBox.AddChild(listScroll);
 
         _conversationList = new VBoxContainer
         {
@@ -216,19 +246,22 @@ public partial class ChatWindow : SLNGWindow
         rightVBox.AddChild(_jumpToLatestButton);
 
         var inputRow = new HBoxContainer();
-        inputRow.AddThemeConstantOverride("separation", 6);
+        inputRow.AddThemeConstantOverride("separation", 4);
         rightVBox.AddChild(inputRow);
+
+        inputRow.AddChild(BuildIconButton("attach_file", "Attach (not implemented)", null));
 
         _inputEdit = new LineEdit
         {
-            PlaceholderText = "Type your message here...",
+            PlaceholderText = "Write a message...",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         _inputEdit.TextSubmitted += (_) => OnSendPressed();
         inputRow.AddChild(_inputEdit);
 
-        _sendButton = new Button { Text = "Send", FocusMode = FocusModeEnum.None };
-        _sendButton.Pressed += OnSendPressed;
+        inputRow.AddChild(BuildIconButton("mood", "Emoji (not implemented)", null));
+
+        _sendButton = BuildIconButton("send", "Send", OnSendPressed);
         inputRow.AddChild(_sendButton);
 
         return hbox;
@@ -240,7 +273,7 @@ public partial class ChatWindow : SLNGWindow
     /// so the intended affordance isn't lost, rather than added silently later.</summary>
     private Control BuildActionIconRow()
     {
-        var row = new HBoxContainer();
+        var row = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End, SizeFlagsHorizontal = SizeFlags.ExpandFill };
         row.AddThemeConstantOverride("separation", 2);
 
         row.AddChild(BuildIconButton("history", "History", OnHistoryPressed));
@@ -459,15 +492,16 @@ public partial class ChatWindow : SLNGWindow
 
     private void BuildOuterTabStrip(Control parent)
     {
-        var stripPanel = new PanelContainer { CustomMinimumSize = new Vector2(0, 34) };
+        var stripPanel = new PanelContainer { CustomMinimumSize = new Vector2(0, 40) };
         var stripStyle = new StyleBoxFlat
         {
             BgColor = new Color(1, 1, 1, 0.03f),
             BorderWidthBottom = 1,
             BorderColor = new Color(1, 1, 1, 0.08f),
-            ContentMarginLeft = 6,
-            ContentMarginRight = 6,
-            ContentMarginTop = 4,
+            ContentMarginLeft = 8,
+            ContentMarginRight = 8,
+            ContentMarginTop = 6,
+            ContentMarginBottom = 6,
         };
         stripPanel.AddThemeStyleboxOverride("panel", stripStyle);
         parent.AddChild(stripPanel);
@@ -484,50 +518,73 @@ public partial class ChatWindow : SLNGWindow
         parent.AddChild(_outerPageHost);
     }
 
-    private void AddOuterTab(string tabName, Control page)
+    private void AddOuterTab(string tabName, string iconGlyph, Control page)
     {
         bool isFirst = _outerTabs.Count == 0;
         page.Visible = isFirst;
         page.SetAnchorsPreset(LayoutPreset.FullRect);
         _outerPageHost.AddChild(page);
 
-        var tabButton = new Button
+        var pill = new PanelContainer();
+        _outerTabStrip.AddChild(pill);
+
+        var inner = new HBoxContainer();
+        inner.AddThemeConstantOverride("separation", 6);
+        pill.AddChild(inner);
+
+        var icon = new Label { Text = iconGlyph, VerticalAlignment = VerticalAlignment.Center };
+        icon.AddThemeFontOverride("font", _iconFont);
+        icon.AddThemeFontSizeOverride("font_size", 15);
+        inner.AddChild(icon);
+
+        var label = new Button
         {
             Text = tabName,
-            ToggleMode = true,
-            ButtonPressed = isFirst,
+            Flat = true,
             FocusMode = FocusModeEnum.None,
-            CustomMinimumSize = new Vector2(70, 30),
+            CustomMinimumSize = new Vector2(0, 24),
         };
-        StyleOuterTabButton(tabButton);
-        tabButton.Pressed += () => SelectOuterTab(page);
-        _outerTabStrip.AddChild(tabButton);
+        label.AddThemeFontSizeOverride("font_size", 12);
+        inner.AddChild(label);
 
-        _outerTabs.Add((tabButton, page));
+        var tab = new OuterTab { Pill = pill, Icon = icon, Label = label, Page = page };
+        _outerTabs.Add(tab);
+        label.Pressed += () => SelectOuterTab(page);
+
+        ApplyOuterTabStyle(tab, selected: isFirst);
     }
 
-    // Rounded-top "pill" tabs -- the classic top tab bar look, distinct from the conversation
-    // list's rounded-left rows so the two axes read as visually different kinds of navigation.
-    private static void StyleOuterTabButton(Button btn)
+    // Rounded "pill" tabs -- the classic top tab bar look, distinct from the conversation list's
+    // rounded-left rows so the two axes read as visually different kinds of navigation.
+    private static void ApplyOuterTabStyle(OuterTab tab, bool selected)
     {
-        var normalStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.03f), CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, ContentMarginTop = 6, ContentMarginBottom = 6 };
-        var hoverStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.08f), CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, ContentMarginTop = 6, ContentMarginBottom = 6 };
-        var pressedStyle = new StyleBoxFlat { BgColor = new Color(0.3f, 0.6f, 0.9f, 0.25f), CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, ContentMarginTop = 6, ContentMarginBottom = 6 };
-        btn.AddThemeStyleboxOverride("normal", normalStyle);
-        btn.AddThemeStyleboxOverride("hover", hoverStyle);
-        btn.AddThemeStyleboxOverride("pressed", pressedStyle);
-        btn.AddThemeStyleboxOverride("hover_pressed", pressedStyle);
-        btn.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
-        btn.AddThemeColorOverride("font_pressed_color", new Color(1, 1, 1));
+        var style = new StyleBoxFlat
+        {
+            BgColor = selected ? new Color(1, 1, 1, 0.10f) : new Color(0, 0, 0, 0),
+            CornerRadiusTopLeft = 8,
+            CornerRadiusTopRight = 8,
+            CornerRadiusBottomLeft = 8,
+            CornerRadiusBottomRight = 8,
+            ContentMarginLeft = 10,
+            ContentMarginRight = 10,
+            ContentMarginTop = 5,
+            ContentMarginBottom = 5,
+        };
+        tab.Pill.AddThemeStyleboxOverride("panel", style);
+
+        var fg = selected ? new Color(1, 1, 1) : new Color(0.65f, 0.65f, 0.65f);
+        tab.Icon.AddThemeColorOverride("font_color", fg);
+        tab.Label.AddThemeColorOverride("font_color", fg);
+        tab.Label.AddThemeColorOverride("font_hover_color", new Color(1, 1, 1));
     }
 
     private void SelectOuterTab(Control selectedPage)
     {
-        foreach (var (tabButton, page) in _outerTabs)
+        foreach (var tab in _outerTabs)
         {
-            bool selected = page == selectedPage;
-            page.Visible = selected;
-            tabButton.ButtonPressed = selected;
+            bool selected = tab.Page == selectedPage;
+            tab.Page.Visible = selected;
+            ApplyOuterTabStyle(tab, selected);
         }
     }
 

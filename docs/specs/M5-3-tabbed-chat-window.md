@@ -119,7 +119,24 @@ replacing the current inline toggle — see §5 Migration).
   dynamic IM rows append a small `×` sub-button (14px, same styling as `SLNGWindow._closeButton`)
   at their right edge. The message log and input row live to the right of this sidebar.
 
-### 2. Chat tab
+**Visual refinement pass (2026-07-21, two further Gemini Canvas mockups reviewed):** the user
+asked for the window to match a more polished reference design. Adopted:
+- Window title `CHAT` → `COMMUNICATION`.
+- Top tabs gained icons (`forum`/`person`/`group`) next to their labels, rendered as a rounded
+  "pill" per tab (all four corners, not just the top) with the active one highlighted.
+- A small `CONTACTS` section label sits above the conversation-list sidebar.
+- The action-icon row (§7/§9) is right-aligned above the log instead of left-aligned.
+- Own vs. others' messages are color-differentiated (sender name in the window's existing blue
+  accent for the local agent, light grey for everyone else) — needs `GridSession.AgentName` (new)
+  to compare against `ChatMessageEvent.FromName`.
+- The input row is icon-based: `attach_file` (not implemented) — `LineEdit` — `mood`/emoji (not
+  implemented) — `send` (functional, replaces the old "Send" text button).
+
+**Deliberately not adopted:** the reference mockup shows a uniform grey person-icon on every
+conversation-list row regardless of online/offline state — no color distinction at all. That
+regresses on an explicit earlier requirement (§7/Resolved decisions: presence must be visible on
+these rows), so the green/grey presence dot added for the width fix stays instead of being
+replaced by the mockup's icon.
 
 - **Message log:** `RichTextLabel`, `bbcode_enabled = true`, `scroll_following = true` — same
   control and cap discipline as the existing `Boot.LogMessage` (200-line cap per buffer, clear
