@@ -35,6 +35,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<AvatarUpdateEvent>? AvatarUpdateReceived;
     public event EventHandler<ObjectRemovedEvent>? ObjectRemovedReceived;
     public event EventHandler<ObjectPropertiesEvent>? ObjectPropertiesReceived;
+    public event EventHandler<PhysicsPropertiesEvent>? PhysicsPropertiesReceived;
     public event EventHandler<NameResolvedEvent>? NameResolved;
     public event EventHandler<AlertMessageEvent>? AlertMessageReceived;
     public event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
@@ -74,6 +75,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Objects.AvatarUpdate += OnAvatarUpdate;
         _client.Objects.ObjectPropertiesFamily += OnObjectPropertiesFamily;
         _client.Objects.ObjectProperties += OnObjectPropertiesFull;
+        _client.Objects.PhysicsProperties += OnPhysicsProperties;
         _client.Avatars.UUIDNameReply += OnUUIDNameReply;
         _client.Groups.GroupNamesReply += OnGroupNamesReply;
         _client.Self.AlertMessage += OnAlertMessage;
@@ -197,6 +199,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Modify),
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Copy),
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Transfer)
+        ));
+    }
+
+    /// <summary>Unlike ObjectUpdate/ObjectProperties, this only arrives after an explicit
+    /// object-select request (see SelectObject) -- delivered asynchronously over the EventQueue
+    /// CAP, not plain UDP, so it can land well after the select call returns.</summary>
+    private void OnPhysicsProperties(object? sender, PhysicsPropertiesEventArgs e)
+    {
+        var p = e.PhysicsProperties;
+        byte shapeByte = (byte)p.PhysicsShapeType;
+        PhysicsPropertiesReceived?.Invoke(this, new PhysicsPropertiesEvent(
+            e.Simulator.Handle,
+            p.LocalID,
+            shapeByte <= 2 ? (SLNG.Core.PrimPhysicsShapeType)shapeByte : SLNG.Core.PrimPhysicsShapeType.Prim,
+            p.Density,
+            p.Friction,
+            p.Restitution,
+            p.GravityMultiplier
         ));
     }
 
@@ -432,6 +452,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             prim.Light.Intensity,
             prim.Light.Radius,
             prim.Light.Falloff,
+            // OpenMetaverse.Material and SLNG.Core.PrimMaterial share the same 0-6 numeric values
+            // by design (see PrimMaterial's doc comment) -- the enum's rare/vestigial value 7
+            // ("Light", unrelated to the point-light feature, not user-selectable in the real SL
+            // viewer either) has no matching PrimMaterial member; clamp it to Wood rather than
+            // let an unnamed enum value reach the UI.
+            (byte)prim.PrimData.Material <= 6 ? (SLNG.Core.PrimMaterial)(byte)prim.PrimData.Material : SLNG.Core.PrimMaterial.Wood,
             isFullUpdate));
     }
 
@@ -771,12 +797,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// simplified 6-arg SetFlags() overload hardcodes Prim, which is why every flag toggle from
     /// this client was being swallowed (confirmed: a full-perm object the same agent already
     /// edits fine in Firestorm still silently rejected our ObjectFlagUpdate).</summary>
-    public void SetObjectFlags(uint localId, bool physical, bool temporary, bool phantom, bool castsShadows)
+    /// <summary>Flags AND physics-shape/material data share one wire message
+    /// (ObjectFlagUpdate) -- every call resends both, so the caller must pass the object's
+    /// current known physics values (not just the flag being changed), the same way
+    /// ObjectEditWindow.SendObjectFlags already threads through its other unchanged flags.
+    /// physicsShapeType=(byte)255/invalid is the sentinel meaning "leave extra-physics data
+    /// alone" (see opensim-objectflagupdate-physshapetype memory) -- pass a real
+    /// PrimPhysicsShapeType value only when the caller actually knows/wants to set one.</summary>
+    public void SetObjectFlags(uint localId, bool physical, bool temporary, bool phantom, bool castsShadows,
+        PrimPhysicsShapeType physicsShapeType, float density, float friction, float restitution, float gravityMultiplier)
     {
         if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
-        const PhysicsShapeType noExtraPhysicsData = (PhysicsShapeType)255;
         _client.Objects.SetFlags(_client.Network.CurrentSim, localId, physical, temporary, phantom, castsShadows,
-            noExtraPhysicsData, 1000f, 0.6f, 0.5f, 1f);
+            (PhysicsShapeType)(byte)physicsShapeType, density, friction, restitution, gravityMultiplier);
     }
 
     /// <summary>SL's "Locked" build-floater checkbox isn't a wire flag -- it's expressed by
@@ -802,6 +835,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             Cutoff = 0f
         };
         _client.Objects.SetLight(_client.Network.CurrentSim, localId, light);
+    }
+
+    /// <summary>Classic material (Stone/Metal/.../Rubber) -- collision sound/friction. Sends a
+    /// dedicated ObjectMaterial packet, unrelated to the flags/light messages above.</summary>
+    public void SetObjectMaterial(uint localId, SLNG.Core.PrimMaterial material)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+        _client.Objects.SetMaterial(_client.Network.CurrentSim, localId, (Material)(byte)material);
     }
 
     /// <summary>Rezzes a new basic-shape prim at the given region-local position. The sim only
@@ -954,6 +995,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Objects.TerseObjectUpdate -= OnTerseObjectUpdate;
         _client.Objects.ObjectPropertiesFamily -= OnObjectPropertiesFamily;
         _client.Objects.ObjectProperties -= OnObjectPropertiesFull;
+        _client.Objects.PhysicsProperties -= OnPhysicsProperties;
         _client.Avatars.UUIDNameReply -= OnUUIDNameReply;
         _client.Groups.GroupNamesReply -= OnGroupNamesReply;
         _client.Self.AlertMessage -= OnAlertMessage;

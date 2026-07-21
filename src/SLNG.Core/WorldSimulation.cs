@@ -40,6 +40,7 @@ public sealed class WorldSimulation : IDisposable
         _source.AvatarAppearanceReceived += OnAvatarAppearance;
         _source.AvatarAnimationReceived += OnAvatarAnimation;
         _source.ObjectPropertiesReceived += OnObjectProperties;
+        _source.PhysicsPropertiesReceived += OnPhysicsProperties;
     }
 
     // These run on background network threads: enqueue only, never touch the world.
@@ -47,6 +48,7 @@ public sealed class WorldSimulation : IDisposable
     private void OnAvatarUpdate(object? sender, AvatarUpdateEvent e) => _pending.Enqueue(e);
     private void OnObjectRemoved(object? sender, ObjectRemovedEvent e) => _pending.Enqueue(e);
     private void OnObjectProperties(object? sender, ObjectPropertiesEvent e) => _pending.Enqueue(e);
+    private void OnPhysicsProperties(object? sender, PhysicsPropertiesEvent e) => _pending.Enqueue(e);
     private void OnTerrainPatch(object? sender, TerrainPatchEvent e) => _pending.Enqueue(e);
     private void OnTerrainSettings(object? sender, TerrainSettingsEvent e) => _pending.Enqueue(e);
     private void OnRegionDisconnected(object? sender, RegionDisconnectedEvent e) => _pending.Enqueue(e);
@@ -67,6 +69,7 @@ public sealed class WorldSimulation : IDisposable
                 case AvatarUpdateEvent e: ApplyAvatarUpdate(e); break;
                 case ObjectRemovedEvent e: _world.RemoveEntity(e.RegionHandle, e.LocalId); break;
                 case ObjectPropertiesEvent e: ApplyObjectProperties(e); break;
+                case PhysicsPropertiesEvent e: ApplyPhysicsProperties(e); break;
                 case TerrainPatchEvent e: ApplyTerrainPatch(e); break;
                 case TerrainSettingsEvent e: ApplyTerrainSettings(e); break;
                 case RegionDisconnectedEvent e: _world.RemoveRegion(e.RegionHandle); break;
@@ -127,6 +130,10 @@ public sealed class WorldSimulation : IDisposable
             entity.SetComponent(prim);
         }
         prim.AttachmentPoint = e.AttachmentPoint;
+        // Unlike the flags/light fields below, Material comes from the same PrimData block as
+        // Shape/ProfileCurve above -- current on every update, full or terse, so no IsFullUpdate
+        // guard is needed here.
+        prim.Material = e.Material;
         // Terse-sourced events (ImprovedTerseObjectUpdate -- fast position streaming for moving
         // objects) never carry real flags on the wire; LibreMetaverse leaves Primitive.Flags at
         // whatever the last full update said. Applying that here would repeatedly stomp a flag
@@ -409,12 +416,33 @@ public sealed class WorldSimulation : IDisposable
         _world.NotifyComponentUpdated(entity, meta);
     }
 
+    /// <summary>Unlike ObjectProperties, PhysicsProperties carries a real LocalID -- resolve
+    /// directly by (region, localId) like ApplyObjectUpdate does, no MetadataComponent lookup
+    /// needed.</summary>
+    private void ApplyPhysicsProperties(PhysicsPropertiesEvent e)
+    {
+        var entity = _world.GetEntity(e.RegionHandle, e.LocalId);
+        if (entity == null) return;
+
+        var prim = entity.GetComponent<PrimitiveComponent>();
+        if (prim == null) return;
+
+        prim.PhysicsShapeType = e.ShapeType;
+        prim.PhysicsDensity = e.Density;
+        prim.PhysicsFriction = e.Friction;
+        prim.PhysicsRestitution = e.Restitution;
+        prim.PhysicsGravity = e.GravityMultiplier;
+        prim.HasPhysicsProperties = true;
+        _world.NotifyComponentUpdated(entity, prim);
+    }
+
     public void Dispose()
     {
         _source.ObjectUpdateReceived -= OnObjectUpdate;
         _source.AvatarUpdateReceived -= OnAvatarUpdate;
         _source.ObjectRemovedReceived -= OnObjectRemoved;
         _source.ObjectPropertiesReceived -= OnObjectProperties;
+        _source.PhysicsPropertiesReceived -= OnPhysicsProperties;
         _source.TerrainPatchReceived -= OnTerrainPatch;
         _source.TerrainSettingsReceived -= OnTerrainSettings;
         _source.RegionDisconnectedReceived -= OnRegionDisconnected;

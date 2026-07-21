@@ -218,23 +218,35 @@ public partial class ObjectRenderer : Node3D
     {
         if (_world == null) return;
         if (!Guid.TryParse(idStr, out var id)) return;
-        
+
         var entity = _world.GetEntity(id);
         if (entity == null) return;
-        
+
+        // Edit Linked Parts ON (FEAT-UI-06): highlight only the specific part that was actually
+        // selected -- grouping by root here would glow the WHOLE linkset regardless of which
+        // part got selected, making it look like per-part selection silently does nothing.
+        if (SelectionSettings.EditLinkedParts)
+        {
+            if (_visuals.TryGetValue(id, out var soloState) && soloState.MeshInstance != null)
+            {
+                soloState.MeshInstance.MaterialOverlay = isSelected ? _highlightMaterial : null;
+            }
+            return;
+        }
+
         var transform = entity.GetComponent<TransformComponent>();
         if (transform == null) return;
-        
+
         uint rootLocalId = transform.ParentLocalId != 0 ? transform.ParentLocalId : entity.LocalId;
-        
+
         foreach (var kvp in _visuals)
         {
             var visEntity = _world.GetEntity(kvp.Key);
             if (visEntity == null) continue;
-            
+
             var visTransform = visEntity.GetComponent<TransformComponent>();
             if (visTransform == null) continue;
-            
+
             uint visRootLocalId = visTransform.ParentLocalId != 0 ? visTransform.ParentLocalId : visEntity.LocalId;
             if (visRootLocalId == rootLocalId && kvp.Value.MeshInstance != null)
             {

@@ -82,14 +82,20 @@ namespace SLNG.App
                                     var entity = _world.GetEntity(guid);
                                     if (entity != null)
                                     {
-                                        var transform = entity.GetComponent<TransformComponent>();
-                                        if (transform != null && transform.ParentLocalId != 0)
+                                        // Edit Linked Parts OFF (default): resolve up to the
+                                        // linkset's root, matching pre-existing behavior. ON:
+                                        // leave the specifically-clicked part as-is (FEAT-UI-06).
+                                        if (!SelectionSettings.EditLinkedParts)
                                         {
-                                            var parent = _world.GetEntity(entity.RegionHandle, transform.ParentLocalId);
-                                            if (parent != null)
+                                            var transform = entity.GetComponent<TransformComponent>();
+                                            if (transform != null && transform.ParentLocalId != 0)
                                             {
-                                                entity = parent;
-                                                localId = transform.ParentLocalId;
+                                                var parent = _world.GetEntity(entity.RegionHandle, transform.ParentLocalId);
+                                                if (parent != null)
+                                                {
+                                                    entity = parent;
+                                                    localId = transform.ParentLocalId;
+                                                }
                                             }
                                         }
 

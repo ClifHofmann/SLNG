@@ -57,6 +57,24 @@ namespace SLNG.App.UI
         private System.Numerics.Vector3? _pendingLightColor;
         private float? _pendingLightIntensity, _pendingLightRadius, _pendingLightFalloff;
 
+        // Same dirty-check role, for the classic Material dropdown (Stone/Metal/.../Rubber).
+        private PrimMaterial _knownMaterial = PrimMaterial.Wood;
+        private PrimMaterial? _pendingMaterial;
+
+        // Physics Shape Type + Gravity/Friction/Density/Bounciness (Features tab "Physics"
+        // section) share ObjectFlagUpdate's wire message with Physical/Temporary/Phantom -- every
+        // SetObjectFlags call resends ALL of it. _hasKnownPhysics guards against sending our own
+        // guessed defaults the FIRST time a flag checkbox is toggled before the server's real
+        // PhysicsPropertiesEvent has arrived (it's fetched asynchronously via the EventQueue CAP,
+        // triggered by ObjectSelectionController's SelectObject call, not bundled with
+        // ObjectUpdate) -- until then, flag-only toggles keep sending the (byte)255 "leave extra
+        // physics data alone" sentinel, exactly like before this feature existed.
+        private bool _hasKnownPhysics;
+        private PrimPhysicsShapeType _knownPhysicsShapeType = PrimPhysicsShapeType.Prim;
+        private float _knownPhysicsGravity = 1.0f, _knownPhysicsFriction = 0.6f, _knownPhysicsDensity = 1000f, _knownPhysicsRestitution = 0.5f;
+        private PrimPhysicsShapeType? _pendingPhysicsShapeType;
+        private float? _pendingPhysicsGravity, _pendingPhysicsFriction, _pendingPhysicsDensity, _pendingPhysicsRestitution;
+
         // See ApplyTransform: true while this window is firing its own optimistic
         // NotifyComponentUpdated calls, so OnComponentUpdated (below) can tell "this is my own
         // write echoing back" apart from a genuine incoming update from the simulator.
@@ -74,6 +92,15 @@ namespace SLNG.App.UI
         private CheckBox _lightCheck = null!;
         private ColorPickerButton _lightColorPicker = null!;
         private LineEdit _lightIntensityInput = null!, _lightRadiusInput = null!, _lightFalloffInput = null!;
+
+        // Index order matches PrimMaterial's declaration order exactly (Stone=0..Rubber=6), so
+        // the OptionButton's selected index can cast directly to PrimMaterial with no lookup.
+        private OptionButton _materialOption = null!;
+
+        // Index order matches PrimPhysicsShapeType's declaration order (Prim=0, None=1,
+        // ConvexHull=2), same direct-cast reasoning as _materialOption.
+        private OptionButton _physicsShapeOption = null!;
+        private LineEdit _physicsGravityInput = null!, _physicsFrictionInput = null!, _physicsDensityInput = null!, _physicsRestitutionInput = null!;
 
         public void Initialize(GridSession session, World world)
         {
@@ -219,6 +246,39 @@ namespace SLNG.App.UI
             lightApplyBtn.Pressed += SendObjectLight;
             featVBox.AddChild(lightApplyBtn);
 
+            featVBox.AddChild(new HSeparator());
+
+            _materialOption = new OptionButton();
+            foreach (var m in new[] { "Stone", "Metal", "Glass", "Wood", "Flesh", "Plastic", "Rubber" })
+                _materialOption.AddItem(m);
+            _materialOption.ItemSelected += idx => SendObjectMaterial((PrimMaterial)idx);
+            var materialGrid = new GridContainer { Columns = 2 };
+            materialGrid.AddChild(new Label { Text = "Material:" }); materialGrid.AddChild(_materialOption);
+            featVBox.AddChild(materialGrid);
+
+            featVBox.AddChild(new HSeparator());
+            featVBox.AddChild(new Label { Text = "Physics" });
+
+            _physicsShapeOption = new OptionButton();
+            foreach (var s in new[] { "Prim", "None", "Convex Hull" })
+                _physicsShapeOption.AddItem(s);
+            _physicsGravityInput = new LineEdit { CustomMinimumSize = new Vector2(60, 0), SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            _physicsFrictionInput = new LineEdit { CustomMinimumSize = new Vector2(60, 0), SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            _physicsDensityInput = new LineEdit { CustomMinimumSize = new Vector2(60, 0), SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            _physicsRestitutionInput = new LineEdit { CustomMinimumSize = new Vector2(60, 0), SizeFlagsHorizontal = SizeFlags.ExpandFill };
+
+            var physicsGrid = new GridContainer { Columns = 2 };
+            physicsGrid.AddChild(new Label { Text = "Shape Type:" }); physicsGrid.AddChild(_physicsShapeOption);
+            physicsGrid.AddChild(new Label { Text = "Gravity:" }); physicsGrid.AddChild(_physicsGravityInput);
+            physicsGrid.AddChild(new Label { Text = "Friction:" }); physicsGrid.AddChild(_physicsFrictionInput);
+            physicsGrid.AddChild(new Label { Text = "Density:" }); physicsGrid.AddChild(_physicsDensityInput);
+            physicsGrid.AddChild(new Label { Text = "Bounciness:" }); physicsGrid.AddChild(_physicsRestitutionInput);
+            featVBox.AddChild(physicsGrid);
+
+            var physicsApplyBtn = new Button { Text = "Apply Physics", CustomMinimumSize = new Vector2(0, 30) };
+            physicsApplyBtn.Pressed += SendObjectPhysics;
+            featVBox.AddChild(physicsApplyBtn);
+
             // Texture Tab
             var textureTab = new MarginContainer { Name = "Texture" };
             var texVBox = new VBoxContainer();
@@ -243,9 +303,11 @@ namespace SLNG.App.UI
         public void EditObject(Entity entity, uint localId, World? world)
         {
             var transform = entity.GetComponent<TransformComponent>();
-            
-            // Always resolve to the Root object of the linkset unless we want to edit a specific part
-            if (transform != null && transform.ParentLocalId != 0 && _session != null && world != null)
+
+            // Resolve to the Root object of the linkset, unless Edit Linked Parts is on
+            // (FEAT-UI-06) -- in which case the caller (ObjectSelectionController) already left
+            // the specifically-clicked part as entity/localId and this must not override that.
+            if (!SelectionSettings.EditLinkedParts && transform != null && transform.ParentLocalId != 0 && _session != null && world != null)
             {
                 var parent = world.GetEntity(_session.CurrentRegionHandle, transform.ParentLocalId);
                 if (parent != null)
@@ -293,6 +355,13 @@ namespace SLNG.App.UI
             _pendingLightEnabled = null;
             _pendingLightColor = null;
             _pendingLightIntensity = _pendingLightRadius = _pendingLightFalloff = null;
+            _pendingMaterial = null;
+            _pendingPhysicsShapeType = null;
+            _pendingPhysicsGravity = _pendingPhysicsFriction = _pendingPhysicsDensity = _pendingPhysicsRestitution = null;
+            // Physics data is per-object and fetched asynchronously (see the field comment on
+            // _hasKnownPhysics) -- opening a different object means we no longer know ITS real
+            // physics state until a fresh PhysicsPropertiesEvent arrives.
+            _hasKnownPhysics = false;
 
             var primitive = entity.GetComponent<PrimitiveComponent>();
             if (primitive != null)
@@ -317,6 +386,23 @@ namespace SLNG.App.UI
                 _lightIntensityInput.Text = primitive.LightIntensity.ToString("F2");
                 _lightRadiusInput.Text = primitive.LightRadius.ToString("F2");
                 _lightFalloffInput.Text = primitive.LightFalloff.ToString("F2");
+
+                _knownMaterial = primitive.Material;
+                _materialOption.Selected = (int)primitive.Material;
+
+                // Placeholder display only -- PrimitiveComponent's physics fields are just its
+                // own constructor defaults until the real PhysicsPropertiesEvent lands (see
+                // _hasKnownPhysics); UpdatePrimStateUI corrects this once it arrives.
+                _knownPhysicsShapeType = primitive.PhysicsShapeType;
+                _knownPhysicsGravity = primitive.PhysicsGravity;
+                _knownPhysicsFriction = primitive.PhysicsFriction;
+                _knownPhysicsDensity = primitive.PhysicsDensity;
+                _knownPhysicsRestitution = primitive.PhysicsRestitution;
+                _physicsShapeOption.Selected = (int)primitive.PhysicsShapeType;
+                _physicsGravityInput.Text = primitive.PhysicsGravity.ToString("F2");
+                _physicsFrictionInput.Text = primitive.PhysicsFriction.ToString("F2");
+                _physicsDensityInput.Text = primitive.PhysicsDensity.ToString("F2");
+                _physicsRestitutionInput.Text = primitive.PhysicsRestitution.ToString("F2");
             }
 
             var meta = entity.GetComponent<MetadataComponent>();
@@ -470,7 +556,13 @@ namespace SLNG.App.UI
             bool p = physical ?? _knownPhysical;
             bool t = temporary ?? _knownTemporary;
             bool ph = phantom ?? _knownPhantom;
-            _session.SetObjectFlags(_currentLocalId, p, t, ph, prim.CastsShadows);
+            // Physics shape/material share this same wire message -- resend the last known-good
+            // values, or the (byte)255 "leave untouched" sentinel if we've never actually learned
+            // this object's real physics data yet (see _hasKnownPhysics), so a plain flag toggle
+            // can't silently reset physics settings the user (or object) already had.
+            var shapeType = _hasKnownPhysics ? _knownPhysicsShapeType : (PrimPhysicsShapeType)255;
+            _session.SetObjectFlags(_currentLocalId, p, t, ph, prim.CastsShadows,
+                shapeType, _knownPhysicsDensity, _knownPhysicsFriction, _knownPhysicsRestitution, _knownPhysicsGravity);
 
             _knownPhysical = p;
             _knownTemporary = t;
@@ -550,6 +642,57 @@ namespace SLNG.App.UI
         private static bool ApproxEqual(System.Numerics.Vector3 a, System.Numerics.Vector3 b, float eps = 0.02f) =>
             ApproxEqual(a.X, b.X, eps) && ApproxEqual(a.Y, b.Y, eps) && ApproxEqual(a.Z, b.Z, eps);
 
+        private void SendObjectMaterial(PrimMaterial material)
+        {
+            if (_currentLocalId == 0 || _session == null) return;
+
+            _session.SetObjectMaterial(_currentLocalId, material);
+
+            var prim = _currentEntity?.GetComponent<PrimitiveComponent>();
+            if (prim != null) prim.Material = material;
+
+            _knownMaterial = material;
+            _pendingMaterial = material;
+        }
+
+        /// <summary>Sends Physics Shape Type + Gravity/Friction/Density/Bounciness via the same
+        /// ObjectFlagUpdate message Physical/Temporary/Phantom use -- carries the current known
+        /// flag state through unchanged, same bundling reasoning as SendObjectFlags.</summary>
+        private void SendObjectPhysics()
+        {
+            if (_currentLocalId == 0 || _session == null) return;
+            var prim = _currentEntity?.GetComponent<PrimitiveComponent>();
+            if (prim == null) return;
+
+            var shapeType = (PrimPhysicsShapeType)_physicsShapeOption.Selected;
+            if (!float.TryParse(_physicsGravityInput.Text, out float gravity)) gravity = _knownPhysicsGravity;
+            if (!float.TryParse(_physicsFrictionInput.Text, out float friction)) friction = _knownPhysicsFriction;
+            if (!float.TryParse(_physicsDensityInput.Text, out float density)) density = _knownPhysicsDensity;
+            if (!float.TryParse(_physicsRestitutionInput.Text, out float restitution)) restitution = _knownPhysicsRestitution;
+
+            _session.SetObjectFlags(_currentLocalId, _knownPhysical, _knownTemporary, _knownPhantom, prim.CastsShadows,
+                shapeType, density, friction, restitution, gravity);
+
+            prim.PhysicsShapeType = shapeType;
+            prim.PhysicsGravity = gravity;
+            prim.PhysicsFriction = friction;
+            prim.PhysicsDensity = density;
+            prim.PhysicsRestitution = restitution;
+
+            _knownPhysicsShapeType = shapeType;
+            _knownPhysicsGravity = gravity;
+            _knownPhysicsFriction = friction;
+            _knownPhysicsDensity = density;
+            _knownPhysicsRestitution = restitution;
+            _hasKnownPhysics = true;
+
+            _pendingPhysicsShapeType = shapeType;
+            _pendingPhysicsGravity = gravity;
+            _pendingPhysicsFriction = friction;
+            _pendingPhysicsDensity = density;
+            _pendingPhysicsRestitution = restitution;
+        }
+
         /// <summary>Set by the owner (Boot.cs) before the first EditObject call so multiple
         /// simultaneously-open windows cascade instead of spawning exactly on top of each other.</summary>
         public int CascadeIndex { get; set; }
@@ -582,14 +725,19 @@ namespace SLNG.App.UI
             {
                 CallDeferred(MethodName.UpdatePrimStateUI, prim.IsPhysical, prim.IsTemporary, prim.IsPhantom,
                     prim.LightEnabled, prim.LightColor.X, prim.LightColor.Y, prim.LightColor.Z,
-                    prim.LightIntensity, prim.LightRadius, prim.LightFalloff);
+                    prim.LightIntensity, prim.LightRadius, prim.LightFalloff, (int)prim.Material,
+                    (int)prim.PhysicsShapeType, prim.PhysicsGravity, prim.PhysicsFriction, prim.PhysicsDensity, prim.PhysicsRestitution,
+                    prim.HasPhysicsProperties);
             }
         }
 
         private void UpdatePrimStateUI(bool physical, bool temporary, bool phantom,
-            bool lightEnabled, float lightR, float lightG, float lightB, float lightIntensity, float lightRadius, float lightFalloff)
+            bool lightEnabled, float lightR, float lightG, float lightB, float lightIntensity, float lightRadius, float lightFalloff,
+            int materialInt, int physicsShapeInt, float physicsGravity, float physicsFriction, float physicsDensity, float physicsRestitution,
+            bool hasPhysicsProperties)
         {
-            GD.Print($"[ObjectEditWindow] UpdatePrimStateUI <- lightEnabled={lightEnabled} color=({lightR:F2},{lightG:F2},{lightB:F2}) intensity={lightIntensity} radius={lightRadius} falloff={lightFalloff} | pendingEnabled={_pendingLightEnabled} pendingColor={_pendingLightColor} pendingIntensity={_pendingLightIntensity} pendingRadius={_pendingLightRadius} pendingFalloff={_pendingLightFalloff}");
+            var material = (PrimMaterial)materialInt;
+            var physicsShape = (PrimPhysicsShapeType)physicsShapeInt;
             // While a flag change is pending, only accept a live value that actually confirms
             // it -- otherwise a stale/late echo would un-toggle what the user just set before the
             // simulator's real confirmation has arrived. No timeout: see the field comment on
@@ -643,6 +791,54 @@ namespace SLNG.App.UI
                 _lightFalloffInput.Text = lightFalloff.ToString("F2");
                 _knownLightFalloff = lightFalloff;
                 _pendingLightFalloff = null;
+            }
+            if (_pendingMaterial is null || _pendingMaterial == material)
+            {
+                _materialOption.Selected = (int)material;
+                _knownMaterial = material;
+                _pendingMaterial = null;
+            }
+
+            // hasPhysicsProperties distinguishes "this notify carries a real, server-confirmed
+            // physics update" from "this notify fired for an unrelated PrimitiveComponent change
+            // (position, texture, ...) that happens to share the same event" -- PrimitiveComponent
+            // always HAS PhysicsX fields (constructor defaults), but they're only trustworthy once
+            // this is true (see PrimitiveComponent.HasPhysicsProperties). Without this gate, the
+            // very first ordinary object update after opening Edit would wrongly mark placeholder
+            // defaults as "known," and the next flag toggle would overwrite the object's real
+            // physics settings with those fake defaults instead of preserving them.
+            if (!hasPhysicsProperties) return;
+
+            _hasKnownPhysics = true;
+            if (_pendingPhysicsShapeType is null || _pendingPhysicsShapeType == physicsShape)
+            {
+                _physicsShapeOption.Selected = (int)physicsShape;
+                _knownPhysicsShapeType = physicsShape;
+                _pendingPhysicsShapeType = null;
+            }
+            if (_pendingPhysicsGravity is null || ApproxEqual(_pendingPhysicsGravity.Value, physicsGravity))
+            {
+                _physicsGravityInput.Text = physicsGravity.ToString("F2");
+                _knownPhysicsGravity = physicsGravity;
+                _pendingPhysicsGravity = null;
+            }
+            if (_pendingPhysicsFriction is null || ApproxEqual(_pendingPhysicsFriction.Value, physicsFriction))
+            {
+                _physicsFrictionInput.Text = physicsFriction.ToString("F2");
+                _knownPhysicsFriction = physicsFriction;
+                _pendingPhysicsFriction = null;
+            }
+            if (_pendingPhysicsDensity is null || ApproxEqual(_pendingPhysicsDensity.Value, physicsDensity))
+            {
+                _physicsDensityInput.Text = physicsDensity.ToString("F2");
+                _knownPhysicsDensity = physicsDensity;
+                _pendingPhysicsDensity = null;
+            }
+            if (_pendingPhysicsRestitution is null || ApproxEqual(_pendingPhysicsRestitution.Value, physicsRestitution))
+            {
+                _physicsRestitutionInput.Text = physicsRestitution.ToString("F2");
+                _knownPhysicsRestitution = physicsRestitution;
+                _pendingPhysicsRestitution = null;
             }
         }
 

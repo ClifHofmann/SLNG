@@ -16,6 +16,11 @@ public class PrimitiveComponent : IComponent
     /// </summary>
     public byte ProfileCurve { get; set; }
 
+    /// <summary>Classic SL material (Stone/Metal/Glass/Wood/Flesh/Plastic/Rubber) -- collision
+    /// sound/friction, not the PBR <see cref="RenderMaterialId"/>. Read from the same PrimData
+    /// block as <see cref="ProfileCurve"/>, so it's current on every ObjectUpdate, full or terse.</summary>
+    public PrimMaterial Material { get; set; } = PrimMaterial.Wood;
+
     public bool IsMesh { get; set; }
     public Guid MeshId { get; set; }
 
@@ -74,6 +79,26 @@ public class PrimitiveComponent : IComponent
     public float LightIntensity { get; set; } = 1.0f;
     public float LightRadius { get; set; } = 10.0f;
     public float LightFalloff { get; set; } = 1.0f;
+
+    /// <summary>Physics collision shape and material response (Features tab "Physics" section).
+    /// Only sourced from the server via an explicit PhysicsProperties request (piggybacked on
+    /// object selection, see GridSession) -- these defaults match the sentinel values
+    /// SetObjectFlags already sent as placeholders before this feature existed, not any real
+    /// server-confirmed state, until that request completes.</summary>
+    public PrimPhysicsShapeType PhysicsShapeType { get; set; } = PrimPhysicsShapeType.Prim;
+    public float PhysicsGravity { get; set; } = 1.0f;
+    public float PhysicsFriction { get; set; } = 0.6f;
+    public float PhysicsDensity { get; set; } = 1000f;
+    public float PhysicsRestitution { get; set; } = 0.5f;
+
+    /// <summary>True only once WorldSimulation has applied a real PhysicsPropertiesEvent --
+    /// distinguishes "the PhysicsX fields above are confirmed server state" from "still just
+    /// this component's constructor defaults," which matters because ordinary ObjectUpdates
+    /// (position/texture/etc changes) fire the same NotifyComponentUpdated as a physics update
+    /// but never touch these fields, and code reacting to that notify (e.g.
+    /// ObjectEditWindow.SendObjectFlags's own known-physics baseline) must not mistake unrelated
+    /// updates for a confirmation that the defaults are real.</summary>
+    public bool HasPhysicsProperties { get; set; }
 
     public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, float repeatU = 1.0f, float repeatV = 1.0f, float offsetU = 0.0f, float offsetV = 0.0f, float rotation = 0.0f, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0, FaceTexture[]? faces = null)
     {

@@ -45,6 +45,10 @@ public record ObjectUpdateEvent(
     // SL's point-light ("Light") prim property -- an ExtraParams block, not a PrimFlags bit.
     // Subject to the same terse-update staleness as the flags above (see IsFullUpdate).
     bool LightEnabled = false, Vector3 LightColor = default, float LightIntensity = 0f, float LightRadius = 0f, float LightFalloff = 0f,
+    // Classic material (Stone/Metal/.../Rubber) -- read from the same PrimData block as
+    // ProfileCurve/Shape above, so unlike the flags/light fields it's current on every update,
+    // full or terse; NOT gated by IsFullUpdate.
+    PrimMaterial Material = PrimMaterial.Wood,
     // ImprovedTerseObjectUpdate (fast position/rotation streaming for moving objects) never
     // carries flags on the wire -- LibreMetaverse leaves Primitive.Flags at whatever the last
     // full update said, which is stale the moment a flag was just changed locally. IsPhysical/
@@ -58,6 +62,15 @@ public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, 
 
 /// <summary>Represents the removal of an object from the simulator's interest list.</summary>
 public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent;
+
+/// <summary>Physics collision shape and material response (Features tab "Physics" section) --
+/// unlike most other prim data, this does NOT ride along ObjectUpdate; the simulator only sends
+/// it in response to an explicit object-select request (see GridSession.SelectObject /
+/// PhysicsProperties subscription), delivered asynchronously over the EventQueue CAP.</summary>
+public record PhysicsPropertiesEvent(
+    ulong RegionHandle, uint LocalId,
+    PrimPhysicsShapeType ShapeType, float Density, float Friction, float Restitution, float GravityMultiplier
+) : IWorldEvent;
 
 /// <summary>Represents the properties of an object (name, description, creator, owner, etc.).</summary>
 public record ObjectPropertiesEvent(

@@ -9,8 +9,10 @@
 ## Overview & Goal
 Implement dynamic mouse cursor state changes based on key modifier holds and object hover states to match SL/Firestorm UX standards:
 1. Holding `Alt` key changes cursor to a Magnifying Glass (camera orbit/zoom mode).
-2. Hovering over scripted/clickable in-world objects changes cursor to a Hand icon (`Hand` / `Touch`).
-3. Hovering over sitting objects changes cursor to a Sit icon (`Sit`).
+2. When Holding Alt and click LMT the zoom center to the mouse position on the ground.
+3. When Holding Alt and click LMT and drag the camera should move like a orbit camera around the mouse position on the ground.
+4. Hovering over scripted/clickable in-world objects changes cursor to a Hand icon (`Hand` / `Touch`).
+5. Hovering over sitting objects changes cursor to a Sit icon (`Sit`).
 
 ## Functional Requirements
 - **Key Modifiers:**
