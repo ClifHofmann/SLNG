@@ -2,7 +2,7 @@
 
 - **Feature ID:** `MVP2-2`
 - **Track:** `net` / `ui`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
