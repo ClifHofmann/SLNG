@@ -582,7 +582,7 @@ public class AssetService
 
             return new TextureData(width, height, rgba, isDegraded);
         }
-        catch (Exception ex)
+        catch
         {
             // Magick.NET (OpenJP2) is very strict and fails on missing EOC markers or bad header lengths
             // common in older SL/OpenSim assets. Fall back to CoreJ2K, which is much more forgiving.
@@ -641,7 +641,7 @@ public class AssetService
                     }
                 }
             }
-            catch (Exception j2kEx)
+            catch
             {
                 // Both standard and CoreJ2K decode failed. This is a truly corrupt asset.
                 // We intentionally suppress the error logs here to avoid console spam during region crossings.
