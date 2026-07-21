@@ -301,8 +301,9 @@ public partial class ChatWindow : SLNGWindow
             FocusMode = FocusModeEnum.None,
             Alignment = HorizontalAlignment.Left,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            CustomMinimumSize = new Vector2(0, 26),
+            CustomMinimumSize = new Vector2(0, 18),
         };
+        label.AddThemeFontSizeOverride("font_size", 12);
         label.AddThemeColorOverride("font_color", new Color(0.75f, 0.75f, 0.75f));
         label.AddThemeColorOverride("font_hover_color", new Color(1, 1, 1));
         inner.AddChild(label);
@@ -359,12 +360,12 @@ public partial class ChatWindow : SLNGWindow
         var style = new StyleBoxFlat
         {
             BgColor = selected ? new Color(0.3f, 0.6f, 0.9f, 0.25f) : new Color(0, 0, 0, 0),
-            CornerRadiusTopLeft = 6,
-            CornerRadiusBottomLeft = 6,
-            ContentMarginLeft = 8,
-            ContentMarginRight = 6,
-            ContentMarginTop = 4,
-            ContentMarginBottom = 4,
+            CornerRadiusTopLeft = 4,
+            CornerRadiusBottomLeft = 4,
+            ContentMarginLeft = 6,
+            ContentMarginRight = 4,
+            ContentMarginTop = 1,
+            ContentMarginBottom = 1,
         };
         tab.RowPanel.AddThemeStyleboxOverride("panel", style);
     }
