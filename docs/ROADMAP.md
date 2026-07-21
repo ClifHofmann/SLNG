@@ -133,7 +133,7 @@ other in-flight work made it cheap to start.
 
 The hard, long-tail work. Not part of the first shot; sequence later.
 
-- **Viewer features:** world map, IM, friends, groups, teleport; inventory v2 (wear/attach/move/delete, drag-drop); contextual cursor feedback ([FEAT-UI-01](file:///E:/Git/SLNG/docs/specs/FEAT-UI-01-cursor-interaction-states.md)); client localization & multi-language support ([FEAT-UI-02](file:///E:/Git/SLNG/docs/specs/FEAT-UI-02-localization-i18n.md)); boot window size & profile persistence ([FEAT-UI-03](file:///E:/Git/SLNG/docs/specs/FEAT-UI-03-boot-window-persistence.md)); in-world 3D transform gizmos for move/rotate/scale ([FEAT-UI-04](file:///E:/Git/SLNG/docs/specs/FEAT-UI-04-transform-gizmos.md)).
+- **Viewer features:** world map, IM, friends, groups, teleport; inventory v2 (wear/attach/move/delete, drag-drop); contextual cursor feedback ([FEAT-UI-01](file:///E:/Git/SLNG/docs/specs/FEAT-UI-01-cursor-interaction-states.md)); client localization & multi-language support ([FEAT-UI-02](file:///E:/Git/SLNG/docs/specs/FEAT-UI-02-localization-i18n.md)); boot window size & profile persistence ([FEAT-UI-03](file:///E:/Git/SLNG/docs/specs/FEAT-UI-03-boot-window-persistence.md)); in-world 3D transform gizmos for move/rotate/scale ([FEAT-UI-04](file:///E:/Git/SLNG/docs/specs/FEAT-UI-04-transform-gizmos.md)); per-conversation action icons on the M5-3 chat window — give inventory item, voice call, in-chat search (see [M5-3 spec §9](file:///E:/Git/SLNG/docs/specs/M5-3-tabbed-chat-window.md)).
 
 
 

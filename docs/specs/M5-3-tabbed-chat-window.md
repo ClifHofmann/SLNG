@@ -253,7 +253,24 @@ check once built) are resolved:
    (e.g. `GetPage(logFile, pageIndex, pageSize)`) to back the History viewer in §2a, not just
    append.
 
-## Acceptance Criteria
+### 9. Future per-conversation action icons (not in scope now — do not discard)
+
+The Gemini Canvas mockup the user reviewed (2026-07-21) showed an icon row above the
+conversation list (person/gift/phone/group/search). Clarified: these are **not** an alternative
+to the Chat/Friends/Groups top tabs — they're a forward-looking row of per-conversation *action*
+icons, e.g.:
+
+- **Chat history** — we already have this as a "History" button (§2a); could move under this icon
+  row later for a more compact header instead of a labeled button.
+- **Give item** — hand an object from inventory to the person/group you're chatting with (drag a
+  row from `InventoryPanel`, or an icon that opens an item picker).
+- **Voice call** — start a voice call with the active conversation's contact/group.
+- **Search** — search within the active conversation's history, or across the conversation list.
+- Possibly a **group/participant info** icon for group chats (member list, roles).
+
+None of this is Phase 1/1b/1c scope (voice in particular is a large, separate subsystem with no
+existing groundwork in `SLNG.Net`) — recorded here explicitly so it survives as a real backlog
+item under M5+ rather than being silently dropped because it didn't fit the current pass.
 - [ ] Window inherits from `SLNGWindow` and opens via shortcut or UI button.
 - [ ] Horizontal top tabs (`Chat`, `Friends`, `Groups`) switch active panel cleanly.
 - [ ] Vertical conversation-list entries under `Chat` show `Main` as static default, with new IM entries opening on message receipt or manual IM initiate.
