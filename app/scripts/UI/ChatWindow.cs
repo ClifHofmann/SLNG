@@ -1,6 +1,7 @@
 using Godot;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using SLNG.Core.Services;
 using SLNG.Net;
 
@@ -41,6 +42,7 @@ public partial class ChatWindow : SLNGWindow
     private HBoxContainer _outerTabStrip = null!;
     private Control _outerPageHost = null!;
 
+    private Control _chatPageControl = null!;
     private VBoxContainer _conversationList = null!;
     private RichTextLabel _logView = null!;
     private Button _jumpToLatestButton = null!;
@@ -60,6 +62,9 @@ public partial class ChatWindow : SLNGWindow
         public readonly List<string> Lines = new();
         public int UnreadCount;
         public bool FollowingBottom = true;
+        // Set for IM tabs only -- who OnSendPressed routes to via GridSession.SendInstantMessage.
+        // Null for "Main" (routes through OnSendLocalChat instead).
+        public Guid? TargetAgentId;
     }
 
     private readonly List<ChatTab> _chatTabs = new();
@@ -105,8 +110,10 @@ public partial class ChatWindow : SLNGWindow
 
         BuildOuterTabStrip(vbox);
 
-        AddOuterTab("Chat", "forum", BuildChatPage());
+        _chatPageControl = BuildChatPage();
+        AddOuterTab("Chat", "forum", _chatPageControl);
         _friendsPanel = new FriendsPanel();
+        _friendsPanel.OnOpenImRequested = OpenOrFocusImTab;
         AddOuterTab("Friends", "person", _friendsPanel);
         AddOuterTab("Groups", "group", BuildPlaceholderPage(
             "You haven't joined any groups yet.", "Group support is planned for a follow-up pass."));
@@ -142,11 +149,45 @@ public partial class ChatWindow : SLNGWindow
     public void AppendLocalChatMessage(string sender, string message)
     {
         var tab = _chatTabs.Find(t => t.Id == "main");
-        if (tab == null) return;
+        if (tab != null) AppendMessageToTab(tab, sender, message);
+    }
 
+    /// <summary>Appends an incoming 1:1 IM, opening a new closeable tab keyed by the sender's
+    /// agent id if this is the first message from them this session. Called by Boot on
+    /// GridSession.InstantMessageReceived, marshalled to the main thread first.</summary>
+    public void AppendIncomingInstantMessage(Guid fromAgentId, string fromAgentName, string message)
+    {
+        var tab = GetOrCreateImTab(fromAgentId, fromAgentName);
+        AppendMessageToTab(tab, fromAgentName, message);
+    }
+
+    /// <summary>Switches to the Chat tab and opens (or focuses) an IM conversation with one
+    /// friend -- wired to FriendsPanel's "IM / Call" button and double-clicking a friend row.</summary>
+    public void OpenOrFocusImTab(Guid friendId, string friendName)
+    {
+        var tab = GetOrCreateImTab(friendId, friendName);
+        SelectOuterTab(_chatPageControl);
+        SelectChatTab(tab);
+    }
+
+    private ChatTab GetOrCreateImTab(Guid agentId, string displayName)
+    {
+        var existing = _chatTabs.Find(t => t.Id == agentId.ToString());
+        if (existing != null) return existing;
+
+        // Presence is only known if this person happens to be a friend -- a stranger IMing you
+        // isn't in GetFriends(), so the row gets no dot at all (see AddChatTab's isOnline param).
+        bool? isOnline = _session?.GetFriends().FirstOrDefault(f => f.Id == agentId)?.IsOnline;
+        var tab = AddChatTab(agentId.ToString(), displayName, ChatLogKind.Im, closeable: true, isOnline);
+        tab.TargetAgentId = agentId;
+        return tab;
+    }
+
+    private void AppendMessageToTab(ChatTab tab, string sender, string message)
+    {
         var now = DateTime.Now;
         AppendLineToTab(tab, FormatChatLine(now, sender, message));
-        _ = _logger.AppendAsync(ChatLogKind.Local, tab.DisplayName, sender, message, now);
+        _ = _logger.AppendAsync(tab.LogKind, tab.DisplayName, sender, message, now);
     }
 
     // Own messages get the same blue accent used for "selected" elsewhere in this window, so a
@@ -324,8 +365,16 @@ public partial class ChatWindow : SLNGWindow
         if (string.IsNullOrWhiteSpace(text) || _activeChatTab == null) return;
 
         if (_activeChatTab.Id == "main")
+        {
             OnSendLocalChat?.Invoke(text);
-        // IM send routing lands with Phase 1c's net plumbing (dynamic tabs aren't created yet).
+        }
+        else if (_activeChatTab.TargetAgentId is { } targetId)
+        {
+            _session?.SendInstantMessage(targetId, text);
+            // The sim doesn't echo your own outgoing IM back through InstantMessageReceived --
+            // every other viewer locally echoes what it just sent, so match that here.
+            AppendMessageToTab(_activeChatTab, _session?.AgentName ?? "You", text);
+        }
 
         _inputEdit.Text = "";
     }

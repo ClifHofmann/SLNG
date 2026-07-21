@@ -55,7 +55,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.1.19-alpha";
+    public const string AppVersion = "v0.1.20-alpha";
 
     public override void _Ready()
     {
@@ -618,6 +618,7 @@ public partial class Boot : Control
         _chatWindow.BindSession(_session);
 
         _session.ChatMessageReceived += OnChatMessage;
+        _session.InstantMessageReceived += OnInstantMessageReceived;
         // Surfaces sim-side rejections that otherwise fail silently, e.g. "Object physics
         // cancelled because it exceeds limits for physical prims" when a Physical toggle is denied.
         _session.AlertMessageReceived += (s, e) => CallDeferred(MethodName.LogMessage, $"[color=orange][Alert] {e.Message}[/color]");
@@ -716,6 +717,18 @@ public partial class Boot : Control
     private void AppendChatMessage(string fromName, string message)
     {
         _chatWindow.AppendLocalChatMessage(fromName, message);
+    }
+
+    private void OnInstantMessageReceived(object? sender, InstantMessageEvent e)
+    {
+        // Same marshalling reason as OnChatMessage -- fires on a LibreMetaverse network thread.
+        // Guid isn't a Variant-safe CallDeferred argument, so it travels as a string.
+        CallDeferred(nameof(AppendInstantMessage), e.FromAgentId.ToString(), e.FromAgentName, e.Message);
+    }
+
+    private void AppendInstantMessage(string fromAgentId, string fromAgentName, string message)
+    {
+        _chatWindow.AppendIncomingInstantMessage(System.Guid.Parse(fromAgentId), fromAgentName, message);
     }
 
     private int _logLineCount;

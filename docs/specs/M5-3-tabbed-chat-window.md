@@ -338,8 +338,8 @@ item under M5+ rather than being silently dropped because it didn't fit the curr
 - [x] Implement `Friends` panel with status indicators, wired to the above *(double-click-to-IM deferred to Phase 1c alongside real IM send/receive — see FriendsPanel.cs doc comment)*
 
 **Phase 1c — IM (net + UI, needed soon per product priority):**
-- [ ] `SLNG.Net`: IM send/receive plumbing — new net sub-task
-- [ ] Implement dynamic IM entries in the `Chat` conversation-list sidebar, wired to the above
+- [x] `SLNG.Net`: IM send/receive plumbing — new net sub-task *(`GridSession.InstantMessageReceived` / `SendInstantMessage`, filtered to `InstantMessageDialog.MessageFromAgent` — friendship offers, teleport requests, group notices etc. ride the same wire event but aren't modeled yet)*
+- [x] Implement dynamic IM entries in the `Chat` conversation-list sidebar, wired to the above *(auto-opens on incoming IM; FriendsPanel's "IM / Call" button and double-clicking a friend row both open/focus a tab too — the IM half of that spec requirement, voice stays not-implemented)*
 
 **Deferred follow-up pass:**
 - [ ] `SLNG.Net`: `GroupManager` wiring

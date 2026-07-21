@@ -44,6 +44,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<AvatarAppearanceEvent>? AvatarAppearanceReceived;
     public event EventHandler<AvatarAnimationEvent>? AvatarAnimationReceived;
     public event EventHandler<FriendStatusEvent>? FriendStatusChanged;
+    public event EventHandler<InstantMessageEvent>? InstantMessageReceived;
 
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
@@ -89,6 +90,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Avatars.AvatarAnimation += OnAvatarAnimation;
         _client.Friends.FriendOnline += OnFriendOnline;
         _client.Friends.FriendOffline += OnFriendOffline;
+        _client.Self.IM += OnInstantMessage;
 
         // Coexists with ObjectManager's own internal ObjectUpdate handler (packet callbacks are
         // multicast) -- see _lightPresentByLocalId for why this is needed.
@@ -306,6 +308,25 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             result.Add(new FriendEntry(id, name, friend.IsOnline));
         }
         return result;
+    }
+
+    // Self.IM carries every instant-message-shaped packet (friendship offers, teleport
+    // requests, group notices, ...), not just plain 1:1 chat -- filter to MessageFromAgent so
+    // Phase 1c's IM tabs only see actual conversation messages. The others get their own
+    // dedicated flows later rather than being half-handled here.
+    private void OnInstantMessage(object? sender, InstantMessageEventArgs e)
+    {
+        if (e.IM.Dialog != InstantMessageDialog.MessageFromAgent || e.IM.GroupIM) return;
+
+        InstantMessageReceived?.Invoke(this, new InstantMessageEvent(
+            e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message, e.IM.IMSessionID.Guid));
+    }
+
+    /// <summary>Sends a 1:1 instant message.</summary>
+    public void SendInstantMessage(Guid targetAgentId, string message)
+    {
+        if (_client.Network.Connected)
+            _client.Self.InstantMessage(new UUID(targetAgentId), message);
     }
 
     private void OnAvatarAppearance(object? sender, AvatarAppearanceEventArgs e)
@@ -1042,6 +1063,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Network.SimDisconnected -= OnSimDisconnected;
         _client.Friends.FriendOnline -= OnFriendOnline;
         _client.Friends.FriendOffline -= OnFriendOffline;
+        _client.Self.IM -= OnInstantMessage;
         _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
         Logout();
     }

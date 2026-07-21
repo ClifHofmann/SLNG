@@ -8,12 +8,13 @@ using SLNG.Net;
 namespace SLNG.App.UI;
 
 /// <summary>
-/// Friends tab content for <see cref="ChatWindow"/> (M5-3 Phase 1b): a filterable presence list
-/// (left) plus a fixed per-friend action panel (right), matching the reviewed mockup
-/// (docs/specs/M5-3-tabbed-chat-window.md §1). Only the filter box and row selection are
-/// functional -- IM/Call, Profile, Teleport, Pay, Remove, and Add all need net-layer plumbing
-/// that doesn't exist yet (IM send/receive, teleport requests, friendship management), so they're
-/// shown disabled with a "(not implemented)" tooltip rather than silently omitted.
+/// Friends tab content for <see cref="ChatWindow"/> (M5-3 Phase 1b/1c): a filterable presence
+/// list (left) plus a fixed per-friend action panel (right), matching the reviewed mockup
+/// (docs/specs/M5-3-tabbed-chat-window.md §1). Filtering, row selection, and "IM / Call" (the IM
+/// half only -- voice is a separate, much larger, unbuilt subsystem) are functional. Profile,
+/// Teleport, Pay, Remove, and Add all still need net-layer plumbing that doesn't exist yet
+/// (teleport requests, payments, friendship management), so they stay disabled with a "(not
+/// implemented)" tooltip rather than silently omitted.
 /// </summary>
 public partial class FriendsPanel : Control
 {
@@ -23,6 +24,11 @@ public partial class FriendsPanel : Control
     private Label _emptyLabel = null!;
     private Label _countLabel = null!;
     private Guid? _selectedFriendId;
+    private string _selectedFriendName = "";
+
+    /// <summary>Wired by ChatWindow to ChatWindow.OpenOrFocusImTab -- fired by the "IM / Call"
+    /// action button and by double-clicking a friend row.</summary>
+    public Action<Guid, string>? OnOpenImRequested;
 
     public override void _Ready()
     {
@@ -169,7 +175,15 @@ public partial class FriendsPanel : Control
         nameBtn.AddThemeColorOverride("font_color",
             friend.IsOnline ? new Color(0.92f, 0.92f, 0.92f) : new Color(0.62f, 0.62f, 0.62f));
         var friendId = friend.Id;
-        nameBtn.Pressed += () => { _selectedFriendId = friendId; Refresh(); };
+        var friendName = DisplayName(friend);
+        nameBtn.Pressed += () => { _selectedFriendId = friendId; _selectedFriendName = friendName; Refresh(); };
+        // Double-clicking a friend opens their IM directly (per the M5-3 spec), rather than
+        // requiring a select-then-click-"IM / Call" round trip.
+        nameBtn.GuiInput += (@event) =>
+        {
+            if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, DoubleClick: true })
+                OnOpenImRequested?.Invoke(friendId, friendName);
+        };
         inner.AddChild(nameBtn);
 
         var style = new StyleBoxFlat
@@ -196,7 +210,14 @@ public partial class FriendsPanel : Control
         var panel = new VBoxContainer { CustomMinimumSize = new Vector2(92, 0) };
         panel.AddThemeConstantOverride("separation", 4);
 
-        panel.AddChild(BuildActionButton("IM / Call", accent: true));
+        var imButton = BuildActionButton("IM / Call", accent: true);
+        imButton.TooltipText = "Open IM (voice call not implemented)";
+        imButton.Pressed += () =>
+        {
+            if (_selectedFriendId is { } id) OnOpenImRequested?.Invoke(id, _selectedFriendName);
+        };
+        panel.AddChild(imButton);
+
         panel.AddChild(BuildActionButton("Profile"));
         panel.AddChild(BuildActionButton("Teleport..."));
         panel.AddChild(BuildActionButton("Pay..."));

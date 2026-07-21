@@ -32,6 +32,12 @@ public record AlertMessageEvent(string Message);
 /// subscribe directly on GridSession, same as <see cref="NameResolvedEvent"/>.</summary>
 public record FriendStatusEvent(Guid FriendId, bool IsOnline);
 
+/// <summary>A 1:1 instant message from another avatar (LibreMetaverse's
+/// <c>InstantMessageDialog.MessageFromAgent</c> only -- friendship offers, teleport requests,
+/// group notices etc. ride the same wire event but aren't modeled here yet). Not world-state, so
+/// intentionally not an <see cref="IWorldEvent"/>.</summary>
+public record InstantMessageEvent(Guid FromAgentId, string FromAgentName, string Message, Guid SessionId);
+
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
 /// <param name="ParentLocalId">Local ID of the parent object, or 0 if unparented.</param>
 /// <param name="AttachmentPoint">SL AttachmentPoint enum byte value; non-zero when the object
