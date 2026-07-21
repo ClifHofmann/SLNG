@@ -1,9 +1,6 @@
 # Roadmap
 
-This roadmap assumes the application is **built by AI agents**. Work is therefore
-sliced into **AI-sized tasks**: each task is a self-contained unit with a clear spec
-and explicit acceptance criteria that one agent can complete in a single focused
-session, and that another agent (or a human) can verify by running tests.
+This roadmap is structured into **MVP Milestones** focused on progressive end-user capabilities (playable increments), supported by **AI-sized tasks** with clear specs and acceptance criteria.
 
 ## How we work
 
@@ -16,10 +13,6 @@ Each task follows a **spec → test → implement → review** loop:
 
 ### Workstreams (parallel tracks)
 
-Tasks are grouped so two agents rarely touch the same files. Default split:
-**Claude** tends the `net` / `core` tracks, **Gemini** tends the `assets` / `render`
-/ `ui` tracks — but whoever is free takes the next unblocked task.
-
 | Track | Area | Lives in |
 |---|---|---|
 | `net` | Protocol, login, regions | `src/SLNG.Net` |
@@ -27,128 +20,125 @@ Tasks are grouped so two agents rarely touch the same files. Default split:
 | `assets` | Decode, mesh, materials, cache | `src/SLNG.Assets` |
 | `render` | Godot scene, lighting, camera | `app/` |
 | `ui` | HUD, chat, login screen | `app/` |
-| `infra` | Build, CI, test grid | root / `tools/` |
-
-### Columns & Status
-
-- **ID** — Unique Feature ID (e.g. `M4-7`). Used in branch names, commit messages `[M4-7]`, and spec files under `docs/specs/<ID>-<name>.md`.
-- **Status** — `✅` Done, `🚧` In Progress, `🧪` Review/Testing, `⏸️` Pending.
-- **Owner** — set to `claude`, `gemini`, or user when claimed.
-- **Agent** — the `.claude/agents/` role best suited to the task.
-- **Tool** — suggested assistant for load-balancing parallel work (a hint, not a rule).
-- **Dep** — task ids that must finish first.
-
+| `infra` | Build, CI, packaging, installer | root / `tools/` |
 
 ---
 
-## M0 — "It connects" (spike · ~1 week)
+## MVP 1 — Foundation & Playable Client ✅
 
-Goal: log in to a grid, join a region, and log incoming object/chat events.
+**Goal:** Connect to a grid, render terrain/prims/PBR/lighting, walk around, chat, and render Bento avatar.
 
-| ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
-|---|---|---|---|---|---|---|---|
-| M0-1 | Scaffold `SLNG.sln`, `src/*` projects, Godot `app/`, CI stub | infra | claude | architect | claude | — | `dotnet build` + `godot --path app` both succeed |
-| M0-2 | Login flow via LibreMetaverse (grid/user/pass → connected) ✅ | net | claude | protocol-re | claude | M0-1 | Connects to OpenSim, returns agent/session id |
-| M0-3 | Event logger: subscribe to ObjectUpdate + Chat, structured log ✅ | net | gemini | protocol-re | gemini | M0-2 | Object & chat events printed with key fields |
-| M0-4 | Godot boot scene: login form + scrolling log panel ✅ | ui | gemini | ux-designer | gemini | M0-1 | Form submits creds; panel shows live events |
-| M0-5 | Test harness + local OpenSim grid bring-up script ✅ | infra | gemini | test-engineer | gemini | M0-1 | `dotnet test` green; `tools/opensim-up` documented |
+### Phase 1A: Connection & World Engine (M0 – M2)
+- [x] **M0-1** Scaffold solution & Godot app ✅
+- [x] **M0-2** Login flow via LibreMetaverse ✅
+- [x] **M0-3** Event logger ✅
+- [x] **M0-4** Godot boot scene ✅
+- [x] **M0-5** Test harness & OpenSim local grid ✅
+- [x] **M1-1** World model / ECS ✅
+- [x] **M1-2** Terrain rendering & collision ✅
+- [x] **M1-3** Primitive shapes ✅
+- [x] **M1-4** Free-fly camera & scene sync ✅
+- [x] **M1-5** Interest management ✅
+- [x] **M2-1** Mesh fetch & LOD selection ✅
+- [x] **M2-2** JPEG2000 decode pool ✅
+- [x] **M2-3** PBR material resolve ✅
+- [x] **M2-4** Texture streaming & VRAM budget ✅
+- [x] **M2-5** Lighting, CSM shadows & post-fx ✅
+- [x] **M2-6** Terrain textures & water plane ✅
 
-Parallel: M0-3/M0-4/M0-5 run concurrently after M0-1/M0-2.
+### Phase 1B: Controls & Bento Avatar (M3 – M4)
+- [x] **M3-1** Avatar movement & network sync ✅
+- [x] **M3-2** Local chat UI ✅
+- [x] **M3-3** Third/first-person camera controller ✅
+- [x] **M3-4** Own avatar render ✅
+- [x] **M4-1** Bento skeleton & base mesh ✅
+- [x] **M4-2** Animation decode & playback ✅
+- [x] **M4-3** Appearance & Bakes-on-Mesh (BoM) ✅
+- [x] **M4-4** Mesh attachments ✅
+- [x] **M4-5** Vertex morphs engine pipeline ✅
+- [x] **M4-6** Morphed body rendering ✅
+- [x] **M4-8** SL-faithful joint composition ✅
+- [x] **M4-9** HUD attachments overlay ✅
 
-## M1 — "World roughly visible" (~2–3 weeks)
+---
 
-Goal: terrain + placeholder prims rendered; free-fly camera.
+## MVP 1.5 — Build Distribution & Client Config 🚧
 
-| ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
-|---|---|---|---|---|---|---|---|
-| M1-1 | World model / ECS: entities, components, diffable updates ✅ | core | gemini | architect | claude | M0-3 | Object updates produce a queryable world model + tests |
-| M1-2 | Terrain: region heightmap → Godot mesh + collision ✅ | render | gemini | graphics-engineer | gemini | M0-1 | Region terrain visible and walkable |
-| M1-3 | Prims as placeholder primitives (box/sphere/cylinder) ✅ | render | gemini | graphics-engineer | gemini | M1-1 | Objects appear at correct transforms |
-| M1-4 | Free-fly camera + entity→Node3D scene sync ✅ | render | gemini | graphics-engineer | gemini | M1-1 | Camera flies; spawned/removed objects sync live |
-| M1-5 | Interest management + region bounds / neighbor handoff ✅ | core | gemini | architect | claude | M1-1 | Only in-range objects instantiated; no leaks crossing regions |
-
-Parallel: M1-2 (terrain) is independent of the core work and can start immediately.
-
-## M2 — "It looks real" (~3–5 weeks)
-
-Goal: real meshes + textures with modern PBR lighting. This is the graphics payoff.
-
-| ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
-|---|---|---|---|---|---|---|---|
-| M2-1 | Mesh fetch + LLMesh parse + LOD selection ✅ | assets | gemini | asset-pipeline | claude | M1-3 | Real object meshes render at correct LOD |
-| M2-2 | JPEG2000 (.j2c) decode pool, fully off main thread ✅ | assets | gemini | asset-pipeline | gemini | M0-1 | Textures decode on workers; no main-thread stalls |
-| M2-3 | glTF 2.0 PBR material resolve → Godot ORM material ✅ | render | gemini | graphics-engineer | claude | M2-2 | Metallic-roughness materials applied correctly |
-| M2-4 | Texture streaming + RAM/disk/GPU cache + VRAM budget ✅ | assets | gemini | performance-engineer | gemini | M2-2 | Stable VRAM under a busy sim; mip prioritization works |
-| M2-5 | Lighting & post-fx: sky, CSM shadows, GTAO, ACES tonemap ✅ | render | gemini | graphics-engineer | gemini | M1-2 | Scene has modern lighting; toggleable post-fx |
-| M2-6 | Terrain textures, water plane, and dynamic sky ✅ | render | gemini | graphics-engineer | gemini | M2-2 | Terrain uses SL textures; water renders at WaterHeight; nice sky |
-
-Parallel: assets track (M2-1/2/4) and render track (M2-5/M2-6) progress side by side.
-
-## M3 — "I'm in-world" (~1–2 weeks)
-
-Goal: control your own avatar, move, and chat. Completes the **first shot**.
+**Goal:** Automated CI/CD pipeline, standalone Windows Installer for test user distribution, and app configuration persistence.
 
 | ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
 |---|---|---|---|---|---|---|---|
-| M3-1 | Self-avatar movement + AgentUpdate send ✅ | net | gemini | protocol-re | gemini | M1-5 | Movement updates accepted by the sim |
-| M3-2 | Local chat send/receive UI ✅ | ui | gemini | ux-designer | gemini | M0-4 | Two-way local chat works |
-| M3-3 | Camera follow + avatar controller ✅ | render | gemini | graphics-engineer | gemini | M3-1 | Third/first-person camera follows avatar |
-| M3-4 | Own-avatar render (system avatar or placeholder mesh) ✅ | render | gemini | graphics-engineer | gemini | M1-4 | Your avatar is visible and moves |
+| M1.5-1 | Godot Headless Export Script | infra | | DevOps | claude | M0-1 | PowerShell script exports Windows binary (.exe + .pck + .NET assemblies) headlessly |
+| M1.5-2 | InnoSetup / Installer Spec & Script | infra | | DevOps | claude | M1.5-1 | InnoSetup script bundles client build into single-click installer executable |
+| M1.5-3 | GitHub Actions Continuous Delivery | infra | | DevOps | claude | M1.5-2 | GitHub Workflow builds installer on `main` push & attaches artifact/release for testers |
+| FEAT-UI-03 | Boot Window Size & Profile Persistence 🚧 | ui/infra | claude | ux-designer | gemini | M0-4 | Client window resolution, grid profiles & user preferences persist across sessions. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-03-boot-window-persistence.md) |
 
-**End of first shot.** A demoable client: connect → see a real, modern-lit world →
-fly/walk around → chat. Other users' avatars are intentionally deferred to M4.
+---
 
-## M4 — "The Avatar" (~4–8 weeks)
+## MVP 2 — Navigation & Social Core ⏸️
 
-Goal: Replace the placeholder capsule with a real Second Life avatar (Bento skeleton) and sync animations.
-
-| ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
-|---|---|---|---|---|---|---|---|
-| M4-1 | Bento Skeleton & Base Mesh ✅ | render | gemini | graphics-engineer | | M3-4 | A static system avatar mesh with the SL skeleton is rendered instead of a capsule |
-| M4-2 | Animation decode & playback ✅ | assets | gemini | asset-pipeline | | M4-1 | Server-sent animations (`.anim` / `.bvh`) play correctly on the skeleton |
-| M4-3 | Appearance & Bakes-on-Mesh (BoM) ✅ | net/render | gemini | graphics-engineer | | M4-1 | Avatar shape params and baked skin textures are downloaded and applied |
-| M4-4 | Mesh Attachments ✅ | assets/render | claude | graphics-engineer | | M4-1 | Equipped objects (hair, clothes) are attached to the correct skeleton bones |
-| M4-5 | Vertex morphs (LLPolyMorphTarget) — engine-neutral pipeline ✅ | assets | claude | asset-pipeline | | M4-3 | `SLNG.Assets` exposes per-param effective weights + morphed body-part vertices (`pos += w·delta`, normals softened 0.65 + renormalized), verified against `llpolymorph.cpp` with unit tests |
-| M4-6 | Morphed-body rendering — rebuild on shape change ✅ | render | claude | graphics-engineer | | M4-5 | System body renders with the avatar's real proportions (male/muscle/breast sliders) matching Firestorm; morph rebuild off the main thread |
-| M4-7 | Base-mesh hiding under worn mesh (alpha/BoM correctness) | render | | graphics-engineer | | M4-3 | System head/body parts hidden exactly per worn alpha layers & BoM rules instead of the temporary hard-hide experiment |
-| M4-8 | SL-faithful joint composition — scale does NOT inherit ✅ | render/core | claude | graphics-engineer | | M4-3 | Godot bone global poses match `LLXformMatrix::update` exactly (basis = own scale only; parent scale offsets children one level; rotation inherits): parity checker reports <1 cm/<1 % deviation on every bone for real avatars, coat-sleeve meshes land on their joints, proportions match Firestorm |
-| M4-9 | HUD attachments — screen-space ortho overlay ✅ | render/ui | claude | graphics-engineer | | M4-4 | Local avatar's HUD objects (points 31–38) render textured in their correct screen quadrants (SL ortho volume: 1 unit tall, anchors at ±0.5, aspect-scaled horizontals), camera-locked, independent of world lighting; other avatars' HUDs never shown |
-
-## M5 — Viewer features
-
-Pulled forward opportunistically from the M5+ list below when a natural pairing with
-other in-flight work made it cheap to start.
+**Goal:** Complete multi-user social interaction, navigation, and script dialogs.
 
 | ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
 |---|---|---|---|---|---|---|---|
-| M5-1 | Inventory browser v1 — read-only, lazy folder fetch ✅ | net/ui | claude | ux-designer | | M0-2 | Ctrl+I opens a tree showing "My Inventory" + "Library"; each folder's children are fetched on first expand (no recursive/whole-tree fetch); folders and items both render with correct names; inventory links are marked as links. Wearing/moving/deleting items is out of scope for v1. |
-| M5-2 | In-World Object Selection & Editing 🚧 | render/ui/net | claude | graphics-engineer | claude | M1-3 | 3D Raycast selection, context menu, SLNGWindow inspector tabbed window, transform sync over network. [Spec](file:///E:/Git/SLNG/docs/specs/M5-2-object-editing.md) |
-| M5-3 | Tabbed Chat, Friends & Groups Window 🚧 | ui/net | claude | ux-designer | claude | M3-2 | Multi-tabbed window (vertical: Chat, Friends, Groups; horizontal: Main & dynamic per-user IMs) inheriting from SLNGWindow. [Spec](file:///E:/Git/SLNG/docs/specs/M5-3-tabbed-chat-window.md) |
-| M5-4 | LSL / SLS Script Dialog System (llDialog) ⏸️ | ui/net | gemini | ux-designer | gemini | M0-3 | Modal UI popups inheriting from SLNGWindow triggered by LSL llDialog packets with dynamic 3x4 button grid & channel reply. [Spec](file:///E:/Git/SLNG/docs/specs/M5-4-script-dialogs.md) |
+| M5-3 | Tabbed Chat, Friends & Groups Window 🚧 | ui/net | claude | ux-designer | claude | M3-2 | Multi-tabbed window (Chat, Friends, Groups, Dynamic IMs) inheriting from `SLNGWindow`. [Spec](file:///E:/Git/SLNG/docs/specs/M5-3-tabbed-chat-window.md) |
+| M5-4 | LSL / SLS Script Dialog System (`llDialog`) ⏸️ | ui/net | gemini | ux-designer | gemini | M0-3 | Modal UI popups inheriting from `SLNGWindow` with 3x4 button grid & channel reply. [Spec](file:///E:/Git/SLNG/docs/specs/M5-4-script-dialogs.md) |
+| FEAT-UI-01 | Contextual Cursor Interaction States | ui/render | | ux-designer | gemini | M1-3 | Viewport mouse cursor dynamically changes based on target object state (Touch, Sit, Inspect, Media). [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-01-cursor-interaction-states.md) |
+| MVP2-1 | Object Interaction & Sit / Touch | render/net | | protocol-re | gemini | M1-3 | Touch objects, sit on prims/anim-seats, stand up |
+| MVP2-2 | World Map, Minimap & Teleport | ui/net | | ux-designer | claude | M0-2 | Minimap overlay, full grid map, search regions & teleport to landmark/coords |
 
+---
 
+## MVP 3 — Avatar, Posing & Media Studio ⏸️
 
+**Goal:** Full avatar customization, animation/pose controls, shared media, and snapshot tools.
 
-## M5+ — Beyond the first shot
+| ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
+|---|---|---|---|---|---|---|---|
+| M4-7 | Base-mesh Hiding Under Worn Mesh | render | | graphics-engineer | | M4-3 | System head/body parts hidden per worn alpha layers & BoM rules |
+| M5-1 | Inventory Browser v1 — Read-only ✅ | net/ui | claude | ux-designer | | M0-2 | Lazy tree view of folders & items |
+| MVP3-1 | Inventory v2 — Wear, Detach & Drag-Drop | net/ui | | ux-designer | claude | M5-1 | Wear/detach clothing & attachments, move/delete items |
+| MVP3-2 | Pose Stand & Animation Override (AO) | render/ui | | graphics-engineer | gemini | M4-2 | Play/stop custom poses, pose stands, basic AO system |
+| MVP3-3 | Shared Media / MOAP (Media on a Prim) | render/net | | graphics-engineer | claude | M2-3 | Web browser / video streaming on prim faces |
+| MVP3-4 | Snapshot & Photography Studio | ui/render | | graphics-engineer | gemini | M2-5 | High-res screenshot capture, DoF, FOV control, EEP/environment presets |
 
-The hard, long-tail work. Not part of the first shot; sequence later.
+---
 
-- **Viewer features:** world map, IM, friends, groups, teleport; inventory v2 (wear/attach/move/delete, drag-drop); contextual cursor feedback ([FEAT-UI-01](file:///E:/Git/SLNG/docs/specs/FEAT-UI-01-cursor-interaction-states.md)); client localization & multi-language support ([FEAT-UI-02](file:///E:/Git/SLNG/docs/specs/FEAT-UI-02-localization-i18n.md)); boot window size & profile persistence ([FEAT-UI-03](file:///E:/Git/SLNG/docs/specs/FEAT-UI-03-boot-window-persistence.md)); in-world 3D transform gizmos for move/rotate/scale ([FEAT-UI-04](file:///E:/Git/SLNG/docs/specs/FEAT-UI-04-transform-gizmos.md)); per-conversation action icons on the M5-3 chat window — give inventory item, voice call, in-chat search (see [M5-3 spec §9](file:///E:/Git/SLNG/docs/specs/M5-3-tabbed-chat-window.md)).
+## MVP 4 — Building & Creator Suite ⏸️
 
+**Goal:** Complete in-world building, editing, prim linking, and terrain manipulation tools.
 
+| ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
+|---|---|---|---|---|---|---|---|
+| M5-2 | In-World Object Selection & Editing 🚧 | render/ui/net | claude | graphics-engineer | claude | M1-3 | Raycast selection, context menu, inspector tabbed window. [Spec](file:///E:/Git/SLNG/docs/specs/M5-2-object-editing.md) |
+| FEAT-UI-04 | In-World 3D Transform Gizmos | render/ui | | graphics-engineer | claude | M5-2 | Interactive 3D translation/rotation/scale handles in viewport. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-04-transform-gizmos.md) |
+| FEAT-UI-05 | Multi-Select & Prim Linking/Unlinking | render/ui/net | | graphics-engineer | claude | M5-2 | Box-select/Shift-select multiple prims, link/unlink root & child objects. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-05-multi-select-linking.md) |
+| FEAT-UI-06 | Edit Linked Parts & Child Prims | render/ui/net | | graphics-engineer | claude | M5-2 | "Edit linked" checkbox mode to transform individual child prims inside a linkset. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-06-edit-linked-parts.md) |
+| MVP4-1 | Prim Rezzing & Mesh Import | render/net | | graphics-engineer | claude | M5-2 | Create new prim shapes in-world, upload/import custom meshes |
+| MVP4-2 | Land & Terrain Sculpting | render/core | | graphics-engineer | gemini | M1-2 | In-world raise/lower/flatten terrain tools |
 
-- **Performance hardening:** profiling on overloaded real sims; impostors; draw-call
-  reduction; aggressive culling.
-- **TPV compliance pass + registration** before any public SL build.
-- **Cross-platform** (Linux/macOS) then **mobile**.
+---
 
-## Milestone summary
+## MVP 5 — Economy, Voice & Marketplace ⏸️
 
-| Milestone | Outcome | Rough effort (solo, full-time) |
-|---|---|---|
-| M0 | Connects, logs events | ~1 week |
-| M1 | World roughly visible | +2–3 weeks |
-| M2 | Real meshes/textures, PBR | +3–5 weeks |
-| M3 | Controllable avatar, chat | +1–2 weeks |
-| **First shot total** | Demoable modern viewer | **~6–10 weeks** |
-| M4+ | Other avatars, features, polish | months |
+**Goal:** Advanced ecosystem features: L$ economy, voice chat, and marketplace integration.
+
+| ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
+|---|---|---|---|---|---|---|---|
+| MVP5-1 | Spatial Voice Chat (Vivox / WebRTC) | net/render | | protocol-re | claude | MVP2-1 | 3D positional voice, group voice, mic input controls |
+| MVP5-2 | L$ Transactions & In-World Economy | net/ui | | protocol-re | claude | M0-2 | View balance, pay avatars/objects, buy land/items |
+| MVP5-3 | In-Viewer Marketplace Browser | ui/net | | ux-designer | gemini | MVP5-2 | Integrated web marketplace, direct delivery & unpacking |
+
+---
+
+## MVP 6 — Multi-Platform, Polish & Compliance ⏸️
+
+**Goal:** Global readiness, performance optimizations, TPV compliance, and multi-platform deployment.
+
+| ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
+|---|---|---|---|---|---|---|---|
+| FEAT-UI-02 | Client Localization & Multi-Language (i18n) | ui | | ux-designer | gemini | M0-4 | Full UI text translation pipeline & multi-language support. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-02-localization-i18n.md) |
+| MVP6-1 | Performance Hardening & Occlusion Culling | render/assets | | performance-engineer | gemini | M2-4 | Impostors, aggressive culling, draw-call reduction on busy sims |
+| MVP6-2 | TPV Policy Compliance Pass & Registration | infra/net | | architect | claude | M0-2 | Full Linden Lab Third-Party Viewer Policy audit & official registration |
+| MVP6-3 | Cross-Platform Build Pipeline (Linux & macOS) | infra | | DevOps | claude | M1.5-3 | Native Linux & macOS releases packaged in CI/CD pipeline |
+| MVP6-4 | Mobile Target Optimization (Android / iOS) | render/ui | | graphics-engineer | gemini | MVP6-3 | Touch controls UI, mobile shading profile & lower memory footprint |
