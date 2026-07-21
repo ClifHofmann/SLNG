@@ -18,9 +18,6 @@ public partial class Boot : Control
 
     private ConfigFile _loginsConfig = new ConfigFile();
     private Godot.Collections.Array<string> _savedProfiles = new();
-    
-    private LineEdit _chatInput = null!;
-    private Button _chatSendButton = null!;
 
     private GridSession? _session;
     private SLNG.Core.ECS.World? _world;
@@ -45,6 +42,10 @@ public partial class Boot : Control
     private SLNG.App.UI.ButtonBar _buttonBar = null!;
     private SLNG.App.UI.PreferencesWindow _preferencesWindow = null!;
     private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
+
+    // M5-3 Tabbed Chat window
+    private SLNG.App.UI.ChatWindow _chatWindow = null!;
+    private SLNG.Core.Services.ChatLogger _chatLogger = null!;
     
     // M5-2 Object Editing UI
     private ObjectSelectionController _objectSelectionController = null!;
@@ -54,7 +55,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.1.13-alpha";
+    public const string AppVersion = "v0.1.14-alpha";
 
     public override void _Ready()
     {
@@ -77,10 +78,6 @@ public partial class Boot : Control
         _saveLoginCheck = GetNode<CheckBox>("%SaveLoginCheck");
         _loginButton = GetNode<Button>("%LoginButton");
         _logPanel = GetNode<RichTextLabel>("%LogPanel");
-        
-        _chatInput = GetNode<LineEdit>("%ChatInput");
-        _chatSendButton = GetNode<Button>("%ChatSendButton");
-        _chatInput.GetParent<Control>().Visible = false;
 
         var versionLabel = GetNodeOrNull<Label>("%VersionLabel");
         if (versionLabel != null) versionLabel.Text = AppVersion;
@@ -92,8 +89,6 @@ public partial class Boot : Control
         if (loadingVersionText != null) loadingVersionText.Text = AppVersion;
 
         _loginButton.Pressed += OnLoginPressed;
-        _chatSendButton.Pressed += OnChatSend;
-        _chatInput.TextSubmitted += (text) => OnChatSend();
         _profileDropdown.ItemSelected += OnProfileSelected;
 
         LoadProfiles();
@@ -137,7 +132,7 @@ public partial class Boot : Control
                 _topMenu.Visible = false;
                 var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
                 if (hudLayer != null) hudLayer.Visible = false;
-                _chatInput.GetParent<Control>().Visible = false;
+                _chatWindow.Visible = false;
                 if (_inventoryPanel != null) { _inventoryPanel.QueueFree(); _inventoryPanel = null; }
                 Input.MouseMode = Input.MouseModeEnum.Visible;
             }
@@ -227,6 +222,14 @@ public partial class Boot : Control
             _session.CreatePrim(type, RenderConfig.FromGodot(_session.CurrentRegionHandle, godotPos));
         };
 
+        _chatLogger = new SLNG.Core.Services.ChatLogger();
+        _chatWindow = new SLNG.App.UI.ChatWindow { Name = "ChatWindow" };
+        hudLayer.AddChild(_chatWindow);
+        _chatWindow.Initialize(_chatLogger);
+        // Captures _session by reference (not by value at wiring time) so this keeps working
+        // across the session getting replaced on re-login, same pattern as OnCreatePrimClicked above.
+        _chatWindow.OnSendLocalChat = (text) => _session?.SendChat(text);
+
         SetupButtonBarAndPreferences(hudLayer, cameraHud);
     }
 
@@ -276,7 +279,7 @@ public partial class Boot : Control
     {
         var toolbarItems = new System.Collections.Generic.List<SLNG.App.UI.ToolbarItemDefinition>
         {
-            new("chat", "Chat", "chat", () => { var p = _chatInput.GetParent<Control>(); p.Visible = !p.Visible; }, () => _chatInput.GetParent<Control>().Visible),
+            new("chat", "Chat", "chat", () => _chatWindow.Visible = !_chatWindow.Visible, () => _chatWindow.Visible),
             new("camera", "Camera Controls", "photo_camera", () => cameraHud.Toggle(), () => cameraHud.Visible),
             new("inventory", "Inventory", "inventory_2", () => _inventoryPanel?.Toggle(), () => _inventoryPanel?.Visible ?? false),
         };
@@ -289,8 +292,6 @@ public partial class Boot : Control
         _buttonBar.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         hudLayer.AddChild(_buttonBar);
         _buttonBar.Initialize(toolbarItems, _toolbarSettings);
-        
-        _buttonBar.AttachChatBox(_chatInput.GetParent<Control>());
 
         _preferencesWindow = new SLNG.App.UI.PreferencesWindow { Name = "PreferencesWindow" };
         hudLayer.AddChild(_preferencesWindow);
@@ -667,7 +668,7 @@ public partial class Boot : Control
             
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) hudLayer.Visible = true;
-            _chatInput.GetParent<Control>().Visible = true;
+            _chatWindow.Visible = true;
 
             _avatarController = new AvatarController();
             _avatarController.Name = "AvatarController";
@@ -694,8 +695,6 @@ public partial class Boot : Control
             _avatarController.MakeCurrent();
 
             LogMessage($"[System] Login succeeded! Agent: {result.AgentId}");
-            _chatInput.Editable = true;
-            _chatSendButton.Disabled = false;
         }
         else
         {
@@ -706,18 +705,16 @@ public partial class Boot : Control
         }
     }
 
-    private void OnChatSend()
-    {
-        var text = _chatInput.Text;
-        if (string.IsNullOrWhiteSpace(text)) return;
-        
-        _session?.SendChat(text);
-        _chatInput.Text = "";
-    }
-
     private void OnChatMessage(object? sender, ChatMessageEvent e)
     {
-        CallDeferred(nameof(LogMessage), $"[CHAT] {e.FromName}: {e.Message}");
+        // ChatMessageReceived fires on a LibreMetaverse network thread -- marshal to the main
+        // thread before touching ChatWindow's Control tree.
+        CallDeferred(nameof(AppendChatMessage), e.FromName, e.Message);
+    }
+
+    private void AppendChatMessage(string fromName, string message)
+    {
+        _chatWindow.AppendLocalChatMessage(fromName, message);
     }
 
     private int _logLineCount;

@@ -75,34 +75,13 @@ public partial class ButtonBar : Control
         };
         barPanel.AddThemeStyleboxOverride("panel", styleBox);
 
-        var split = new HSplitContainer();
-        barPanel.AddChild(split);
-
-        _chatContainer = new MarginContainer();
-        _chatContainer.CustomMinimumSize = new Vector2(100, 0);
-        _chatContainer.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
-        _chatContainer.SizeFlagsStretchRatio = 0.25f; // ~20% width
-        split.AddChild(_chatContainer);
-
-        var rightBox = new HBoxContainer();
-        rightBox.Alignment = BoxContainer.AlignmentMode.End;
+        var rightBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
         rightBox.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
-        rightBox.SizeFlagsStretchRatio = 0.75f; // ~80% width
-        split.AddChild(rightBox);
+        barPanel.AddChild(rightBox);
 
         _hbox = new HBoxContainer();
         _hbox.AddThemeConstantOverride("separation", 2);
         rightBox.AddChild(_hbox);
-    }
-
-    private MarginContainer _chatContainer = null!;
-
-    public void AttachChatBox(Control chatBox)
-    {
-        chatBox.GetParent()?.RemoveChild(chatBox);
-        _chatContainer.AddChild(chatBox);
-        chatBox.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
-        chatBox.SizeFlagsVertical = Control.SizeFlags.Fill;
     }
 
     /// <summary>Wires the bar to the full item registry and its persisted enabled/order state.
