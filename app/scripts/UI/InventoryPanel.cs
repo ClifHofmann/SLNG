@@ -236,6 +236,7 @@ public partial class InventoryPanel : SLNGWindow
                     // lag right after creation, see TeleportAsync below), and that case must still
                     // enable Teleport rather than being mistaken for a link.
                     bool isLandmark = assetType == SLNG.Core.AssetTypeIds.Landmark && !isLink;
+                    GD.Print($"[Inventory] context menu for '{item.GetText(0)}': assetType={assetType} isLink={isLink} isLandmark={isLandmark} rawMeta='{metaStr}'");
 
                     _contextMenu.SetItemDisabled(0, false); // Wear
                     _contextMenu.SetItemDisabled(1, !canCopy); // Copy
@@ -328,15 +329,19 @@ public partial class InventoryPanel : SLNGWindow
     /// "teleport home", so an unresolved id must fail loudly, not silently send the agent home.</summary>
     private async System.Threading.Tasks.Task TeleportAsync(Guid itemId, Guid assetId, Guid? parentFolderId)
     {
+        GD.Print($"[Teleport] item={itemId} assetId={assetId} parentFolder={parentFolderId}");
+
         if (assetId == Guid.Empty && parentFolderId is { } folderId && _session != null)
         {
             var children = await _session.FetchInventoryChildrenAsync(folderId).ConfigureAwait(false);
             var fresh = children.FirstOrDefault(c => c.Id == itemId);
-            if (fresh != null) assetId = fresh.AssetId;
+            assetId = fresh?.AssetId ?? Guid.Empty;
+            GD.Print($"[Teleport] re-resolved assetId={assetId} (found={fresh != null})");
         }
 
         if (assetId == Guid.Empty)
         {
+            GD.PrintErr("[Teleport] asset id still empty after re-resolve -- refusing to teleport");
             Callable.From(() =>
             {
                 if (IsInstanceValid(this))
@@ -346,6 +351,7 @@ public partial class InventoryPanel : SLNGWindow
         }
 
         var result = await _session!.TeleportToLandmarkAsync(assetId).ConfigureAwait(false);
+        GD.Print($"[Teleport] result success={result.Success} message='{result.Message}'");
         Callable.From(() =>
         {
             if (!IsInstanceValid(this)) return;

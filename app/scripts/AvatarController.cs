@@ -160,14 +160,18 @@ public partial class AvatarController : Camera3D
 
         if (@event is InputEventMouseButton mouseBtn)
         {
-            // Reaching _UnhandledInput at all already means no Control under the cursor claimed
-            // this event (see the class comment above) -- but that's not enough on its own: the
-            // cursor drifting a few pixels outside a window mid-scroll (e.g. reaching for the
-            // wheel while it was still over the chat log) lands here too, and shouldn't zoom the
-            // world just because a text field the user was actively using still holds focus. Same
-            // hasUiFocus signal already gates WASD/orbit in _Process below.
+            // Reaching _UnhandledInput at all is SUPPOSED to mean no Control under the cursor
+            // claimed this event -- live testing showed that assumption doesn't hold in every
+            // case (mouse-wheel scroll over the Inventory Tree still reached here and zoomed the
+            // world at the same time), so this checks GuiGetHoveredControl() directly rather than
+            // trusting Godot's own consumption bookkeeping: if the mouse is over ANY Control right
+            // now, this is a UI scroll/interaction, full stop, regardless of whether that Control
+            // itself marked the event handled. Same hasUiFocus signal (focus-based) still also
+            // gates WASD/orbit in _Process below; hover is checked here in addition, specifically
+            // for wheel-zoom, since a scroll is defined by where the cursor sits, not by focus.
             var focusOwner = GetViewport().GuiGetFocusOwner();
-            bool hasUiFocus = focusOwner is LineEdit || focusOwner is TextEdit;
+            bool hasUiFocus = focusOwner is LineEdit || focusOwner is TextEdit
+                || GetViewport().GuiGetHoveredControl() != null;
 
             if (!hasUiFocus && mouseBtn.ButtonIndex == MouseButton.WheelUp)
             {

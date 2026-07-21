@@ -46,6 +46,13 @@ namespace SLNG.App
 
             if (@event is InputEventMouseButton mouseBtn && mouseBtn.Pressed && !mouseBtn.AltPressed)
             {
+                // Same defensive hover check as AvatarController's wheel-zoom guard: reaching
+                // _UnhandledInput is supposed to already mean "no Control claimed this," but live
+                // testing showed clicks on a window could still land here and raycast/select
+                // whatever's in the 3D scene behind it. Checking GuiGetHoveredControl() directly
+                // closes that regardless of why the click wasn't actually consumed upstream.
+                if (GetViewport().GuiGetHoveredControl() != null) return;
+
                 if (mouseBtn.ButtonIndex == MouseButton.Right || mouseBtn.ButtonIndex == MouseButton.Left)
                 {
                     var result = RaycastFromMouse(mouseBtn.Position);
