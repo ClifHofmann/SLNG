@@ -650,6 +650,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             string msg = !string.IsNullOrWhiteSpace(lastMessage) ? lastMessage : _client.Self.TeleportMessage;
             if (success)
             {
+                SyncLocalAgentPositionAfterTeleport();
                 return new TeleportResult(true, msg);
             }
 
@@ -670,6 +671,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                             .TeleportAsync(handle.Value, landmark.Position, ct)
                             .ConfigureAwait(false);
 
+                        if (fallbackSuccess)
+                        {
+                            SyncLocalAgentPositionAfterTeleport();
+                        }
+
                         string fallbackMsg = !string.IsNullOrWhiteSpace(lastMessage) ? lastMessage : _client.Self.TeleportMessage;
                         return new TeleportResult(fallbackSuccess, fallbackSuccess ? string.Empty : fallbackMsg);
                     }
@@ -686,6 +692,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             _client.Self.TeleportProgress -= OnProgress;
         }
+    }
+
+    private void SyncLocalAgentPositionAfterTeleport()
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null) return;
+
+        var pos = _client.Self.SimPosition;
+        var rot = _client.Self.SimRotation;
+        AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
+            sim.Handle,
+            0,
+            _client.Self.AgentID.Guid,
+            new System.Numerics.Vector3(pos.X, pos.Y, pos.Z),
+            new System.Numerics.Quaternion(rot.X, rot.Y, rot.Z, rot.W),
+            _client.Self.FirstName,
+            _client.Self.LastName,
+            IsLocalAgent: true));
     }
 
     private async Task<ulong?> ResolveRegionHandleAsync(UUID regionId, CancellationToken ct)
