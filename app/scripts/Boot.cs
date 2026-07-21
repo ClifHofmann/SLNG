@@ -42,6 +42,7 @@ public partial class Boot : Control
     private SLNG.App.UI.ButtonBar _buttonBar = null!;
     private SLNG.App.UI.PreferencesWindow _preferencesWindow = null!;
     private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
+    private SLNG.App.UI.UiSettings _uiSettings = null!;
 
     // M5-3 Tabbed Chat window
     private SLNG.App.UI.ChatWindow _chatWindow = null!;
@@ -55,7 +56,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.1.27-alpha";
+    public const string AppVersion = "v0.1.28-alpha";
 
     public override void _Ready()
     {
@@ -175,6 +176,12 @@ public partial class Boot : Control
 
     private void SetupHud()
     {
+        // Loaded before any SLNGWindow is constructed below, so CameraHUD/InventoryPanel/
+        // ChatWindow etc. all pick up the saved scale in their own _Ready() instead of
+        // flashing at 1.0x first (FEAT-UI-07).
+        _uiSettings = new SLNG.App.UI.UiSettings();
+        _uiSettings.Load();
+
         // Position/altitude readout in the top-right corner, overlaying the 3D view.
         // On its own CanvasLayer so it always draws on top of the world and the login/chat
         // Controls, regardless of scene-tree order.
@@ -298,6 +305,10 @@ public partial class Boot : Control
         var toolbarPage = new SLNG.App.UI.ToolbarPreferencesPage();
         _preferencesWindow.AddTab("Toolbar", toolbarPage);
         toolbarPage.Initialize(toolbarItems, _toolbarSettings);
+
+        var displayPage = new SLNG.App.UI.DisplayPreferencesPage();
+        _preferencesWindow.AddTab("Display", displayPage);
+        displayPage.Initialize(_uiSettings);
     }
 
     private void SetupEnvironment()

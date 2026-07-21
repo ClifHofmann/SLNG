@@ -9,13 +9,35 @@ public partial class SLNGWindow : MarginContainer
     private MarginContainer _contentContainer = null!;
     private PanelContainer _headerPanel = null!;
     private Button _closeButton = null!;
-    
+
     private bool _isDragging = false;
     private Vector2 _dragOffset;
     private bool _isResizing = false;
     private Control _resizeHandle = null!;
 
-    public string Title 
+    public const float MinUiScale = 0.8f;
+    public const float MaxUiScale = 1.6f;
+    private static float _globalUiScale = 1.0f;
+
+    /// <summary>Current global window/HUD scale (FEAT-UI-07), shared by every SLNGWindow
+    /// instance. UiSettings owns persistence; this is just the live broadcast value.</summary>
+    public static float GlobalUiScale => _globalUiScale;
+
+    /// <summary>Raised after a change so already-open windows rescale live instead of only
+    /// picking up the new value on next open.</summary>
+    public static event Action<float>? GlobalUiScaleChanged;
+
+    /// <summary>Sets the scale every SLNGWindow (current and future) renders at. Clamped to
+    /// [MinUiScale, MaxUiScale] -- callers (UiSettings) don't need to duplicate the range.</summary>
+    public static void SetGlobalUiScale(float scale)
+    {
+        scale = Mathf.Clamp(scale, MinUiScale, MaxUiScale);
+        if (Mathf.IsEqualApprox(scale, _globalUiScale)) return;
+        _globalUiScale = scale;
+        GlobalUiScaleChanged?.Invoke(scale);
+    }
+
+    public string Title
     {
         get => _titleLabel?.Text ?? "";
         set 
@@ -33,7 +55,12 @@ public partial class SLNGWindow : MarginContainer
     {
         // Allow free positioning (not constrained by parent containers if placed inside a standard Control)
         SetAnchorsPreset(LayoutPreset.TopLeft);
-        
+
+        // FEAT-UI-07: scale grows from the top-left (PivotOffset default (0,0)), so Position
+        // keeps meaning "where the window's corner sits" regardless of scale.
+        Scale = new Vector2(_globalUiScale, _globalUiScale);
+        GlobalUiScaleChanged += OnGlobalUiScaleChanged;
+
         // Add a drop shadow or outline margin around the actual panel
         AddThemeConstantOverride("margin_left", 8);
         AddThemeConstantOverride("margin_right", 8);
@@ -153,6 +180,14 @@ public partial class SLNGWindow : MarginContainer
         AddChild(_resizeHandle);
     }
 
+    public override void _ExitTree()
+    {
+        GlobalUiScaleChanged -= OnGlobalUiScaleChanged;
+        base._ExitTree();
+    }
+
+    private void OnGlobalUiScaleChanged(float scale) => Scale = new Vector2(scale, scale);
+
     private void OnHeaderGuiInput(InputEvent @event)
     {
         if (@event is InputEventMouseButton mouseBtn)
@@ -200,7 +235,11 @@ public partial class SLNGWindow : MarginContainer
         {
             if (_isResizing)
             {
-                var newSize = mouseMotion.GlobalPosition - GlobalPosition;
+                // GlobalPosition/mouseMotion.GlobalPosition are in screen space; Size is the
+                // pre-scale local rect, so the screen-space delta must be un-scaled before it's
+                // assigned back, or dragging at e.g. 1.5x UI scale would resize 1.5x faster than
+                // the cursor moves (FEAT-UI-07).
+                var newSize = (mouseMotion.GlobalPosition - GlobalPosition) / Scale;
                 newSize.X = Mathf.Max(newSize.X, CustomMinimumSize.X > 0 ? CustomMinimumSize.X : 100);
                 newSize.Y = Mathf.Max(newSize.Y, CustomMinimumSize.Y > 0 ? CustomMinimumSize.Y : 100);
                 Size = newSize;
