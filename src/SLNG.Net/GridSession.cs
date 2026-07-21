@@ -851,6 +851,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     break;
                 case LibreMetaverse.InventoryItem i:
                     var owned = i.Permissions.OwnerMask;
+                    int assetType = (int)i.AssetType;
+                    if (assetType <= 0 && (i.InventoryType == LibreMetaverse.InventoryType.Landmark || i is LibreMetaverse.InventoryLandmark))
+                    {
+                        assetType = (int)LibreMetaverse.AssetType.Landmark;
+                    }
                     result.Add(new InventoryEntry(
                         i.UUID.Guid, i.ParentUUID.Guid, i.OwnerID.Guid, i.Name,
                         IsFolder: false, PreferredFolderType: -1,
@@ -858,7 +863,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                         // report it as the link target and leave AssetId empty (resolving the
                         // target's real asset takes a second fetch the UI doesn't need yet).
                         AssetId: i.ResolvedAssetID.Guid,
-                        (int)i.AssetType, (int)i.InventoryType,
+                        assetType, (int)i.InventoryType,
                         i.IsLink(), i.IsLink() ? i.ResolvedItemID.Guid : Guid.Empty,
                         owned.HasFlag(LibreMetaverse.PermissionMask.Copy),
                         owned.HasFlag(LibreMetaverse.PermissionMask.Modify),
