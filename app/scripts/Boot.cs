@@ -55,7 +55,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.1.24-alpha";
+    public const string AppVersion = "v0.1.25-alpha";
 
     public override void _Ready()
     {

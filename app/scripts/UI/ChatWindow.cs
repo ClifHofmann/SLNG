@@ -414,6 +414,15 @@ public partial class ChatWindow : SLNGWindow
         var text = _inputEdit.Text;
         if (string.IsNullOrWhiteSpace(text) || _activeChatTab == null) return;
 
+        // Sending is always an intentional "show me this" action -- jump back to the bottom even
+        // if the user had scrolled up to read history, unlike an incoming message, which respects
+        // wherever they currently are (see AppendLineToTab's FollowingBottom check). Main's own
+        // message arrives asynchronously via the sim's echo (OnSendLocalChat doesn't append
+        // anything itself), so this has to be set now rather than after some append call.
+        _activeChatTab.FollowingBottom = true;
+        ScrollLogToBottom();
+        ShowJumpToLatest(false);
+
         if (_activeChatTab.Id == "main")
         {
             OnSendLocalChat?.Invoke(text);
