@@ -277,12 +277,12 @@ check once built) are resolved:
 
 **Phase 1 — window shell + Main chat (this pass, no net-layer prerequisites):**
 - [x] Create `M5-3` spec & update `ROADMAP.md`
-- [ ] Implement `ChatWindow` UI shell with vertical tab container (Chat/Friends/Groups) + horizontal chip strip
-- [ ] Migrate `Main` local chat from the M3-2 inline `ChatBox`/`LogPanel` into the new window (retire the inline UI)
-- [ ] Implement rolling recent-lines log with pause-on-scroll-up + "jump to latest"
-- [ ] Implement `ChatLogger` service (SL format, user-space default path, async append + paginated read-back)
-- [ ] Implement `ChatHistoryWindow` (paginated viewer, §2a)
-- [ ] Connect Chat Logger & Chat Window options to Preferences
+- [x] Implement `ChatWindow` UI shell with vertical tab container (Chat/Friends/Groups) + horizontal chip strip
+- [x] Migrate `Main` local chat from the M3-2 inline `ChatBox`/`LogPanel` into the new window (retire the inline UI)
+- [x] Implement rolling recent-lines log with pause-on-scroll-up + "jump to latest"
+- [x] Implement `ChatLogger` service (SL format, user-space default path, async append + paginated read-back)
+- [x] Implement `ChatHistoryWindow` (paginated viewer, §2a)
+- [ ] Connect Chat Logger & Chat Window options to Preferences *(deferred — sane default log path ships now, no toggle UI yet; not blocking per §6)*
 
 **Phase 1b — Friends (net + UI, sequenced immediately after shell, not deferred):**
 - [ ] `SLNG.Net`: `FriendsManager` wiring (online/offline status) — new net sub-task
