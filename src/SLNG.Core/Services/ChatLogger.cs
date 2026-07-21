@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -74,7 +75,10 @@ public sealed class ChatLogger
         if (!Enabled) return;
 
         string path = FilePathFor(kind, conversationName);
-        string line = $"[{timestamp:yyyy/MM/dd HH:mm:ss}] {sender}: {message}";
+        // "/" in a .NET custom format string is a locale-dependent date-separator placeholder,
+        // not a literal slash -- without InvariantCulture this renders as "." on e.g. German
+        // Windows instead of the SL log format's fixed "yyyy/MM/dd".
+        string line = $"[{timestamp.ToString("yyyy/MM/dd HH:mm:ss", CultureInfo.InvariantCulture)}] {sender}: {message}";
         var gate = _fileLocks.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
 
         await gate.WaitAsync().ConfigureAwait(false);

@@ -240,7 +240,9 @@ public partial class ChatWindow : SLNGWindow
     {
         bool isOwn = !string.IsNullOrEmpty(_session?.AgentName) && sender == _session!.AgentName;
         string senderColor = isOwn ? "#79B8F0" : "#E0E0E0";
-        return $"[color=#888888]{timestamp:HH:mm}[/color] [color={senderColor}][b]{BbEscape(sender)}[/b][/color]: {BbEscape(message)}";
+        // [lb] escapes the literal "[" so Godot's BBCode parser doesn't try to read "[15:28]" as
+        // a tag -- matches the bracketed timestamp style of preloaded lines from the log file.
+        return $"[color=#888888][lb]{timestamp:HH:mm}][/color] [color={senderColor}][b]{BbEscape(sender)}[/b][/color]: {BbEscape(message)}";
     }
 
     private static string BbEscape(string s) => s.Replace("[", "[lb]");
@@ -320,8 +322,13 @@ public partial class ChatWindow : SLNGWindow
             ScrollFollowing = false, // manual pause/follow control -- see _Process
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
+        // RichTextLabel keys normal/bold/italics/bold_italics separately -- missing any of them
+        // falls back to the ~16px theme default, which is exactly what happened to the preloaded
+        // history lines (they're wrapped in [i]...[/i] and only normal/bold were set here).
         _logView.AddThemeFontSizeOverride("normal_font_size", BodyFontSize);
         _logView.AddThemeFontSizeOverride("bold_font_size", BodyFontSize);
+        _logView.AddThemeFontSizeOverride("italics_font_size", BodyFontSize);
+        _logView.AddThemeFontSizeOverride("bold_italics_font_size", BodyFontSize);
         rightVBox.AddChild(_logView);
 
         _jumpToLatestButton = new Button
