@@ -271,23 +271,23 @@ public partial class AvatarRenderer : Node3D
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
         if (_visuals.TryGetValue(entityId, out var visual))
         {
-            visual.QueueFree();
+            if (GodotObject.IsInstanceValid(visual.Root)) visual.QueueFree();
             _visuals.Remove(entityId);
         }
         if (_attachmentNodes.TryGetValue(entityId, out var attachNode))
         {
-            attachNode.QueueFree();
+            if (GodotObject.IsInstanceValid(attachNode)) attachNode.QueueFree();
             _attachmentNodes.Remove(entityId);
         }
         if (_riggedAttachments.TryGetValue(entityId, out var riggedMesh))
         {
-            riggedMesh.QueueFree();
+            if (GodotObject.IsInstanceValid(riggedMesh)) riggedMesh.QueueFree();
             _riggedAttachments.Remove(entityId);
         }
         _attachmentMeshIds.Remove(entityId);
         if (_hudNodes.TryGetValue(entityId, out var hudNode))
         {
-            hudNode.QueueFree();
+            if (GodotObject.IsInstanceValid(hudNode)) hudNode.QueueFree();
             _hudNodes.Remove(entityId);
         }
         _hudPlacements.Remove(entityId);
