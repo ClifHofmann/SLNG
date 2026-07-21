@@ -143,18 +143,22 @@ public partial class FriendsPanel : Control
         inner.AddThemeConstantOverride("separation", 8);
         row.AddChild(inner);
 
-        var dot = new ColorRect
+        var dot = new Label
         {
-            CustomMinimumSize = new Vector2(8, 8),
-            Color = friend.IsOnline ? new Color(0.3f, 0.85f, 0.3f) : new Color(0.4f, 0.4f, 0.4f),
+            Text = "●",
+            VerticalAlignment = VerticalAlignment.Center,
             SizeFlagsVertical = SizeFlags.ShrinkCenter,
         };
+        dot.AddThemeFontSizeOverride("font_size", 9);
+        dot.AddThemeColorOverride("font_color",
+            friend.IsOnline ? new Color(0.3f, 0.85f, 0.3f) : new Color(0.4f, 0.4f, 0.4f));
         inner.AddChild(dot);
 
         var nameBtn = new Button
         {
             Text = DisplayName(friend),
             Flat = true,
+            ClipText = true,
             FocusMode = FocusModeEnum.None,
             Alignment = HorizontalAlignment.Left,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
@@ -206,12 +210,14 @@ public partial class FriendsPanel : Control
         return panel;
     }
 
+    // Deliberately NOT using Button.Disabled here -- see the matching comment on
+    // ChatWindow.BuildIconButton for why (it silently kills tooltip hover).
     private static Button BuildActionButton(string text, bool accent = false, bool warn = false)
     {
         var btn = new Button
         {
             Text = text,
-            Disabled = true, // not implemented yet -- see class doc comment
+            ClipText = true,
             TooltipText = $"{text.TrimEnd('.')} (not implemented)",
             FocusMode = FocusModeEnum.None,
             CustomMinimumSize = new Vector2(0, 26),
@@ -227,8 +233,7 @@ public partial class FriendsPanel : Control
             CornerRadiusBottomRight = 4,
         };
         btn.AddThemeStyleboxOverride("normal", style);
-        btn.AddThemeStyleboxOverride("disabled", style);
-        btn.AddThemeColorOverride("font_disabled_color", warn ? new Color(0.9f, 0.4f, 0.4f, 0.9f) : new Color(0.75f, 0.75f, 0.75f));
+        btn.AddThemeColorOverride("font_color", warn ? new Color(0.9f, 0.4f, 0.4f, 0.9f) : new Color(0.85f, 0.85f, 0.85f));
 
         return btn;
     }

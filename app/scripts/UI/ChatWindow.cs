@@ -284,6 +284,10 @@ public partial class ChatWindow : SLNGWindow
         return row;
     }
 
+    // Deliberately NOT using Button.Disabled for "not implemented yet" icons: a disabled
+    // BaseButton in Godot 4 stops receiving hover/tooltip processing, which would silently
+    // defeat the whole point of the "(not implemented)" tooltip. Leaving it enabled with no
+    // Pressed handler gets normal hover/tooltip feedback and a harmless no-op click instead.
     private Button BuildIconButton(string glyph, string tooltip, Action? onPressed)
     {
         var btn = new Button
@@ -292,14 +296,12 @@ public partial class ChatWindow : SLNGWindow
             Flat = true,
             FocusMode = FocusModeEnum.None,
             TooltipText = tooltip,
-            Disabled = onPressed == null,
             CustomMinimumSize = new Vector2(28, 28),
         };
         btn.AddThemeFontOverride("font", _iconFont);
         btn.AddThemeFontSizeOverride("font_size", 18);
         btn.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
         btn.AddThemeColorOverride("font_hover_color", new Color(1, 1, 1));
-        btn.AddThemeColorOverride("font_disabled_color", new Color(0.4f, 0.4f, 0.4f));
         if (onPressed != null) btn.Pressed += onPressed;
         return btn;
     }
@@ -349,12 +351,10 @@ public partial class ChatWindow : SLNGWindow
 
         if (isOnline.HasValue)
         {
-            var dot = new ColorRect
-            {
-                CustomMinimumSize = new Vector2(6, 6),
-                Color = isOnline.Value ? new Color(0.3f, 0.85f, 0.3f) : new Color(0.4f, 0.4f, 0.4f),
-                SizeFlagsVertical = SizeFlags.ShrinkCenter,
-            };
+            var dot = new Label { Text = "●", VerticalAlignment = VerticalAlignment.Center };
+            dot.AddThemeFontSizeOverride("font_size", 8);
+            dot.AddThemeColorOverride("font_color",
+                isOnline.Value ? new Color(0.3f, 0.85f, 0.3f) : new Color(0.4f, 0.4f, 0.4f));
             inner.AddChild(dot);
         }
 
@@ -362,6 +362,7 @@ public partial class ChatWindow : SLNGWindow
         {
             Text = displayName,
             Flat = true,
+            ClipText = true,
             FocusMode = FocusModeEnum.None,
             Alignment = HorizontalAlignment.Left,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
@@ -510,12 +511,26 @@ public partial class ChatWindow : SLNGWindow
         _outerTabStrip.AddThemeConstantOverride("separation", 4);
         stripPanel.AddChild(_outerTabStrip);
 
+        // Without this margin, a tab page's last row (e.g. FriendsPanel's "Friends: N" count)
+        // sits flush against the window's bottom edge/resize handle -- give every page the same
+        // breathing room instead of margin-ing each one individually.
+        var pageMargin = new MarginContainer
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+        };
+        pageMargin.AddThemeConstantOverride("margin_left", 8);
+        pageMargin.AddThemeConstantOverride("margin_right", 8);
+        pageMargin.AddThemeConstantOverride("margin_top", 8);
+        pageMargin.AddThemeConstantOverride("margin_bottom", 8);
+        parent.AddChild(pageMargin);
+
         _outerPageHost = new Control
         {
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
-        parent.AddChild(_outerPageHost);
+        pageMargin.AddChild(_outerPageHost);
     }
 
     private void AddOuterTab(string tabName, string iconGlyph, Control page)
