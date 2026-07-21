@@ -2,6 +2,7 @@ using Godot;
 using SLNG.Net;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace SLNG.App.UI;
 
@@ -221,17 +222,20 @@ public partial class InventoryPanel : SLNGWindow
             {
                 var metaStr = item.GetMetadata(0).AsString();
                 var parts = metaStr.Split(',');
-                if (parts.Length == 6)
+                if (parts.Length == 7)
                 {
                     bool canCopy = bool.Parse(parts[1]);
                     bool canModify = bool.Parse(parts[2]);
                     bool canTransfer = bool.Parse(parts[3]);
                     int assetType = int.Parse(parts[4]);
-                    // Links (e.g. Current Outfit entries) carry AssetId == Guid.Empty -- their
-                    // target item, not this row, holds the real landmark asset -- so exclude
-                    // them even if AssetType happens to read as Landmark.
-                    bool isLandmark = assetType == SLNG.Core.AssetTypeIds.Landmark
-                        && Guid.TryParse(parts[5], out var landmarkAssetId) && landmarkAssetId != Guid.Empty;
+                    bool isLink = bool.Parse(parts[6]);
+                    // Links (e.g. Current Outfit entries) always carry AssetId == Guid.Empty --
+                    // their target item, not this row, holds the real landmark asset -- so
+                    // exclude them by IsLink, not by asset-id emptiness: a just-created (non-link)
+                    // landmark can ALSO have a momentarily-empty asset id (server-side indexing
+                    // lag right after creation, see TeleportAsync below), and that case must still
+                    // enable Teleport rather than being mistaken for a link.
+                    bool isLandmark = assetType == SLNG.Core.AssetTypeIds.Landmark && !isLink;
 
                     _contextMenu.SetItemDisabled(0, false); // Wear
                     _contextMenu.SetItemDisabled(1, !canCopy); // Copy
@@ -302,16 +306,46 @@ public partial class InventoryPanel : SLNGWindow
             if (isFolder) return;
 
             var parts = metaStr.Split(',');
-            if (parts.Length != 6 || !Guid.TryParse(parts[5], out var assetId)) return;
+            if (parts.Length != 7 || !Guid.TryParse(parts[5], out var assetId)) return;
+
+            var parentItem = item.GetParent();
+            Guid? parentFolderId = null;
+            var parentMetaStr = parentItem?.GetMetadata(0).AsString() ?? "";
+            var parentIdStr = parentMetaStr.Contains(',') ? parentMetaStr.Split(',')[0] : parentMetaStr;
+            if (Guid.TryParse(parentIdStr, out var pid)) parentFolderId = pid;
 
             _status.Text = "Teleporting…";
-            _ = TeleportAsync(assetId);
+            _ = TeleportAsync(itemId, assetId, parentFolderId);
         }
     }
 
-    private async System.Threading.Tasks.Task TeleportAsync(Guid landmarkAssetId)
+    /// <summary>Teleports to a landmark's asset id. If that id is still <see cref="Guid.Empty"/>
+    /// (the freshly-created-landmark race -- see RefreshFolder/Populate), re-resolves it from a
+    /// fresh fetch of the parent folder before giving up: a server-side indexing lag can leave a
+    /// just-created item's asset id briefly unresolved even right after RefreshFolder's own patch,
+    /// e.g. if the folder wasn't expanded at creation time so that patch never ran. Never passes
+    /// Guid.Empty to TeleportToLandmarkAsync -- the SL wire protocol treats a null landmark id as
+    /// "teleport home", so an unresolved id must fail loudly, not silently send the agent home.</summary>
+    private async System.Threading.Tasks.Task TeleportAsync(Guid itemId, Guid assetId, Guid? parentFolderId)
     {
-        var result = await _session!.TeleportToLandmarkAsync(landmarkAssetId).ConfigureAwait(false);
+        if (assetId == Guid.Empty && parentFolderId is { } folderId && _session != null)
+        {
+            var children = await _session.FetchInventoryChildrenAsync(folderId).ConfigureAwait(false);
+            var fresh = children.FirstOrDefault(c => c.Id == itemId);
+            if (fresh != null) assetId = fresh.AssetId;
+        }
+
+        if (assetId == Guid.Empty)
+        {
+            Callable.From(() =>
+            {
+                if (IsInstanceValid(this))
+                    _status.Text = "Landmark not ready yet — try again in a moment.";
+            }).CallDeferred();
+            return;
+        }
+
+        var result = await _session!.TeleportToLandmarkAsync(assetId).ConfigureAwait(false);
         Callable.From(() =>
         {
             if (!IsInstanceValid(this)) return;
@@ -375,7 +409,7 @@ public partial class InventoryPanel : SLNGWindow
             // See RefreshFolder's doc comment: a just-created item's own known-good asset id
             // (from the create response, not this fetch) wins over whatever this listing reports.
             var assetId = entry.Id == knownItemId && knownAssetId is { } known ? known : entry.AssetId;
-            row.SetMetadata(0, $"{entry.Id},{entry.CanCopy},{entry.CanModify},{entry.CanTransfer},{entry.AssetType},{assetId}");
+            row.SetMetadata(0, $"{entry.Id},{entry.CanCopy},{entry.CanModify},{entry.CanTransfer},{entry.AssetType},{assetId},{entry.IsLink}");
         }
 
         if (children.Count == 0)
