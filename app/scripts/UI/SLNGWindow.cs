@@ -56,6 +56,15 @@ public partial class SLNGWindow : MarginContainer
         // Allow free positioning (not constrained by parent containers if placed inside a standard Control)
         SetAnchorsPreset(LayoutPreset.TopLeft);
 
+        // Stop (not the container-default Pass) so every click/scroll landing anywhere inside
+        // the window's rect -- including blank padding and gaps a child Control doesn't cover,
+        // e.g. between Tree rows -- is consumed here instead of leaking through to whatever's
+        // rendered behind (CameraHUD buttons, the 3D viewport's own input/camera zoom). Pass
+        // would still let children handle their own input first, but afterward continues the
+        // event to siblings/behind regardless, which is exactly the "clicks go through the
+        // window" bug this fixes.
+        MouseFilter = MouseFilterEnum.Stop;
+
         // FEAT-UI-07: scale grows from the top-left (PivotOffset default (0,0)), so Position
         // keeps meaning "where the window's corner sits" regardless of scale.
         Scale = new Vector2(_globalUiScale, _globalUiScale);
@@ -67,7 +76,7 @@ public partial class SLNGWindow : MarginContainer
         AddThemeConstantOverride("margin_top", 8);
         AddThemeConstantOverride("margin_bottom", 8);
 
-        var bgPanel = new PanelContainer();
+        var bgPanel = new PanelContainer { MouseFilter = MouseFilterEnum.Stop };
         AddChild(bgPanel);
 
         var styleBox = new StyleBoxFlat
@@ -184,6 +193,21 @@ public partial class SLNGWindow : MarginContainer
     {
         GlobalUiScaleChanged -= OnGlobalUiScaleChanged;
         base._ExitTree();
+    }
+
+    /// <summary>Raises this window above every other overlapping SLNGWindow the instant it's
+    /// clicked -- anywhere inside it, not just the header. Deliberately uses <c>_Input</c> (fires
+    /// for every event, before GUI dispatch/consumption) rather than a GuiInput/_gui_input hook:
+    /// a click on an interactive child (a Tree row, a Button) is consumed right there and never
+    /// bubbles up to this window's own gui_input, so a bubble-based hook would miss most clicks.
+    /// <c>GuiGetHoveredControl()</c> reflects true rendered stacking order (unlike a raw rect
+    /// check, which can't tell two overlapping windows apart), so only the window actually under
+    /// the cursor raises itself -- no fighting between overlapping windows on the same click.</summary>
+    public override void _Input(InputEvent @event)
+    {
+        if (@event is not InputEventMouseButton { Pressed: true }) return;
+        var hovered = GetViewport().GuiGetHoveredControl();
+        if (hovered == this || (hovered != null && IsAncestorOf(hovered))) MoveToFront();
     }
 
     private void OnGlobalUiScaleChanged(float scale) => Scale = new Vector2(scale, scale);
