@@ -160,12 +160,21 @@ public partial class AvatarController : Camera3D
 
         if (@event is InputEventMouseButton mouseBtn)
         {
-            if (mouseBtn.ButtonIndex == MouseButton.WheelUp)
+            // Reaching _UnhandledInput at all already means no Control under the cursor claimed
+            // this event (see the class comment above) -- but that's not enough on its own: the
+            // cursor drifting a few pixels outside a window mid-scroll (e.g. reaching for the
+            // wheel while it was still over the chat log) lands here too, and shouldn't zoom the
+            // world just because a text field the user was actively using still holds focus. Same
+            // hasUiFocus signal already gates WASD/orbit in _Process below.
+            var focusOwner = GetViewport().GuiGetFocusOwner();
+            bool hasUiFocus = focusOwner is LineEdit || focusOwner is TextEdit;
+
+            if (!hasUiFocus && mouseBtn.ButtonIndex == MouseButton.WheelUp)
             {
                 ZoomTowardCursor(-0.5f, mouseBtn.Position);
                 GD.Print($"[AvatarController] Zoom: {_zoom:F1} (WheelUp)");
             }
-            else if (mouseBtn.ButtonIndex == MouseButton.WheelDown)
+            else if (!hasUiFocus && mouseBtn.ButtonIndex == MouseButton.WheelDown)
             {
                 ZoomTowardCursor(0.5f, mouseBtn.Position);
                 GD.Print($"[AvatarController] Zoom: {_zoom:F1} (WheelDown)");
