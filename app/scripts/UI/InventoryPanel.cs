@@ -160,7 +160,31 @@ public partial class InventoryPanel : SLNGWindow
     {
         var root = _tree.GetRoot();
         if (root == null) return;
-        FilterTree(root, newText.ToLowerInvariant());
+        string query = newText.Trim().ToLowerInvariant();
+        if (!string.IsNullOrEmpty(query))
+        {
+            EnsureFoldersLoadedForSearch(root);
+        }
+        FilterTree(root, query);
+    }
+
+    private void EnsureFoldersLoadedForSearch(TreeItem item)
+    {
+        var metaStr = item.GetMetadata(0).AsString();
+        var idStr = metaStr.Contains(',') ? metaStr.Split(',')[0] : metaStr;
+
+        if (!metaStr.Contains(',') && Guid.TryParse(idStr, out var folderId))
+        {
+            if (!_loadedFolders.Contains(folderId))
+            {
+                LoadFolder(item, folderId);
+            }
+        }
+
+        foreach (var child in item.GetChildren())
+        {
+            EnsureFoldersLoadedForSearch(child);
+        }
     }
 
     private bool FilterTree(TreeItem item, string query)
@@ -566,6 +590,15 @@ public partial class InventoryPanel : SLNGWindow
             var empty = _tree.CreateItem(item);
             empty.SetText(0, "(empty)");
             empty.SetCustomColor(0, new Color(1, 1, 1, 0.4f));
+        }
+
+        if (_searchBox != null && !string.IsNullOrEmpty(_searchBox.Text))
+        {
+            var root = _tree.GetRoot();
+            if (root != null)
+            {
+                FilterTree(root, _searchBox.Text.Trim().ToLowerInvariant());
+            }
         }
 
         _status.Text = "";

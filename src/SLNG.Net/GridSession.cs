@@ -1062,7 +1062,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// Detaches an inventory item / attachment from the agent.
     /// Handles both real inventory item IDs and link IDs inside Current Outfit.
     /// </summary>
-    public async Task DetachItemAsync(Guid itemId)
+    public Task DetachItemAsync(Guid itemId)
     {
         var itemUuid = new LibreMetaverse.UUID(itemId);
         var store = _client.Inventory.Store;
@@ -1109,15 +1109,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             _client.Appearance.Detach(linkUuid);
         }
 
-        // 3. Remove link from COF store if present so UI & worn status update immediately
-        if (linkUuid != LibreMetaverse.UUID.Zero)
+        // 3. Also send Detach for original itemId if distinct from both
+        if (itemUuid != targetUuid && itemUuid != linkUuid)
         {
-            try
-            {
-                await _client.Inventory.RemoveItemAsync(linkUuid).ConfigureAwait(false);
-            }
-            catch { }
+            _client.Appearance.Detach(itemUuid);
         }
+
+        return Task.CompletedTask;
     }
 
     /// <summary>
