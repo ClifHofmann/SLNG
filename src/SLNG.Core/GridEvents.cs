@@ -70,8 +70,17 @@ public record ObjectUpdateEvent(
     bool IsFullUpdate = true
 ) : IWorldEvent;
 
-/// <summary>Represents an update for an avatar.</summary>
-public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent) : IWorldEvent;
+/// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY
+/// (2026-07-22, round 9): the avatar object's own wire-transmitted Scale.Z (LibreMetaverse:
+/// Avatar/Primitive.Scale, decoded from the same ObjectUpdate/TerseObjectUpdate as everything
+/// else — see linden_llvoavatar.cpp's getScale(), a quantity the real viewer treats as DISTINCT
+/// from mBodySize.z/computeBodySize()'s output). Both avatars were independently measured
+/// under-height by ~14-15cm vs. their real Firestorm-displayed height, ruling out a remote-
+/// specific bug — logged here so a live session can check whether THIS simulator-tracked value
+/// (analogous to llGetAgentSize()) matches Firestorm's number better than our own ComputeBodySize
+/// port does, before trusting either as ground truth. Not yet used in any rendering/position
+/// math. Defaults to 0f so existing call sites/tests keep compiling unchanged.</summary>
+public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent, float ScaleZ = 0f) : IWorldEvent;
 
 /// <summary>Represents the removal of an object from the simulator's interest list.</summary>
 public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent;
@@ -114,8 +123,18 @@ public record TerrainSettingsEvent(
 /// <summary>Represents a simulator disconnection or departure.</summary>
 public record RegionDisconnectedEvent(ulong RegionHandle) : IWorldEvent;
 
-/// <summary>Represents an update to an avatar's visual appearance and baked textures.</summary>
-public record AvatarAppearanceEvent(ulong RegionHandle, Guid AgentId, byte[] VisualParams, Dictionary<int, Guid> BakedTextures) : IWorldEvent;
+/// <summary>Represents an update to an avatar's visual appearance and baked textures.
+/// <paramref name="HoverOffsetZ"/> is the AppearanceHover Z offset (LibreMetaverse:
+/// Avatar.HoverHeight.Z, sourced from AvatarAppearancePacket.AppearanceHover) — a per-avatar,
+/// user-configured "Hover" shape-slider-style adjustment (commonly used to fix a specific mesh
+/// body/shoe's ground contact) that the real viewer adds directly onto the avatar root position
+/// (LLVOAvatar::updateRootPositionAndRotation: <c>root_pos += LLVector3d(getHoverOffset())</c>),
+/// separate from and in addition to the halfBodySize/PelvisToFoot correction. Verified against
+/// linden_llvoavatar.cpp (contents.mHoverOffsetWasSet, applied only for !isSelf() — remote
+/// avatars specifically) and AvatarManager.cs's AvatarAppearanceHandler, which parses this SAME
+/// field alongside VisualParams from the identical AvatarAppearance packet. Defaults to 0f so
+/// existing call sites/tests that don't care about hover keep compiling unchanged.</summary>
+public record AvatarAppearanceEvent(ulong RegionHandle, Guid AgentId, byte[] VisualParams, Dictionary<int, Guid> BakedTextures, float HoverOffsetZ = 0f) : IWorldEvent;
 
 /// <summary>Represents the set of animations currently playing on an avatar.</summary>
 public record AvatarAnimationEvent(Guid AgentId, List<Guid> AnimationIds) : IWorldEvent;

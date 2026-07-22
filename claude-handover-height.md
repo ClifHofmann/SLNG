@@ -312,3 +312,53 @@ Rebuild clean, fresh relogin, get both avatars in view, and read the now-tagged 
 - Compare the SAME two numbers for Clifton (local) as a control — if his `renderedSkullToFootY`/`BodySizeZ` pair is internally consistent while Reamon's isn't, that's strong evidence the divergence is remote-avatar-specific (some other asymmetry in how remote avatars get shaped/skinned vs. local), not a universal formula bug.
 
 If both numbers check out consistent for Reamon (formula = render = ~1.99m) and the visual "renders much smaller than Clifton" complaint STILL doesn't square with that, the mesh-scale/proportions theory may need to be abandoned in favor of investigating the residual position float (still ~5-8cm) or genuinely different worn attachments (body mod, mesh body brand, hair/shoes contributing to a bounding-box-based height stat) as the real explanation for what the user is seeing.
+
+---
+
+## Round 9 (proportions question CLOSED; position bug found and fixed via real AppearanceHover data; new systemic height question opened)
+
+### Proportions complaint: closed, was never a separate bug
+
+Live: `[DBG-PARITY]` (now tagged) showed `renderedSkullToFootY=2.068` (local, Clifton) vs. `2.054` (remote, Reamon) — 1.4cm apart, both with `0 deviated beyond 1cm/1%`. User confirmed visually too ("die Form scheint zu passen" — the shape/proportions look right now). **Closed**: the round-8 trace through `ApplyShape`/`RebuildBodyMorphs`/`RebuildRiggedAttachmentSkins` was correct — there was no mesh-scale bug. The earlier "Reamon renders much smaller" read was almost certainly the OLD (pre-round-7) corrupted `BodySizeZ` cascading into a wrong root offset, compounded by the sinking-into-the-platform optical effect (occluded legs read as "shorter"). No further work needed on this thread.
+
+### Position: found and fixed the real remaining term — AppearanceHover
+
+With the shape question closed, the residual position gap became cleanly isolated: `simPos.Z - remoteGroundHeight = 1.089` vs. `PelvisToFootZ = 1.167` — a real ~7.8cm gap causing Reamon to sink into the ground, not float.
+
+Traced this to a genuine missing term, confirmed against real source. `linden_llvoavatar.cpp`'s `updateRootPositionAndRotation` has a term this investigation's formula had never ported: `root_pos += LLVector3d(getHoverOffset());`, applied AFTER the halfBodySize/PelvisToFoot correction. Traced `getHoverOffset()`'s data source further:
+
+- `linden_llvoavatar.cpp` (~line 9591-9980): the avatar's hover offset is parsed from a packet's **`AppearanceHover`** field, and critically `contents.mHoverOffsetWasSet && !isSelf()` — this is set from network data specifically for **remote avatars**; if the field isn't present, hover resets to zero.
+- LibreMetaverse (`scratch/libremetaverse_src/LibreMetaverse/AvatarManager.cs`, `AvatarAppearanceHandler`): parses the SAME `AppearanceHover` field from the SAME `AvatarAppearancePacket` that also carries `VisualParam` (`appearance.AppearanceHover[0].HoverHeight`), storing it on the cached `Avatar.HoverHeight` (a `Vector3`).
+- This is exactly the mechanism many real SL/OpenSim users rely on: a manually-configured "Hover" adjustment (Appearance editor slider) to fix a SPECIFIC mesh body/shoe's ground contact — a very plausible, common real-world source for a small, fixed, several-cm offset. The magnitude (~7.8cm) is entirely consistent with a real user-configured value.
+- **Our own `AvatarAppearanceEventArgs` (the public LibreMetaverse event we subscribe to) does NOT expose this field at all** — only the underlying `Avatar` object (in `Simulator.ObjectsAvatars`, keyed by LocalID) gets it set internally. Confirmed via `AgentManager.SimPosition` (`scratch/libremetaverse_src/LibreMetaverse/Agent/AgentManager.cs:815-834`): for the LOCAL avatar, LibreMetaverse itself ALREADY folds `self.HoverHeight.Z` into `Client.Self.SimPosition` — meaning the local avatar's own position (when read via that property) is hover-corrected automatically, while a remote avatar's raw decoded `Prim.Position` never gets any such correction anywhere in our pipeline.
+
+**Fix**: plumbed `HoverOffsetZ` end-to-end:
+- `AvatarAppearanceEvent` (`src/SLNG.Core/GridEvents.cs`) gained an optional `HoverOffsetZ` field (default `0f`, existing call sites/tests unaffected).
+- `GridSession.OnAvatarAppearance` (`src/SLNG.Net/GridSession.cs`) looks up `e.Simulator.ObjectsAvatars` by `AvatarID` (same linear-scan-by-`.ID` pattern LibreMetaverse's own internal handler uses, since `ObjectsAvatars` is LocalID-keyed and this event only carries an AgentId) and reads `.HoverHeight.Z` from the cached `Avatar` object.
+- `AvatarComponent.HoverOffsetZ` (`src/SLNG.Core/Components/AvatarComponent.cs`), set in `WorldSimulation.ApplyAvatarAppearance`.
+- `AvatarRenderer.UpdateVisual` (`app/scripts/AvatarRenderer.cs`) adds `rootPos.Y += avatar.HoverOffsetZ;` right after the existing pelvis-fixup term — matching the real formula's own ordering. Harmless no-op for the local avatar (its own `AvatarComponent.HoverOffsetZ` is never set by `OnAppearanceSet`, since local's `transform.Position.Z` is our own artificial construction that doesn't need this correction at all).
+- `[HeightDebug]`/`[RemoteGroundDiag]` both now log `hoverOffsetZ`.
+
+Did NOT wire local avatar's own hover setting into `AvatarController`'s ground-clamp this round — out of scope (local's Z math has been empirically stable this whole investigation and Clifton's own local avatar renders correctly without it), and no live-test capability to verify a change there safely.
+
+### New, separate, systemic question: absolute height (~14-15cm under Firestorm for BOTH avatars)
+
+Fresh ground-truth numbers changed the picture on a THIRD, previously-unopened thread: Firestorm's own displayed height is **2.22m for Clifton (local)** and **2.19m for Reamon (remote)** — our `renderedSkullToFootY` was `2.068`/`2.054` respectively. **Both avatars are under-height by a similar ~14-15cm margin** — since this affects the LOCAL avatar too (whose position/shape math has been stable and correct this whole investigation), this is explicitly **not** a remote-avatar-specific bug, and not the same bug class as anything fixed in rounds 2-9. The coordinator asked this be tracked as its own follow-up thread, separate from the (now resolved) position-offset saga.
+
+Two hypotheses, per the coordinator, not yet distinguished:
+1. `SlJointComposer.ComputeBodySize`'s formula itself (a literal port of `LLAvatarAppearance::computeBodySize()`) under-computes — the top-of-head term is explicitly an approximation in LL's own source (`F_SQRT2 * skullZ * headScaleZ`, LL's own comment calls it "approximate correction to top of head") and its error need not stay small outside the default-shape case the existing unit tests cover.
+2. Firestorm's displayed "height" isn't sourced from `mBodySize.z`/our `BodySizeZ`/`computeBodySize()` at all — `linden_llvoavatar.cpp` (~line 4680) shows `getScale()[VZ]` and `mBodySize.mV[VZ]` treated as two DISTINCT quantities in the same file. `getScale()` is the avatar's own simulator-tracked **prim Scale** (the same `Scale` every `Primitive`/`Avatar` carries over the wire — analogous to `llGetAgentSize()`), which our own event/component model never extracted or used at all, anywhere, until this round.
+
+**Did a bounded, source-grounded check rather than immediately guessing which hypothesis is right**: confirmed (`ObjectManager.PacketHandlers.cs:433`, `avatar.Scale = block.Scale;`) that LibreMetaverse DOES decode a live, per-avatar `Scale` from `ObjectUpdate` — not a placeholder/unused field. Added this as a **diagnostic-only** value (no rendering/position math changed, low risk, mirrors the `[ShapeDataDiag]`/`[RemoteGroundDiag]` pattern already used throughout this investigation):
+- `AvatarUpdateEvent.ScaleZ` (`src/SLNG.Core/GridEvents.cs`, optional, default `0f`).
+- Wired from `e.Avatar.Scale.Z` / `e.Prim.Scale.Z` at the two `GridSession.cs` call sites that have direct access to the LibreMetaverse object (the third, `SyncLocalAgentPositionAfterTeleport`, doesn't supply one — a rare one-off post-teleport sync path, left at the default and self-heals on the next regular update).
+- `AvatarComponent.ScaleZ`, set in `WorldSimulation.ApplyAvatarUpdate` with the same "only add information, never regress to 0" guard already used for `AgentId`/names (added regression test `AvatarUpdateEvent_DoesNotRegressAlreadyKnownScaleZ`, `tests/SLNG.Core.Tests/WorldSimulationTests.cs`).
+- Logged in `[HeightDebug]` (`app/scripts/AvatarRenderer.cs`) next to `BodySizeZ`, ready for direct comparison against 2.22m/2.19m on the next live run.
+
+Did NOT change `ComputeBodySize`, `AvatarController`, or any rendering/position math based on `ScaleZ` this round — it's purely instrumentation until there's live confirmation of which hypothesis (or neither) explains the gap. Build clean (`dotnet build app/SLNG.App.csproj` after clearing `app/.godot/mono`, `dotnet build SLNG.sln`), all 78 tests pass (`dotnet test SLNG.sln`).
+
+### Next step
+
+Rebuild clean, fresh relogin, get both avatars in view:
+1. **Position** (should now be resolved): read `[RemoteGroundDiag]`'s `hoverOffsetZ` for Reamon — if nonzero and `rootPos.Y` now lands at `remoteGroundHeight` (within a cm or two), the hover fix closed the loop. If `hoverOffsetZ` reads `0.000` despite the fix, the `ObjectsAvatars`-cache lookup in `GridSession.OnAvatarAppearance` isn't finding the entry (worth checking timing — does the appearance packet arrive before the avatar is in `ObjectsAvatars` at all?) and needs its own look.
+2. **Absolute height** (new thread): compare `[HeightDebug]`'s `ScaleZ` against `BodySizeZ` and against 2.22m (Clifton)/2.19m (Reamon) for both avatars. If `ScaleZ` closely matches the Firestorm numbers while `BodySizeZ` doesn't, that's strong evidence for hypothesis 2 (wrong ground-truth source, not a computation bug) and the next step would be switching what feeds the height-dependent parts of the render pipeline (careful: `BodySizeZ`/`PelvisToFootZ` are also load-bearing for the now-working position formula — any change here needs to keep that working, not just fix the "how tall does he look" number). If `ScaleZ` is also short of Firestorm's number (or reads 0/implausible), hypothesis 2 is out and the investigation should turn to `ComputeBodySize`'s formula itself — specifically the `F_SQRT2` head-top approximation term, using `LogJointParityCheck`'s per-bone data (already logged) to see whether the head/neck/skull chain's contribution to `BodySizeZ` looks disproportionately small relative to what `renderedSkullToFootY` (i.e. Godot's own actually-composed pose) shows for that same sub-chain.

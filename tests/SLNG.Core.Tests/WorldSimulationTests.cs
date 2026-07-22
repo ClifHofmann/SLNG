@@ -245,4 +245,31 @@ public class WorldSimulationTests
         // Position/rotation should still update normally.
         Assert.Equal(new Vector3(1, 2, 3), entity.GetComponent<TransformComponent>()!.Position);
     }
+
+    /// <summary>Regression test (round 9): AvatarComponent.ScaleZ (diagnostic-only, the avatar's
+    /// wire-transmitted Scale.Z -- see AvatarUpdateEvent's doc comment) must not regress to 0 from
+    /// a later AvatarUpdateEvent whose ScaleZ wasn't populated (e.g. SyncLocalAgentPositionAfterTeleport,
+    /// which doesn't currently supply one), mirroring the same "only add information, never blank
+    /// it out" guard already applied to AgentId/FirstName/LastName.</summary>
+    [Fact]
+    public void AvatarUpdateEvent_DoesNotRegressAlreadyKnownScaleZ()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, Guid.NewGuid(), Vector3.Zero, Quaternion.Identity, "Reamon", "Bullmer", false, ScaleZ: 2.19f));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        var avatar = entity!.GetComponent<AvatarComponent>();
+        Assert.Equal(2.19f, avatar!.ScaleZ);
+
+        // A later update with no ScaleZ (defaults to 0) must not stomp the known-good value.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, avatar.AgentId, new Vector3(1, 2, 3), Quaternion.Identity, "Reamon", "Bullmer", false));
+        simulation.Pump();
+
+        avatar = entity.GetComponent<AvatarComponent>();
+        Assert.Equal(2.19f, avatar!.ScaleZ);
+    }
 }

@@ -432,12 +432,32 @@ public partial class AvatarRenderer : Node3D
             if (TryGetActivePelvisFixup(visual, out pelvisFixupZ))
                 rootPos.Y += pelvisFixupZ;
 
+            // Viewer parity (round 9 — see claude-handover-height.md): LLVOAvatar::
+            // updateRootPositionAndRotation adds `root_pos += LLVector3d(getHoverOffset())`,
+            // a SEPARATE per-avatar correction from the halfBodySize/PelvisToFoot term above —
+            // the real "Hover" shape-slider-style adjustment many SL/mesh-body users configure to
+            // fix a specific mesh body/shoe's ground contact, transmitted via AvatarAppearance's
+            // AppearanceHover field (same packet as VisualParams; see AvatarAppearanceEvent's doc
+            // comment) and applied by the real viewer only for !isSelf() — remote avatars
+            // specifically. Our local avatar's own Position.Z is entirely our own construction
+            // (AvatarController's ground-clamp), so this only ever has an effect for remote
+            // avatars (avatar.HoverOffsetZ stays 0 unless a real AvatarAppearance event set it).
+            // Round 8's [RemoteGroundDiag] measured a residual ~7.8cm sink after the pelvis/
+            // capsule-center conversion (round 6) and the distortions-aliasing fix (round 7) — a
+            // magnitude entirely consistent with a real user-configured Hover value, which nothing
+            // in this pipeline read or applied before now.
+            rootPos.Y += avatar.HoverOffsetZ;
+
             // hasShape=false means VisualParams never reached this AvatarComponent (see
             // WorldSimulation.FindAvatarEntityByAgentId's doc comment for the AgentId-race gap
             // this used to fall through) -- BodySizeZ/FootOffsetY below are then just the generic
             // AvatarVisual field defaults (1.90 / 0), not this avatar's actual proportions, and
             // the avatar will float/sink by whatever the real shape differs from that default.
-            GD.Print($"[HeightDebug] entity={entity.Id} (isLocal={avatar.IsLocalAgent}) hasShape={avatar.VisualParams != null} simPos.Z={transform.Position.Z:F3} rootPos.Y={rootPos.Y:F3} BodySizeZ={visual.BodySizeZ:F3} PelvisToFootZ={visual.PelvisToFootZ:F3} FootOffsetY={visual.FootOffsetY:F3} pelvisFixupZ={pelvisFixupZ:F3}");
+            // ScaleZ (round 9): the avatar's own wire-transmitted Scale.Z, diagnostic only -- see
+            // AvatarUpdateEvent's doc comment. Logged here so a live session can directly compare
+            // it against BodySizeZ and the real Firestorm-displayed height (both avatars measured
+            // ~14-15cm under that reference, ruling out a remote-specific cause).
+            GD.Print($"[HeightDebug] entity={entity.Id} (isLocal={avatar.IsLocalAgent}) hasShape={avatar.VisualParams != null} simPos.Z={transform.Position.Z:F3} rootPos.Y={rootPos.Y:F3} BodySizeZ={visual.BodySizeZ:F3} PelvisToFootZ={visual.PelvisToFootZ:F3} FootOffsetY={visual.FootOffsetY:F3} pelvisFixupZ={pelvisFixupZ:F3} hoverOffsetZ={avatar.HoverOffsetZ:F3} ScaleZ={avatar.ScaleZ:F3}");
 
             visual.Root.Position = rootPos;
 
@@ -517,7 +537,8 @@ public partial class AvatarRenderer : Node3D
                     GD.Print($"[RemoteGroundDiag] entity={entity.Id} simPos.Z={transform.Position.Z:F3} " +
                              $"remoteGroundHeight={remoteGroundHeight:F3} simPos.Z-remoteGroundHeight={transform.Position.Z - remoteGroundHeight:F3} " +
                              $"halfBodyZ={halfBodyZDiag:F3} PelvisToFootZ={visual.PelvisToFootZ:F3} FootOffsetY={visual.FootOffsetY:F3} " +
-                             "(simPos.Z-remoteGroundHeight should now land near PelvisToFootZ, not halfBodyZ -- confirmed via linden_llvoavatar.cpp source, round 6)");
+                             $"hoverOffsetZ={avatar.HoverOffsetZ:F3} " +
+                             "(simPos.Z-remoteGroundHeight should now land near PelvisToFootZ + hoverOffsetZ -- round 9)");
                 }
                 else
                 {

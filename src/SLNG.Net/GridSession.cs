@@ -215,7 +215,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             new System.Numerics.Quaternion(e.Avatar.Rotation.X, e.Avatar.Rotation.Y, e.Avatar.Rotation.Z, e.Avatar.Rotation.W),
             e.Avatar.FirstName,
             e.Avatar.LastName,
-            isLocalAgent));
+            isLocalAgent,
+            e.Avatar.Scale.Z));
     }
 
     private void OnObjectPropertiesFamily(object? sender, ObjectPropertiesFamilyEventArgs e)
@@ -396,11 +397,29 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
         }
 
+        // AvatarAppearanceEventArgs doesn't expose the packet's AppearanceHover field (see
+        // AvatarAppearanceEvent's doc comment for why it matters), but LibreMetaverse's own
+        // internal AvatarAppearanceHandler already parsed it into the cached Avatar object's
+        // HoverHeight before raising this event -- same ObjectsAvatars cache, same linear-scan-
+        // by-AgentID pattern already used for the AgentId-resolution fix (see the ObjectUpdate/
+        // TerseObjectUpdate handlers above), just keyed by AvatarID here since that's all this
+        // event carries (no LocalID).
+        float hoverOffsetZ = 0f;
+        foreach (var kv in e.Simulator.ObjectsAvatars)
+        {
+            if (kv.Value != null && kv.Value.ID == e.AvatarID)
+            {
+                hoverOffsetZ = kv.Value.HoverHeight.Z;
+                break;
+            }
+        }
+
         AvatarAppearanceReceived?.Invoke(this, new AvatarAppearanceEvent(
             e.Simulator.Handle,
             e.AvatarID.Guid,
             e.VisualParams?.ToArray() ?? Array.Empty<byte>(),
-            textures
+            textures,
+            hoverOffsetZ
         ));
     }
 
@@ -495,7 +514,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 new System.Numerics.Quaternion(e.Prim.Rotation.X, e.Prim.Rotation.Y, e.Prim.Rotation.Z, e.Prim.Rotation.W),
                 firstName,
                 lastName,
-                isLocalAgent));
+                isLocalAgent,
+                e.Prim.Scale.Z));
             return;
         }
 

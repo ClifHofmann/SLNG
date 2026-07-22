@@ -41,6 +41,19 @@ public class AvatarComponent : IComponent
     public Dictionary<int, Guid>? BakedTextures { get; set; }
     public List<Guid>? ActiveAnimations { get; set; }
 
+    /// <summary>
+    /// AppearanceHover Z offset from AvatarAppearance (see <see cref="SLNG.Core.AvatarAppearanceEvent"/>'s
+    /// doc comment) — a per-avatar user-configured height nudge the real viewer adds directly onto
+    /// the root position, on top of the halfBodySize/PelvisToFoot correction. 0 until an
+    /// AvatarAppearance event has been applied.
+    /// </summary>
+    public float HoverOffsetZ { get; set; }
+
+    /// <summary>DIAGNOSTIC ONLY (see <see cref="SLNG.Core.AvatarUpdateEvent"/>'s doc comment) — the
+    /// avatar's own wire-transmitted Scale.Z, a quantity the real viewer treats as distinct from
+    /// its own <c>computeBodySize()</c> output. Not used in any rendering/position math yet.</summary>
+    public float ScaleZ { get; set; }
+
     public AvatarComponent(Guid agentId, string firstName, string lastName, bool isLocalAgent)
     {
         AgentId = agentId;

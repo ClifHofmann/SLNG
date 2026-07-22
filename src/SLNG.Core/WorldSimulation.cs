@@ -327,6 +327,7 @@ public sealed class WorldSimulation : IDisposable
         if (avatar == null)
         {
             avatar = new AvatarComponent(e.AgentId, e.FirstName, e.LastName, e.IsLocalAgent);
+            avatar.ScaleZ = e.ScaleZ;
             entity.SetComponent(avatar);
         }
         else
@@ -344,6 +345,7 @@ public sealed class WorldSimulation : IDisposable
             if (!string.IsNullOrEmpty(e.FirstName)) avatar.FirstName = e.FirstName;
             if (!string.IsNullOrEmpty(e.LastName)) avatar.LastName = e.LastName;
             avatar.IsLocalAgent = e.IsLocalAgent;
+            if (e.ScaleZ > 0f) avatar.ScaleZ = e.ScaleZ;
             entity.SetComponent(avatar);
         }
         _world.NotifyComponentUpdated(entity, avatar);
@@ -397,6 +399,7 @@ public sealed class WorldSimulation : IDisposable
             var avatar = entity.GetComponent<AvatarComponent>()!;
             avatar.VisualParams = e.VisualParams;
             avatar.BakedTextures = e.BakedTextures;
+            avatar.HoverOffsetZ = e.HoverOffsetZ;
             entity.SetComponent(avatar);
             _world.NotifyComponentUpdated(entity, avatar);
         }
