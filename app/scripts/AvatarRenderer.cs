@@ -416,33 +416,25 @@ public partial class AvatarRenderer : Node3D
 
             if (!avatar.IsLocalAgent)
             {
-                // Source-verified fix (2026-07-22, round 6 — see claude-handover-height.md): a
-                // REMOTE avatar's transform.Position.Z is the genuine SL/OpenSim wire value, which
-                // real SL semantics define as the avatar's PELVIS position (confirmed against
-                // linden_llvoavatar.cpp's updateRootPositionAndRotation — root_pos starts at
-                // getRenderPosition()==getPositionAgent(), the raw network Position; the correction
-                // -(0.5*BodySize.z - PelvisToFoot) runs identically for isSelf() and remote avatars,
-                // only the extra gAgent.setPositionAgent() call differs — and matches the well-known
-                // SL/LSL fact that llGetPos()/OBJECT_POS on an avatar UUID returns its pelvis, not a
-                // capsule center). [RemoteGroundDiag] measured this gap live at ~0.26 m, matching
-                // neither halfBodyZ nor zero — exactly what a pelvis-vs-capsule-center mismatch
-                // predicts. Our LOCAL avatar's transform.Position.Z has NO such real semantic at
-                // all — AvatarController's ground-clamp invented its own "capsule-center" convention
-                // (groundHeight + halfBodyZ) purely for our rendering, which the formula below
-                // (kept unchanged, empirically validated against Firestorm for local) expects.
-                // Converting the real pelvis-semantic remote value into that SAME convention here
-                // — rather than rewriting the already-working local formula/clamp — fixes the actual
-                // semantic mismatch with zero regression risk to the confirmed-correct local path.
+                // Source-verified fix (2026-07-22, round 12): a REMOTE avatar's transform.Position.Z
+                // (the raw SL/OpenSim wire value) is the CAPSULE CENTER, not the pelvis!
+                // In linden_llvoavatar.cpp:
+                // root_pos.Z = simPos.Z - 0.5*mBodySize.Z + mPelvisToFoot.
+                // Since the SL skeleton's foot is at -mPelvisToFoot relative to the root, the foot
+                // in the LL viewer ends up exactly at `simPos.Z - 0.5*mBodySize.Z`. This proves
+                // simPos.Z is a capsule center.
+                // Our LOCAL avatar's clampTargetZ is exactly `groundHeight + halfBodyZ`, which
+                // is the exact same convention. Thus, no pelvis-to-capsule conversion is needed.
                 //
                 // + visual.AvatarHoverParamZ (round 11): LLVOAvatar adds getVisualParamWeight(
-                // AVATAR_HOVER) directly onto the raw network pelvis Z, BEFORE this halfBodySize/
+                // AVATAR_HOVER) directly onto the raw network Z, BEFORE the halfBodySize/
                 // PelvisToFoot correction — the "Hover" SHAPE SLIDER (id 11001), a completely
                 // different mechanism from AvatarComponent.HoverOffsetZ (round 9's AppearanceHover
                 // network field). Missing this term left a real, unexplained ~7.8cm residual sink
                 // for an avatar whose account has no AppearanceHover configured but DOES have a
                 // nonzero Hover shape slider. See AvatarVisual.AvatarHoverParamZ's doc comment and
                 // claude-handover-height.md, round 11.
-                rootPos.Y = (transform.Position.Z + visual.AvatarHoverParamZ) - visual.PelvisToFootZ + halfBodyZ;
+                rootPos.Y = transform.Position.Z + visual.AvatarHoverParamZ;
             }
 
             // Viewer parity (LLVOAvatar::updateRootPositionAndRotation):
@@ -1888,6 +1880,40 @@ public partial class AvatarRenderer : Node3D
             if (delta > maxDelta) maxDelta = delta;
         }
 
+        // Viewer parity (LLVOAvatar::applyAttachmentOverrides): 
+        // Worn meshes often only provide joint overrides for one side (e.g. mFootLeft).
+        // The viewer implicitly mirrors them to the other side (mFootRight) by negating the Y axis
+        // (which is the left/right axis in SL local bone space).
+        var toAdd = new Dictionary<string, System.Numerics.Vector3>();
+        foreach (var kvp in visual.JointPosOverrides)
+        {
+            string name = kvp.Key;
+            var pos = kvp.Value;
+            
+            if (name.EndsWith("Left"))
+            {
+                string rightName = name.Substring(0, name.Length - 4) + "Right";
+                if (!visual.JointPosOverrides.ContainsKey(rightName))
+                {
+                    toAdd[rightName] = new System.Numerics.Vector3(pos.X, -pos.Y, pos.Z);
+                }
+            }
+            else if (name.EndsWith("Right"))
+            {
+                string leftName = name.Substring(0, name.Length - 5) + "Left";
+                if (!visual.JointPosOverrides.ContainsKey(leftName))
+                {
+                    toAdd[leftName] = new System.Numerics.Vector3(pos.X, -pos.Y, pos.Z);
+                }
+            }
+        }
+        
+        foreach (var kvp in toAdd)
+        {
+            visual.JointPosOverrides[kvp.Key] = kvp.Value;
+            // Don't increment applied count for implicitly added bones so logging remains accurate to the asset
+        }
+
         if (applied > 0)
         {
             if (_avatarSkeleton != null)
@@ -1972,7 +1998,13 @@ public partial class AvatarRenderer : Node3D
         // — equally wrong — BodySizeZ, so it canceled algebraically either way) but round 6's
         // PelvisToFootZ conversion for REMOTE avatars has no such cancellation, so it directly
         // exposed this as a live, visible float plus wrong apparent proportions.
-        var body = SLNG.Core.SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions);
+        // Bug fix (2026-07-22, round 12): ComputeBodySize MUST also receive visual.JointPosOverrides!
+        // Without it, BodySizeZ stays at the natural body size (e.g., 1.99m) even when fitted mesh
+        // boots override the foot/ankle joints to make the avatar 2.19m tall. Firestorm grounds the
+        // avatar using the full 2.19m bounding-box/skeleton offset, pushing the avatar up. SLNG
+        // received the pushed-up simPos.Z but subtracted the too-small 1.99m halfBodyZ, resulting in
+        // the Godot foot floating significantly above the ground.
+        var body = SLNG.Core.SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions, visual.JointPosOverrides);
         visual.BodySizeZ = body.BodySizeZ;
         visual.PelvisToFootZ = body.PelvisToFoot;
 
