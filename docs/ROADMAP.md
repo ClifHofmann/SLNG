@@ -71,7 +71,7 @@ Each task follows a **spec → test → implement → review** loop:
 | M1.5-1 | Godot Headless Export Script | infra | | DevOps | claude | M0-1 | PowerShell script exports Windows binary (.exe + .pck + .NET assemblies) headlessly |
 | M1.5-2 | InnoSetup / Installer Spec & Script | infra | | DevOps | claude | M1.5-1 | InnoSetup script bundles client build into single-click installer executable |
 | M1.5-3 | GitHub Actions Continuous Delivery | infra | | DevOps | claude | M1.5-2 | GitHub Workflow builds installer on `main` push & attaches artifact/release for testers |
-| FEAT-UI-03 | Boot Window Size & Profile Persistence ⏸️ | ui/infra | claude | ux-designer | gemini | M0-4 | Client window resolution, grid profiles & user preferences persist across sessions. Not started — no persistence code in `Boot.cs` yet. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-03-boot-window-persistence.md) |
+| FEAT-UI-03 | Boot Window Size & Profile Persistence ✅ | ui/infra | gemini | ux-designer | gemini | M0-4 | Client window resolution, grid profiles & user preferences persist across sessions in `user://logins.cfg`. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-03-boot-window-persistence.md) |
 | FEAT-UI-07 | UI Scale Setting ✅ | ui | claude | ux-designer | claude | M5-3 | Preferences slider (80%–160%) scales every `SLNGWindow` live, persisted in `preferences.cfg`. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-07-ui-scaling.md) |
 
 ---

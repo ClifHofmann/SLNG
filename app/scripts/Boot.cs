@@ -57,7 +57,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.1.53-alpha";
+    public const string AppVersion = "v0.1.54-alpha";
 
     public override void _Ready()
     {
@@ -92,6 +92,7 @@ public partial class Boot : Control
 
         _loginButton.Pressed += OnLoginPressed;
         _profileDropdown.ItemSelected += OnProfileSelected;
+        GetTree().Root.SizeChanged += OnWindowSizeChanged;
 
         LoadProfiles();
 
@@ -479,6 +480,53 @@ public partial class Boot : Control
             $"Alt {t.Position.Z:0.0} m   ·   Draw {RenderConfig.DrawDistance:0} m";
     }
 
+    private void LoadWindowSettings()
+    {
+        int width = (int)_loginsConfig.GetValue("Settings", "width", 0);
+        int height = (int)_loginsConfig.GetValue("Settings", "height", 0);
+        bool maximized = (bool)_loginsConfig.GetValue("Settings", "maximized", false);
+
+        if (width > 0 && height > 0)
+        {
+            DisplayServer.WindowSetSize(new Vector2I(width, height));
+        }
+
+        if (maximized)
+        {
+            DisplayServer.WindowSetMode(DisplayServer.WindowMode.Maximized);
+        }
+    }
+
+    private void SaveWindowSettings()
+    {
+        var mode = DisplayServer.WindowGetMode();
+        bool isMaximized = mode == DisplayServer.WindowMode.Maximized;
+
+        _loginsConfig.SetValue("Settings", "maximized", isMaximized);
+
+        if (!isMaximized)
+        {
+            var size = DisplayServer.WindowGetSize();
+            _loginsConfig.SetValue("Settings", "width", size.X);
+            _loginsConfig.SetValue("Settings", "height", size.Y);
+        }
+
+        _loginsConfig.Save("user://logins.cfg");
+    }
+
+    private void OnWindowSizeChanged()
+    {
+        SaveWindowSettings();
+    }
+
+    public override void _Notification(int what)
+    {
+        if (what == NotificationWMCloseRequest)
+        {
+            SaveWindowSettings();
+        }
+    }
+
     private void LoadProfiles()
     {
         _profileDropdown.Clear();
@@ -490,8 +538,23 @@ public partial class Boot : Control
             var sections = _loginsConfig.GetSections();
             foreach (var profile in sections)
             {
+                if (profile == "Settings" || profile == "Window") continue;
                 _profileDropdown.AddItem(profile);
                 _savedProfiles.Add(profile);
+            }
+
+            LoadWindowSettings();
+
+            string lastProfile = (string)_loginsConfig.GetValue("Settings", "last_profile", "");
+            if (!string.IsNullOrEmpty(lastProfile))
+            {
+                int profileIndex = _savedProfiles.IndexOf(lastProfile);
+                if (profileIndex >= 0)
+                {
+                    int dropdownIndex = profileIndex + 1;
+                    _profileDropdown.Select(dropdownIndex);
+                    OnProfileSelected(dropdownIndex);
+                }
             }
         }
     }
@@ -505,6 +568,9 @@ public partial class Boot : Control
         _firstInput.Text = (string)_loginsConfig.GetValue(profile, "first", "");
         _lastInput.Text = (string)_loginsConfig.GetValue(profile, "last", "");
         _passInput.Text = (string)_loginsConfig.GetValue(profile, "pass", "");
+
+        _loginsConfig.SetValue("Settings", "last_profile", profile);
+        _loginsConfig.Save("user://logins.cfg");
     }
 
     public override void _Input(InputEvent @event)
@@ -683,15 +749,16 @@ public partial class Boot : Control
 
         if (result.Success)
         {
+            string profileName = $"{creds.FirstName} {creds.LastName} @ {creds.GridLoginUri}";
             if (_saveLoginCheck.ButtonPressed)
             {
-                string profileName = $"{creds.FirstName} {creds.LastName} @ {creds.GridLoginUri}";
                 _loginsConfig.SetValue(profileName, "grid", creds.GridLoginUri);
                 _loginsConfig.SetValue(profileName, "first", creds.FirstName);
                 _loginsConfig.SetValue(profileName, "last", creds.LastName);
                 _loginsConfig.SetValue(profileName, "pass", creds.Password);
-                _loginsConfig.Save("user://logins.cfg");
             }
+            _loginsConfig.SetValue("Settings", "last_profile", profileName);
+            _loginsConfig.Save("user://logins.cfg");
 
             LogMessage($"[color=green]Login SUCCESS[/color] - AgentID: {result.AgentId}");
             if (!string.IsNullOrEmpty(result.Message))
