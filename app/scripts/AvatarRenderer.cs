@@ -136,7 +136,7 @@ public partial class AvatarRenderer : Node3D
     // DLL timestamp. If this line is missing or shows an old tag, the client is NOT running
     // the code you think it is; close it fully (not just the window) and re-run
     // tools/run-client.ps1 before drawing any conclusion from the rest of the log.
-    private const string BuildMarker = "2026-07-22-rootapply-globaltransform-diagnostic";
+    private const string BuildMarker = "2026-07-22-footbone-globalpose-diagnostic";
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
     {
@@ -404,11 +404,34 @@ public partial class AvatarRenderer : Node3D
                     _timeSinceRootPosLog = 0;
                     float globalOriginY = visual.Root.GlobalTransform.Origin.Y;
                     float globalOriginAsSlZ = RenderConfig.FromGodot(entity.RegionHandle, visual.Root.GlobalTransform.Origin).Z;
+
+                    // The actual number the coordinator asked for (2026-07-22, round 4): where the
+                    // FOOT bone really renders, not just Root. Root sitting exactly at groundHeight
+                    // says nothing about where the feet are if the skeleton hangs below Root by
+                    // some amount independent of RootOffsetZ (e.g. mPelvis's own rest Y, ~1.067m in
+                    // the default skeleton) — only the actual bone global pose settles that.
+                    string footInfo = "mFootLeft:no-skeleton";
+                    if (visual.Skeleton != null)
+                    {
+                        int footBone = visual.Skeleton.FindBone("mFootLeft");
+                        if (footBone >= 0)
+                        {
+                            var footGlobal = visual.Skeleton.GlobalTransform * visual.Skeleton.GetBoneGlobalPose(footBone);
+                            float footY = footGlobal.Origin.Y;
+                            float footAsSlZ = RenderConfig.FromGodot(entity.RegionHandle, footGlobal.Origin).Z;
+                            footInfo = $"mFootLeft.GlobalTransform.Origin.Y={footY:0.####} (as SL Z)={footAsSlZ:0.####}";
+                        }
+                        else
+                        {
+                            footInfo = "mFootLeft:bone-not-found";
+                        }
+                    }
+
                     GD.Print($"[RootApply] entity={entityId} transform.Position.Z={transform.Position.Z:0.####} " +
                              $"pelvisFixupZ={pelvisFixupZ:0.####} RootOffsetZ={visual.RootOffsetZ:0.####} " +
                              $"rootPos.Y(assigned)={rootPos.Y:0.####} " +
                              $"Root.GlobalTransform.Origin.Y(read back)={globalOriginY:0.####} " +
-                             $"(as SL Z via FromGodot)={globalOriginAsSlZ:0.####}");
+                             $"(as SL Z via FromGodot)={globalOriginAsSlZ:0.####} | {footInfo}");
                 }
             }
         }
