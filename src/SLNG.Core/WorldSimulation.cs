@@ -331,9 +331,18 @@ public sealed class WorldSimulation : IDisposable
         }
         else
         {
-            avatar.AgentId = e.AgentId;
-            avatar.FirstName = e.FirstName;
-            avatar.LastName = e.LastName;
+            // Don't let a later update that failed to resolve these (e.g. a bare TerseObjectUpdate
+            // whose Prim isn't an Avatar, or whose LocalID missed LibreMetaverse's ObjectsAvatars
+            // cache -- see GridSession's own AgentId-resolution fix, commit 6bcf31e) regress fields
+            // we'd already resolved correctly from an earlier update. Found 2026-07-22 (round 5):
+            // this used to overwrite unconditionally, so a resolved AgentId could silently revert
+            // to Guid.Empty mid-session -- which then re-opens the entity to
+            // FindAvatarEntityByAgentId's "any unresolved avatar" fallback match, letting a LATER,
+            // unrelated avatar's appearance/animation event land on the WRONG (already-resolved)
+            // entity and clobber its real data with someone else's (or stale/default) values.
+            if (e.AgentId != System.Guid.Empty) avatar.AgentId = e.AgentId;
+            if (!string.IsNullOrEmpty(e.FirstName)) avatar.FirstName = e.FirstName;
+            if (!string.IsNullOrEmpty(e.LastName)) avatar.LastName = e.LastName;
             avatar.IsLocalAgent = e.IsLocalAgent;
             entity.SetComponent(avatar);
         }

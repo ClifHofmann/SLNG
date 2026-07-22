@@ -124,8 +124,6 @@ public partial class AvatarRenderer : Node3D
     private AvatarSkeleton? _avatarSkeleton;
     // Throttles the [RootApply] ground-truth diagnostic in UpdateVisual to ~1/sec.
     private double _timeSinceRootPosLog = 0;
-    // Throttles the [RemoteGroundDiag] hypothesis-1 diagnostic (per remote avatar) to ~1/sec.
-    private readonly Dictionary<Guid, double> _timeSinceRemoteGroundLog = new();
     private readonly Dictionary<Guid, AvatarVisual> _visuals = new();
     // attachment entity ID → BoneAttachment3D node parented to the avatar skeleton
     private readonly Dictionary<Guid, BoneAttachment3D> _attachmentNodes = new();
@@ -447,48 +445,38 @@ public partial class AvatarRenderer : Node3D
                 // our side, and nothing before this queried ground height at a remote avatar's own
                 // X/Y to check the assumption that it means the same thing. Diagnostic-only --
                 // NOT wired into the render path. See claude-handover-height.md, round 3.
-                if (!_timeSinceRemoteGroundLog.TryGetValue(entity.Id, out var tRemote)) tRemote = 0;
-                tRemote += GetProcessDeltaTime();
-                if (tRemote > 1.0)
+                //
+                // Deliberately UNTHROTTLED (round 5): UpdateVisual is not a per-frame _Process
+                // callback -- it fires per-entity from ECS component-update events, which for an
+                // idle remote avatar arrive in sparse bursts seconds apart, not every frame. A
+                // GetProcessDeltaTime()-based accumulator (rounds 3-4) only advances by one frame's
+                // delta PER ACTUAL CALL, so it could take dozens of real seconds to cross a 1s
+                // threshold even with wall-clock time clearly passing -- exactly what round 4's live
+                // test showed (one line in 35+ seconds). This is diagnostic-only and temporary; an
+                // idle remote avatar's UpdateVisual calls are already infrequent, so just print
+                // every time rather than fight frame-delta-vs-wall-clock throttling again.
+                var rawGodotPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
+                var spaceState = GetWorld3D().DirectSpaceState;
+                var rayFrom = rawGodotPos + new Godot.Vector3(0, 5.0f, 0);
+                var rayTo = rawGodotPos - new Godot.Vector3(0, 100.0f, 0);
+                var query = PhysicsRayQueryParameters3D.Create(rayFrom, rayTo);
+                query.CollisionMask = 1; // terrain/objects only, same mask AvatarController uses
+                var result = spaceState.IntersectRay(query);
+
+                if (result.Count > 0)
                 {
-                    // Bug fix (2026-07-22, round 4): this branch used to be the ONLY place that
-                    // wrote back to the dictionary (resetting to 0 on fire) -- the non-firing path
-                    // below never persisted the incremented local value, so every subsequent call
-                    // read back ~0, added one frame's delta, failed ">1.0", and discarded it. tRemote
-                    // could never accumulate past a single frame's delta, so this never fired outside
-                    // a multi-second stutter. Compare the local-only _timeSinceRootPosLog throttle
-                    // right above, which is a plain field mutated in place every call -- the
-                    // dictionary version needs the equivalent explicit write-back (see the else
-                    // branch below) since TryGetValue doesn't do that for you.
-                    _timeSinceRemoteGroundLog[entity.Id] = 0;
-
-                    var rawGodotPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
-                    var spaceState = GetWorld3D().DirectSpaceState;
-                    var rayFrom = rawGodotPos + new Godot.Vector3(0, 5.0f, 0);
-                    var rayTo = rawGodotPos - new Godot.Vector3(0, 100.0f, 0);
-                    var query = PhysicsRayQueryParameters3D.Create(rayFrom, rayTo);
-                    query.CollisionMask = 1; // terrain/objects only, same mask AvatarController uses
-                    var result = spaceState.IntersectRay(query);
-
-                    if (result.Count > 0)
-                    {
-                        // Godot Y == SL Z directly for this axis — see RenderConfig.ToGodot/FromGodot
-                        // (only X/Y get the floating-origin shift; height passes through unchanged).
-                        float remoteGroundHeight = result["position"].AsVector3().Y;
-                        float halfBodyZDiag = 0.5f * visual.BodySizeZ;
-                        GD.Print($"[RemoteGroundDiag] entity={entity.Id} simPos.Z={transform.Position.Z:F3} " +
-                                 $"remoteGroundHeight={remoteGroundHeight:F3} simPos.Z-remoteGroundHeight={transform.Position.Z - remoteGroundHeight:F3} " +
-                                 $"halfBodyZ={halfBodyZDiag:F3} FootOffsetY={visual.FootOffsetY:F3} " +
-                                 "(if simPos.Z were capsule-center like the local avatar's, simPos.Z-remoteGroundHeight should land near halfBodyZ)");
-                    }
-                    else
-                    {
-                        GD.Print($"[RemoteGroundDiag] entity={entity.Id} simPos.Z={transform.Position.Z:F3} ray missed ground (no Layer-1 collider under this avatar's X/Y)");
-                    }
+                    // Godot Y == SL Z directly for this axis — see RenderConfig.ToGodot/FromGodot
+                    // (only X/Y get the floating-origin shift; height passes through unchanged).
+                    float remoteGroundHeight = result["position"].AsVector3().Y;
+                    float halfBodyZDiag = 0.5f * visual.BodySizeZ;
+                    GD.Print($"[RemoteGroundDiag] entity={entity.Id} simPos.Z={transform.Position.Z:F3} " +
+                             $"remoteGroundHeight={remoteGroundHeight:F3} simPos.Z-remoteGroundHeight={transform.Position.Z - remoteGroundHeight:F3} " +
+                             $"halfBodyZ={halfBodyZDiag:F3} FootOffsetY={visual.FootOffsetY:F3} " +
+                             "(if simPos.Z were capsule-center like the local avatar's, simPos.Z-remoteGroundHeight should land near halfBodyZ)");
                 }
                 else
                 {
-                    _timeSinceRemoteGroundLog[entity.Id] = tRemote;
+                    GD.Print($"[RemoteGroundDiag] entity={entity.Id} simPos.Z={transform.Position.Z:F3} ray missed ground (no Layer-1 collider under this avatar's X/Y)");
                 }
             }
         }

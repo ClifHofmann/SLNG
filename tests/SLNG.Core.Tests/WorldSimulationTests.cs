@@ -204,4 +204,45 @@ public class WorldSimulationTests
         Assert.Equal(visualParams, avatar.VisualParams);
         Assert.Equal(realAgentId, avatar.AgentId);
     }
+
+    /// <summary>Regression test (round 5 of the remote-avatar float investigation): a resolved
+    /// AgentId must never regress back to Guid.Empty from a later AvatarUpdateEvent that failed to
+    /// resolve it (e.g. a bare TerseObjectUpdate whose Prim isn't an Avatar). Before this fix,
+    /// ApplyAvatarUpdate overwrote AvatarComponent.AgentId/FirstName/LastName unconditionally on
+    /// every update -- so a resolved AgentId reverting to empty would re-open the entity to
+    /// FindAvatarEntityByAgentId's "any unresolved avatar" fallback, letting a LATER, unrelated
+    /// avatar's appearance/animation event land on the wrong (already-resolved) entity and clobber
+    /// its real shape/animation data.</summary>
+    [Fact]
+    public void AvatarUpdateEvent_DoesNotRegressAlreadyResolvedAgentId()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var realAgentId = Guid.NewGuid();
+
+        // 1. First update resolves the real AgentId and name.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, realAgentId, Vector3.Zero, Quaternion.Identity, "Reamon", "Bullmer", false));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        Assert.NotNull(entity);
+        var avatar = entity.GetComponent<AvatarComponent>();
+        Assert.Equal(realAgentId, avatar!.AgentId);
+        Assert.Equal("Reamon", avatar.FirstName);
+        Assert.Equal("Bullmer", avatar.LastName);
+
+        // 2. A later update for the same entity fails to resolve AgentId/name (mirrors a bare
+        // TerseObjectUpdate) -- must NOT stomp the already-known-good values.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, Guid.Empty, new Vector3(1, 2, 3), Quaternion.Identity, "", "", false));
+        simulation.Pump();
+
+        avatar = entity.GetComponent<AvatarComponent>();
+        Assert.Equal(realAgentId, avatar!.AgentId);
+        Assert.Equal("Reamon", avatar.FirstName);
+        Assert.Equal("Bullmer", avatar.LastName);
+        // Position/rotation should still update normally.
+        Assert.Equal(new Vector3(1, 2, 3), entity.GetComponent<TransformComponent>()!.Position);
+    }
 }
