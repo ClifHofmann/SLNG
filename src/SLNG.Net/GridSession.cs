@@ -63,6 +63,45 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // processed packet", texture-pipeline chatter); warnings/errors still come through.
         LibreMetaverse.Settings.LogLevel = Microsoft.Extensions.Logging.LogLevel.Error;
 
+        // BakeLayer.LoadResourceLayer (client-side avatar bake compositing, e.g. head_color.tga)
+        // resolves default system-avatar layer textures via ResourceDir + "static_assets", and
+        // ResourceDir defaults to the CWD-relative "linden". That's wrong under Godot: the NuGet
+        // package's content files (linden/character/*, linden/static_assets/*) land next to
+        // LibreMetaverse.dll in the build output, but Godot's CWD at runtime is the project root
+        // -- so the lookup missed every time ("Failed opening resource ...\linden\static_assets\
+        // head_color.tga"). Point it at the assembly's own directory instead, same fix
+        // AvatarRenderer.cs already applies for the sibling "linden/character" mesh files.
+        var libremetaverseDir = System.IO.Path.GetDirectoryName(typeof(LibreMetaverse.Settings).Assembly.Location);
+        if (libremetaverseDir != null)
+        {
+            var lindenDir = System.IO.Path.Combine(libremetaverseDir, "linden");
+            LibreMetaverse.Settings.ResourceDir = lindenDir;
+
+            // Fixing ResourceDir alone isn't enough: the NuGet package's own layout puts every
+            // default bake-layer .tga (head_color.tga, upperbody_color.tga, ...) under
+            // "linden/character/", but BakeLayer.LoadResourceLayer always looks in
+            // "<ResourceDir>/static_assets/" -- a mismatch inside the package itself, not
+            // something ResourceDir can route around. Mirror the .tga files into static_assets/
+            // once so the lookup finds them; best-effort since a missing layer just falls back
+            // to a flat placeholder color (see AvatarRenderer's neutral-skin-tone comment).
+            try
+            {
+                var characterDir = System.IO.Path.Combine(lindenDir, "character");
+                var staticAssetsDir = System.IO.Path.Combine(lindenDir, "static_assets");
+                if (System.IO.Directory.Exists(characterDir) && System.IO.Directory.Exists(staticAssetsDir))
+                {
+                    foreach (var tgaFile in System.IO.Directory.EnumerateFiles(characterDir, "*.tga"))
+                    {
+                        var dest = System.IO.Path.Combine(staticAssetsDir, System.IO.Path.GetFileName(tgaFile));
+                        if (!System.IO.File.Exists(dest))
+                            System.IO.File.Copy(tgaFile, dest);
+                    }
+                }
+            }
+            catch (System.IO.IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+
         _client = new GridClient();
         // MUST stay true. This single flag gates LibreMetaverse's entire appearance/bake
         // workflow: Simulator_OnCapabilitiesReceived (the on-login / on-region-change trigger),
