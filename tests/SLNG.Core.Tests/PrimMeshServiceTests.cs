@@ -56,4 +56,62 @@ public class PrimMeshServiceTests
         var cylinder = box with { ProfileCurve = 0 };
         Assert.NotEqual(box, cylinder);
     }
+
+    // Regression: LibreMetaverse.Rendering.MeshFoundry (NuGet 3.0.0) only assembles the path's
+    // *last* end face into a cap (PrimMesh.Create gates the cap ViewerFaces on
+    // `nodeIndex == path.pathNodes.Count - 1`); the first end face (the bottom, for a straight
+    // extrusion) never gets a cap submesh, leaving the object's bottom entirely open. At normal
+    // ~1m prim scale the resulting sliver is sub-pixel; scaled into a large flat platform it
+    // reads as a visible seam/gap right at the top edge where the camera's sightline grazes past
+    // the missing bottom into the hollow interior. PrimMeshService.Generate repairs this for any
+    // straight-extruded profile (PathCurve Line/Flexible) by reconstructing the missing cap from
+    // the side walls' own (correct) bottom-ring vertices.
+    [Fact]
+    public void Generate_box_closes_both_top_and_bottom_caps()
+    {
+        var mesh = PrimMeshService.Generate(BoxShape());
+
+        Assert.NotNull(mesh);
+
+        float minZ = mesh!.Submeshes.SelectMany(s => s.Positions).Min(p => p.Z);
+        float maxZ = mesh.Submeshes.SelectMany(s => s.Positions).Max(p => p.Z);
+
+        bool HasCapAt(float z) => mesh.Submeshes.Any(sm =>
+            sm.Positions.Length >= 3 &&
+            sm.Positions.All(p => System.MathF.Abs(p.Z - z) < 1e-3f) &&
+            TriangleArea(sm) > 0.9f); // a real 1x1 quad cap, not a degenerate sliver
+
+        Assert.True(HasCapAt(maxZ), "top cap missing");
+        Assert.True(HasCapAt(minZ), "bottom cap missing (the open-bottom regression)");
+
+        // The reconstructed bottom cap's corners must exactly match the side walls' bottom
+        // corners (bit-identical, like the top cap already does) — no re-introduced crack.
+        var bottomCap = mesh.Submeshes.First(sm =>
+            sm.Positions.Length >= 3 &&
+            sm.Positions.All(p => System.MathF.Abs(p.Z - minZ) < 1e-3f) &&
+            TriangleArea(sm) > 0.9f);
+
+        foreach (var corner in bottomCap.Positions)
+        {
+            bool weldedElsewhere = mesh.Submeshes
+                .Where(sm => !ReferenceEquals(sm, bottomCap))
+                .SelectMany(sm => sm.Positions)
+                .Any(p => p == corner);
+            Assert.True(weldedElsewhere, $"bottom cap corner {corner} isn't shared with a side wall");
+        }
+    }
+
+    private static double TriangleArea(SLNG.Assets.MeshSubmesh sm)
+    {
+        double area = 0;
+        for (int t = 0; t + 2 < sm.Indices.Length; t += 3)
+        {
+            var a = sm.Positions[sm.Indices[t]];
+            var b = sm.Positions[sm.Indices[t + 1]];
+            var c = sm.Positions[sm.Indices[t + 2]];
+            var cross = System.Numerics.Vector3.Cross(b - a, c - a);
+            area += 0.5 * cross.Length();
+        }
+        return area;
+    }
 }

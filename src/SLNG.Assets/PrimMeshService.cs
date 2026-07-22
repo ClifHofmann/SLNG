@@ -65,13 +65,132 @@ public static class PrimMeshService
 
             var renderer = _renderer ??= new MeshFoundry();
             var faceted = renderer.GenerateFacetedMesh(prim, lod);
-            return Convert(faceted);
+            var mesh = Convert(faceted);
+
+            // LibreMetaverse.Rendering.MeshFoundry (as of the 3.0.0 package) only emits the
+            // path's *last* end face (ViewerFace tagging in PrimMesh.Create is gated on
+            // `nodeIndex == path.pathNodes.Count - 1`); the first end face is never added. For
+            // a straight-extruded profile (PathCurve Line/Flexible — box, cylinder, prism, any
+            // "basic shape") that means the bottom cap is silently missing from the mesh: the
+            // object is a closed shell everywhere except its bottom, which is wide open. At
+            // normal prim scale that gap is a sliver nobody notices; scaled into a large flat
+            // platform it reads as a seam/crack right at the top edge, because the camera's
+            // sightline grazes past the (missing) bottom and into the hollow interior. See the
+            // regression test for the reproduction. Repair it here rather than in the vendored
+            // library, which we don't build from source (NuGet dependency).
+            bool isLinearPath = (PathCurve)shape.PathCurve == PathCurve.Line || (PathCurve)shape.PathCurve == PathCurve.Flexible;
+            if (isLinearPath) mesh = RepairMissingEndCap(mesh);
+            return mesh;
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[PrimMeshService] mesh generation failed: {ex.Message}");
             return null;
         }
+    }
+
+    /// <summary>
+    /// Detects a straight-extruded prim missing one of its two path end caps (see the comment
+    /// in <see cref="Generate"/>) and synthesizes the missing one from data that IS present and
+    /// correct: the side-wall submeshes already carry both the top and bottom ring of vertices
+    /// (that's how the top cap and side walls stay exactly welded at the shared edge), the
+    /// mesher just never assembles the bottom ring into its own cap face. Reusing those vertices
+    /// — rather than mirroring the existing cap's coordinates — keeps the fix correct even when
+    /// the prim has taper/shear (which make the bottom ring's X/Y differ from the top's).
+    /// </summary>
+    private static MeshData? RepairMissingEndCap(MeshData? mesh)
+    {
+        if (mesh == null || mesh.Submeshes.Count == 0) return mesh;
+
+        const float epsZ = 1e-3f;
+        const float epsXY2 = 1e-6f;
+
+        float minZ = float.MaxValue, maxZ = float.MinValue;
+        foreach (var sm in mesh.Submeshes)
+            foreach (var p in sm.Positions)
+            {
+                if (p.Z < minZ) minZ = p.Z;
+                if (p.Z > maxZ) maxZ = p.Z;
+            }
+        if (maxZ - minZ < epsZ) return mesh; // no meaningful path extent (flat profile)
+
+        static bool IsCapAt(MeshSubmesh sm, float z, float eps)
+        {
+            if (sm.Positions.Length < 3) return false;
+            foreach (var p in sm.Positions)
+                if (MathF.Abs(p.Z - z) > eps) return false;
+            return true;
+        }
+
+        MeshSubmesh? capAtMax = null, capAtMin = null;
+        foreach (var sm in mesh.Submeshes)
+        {
+            if (capAtMax == null && IsCapAt(sm, maxZ, epsZ)) capAtMax = sm;
+            if (capAtMin == null && IsCapAt(sm, minZ, epsZ)) capAtMin = sm;
+        }
+
+        // Both caps present (healthy mesh) or both missing (nothing usable to reconstruct from).
+        if ((capAtMax != null) == (capAtMin != null)) return mesh;
+
+        var existingCap = capAtMax ?? capAtMin!;
+        float missingZ = capAtMax != null ? minZ : maxZ;
+
+        // Gather the missing ring's vertices from the side-wall submeshes (every submesh other
+        // than the existing cap), de-duplicating by position.
+        var ring = new List<Vector3>();
+        foreach (var sm in mesh.Submeshes)
+        {
+            if (ReferenceEquals(sm, existingCap)) continue;
+            foreach (var p in sm.Positions)
+            {
+                if (MathF.Abs(p.Z - missingZ) > epsZ) continue;
+                bool dup = false;
+                foreach (var r in ring)
+                {
+                    float dx = r.X - p.X, dy = r.Y - p.Y;
+                    if (dx * dx + dy * dy < epsXY2) { dup = true; break; }
+                }
+                if (!dup) ring.Add(p);
+            }
+        }
+
+        if (ring.Count != existingCap.Positions.Length)
+            return mesh; // topology doesn't match what we expect — don't guess, leave as-is
+
+        // Match each existing-cap vertex to its ring counterpart by nearest X/Y (exact for the
+        // common no-twist case; the side-wall data keeps taper/shear correct either way).
+        var newPositions = new Vector3[existingCap.Positions.Length];
+        for (int i = 0; i < existingCap.Positions.Length; i++)
+        {
+            var target = existingCap.Positions[i];
+            int best = 0; float bestD = float.MaxValue;
+            for (int j = 0; j < ring.Count; j++)
+            {
+                float dx = ring[j].X - target.X, dy = ring[j].Y - target.Y;
+                float d = dx * dx + dy * dy;
+                if (d < bestD) { bestD = d; best = j; }
+            }
+            newPositions[i] = ring[best];
+        }
+
+        var newNormals = new Vector3[existingCap.Normals.Length];
+        for (int i = 0; i < newNormals.Length; i++) newNormals[i] = -existingCap.Normals[i];
+
+        var newUVs = (Vector2[])existingCap.UVs.Clone();
+
+        // Reverse each triangle's winding so the mirrored cap faces outward.
+        var newIndices = new int[existingCap.Indices.Length];
+        for (int t = 0; t + 2 < existingCap.Indices.Length; t += 3)
+        {
+            newIndices[t] = existingCap.Indices[t];
+            newIndices[t + 1] = existingCap.Indices[t + 2];
+            newIndices[t + 2] = existingCap.Indices[t + 1];
+        }
+
+        var repaired = new List<MeshSubmesh>(mesh.Submeshes.Count + 1);
+        repaired.AddRange(mesh.Submeshes);
+        repaired.Add(new MeshSubmesh(newPositions, newNormals, newUVs, newIndices, existingCap.FaceIndex));
+        return mesh with { Submeshes = repaired };
     }
 
     /// <summary>
