@@ -981,27 +981,13 @@ public partial class AvatarRenderer : Node3D
         if (texId == Guid.Empty || _assetService == null)
             return material;
 
-        // Always enable AlphaScissor for texture-carried alpha (e.g. an alpha-punched skin bake,
-        // or a genuinely blank/all-transparent placeholder on an unfilled applier slot) — matching
-        // LoadAndApplyTextureAsync's own established rule: Image.DetectAlpha() is unreliable
-        // (confirmed here too: an all-zero-alpha 32x32 placeholder texture, with correct alpha=0
-        // data reaching this point, still rendered fully OPAQUE white instead of being cut out
-        // when this was gated behind DetectAlpha()). Applied here — BEFORE the cache check —
-        // rather than only inside the fresh-decode branch below: two faces sharing the same
-        // texture id (e.g. LOD-duplicate meshes) previously got this right only for whichever one
-        // decoded first, since the cache-hit path returned a material with no Transparency set at
-        // all, rendering that duplicate fully opaque. Only skip it when tint alpha is ALREADY
-        // driving real (possibly fractional/zero) blending — AlphaScissor would otherwise stomp a
-        // deliberately-invisible face back to a binary 0/1 cutout.
-        if (!tintTranslucent)
-        {
-            material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-            material.AlphaScissorThreshold = 0.5f;
-        }
-
         var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
         ImageTexture? cached = _gpuCache?.Get(texId) as ImageTexture;
-        if (cached != null) { material.AlbedoTexture = cached; return material; }
+        if (cached != null) { 
+            material.AlbedoTexture = cached; 
+            ApplyAlphaCutout(material, cached);
+            return material; 
+        }
 
         var textureData = await _assetService.GetTextureAsync(texId).ConfigureAwait(false);
         if (textureData == null)
@@ -1024,8 +1010,34 @@ public partial class AvatarRenderer : Node3D
         }).CallDeferred();
 
         var built = await tcs.Task.ConfigureAwait(false);
-        if (built != null) material.AlbedoTexture = built;
+        if (built != null) {
+            material.AlbedoTexture = built;
+            ApplyAlphaCutout(material, built);
+        }
         return material;
+    }
+
+    private static void ApplyAlphaCutout(StandardMaterial3D material, ImageTexture tex)
+    {
+        var img = tex.GetImage();
+        if (img == null) return;
+
+        var alphaMode = img.DetectAlpha();
+        if (alphaMode == Image.AlphaMode.None) return; // fully opaque
+
+        if (material.Transparency != BaseMaterial3D.TransparencyEnum.Alpha)
+        {
+            if (alphaMode == Image.AlphaMode.Blend)
+            {
+                material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+            }
+            else
+            {
+                material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+                material.AlphaScissorThreshold = 0.5f;
+            }
+        }
+        material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
     }
 
     /// <summary>Registers a worn mesh's Bakes-on-Mesh usage on its avatar and hides the system

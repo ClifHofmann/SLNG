@@ -233,7 +233,7 @@ public partial class AvatarController : Camera3D
             var rayOrigin = ProjectRayOrigin(_altZoomAnchorPos);
             var rayEnd = rayOrigin + ProjectRayNormal(_altZoomAnchorPos) * 1000f;
             var query = PhysicsRayQueryParameters3D.Create(rayOrigin, rayEnd);
-            query.CollisionMask = 1; // Only hit Layer 1
+            query.CollisionMask = 3; // Hit Layer 1 (objects/terrain) and Layer 2 (avatars)
             var result = spaceState.IntersectRay(query);
             if (result.Count > 0)
             {
