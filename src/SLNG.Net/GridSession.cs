@@ -1027,7 +1027,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// Attaches an inventory item (Object/HUD/Attachment) to the agent.
     /// Handles both real inventory item IDs and link IDs.
     /// </summary>
-    public Task AttachItemAsync(Guid itemId, byte attachPoint = 0, bool replace = true)
+    public Task AttachItemAsync(Guid itemId, byte attachPoint = 0, bool replace = false)
     {
         var itemUuid = new LibreMetaverse.UUID(itemId);
         var store = _client.Inventory.Store;

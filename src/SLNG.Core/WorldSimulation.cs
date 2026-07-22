@@ -67,7 +67,7 @@ public sealed class WorldSimulation : IDisposable
             {
                 case ObjectUpdateEvent e: ApplyObjectUpdate(e); break;
                 case AvatarUpdateEvent e: ApplyAvatarUpdate(e); break;
-                case ObjectRemovedEvent e: _world.RemoveEntity(e.RegionHandle, e.LocalId); break;
+                case ObjectRemovedEvent e: ApplyObjectRemoved(e); break;
                 case ObjectPropertiesEvent e: ApplyObjectProperties(e); break;
                 case PhysicsPropertiesEvent e: ApplyPhysicsProperties(e); break;
                 case TerrainPatchEvent e: ApplyTerrainPatch(e); break;
@@ -445,6 +445,30 @@ public sealed class WorldSimulation : IDisposable
         prim.PhysicsGravity = e.GravityMultiplier;
         prim.HasPhysicsProperties = true;
         _world.NotifyComponentUpdated(entity, prim);
+    }
+
+    private void ApplyObjectRemoved(ObjectRemovedEvent e)
+    {
+        RemoveEntityRecursive(e.RegionHandle, e.LocalId);
+    }
+
+    private void RemoveEntityRecursive(ulong regionHandle, uint localId)
+    {
+        var key = (regionHandle, localId);
+        if (_children.TryGetValue(key, out var childSet))
+        {
+            var childrenList = childSet.ToList();
+            _children.Remove(key);
+            foreach (var childEntityId in childrenList)
+            {
+                var childEntity = _world.GetEntity(childEntityId);
+                if (childEntity != null)
+                {
+                    RemoveEntityRecursive(regionHandle, childEntity.LocalId);
+                }
+            }
+        }
+        _world.RemoveEntity(regionHandle, localId);
     }
 
     public void Dispose()
