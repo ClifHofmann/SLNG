@@ -1025,6 +1025,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     /// <summary>
     /// Attaches an inventory item (Object/HUD/Attachment) to the agent.
+    /// Handles both real inventory item IDs and link IDs.
     /// </summary>
     public Task AttachItemAsync(Guid itemId, byte attachPoint = 0, bool replace = true)
     {
@@ -1032,9 +1033,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var store = _client.Inventory.Store;
         var itemNode = store?.GetNodeOrDefault(itemUuid);
 
-        if (itemNode?.Data is LibreMetaverse.InventoryItem item)
+        if (itemNode?.Data is LibreMetaverse.InventoryItem item && item.IsLink())
         {
-            _client.Appearance.Attach(item, (LibreMetaverse.AttachmentPoint)attachPoint, replace);
+            itemUuid = item.ResolvedItemID;
+            itemNode = store?.GetNodeOrDefault(itemUuid);
+        }
+
+        if (itemNode?.Data is LibreMetaverse.InventoryItem realItem)
+        {
+            _client.Appearance.Attach(realItem, (LibreMetaverse.AttachmentPoint)attachPoint, replace);
         }
         else
         {
@@ -1053,12 +1060,64 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     /// <summary>
     /// Detaches an inventory item / attachment from the agent.
+    /// Handles both real inventory item IDs and link IDs inside Current Outfit.
     /// </summary>
-    public Task DetachItemAsync(Guid itemId)
+    public async Task DetachItemAsync(Guid itemId)
     {
         var itemUuid = new LibreMetaverse.UUID(itemId);
-        _client.Appearance.Detach(itemUuid);
-        return Task.CompletedTask;
+        var store = _client.Inventory.Store;
+        var node = store?.GetNodeOrDefault(itemUuid);
+
+        LibreMetaverse.UUID targetUuid = itemUuid;
+        LibreMetaverse.UUID linkUuid = LibreMetaverse.UUID.Zero;
+
+        if (node?.Data is LibreMetaverse.InventoryItem item && item.IsLink())
+        {
+            linkUuid = itemUuid;
+            targetUuid = item.ResolvedItemID;
+        }
+
+        // Also search Current Outfit folder to find matching links or items
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        if (cofUuid != LibreMetaverse.UUID.Zero)
+        {
+            var cofNode = store?.GetNodeOrDefault(cofUuid);
+            if (cofNode != null)
+            {
+                foreach (var childNode in cofNode.Nodes.Values)
+                {
+                    if (childNode.Data is LibreMetaverse.InventoryItem cofItem)
+                    {
+                        var target = cofItem.IsLink() ? cofItem.ResolvedItemID : cofItem.UUID;
+                        if (target == targetUuid || cofItem.UUID == itemUuid)
+                        {
+                            linkUuid = cofItem.UUID;
+                            if (target != LibreMetaverse.UUID.Zero) targetUuid = target;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1. Send DetachAttachmentIntoInv packet for the real target ItemID
+        _client.Appearance.Detach(targetUuid);
+
+        // 2. Also send Detach for the link UUID if distinct
+        if (linkUuid != LibreMetaverse.UUID.Zero && linkUuid != targetUuid)
+        {
+            _client.Appearance.Detach(linkUuid);
+        }
+
+        // 3. Remove link from COF store if present so UI & worn status update immediately
+        if (linkUuid != LibreMetaverse.UUID.Zero)
+        {
+            try
+            {
+                await _client.Inventory.RemoveItemAsync(linkUuid).ConfigureAwait(false);
+            }
+            catch { }
+        }
     }
 
     /// <summary>
