@@ -8,6 +8,7 @@ using System.Linq;
 public partial class Boot : Control
 {
     private OptionButton _profileDropdown = null!;
+    private OptionButton _gridDropdown = null!;
     private LineEdit _gridInput = null!;
     private LineEdit _firstInput = null!;
     private LineEdit _lastInput = null!;
@@ -73,9 +74,25 @@ public partial class Boot : Control
 
         _vboxContainer = GetNode<VBoxContainer>("%VBoxContainer");
         _profileDropdown = GetNode<OptionButton>("%ProfileDropdown");
+        _gridDropdown = GetNode<OptionButton>("%GridDropdown");
         _gridInput = GetNode<LineEdit>("%GridInput");
         _firstInput = GetNode<LineEdit>("%FirstInput");
         _lastInput = GetNode<LineEdit>("%LastInput");
+
+        // Populate Grid Dropdown
+        _gridDropdown.AddItem("OSGrid");
+        _gridDropdown.SetItemMetadata(0, "http://hg.osgrid.org/");
+        _gridDropdown.AddItem("Second Life (Agni)");
+        _gridDropdown.SetItemMetadata(1, "https://login.agni.lindenlab.com/cgi-bin/login.cgi");
+        _gridDropdown.AddItem("Second Life (Aditi)");
+        _gridDropdown.SetItemMetadata(2, "https://login.aditi.lindenlab.com/cgi-bin/login.cgi");
+        _gridDropdown.AddItem("Localhost");
+        _gridDropdown.SetItemMetadata(3, "http://127.0.0.1:9000/");
+        
+        _gridDropdown.ItemSelected += (index) => 
+        {
+            _gridInput.Text = (string)_gridDropdown.GetItemMetadata((int)index);
+        };
         _passInput = GetNode<LineEdit>("%PassInput");
         _saveLoginCheck = GetNode<CheckBox>("%SaveLoginCheck");
         _loginButton = GetNode<Button>("%LoginButton");
