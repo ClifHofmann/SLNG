@@ -1776,18 +1776,15 @@ public partial class AvatarRenderer : Node3D
 
     private static float GetBoneRootRelativeY(Skeleton3D skeleton, int boneIdx)
     {
-        float y = 0f;
+        Transform3D globalRest = Transform3D.Identity;
         int current = boneIdx;
         while (current >= 0)
         {
             var rest = skeleton.GetBoneRest(current);
-            string bName = skeleton.GetBoneName(current);
-            int pIdx = skeleton.GetBoneParent(current);
-            y += rest.Origin.Y;
-            GD.Print($"[ChainDebug] bone={bName} (idx={current}, parentIdx={pIdx}) rest.Origin.Y={rest.Origin.Y:F3} accumY={y:F3}");
-            current = pIdx;
+            globalRest = rest * globalRest;
+            current = skeleton.GetBoneParent(current);
         }
-        return y;
+        return globalRest.Origin.Y;
     }
 
     private static bool TryGetActivePelvisFixup(AvatarVisual visual, out float fixupZ)
