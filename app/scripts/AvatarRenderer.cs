@@ -380,20 +380,12 @@ public partial class AvatarRenderer : Node3D
             // Position the avatar root node (floating-origin relative; see RenderConfig)
             var rootPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
 
-            if (avatar.IsLocalAgent)
-            {
-                // Local agent physics capsule center is at transform.Position.
-                // Subtract (halfBodyZ + FootOffsetY) and add 0.025m shoe-sole offset so boots sit on the floor.
-                float halfBodyZ = 0.5f * visual.BodySizeZ;
-                rootPos.Y -= (halfBodyZ + visual.FootOffsetY);
-                rootPos.Y += 0.025f;
-            }
-            else
-            {
-                // Remote avatar position from sim is ground/feet level.
-                // Elevate rootPos.Y by -FootOffsetY (~0.95m) so feet sit precisely at ground level.
-                rootPos.Y -= visual.FootOffsetY;
-            }
+            // Viewer parity (LLVOAvatar::updateRootPositionAndRotation):
+            // transform.Position is the SL simulator collision cylinder center (mPosition).
+            // Subtract (halfBodyZ + FootOffsetY) and add 0.025m shoe-sole offset so boots sit on the floor.
+            float halfBodyZ = 0.5f * visual.BodySizeZ;
+            rootPos.Y -= (halfBodyZ + visual.FootOffsetY);
+            rootPos.Y += 0.025f;
 
             float pelvisFixupZ = 0f;
             if (TryGetActivePelvisFixup(visual, out pelvisFixupZ))
