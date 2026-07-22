@@ -1077,20 +1077,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (item.AssetUUID != LibreMetaverse.UUID.Zero) uuidsToDetach.Add(item.AssetUUID);
         }
 
-        // Query all active attachments from AppearanceManager
-        try
-        {
-            var activeAtts = _client.Appearance.GetAttachmentsByItemId();
-            foreach (var kvp in activeAtts)
-            {
-                if (kvp.Key != LibreMetaverse.UUID.Zero)
-                {
-                    uuidsToDetach.Add(kvp.Key);
-                }
-            }
-        }
-        catch { }
-
         // Search Current Outfit folder to find matching links or items
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
         if (cofUuid != LibreMetaverse.UUID.Zero)
@@ -1114,6 +1100,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 }
             }
         }
+
+        // Query active attachments from AppearanceManager ONLY for matching candidate UUIDs
+        try
+        {
+            var activeAtts = _client.Appearance.GetAttachmentsByItemId();
+            foreach (var kvp in activeAtts)
+            {
+                if (uuidsToDetach.Contains(kvp.Key))
+                {
+                    uuidsToDetach.Add(kvp.Key);
+                }
+            }
+        }
+        catch { }
 
         // Send DetachAttachmentIntoInv packet for every candidate UUID
         foreach (var u in uuidsToDetach)
