@@ -435,15 +435,7 @@ public partial class AvatarController : Camera3D
                     // For a standing avatar whose feet sit at groundHeight, the cylinder center is groundHeight + halfBodyZ.
                     float clampTargetZ = groundHeight + halfBodyZ;
 
-                    // Ground truth for diagnosing "feet in/above ground" reports: what the raycast
-                    // actually found and the collision center offset applied. Throttled to ~1/sec.
-                    _timeSinceGroundLog += delta;
-                    if (_timeSinceGroundLog > 1.0)
-                    {
-                        _timeSinceGroundLog = 0;
-                        GD.Print($"[GroundClamp] entity={localAgent.Id} groundHeight={groundHeight:0.####} source={groundSource} " +
-                                 $"halfBodyZ={halfBodyZ:0.####} clampTargetZ={clampTargetZ:0.####} transform.Position.Z={transform.Position.Z:0.####}");
-                    }
+
 
                     if (_flying)
                     {

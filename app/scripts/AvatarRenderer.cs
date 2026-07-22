@@ -428,10 +428,7 @@ public partial class AvatarRenderer : Node3D
                         }
                     }
 
-                    GD.Print($"[RootApply] entity={entityId} transform.Position.Z={transform.Position.Z:0.####} " +
-                             $"pelvisFixupZ={pelvisFixupZ:0.####} FootOffsetY={visual.FootOffsetY:0.####} " +
-                             $"rootPos.Y(assigned)={rootPos.Y:0.####} | {footInfo} " +
-                             "<- target: mFootLeft SL-Z should now equal transform.Position.Z / groundHeight");
+
                 }
             }
         }
@@ -1786,8 +1783,7 @@ public partial class AvatarRenderer : Node3D
         // (should normally be 0 or a handful of sub-cm shifts; the skeleton-root override is
         // deliberately excluded before it ever reaches visual.JointPosOverrides — see
         // ApplyJointPositionOverrides).
-        GD.Print($"[RootOffset] BodySizeZ={visual.BodySizeZ:0.####} FootOffsetY={visual.FootOffsetY:0.####} (measured, mFootLeft relative to Root) " +
-                 $"jointOverrideCount={visual.JointPosOverrides.Count}");
+
     }
 
     private static bool TryGetActivePelvisFixup(AvatarVisual visual, out float fixupZ)
