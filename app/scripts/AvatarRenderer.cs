@@ -380,27 +380,23 @@ public partial class AvatarRenderer : Node3D
             // Position the avatar root node (floating-origin relative; see RenderConfig)
             var rootPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
 
-            if (avatar.IsLocalAgent)
-            {
-                // Viewer parity (LLVOAvatar::updateRootPositionAndRotation):
-                // Local agent physics capsule center is at transform.Position.
-                // Subtract (halfBodyZ + FootOffsetY) and add 0.025m shoe-sole offset so boots sit on the floor.
-                float halfBodyZ = 0.5f * visual.BodySizeZ;
-                rootPos.Y -= (halfBodyZ + visual.FootOffsetY);
-                rootPos.Y += 0.025f;
-            }
-            else
-            {
-                // Remote avatar position from sim is ground/feet level.
-                // Elevate rootPos.Y by -FootOffsetY (~0.95m) so feet sit precisely at ground level.
-                rootPos.Y -= visual.FootOffsetY;
-            }
+            // Viewer parity (LLVOAvatar::updateRootPositionAndRotation):
+            // transform.Position is the SL simulator collision cylinder center (mPosition).
+            // Subtract (halfBodyZ + FootOffsetY) and add 0.025m shoe-sole offset so boots sit on the floor.
+            float halfBodyZ = 0.5f * visual.BodySizeZ;
+            rootPos.Y -= (halfBodyZ + visual.FootOffsetY);
+            rootPos.Y += 0.025f;
 
             float pelvisFixupZ = 0f;
             if (TryGetActivePelvisFixup(visual, out pelvisFixupZ))
                 rootPos.Y += pelvisFixupZ;
 
-            GD.Print($"[HeightDebug] entity={entity.Id} (isLocal={avatar.IsLocalAgent}) simPos.Z={transform.Position.Z:F3} rootPos.Y={rootPos.Y:F3} BodySizeZ={visual.BodySizeZ:F3} FootOffsetY={visual.FootOffsetY:F3} pelvisFixupZ={pelvisFixupZ:F3}");
+            // hasShape=false means VisualParams never reached this AvatarComponent (see
+            // WorldSimulation.FindAvatarEntityByAgentId's doc comment for the AgentId-race gap
+            // this used to fall through) -- BodySizeZ/FootOffsetY below are then just the generic
+            // AvatarVisual field defaults (1.90 / 0), not this avatar's actual proportions, and
+            // the avatar will float/sink by whatever the real shape differs from that default.
+            GD.Print($"[HeightDebug] entity={entity.Id} (isLocal={avatar.IsLocalAgent}) hasShape={avatar.VisualParams != null} simPos.Z={transform.Position.Z:F3} rootPos.Y={rootPos.Y:F3} BodySizeZ={visual.BodySizeZ:F3} FootOffsetY={visual.FootOffsetY:F3} pelvisFixupZ={pelvisFixupZ:F3}");
 
             visual.Root.Position = rootPos;
 
@@ -1772,7 +1768,7 @@ public partial class AvatarRenderer : Node3D
         foreach (var kv in distortions)
             visual.LastDistortions[kv.Key] = kv.Value;
 
-        var body = SLNG.Core.SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions, visual.JointPosOverrides);
+        var body = SLNG.Core.SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions);
         visual.BodySizeZ = body.BodySizeZ;
 
         if (visual.Skeleton == null) return;

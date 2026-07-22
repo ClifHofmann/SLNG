@@ -343,10 +343,45 @@ public sealed class WorldSimulation : IDisposable
         LinkPendingAttachments(e.RegionHandle, e.LocalId, entity.Id);
     }
 
-    private void ApplyAvatarAppearance(AvatarAppearanceEvent e)
+    /// <summary>Finds the entity carrying <paramref name="agentId"/>'s AvatarComponent, healing the
+    /// AgentId-race gap documented on <see cref="ApplyAvatarUpdate"/>: a remote avatar's entity can
+    /// exist (created from a bare TerseObjectUpdate, LocalId only) with its AvatarComponent.AgentId
+    /// still <see cref="System.Guid.Empty"/> because LibreMetaverse's ObjectsAvatars cache hadn't
+    /// resolved the full AgentID yet when GridSession raised the event (see GridSession's own fix,
+    /// commit 6bcf31e). A subsequent full ObjectUpdate eventually heals that entity's AgentId via
+    /// <see cref="ApplyAvatarUpdate"/> — but ANY per-agent network message that can arrive in the
+    /// meantime (animations, appearance/VisualParams, ...) needs this same fallback or it silently
+    /// drops forever: an exact-match lookup against an AgentId that's still Guid.Empty never
+    /// matches, and unlike ObjectUpdate these messages aren't re-sent on every tick, so a dropped
+    /// appearance packet means that avatar keeps its default shape/body-size for the rest of the
+    /// session (originally caught only for animations — this shares the fix so appearance gets it
+    /// too, since a remote avatar's real BodySizeZ/FootOffsetY come from VisualParams).</summary>
+    private Entity? FindAvatarEntityByAgentId(System.Guid agentId)
     {
         var entity = _world.Query<AvatarComponent>()
-            .FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.AgentId == e.AgentId);
+            .FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.AgentId == agentId);
+
+        if (entity == null && agentId != System.Guid.Empty)
+        {
+            entity = _world.Query<AvatarComponent>()
+                .FirstOrDefault(ent => {
+                    var av = ent.GetComponent<AvatarComponent>();
+                    return av != null && !av.IsLocalAgent && (av.AgentId == System.Guid.Empty || av.AgentId == agentId);
+                });
+            if (entity != null)
+            {
+                var av = entity.GetComponent<AvatarComponent>()!;
+                av.AgentId = agentId;
+                entity.SetComponent(av);
+            }
+        }
+
+        return entity;
+    }
+
+    private void ApplyAvatarAppearance(AvatarAppearanceEvent e)
+    {
+        var entity = FindAvatarEntityByAgentId(e.AgentId);
 
         if (entity != null)
         {
@@ -360,23 +395,7 @@ public sealed class WorldSimulation : IDisposable
 
     private void ApplyAvatarAnimation(AvatarAnimationEvent e)
     {
-        var entity = _world.Query<AvatarComponent>()
-            .FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.AgentId == e.AgentId);
-
-        if (entity == null && e.AgentId != System.Guid.Empty)
-        {
-            entity = _world.Query<AvatarComponent>()
-                .FirstOrDefault(ent => {
-                    var av = ent.GetComponent<AvatarComponent>();
-                    return av != null && !av.IsLocalAgent && (av.AgentId == System.Guid.Empty || av.AgentId == e.AgentId);
-                });
-            if (entity != null)
-            {
-                var av = entity.GetComponent<AvatarComponent>()!;
-                av.AgentId = e.AgentId;
-                entity.SetComponent(av);
-            }
-        }
+        var entity = FindAvatarEntityByAgentId(e.AgentId);
 
         if (entity != null)
         {

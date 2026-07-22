@@ -164,4 +164,44 @@ public class WorldSimulationTests
         Assert.Contains(anim1, avatar.ActiveAnimations);
         Assert.Contains(anim2, avatar.ActiveAnimations);
     }
+
+    /// <summary>Regression test for the remote-avatar float bug (fix/remote-avatar-animations):
+    /// a remote avatar's entity can be created from a bare TerseObjectUpdate before
+    /// LibreMetaverse's ObjectsAvatars cache has resolved the full AgentID, leaving
+    /// AvatarComponent.AgentId == Guid.Empty. The dedicated AvatarAppearance message DOES carry
+    /// the real AgentId, but an exact-match lookup against the still-empty AgentId never finds
+    /// the entity — so the avatar's real VisualParams (and therefore its real BodySizeZ /
+    /// FootOffsetY) are silently dropped forever, leaving it on default shape constants that
+    /// don't match its actual proportions. ApplyAvatarAnimation already had this fallback
+    /// (commit 6bcf31e); ApplyAvatarAppearance did not.</summary>
+    [Fact]
+    public void AvatarAppearanceEvent_ResolvesEntity_WhenAgentIdWasStillEmpty()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        // Entity created with AgentId == Guid.Empty, mirroring a bare TerseObjectUpdate for a
+        // remote avatar whose AgentID hadn't resolved yet.
+        var updateEvt = new AvatarUpdateEvent(123ul, 42, Guid.Empty, Vector3.Zero, Quaternion.Identity, "", "", false);
+        session.RaiseAvatarUpdate(updateEvt);
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        Assert.NotNull(entity);
+        Assert.Equal(Guid.Empty, entity.GetComponent<AvatarComponent>()!.AgentId);
+
+        // The appearance message arrives with the real AgentId before any full ObjectUpdate
+        // heals the entity's AgentId.
+        var realAgentId = Guid.NewGuid();
+        var visualParams = new byte[] { 1, 2, 3 };
+        var appearanceEvt = new AvatarAppearanceEvent(123ul, realAgentId, visualParams, new Dictionary<int, Guid>());
+        session.RaiseAvatarAppearance(appearanceEvt);
+        simulation.Pump();
+
+        var avatar = entity.GetComponent<AvatarComponent>();
+        Assert.NotNull(avatar);
+        Assert.Equal(visualParams, avatar.VisualParams);
+        Assert.Equal(realAgentId, avatar.AgentId);
+    }
 }
