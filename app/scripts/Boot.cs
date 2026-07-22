@@ -22,7 +22,8 @@ public partial class Boot : Control
 
     private GridSession? _session;
     private SLNG.Core.ECS.World? _world;
-    private SLNG.Core.WorldSimulation? _worldSimulation;
+    private SLNG.Core.Services.LocalizationManager _localizationManager = null!;
+    private SLNG.Core.WorldSimulation _worldSimulation = null!;
     private TerrainRenderer? _terrainRenderer;
     private ObjectRenderer? _objectRenderer;
     private AvatarRenderer? _avatarRenderer;
@@ -63,6 +64,10 @@ public partial class Boot : Control
     public override void _Ready()
     {
         MouseFilter = MouseFilterEnum.Ignore;
+        
+        string i18nDir = ProjectSettings.GlobalizePath("res://i18n");
+        _localizationManager = new SLNG.Core.Services.LocalizationManager(i18nDir);
+        SLNG.App.UI.L10n.Initialize(_localizationManager);
 
         // Godot debug builds hard-code an "(DEBUG)" window-title suffix that gets applied
         // AFTER _Ready() runs, silently overwriting whatever title we set here a moment later
@@ -205,6 +210,9 @@ public partial class Boot : Control
         // flashing at 1.0x first (FEAT-UI-07).
         _uiSettings = new SLNG.App.UI.UiSettings();
         _uiSettings.Load();
+        
+        // Apply saved language setting
+        _localizationManager.CurrentLocale = _uiSettings.Language;
 
         // Position/altitude readout in the top-right corner, overlaying the 3D view.
         // On its own CanvasLayer so it always draws on top of the world and the login/chat
@@ -351,7 +359,7 @@ public partial class Boot : Control
 
         var displayPage = new SLNG.App.UI.DisplayPreferencesPage();
         _preferencesWindow.AddTab("Display", displayPage);
-        displayPage.Initialize(_uiSettings);
+        displayPage.Initialize(_uiSettings, _localizationManager);
     }
 
     private void SetupEnvironment()

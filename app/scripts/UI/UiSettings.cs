@@ -14,6 +14,7 @@ public sealed class UiSettings
     private const string Section = "display";
 
     public float Scale { get; private set; } = 1.0f;
+    public string Language { get; private set; } = "en-US";
 
     public void Load()
     {
@@ -21,6 +22,7 @@ public sealed class UiSettings
         if (cfg.Load(ConfigPath) == Error.Ok)
         {
             Scale = Mathf.Clamp((float)cfg.GetValue(Section, "ui_scale", 1.0), SLNGWindow.MinUiScale, SLNGWindow.MaxUiScale);
+            Language = (string)cfg.GetValue(Section, "language", "en-US");
         }
         SLNGWindow.SetGlobalUiScale(Scale);
     }
@@ -36,4 +38,15 @@ public sealed class UiSettings
 
         SLNGWindow.SetGlobalUiScale(Scale);
     }
+
+    public void SetLanguage(string language)
+    {
+        Language = language;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "language", Language);
+        cfg.Save(ConfigPath);
+    }
+
 }

@@ -57,7 +57,7 @@ namespace SLNG.App.UI
             // App Menu
             var appMenu = new PopupMenu();
             appMenu.Name = "App";
-            appMenu.AddItem("Preferences...", 2);
+            appMenu.AddItem(L10n.Tr("ui.menu.preferences"), 2);
             appMenu.AddSeparator();
             appMenu.AddItem("Disconnect", 0);
             appMenu.AddItem("Exit", 1);

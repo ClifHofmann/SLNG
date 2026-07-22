@@ -20,10 +20,36 @@ public partial class DisplayPreferencesPage : VBoxContainer
 
     /// <summary>Builds the scale slider. Call once, right after this page has been added via
     /// PreferencesWindow.AddTab (mirrors ToolbarPreferencesPage.Initialize).</summary>
-    public void Initialize(UiSettings settings)
+    public void Initialize(UiSettings settings, SLNG.Core.Services.LocalizationManager locManager)
     {
         _settings = settings;
 
+        // --- Language Settings ---
+        var langHeading = new Label { Text = "Language (requires reopening windows):" };
+        langHeading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
+        AddChild(langHeading);
+
+        var langDropdown = new OptionButton();
+        var locales = locManager.GetAvailableLocales();
+        for (int i = 0; i < locales.Count; i++)
+        {
+            langDropdown.AddItem(locales[i]);
+            if (locales[i] == _settings.Language)
+                langDropdown.Select(i);
+        }
+        langDropdown.ItemSelected += index =>
+        {
+            string newLang = locales[(int)index];
+            _settings.SetLanguage(newLang);
+            locManager.CurrentLocale = newLang;
+        };
+        AddChild(langDropdown);
+        
+        var separator = new HSeparator();
+        separator.AddThemeConstantOverride("separation", 15);
+        AddChild(separator);
+
+        // --- Scale Settings ---
         var heading = new Label { Text = "UI Scale (windows & HUD):" };
         heading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
         AddChild(heading);

@@ -1,0 +1,15 @@
+{
+  "ui": {
+    "login": {
+      "button": "Login",
+      "grid_url": "Grid URL",
+      "first_name": "First Name",
+      "last_name": "Last Name",
+      "password": "Password",
+      "save_login": "Save Login"
+    },
+    "menu": {
+      "preferences": "Preferences..."
+    }
+  }
+}

@@ -139,7 +139,7 @@ Each task follows a **spec → test → implement → review** loop:
 
 | ID | Task | Track | Owner | Agent | Tool | Dep | Done when |
 |---|---|---|---|---|---|---|---|
-| FEAT-UI-02 | Client Localization & Multi-Language (i18n) | ui | | ux-designer | gemini | M0-4 | Full UI text translation pipeline & multi-language support. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-02-localization-i18n.md) |
+| FEAT-UI-02 | Client Localization & Multi-Language (i18n) ✅ | ui | gemini | ux-designer | gemini | M0-4 | Full UI text translation pipeline & multi-language support. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-02-localization-i18n.md) |
 | MVP6-1 | Performance Hardening & Occlusion Culling | render/assets | | performance-engineer | gemini | M2-4 | Impostors, aggressive culling, draw-call reduction on busy sims |
 | MVP6-2 | TPV Policy Compliance Pass & Registration | infra/net | | architect | claude | M0-2 | Full Linden Lab Third-Party Viewer Policy audit & official registration |
 | MVP6-3 | Cross-Platform Build Pipeline (Linux & macOS) | infra | | DevOps | claude | M1.5-3 | Native Linux & macOS releases packaged in CI/CD pipeline |

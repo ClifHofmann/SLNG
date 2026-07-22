@@ -149,7 +149,7 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_styles/normal = SubResource("StyleBoxFlat_input")
 text = "http://hg.osgrid.org/"
-placeholder_text = "Grid URL"
+placeholder_text = "ui.login.grid_url"
 
 [node name="GridDropdown" type="OptionButton" parent="LoginScreen/Panel/Margin/VBox/GridHBox"]
 unique_name_in_owner = true
@@ -166,7 +166,7 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_styles/normal = SubResource("StyleBoxFlat_input")
 text = "Test"
-placeholder_text = "Vorname"
+placeholder_text = "ui.login.first_name"
 
 [node name="LastInput" type="LineEdit" parent="LoginScreen/Panel/Margin/VBox/HBox"]
 unique_name_in_owner = true
@@ -174,7 +174,7 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_styles/normal = SubResource("StyleBoxFlat_input")
 text = "User"
-placeholder_text = "Nachname"
+placeholder_text = "ui.login.last_name"
 
 [node name="PassInput" type="LineEdit" parent="LoginScreen/Panel/Margin/VBox"]
 unique_name_in_owner = true
@@ -182,7 +182,7 @@ layout_mode = 2
 theme_override_styles/normal = SubResource("StyleBoxFlat_input")
 secret = true
 text = "secret"
-placeholder_text = "Passwort"
+placeholder_text = "ui.login.password"
 
 [node name="Spacer2" type="Control" parent="LoginScreen/Panel/Margin/VBox"]
 custom_minimum_size = Vector2(0, 8)
@@ -196,7 +196,7 @@ alignment = 1
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
-text = "Login merken"
+text = "ui.login.save_login"
 
 [node name="LoginButton" type="Button" parent="LoginScreen/Panel/Margin/VBox/Actions"]
 unique_name_in_owner = true
@@ -204,7 +204,7 @@ layout_mode = 2
 theme_override_styles/normal = SubResource("StyleBoxFlat_button")
 theme_override_styles/hover = SubResource("StyleBoxFlat_button_hover")
 theme_override_styles/pressed = SubResource("StyleBoxFlat_button")
-text = "Verbinden"
+text = "ui.login.button"
 
 [node name="LoadingScreen" type="CenterContainer" parent="."]
 unique_name_in_owner = true

@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-02`
 - **Track:** `ui` / `core`
-- **Status:** `⏸️ Pending`
+- **Status:** `✅ Done`
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -64,8 +64,8 @@ Implement a lightweight, extensible localization (i18n) framework for SLNG. All 
 - `docs/specs/FEAT-UI-02-localization-i18n.md` — Feature specification.
 
 ## Sub-tasks / Progress
-- [ ] Create `FEAT-UI-02` spec & update `ROADMAP.md`
-- [ ] Create `en-US.json` baseline dictionary and schema specification
-- [ ] Implement `LocalizationManager` in `SLNG.Core` with fallback & formatting support
-- [ ] Implement `L10n` Godot helper and wire into `Preferences` language selector
-- [ ] Add unit tests for `LocalizationManager`
+- [x] Create `FEAT-UI-02` spec & update `ROADMAP.md`
+- [x] Create `en-US.json` baseline dictionary and schema specification
+- [x] Implement `LocalizationManager` in `SLNG.Core` with fallback & formatting support
+- [x] Implement `L10n` Godot helper and wire into `Preferences` language selector
+- [x] Add unit tests for `LocalizationManager`
