@@ -1768,23 +1768,23 @@ public partial class AvatarRenderer : Node3D
 
         if (visual.Skeleton == null) return;
         int footBone = visual.Skeleton.FindBone("mFootLeft");
-        if (footBone < 0) return;
+        if (footBone >= 0)
+        {
+            visual.FootOffsetY = GetBoneRootRelativeY(visual.Skeleton, footBone);
+        }
+    }
 
-        // GetBoneGlobalPose is composed through the bone hierarchy but expressed in the
-        // Skeleton3D node's OWN local space — i.e. relative to Root, since the Skeleton3D node
-        // sits at Root's local origin with zero further offset (see CreateVisual). No SL<->Godot
-        // axis conversion needed here: this is already a Godot-space Y, and UpdateVisual only ever
-        // uses it as a Godot Y-axis subtraction from rootPos.Y.
-        visual.FootOffsetY = visual.Skeleton.GetBoneGlobalPose(footBone).Origin.Y;
-
-        // Ground truth for diagnosing height/offset mismatches (e.g. against a fixed-size
-        // reference prim) — print the actual measured number this avatar's real shape + joint
-        // overrides produced, not just the fact that a recompute happened. jointOverrideCount lets
-        // you eyeball whether any worn mesh's fitted-mesh overrides are actually feeding this
-        // (should normally be 0 or a handful of sub-cm shifts; the skeleton-root override is
-        // deliberately excluded before it ever reaches visual.JointPosOverrides — see
-        // ApplyJointPositionOverrides).
-
+    private static float GetBoneRootRelativeY(Skeleton3D skeleton, int boneIdx)
+    {
+        float y = 0f;
+        int current = boneIdx;
+        while (current >= 0)
+        {
+            var rest = skeleton.GetBoneRest(current);
+            y += rest.Origin.Y;
+            current = skeleton.GetBoneParent(current);
+        }
+        return y;
     }
 
     private static bool TryGetActivePelvisFixup(AvatarVisual visual, out float fixupZ)
