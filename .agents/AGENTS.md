@@ -6,6 +6,9 @@
 ## Rule
 
 Always prefix shell commands with rtk (or tk) to minimize token consumption when executing terminal commands.
+**Windows-Specific RTK Rule**: `rtk` only resolves direct `.exe` files. 
+- For native binaries (`git`, `docker`, `cargo`), use normally: `rtk git status`
+- For built-in commands, `.bat` / `.cmd` scripts, or aliases (e.g., `dir`, `npm`), you MUST wrap them: `rtk cmd /c "dir /O-D"` or `rtk powershell -c "Dein Befehl"`.
 
 Examples:
 - rtk git status
