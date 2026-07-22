@@ -60,6 +60,9 @@ public class PrimitiveComponent : IComponent
     /// <see cref="TextureId"/>/<see cref="ColorTint"/> for the whole object.</summary>
     public FaceTexture[]? Faces { get; set; }
 
+    /// <summary>LibreMetaverse ClickAction byte (0=Touch, 1=Sit, etc).</summary>
+    public byte ClickAction { get; set; }
+
     /// <summary>SL attachment-point byte (0 = not worn). Stored so a worn object can be linked
     /// to its avatar even if the avatar entity streams in after this prim.</summary>
     public byte AttachmentPoint { get; set; }

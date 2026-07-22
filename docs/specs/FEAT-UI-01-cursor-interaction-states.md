@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-01`
 - **Track:** `ui` / `render`
-- **Status:** `⏸️ Pending`
+- **Status:** `✅ Done`
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -22,9 +22,9 @@ Implement dynamic mouse cursor state changes based on key modifier holds and obj
   - Dynamically changes viewport cursor texture (Hand / Sit / Zoom / Default).
 
 ## Acceptance Criteria
-- [ ] Holding `Alt` switches cursor to magnifying glass icon immediately.
-- [ ] Hovering over clickable objects changes cursor to hand icon.
-- [ ] Releasing modifier keys or un-hovering restores default cursor smoothly.
+- [x] Holding `Alt` switches cursor to magnifying glass icon immediately.
+- [x] Hovering over clickable objects changes cursor to hand icon.
+- [x] Releasing modifier keys or un-hovering restores default cursor smoothly.
 
 ## Technical Specs & Affected Files
 - `app/scripts/Input/CursorManager.cs` — Central manager for cursor states and raycast hover feedback.

@@ -510,6 +510,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // viewer either) has no matching PrimMaterial member; clamp it to Wood rather than
             // let an unnamed enum value reach the UI.
             (byte)prim.PrimData.Material <= 6 ? (SLNG.Core.PrimMaterial)(byte)prim.PrimData.Material : SLNG.Core.PrimMaterial.Wood,
+            (byte)prim.ClickAction,
             isFullUpdate));
     }
 

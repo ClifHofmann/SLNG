@@ -60,6 +60,8 @@ public record ObjectUpdateEvent(
     // ProfileCurve/Shape above, so unlike the flags/light fields it's current on every update,
     // full or terse; NOT gated by IsFullUpdate.
     PrimMaterial Material = PrimMaterial.Wood,
+    // LibreMetaverse ClickAction byte (0=Touch, 1=Sit, etc)
+    byte ClickAction = 0,
     // ImprovedTerseObjectUpdate (fast position/rotation streaming for moving objects) never
     // carries flags on the wire -- LibreMetaverse leaves Primitive.Flags at whatever the last
     // full update said, which is stale the moment a flag was just changed locally. IsPhysical/

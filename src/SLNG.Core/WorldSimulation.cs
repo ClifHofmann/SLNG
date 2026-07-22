@@ -134,6 +134,7 @@ public sealed class WorldSimulation : IDisposable
         // Shape/ProfileCurve above -- current on every update, full or terse, so no IsFullUpdate
         // guard is needed here.
         prim.Material = e.Material;
+        prim.ClickAction = e.ClickAction;
         // Terse-sourced events (ImprovedTerseObjectUpdate -- fast position streaming for moving
         // objects) never carry real flags on the wire; LibreMetaverse leaves Primitive.Flags at
         // whatever the last full update said. Applying that here would repeatedly stomp a flag
