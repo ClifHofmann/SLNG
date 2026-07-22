@@ -362,3 +362,32 @@ Did NOT change `ComputeBodySize`, `AvatarController`, or any rendering/position 
 Rebuild clean, fresh relogin, get both avatars in view:
 1. **Position** (should now be resolved): read `[RemoteGroundDiag]`'s `hoverOffsetZ` for Reamon — if nonzero and `rootPos.Y` now lands at `remoteGroundHeight` (within a cm or two), the hover fix closed the loop. If `hoverOffsetZ` reads `0.000` despite the fix, the `ObjectsAvatars`-cache lookup in `GridSession.OnAvatarAppearance` isn't finding the entry (worth checking timing — does the appearance packet arrive before the avatar is in `ObjectsAvatars` at all?) and needs its own look.
 2. **Absolute height** (new thread): compare `[HeightDebug]`'s `ScaleZ` against `BodySizeZ` and against 2.22m (Clifton)/2.19m (Reamon) for both avatars. If `ScaleZ` closely matches the Firestorm numbers while `BodySizeZ` doesn't, that's strong evidence for hypothesis 2 (wrong ground-truth source, not a computation bug) and the next step would be switching what feeds the height-dependent parts of the render pipeline (careful: `BodySizeZ`/`PelvisToFootZ` are also load-bearing for the now-working position formula — any change here needs to keep that working, not just fix the "how tall does he look" number). If `ScaleZ` is also short of Firestorm's number (or reads 0/implausible), hypothesis 2 is out and the investigation should turn to `ComputeBodySize`'s formula itself — specifically the `F_SQRT2` head-top approximation term, using `LogJointParityCheck`'s per-bone data (already logged) to see whether the head/neck/skull chain's contribution to `BodySizeZ` looks disproportionately small relative to what `renderedSkullToFootY` (i.e. Godot's own actually-composed pose) shows for that same sub-chain.
+
+---
+
+## Round 10 (close-out): position/sink bug RESOLVED; height-stat mismatch demoted to low-priority open thread
+
+### Position — resolved, this investigation's original bug is fixed
+
+Live test of the hover-offset fix: both avatars now stand correctly on the platform, no more visible sinking for Reamon, screenshot matches Firestorm reasonably well. Reamon's `hoverOffsetZ` happened to read `0.000` in this specific test (his account has no Hover configured) — so for THIS avatar, that particular term wasn't what closed the remaining gap; more likely the last few cm were within normal visual tolerance once the round 6/7 fixes (pelvis-vs-capsule-center semantics, the distortions-aliasing bug) landed. The `HoverOffsetZ` plumbing itself is still a real, verified-against-source fix worth keeping for any account that DOES configure Hover (common practice for mesh-body/shoe fit) — it just wasn't the deciding factor in this particular test.
+
+**The original symptom that started this whole investigation — a remote avatar floating or sinking relative to the ground, unlike the correctly-grounded local avatar — is resolved.** Treat the position/sink saga as closed.
+
+### Height-stat mismatch — ruled out both live hypotheses, demoted to low-priority
+
+Got the `ScaleZ` numbers:
+
+```
+Clifton (local):  BodySizeZ=2.020  ScaleZ=2.021  (basically identical)
+Reamon (remote):  BodySizeZ=1.991  ScaleZ=1.992  (basically identical)
+```
+
+The wire-transmitted `Primitive.Scale.Z` essentially CONFIRMS our own `ComputeBodySize` port (they agree to within 1-2mm for both avatars) — this **rules out round 9's hypothesis 2** (that Firestorm's displayed height comes from the simulator-tracked `Scale` rather than the viewer's own skeletal `mBodySize.z` computation). Both independently-sourced values agree with EACH OTHER, and both are ~15cm short of Firestorm's displayed 2.19m/2.22m. Whatever Firestorm's height stat measures, it is neither `mBodySize.z`/our `ComputeBodySize` port NOR the raw object `Scale` — something else entirely.
+
+Did a quick, bounded source check (`linden_llvoavatar.cpp`) for any other obvious height-display mechanism before giving up on this round — found nothing conclusive (no Firestorm-specific UI code in this vendored file, only base LLVOAvatar; a `avatar_height` local variable at line ~3899 is just `getPositionGlobal().mdV[VZ]` used for a below-water check, unrelated to any displayed stat). Not worth digging further without either Firestorm's own source (not vendored here) or a live A/B test isolating exactly which UI element shows "2.19m" and under what circumstances.
+
+**Per the coordinator's explicit call**: this is now a low-priority, nice-to-have follow-up, not urgent — the visually-broken bug (sinking/floating avatars) that motivated this entire investigation is fixed. Two remaining candidate explanations, worth a source/live check whenever this gets picked up again, in no particular priority order:
+- LL's own wiki documents `llGetAgentSize()` as an approximation "not to be relied upon for precise size" — if Firestorm's displayed number derives from that (or a similar simulator-side approximation), some of the ~15cm gap may just be inherent imprecision in the REFERENCE number, not an error in our own computation at all.
+- Firestorm's stat could be a true rendered bounding-box measurement (worn shoes/hair/attachments included), which is a fundamentally different quantity from any purely-skeletal metric (`mBodySize.z` or `Scale`) and wouldn't be expected to match either.
+
+No code changes this round — `[HeightDebug]`'s `ScaleZ`/`BodySizeZ` logging (round 9) remains in place for whenever this gets revisited; no further diagnostics added since the two candidates above would need either Firestorm's own source or a targeted live A/B test (e.g. removing shoes/hair and rechecking the displayed number) rather than more logging on our side.
