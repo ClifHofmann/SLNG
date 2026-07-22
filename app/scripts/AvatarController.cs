@@ -425,25 +425,24 @@ public partial class AvatarController : Camera3D
                     // subtracted AvatarRenderer's RootOffsetZ here so AvatarRenderer could add it
                     // back at render time — that design was provably a no-op: clampTargetZ =
                     // groundHeight - correction, then Root.Y = clampTargetZ + correction, which
-                    // cancels for ANY value of "correction", so Root.Y always matched groundHeight
-                    // regardless of whether the fix was doing anything real (confirmed live with
-                    float rendererFootOffsetY = 0f;
-                    bool haveCorrection = _avatarRenderer != null
-                        && _avatarRenderer.TryGetVerticalRenderCorrection(localAgent.Id, out rendererFootOffsetY);
+                    float halfBodyZ = 0.95f;
+                    if (_avatarRenderer != null && _avatarRenderer.TryGetBodySizeZ(localAgent.Id, out float bodySizeZ))
+                    {
+                        halfBodyZ = 0.5f * bodySizeZ;
+                    }
 
-                    // FootOffsetY is mFootLeft's position relative to Root in Godot space (negative value, e.g. -0.188m).
-                    // To place the feet at groundHeight, the avatar Root position must be at groundHeight - FootOffsetY.
-                    float clampTargetZ = groundHeight - rendererFootOffsetY;
+                    // Second Life physics model: transform.Position.Z is the collision cylinder center.
+                    // For a standing avatar whose feet sit at groundHeight, the cylinder center is groundHeight + halfBodyZ.
+                    float clampTargetZ = groundHeight + halfBodyZ;
 
                     // Ground truth for diagnosing "feet in/above ground" reports: what the raycast
-                    // actually found and the FootOffsetY correction applied. Throttled to ~1/sec.
+                    // actually found and the collision center offset applied. Throttled to ~1/sec.
                     _timeSinceGroundLog += delta;
                     if (_timeSinceGroundLog > 1.0)
                     {
                         _timeSinceGroundLog = 0;
                         GD.Print($"[GroundClamp] entity={localAgent.Id} groundHeight={groundHeight:0.####} source={groundSource} " +
-                                 $"rendererFootOffsetY={rendererFootOffsetY:0.####} (haveCorrection={haveCorrection}) " +
-                                 $"clampTargetZ={clampTargetZ:0.####} transform.Position.Z={transform.Position.Z:0.####}");
+                                 $"halfBodyZ={halfBodyZ:0.####} clampTargetZ={clampTargetZ:0.####} transform.Position.Z={transform.Position.Z:0.####}");
                     }
 
                     if (_flying)

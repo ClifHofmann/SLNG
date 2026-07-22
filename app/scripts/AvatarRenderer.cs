@@ -90,6 +90,7 @@ public partial class AvatarRenderer : Node3D
         // bone pose at that point in its pipeline; SLNG does (Skeleton3D.GetBoneGlobalPose), so this
         // uses that directly instead of porting the indirect formula.
         public float FootOffsetY { get; set; }
+        public float BodySizeZ { get; set; } = 1.90f;
         // Per-avatar system-body-part Skin cache (bone binds + boneName->slot map), keyed by part
         // name. Used to be a single static dictionary shared across every avatar because the bind
         // matrices only depended on the neutral skeleton rest — true under the OLD (Godot-native
@@ -378,6 +379,13 @@ public partial class AvatarRenderer : Node3D
         {
             // Position the avatar root node (floating-origin relative; see RenderConfig)
             var rootPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
+
+            // Viewer parity (LLVOAvatar::updateRootPositionAndRotation):
+            // transform.Position is the SL simulator collision cylinder center (mPosition).
+            // The feet sit at (rootPos.Y - 0.5 * BodySizeZ).
+            // To land mFootLeft precisely at the feet level, rootPos.Y is adjusted by halfBodyZ and FootOffsetY.
+            float halfBodyZ = 0.5f * visual.BodySizeZ;
+            rootPos.Y -= (halfBodyZ + visual.FootOffsetY);
 
             // Viewer parity: LLVOAvatar::getRenderPosition applies a worn rigged mesh's pelvis
             // fixup (fitted-mesh skin data) to the avatar's world RENDER position every frame —
@@ -1757,6 +1765,9 @@ public partial class AvatarRenderer : Node3D
         foreach (var kv in distortions)
             visual.LastDistortions[kv.Key] = kv.Value;
 
+        var body = SLNG.Core.SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions, visual.JointPosOverrides);
+        visual.BodySizeZ = body.BodySizeZ;
+
         if (visual.Skeleton == null) return;
         int footBone = visual.Skeleton.FindBone("mFootLeft");
         if (footBone < 0) return;
@@ -1775,7 +1786,7 @@ public partial class AvatarRenderer : Node3D
         // (should normally be 0 or a handful of sub-cm shifts; the skeleton-root override is
         // deliberately excluded before it ever reaches visual.JointPosOverrides — see
         // ApplyJointPositionOverrides).
-        GD.Print($"[RootOffset] FootOffsetY={visual.FootOffsetY:0.####} (measured, mFootLeft relative to Root) " +
+        GD.Print($"[RootOffset] BodySizeZ={visual.BodySizeZ:0.####} FootOffsetY={visual.FootOffsetY:0.####} (measured, mFootLeft relative to Root) " +
                  $"jointOverrideCount={visual.JointPosOverrides.Count}");
     }
 
@@ -1794,6 +1805,14 @@ public partial class AvatarRenderer : Node3D
             }
         }
         return found;
+    }
+
+    public bool TryGetBodySizeZ(Guid entityId, out float bodySizeZ)
+    {
+        bodySizeZ = 1.90f;
+        if (!_visuals.TryGetValue(entityId, out var visual)) return false;
+        bodySizeZ = visual.BodySizeZ;
+        return true;
     }
 
     /// <summary>Diagnostic accessor only — AvatarController's ground-clamp does NOT use this for
