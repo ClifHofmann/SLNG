@@ -58,21 +58,38 @@ public partial class AvatarRenderer : Node3D
         // inherits position/rotation, matching SL; this map supplies the scale each bone's own
         // skinning bind needs to inject back in afterward (see SlJointComposer).
         public Dictionary<string, System.Numerics.Vector3> BoneOwnScale { get; } = new();
-        // Last shape distortions passed to RecomputeRootOffset (see that method), cached so a
+        // Last shape distortions passed to RecomputeFootOffset (see that method), cached so a
         // later joint-position-override change (e.g. a fitted mesh attaching after shape already
-        // applied) can recompute RootOffsetZ without re-deriving distortions from VisualParams.
+        // applied) can recompute FootOffsetY without re-deriving distortions from VisualParams.
         public Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)> LastDistortions { get; } = new();
-        // Root Z (Godot Y) correction applied every frame in UpdateVisual, mirroring viewer:
-        // LLVOAvatar::updateRootPositionAndRotation's "root_pos.mdV[VZ] -= (0.5f *
-        // mBodySize.mV[VZ]) - mPelvisToFoot" — the network/render position tracks roughly the
-        // sim's physics-capsule center, not the pelvis joint, so the root must be nudged up/down
-        // by this amount every frame regardless of worn content (unlike PelvisFixups above, which
-        // only exists when a fitted mesh's skin data supplies one). Recomputed only when shape or
-        // a pelvis-affecting joint override changes (see RecomputeRootOffset), not every frame —
-        // mirrors LLAvatarAppearance::computeBodySize's own invalidation call sites (shape/skeleton
-        // change), not the SL-402 "on every anim state change" compromise, which this renderer
-        // doesn't need since it doesn't yet support joint-position-animating AOs.
-        public float RootOffsetZ { get; set; }
+        // mFootLeft's actual current Y position relative to Root (== relative to the Skeleton3D
+        // node, which sits at Root's local origin with zero further offset — see CreateVisual),
+        // measured DIRECTLY from the live Skeleton3D via GetBoneGlobalPose. UpdateVisual subtracts
+        // this from the network-derived root position every frame so the ACTUAL foot bone — not
+        // Root itself — lands at the avatar's network Z (which AvatarController's ground-clamp
+        // treats as "feet at ground", matching the real protocol convention).
+        //
+        // REPLACES an earlier RootOffsetZ field that ported LLVOAvatar::updateRootPositionAndRotation's
+        // formula verbatim ("root_pos.mdV[VZ] -= (0.5f * mBodySize.mV[VZ]) - mPelvisToFoot", i.e.
+        // SlJointComposer.ComputeBodySize's PelvisToFoot/BodySizeZ). That formula is provably NOT
+        // the bug fix it looked like: with AvatarController's ground-clamp computing
+        // clampTargetZ = groundHeight - correction and AvatarRenderer computing
+        // Root.Y = clampTargetZ + correction, the correction term algebraically cancels for ANY
+        // value — Root.Y always equals groundHeight regardless of whether the formula's output is
+        // right, wrong, or zero. Root.Y matching groundHeight in every round of live testing was a
+        // tautology of that cancellation, not evidence the fix worked (confirmed with live
+        // [RootApply]/[GroundClamp] logging, 2026-07-22, rounds 2-4 of this investigation — see
+        // git history on fix/avatar-pelvis-offset). The actual bug was never in the arithmetic;
+        // it's that NOTHING was measuring where the foot bone really sits after THIS avatar's real
+        // shape distortions + worn-mesh joint overrides move it. Measured on a real avatar this
+        // session: mFootLeft sits ~+0.006 m from Root for an undistorted default rest pose
+        // (negligible — matches SlJointComposerTests' default-skeleton reference), but ~-0.19 m for
+        // this avatar's actual shape + worn coat/boots — a gap the formula-based approach, which
+        // never reads a live bone pose, could not see. The real viewer uses the formula because
+        // LLAvatarAppearance::updateRootPositionAndRotation doesn't have cheap access to a composed
+        // bone pose at that point in its pipeline; SLNG does (Skeleton3D.GetBoneGlobalPose), so this
+        // uses that directly instead of porting the indirect formula.
+        public float FootOffsetY { get; set; }
         // Per-avatar system-body-part Skin cache (bone binds + boneName->slot map), keyed by part
         // name. Used to be a single static dictionary shared across every avatar because the bind
         // matrices only depended on the neutral skeleton rest — true under the OLD (Godot-native
@@ -136,7 +153,7 @@ public partial class AvatarRenderer : Node3D
     // DLL timestamp. If this line is missing or shows an old tag, the client is NOT running
     // the code you think it is; close it fully (not just the window) and re-run
     // tools/run-client.ps1 before drawing any conclusion from the rest of the log.
-    private const string BuildMarker = "2026-07-22-footbone-globalpose-diagnostic";
+    private const string BuildMarker = "2026-07-22-measured-footoffset-replaces-formula";
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
     {
@@ -369,12 +386,15 @@ public partial class AvatarRenderer : Node3D
             if (TryGetActivePelvisFixup(visual, out var pelvisFixupZ))
                 rootPos.Y += pelvisFixupZ;
 
-            // Viewer parity: LLVOAvatar::updateRootPositionAndRotation applies this correction to
-            // EVERY avatar EVERY frame, unconditionally (no worn-mesh gate) — see RootOffsetZ's
-            // doc comment and RecomputeRootOffset. Kept as a precomputed field (updated only on
-            // shape/joint-override change) rather than recomputed here since ComputeBodySize walks
-            // the whole leg+spine chain and this runs every frame for every visible avatar.
-            rootPos.Y += visual.RootOffsetZ;
+            // Compensates for wherever mFootLeft ACTUALLY sits relative to Root right now (see
+            // AvatarVisual.FootOffsetY's doc comment for why this replaced a formula-based
+            // RootOffsetZ that provably never had any effect). rootPos.Y currently equals the raw
+            // network Z; subtracting FootOffsetY shifts Root so that Root.Y + FootOffsetY — i.e.
+            // the actual foot bone's world Y — lands back at that same network Z, for EVERY avatar
+            // (local and remote alike; this runs unconditionally, same as the old mechanism it
+            // replaced, and AvatarController's ground-clamp no longer needs to know about it at
+            // all — see that file's simplified clamp).
+            rootPos.Y -= visual.FootOffsetY;
 
             visual.Root.Position = rootPos;
 
@@ -383,33 +403,17 @@ public partial class AvatarRenderer : Node3D
                 -transform.Rotation.Y, transform.Rotation.W);
             visual.Root.Quaternion = slQuat;
 
-            // Direct, unambiguous ground-truth for the "does RootOffsetZ actually reach the
-            // rendered node" question (2026-07-22 ground-clamp investigation, round 3): logs the
-            // SAME entityId AvatarController's [GroundClamp] line uses, the raw network Z, every
-            // term added on top, the value just assigned to visual.Root.Position, AND — critically
-            // — visual.Root.GlobalTransform.Origin.Y read back immediately after the assignment.
-            // If GlobalTransform.Origin.Y (converted back through RenderConfig.FromGodot for an
-            // apples-to-apples SL-Z comparison) does NOT match rootPos.Y here, something between
-            // this assignment and the next render frame is overwriting Root's transform — a
-            // different bug than anything in this function. If it DOES match, the bug is upstream
-            // of this function (e.g. AvatarController computing/reading a different RootOffsetZ
-            // than the one actually used here, or a stale/zero value at the time this ran).
-            // Throttled to ~1/sec and local-agent-only to avoid flooding the log with every
-            // visible avatar every frame.
+            // Ground-truth verification log (2026-07-22, round 5 of the ground-sinking
+            // investigation): confirms the NEW measured-offset approach actually lands the FOOT
+            // bone (not just Root) at the network Z / groundHeight — Root matching groundHeight was
+            // proven to be a tautology of the old subtract-then-re-add design in rounds 2-4 and is
+            // deliberately NOT what this checks anymore. Throttled to ~1/sec, local-agent-only.
             if (avatar.IsLocalAgent)
             {
                 _timeSinceRootPosLog += GetProcessDeltaTime();
                 if (_timeSinceRootPosLog > 1.0)
                 {
                     _timeSinceRootPosLog = 0;
-                    float globalOriginY = visual.Root.GlobalTransform.Origin.Y;
-                    float globalOriginAsSlZ = RenderConfig.FromGodot(entity.RegionHandle, visual.Root.GlobalTransform.Origin).Z;
-
-                    // The actual number the coordinator asked for (2026-07-22, round 4): where the
-                    // FOOT bone really renders, not just Root. Root sitting exactly at groundHeight
-                    // says nothing about where the feet are if the skeleton hangs below Root by
-                    // some amount independent of RootOffsetZ (e.g. mPelvis's own rest Y, ~1.067m in
-                    // the default skeleton) — only the actual bone global pose settles that.
                     string footInfo = "mFootLeft:no-skeleton";
                     if (visual.Skeleton != null)
                     {
@@ -417,9 +421,8 @@ public partial class AvatarRenderer : Node3D
                         if (footBone >= 0)
                         {
                             var footGlobal = visual.Skeleton.GlobalTransform * visual.Skeleton.GetBoneGlobalPose(footBone);
-                            float footY = footGlobal.Origin.Y;
                             float footAsSlZ = RenderConfig.FromGodot(entity.RegionHandle, footGlobal.Origin).Z;
-                            footInfo = $"mFootLeft.GlobalTransform.Origin.Y={footY:0.####} (as SL Z)={footAsSlZ:0.####}";
+                            footInfo = $"mFootLeft.GlobalTransform.Origin.Y={footGlobal.Origin.Y:0.####} (as SL Z)={footAsSlZ:0.####}";
                         }
                         else
                         {
@@ -428,10 +431,9 @@ public partial class AvatarRenderer : Node3D
                     }
 
                     GD.Print($"[RootApply] entity={entityId} transform.Position.Z={transform.Position.Z:0.####} " +
-                             $"pelvisFixupZ={pelvisFixupZ:0.####} RootOffsetZ={visual.RootOffsetZ:0.####} " +
-                             $"rootPos.Y(assigned)={rootPos.Y:0.####} " +
-                             $"Root.GlobalTransform.Origin.Y(read back)={globalOriginY:0.####} " +
-                             $"(as SL Z via FromGodot)={globalOriginAsSlZ:0.####} | {footInfo}");
+                             $"pelvisFixupZ={pelvisFixupZ:0.####} FootOffsetY={visual.FootOffsetY:0.####} " +
+                             $"rootPos.Y(assigned)={rootPos.Y:0.####} | {footInfo} " +
+                             "<- target: mFootLeft SL-Z should now equal transform.Position.Z / groundHeight");
                 }
             }
         }
@@ -464,7 +466,7 @@ public partial class AvatarRenderer : Node3D
 
                 LogJointParityCheck(visual, visual.Skeleton, _avatarSkeleton, distortions.BoneMods);
 
-                RecomputeRootOffset(visual, distortions.BoneMods);
+                RecomputeFootOffset(visual, distortions.BoneMods);
 
                 // Deform the system body into this avatar's real proportions (male/muscle/breast/…
                 // sliders are vertex morphs, not bone scales — see AvatarMorphService).
@@ -1705,10 +1707,10 @@ public partial class AvatarRenderer : Node3D
             skeleton.ResetBonePoses();
             GD.Print($"[JointOverride] mesh {meshId}: {applied}/{jointCount} joint positions overridden (max shift {maxDelta:0.###} m)");
 
-            // A fitted mesh can override leg/spine joints that feed ComputeBodySize (e.g. an
-            // alternate-bind mesh body/legs) — refresh the root offset now rather than waiting
-            // for the next shape change. See RecomputeRootOffset's doc comment.
-            RecomputeRootOffset(visual, visual.LastDistortions);
+            // A fitted mesh can override leg/spine joints (e.g. an alternate-bind mesh body/legs)
+            // that move mFootLeft — refresh the measured foot offset now rather than waiting for
+            // the next shape change. See RecomputeFootOffset's doc comment.
+            RecomputeFootOffset(visual, visual.LastDistortions);
         }
         // Viewer parity: LLAvatarAppearance::addPelvisFixup (indra/llappearance/
         // llavatarappearance.cpp) — this offset does NOT move the mPelvis joint's local
@@ -1742,27 +1744,21 @@ public partial class AvatarRenderer : Node3D
     /// ordering gives us too. The overwhelmingly common case is a single contributor (one
     /// fitted body/outfit mesh), where this is just that mesh's offset.
     /// </summary>
-    /// <summary>Recomputes <see cref="AvatarVisual.RootOffsetZ"/> from this avatar's current shape
-    /// distortions + joint-position overrides. Mirrors viewer:
-    /// <c>LLVOAvatar::updateRootPositionAndRotation</c>'s
-    /// <c>root_pos.mdV[VZ] -= (0.5f * mBodySize.mV[VZ]) - mPelvisToFoot</c> — i.e.
-    /// <c>+= mPelvisToFoot - 0.5*mBodySize.z</c>. SL Z-up is Godot's Y-up here with no sign flip
-    /// (see RenderConfig.ToGodot), so that is exactly what's stored. Deliberately does NOT add
-    /// <c>getVisualParamWeight(AVATAR_HOVER)</c> or <c>getHoverOffset()</c>: both verified (source:
-    /// llappearance/llavatarappearancedefines.h AVATAR_HOVER=11001 and its avatar_lad.xml
-    /// definition, value_default="0") to default to zero, and neither is wired up anywhere in this
-    /// codebase yet (AVATAR_HOVER is a "Hover" shape slider we don't parse from worn shape
-    /// wearables; getHoverOffset() is a separate script/preference-driven mechanism, also unwired).
-    /// Treating both as 0 is a no-op for the overwhelming majority of avatars, same simplification
-    /// LL's own "SL-427: too frequent, moved to only do on state change" comment makes for cost —
-    /// revisit if a shape using a nonzero Hover slider is still measurably off by that slider's
-    /// value. Called from UpdateVisual's shape-change block AND whenever
-    /// <see cref="ApplyJointPositionOverrides"/> applies a fitted-mesh joint override — broader
-    /// than the real viewer's own invalidation (which only rebuilds on an mPelvis-specific override
-    /// or pelvis-fixup change, see postPelvisSetRecalc's pelvisGotSet gate), but strictly more
-    /// correct: recomputing on any leg/spine joint override just keeps this fresher, never wrong
-    /// against the same formula LL itself uses.</summary>
-    private void RecomputeRootOffset(AvatarVisual visual,
+    /// <summary>Recomputes <see cref="AvatarVisual.FootOffsetY"/> by measuring mFootLeft's actual
+    /// CURRENT position directly from the live <see cref="Skeleton3D"/> — see that field's doc
+    /// comment for why this replaced an earlier formula-based (<c>SlJointComposer.ComputeBodySize</c>
+    /// / <c>mBodySize</c>/<c>mPelvisToFoot</c>) approach that provably never affected the rendered
+    /// result. <paramref name="distortions"/> is accepted (and cached into
+    /// <see cref="AvatarVisual.LastDistortions"/>) only so <see cref="ApplyJointPositionOverrides"/>
+    /// can trigger a recompute later without re-deriving it from VisualParams — the measurement
+    /// itself needs no distortion data, since by the time this runs <see cref="ApplyShape"/> and/or
+    /// <see cref="ApplyJointPositionOverrides"/> have already baked every distortion and joint
+    /// override into the skeleton's bone rests and called <c>ResetBonePoses()</c>, so
+    /// <c>GetBoneGlobalPose</c> already reflects all of it. Called from UpdateVisual's shape-change
+    /// block AND whenever <see cref="ApplyJointPositionOverrides"/> applies a fitted-mesh joint
+    /// override — both places already call <c>ResetBonePoses()</c> immediately beforehand, which
+    /// this method depends on for the measurement to be current.</summary>
+    private void RecomputeFootOffset(AvatarVisual visual,
         IReadOnlyDictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)> distortions)
     {
         if (_avatarSkeleton == null) return;
@@ -1771,17 +1767,26 @@ public partial class AvatarRenderer : Node3D
         foreach (var kv in distortions)
             visual.LastDistortions[kv.Key] = kv.Value;
 
-        var body = SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions, visual.JointPosOverrides);
-        visual.RootOffsetZ = body.PelvisToFoot - 0.5f * body.BodySizeZ;
+        if (visual.Skeleton == null) return;
+        int footBone = visual.Skeleton.FindBone("mFootLeft");
+        if (footBone < 0) return;
+
+        // GetBoneGlobalPose is composed through the bone hierarchy but expressed in the
+        // Skeleton3D node's OWN local space — i.e. relative to Root, since the Skeleton3D node
+        // sits at Root's local origin with zero further offset (see CreateVisual). No SL<->Godot
+        // axis conversion needed here: this is already a Godot-space Y, and UpdateVisual only ever
+        // uses it as a Godot Y-axis subtraction from rootPos.Y.
+        visual.FootOffsetY = visual.Skeleton.GetBoneGlobalPose(footBone).Origin.Y;
 
         // Ground truth for diagnosing height/offset mismatches (e.g. against a fixed-size
-        // reference prim) — print the actual numbers this avatar's real shape + joint overrides
-        // produced, not just the fact that a recompute happened. jointOverrideCount lets you
-        // eyeball whether any worn mesh's fitted-mesh overrides are actually feeding this (should
-        // normally be 0 or a handful of sub-cm shifts; the skeleton-root override is deliberately
-        // excluded before it ever reaches visual.JointPosOverrides — see ApplyJointPositionOverrides).
-        GD.Print($"[RootOffset] PelvisToFoot={body.PelvisToFoot:0.####} BodySizeZ={body.BodySizeZ:0.####} " +
-                 $"RootOffsetZ={visual.RootOffsetZ:0.####} jointOverrideCount={visual.JointPosOverrides.Count}");
+        // reference prim) — print the actual measured number this avatar's real shape + joint
+        // overrides produced, not just the fact that a recompute happened. jointOverrideCount lets
+        // you eyeball whether any worn mesh's fitted-mesh overrides are actually feeding this
+        // (should normally be 0 or a handful of sub-cm shifts; the skeleton-root override is
+        // deliberately excluded before it ever reaches visual.JointPosOverrides — see
+        // ApplyJointPositionOverrides).
+        GD.Print($"[RootOffset] FootOffsetY={visual.FootOffsetY:0.####} (measured, mFootLeft relative to Root) " +
+                 $"jointOverrideCount={visual.JointPosOverrides.Count}");
     }
 
     private static bool TryGetActivePelvisFixup(AvatarVisual visual, out float fixupZ)
@@ -1801,24 +1806,21 @@ public partial class AvatarRenderer : Node3D
         return found;
     }
 
-    /// <summary>Net vertical (Godot Y) shift <see cref="UpdateVisual"/> adds on top of an avatar's
-    /// raw <c>TransformComponent</c> position before rendering — <see cref="AvatarVisual.RootOffsetZ"/>
-    /// plus any active pelvis fixup (the same two terms UpdateVisual's root-position step applies).
-    /// AvatarController's ground-collision code needs this: it calibrates the raw network position
-    /// to sit exactly at a raycasted ground height with ZERO knowledge of this renderer-side
-    /// correction. Before RootOffsetZ existed that was fine (the skeleton's own geometry puts the
-    /// feet almost exactly at the root, ~6mm off — see the real avatar_skeleton.xml numbers checked
-    /// this session), but RootOffsetZ is a real, non-zero (~0.126 m for a default shape) addition on
-    /// top now, so without feeding it back here the ground-clamp and the renderer disagree on where
-    /// "at the ground" is by exactly this amount every frame — see AvatarController.cs's use of this
-    /// method for the fix. Returns false (correctionZ = 0) if this avatar isn't tracked yet, which
-    /// callers should treat as "no correction known yet", not "confirmed zero".</summary>
+    /// <summary>Diagnostic accessor only — AvatarController's ground-clamp does NOT use this for
+    /// its clamp math anymore (see that file: it clamps straight to <c>groundHeight</c>, no
+    /// compensation, because <see cref="UpdateVisual"/> now applies the ENTIRE foot/ground
+    /// correction itself via <see cref="AvatarVisual.FootOffsetY"/> — see that field's doc comment
+    /// for why a previous split-across-two-files subtract-then-re-add design was a no-op
+    /// tautology). Kept so AvatarController's <c>[GroundClamp]</c> log can print the SAME
+    /// FootOffsetY + active pelvis-fixup value <see cref="UpdateVisual"/> is using, for direct
+    /// cross-verification against its own <c>[RootApply]</c> log. Returns false (correctionZ = 0)
+    /// if this avatar isn't tracked yet.</summary>
     public bool TryGetVerticalRenderCorrection(Guid entityId, out float correctionZ)
     {
         correctionZ = 0f;
         if (!_visuals.TryGetValue(entityId, out var visual)) return false;
 
-        correctionZ = visual.RootOffsetZ;
+        correctionZ = visual.FootOffsetY;
         if (TryGetActivePelvisFixup(visual, out var fixupZ)) correctionZ += fixupZ;
         return true;
     }

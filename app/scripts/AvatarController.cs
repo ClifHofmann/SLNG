@@ -10,9 +10,9 @@ public partial class AvatarController : Camera3D
 {
     private World? _world;
     private GridSession? _session;
-    // Set by Boot.cs so the ground-collision clamp can stay consistent with AvatarRenderer's
-    // per-frame root-position correction (RootOffsetZ / pelvis fixup) — see the ground-clamp
-    // block below and AvatarRenderer.TryGetVerticalRenderCorrection's doc comment.
+    // Set by Boot.cs — no longer used in the ground-clamp's own math (see that block's doc
+    // comment), only to cross-verify AvatarRenderer's measured FootOffsetY/pelvis-fixup in the
+    // [GroundClamp] diagnostic log against AvatarRenderer's own [RootApply] log.
     private AvatarRenderer? _avatarRenderer;
     private float _pitch = 0f;
     private float _yaw = 0f;
@@ -137,7 +137,7 @@ public partial class AvatarController : Camera3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-07-22-groundclamp-collider-source-logged";
+    private const string BuildMarker = "2026-07-22-groundclamp-reverted-to-simple-clamp";
 
     public void Initialize(World world, GridSession session, AvatarRenderer? avatarRenderer = null)
     {
@@ -420,29 +420,35 @@ public partial class AvatarController : Camera3D
 
                 if (hasGround)
                 {
-                    // AvatarRenderer.UpdateVisual renders this SAME transform.Position shifted up
-                    // by RootOffsetZ (+ any active pelvis fixup) every frame — a real, non-zero
-                    // (~0.126 m for a default shape) correction now, not the ~0 it effectively was
-                    // before that mechanism existed. Clamping the raw position straight to
-                    // groundHeight (as this code did before) ignores that shift entirely, so the
-                    // RENDERED avatar ends up displaced from the ground by exactly this amount every
-                    // frame. Compensate by clamping to groundHeight MINUS that same correction, so
-                    // that after AvatarRenderer adds it back the rendered feet land at groundHeight.
-                    // See AvatarRenderer.TryGetVerticalRenderCorrection's doc comment.
-                    float renderCorrectionZ = 0f;
-                    bool haveCorrection = _avatarRenderer != null
-                        && _avatarRenderer.TryGetVerticalRenderCorrection(localAgent.Id, out renderCorrectionZ);
-                    float clampTargetZ = groundHeight - renderCorrectionZ;
+                    // Reverted to a plain "network Z == feet at ground" clamp (2026-07-22, round 5
+                    // of the ground-sinking investigation). A previous version of this block
+                    // subtracted AvatarRenderer's RootOffsetZ here so AvatarRenderer could add it
+                    // back at render time — that design was provably a no-op: clampTargetZ =
+                    // groundHeight - correction, then Root.Y = clampTargetZ + correction, which
+                    // cancels for ANY value of "correction", so Root.Y always matched groundHeight
+                    // regardless of whether the fix was doing anything real (confirmed live with
+                    // paired [GroundClamp]/[RootApply] logging — Root.Y matching was a tautology,
+                    // not evidence). AvatarRenderer.UpdateVisual now applies the entire foot/ground
+                    // correction itself, measured directly from the live skeleton (see
+                    // AvatarVisual.FootOffsetY), for every avatar including remote ones this code
+                    // never touches — so this clamp goes back to the simple, single-purpose job of
+                    // keeping the raw network position at ground level; it takes AvatarRenderer's
+                    // word for where the feet actually end up relative to that.
+                    float clampTargetZ = groundHeight;
 
                     // Ground truth for diagnosing "feet in/above ground" reports: what the raycast
-                    // actually found, what we're compensating by, and where transform.Position ends
-                    // up — throttled to ~1/sec so it doesn't flood the log every frame.
+                    // actually found, and — purely for cross-verification against AvatarRenderer's
+                    // own [RootApply] log — the FootOffsetY + pelvis-fixup value it's currently
+                    // using (not used in this clamp's math anymore). Throttled to ~1/sec.
                     _timeSinceGroundLog += delta;
                     if (_timeSinceGroundLog > 1.0)
                     {
                         _timeSinceGroundLog = 0;
+                        float rendererFootOffsetY = 0f;
+                        bool haveCorrection = _avatarRenderer != null
+                            && _avatarRenderer.TryGetVerticalRenderCorrection(localAgent.Id, out rendererFootOffsetY);
                         GD.Print($"[GroundClamp] entity={localAgent.Id} groundHeight={groundHeight:0.####} source={groundSource} " +
-                                 $"renderCorrectionZ={renderCorrectionZ:0.####} (haveCorrection={haveCorrection}) " +
+                                 $"rendererFootOffsetY={rendererFootOffsetY:0.####} (haveCorrection={haveCorrection}) " +
                                  $"clampTargetZ={clampTargetZ:0.####} transform.Position.Z={transform.Position.Z:0.####}");
                     }
 
