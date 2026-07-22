@@ -50,7 +50,7 @@ public partial class AvatarController : Camera3D
     private void ZoomTowardCursor(float zoomDelta, Vector2 mousePos)
     {
         float oldZoom = _zoom;
-        _zoom = Mathf.Clamp(_zoom + zoomDelta, 0.5f, 50.0f);
+        _zoom = Mathf.Clamp(_zoom + zoomDelta, 0.5f, 200.0f);
         if (Mathf.IsEqualApprox(_zoom, oldZoom)) return;
 
         var vpSize = GetViewport().GetVisibleRect().Size;
@@ -81,6 +81,7 @@ public partial class AvatarController : Camera3D
         _orbitPitch = 0f;
         _panOffset = Vector3.Zero;
         _zoom = 4.0f;
+        _orbitTarget = null;
     }
 
     public void SetPresetView(string preset)
@@ -109,6 +110,7 @@ public partial class AvatarController : Camera3D
     private bool _altOrbitActive = false;
     private float _orbitYaw = 0f;
     private float _orbitPitch = 0f;
+    private Godot.Vector3? _orbitTarget = null;
 
     // The cursor's viewport position at the moment Alt+LMB was pressed, captured BEFORE
     // Input.MouseMode switches to Captured. Captured mode hides and re-centres the cursor, so
@@ -226,6 +228,45 @@ public partial class AvatarController : Camera3D
             // frame the warp actually took effect on produced one huge, unpredictably-timed false
             // delta -- live-tested as a sudden jump to max zoom-out with no clear trigger.
             _orbitLastMousePos = _altZoomAnchorPos;
+
+            var spaceState = GetWorld3D().DirectSpaceState;
+            var rayOrigin = ProjectRayOrigin(_altZoomAnchorPos);
+            var rayEnd = rayOrigin + ProjectRayNormal(_altZoomAnchorPos) * 1000f;
+            var query = PhysicsRayQueryParameters3D.Create(rayOrigin, rayEnd);
+            query.CollisionMask = 1; // Only hit Layer 1
+            var result = spaceState.IntersectRay(query);
+            if (result.Count > 0)
+            {
+                _orbitTarget = result["position"].AsVector3();
+                var currentPos = Position;
+                
+                // Keep the camera in the exact same physical spot, but look at the new target
+                _zoom = currentPos.DistanceTo(_orbitTarget.Value);
+                _zoom = Mathf.Clamp(_zoom, 0.5f, 200.0f);
+                
+                if (currentPos.DistanceSquaredTo(_orbitTarget.Value) > 0.01f)
+                {
+                    // Look at the new orbit target. Up vector must not be parallel to look direction.
+                    var lookDir = (_orbitTarget.Value - currentPos).Normalized();
+                    var cameraUp = Godot.Vector3.Up;
+                    if (Mathf.Abs(lookDir.Dot(cameraUp)) > 0.99f) cameraUp = Godot.Vector3.Forward;
+
+                    var lookTransform = Transform.LookingAt(_orbitTarget.Value, cameraUp);
+                    var euler = lookTransform.Basis.GetEuler(Godot.EulerOrder.Yxz);
+                    
+                    float targetPitch = euler.X;
+                    float targetYaw = euler.Y;
+                    
+                    _orbitPitch = targetPitch - _pitch;
+                    
+                    float yawDiff = targetYaw - (_yaw + _orbitYaw);
+                    while (yawDiff > Mathf.Pi) yawDiff -= Mathf.Tau;
+                    while (yawDiff < -Mathf.Pi) yawDiff += Mathf.Tau;
+                    
+                    _orbitYaw += yawDiff;
+                    _panOffset = Godot.Vector3.Zero;
+                }
+            }
         }
         else if (!wantOrbit && _altOrbitActive)
         {
@@ -282,6 +323,7 @@ public partial class AvatarController : Camera3D
                 {
                     _orbitYaw = 0f;
                     _orbitPitch = 0f;
+                    _orbitTarget = null;
                 }
 
                 // Camera rotation = avatar facing (_yaw/_pitch) plus the orbit offset.
@@ -382,16 +424,24 @@ public partial class AvatarController : Camera3D
                 }
                 if (Input.IsKeyPressed(Key.Minus) || Input.IsKeyPressed(Key.KpSubtract))
                 {
-                    _zoom = Mathf.Min(50.0f, _zoom + 15.0f * (float)delta);
+                    _zoom = Mathf.Min(200.0f, _zoom + 15.0f * (float)delta);
                 }
 
-                // Floating-origin-relative world position (see RenderConfig), plus eye height.
-                var targetPos = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
-                targetPos.Y += 1.8f;
+                Godot.Vector3 targetPos;
+                if (_orbitTarget.HasValue)
+                {
+                    targetPos = _orbitTarget.Value;
+                }
+                else
+                {
+                    // Floating-origin-relative world position (see RenderConfig), plus eye height.
+                    targetPos = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
+                    targetPos.Y += 1.8f;
 
-                // Apply pan offset relative to camera's orientation
-                targetPos += Transform.Basis.X * _panOffset.X;
-                targetPos += Transform.Basis.Y * _panOffset.Y;
+                    // Apply pan offset relative to camera's orientation
+                    targetPos += Transform.Basis.X * _panOffset.X;
+                    targetPos += Transform.Basis.Y * _panOffset.Y;
+                }
 
                 // Third-person camera: pull back along the camera's Z axis
                 Position = targetPos + Transform.Basis.Z * _zoom;

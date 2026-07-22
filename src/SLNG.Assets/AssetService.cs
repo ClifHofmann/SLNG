@@ -556,35 +556,14 @@ public class AssetService
                 }
             }
 
-            // Force Magick to decode into usable colorspaces before grabbing pixel values.
-            // Some SL/OpenSim J2K assets report ChannelCount==5 (an extra component beyond RGBA
-            // that Magick.NET doesn't itself flag via HasAlpha) rather than a clean 4 — using
-            // "== 4" here missed those, forcing them down the no-alpha sRGB path. That collapses
-            // GetPixels() to 3 channels, and the fallback below then defaults alpha to 255
-            // (opaque) — so a genuinely blank/transparent placeholder (alpha≈0 everywhere, e.g. an
-            // unfilled applier slot or a bake for a channel with nothing worn) rendered as a solid
-            // opaque white patch instead of being invisible. ">= 4" catches both cases.
-            if (image.HasAlpha || image.ChannelCount >= 4) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
-            else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
-            byte[] rgba;
+            // Force Magick to extract RGBA. This is far more robust than manual channel mapping,
+            // as it handles OpenJPEG's internal layouts and automatically fills missing alpha with 255.
+            image.HasAlpha = true;
+            byte[]? rgba;
             using (var pixels = image.GetPixels())
             {
-                var raw = pixels.GetValues() ?? Array.Empty<byte>();
-                int ch = width > 0 && height > 0 ? raw.Length / (width * height) : 0;
-                if (ch >= 3 && raw.Length >= width * height * ch)
-                {
-                    rgba = new byte[width * height * 4];
-                    for (int p = 0; p < width * height; p++)
-                    {
-                        int s = p * ch, d = p * 4;
-                        rgba[d]     = raw[s];
-                        rgba[d + 1] = raw[s + 1];
-                        rgba[d + 2] = raw[s + 2];
-                        rgba[d + 3] = ch >= 4 ? raw[s + 3] : (byte)255;
-                    }
-                }
-                else
-                    // Suppress verbose unsupported layout warnings
+                rgba = pixels.ToByteArray("RGBA");
+                if (rgba == null || rgba.Length < width * height * 4)
                     return null;
             }
 
