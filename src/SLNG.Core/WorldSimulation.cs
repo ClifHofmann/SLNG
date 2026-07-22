@@ -363,6 +363,21 @@ public sealed class WorldSimulation : IDisposable
         var entity = _world.Query<AvatarComponent>()
             .FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.AgentId == e.AgentId);
 
+        if (entity == null && e.AgentId != System.Guid.Empty)
+        {
+            entity = _world.Query<AvatarComponent>()
+                .FirstOrDefault(ent => {
+                    var av = ent.GetComponent<AvatarComponent>();
+                    return av != null && !av.IsLocalAgent && (av.AgentId == System.Guid.Empty || av.AgentId == e.AgentId);
+                });
+            if (entity != null)
+            {
+                var av = entity.GetComponent<AvatarComponent>()!;
+                av.AgentId = e.AgentId;
+                entity.SetComponent(av);
+            }
+        }
+
         if (entity != null)
         {
             var avatar = entity.GetComponent<AvatarComponent>()!;

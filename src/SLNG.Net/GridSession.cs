@@ -475,16 +475,26 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         if (e.Update.Avatar || e.Prim is Avatar)
         {
-            bool isLocalAgent = e.Prim.ID == _client.Self.AgentID;
-            var av = e.Prim as Avatar;
+            Guid agentId = e.Prim.ID.Guid;
+            string firstName = (e.Prim as Avatar)?.FirstName ?? "";
+            string lastName = (e.Prim as Avatar)?.LastName ?? "";
+
+            if (e.Simulator.ObjectsAvatars.TryGetValue(e.Prim.LocalID, out var knownAv) && knownAv != null)
+            {
+                if (agentId == Guid.Empty) agentId = knownAv.ID.Guid;
+                if (string.IsNullOrEmpty(firstName)) firstName = knownAv.FirstName;
+                if (string.IsNullOrEmpty(lastName)) lastName = knownAv.LastName;
+            }
+
+            bool isLocalAgent = agentId == _client.Self.AgentID.Guid || e.Prim.LocalID == _client.Self.LocalID;
             AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
                 e.Simulator.Handle,
                 e.Prim.LocalID,
-                e.Prim.ID.Guid,
+                agentId,
                 new System.Numerics.Vector3(e.Prim.Position.X, e.Prim.Position.Y, e.Prim.Position.Z),
                 new System.Numerics.Quaternion(e.Prim.Rotation.X, e.Prim.Rotation.Y, e.Prim.Rotation.Z, e.Prim.Rotation.W),
-                av?.FirstName ?? "",
-                av?.LastName ?? "",
+                firstName,
+                lastName,
                 isLocalAgent));
             return;
         }
