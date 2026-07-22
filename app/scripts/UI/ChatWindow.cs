@@ -77,6 +77,44 @@ public partial class ChatWindow : SLNGWindow
     private ChatLogger _logger = null!;
     private GridSession? _session;
 
+    private partial class ChatLineEdit : LineEdit
+    {
+        public ChatWindow? OwnerWindow;
+        public override bool _CanDropData(Vector2 atPosition, Variant data)
+        {
+            if (OwnerWindow != null && OwnerWindow.IsInventoryItemData(data)) return true;
+            return base._CanDropData(atPosition, data);
+        }
+        public override void _DropData(Vector2 atPosition, Variant data)
+        {
+            if (OwnerWindow != null && OwnerWindow.IsInventoryItemData(data))
+            {
+                OwnerWindow.HandleInventoryDrop(data);
+                return;
+            }
+            base._DropData(atPosition, data);
+        }
+    }
+
+    private partial class ChatLogRichTextLabel : RichTextLabel
+    {
+        public ChatWindow? OwnerWindow;
+        public override bool _CanDropData(Vector2 atPosition, Variant data)
+        {
+            if (OwnerWindow != null && OwnerWindow.IsInventoryItemData(data)) return true;
+            return base._CanDropData(atPosition, data);
+        }
+        public override void _DropData(Vector2 atPosition, Variant data)
+        {
+            if (OwnerWindow != null && OwnerWindow.IsInventoryItemData(data))
+            {
+                OwnerWindow.HandleInventoryDrop(data);
+                return;
+            }
+            base._DropData(atPosition, data);
+        }
+    }
+
     /// <summary>Wired by Boot to GridSession.SendChat -- the Main tab's send path. IM tabs get
     /// their own send routing once Phase 1c's net plumbing exists.</summary>
     public Action<string>? OnSendLocalChat;
@@ -319,8 +357,9 @@ public partial class ChatWindow : SLNGWindow
 
         rightVBox.AddChild(BuildActionIconRow());
 
-        _logView = new RichTextLabel
+        _logView = new ChatLogRichTextLabel
         {
+            OwnerWindow = this,
             BbcodeEnabled = true,
             ScrollFollowing = false, // manual pause/follow control -- see _Process
             SizeFlagsVertical = SizeFlags.ExpandFill,
@@ -356,8 +395,9 @@ public partial class ChatWindow : SLNGWindow
 
         inputRow.AddChild(BuildIconButton("attach_file", "Attach (not implemented)", null));
 
-        _inputEdit = new LineEdit
+        _inputEdit = new ChatLineEdit
         {
+            OwnerWindow = this,
             PlaceholderText = "Write a message...",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
@@ -436,18 +476,27 @@ public partial class ChatWindow : SLNGWindow
         }
     }
 
-    public override bool _CanDropData(Vector2 atPosition, Variant data)
+    public bool IsInventoryItemData(Variant data)
     {
-        if (data.VariantType != Variant.Type.Dictionary) return false;
-        var dict = data.AsGodotDictionary();
-        return dict.ContainsKey("type") && dict["type"].AsString() == "slng_inventory_item";
+        if (data.VariantType == Variant.Type.Dictionary)
+        {
+            var dict = data.AsGodotDictionary();
+            return dict.ContainsKey("type") && dict["type"].AsString() == "slng_inventory_item";
+        }
+        if (data.Obj is Godot.Collections.Dictionary d)
+        {
+            return d.ContainsKey("type") && d["type"].ToString() == "slng_inventory_item";
+        }
+        return false;
     }
 
-    public override void _DropData(Vector2 atPosition, Variant data)
+    public void HandleInventoryDrop(Variant data)
     {
-        if (data.VariantType != Variant.Type.Dictionary) return;
-        var dict = data.AsGodotDictionary();
-        if (!dict.ContainsKey("type") || dict["type"].AsString() != "slng_inventory_item") return;
+        Godot.Collections.Dictionary? dict = null;
+        if (data.VariantType == Variant.Type.Dictionary) dict = data.AsGodotDictionary();
+        else if (data.Obj is Godot.Collections.Dictionary d) dict = d;
+
+        if (dict == null || !dict.ContainsKey("type") || dict["type"].ToString() != "slng_inventory_item") return;
 
         if (_activeChatTab?.TargetAgentId is not { } recipientId)
         {
@@ -455,8 +504,8 @@ public partial class ChatWindow : SLNGWindow
             return;
         }
 
-        string itemName = dict.ContainsKey("name") ? dict["name"].AsString() : "Item";
-        bool canTransfer = dict.ContainsKey("canTransfer") && dict["canTransfer"].AsBool();
+        string itemName = dict.ContainsKey("name") ? dict["name"].ToString()! : "Item";
+        bool canTransfer = dict.ContainsKey("canTransfer") && Convert.ToBoolean(dict["canTransfer"]);
 
         if (!canTransfer)
         {
@@ -464,12 +513,16 @@ public partial class ChatWindow : SLNGWindow
             return;
         }
 
-        if (!Guid.TryParse(dict.ContainsKey("id") ? dict["id"].AsString() : "", out var itemId)) return;
-        bool isFolder = dict.ContainsKey("isFolder") && dict["isFolder"].AsBool();
-        int assetType = dict.ContainsKey("assetType") ? dict["assetType"].AsInt32() : 0;
+        if (!Guid.TryParse(dict.ContainsKey("id") ? dict["id"].ToString()! : "", out var itemId)) return;
+        bool isFolder = dict.ContainsKey("isFolder") && Convert.ToBoolean(dict["isFolder"]);
+        int assetType = dict.ContainsKey("assetType") ? Convert.ToInt32(dict["assetType"]) : 0;
 
         GiveInventoryItemToActiveTab(itemId, itemName, assetType, isFolder);
     }
+
+    public override bool _CanDropData(Vector2 atPosition, Variant data) => IsInventoryItemData(data);
+
+    public override void _DropData(Vector2 atPosition, Variant data) => HandleInventoryDrop(data);
 
     // Deliberately NOT using Button.Disabled for "not implemented yet" icons: a disabled
     // BaseButton in Godot 4 stops receiving hover/tooltip processing, which would silently
