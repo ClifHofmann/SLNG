@@ -1068,16 +1068,30 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var store = _client.Inventory.Store;
         var node = store?.GetNodeOrDefault(itemUuid);
 
-        LibreMetaverse.UUID targetUuid = itemUuid;
-        LibreMetaverse.UUID linkUuid = LibreMetaverse.UUID.Zero;
+        var uuidsToDetach = new HashSet<LibreMetaverse.UUID>();
+        if (itemUuid != LibreMetaverse.UUID.Zero) uuidsToDetach.Add(itemUuid);
 
         if (node?.Data is LibreMetaverse.InventoryItem item && item.IsLink())
         {
-            linkUuid = itemUuid;
-            targetUuid = item.ResolvedItemID;
+            if (item.ResolvedItemID != LibreMetaverse.UUID.Zero) uuidsToDetach.Add(item.ResolvedItemID);
+            if (item.AssetUUID != LibreMetaverse.UUID.Zero) uuidsToDetach.Add(item.AssetUUID);
         }
 
-        // Also search Current Outfit folder to find matching links or items
+        // Query all active attachments from AppearanceManager
+        try
+        {
+            var activeAtts = _client.Appearance.GetAttachmentsByItemId();
+            foreach (var kvp in activeAtts)
+            {
+                if (kvp.Key != LibreMetaverse.UUID.Zero)
+                {
+                    uuidsToDetach.Add(kvp.Key);
+                }
+            }
+        }
+        catch { }
+
+        // Search Current Outfit folder to find matching links or items
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
         if (cofUuid != LibreMetaverse.UUID.Zero)
         {
@@ -1088,31 +1102,26 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 {
                     if (childNode.Data is LibreMetaverse.InventoryItem cofItem)
                     {
-                        var target = cofItem.IsLink() ? cofItem.ResolvedItemID : cofItem.UUID;
-                        if (target == targetUuid || cofItem.UUID == itemUuid)
+                        var linkId = cofItem.UUID;
+                        var targetId = cofItem.IsLink() ? (cofItem.ResolvedItemID != LibreMetaverse.UUID.Zero ? cofItem.ResolvedItemID : cofItem.AssetUUID) : cofItem.UUID;
+
+                        if (uuidsToDetach.Contains(linkId) || uuidsToDetach.Contains(targetId) || linkId == itemUuid || targetId == itemUuid)
                         {
-                            linkUuid = cofItem.UUID;
-                            if (target != LibreMetaverse.UUID.Zero) targetUuid = target;
-                            break;
+                            if (linkId != LibreMetaverse.UUID.Zero) uuidsToDetach.Add(linkId);
+                            if (targetId != LibreMetaverse.UUID.Zero) uuidsToDetach.Add(targetId);
                         }
                     }
                 }
             }
         }
 
-        // 1. Send DetachAttachmentIntoInv packet for the real target ItemID
-        _client.Appearance.Detach(targetUuid);
-
-        // 2. Also send Detach for the link UUID if distinct
-        if (linkUuid != LibreMetaverse.UUID.Zero && linkUuid != targetUuid)
+        // Send DetachAttachmentIntoInv packet for every candidate UUID
+        foreach (var u in uuidsToDetach)
         {
-            _client.Appearance.Detach(linkUuid);
-        }
-
-        // 3. Also send Detach for original itemId if distinct from both
-        if (itemUuid != targetUuid && itemUuid != linkUuid)
-        {
-            _client.Appearance.Detach(itemUuid);
+            if (u != LibreMetaverse.UUID.Zero)
+            {
+                _client.Appearance.Detach(u);
+            }
         }
 
         return Task.CompletedTask;

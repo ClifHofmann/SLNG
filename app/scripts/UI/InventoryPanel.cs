@@ -426,6 +426,10 @@ public partial class InventoryPanel : SLNGWindow
         _status.Text = "Detaching…";
 
         await _session.DetachItemAsync(itemId).ConfigureAwait(false);
+        if (parts.Length >= 8 && Guid.TryParse(parts[7], out var linkTargetId) && linkTargetId != Guid.Empty && linkTargetId != itemId)
+        {
+            await _session.DetachItemAsync(linkTargetId).ConfigureAwait(false);
+        }
 
         Callable.From(() =>
         {
@@ -582,7 +586,7 @@ public partial class InventoryPanel : SLNGWindow
             bool isLandmarkSubtree = _session != null && _session.IsInLandmarksSubtree(entry.ParentId);
             var assetId = isKnownItem ? knownAssetId!.Value : entry.AssetId;
             int assetType = (isKnownItem || isLandmarkSubtree) ? SLNG.Core.AssetTypeIds.Landmark : entry.AssetType;
-            row.SetMetadata(0, $"{entry.Id},{entry.CanCopy},{entry.CanModify},{entry.CanTransfer},{assetType},{assetId},{entry.IsLink}");
+            row.SetMetadata(0, $"{entry.Id},{entry.CanCopy},{entry.CanModify},{entry.CanTransfer},{assetType},{assetId},{entry.IsLink},{entry.LinkTargetId}");
         }
 
         if (children.Count == 0)
