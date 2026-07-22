@@ -119,7 +119,7 @@ public partial class InventoryPanel : SLNGWindow
     {
         public override Variant _GetDragData(Vector2 atPosition)
         {
-            var item = GetItemAtPosition(atPosition);
+            var item = GetItemAtPosition(atPosition) ?? GetSelected();
             if (item == null) return default;
 
             var metaStr = item.GetMetadata(0).AsString();
