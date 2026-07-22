@@ -14,6 +14,7 @@ everything in the main thread — it keeps context focused and lets work paralle
 |---|---|
 | `architect` | System design, module boundaries, ADRs, cross-cutting decisions |
 | `protocol-re` | Reverse-engineering SL/OpenSim protocol & asset formats; LibreMetaverse internals |
+| `viewer-parity` | Settling "how does the real viewer/OpenSim actually do this" against vendored source (`scratch/slviewer`, `scratch/libremetaverse_src`) or fetched OpenSim source, instead of guessing |
 | `graphics-engineer` | Godot rendering, PBR materials, shaders, lighting, post-processing |
 | `asset-pipeline` | J2K decode, mesh/LOD, material resolve, avatar bake, caching, threading |
 | `ux-designer` | Viewer UX/UI: HUD, inventory, chat, world map, settings |
