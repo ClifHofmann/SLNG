@@ -247,7 +247,6 @@ public partial class InventoryPanel : SLNGWindow
                     // lag right after creation, see TeleportAsync below), and that case must still
                     // enable Teleport rather than being mistaken for a link.
                     bool isLandmark = assetType == SLNG.Core.AssetTypeIds.Landmark && !isLink;
-                    GD.Print($"[Inventory] context menu for '{item.GetText(0)}': assetType={assetType} isLink={isLink} isLandmark={isLandmark} rawMeta='{metaStr}'");
 
                     _contextMenu.SetItemDisabled(0, false); // Wear
                     _contextMenu.SetItemDisabled(1, !canCopy); // Copy
