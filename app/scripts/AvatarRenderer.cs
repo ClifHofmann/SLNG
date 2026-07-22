@@ -570,7 +570,7 @@ public partial class AvatarRenderer : Node3D
                 ApplyShape(visual, visual.Skeleton, _avatarSkeleton, distortions.BoneMods, visual.JointPosOverrides);
                 visual.Skeleton.ResetBonePoses();
 
-                LogJointParityCheck(visual, visual.Skeleton, _avatarSkeleton, distortions.BoneMods);
+                LogJointParityCheck(visual, visual.Skeleton, _avatarSkeleton, distortions.BoneMods, entity.Id, avatar.IsLocalAgent);
 
                 RecomputeFootOffset(visual, distortions.BoneMods);
 
@@ -750,10 +750,21 @@ public partial class AvatarRenderer : Node3D
     /// (they never touch Skeleton3D). Runs on every shape update; logs ONLY bones that exceed the
     /// M4-8 acceptance threshold (1 cm position / 1% scale) — silence means every bone is within
     /// tolerance. Kept permanently (not removed after M4-8 shipped) as a cheap tripwire against
-    /// this exact class of bug recurring.</summary>
+    /// this exact class of bug recurring.
+    ///
+    /// <paramref name="entityId"/>/<paramref name="isLocal"/> (2026-07-22, round 8): tag every line
+    /// with WHICH avatar it's about — added because comparing two avatars live (e.g. is a remote
+    /// avatar's ACTUAL rendered bone scale reflecting their real shape, vs. a local avatar's) is
+    /// exactly the evidence needed to settle "proportions look wrong" complaints, but the untagged
+    /// output was ambiguous with more than one avatar in view. Also logs a directly-comparable
+    /// summary height (mSkull-to-mFootLeft global Y, i.e. what Godot ACTUALLY composed and will
+    /// render) next to BodySizeZ (the independently-computed SlJointComposer reference) — if a
+    /// visual "renders shorter/taller than expected" complaint is real (not perspective/distance),
+    /// this pair should diverge from each other even when both individually look plausible.</summary>
     private void LogJointParityCheck(
         AvatarVisual visual, Skeleton3D skeleton, AvatarSkeleton avatarSkeleton,
-        Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)> distortions)
+        Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)> distortions,
+        Guid entityId, bool isLocal)
     {
         var slPoses = SlJointComposer.ComputePoses(avatarSkeleton, distortions, visual.JointPosOverrides);
         int checkedCount = 0, deviatedCount = 0;
@@ -778,11 +789,29 @@ public partial class AvatarRenderer : Node3D
             if (posGapM >= 0.01f || scaleGapPct >= 1f)
             {
                 deviatedCount++;
-                GD.PrintErr($"[DBG-PARITY] {name}: posGap={posGapM:0.####}m godotPos={godotPose.Origin} slPos={slPosGodot} godotScale={ownScale} slScale={slPose.OwnScale} scaleGap={scaleGapPct:0.##}%");
+                GD.PrintErr($"[DBG-PARITY] entity={entityId} (isLocal={isLocal}) {name}: posGap={posGapM:0.####}m godotPos={godotPose.Origin} slPos={slPosGodot} godotScale={ownScale} slScale={slPose.OwnScale} scaleGap={scaleGapPct:0.##}%");
             }
         }
 
-        GD.Print($"[DBG-PARITY] checked {checkedCount} bones, {deviatedCount} deviated beyond 1cm/1%");
+        // Directly-comparable rendered height: what Godot's OWN composed skeleton actually spans
+        // (mSkull to mFootLeft, global Y), vs. BodySizeZ (the independent SlJointComposer
+        // reference this avatar's root-placement math already trusts). If the visible mesh is
+        // genuinely rendering shorter/taller than BodySizeZ predicts, THIS is where it would show
+        // up — a real divergence here (not perspective/camera distance) would mean the skinned
+        // mesh isn't tracking the skeleton's own bone poses, a step downstream of everything
+        // ApplyShape/BoneOwnScale/the per-bone check above can see.
+        int skullIdx = skeleton.FindBone("mSkull");
+        int footIdx = skeleton.FindBone("mFootLeft");
+        string renderedHeightInfo = "n/a";
+        if (skullIdx >= 0 && footIdx >= 0)
+        {
+            float skullY = skeleton.GetBoneGlobalPose(skullIdx).Origin.Y;
+            float footY = skeleton.GetBoneGlobalPose(footIdx).Origin.Y;
+            renderedHeightInfo = $"{(skullY - footY):F3}";
+        }
+
+        GD.Print($"[DBG-PARITY] entity={entityId} (isLocal={isLocal}) checked {checkedCount} bones, {deviatedCount} deviated beyond 1cm/1% " +
+                 $"renderedSkullToFootY={renderedHeightInfo} BodySizeZ={visual.BodySizeZ:F3}");
     }
 
     private async System.Threading.Tasks.Task LoadAndApplyTextureAsync(AvatarVisual visual, int bakeIndex, Guid textureId)
