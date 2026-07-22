@@ -258,7 +258,7 @@ public partial class InventoryPanel : SLNGWindow
             {
                 var metaStr = item.GetMetadata(0).AsString();
                 var parts = metaStr.Split(',');
-                if (parts.Length == 7)
+                if (parts.Length >= 7)
                 {
                     bool canCopy = bool.Parse(parts[1]);
                     bool canModify = bool.Parse(parts[2]);
@@ -278,7 +278,7 @@ public partial class InventoryPanel : SLNGWindow
                     if (Guid.TryParse(parts[0], out var checkId))
                     {
                         if (wornMap.ContainsKey(checkId)) isWorn = true;
-                        else if (parts.Length == 7 && Guid.TryParse(parts[6], out var linkTarget) && wornMap.ContainsKey(linkTarget)) isWorn = true;
+                        else if (parts.Length >= 8 && Guid.TryParse(parts[7], out var linkTarget) && wornMap.ContainsKey(linkTarget)) isWorn = true;
                     }
                     if (!isWorn)
                     {
