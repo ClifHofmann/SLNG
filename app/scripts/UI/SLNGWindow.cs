@@ -19,6 +19,14 @@ public partial class SLNGWindow : MarginContainer
     public const float MaxUiScale = 1.6f;
     private static float _globalUiScale = 1.0f;
 
+    private const string GeometryConfigPath = "user://preferences.cfg";
+    private const string GeometrySection = "window_geometry";
+
+    /// <summary>Set by a subclass (e.g. "camera_hud") to opt this window into position/size
+    /// persistence across sessions. Left null, a window keeps today's behavior -- reopens at
+    /// whatever Position/CustomMinimumSize its own _Ready sets every time.</summary>
+    protected string? PersistId;
+
     /// <summary>Current global window/HUD scale (FEAT-UI-07), shared by every SLNGWindow
     /// instance. UiSettings owns persistence; this is just the live broadcast value.</summary>
     public static float GlobalUiScale => _globalUiScale;
@@ -187,6 +195,51 @@ public partial class SLNGWindow : MarginContainer
             _resizeHandle.DrawPolygon(points, colors);
         };
         AddChild(_resizeHandle);
+
+        // Deferred so it runs after the calling subclass's _Ready has finished setting its own
+        // default Position/CustomMinimumSize (base._Ready() always runs first in those overrides)
+        // -- otherwise the subclass's defaults would stomp the restored geometry right back.
+        CallDeferred(nameof(RestorePersistedGeometry));
+    }
+
+    /// <summary>No-op unless a subclass opted in via <see cref="PersistId"/>. Loads the saved
+    /// Position/Size from user://preferences.cfg, clamped so a window saved on a larger/different
+    /// screen still reopens at least partially on-screen instead of stranded off-viewport.</summary>
+    private void RestorePersistedGeometry()
+    {
+        if (string.IsNullOrEmpty(PersistId)) return;
+
+        var cfg = new ConfigFile();
+        if (cfg.Load(GeometryConfigPath) != Error.Ok) return;
+
+        if (cfg.HasSectionKey(GeometrySection, $"{PersistId}_pos"))
+            Position = (Vector2)cfg.GetValue(GeometrySection, $"{PersistId}_pos");
+        if (cfg.HasSectionKey(GeometrySection, $"{PersistId}_size"))
+        {
+            var savedSize = (Vector2)cfg.GetValue(GeometrySection, $"{PersistId}_size");
+            Size = new Vector2(
+                Mathf.Max(savedSize.X, CustomMinimumSize.X),
+                Mathf.Max(savedSize.Y, CustomMinimumSize.Y));
+        }
+
+        var viewportSize = GetViewport()?.GetVisibleRect().Size ?? Position;
+        Position = new Vector2(
+            Mathf.Clamp(Position.X, -Size.X + 40, Mathf.Max(viewportSize.X - 40, 0)),
+            Mathf.Clamp(Position.Y, 0, Mathf.Max(viewportSize.Y - 40, 0)));
+    }
+
+    /// <summary>No-op unless a subclass opted in via <see cref="PersistId"/>. Called after every
+    /// drag/resize gesture completes -- persists live rather than only on app exit, so a crash
+    /// doesn't lose the last-arranged layout.</summary>
+    private void SavePersistedGeometry()
+    {
+        if (string.IsNullOrEmpty(PersistId)) return;
+
+        var cfg = new ConfigFile();
+        cfg.Load(GeometryConfigPath); // preserve sections owned by other features (UiSettings, ToolbarSettings)
+        cfg.SetValue(GeometrySection, $"{PersistId}_pos", Position);
+        cfg.SetValue(GeometrySection, $"{PersistId}_size", Size);
+        cfg.Save(GeometryConfigPath);
     }
 
     public override void _ExitTree()
@@ -236,6 +289,7 @@ public partial class SLNGWindow : MarginContainer
                 else
                 {
                     _isDragging = false;
+                    SavePersistedGeometry();
                 }
             }
         }
@@ -262,6 +316,7 @@ public partial class SLNGWindow : MarginContainer
                 else
                 {
                     _isResizing = false;
+                    SavePersistedGeometry();
                 }
             }
         }
