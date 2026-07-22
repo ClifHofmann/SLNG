@@ -1781,8 +1781,11 @@ public partial class AvatarRenderer : Node3D
         while (current >= 0)
         {
             var rest = skeleton.GetBoneRest(current);
+            string bName = skeleton.GetBoneName(current);
+            int pIdx = skeleton.GetBoneParent(current);
             y += rest.Origin.Y;
-            current = skeleton.GetBoneParent(current);
+            GD.Print($"[ChainDebug] bone={bName} (idx={current}, parentIdx={pIdx}) rest.Origin.Y={rest.Origin.Y:F3} accumY={y:F3}");
+            current = pIdx;
         }
         return y;
     }
