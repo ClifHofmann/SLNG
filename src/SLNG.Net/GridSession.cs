@@ -1023,6 +1023,44 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         await _client.Inventory.RequestCopyItemAsync(itemUuid, parentUuid, newName, CancellationToken.None).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Attaches an inventory item (Object/HUD/Attachment) to the agent.
+    /// </summary>
+    public Task AttachItemAsync(Guid itemId, byte attachPoint = 0, bool replace = true)
+    {
+        var itemUuid = new LibreMetaverse.UUID(itemId);
+        var store = _client.Inventory.Store;
+        var itemNode = store?.GetNodeOrDefault(itemUuid);
+
+        if (itemNode?.Data is LibreMetaverse.InventoryItem item)
+        {
+            _client.Appearance.Attach(item, (LibreMetaverse.AttachmentPoint)attachPoint, replace);
+        }
+        else
+        {
+            _client.Appearance.Attach(
+                itemUuid,
+                _client.Self.AgentID,
+                "Attachment",
+                "",
+                new LibreMetaverse.Permissions { OwnerMask = LibreMetaverse.PermissionMask.All },
+                0,
+                (LibreMetaverse.AttachmentPoint)attachPoint,
+                replace);
+        }
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Detaches an inventory item / attachment from the agent.
+    /// </summary>
+    public Task DetachItemAsync(Guid itemId)
+    {
+        var itemUuid = new LibreMetaverse.UUID(itemId);
+        _client.Appearance.Detach(itemUuid);
+        return Task.CompletedTask;
+    }
+
     /// <summary>Creates a new inventory subfolder — used for the Create Landmark dialog's
     /// "new folder" affordance, but generic. Note: the 3-arg <c>CreateFolder</c> overload that
     /// takes a <c>FolderType</c> de-dupes on preferred type and would hand back the *existing*

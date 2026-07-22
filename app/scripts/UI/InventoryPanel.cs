@@ -91,12 +91,13 @@ public partial class InventoryPanel : SLNGWindow
         vbox.AddChild(statusMargin);
 
         _contextMenu = new PopupMenu();
-        _contextMenu.AddItem("Wear", 0);
+        _contextMenu.AddItem("Wear / Attach", 0);
         _contextMenu.AddItem("Copy", 1);
         _contextMenu.AddItem("Edit", 2);
         _contextMenu.AddItem("Export (Full Perm)", 3);
         _contextMenu.AddItem("Delete", 4);
         _contextMenu.AddItem("Teleport", 5);
+        _contextMenu.AddItem("Detach", 6);
         _contextMenu.IdPressed += OnContextMenuIdPressed;
         
         _tree = new Tree 
@@ -248,12 +249,27 @@ public partial class InventoryPanel : SLNGWindow
                     // enable Teleport rather than being mistaken for a link.
                     bool isLandmark = assetType == SLNG.Core.AssetTypeIds.Landmark && !isLink;
 
-                    _contextMenu.SetItemDisabled(0, false); // Wear
+                    bool isWorn = false;
+                    var parent = item.GetParent();
+                    while (parent != null)
+                    {
+                        var pMeta = parent.GetMetadata(0).AsString();
+                        var pIdStr = pMeta.Contains(',') ? pMeta.Split(',')[0] : pMeta;
+                        if (Guid.TryParse(pIdStr, out var pId) && _session?.CurrentOutfitFolderId == pId)
+                        {
+                            isWorn = true;
+                            break;
+                        }
+                        parent = parent.GetParent();
+                    }
+
+                    _contextMenu.SetItemDisabled(0, isWorn); // Wear / Attach
                     _contextMenu.SetItemDisabled(1, !canCopy); // Copy
                     _contextMenu.SetItemDisabled(2, !canModify); // Edit
                     _contextMenu.SetItemDisabled(3, !(canCopy && canModify && canTransfer)); // Export
                     _contextMenu.SetItemDisabled(4, false); // Delete
                     _contextMenu.SetItemDisabled(5, !isLandmark); // Teleport
+                    _contextMenu.SetItemDisabled(6, !isWorn); // Detach
 
                     _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
                     _contextMenu.Popup();
@@ -328,6 +344,54 @@ public partial class InventoryPanel : SLNGWindow
             _status.Text = "Teleporting…";
             _ = TeleportAsync(itemId, assetId, parentFolderId);
         }
+        else if (id == 0) // Wear / Attach
+        {
+            if (isFolder) return;
+            var parts = metaStr.Split(',');
+            _ = AttachAndRefreshAsync(itemId, parts);
+        }
+        else if (id == 6) // Detach
+        {
+            if (isFolder) return;
+            var parts = metaStr.Split(',');
+            _ = DetachAndRefreshAsync(itemId, parts);
+        }
+    }
+
+    private async System.Threading.Tasks.Task AttachAndRefreshAsync(Guid itemId, string[] parts)
+    {
+        if (_session == null) return;
+        _status.Text = "Attaching…";
+
+        await _session.AttachItemAsync(itemId).ConfigureAwait(false);
+
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            _status.Text = "Attached.";
+            if (_session.CurrentOutfitFolderId is { } cofId)
+            {
+                RefreshFolder(cofId);
+            }
+        }).CallDeferred();
+    }
+
+    private async System.Threading.Tasks.Task DetachAndRefreshAsync(Guid itemId, string[] parts)
+    {
+        if (_session == null) return;
+        _status.Text = "Detaching…";
+
+        await _session.DetachItemAsync(itemId).ConfigureAwait(false);
+
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            _status.Text = "Detached.";
+            if (_session.CurrentOutfitFolderId is { } cofId)
+            {
+                RefreshFolder(cofId);
+            }
+        }).CallDeferred();
     }
 
     /// <summary>Teleports to a landmark's asset id. If that id is still <see cref="Guid.Empty"/>
