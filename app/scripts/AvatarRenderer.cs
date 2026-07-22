@@ -579,12 +579,13 @@ public partial class AvatarRenderer : Node3D
             // exempt from the parent-scale step below — LLJoint::setPosition stores the override
             // as the same mPosition field LLXformMatrix::update() later scales by the parent.
             if (posOverrides != null && posOverrides.TryGetValue(name, out var ov))
+            {
                 slPos = ov;
-
-            // SL rule: this bone's position is scaled by its PARENT's OWN scale before being
-            // placed into the parent's frame (exactly one level — never compounded further).
-            if (bone.ParentName != null && visual.BoneOwnScale.TryGetValue(bone.ParentName, out var parentScale))
+            }
+            else if (bone.ParentName != null && visual.BoneOwnScale.TryGetValue(bone.ParentName, out var parentScale))
+            {
                 slPos *= parentScale;
+            }
 
             visual.BoneOwnScale[name] = slScale;
 
@@ -1690,15 +1691,16 @@ public partial class AvatarRenderer : Node3D
             }
 
             visual.JointPosOverrides[boneName] = slPos;
-            var rest = skeleton.GetBoneRest(bone);
-            rest.Origin = new Godot.Vector3(slPos.X, slPos.Z, -slPos.Y);
-            skeleton.SetBoneRest(bone, rest);
             applied++;
             if (delta > maxDelta) maxDelta = delta;
         }
 
         if (applied > 0)
         {
+            if (_avatarSkeleton != null)
+            {
+                ApplyShape(visual, skeleton, _avatarSkeleton, visual.LastDistortions, visual.JointPosOverrides);
+            }
             skeleton.ResetBonePoses();
             GD.Print($"[JointOverride] mesh {meshId}: {applied}/{jointCount} joint positions overridden (max shift {maxDelta:0.###} m)");
 
