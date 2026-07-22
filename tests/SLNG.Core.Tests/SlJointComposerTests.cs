@@ -251,4 +251,28 @@ public class SlJointComposerTests
         var overridden = SlJointComposer.ComputeBodySize(skel, positionOverrides: overrides);
         Assert.NotEqual(baseline.PelvisToFoot, overridden.PelvisToFoot);
     }
+
+    [Fact]
+    public void ComputeBodySize_ignores_mPelvis_position_override_entirely()
+    {
+        // Pins the fact AvatarRenderer.ApplyJointPositionOverrides' root-joint exclusion relies on
+        // (2026-07-22 investigation into a real coat/boots asset whose mPelvis alt_inverse_bind_
+        // matrix decoded to a ~9.6 m, 10x-too-large, non-negated translation vs. every sibling
+        // joint's sub-cm delta in the same asset — see AvatarRenderer's doc comment for the full
+        // trace). Confirmed against llavatarappearance.cpp's literal computeBodySize(): it reads
+        // mPelvisp->getScale() but never mPelvisp->getPosition() — a position override on "mPelvis"
+        // must be a complete no-op for BodySize/PelvisToFoot, matching this port. If this test ever
+        // fails, ComputeBodySize's formula changed to read mPelvis's position somewhere, which would
+        // mean a corrupt/garbage mPelvis override (a real, observed hazard) could silently corrupt
+        // the whole avatar's root-Z correction — re-evaluate the exclusion in AvatarRenderer before
+        // "fixing" this test.
+        var skel = MakeDefaultBodySizeSkeleton();
+        var baseline = SlJointComposer.ComputeBodySize(skel);
+
+        var overrides = new Dictionary<string, Vector3> { ["mPelvis"] = new Vector3(0f, 0f, 10.6701f) };
+        var withBogusPelvisOverride = SlJointComposer.ComputeBodySize(skel, positionOverrides: overrides);
+
+        Assert.Equal(baseline.PelvisToFoot, withBogusPelvisOverride.PelvisToFoot);
+        Assert.Equal(baseline.BodySizeZ, withBogusPelvisOverride.BodySizeZ);
+    }
 }

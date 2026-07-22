@@ -134,7 +134,7 @@ public partial class AvatarRenderer : Node3D
     // DLL timestamp. If this line is missing or shows an old tag, the client is NOT running
     // the code you think it is; close it fully (not just the window) and re-run
     // tools/run-client.ps1 before drawing any conclusion from the rest of the log.
-    private const string BuildMarker = "2026-07-22-session-root-body-size-offset-applied";
+    private const string BuildMarker = "2026-07-22-root-joint-override-excluded-plus-diagnostics";
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
     {
@@ -1596,9 +1596,47 @@ public partial class AvatarRenderer : Node3D
             var slPos = new System.Numerics.Vector3(m.M41, m.M42, m.M43);
 
             // Viewer threshold: skip overrides within 0.1 mm of the default local position.
-            var basePos = _avatarSkeleton?.GetBone(boneName)?.Position ?? System.Numerics.Vector3.Zero;
+            var boneDef = _avatarSkeleton?.GetBone(boneName);
+            var basePos = boneDef?.Position ?? System.Numerics.Vector3.Zero;
             float delta = (slPos - basePos).Length();
             if (delta <= 0.0001f) continue;
+
+            // The skeleton ROOT (mPelvis — the one bone with no ParentName, see
+            // avatar_skeleton.xml) is excluded here, even though the real viewer's
+            // addAttachmentOverridesForObject applies no such exclusion and would (per its literal
+            // source, verified against scratch/slviewer/indra/newview/llvoavatar.cpp:6776-6804)
+            // take the same jointPos = mAlternateBindMatrix[i].getTranslation() at face value.
+            // Reason: for every OTHER joint, "local position override" means "relative to this
+            // joint's PARENT", which is exactly the "custom fit" a fitted mesh legitimately needs.
+            // mPelvis has no parent — its "local position" IS the pelvis's height above the
+            // avatar's world anchor, so an override here does not mean "fit this bone to my mesh",
+            // it means "relocate the entire avatar's shared Skeleton3D root" (every other bone
+            // hangs off mPelvis, and SetBoneRest below is NOT scoped to this one mesh/attachment —
+            // it mutates the single Skeleton3D instance the whole avatar body and every other
+            // attachment share). A legitimate whole-avatar Z relocation already has its own
+            // sanctioned, reversible channel: skinData.PelvisOffset / PelvisFixups below (mirrors
+            // LLAvatarAppearance::addPelvisFixup), which every asset seen so far (including this
+            // one — PelvisOffset prints 0) sets correctly when it's actually intended. A nonzero
+            // mPelvis position override on top of PelvisOffset==0 is not a coherent combination a
+            // correctly-authored asset would produce; measured on two real assets (coat
+            // 32d87071-617d-e3f4-54e1-e02bfbba6017 and boots 8a6f4154-1907-0b68-aace-978da4d9f85c,
+            // both from the same content, both otherwise well-formed — every other joint's delta is
+            // sub-centimeter) it was a ~9.6 m shift, 10x the joint's own rest Z with the wrong sign,
+            // i.e. garbage relative to the sane small deltas on every sibling joint in the SAME
+            // asset. Applying it verbatim would drag the entire shared skeleton (avatar body +
+            // every attachment) up by ~9.6 m — not a "shorter than reference" symptom, so this is
+            // NOT the cause of the separately-reported height-vs-cube mismatch (confirmed: neither
+            // the real viewer's LLAvatarAppearance::computeBodySize() nor our
+            // SlJointComposer.ComputeBodySize port ever reads a joint's POSITION override for
+            // "mPelvis", only its SCALE, which this override does not touch — see ComputeBodySize's
+            // pelvisScaleZ). It is a real, separate hazard worth guarding regardless.
+            if (boneDef != null && boneDef.ParentName == null)
+            {
+                GD.Print($"[JointOverride] mesh {meshId}: SKIPPED root-joint \"{boneName}\" override " +
+                         $"(would-be shift {delta:0.###} m, raw pos {slPos.X:0.###},{slPos.Y:0.###},{slPos.Z:0.###}) " +
+                         "— root/pelvis position overrides are not applied, see ApplyJointPositionOverrides doc comment");
+                continue;
+            }
 
             visual.JointPosOverrides[boneName] = slPos;
             var rest = skeleton.GetBoneRest(bone);
@@ -1681,6 +1719,15 @@ public partial class AvatarRenderer : Node3D
 
         var body = SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions, visual.JointPosOverrides);
         visual.RootOffsetZ = body.PelvisToFoot - 0.5f * body.BodySizeZ;
+
+        // Ground truth for diagnosing height/offset mismatches (e.g. against a fixed-size
+        // reference prim) — print the actual numbers this avatar's real shape + joint overrides
+        // produced, not just the fact that a recompute happened. jointOverrideCount lets you
+        // eyeball whether any worn mesh's fitted-mesh overrides are actually feeding this (should
+        // normally be 0 or a handful of sub-cm shifts; the skeleton-root override is deliberately
+        // excluded before it ever reaches visual.JointPosOverrides — see ApplyJointPositionOverrides).
+        GD.Print($"[RootOffset] PelvisToFoot={body.PelvisToFoot:0.####} BodySizeZ={body.BodySizeZ:0.####} " +
+                 $"RootOffsetZ={visual.RootOffsetZ:0.####} jointOverrideCount={visual.JointPosOverrides.Count}");
     }
 
     private static bool TryGetActivePelvisFixup(AvatarVisual visual, out float fixupZ)
