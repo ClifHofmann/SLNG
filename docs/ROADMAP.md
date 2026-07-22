@@ -71,8 +71,8 @@ Each task follows a **spec → test → implement → review** loop:
 | M1.5-1 | Godot Headless Export Script | infra | | DevOps | claude | M0-1 | PowerShell script exports Windows binary (.exe + .pck + .NET assemblies) headlessly |
 | M1.5-2 | InnoSetup / Installer Spec & Script | infra | | DevOps | claude | M1.5-1 | InnoSetup script bundles client build into single-click installer executable |
 | M1.5-3 | GitHub Actions Continuous Delivery | infra | | DevOps | claude | M1.5-2 | GitHub Workflow builds installer on `main` push & attaches artifact/release for testers |
-| FEAT-UI-03 | Boot Window Size & Profile Persistence ✅ | ui/infra | gemini | ux-designer | gemini | M0-4 | Client window resolution, grid profiles & user preferences persist across sessions in `user://logins.cfg`. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-03-boot-window-persistence.md) |
-| FEAT-UI-07 | UI Scale Setting ✅ | ui | claude | ux-designer | claude | M5-3 | Preferences slider (80%–160%) scales every `SLNGWindow` live, persisted in `preferences.cfg`. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-07-ui-scaling.md) |
+| FEAT-UI-03 | Boot Window Size & Profile Persistence ✅ | ui/infra | gemini | ux-designer | gemini | M0-4 | Client window resolution, grid profiles & user preferences persist across sessions in `user://logins.cfg`. [Spec](file:///E:/Git/SLNG/docs/specs/done/FEAT-UI-03-boot-window-persistence.md) |
+| FEAT-UI-07 | UI Scale Setting ✅ | ui | claude | ux-designer | claude | M5-3 | Preferences slider (80%–160%) scales every `SLNGWindow` live, persisted in `preferences.cfg`. [Spec](file:///E:/Git/SLNG/docs/specs/done/FEAT-UI-07-ui-scaling.md) |
 
 ---
 
@@ -84,7 +84,7 @@ Each task follows a **spec → test → implement → review** loop:
 |---|---|---|---|---|---|---|---|
 | M5-3 | Tabbed Chat, Friends & Groups Window 🚧 | ui/net | claude | ux-designer | claude | M3-2 | Multi-tabbed window (Chat, Friends, Groups, Dynamic IMs) inheriting from `SLNGWindow`. [Spec](file:///E:/Git/SLNG/docs/specs/M5-3-tabbed-chat-window.md) |
 | M5-4 | LSL / SLS Script Dialog System (`llDialog`) ⏸️ | ui/net | gemini | ux-designer | gemini | M0-3 | Modal UI popups inheriting from `SLNGWindow` with 3x4 button grid & channel reply. [Spec](file:///E:/Git/SLNG/docs/specs/M5-4-script-dialogs.md) |
-| FEAT-UI-01 | Contextual Cursor Interaction States ✅ | ui/render | gemini | ux-designer | gemini | M1-3 | Viewport mouse cursor dynamically changes based on target object state (Touch, Sit, Inspect, Media). [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-01-cursor-interaction-states.md) |
+| FEAT-UI-01 | Contextual Cursor Interaction States ✅ | ui/render | gemini | ux-designer | gemini | M1-3 | Viewport mouse cursor dynamically changes based on target object state (Touch, Sit, Inspect, Media). [Spec](file:///E:/Git/SLNG/docs/specs/done/FEAT-UI-01-cursor-interaction-states.md) |
 | MVP2-1 | Object Interaction & Sit / Touch | render/net | | protocol-re | gemini | M1-3 | Touch objects, sit on prims/anim-seats, stand up |
 | MVP2-2 | World Map, Minimap & Teleport ✅ | ui/net | gemini | protocol-re | gemini | M0-2 | Minimap overlay, full grid map, search regions & teleport to landmark/coords. Create Landmark + Teleport UI & execution fallback fixed (direct packet + asset-decode fallback). [Spec](file:///E:/Git/SLNG/docs/specs/MVP2-2-landmark-teleport.md) |
 
