@@ -68,7 +68,7 @@ public partial class Boot : Control
         // — a known engine behavior (godotengine/godot#104321), not an SLNG bug. Re-asserting
         // the title once more after the next frame renders lands after that internal logic and
         // sticks; the immediate call below just avoids a flash of the wrong title before then.
-        DisplayServer.WindowSetTitle($"SLNG {AppVersion}");
+        DisplayServer.WindowSetTitle($"Puris Viewer {AppVersion}");
         RenderingServer.FramePostDraw += ReassertWindowTitleOnce;
 
         _vboxContainer = GetNode<VBoxContainer>("%VBoxContainer");
@@ -115,7 +115,7 @@ public partial class Boot : Control
     private void ReassertWindowTitleOnce()
     {
         RenderingServer.FramePostDraw -= ReassertWindowTitleOnce;
-        DisplayServer.WindowSetTitle($"SLNG {AppVersion}", GetWindow().GetWindowId());
+        DisplayServer.WindowSetTitle($"Puris Viewer {AppVersion}", GetWindow().GetWindowId());
     }
 
     private void SetupTopMenu()

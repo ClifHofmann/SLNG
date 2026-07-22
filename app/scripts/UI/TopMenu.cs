@@ -46,7 +46,7 @@ namespace SLNG.App.UI
 
             var versionLabel = new Label
             {
-                Text = $"SLNG {Boot.AppVersion}",
+                Text = $"Puris Viewer {Boot.AppVersion}",
                 HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Center
             };
