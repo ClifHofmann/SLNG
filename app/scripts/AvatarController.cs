@@ -137,7 +137,7 @@ public partial class AvatarController : Camera3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-07-22-ground-clamp-compensates-render-correction";
+    private const string BuildMarker = "2026-07-22-groundclamp-entityid-logged";
 
     public void Initialize(World world, GridSession session, AvatarRenderer? avatarRenderer = null)
     {
@@ -427,7 +427,7 @@ public partial class AvatarController : Camera3D
                     if (_timeSinceGroundLog > 1.0)
                     {
                         _timeSinceGroundLog = 0;
-                        GD.Print($"[GroundClamp] groundHeight={groundHeight:0.####} renderCorrectionZ={renderCorrectionZ:0.####} " +
+                        GD.Print($"[GroundClamp] entity={localAgent.Id} groundHeight={groundHeight:0.####} renderCorrectionZ={renderCorrectionZ:0.####} " +
                                  $"(haveCorrection={haveCorrection}) clampTargetZ={clampTargetZ:0.####} transform.Position.Z={transform.Position.Z:0.####}");
                     }
 

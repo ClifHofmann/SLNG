@@ -104,6 +104,8 @@ public partial class AvatarRenderer : Node3D
     private GpuCache? _gpuCache;
     private SLNG.Net.GridSession? _session;
     private AvatarSkeleton? _avatarSkeleton;
+    // Throttles the [RootApply] ground-truth diagnostic in UpdateVisual to ~1/sec.
+    private double _timeSinceRootPosLog = 0;
     private readonly Dictionary<Guid, AvatarVisual> _visuals = new();
     // attachment entity ID → BoneAttachment3D node parented to the avatar skeleton
     private readonly Dictionary<Guid, BoneAttachment3D> _attachmentNodes = new();
@@ -134,7 +136,7 @@ public partial class AvatarRenderer : Node3D
     // DLL timestamp. If this line is missing or shows an old tag, the client is NOT running
     // the code you think it is; close it fully (not just the window) and re-run
     // tools/run-client.ps1 before drawing any conclusion from the rest of the log.
-    private const string BuildMarker = "2026-07-22-root-joint-override-excluded-plus-diagnostics";
+    private const string BuildMarker = "2026-07-22-rootapply-globaltransform-diagnostic";
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
     {
@@ -380,6 +382,35 @@ public partial class AvatarRenderer : Node3D
                 transform.Rotation.X, transform.Rotation.Z,
                 -transform.Rotation.Y, transform.Rotation.W);
             visual.Root.Quaternion = slQuat;
+
+            // Direct, unambiguous ground-truth for the "does RootOffsetZ actually reach the
+            // rendered node" question (2026-07-22 ground-clamp investigation, round 3): logs the
+            // SAME entityId AvatarController's [GroundClamp] line uses, the raw network Z, every
+            // term added on top, the value just assigned to visual.Root.Position, AND — critically
+            // — visual.Root.GlobalTransform.Origin.Y read back immediately after the assignment.
+            // If GlobalTransform.Origin.Y (converted back through RenderConfig.FromGodot for an
+            // apples-to-apples SL-Z comparison) does NOT match rootPos.Y here, something between
+            // this assignment and the next render frame is overwriting Root's transform — a
+            // different bug than anything in this function. If it DOES match, the bug is upstream
+            // of this function (e.g. AvatarController computing/reading a different RootOffsetZ
+            // than the one actually used here, or a stale/zero value at the time this ran).
+            // Throttled to ~1/sec and local-agent-only to avoid flooding the log with every
+            // visible avatar every frame.
+            if (avatar.IsLocalAgent)
+            {
+                _timeSinceRootPosLog += GetProcessDeltaTime();
+                if (_timeSinceRootPosLog > 1.0)
+                {
+                    _timeSinceRootPosLog = 0;
+                    float globalOriginY = visual.Root.GlobalTransform.Origin.Y;
+                    float globalOriginAsSlZ = RenderConfig.FromGodot(entity.RegionHandle, visual.Root.GlobalTransform.Origin).Z;
+                    GD.Print($"[RootApply] entity={entityId} transform.Position.Z={transform.Position.Z:0.####} " +
+                             $"pelvisFixupZ={pelvisFixupZ:0.####} RootOffsetZ={visual.RootOffsetZ:0.####} " +
+                             $"rootPos.Y(assigned)={rootPos.Y:0.####} " +
+                             $"Root.GlobalTransform.Origin.Y(read back)={globalOriginY:0.####} " +
+                             $"(as SL Z via FromGodot)={globalOriginAsSlZ:0.####}");
+                }
+            }
         }
 
         // 2. Apply Shape Morphs (Skeletal Distortions) — only when params actually changed.
