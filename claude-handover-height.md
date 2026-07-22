@@ -212,3 +212,56 @@ Checked `tests/SLNG.Core.Tests/SlJointComposerTests.cs`: the DEFAULT, undistorte
 ### Next step
 
 Rebuild clean, fresh relogin (not a continuation of an old session), get Reamon in view, and read `[RemoteGroundDiag]`: does `simPos.Z - remoteGroundHeight` now land near `PelvisToFootZ` (confirming the conversion fix is complete) or is there still a residual gap (meaning there's more to this than the pelvis/capsule-center semantic alone)? Also check whether `BodySizeZ`/`PelvisToFootZ` still read near-default for Reamon on this fresh session — if yes, the proportions complaint needs its own dedicated investigation; if no (now showing his real, distinct values), it was resolved as a side effect of the round-5 AgentId fix.
+
+---
+
+## Round 7 (found it: a self-aliasing Dictionary.Clear() bug, not a data-arrival problem at all)
+
+Fresh relogin, live: `simPos.Z - remoteGroundHeight = 1.112` vs. predicted `PelvisToFootZ = 0.979` — direction confirmed correct (much closer than the old `halfBodyZ=0.853` comparison) but still off by ~0.13 m; Reamon still floated, just less (~0.28 m → ~0.15 m). The coordinator noticed `BodySizeZ=1.707`/`PelvisToFootZ=0.979` are **exactly** `SlJointComposerTests`' zero-distortion reference constants (confirmed: `tests/SLNG.Core.Tests/SlJointComposerTests.cs` asserts `PelvisToFoot ≈ 0.979`, `BodySizeZ ≈ 1.7067` for a completely undistorted skeleton) — despite `[ShapeDataDiag]` independently proving Reamon's `VisualParams` is genuinely rich (`nonZeroBytes=182/253`, `nonTrivialBoneMods=120/127`). That's the tell: an avatar with a real, different, non-trivial shape would not coincidentally produce the exact textbook zero-distortion numbers — this had to mean `ComputeBodySize` was being fed a literally-empty distortions dictionary, not "some other avatar's real (but different) shape" (ruling out a further AgentId-cross-contamination variant of the round-5 bug).
+
+### Root cause: `RecomputeFootOffset` clearing its own input
+
+Found it on inspection of `RecomputeFootOffset` (`app/scripts/AvatarRenderer.cs`). Two call sites:
+
+1. The real "Apply Shape Morphs" block: `RecomputeFootOffset(visual, distortions.BoneMods)` — a **freshly-computed** dictionary from `AvatarShapeService.ComputeDistortions(avatar.VisualParams, ...)`, a different object every time. Safe.
+2. `ApplyJointPositionOverrides` (fires whenever a worn rigged mesh with joint-position overrides — i.e. basically any fitted-mesh body/outfit — gets processed): `RecomputeFootOffset(visual, visual.LastDistortions)` — passing **`visual.LastDistortions` itself** as the `distortions` argument, deliberately, to reuse the last-known real shape distortions without re-deriving them from `VisualParams`.
+
+`RecomputeFootOffset`'s old body:
+```csharp
+visual.LastDistortions.Clear();                    // <- since Dictionary is a reference type, in
+foreach (var kv in distortions)                     //    call site 2 this is THE SAME OBJECT as
+    visual.LastDistortions[kv.Key] = kv.Value;      //    `distortions` -- Clear() wipes it, so this
+                                                     //    foreach iterates zero times
+var body = SLNG.Core.SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions); // reads the now-empty dict
+```
+
+In call site 2, `distortions` and `visual.LastDistortions` are literally the same Dictionary instance. `visual.LastDistortions.Clear()` therefore also empties `distortions` out from under the very next line — the foreach that was supposed to copy it does zero iterations, and `ComputeBodySize` computes from an empty dictionary. **Every time any rigged mesh with joint-position overrides gets processed — routine for any fitted-mesh avatar — `BodySizeZ`/`PelvisToFootZ` silently reset to the pure zero-distortion constants**, regardless of how correct the real values were a moment earlier, and regardless of whether the real "Apply Shape Morphs" block ran before or after (this call site can fire independently, e.g. whenever an attachment finishes loading).
+
+### Why this never showed up on the LOCAL avatar
+
+`AvatarController`'s ground-clamp and `AvatarRenderer`'s render formula both read the SAME (possibly-corrupted) `visual.BodySizeZ` via `TryGetBodySizeZ` — an identically-wrong value cancels out algebraically in the local avatar's own formula regardless of what it actually is (the same cancellation documented earlier in this file). Round 6's fix introduced the FIRST genuine, non-cancelling dependence on `PelvisToFootZ` (for the remote-avatar pelvis→capsule-center conversion) — which is exactly why this pre-existing bug only became visible now, as a live, measurable float plus (very plausibly) the "wrong proportions" complaint, since a corrupted `BodySizeZ` would also make an avatar's ROOT PLACEMENT (not the mesh itself, which skins correctly off `visual.LastDistortions`/`ApplyShape` before this bug's damage happens) land at the wrong height relative to their real one — and a floating avatar's apparent height/leg-length reads differently than a properly-grounded one, per round 6's own reasoning.
+
+### Fix
+
+Reordered `RecomputeFootOffset` so `ComputeBodySize` reads `distortions` BEFORE anything mutates it, and made the `visual.LastDistortions` cache-update a genuine no-op (via `ReferenceEquals`) when `distortions` already IS `visual.LastDistortions`, instead of a self-destructive clear-and-copy-from-itself:
+
+```csharp
+var body = SLNG.Core.SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions);
+visual.BodySizeZ = body.BodySizeZ;
+visual.PelvisToFootZ = body.PelvisToFoot;
+
+if (!ReferenceEquals(distortions, visual.LastDistortions))
+{
+    visual.LastDistortions.Clear();
+    foreach (var kv in distortions)
+        visual.LastDistortions[kv.Key] = kv.Value;
+}
+```
+
+This is a general C#-semantics bug (Dictionary is a reference type; passing a field as its own "source" argument to a method that clears-then-copies-from that same parameter silently self-destructs), not specific to remote avatars, appearance dispatch, or anything protocol-related — it just needed round 6's PelvisToFootZ dependency to become observable. No unit test added: `RecomputeFootOffset` is a private method on `AvatarRenderer` operating on a live `Skeleton3D`, outside `src/`'s engine-agnostic, xUnit-testable surface (consistent with the rest of this file's Godot-side logic) — verified by re-reading the fixed code path by hand (traced both call sites through the new order) plus a clean rebuild; live re-verification is still the real check, same as every other fix this session.
+
+Build clean (`dotnet build app/SLNG.App.csproj` after clearing `app/.godot/mono`, `dotnet build SLNG.sln`), all 77 tests pass (`dotnet test SLNG.sln` — unaffected, since this bug lives entirely in `app/`, outside `src/`'s test surface).
+
+### Next step
+
+Rebuild clean, fresh relogin, get Reamon in view, and check both `[RemoteGroundDiag]` (`PelvisToFootZ` should now show HIS real value, no longer exactly `0.979`, and `simPos.Z - remoteGroundHeight` should land much closer to it) and the visual proportions comparison against Firestorm — this fix should very plausibly close both the residual ~13cm float AND the proportions complaint in one shot, since both trace back to this same corrupted `BodySizeZ`/`PelvisToFootZ`. If a residual gap remains after this, it's genuinely a new, third thing — not another variant of the data-arrival/dispatch bug class this session has now fixed three times over (AgentId race, AgentId regression, and this aliasing bug).

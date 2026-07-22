@@ -1871,13 +1871,37 @@ public partial class AvatarRenderer : Node3D
     {
         if (_avatarSkeleton == null) return;
 
-        visual.LastDistortions.Clear();
-        foreach (var kv in distortions)
-            visual.LastDistortions[kv.Key] = kv.Value;
-
+        // Bug fix (2026-07-22, round 7): ComputeBodySize MUST read `distortions` before anything
+        // below mutates it. ApplyJointPositionOverrides calls this method with
+        // visual.LastDistortions passed AS `distortions` (deliberately, to reuse the last-known
+        // shape distortions without re-deriving them from VisualParams) — since Dictionary is a
+        // reference type, `distortions` and visual.LastDistortions are then THE SAME OBJECT. The
+        // old code order called visual.LastDistortions.Clear() FIRST, which — being the same
+        // object — also wiped `distortions` out from under the ComputeBodySize call below,
+        // silently computing BodySizeZ/PelvisToFootZ from an EMPTY dictionary every single time a
+        // worn rigged mesh with joint-position overrides triggered this path (i.e. routinely, for
+        // any fitted-mesh outfit/body). Confirmed live: BodySizeZ/PelvisToFootZ landing on EXACTLY
+        // SlJointComposerTests' zero-distortion reference values (1.7067/0.979) for an avatar
+        // independently confirmed (via [ShapeDataDiag]) to have rich, non-default VisualParams —
+        // the precise signature of "computed from an empty dict", not "computed from a different
+        // avatar's real shape" (which would have produced SOME other nontrivial number, not
+        // exactly the textbook zero-distortion constants). This canceled out invisibly for the
+        // LOCAL avatar (AvatarController's ground-clamp and this render formula both read the same
+        // — equally wrong — BodySizeZ, so it canceled algebraically either way) but round 6's
+        // PelvisToFootZ conversion for REMOTE avatars has no such cancellation, so it directly
+        // exposed this as a live, visible float plus wrong apparent proportions.
         var body = SLNG.Core.SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions);
         visual.BodySizeZ = body.BodySizeZ;
         visual.PelvisToFootZ = body.PelvisToFoot;
+
+        // Skip entirely when `distortions` IS visual.LastDistortions (the aliased case above) —
+        // it's already correct by definition, and Clear()-then-copy on itself would just erase it.
+        if (!ReferenceEquals(distortions, visual.LastDistortions))
+        {
+            visual.LastDistortions.Clear();
+            foreach (var kv in distortions)
+                visual.LastDistortions[kv.Key] = kv.Value;
+        }
 
         if (visual.Skeleton == null) return;
         int footBone = visual.Skeleton.FindBone("mFootLeft");
