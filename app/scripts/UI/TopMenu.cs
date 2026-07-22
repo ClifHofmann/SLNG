@@ -56,11 +56,11 @@ namespace SLNG.App.UI
 
             // App Menu
             var appMenu = new PopupMenu();
-            appMenu.Name = "App";
+            appMenu.Name = L10n.Tr("ui.menu.app");
             appMenu.AddItem(L10n.Tr("ui.menu.preferences"), 2);
             appMenu.AddSeparator();
-            appMenu.AddItem("Disconnect", 0);
-            appMenu.AddItem("Exit", 1);
+            appMenu.AddItem(L10n.Tr("ui.menu.disconnect"), 0);
+            appMenu.AddItem(L10n.Tr("ui.menu.exit"), 1);
             appMenu.IdPressed += (id) => {
                 if (id == 0) OnDisconnect?.Invoke();
                 if (id == 1) OnExit?.Invoke();
@@ -70,13 +70,13 @@ namespace SLNG.App.UI
 
             // View Menu
             var viewMenu = new PopupMenu();
-            viewMenu.Name = "View";
-            viewMenu.AddItem("Toggle HUD", 0);
-            viewMenu.AddItem("Camera Controls", 4);
+            viewMenu.Name = L10n.Tr("ui.menu.view");
+            viewMenu.AddItem(L10n.Tr("ui.menu.toggle_hud"), 0);
+            viewMenu.AddItem(L10n.Tr("ui.menu.camera_controls"), 4);
             viewMenu.AddSeparator();
-            viewMenu.AddItem("First Person", 1);
-            viewMenu.AddItem("Third Person", 2);
-            viewMenu.AddItem("Free Camera", 3);
+            viewMenu.AddItem(L10n.Tr("ui.menu.first_person"), 1);
+            viewMenu.AddItem(L10n.Tr("ui.menu.third_person"), 2);
+            viewMenu.AddItem(L10n.Tr("ui.menu.free_camera"), 3);
             viewMenu.IdPressed += (id) => {
                 if (id == 0) OnToggleHud?.Invoke();
                 if (id == 4) OnToggleCameraHud?.Invoke();
@@ -86,8 +86,8 @@ namespace SLNG.App.UI
 
             // World Menu
             var worldMenu = new PopupMenu();
-            worldMenu.Name = "World";
-            worldMenu.AddItem("Create Landmark...", 0);
+            worldMenu.Name = L10n.Tr("ui.menu.world");
+            worldMenu.AddItem(L10n.Tr("ui.menu.create_landmark"), 0);
             worldMenu.IdPressed += (id) => {
                 if (id == 0) OnCreateLandmark?.Invoke();
             };
@@ -95,8 +95,8 @@ namespace SLNG.App.UI
 
             // Developer Menu
             var devMenu = new PopupMenu();
-            devMenu.Name = "Developer";
-            devMenu.AddItem("Toggle Wireframe", 0);
+            devMenu.Name = L10n.Tr("ui.menu.developer");
+            devMenu.AddItem(L10n.Tr("ui.menu.toggle_wireframe"), 0);
             devMenu.IdPressed += (id) => {
                 if (id == 0) OnToggleWireframe?.Invoke();
             };

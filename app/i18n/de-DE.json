@@ -9,7 +9,29 @@
       "save_login": "Login speichern"
     },
     "menu": {
-      "preferences": "Einstellungen..."
+      "app": "App",
+      "preferences": "Einstellungen...",
+      "disconnect": "Trennen",
+      "exit": "Beenden",
+      "view": "Ansicht",
+      "toggle_hud": "HUD umschalten",
+      "camera_controls": "Kamerasteuerung",
+      "first_person": "Ego-Perspektive",
+      "third_person": "Verfolgerkamera",
+      "free_camera": "Freie Kamera",
+      "world": "Welt",
+      "create_landmark": "Landmarke erstellen...",
+      "developer": "Entwickler",
+      "toggle_wireframe": "Drahtmodell umschalten"
+    },
+    "preferences": {
+      "title": "EINSTELLUNGEN",
+      "tab_toolbar": "Werkzeugleiste",
+      "tab_display": "Anzeige",
+      "toolbar_heading": "Angezeigte Buttons auf der unteren Leiste:",
+      "language_heading": "Sprache (Fenster müssen neu geöffnet werden):",
+      "ui_scale_heading": "UI-Skalierung (Fenster & HUD):",
+      "ui_scale_hint": "Skaliert freischwebende Fenster und das HUD live. Gilt auch für neu geöffnete Fenster."
     }
   }
 }

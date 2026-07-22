@@ -327,7 +327,7 @@ public partial class ChatWindow : SLNGWindow
         listVBox.AddThemeConstantOverride("separation", 4);
         listPanel.AddChild(listVBox);
 
-        var sectionLabel = new Label { Text = "CONTACTS" };
+        var sectionLabel = new Label { Text = L10n.Tr("ui.chat.contacts") };
         sectionLabel.AddThemeFontSizeOverride("font_size", MetaFontSize);
         sectionLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
         listVBox.AddChild(sectionLabel);

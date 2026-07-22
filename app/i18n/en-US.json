@@ -9,7 +9,29 @@
       "save_login": "Save Login"
     },
     "menu": {
-      "preferences": "Preferences..."
+      "app": "App",
+      "preferences": "Preferences...",
+      "disconnect": "Disconnect",
+      "exit": "Exit",
+      "view": "View",
+      "toggle_hud": "Toggle HUD",
+      "camera_controls": "Camera Controls",
+      "first_person": "First Person",
+      "third_person": "Third Person",
+      "free_camera": "Free Camera",
+      "world": "World",
+      "create_landmark": "Create Landmark...",
+      "developer": "Developer",
+      "toggle_wireframe": "Toggle Wireframe"
+    },
+    "preferences": {
+      "title": "PREFERENCES",
+      "tab_toolbar": "Toolbar",
+      "tab_display": "Display",
+      "toolbar_heading": "Buttons shown on the bottom bar:",
+      "language_heading": "Language (requires reopening windows):",
+      "ui_scale_heading": "UI Scale (windows & HUD):",
+      "ui_scale_hint": "Resizes floating windows and the HUD live. Applies to newly opened windows too."
     }
   }
 }

@@ -354,11 +354,11 @@ public partial class Boot : Control
         _preferencesWindow = new SLNG.App.UI.PreferencesWindow { Name = "PreferencesWindow" };
         hudLayer.AddChild(_preferencesWindow);
         var toolbarPage = new SLNG.App.UI.ToolbarPreferencesPage();
-        _preferencesWindow.AddTab("Toolbar", toolbarPage);
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_toolbar"), toolbarPage);
         toolbarPage.Initialize(toolbarItems, _toolbarSettings);
 
         var displayPage = new SLNG.App.UI.DisplayPreferencesPage();
-        _preferencesWindow.AddTab("Display", displayPage);
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_display"), displayPage);
         displayPage.Initialize(_uiSettings, _localizationManager);
     }
 

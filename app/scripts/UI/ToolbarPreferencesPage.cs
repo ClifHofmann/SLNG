@@ -28,7 +28,7 @@ public partial class ToolbarPreferencesPage : VBoxContainer
         _items = items;
         _settings = settings;
 
-        var heading = new Label { Text = "Buttons shown on the bottom bar:" };
+        var heading = new Label { Text = L10n.Tr("ui.preferences.toolbar_heading") };
         heading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
         AddChild(heading);
 

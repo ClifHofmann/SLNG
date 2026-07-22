@@ -25,7 +25,7 @@ public partial class DisplayPreferencesPage : VBoxContainer
         _settings = settings;
 
         // --- Language Settings ---
-        var langHeading = new Label { Text = "Language (requires reopening windows):" };
+        var langHeading = new Label { Text = L10n.Tr("ui.preferences.language_heading") };
         langHeading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
         AddChild(langHeading);
 
@@ -50,7 +50,7 @@ public partial class DisplayPreferencesPage : VBoxContainer
         AddChild(separator);
 
         // --- Scale Settings ---
-        var heading = new Label { Text = "UI Scale (windows & HUD):" };
+        var heading = new Label { Text = L10n.Tr("ui.preferences.ui_scale_heading") };
         heading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
         AddChild(heading);
 
@@ -86,7 +86,7 @@ public partial class DisplayPreferencesPage : VBoxContainer
 
         var hint = new Label
         {
-            Text = "Resizes floating windows and the HUD live. Applies to newly opened windows too.",
+            Text = L10n.Tr("ui.preferences.ui_scale_hint"),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         };
         hint.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));

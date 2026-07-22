@@ -24,7 +24,7 @@ public partial class PreferencesWindow : SLNGWindow
     {
         base._Ready(); // SLNGWindow styling
 
-        Title = "PREFERENCES";
+        Title = L10n.Tr("ui.preferences.title");
         Visible = false;
         CustomMinimumSize = new Vector2(520, 360);
         Size = new Vector2(520, 360);
