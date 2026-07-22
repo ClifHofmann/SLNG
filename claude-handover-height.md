@@ -391,3 +391,64 @@ Did a quick, bounded source check (`linden_llvoavatar.cpp`) for any other obviou
 - Firestorm's stat could be a true rendered bounding-box measurement (worn shoes/hair/attachments included), which is a fundamentally different quantity from any purely-skeletal metric (`mBodySize.z` or `Scale`) and wouldn't be expected to match either.
 
 No code changes this round — `[HeightDebug]`'s `ScaleZ`/`BodySizeZ` logging (round 9) remains in place for whenever this gets revisited; no further diagnostics added since the two candidates above would need either Firestorm's own source or a targeted live A/B test (e.g. removing shoes/hair and rechecking the displayed number) rather than more logging on our side.
+
+---
+
+## Round 11 (correction: position saga was NOT actually closed — found the real second "Hover")
+
+The coordinator corrected round 10's close-out: they'd mis-read a screenshot. User confirms live Reamon is STILL visibly sunk into the ground. Re-checked the log — same numbers as round 8, essentially unchanged:
+
+```
+simPos.Z=26.092  rootPos.Y=24.952  BodySizeZ=1.991  PelvisToFootZ=1.167  FootOffsetY=-0.002  pelvisFixupZ=0.000  hoverOffsetZ=0.000  ScaleZ=1.992
+```
+
+`hoverOffsetZ=0.000` confirms Reamon's account has no `AppearanceHover` configured — round 9's fix is real and correct for accounts that DO use it, but had zero effect here. The round-8 residual (`simPos.Z-remoteGroundHeight=1.089` vs. `PelvisToFootZ=1.167`, a ~7.8cm gap) was never actually closed.
+
+### Found it: SL has TWO separate "Hover" mechanisms, and round 9 only fixed one
+
+Re-read `linden_llvoavatar.cpp`'s `updateRootPositionAndRotation` line-by-line again, paying attention to a term skipped over in round 6:
+
+```cpp
+root_pos = gAgent.getPosGlobalFromAgent(getRenderPosition());
+root_pos.mdV[VZ] += getVisualParamWeight(AVATAR_HOVER);   // <-- a SECOND, separate hover term
+...
+root_pos.mdV[VZ] -= (0.5f * mBodySize.mV[VZ]) - mPelvisToFoot;
+if (!isSitting() && !was_sit_ground_constrained) {
+    root_pos += LLVector3d(getHoverOffset());               // <-- round 9's term (AppearanceHover)
+}
+```
+
+`getVisualParamWeight(AVATAR_HOVER)` and `getHoverOffset()` are TWO INDEPENDENT quantities:
+- `getHoverOffset()` — reads `mHoverOffset`, populated from the network `AppearanceHover` field (round 9's fix). Applied AFTER the halfBodySize/PelvisToFoot correction.
+- `getVisualParamWeight(AVATAR_HOVER)` — reads a regular **VisualParam**, applied EARLY, directly onto the raw pelvis Z, BEFORE the halfBodySize/PelvisToFoot correction. Never touched until this round.
+
+Confirmed the VisualParam directly in the vendored `avatar_lad.xml` (`scratch/libremetaverse_src/LibreMetaverse/linden/character/avatar_lad.xml:2180-2194`):
+
+```xml
+<param id="11001" group="0" name="Hover" wearable="shape" edit_group="shape_body"
+       label_min="Lower" label_max="Higher" value_min="-2" value_max="2" value_default="0">
+  <param_skeleton />
+</param>
+```
+
+This is the **"Hover" slider in the Body shape editor** (SHAPE data, not a mesh-body accessory setting) — `group="0"` means it's transmitted as a completely ordinary entry in the same `VisualParams` byte array as every height/limb-length slider `AvatarShapeService.ComputeDistortions` already reads. But its `<param_skeleton />` is EMPTY — it carries **no bone distortion at all** — so `ComputeDistortions` (which only extracts each param's `SkeletalDistortions`) silently drops it on the floor. It's a pure position offset the real viewer applies through a completely separate code path (`getVisualParamWeight`, called directly from the root-positioning function), not through the normal per-bone distortion pipeline at all. Nothing in this renderer had EVER read this specific param before this round — not the height formula (obviously), not `ComputeDistortions`, not `RebuildBodyMorphs`'s vertex morphs (it has no morph target either). A shape with any nonzero Hover slider value (range ±2m — a substantial range) would sink or float by exactly that amount, with nothing in the pipeline able to see it.
+
+### Fix
+
+Added `AvatarVisual.AvatarHoverParamZ` (`app/scripts/AvatarRenderer.cs`), populated in the "Apply Shape Morphs" block by reading `weights[11001]` — `weights` is the SAME `Dictionary<int,float>` `AvatarShapeService.ComputeEffectiveWeights` already produces for the vertex-morph path; the Hover param's effective weight was already being computed correctly, just never consumed. Cached on `AvatarVisual` (not read inline) because `UpdateVisual`'s position step runs BEFORE its shape-apply step in the same method — same pattern as `BodySizeZ`/`PelvisToFootZ`.
+
+Wired into the remote-only conversion (unchanged for local, same reasoning as every other term in this branch — local's `transform.Position.Z` is our own construction, not a real network pelvis value this term would apply to):
+
+```csharp
+rootPos.Y = (transform.Position.Z + visual.AvatarHoverParamZ) - visual.PelvisToFootZ + halfBodyZ;
+```
+
+matching the real formula's own ordering (hover-param added to the raw pelvis Z first, then the halfBodySize/PelvisToFoot correction runs on the adjusted value). Added `avatarHoverParamZ` to both `[HeightDebug]` and `[RemoteGroundDiag]` for direct live verification, and updated `[RemoteGroundDiag]`'s falsifiable prediction to `simPos.Z + avatarHoverParamZ - remoteGroundHeight` landing near `PelvisToFootZ + hoverOffsetZ`.
+
+Build clean (`dotnet build app/SLNG.App.csproj` after clearing `app/.godot/mono`, `dotnet build SLNG.sln`), all 78 tests pass (`dotnet test SLNG.sln` — this fix is `app/`-only, no `src/` changes, so pre-existing coverage is unaffected and no new test was added; verifying it needs a live avatar with a real, known Hover shape-slider value, which the xUnit-testable engine-agnostic surface can't provide).
+
+### Next step
+
+Rebuild clean, fresh relogin, get Reamon in view. Read `[HeightDebug]`'s new `avatarHoverParamZ` for his entity: if it's a nonzero value roughly matching the ~7.8cm gap (i.e. around `-0.078`, since he's SINKING, meaning the missing term should have been NEGATIVE — a "Lower" Hover setting), this fix should close the loop and `rootPos.Y` should now land within a cm or two of `remoteGroundHeight`. If `avatarHoverParamZ` reads `0.000` (his Hover shape slider genuinely is default/neutral) and the sink somehow persists, that rules out BOTH hover mechanisms and the investigation needs to go back to the coordinator's other round-8 candidates (ground-sample-point mismatch between the local avatar's own resolveHeightGlobal-equivalent and this renderer's `[RemoteGroundDiag]` raycast technique, or some other per-avatar convention not yet identified) — with real numbers this time, not another guessed term.
+
+**Do not declare this saga closed again without a fresh live confirmation** — round 10's premature close-out (based on a misread screenshot) is exactly the failure mode to avoid repeating.

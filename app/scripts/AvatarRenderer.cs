@@ -109,6 +109,20 @@ public partial class AvatarRenderer : Node3D
         // round 6, for the [RemoteGroundDiag] measurement (~0.26 m gap, matching neither halfBodyZ
         // nor 0) that this fixes.
         public float PelvisToFootZ { get; set; }
+        // The "Hover" SHAPE slider (VisualParam id 11001, avatar_lad.xml: group="0", range -2..2m,
+        // default 0, <param_skeleton/> EMPTY — i.e. it carries no bone distortion at all, so
+        // AvatarShapeService.ComputeDistortions silently drops it entirely; it's a pure position
+        // offset the real viewer reads via a completely different path: LLVOAvatar::
+        // updateRootPositionAndRotation's `root_pos.mdV[VZ] += getVisualParamWeight(AVATAR_HOVER);`
+        // — applied EARLY, directly onto the raw network pelvis Z, BEFORE the halfBodySize/
+        // PelvisToFoot correction. NOT the same mechanism as HoverOffsetZ on AvatarComponent (the
+        // separate AppearanceHover network field, round 9) — SL has TWO independent "hover"
+        // concepts: this one is a regular shape slider transmitted in VisualParams like any other,
+        // while AppearanceHover is a dedicated per-agent network field mesh-body wearers commonly
+        // configure via llSetHoverHeight. Missing this term left a ~7.8cm residual sink for a
+        // remote avatar whose account has no AppearanceHover set but DOES have a nonzero Hover
+        // shape slider (2026-07-22, round 11 — see claude-handover-height.md).
+        public float AvatarHoverParamZ { get; set; }
         // Per-avatar system-body-part Skin cache (bone binds + boneName->slot map), keyed by part
         // name. Used to be a single static dictionary shared across every avatar because the bind
         // matrices only depended on the neutral skeleton rest — true under the OLD (Godot-native
@@ -419,7 +433,16 @@ public partial class AvatarRenderer : Node3D
                 // Converting the real pelvis-semantic remote value into that SAME convention here
                 // — rather than rewriting the already-working local formula/clamp — fixes the actual
                 // semantic mismatch with zero regression risk to the confirmed-correct local path.
-                rootPos.Y = transform.Position.Z - visual.PelvisToFootZ + halfBodyZ;
+                //
+                // + visual.AvatarHoverParamZ (round 11): LLVOAvatar adds getVisualParamWeight(
+                // AVATAR_HOVER) directly onto the raw network pelvis Z, BEFORE this halfBodySize/
+                // PelvisToFoot correction — the "Hover" SHAPE SLIDER (id 11001), a completely
+                // different mechanism from AvatarComponent.HoverOffsetZ (round 9's AppearanceHover
+                // network field). Missing this term left a real, unexplained ~7.8cm residual sink
+                // for an avatar whose account has no AppearanceHover configured but DOES have a
+                // nonzero Hover shape slider. See AvatarVisual.AvatarHoverParamZ's doc comment and
+                // claude-handover-height.md, round 11.
+                rootPos.Y = (transform.Position.Z + visual.AvatarHoverParamZ) - visual.PelvisToFootZ + halfBodyZ;
             }
 
             // Viewer parity (LLVOAvatar::updateRootPositionAndRotation):
@@ -457,7 +480,7 @@ public partial class AvatarRenderer : Node3D
             // AvatarUpdateEvent's doc comment. Logged here so a live session can directly compare
             // it against BodySizeZ and the real Firestorm-displayed height (both avatars measured
             // ~14-15cm under that reference, ruling out a remote-specific cause).
-            GD.Print($"[HeightDebug] entity={entity.Id} (isLocal={avatar.IsLocalAgent}) hasShape={avatar.VisualParams != null} simPos.Z={transform.Position.Z:F3} rootPos.Y={rootPos.Y:F3} BodySizeZ={visual.BodySizeZ:F3} PelvisToFootZ={visual.PelvisToFootZ:F3} FootOffsetY={visual.FootOffsetY:F3} pelvisFixupZ={pelvisFixupZ:F3} hoverOffsetZ={avatar.HoverOffsetZ:F3} ScaleZ={avatar.ScaleZ:F3}");
+            GD.Print($"[HeightDebug] entity={entity.Id} (isLocal={avatar.IsLocalAgent}) hasShape={avatar.VisualParams != null} simPos.Z={transform.Position.Z:F3} rootPos.Y={rootPos.Y:F3} BodySizeZ={visual.BodySizeZ:F3} PelvisToFootZ={visual.PelvisToFootZ:F3} FootOffsetY={visual.FootOffsetY:F3} pelvisFixupZ={pelvisFixupZ:F3} hoverOffsetZ={avatar.HoverOffsetZ:F3} avatarHoverParamZ={visual.AvatarHoverParamZ:F3} ScaleZ={avatar.ScaleZ:F3}");
 
             visual.Root.Position = rootPos;
 
@@ -537,8 +560,8 @@ public partial class AvatarRenderer : Node3D
                     GD.Print($"[RemoteGroundDiag] entity={entity.Id} simPos.Z={transform.Position.Z:F3} " +
                              $"remoteGroundHeight={remoteGroundHeight:F3} simPos.Z-remoteGroundHeight={transform.Position.Z - remoteGroundHeight:F3} " +
                              $"halfBodyZ={halfBodyZDiag:F3} PelvisToFootZ={visual.PelvisToFootZ:F3} FootOffsetY={visual.FootOffsetY:F3} " +
-                             $"hoverOffsetZ={avatar.HoverOffsetZ:F3} " +
-                             "(simPos.Z-remoteGroundHeight should now land near PelvisToFootZ + hoverOffsetZ -- round 9)");
+                             $"hoverOffsetZ={avatar.HoverOffsetZ:F3} avatarHoverParamZ={visual.AvatarHoverParamZ:F3} " +
+                             "(simPos.Z+avatarHoverParamZ-remoteGroundHeight should now land near PelvisToFootZ + hoverOffsetZ -- round 11)");
                 }
                 else
                 {
@@ -568,6 +591,15 @@ public partial class AvatarRenderer : Node3D
                 // One effective-weight map drives BOTH the skeletal distortions (bone scale/pos)
                 // and the vertex morphs (body silhouette) — so they can never disagree on a slider.
                 var weights = AvatarShapeService.ComputeEffectiveWeights(avatar.VisualParams, charDir);
+
+                // "Hover" shape slider (id 11001) — see AvatarVisual.AvatarHoverParamZ's doc
+                // comment. Cached here (rather than read inline in UpdateVisual's position step,
+                // which runs BEFORE this shape-apply step in the same method) so the position
+                // formula can use the last-known value on every call, same pattern as BodySizeZ/
+                // PelvisToFootZ. weights.TryGetValue defaults to 0f (no Hover applied) if the
+                // param wasn't in this avatar's transmitted Group0 array at all.
+                const int HoverVisualParamId = 11001;
+                visual.AvatarHoverParamZ = weights.TryGetValue(HoverVisualParamId, out var hoverW) ? hoverW : 0f;
 
                 var distortions = AvatarShapeService.ComputeDistortions(avatar.VisualParams, charDir);
 
