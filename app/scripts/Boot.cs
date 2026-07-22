@@ -50,7 +50,7 @@ public partial class Boot : Control
     
     // M5-2 Object Editing UI
     private ObjectSelectionController _objectSelectionController = null!;
-    private SLNG.App.Input.CursorManager _cursorManager = null!;
+    private SLNG.App.CursorManager _cursorManager = null!;
     private SLNG.App.UI.InWorldContextMenu _inWorldContextMenu = null!;
 
     // One independent ObjectEditWindow per edited object (keyed by its ECS Entity.Id) so
@@ -718,7 +718,7 @@ public partial class Boot : Control
             AddChild(_objectSelectionController);
             _objectSelectionController.Initialize(_world, _session, _avatarController, _inWorldContextMenu);
 
-            _cursorManager = new SLNG.App.Input.CursorManager();
+            _cursorManager = new SLNG.App.CursorManager();
             AddChild(_cursorManager);
             _cursorManager.Initialize(_world, _avatarController);
 

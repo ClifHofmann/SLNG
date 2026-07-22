@@ -3,7 +3,7 @@ using SLNG.Core;
 using SLNG.Core.Components;
 using SLNG.Core.ECS;
 
-namespace SLNG.App.Input;
+namespace SLNG.App;
 
 public partial class CursorManager : Node
 {
