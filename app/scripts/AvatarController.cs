@@ -427,26 +427,20 @@ public partial class AvatarController : Camera3D
                     // groundHeight - correction, then Root.Y = clampTargetZ + correction, which
                     // cancels for ANY value of "correction", so Root.Y always matched groundHeight
                     // regardless of whether the fix was doing anything real (confirmed live with
-                    // paired [GroundClamp]/[RootApply] logging — Root.Y matching was a tautology,
-                    // not evidence). AvatarRenderer.UpdateVisual now applies the entire foot/ground
-                    // correction itself, measured directly from the live skeleton (see
-                    // AvatarVisual.FootOffsetY), for every avatar including remote ones this code
-                    // never touches — so this clamp goes back to the simple, single-purpose job of
-                    // keeping the raw network position at ground level; it takes AvatarRenderer's
-                    // word for where the feet actually end up relative to that.
-                    float clampTargetZ = groundHeight;
+                    float rendererFootOffsetY = 0f;
+                    bool haveCorrection = _avatarRenderer != null
+                        && _avatarRenderer.TryGetVerticalRenderCorrection(localAgent.Id, out rendererFootOffsetY);
+
+                    // FootOffsetY is mFootLeft's position relative to Root in Godot space (negative value, e.g. -0.188m).
+                    // To place the feet at groundHeight, the avatar Root position must be at groundHeight - FootOffsetY.
+                    float clampTargetZ = groundHeight - rendererFootOffsetY;
 
                     // Ground truth for diagnosing "feet in/above ground" reports: what the raycast
-                    // actually found, and — purely for cross-verification against AvatarRenderer's
-                    // own [RootApply] log — the FootOffsetY + pelvis-fixup value it's currently
-                    // using (not used in this clamp's math anymore). Throttled to ~1/sec.
+                    // actually found and the FootOffsetY correction applied. Throttled to ~1/sec.
                     _timeSinceGroundLog += delta;
                     if (_timeSinceGroundLog > 1.0)
                     {
                         _timeSinceGroundLog = 0;
-                        float rendererFootOffsetY = 0f;
-                        bool haveCorrection = _avatarRenderer != null
-                            && _avatarRenderer.TryGetVerticalRenderCorrection(localAgent.Id, out rendererFootOffsetY);
                         GD.Print($"[GroundClamp] entity={localAgent.Id} groundHeight={groundHeight:0.####} source={groundSource} " +
                                  $"rendererFootOffsetY={rendererFootOffsetY:0.####} (haveCorrection={haveCorrection}) " +
                                  $"clampTargetZ={clampTargetZ:0.####} transform.Position.Z={transform.Position.Z:0.####}");

@@ -386,16 +386,6 @@ public partial class AvatarRenderer : Node3D
             if (TryGetActivePelvisFixup(visual, out var pelvisFixupZ))
                 rootPos.Y += pelvisFixupZ;
 
-            // Compensates for wherever mFootLeft ACTUALLY sits relative to Root right now (see
-            // AvatarVisual.FootOffsetY's doc comment for why this replaced a formula-based
-            // RootOffsetZ that provably never had any effect). rootPos.Y currently equals the raw
-            // network Z; subtracting FootOffsetY shifts Root so that Root.Y + FootOffsetY — i.e.
-            // the actual foot bone's world Y — lands back at that same network Z, for EVERY avatar
-            // (local and remote alike; this runs unconditionally, same as the old mechanism it
-            // replaced, and AvatarController's ground-clamp no longer needs to know about it at
-            // all — see that file's simplified clamp).
-            rootPos.Y -= visual.FootOffsetY;
-
             visual.Root.Position = rootPos;
 
             var slQuat = new Godot.Quaternion(
