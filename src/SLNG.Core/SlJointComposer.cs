@@ -110,4 +110,86 @@ public static class SlJointComposer
     }
 
     private static float DegToRad(float deg) => deg * (float)(System.Math.PI / 180.0);
+
+    /// <summary>Pelvis-to-foot height and total body height, computed EXACTLY like
+    /// <c>LLAvatarAppearance::computeBodySize()</c> (indra/llappearance/llavatarappearance.cpp,
+    /// ~471-556) — verified against source line-by-line, including a genuine asymmetry the real
+    /// formula has that a "geometrically clean" telescoped chain sum does NOT reproduce: the first
+    /// term of <see cref="PelvisToFoot"/> is ADDED while the other three are SUBTRACTED. (Sanity
+    /// check performed while implementing this: composing the same chain through
+    /// <see cref="ComputePoses"/> — which correctly telescopes position through each parent's own
+    /// scale — gives a materially different number for the default skeleton, ~1.061 m vs. this
+    /// method's ~0.979 m. That is not a bug in <see cref="ComputePoses"/>; it means LL's own
+    /// <c>mPelvisToFoot</c> is NOT a true telescoped chain distance, and viewer parity requires
+    /// reproducing its literal per-term signs, not "fixing" them.) Used every frame by the real
+    /// viewer to correct the avatar root's rendered Z so the pelvis (not geometric mid-body) lines
+    /// up with the network position — see LLVOAvatar::updateRootPositionAndRotation.</summary>
+    public readonly record struct BodySize(float PelvisToFoot, float BodySizeZ);
+
+    /// <summary>Computes <see cref="BodySize"/> from the SAME per-bone base position/scale +
+    /// shape distortion + joint-position-override inputs <see cref="ComputePoses"/> takes — no new
+    /// data source. SL uses the LEFT leg (mHipLeft/mKneeLeft/mAnkleLeft/mFootLeft) for this; the
+    /// right leg is assumed symmetric and never consulted by the real viewer either.</summary>
+    public static BodySize ComputeBodySize(
+        AvatarSkeleton skeleton,
+        IReadOnlyDictionary<string, (Vector3 Scale, Vector3 Position)>? distortions = null,
+        IReadOnlyDictionary<string, Vector3>? positionOverrides = null)
+    {
+        float LocalZ(string name)
+        {
+            var bone = skeleton.GetBone(name);
+            if (bone == null) return 0f;
+            var pos = bone.Position;
+            if (distortions != null && distortions.TryGetValue(name, out var d)) pos += d.Position;
+            if (positionOverrides != null && positionOverrides.TryGetValue(name, out var ov)) pos = ov;
+            return pos.Z;
+        }
+
+        float OwnScaleZ(string name)
+        {
+            var bone = skeleton.GetBone(name);
+            if (bone == null) return 1f;
+            var scale = bone.Scale;
+            if (distortions != null && distortions.TryGetValue(name, out var d)) scale += d.Scale;
+            return scale.Z;
+        }
+
+        float pelvisScaleZ = OwnScaleZ("mPelvis");
+        float hipScaleZ = OwnScaleZ("mHipLeft");
+        float kneeScaleZ = OwnScaleZ("mKneeLeft");
+        float ankleScaleZ = OwnScaleZ("mAnkleLeft");
+
+        float hipZ = LocalZ("mHipLeft");
+        float kneeZ = LocalZ("mKneeLeft");
+        float ankleZ = LocalZ("mAnkleLeft");
+        float footZ = LocalZ("mFootLeft");
+
+        // Literal LL formula (llavatarappearance.cpp:528-531) — first term added, rest
+        // subtracted. Do not "symmetrize" this; see BodySize's doc comment.
+        float pelvisToFoot = hipZ * pelvisScaleZ
+                            - kneeZ * hipScaleZ
+                            - ankleZ * kneeScaleZ
+                            - footZ * ankleScaleZ;
+
+        float headScaleZ = OwnScaleZ("mHead");
+        float neckScaleZ = OwnScaleZ("mNeck");
+        float chestScaleZ = OwnScaleZ("mChest");
+        float torsoScaleZ = OwnScaleZ("mTorso");
+
+        float skullZ = LocalZ("mSkull");
+        float headZ = LocalZ("mHead");
+        float neckZ = LocalZ("mNeck");
+        float chestZ = LocalZ("mChest");
+        float torsoZ = LocalZ("mTorso");
+
+        const float Sqrt2 = 1.41421356f; // F_SQRT2 — approximate correction to top of head.
+        float bodySizeZ = pelvisToFoot
+                         + Sqrt2 * (skullZ * headScaleZ)
+                         + headZ * neckScaleZ
+                         + neckZ * chestScaleZ
+                         + chestZ * torsoScaleZ
+                         + torsoZ * pelvisScaleZ;
+
+        return new BodySize(pelvisToFoot, bodySizeZ);
+    }
 }

@@ -172,4 +172,83 @@ public class SlJointComposerTests
         var rotatedX = Vector3.Transform(Vector3.UnitX, poses["mTest"].WorldRotation);
         Assert.True((rotatedX - Vector3.UnitY).Length() < 1e-4f, $"expected local +X to rotate to +Y, got {rotatedX}");
     }
+
+    // Local (pos.z relative to parent) values copied verbatim from the real SL
+    // avatar_skeleton.xml (scratch/slviewer/indra/newview/character/avatar_skeleton.xml) so this
+    // test exercises ComputeBodySize against real default-shape numbers, not synthetic ones.
+    private static AvatarSkeleton MakeDefaultBodySizeSkeleton() => MakeSkeleton(
+        ("mPelvis", null, new Vector3(0, 0, 1.067f), Vector3.Zero),
+        ("mTorso", "mPelvis", new Vector3(0, 0, 0.084f), Vector3.Zero),
+        ("mChest", "mTorso", new Vector3(-0.015f, 0, 0.205f), Vector3.Zero),
+        ("mNeck", "mChest", new Vector3(-0.010f, 0, 0.251f), Vector3.Zero),
+        ("mHead", "mNeck", new Vector3(0, 0, 0.076f), Vector3.Zero),
+        ("mSkull", "mHead", new Vector3(0, 0, 0.079f), Vector3.Zero),
+        ("mHipLeft", "mPelvis", new Vector3(0.034f, 0.127f, -0.041f), Vector3.Zero),
+        ("mKneeLeft", "mHipLeft", new Vector3(-0.001f, -0.046f, -0.491f), Vector3.Zero),
+        ("mAnkleLeft", "mKneeLeft", new Vector3(-0.029f, 0.001f, -0.468f), Vector3.Zero),
+        ("mFootLeft", "mAnkleLeft", new Vector3(0.112f, -0.000f, -0.061f), Vector3.Zero));
+
+    [Fact]
+    public void ComputeBodySize_matches_LLAvatarAppearance_computeBodySize_for_the_default_skeleton()
+    {
+        // Reference values hand-derived from llavatarappearance.cpp's literal formula (all
+        // joint/parent scales = 1 for the un-distorted default skeleton):
+        //   pelvisToFoot = hipZ - kneeZ - ankleZ - footZ
+        //                = -0.041 - (-0.491) - (-0.468) - (-0.061) = 0.979
+        //   bodySizeZ = pelvisToFoot + sqrt2*skullZ + headZ + neckZ + chestZ + torsoZ
+        //             = 0.979 + 1.41421356*0.079 + 0.076 + 0.251 + 0.205 + 0.084 ~= 1.7067
+        var skel = MakeDefaultBodySizeSkeleton();
+        var body = SlJointComposer.ComputeBodySize(skel);
+
+        Assert.True(System.MathF.Abs(body.PelvisToFoot - 0.979f) < 1e-3f,
+            $"expected PelvisToFoot ~0.979, got {body.PelvisToFoot}");
+        Assert.True(System.MathF.Abs(body.BodySizeZ - 1.7067f) < 1e-3f,
+            $"expected BodySizeZ ~1.7067, got {body.BodySizeZ}");
+    }
+
+    [Fact]
+    public void ComputeBodySize_is_not_the_same_as_telescoping_ComputePoses_world_positions()
+    {
+        // Documents the asymmetry called out in BodySize's doc comment: naively taking
+        // ComputePoses' fully-composed world Z for mPelvis/mFootLeft (a true chain distance)
+        // gives a DIFFERENT number than the real viewer's mPelvisToFoot. Both are "correct" for
+        // what they each compute; only ComputeBodySize's number matches the real viewer's root
+        // Z correction.
+        var skel = MakeDefaultBodySizeSkeleton();
+        var body = SlJointComposer.ComputeBodySize(skel);
+
+        var poses = SlJointComposer.ComputePoses(skel);
+        float telescoped = poses["mPelvis"].WorldPosition.Z - poses["mFootLeft"].WorldPosition.Z;
+
+        Assert.True(System.MathF.Abs(telescoped - 1.061f) < 1e-3f,
+            $"expected telescoped chain distance ~1.061, got {telescoped}");
+        Assert.True(System.MathF.Abs(telescoped - body.PelvisToFoot) > 0.05f,
+            "expected ComputeBodySize to genuinely differ from the telescoped chain distance");
+    }
+
+    [Fact]
+    public void ComputeBodySize_honors_shape_distortions_and_position_overrides()
+    {
+        var skel = MakeDefaultBodySizeSkeleton();
+        var baseline = SlJointComposer.ComputeBodySize(skel);
+
+        // Stretching mKneeLeft->mAnkleLeft's parent scale (mKneeLeft's own scale) should change
+        // PelvisToFoot by exactly (ankleZ * deltaKneeScaleZ), matching the formula's
+        // "- ankleZ * kneeScaleZ" term.
+        var distortions = new Dictionary<string, (Vector3 Scale, Vector3 Position)>
+        {
+            ["mKneeLeft"] = (new Vector3(0, 0, 0.2f), Vector3.Zero),
+        };
+        var stretched = SlJointComposer.ComputeBodySize(skel, distortions);
+        float expectedDelta = -(-0.468f) * 0.2f; // -ankleZ * deltaKneeScaleZ
+        Assert.True(System.MathF.Abs((stretched.PelvisToFoot - baseline.PelvisToFoot) - expectedDelta) < 1e-4f,
+            $"expected delta {expectedDelta}, got {stretched.PelvisToFoot - baseline.PelvisToFoot}");
+
+        // A joint position override on a body-size-relevant bone (e.g. a fitted mesh's alternate
+        // bind moving mAnkleLeft) must feed straight into the same formula, exactly like
+        // ComputePoses' own position-override handling.
+        var overrides = new Dictionary<string, Vector3> { ["mAnkleLeft"] = new Vector3(-0.029f, 0.001f, -1.0f) };
+        var overridden = SlJointComposer.ComputeBodySize(skel, positionOverrides: overrides);
+        Assert.NotEqual(baseline.PelvisToFoot, overridden.PelvisToFoot);
+    }
 }

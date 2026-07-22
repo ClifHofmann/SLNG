@@ -58,6 +58,21 @@ public partial class AvatarRenderer : Node3D
         // inherits position/rotation, matching SL; this map supplies the scale each bone's own
         // skinning bind needs to inject back in afterward (see SlJointComposer).
         public Dictionary<string, System.Numerics.Vector3> BoneOwnScale { get; } = new();
+        // Last shape distortions passed to RecomputeRootOffset (see that method), cached so a
+        // later joint-position-override change (e.g. a fitted mesh attaching after shape already
+        // applied) can recompute RootOffsetZ without re-deriving distortions from VisualParams.
+        public Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)> LastDistortions { get; } = new();
+        // Root Z (Godot Y) correction applied every frame in UpdateVisual, mirroring viewer:
+        // LLVOAvatar::updateRootPositionAndRotation's "root_pos.mdV[VZ] -= (0.5f *
+        // mBodySize.mV[VZ]) - mPelvisToFoot" — the network/render position tracks roughly the
+        // sim's physics-capsule center, not the pelvis joint, so the root must be nudged up/down
+        // by this amount every frame regardless of worn content (unlike PelvisFixups above, which
+        // only exists when a fitted mesh's skin data supplies one). Recomputed only when shape or
+        // a pelvis-affecting joint override changes (see RecomputeRootOffset), not every frame —
+        // mirrors LLAvatarAppearance::computeBodySize's own invalidation call sites (shape/skeleton
+        // change), not the SL-402 "on every anim state change" compromise, which this renderer
+        // doesn't need since it doesn't yet support joint-position-animating AOs.
+        public float RootOffsetZ { get; set; }
         // Per-avatar system-body-part Skin cache (bone binds + boneName->slot map), keyed by part
         // name. Used to be a single static dictionary shared across every avatar because the bind
         // matrices only depended on the neutral skeleton rest — true under the OLD (Godot-native
@@ -119,7 +134,7 @@ public partial class AvatarRenderer : Node3D
     // DLL timestamp. If this line is missing or shows an old tag, the client is NOT running
     // the code you think it is; close it fully (not just the window) and re-run
     // tools/run-client.ps1 before drawing any conclusion from the rest of the log.
-    private const string BuildMarker = "2026-07-22-session-pelvis-offset-applied";
+    private const string BuildMarker = "2026-07-22-session-root-body-size-offset-applied";
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
     {
@@ -352,6 +367,13 @@ public partial class AvatarRenderer : Node3D
             if (TryGetActivePelvisFixup(visual, out var pelvisFixupZ))
                 rootPos.Y += pelvisFixupZ;
 
+            // Viewer parity: LLVOAvatar::updateRootPositionAndRotation applies this correction to
+            // EVERY avatar EVERY frame, unconditionally (no worn-mesh gate) — see RootOffsetZ's
+            // doc comment and RecomputeRootOffset. Kept as a precomputed field (updated only on
+            // shape/joint-override change) rather than recomputed here since ComputeBodySize walks
+            // the whole leg+spine chain and this runs every frame for every visible avatar.
+            rootPos.Y += visual.RootOffsetZ;
+
             visual.Root.Position = rootPos;
 
             var slQuat = new Godot.Quaternion(
@@ -387,6 +409,8 @@ public partial class AvatarRenderer : Node3D
                 visual.Skeleton.ResetBonePoses();
 
                 LogJointParityCheck(visual, visual.Skeleton, _avatarSkeleton, distortions.BoneMods);
+
+                RecomputeRootOffset(visual, distortions.BoneMods);
 
                 // Deform the system body into this avatar's real proportions (male/muscle/breast/…
                 // sliders are vertex morphs, not bone scales — see AvatarMorphService).
@@ -1588,6 +1612,11 @@ public partial class AvatarRenderer : Node3D
         {
             skeleton.ResetBonePoses();
             GD.Print($"[JointOverride] mesh {meshId}: {applied}/{jointCount} joint positions overridden (max shift {maxDelta:0.###} m)");
+
+            // A fitted mesh can override leg/spine joints that feed ComputeBodySize (e.g. an
+            // alternate-bind mesh body/legs) — refresh the root offset now rather than waiting
+            // for the next shape change. See RecomputeRootOffset's doc comment.
+            RecomputeRootOffset(visual, visual.LastDistortions);
         }
         // Viewer parity: LLAvatarAppearance::addPelvisFixup (indra/llappearance/
         // llavatarappearance.cpp) — this offset does NOT move the mPelvis joint's local
@@ -1621,6 +1650,39 @@ public partial class AvatarRenderer : Node3D
     /// ordering gives us too. The overwhelmingly common case is a single contributor (one
     /// fitted body/outfit mesh), where this is just that mesh's offset.
     /// </summary>
+    /// <summary>Recomputes <see cref="AvatarVisual.RootOffsetZ"/> from this avatar's current shape
+    /// distortions + joint-position overrides. Mirrors viewer:
+    /// <c>LLVOAvatar::updateRootPositionAndRotation</c>'s
+    /// <c>root_pos.mdV[VZ] -= (0.5f * mBodySize.mV[VZ]) - mPelvisToFoot</c> — i.e.
+    /// <c>+= mPelvisToFoot - 0.5*mBodySize.z</c>. SL Z-up is Godot's Y-up here with no sign flip
+    /// (see RenderConfig.ToGodot), so that is exactly what's stored. Deliberately does NOT add
+    /// <c>getVisualParamWeight(AVATAR_HOVER)</c> or <c>getHoverOffset()</c>: both verified (source:
+    /// llappearance/llavatarappearancedefines.h AVATAR_HOVER=11001 and its avatar_lad.xml
+    /// definition, value_default="0") to default to zero, and neither is wired up anywhere in this
+    /// codebase yet (AVATAR_HOVER is a "Hover" shape slider we don't parse from worn shape
+    /// wearables; getHoverOffset() is a separate script/preference-driven mechanism, also unwired).
+    /// Treating both as 0 is a no-op for the overwhelming majority of avatars, same simplification
+    /// LL's own "SL-427: too frequent, moved to only do on state change" comment makes for cost —
+    /// revisit if a shape using a nonzero Hover slider is still measurably off by that slider's
+    /// value. Called from UpdateVisual's shape-change block AND whenever
+    /// <see cref="ApplyJointPositionOverrides"/> applies a fitted-mesh joint override — broader
+    /// than the real viewer's own invalidation (which only rebuilds on an mPelvis-specific override
+    /// or pelvis-fixup change, see postPelvisSetRecalc's pelvisGotSet gate), but strictly more
+    /// correct: recomputing on any leg/spine joint override just keeps this fresher, never wrong
+    /// against the same formula LL itself uses.</summary>
+    private void RecomputeRootOffset(AvatarVisual visual,
+        IReadOnlyDictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)> distortions)
+    {
+        if (_avatarSkeleton == null) return;
+
+        visual.LastDistortions.Clear();
+        foreach (var kv in distortions)
+            visual.LastDistortions[kv.Key] = kv.Value;
+
+        var body = SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions, visual.JointPosOverrides);
+        visual.RootOffsetZ = body.PelvisToFoot - 0.5f * body.BodySizeZ;
+    }
+
     private static bool TryGetActivePelvisFixup(AvatarVisual visual, out float fixupZ)
     {
         fixupZ = 0f;
