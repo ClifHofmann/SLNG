@@ -28,6 +28,20 @@ public partial class AvatarRenderer : Node3D
         // overridden LOCAL joint position in SL space (relative to the parent joint).
         // ApplyShape re-applies these after rebuilding rests so they survive shape updates.
         public Dictionary<string, System.Numerics.Vector3> JointPosOverrides { get; } = new();
+        // Per-mesh pelvis Z fixups harvested from worn rigged meshes' skin data (viewer:
+        // LLAvatarAppearance::addPelvisFixup / LLVector3OverrideMap, indra/llappearance/
+        // llavatarappearance.cpp + indra/llcharacter/lljoint.{h,cpp}). Keyed by the contributing
+        // mesh id so it can be removed again when that mesh is un-worn — mirrors the viewer's
+        // LLVOAvatar::removeAttachmentOverridesForObject, which calls removePelvisFixup(mesh_id)
+        // on detach. NOT applied to the mPelvis joint's local position: the viewer adds the
+        // active fixup's Z to the AVATAR ROOT's world render position every frame
+        // (LLVOAvatar::getRenderPosition, "pos[VZ] += fixup") — see UpdateVisual's root-position
+        // step, which mirrors that. When more than one worn mesh carries a nonzero offset
+        // simultaneously, only ONE wins (LLVector3OverrideMap::findActiveOverride picks the
+        // entry whose mesh_id key compares greatest — an arbitrary but deterministic tie-break,
+        // not a sum/max/most-recent rule); TryGetActivePelvisFixup below reproduces that same
+        // "one deterministic winner by key" contract.
+        public Dictionary<Guid, float> PelvisFixups { get; } = new();
         // Bakes-on-Mesh bookkeeping (viewer: LLVOAvatar::updateMeshVisibility +
         // LLViewerObject::getBakedTextureForMagicId). Which bake channels (AvatarTextureIndex)
         // any worn mesh consumes — used to hide the matching system body parts — and the worn
@@ -92,8 +106,12 @@ public partial class AvatarRenderer : Node3D
     // textures moments after the initial attach (placeholder/UV-template skin -> the user's
     // actual applied skin) — comparing only MeshId made that legitimate refresh look identical
     // to the noisy rez-time duplicates this guard exists to swallow, permanently freezing the
-    // mesh on its placeholder texture.
-    private readonly Dictionary<Guid, (Guid MeshId, FaceTexture[]? Faces, FaceTexture DefaultFace)> _attachmentMeshIds = new();
+    // mesh on its placeholder texture. AvatarEntityId is carried alongside so RemoveVisual can
+    // find the owning AvatarVisual and revert this mesh's pelvis fixup contribution (see
+    // AvatarVisual.PelvisFixups) once the entity itself (not just the mesh) is torn down —
+    // OnEntityRemoved only survives the CallDeferred hop as a bare Guid, so the owner has to be
+    // captured here at attach time rather than re-looked-up from the (by-then-gone) entity.
+    private readonly Dictionary<Guid, (Guid MeshId, FaceTexture[]? Faces, FaceTexture DefaultFace, Guid AvatarEntityId)> _attachmentMeshIds = new();
 
     // Bump this string with every fix and check it's actually printed at the top of the log
     // before trusting anything else in it — this session got burned repeatedly by stale/
@@ -101,7 +119,7 @@ public partial class AvatarRenderer : Node3D
     // DLL timestamp. If this line is missing or shows an old tag, the client is NOT running
     // the code you think it is; close it fully (not just the window) and re-run
     // tools/run-client.ps1 before drawing any conclusion from the rest of the log.
-    private const string BuildMarker = "2026-07-22-session-hair-alpha-blend-vs-hash";
+    private const string BuildMarker = "2026-07-22-session-pelvis-offset-applied";
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
     {
@@ -284,6 +302,16 @@ public partial class AvatarRenderer : Node3D
             if (GodotObject.IsInstanceValid(riggedMesh)) riggedMesh.QueueFree();
             _riggedAttachments.Remove(entityId);
         }
+        // Un-worn rigged mesh: revert any pelvis fixup it contributed to its OWNER avatar
+        // (viewer parity: LLVOAvatar::removeAttachmentOverridesForObject calls
+        // removePelvisFixup(mesh_id)). The owner has to come from _attachmentMeshIds, captured
+        // at attach time, because the entity itself is already gone from the World by the time
+        // this deferred call runs.
+        if (_attachmentMeshIds.TryGetValue(entityId, out var removedMeshInfo)
+            && _visuals.TryGetValue(removedMeshInfo.AvatarEntityId, out var ownerVisual))
+        {
+            ownerVisual.PelvisFixups.Remove(removedMeshInfo.MeshId);
+        }
         _attachmentMeshIds.Remove(entityId);
         if (_hudNodes.TryGetValue(entityId, out var hudNode))
         {
@@ -315,7 +343,16 @@ public partial class AvatarRenderer : Node3D
         if (transform != null)
         {
             // Position the avatar root node (floating-origin relative; see RenderConfig)
-            visual.Root.Position = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
+            var rootPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
+
+            // Viewer parity: LLVOAvatar::getRenderPosition applies a worn rigged mesh's pelvis
+            // fixup (fitted-mesh skin data) to the avatar's world RENDER position every frame —
+            // "pos[VZ] += fixup" — not to the mPelvis joint. SL Z-up (VZ) is Godot's Y-up here
+            // since RenderConfig.ToGodot has already done the axis conversion above.
+            if (TryGetActivePelvisFixup(visual, out var pelvisFixupZ))
+                rootPos.Y += pelvisFixupZ;
+
+            visual.Root.Position = rootPos;
 
             var slQuat = new Godot.Quaternion(
                 transform.Rotation.X, transform.Rotation.Z,
@@ -769,6 +806,12 @@ public partial class AvatarRenderer : Node3D
             oldRigged.QueueFree();
             _riggedAttachments.Remove(entityId);
         }
+        // Same item being re-rezzed with a NEW mesh id at this attachment point (e.g. an
+        // applier swapping mesh assets, not just face textures): the OLD mesh's pelvis fixup
+        // must go too, or a removed/replaced fitted item leaves the avatar's height shifted
+        // forever (viewer parity: removeAttachmentOverridesForObject on detach).
+        if (_attachmentMeshIds.TryGetValue(entityId, out var priorMeshInfo))
+            avatarVisual.PelvisFixups.Remove(priorMeshInfo.MeshId);
 
         // Kick off mesh/texture load for mesh attachments.
         if (prim != null)
@@ -779,7 +822,7 @@ public partial class AvatarRenderer : Node3D
                 // redundant UpdateAttachment arriving while this load is still in flight sees
                 // it immediately and hits the early-return guard above instead of starting an
                 // overlapping duplicate load.
-                _attachmentMeshIds[entityId] = (prim.MeshId, prim.Faces, defaultFace);
+                _attachmentMeshIds[entityId] = (prim.MeshId, prim.Faces, defaultFace, attachment.AvatarEntityId);
                 Logger.Debug($"[Attachment] REQUESTING MESH {prim.MeshId} for entity {entityId}");
                 _ = LoadAndApplyAttachmentMeshAsync(boneAttach, avatarVisual, prim.MeshId,
                     prim.Faces, defaultFace,
@@ -1319,6 +1362,13 @@ public partial class AvatarRenderer : Node3D
             staleRigged.QueueFree();
             _riggedAttachments.Remove(entityId);
         }
+        // Moved off the body entirely (onto a HUD point) — same "un-worn" case as detach for
+        // pelvis-fixup purposes; revert this mesh's contribution on its (body) owner avatar.
+        if (_attachmentMeshIds.TryGetValue(entityId, out var hudMovedMeshInfo)
+            && _visuals.TryGetValue(hudMovedMeshInfo.AvatarEntityId, out var hudOwnerVisual))
+        {
+            hudOwnerVisual.PelvisFixups.Remove(hudMovedMeshInfo.MeshId);
+        }
         _attachmentMeshIds.Remove(entityId);
 
         EnsureHudViewport();
@@ -1539,8 +1589,53 @@ public partial class AvatarRenderer : Node3D
             skeleton.ResetBonePoses();
             GD.Print($"[JointOverride] mesh {meshId}: {applied}/{jointCount} joint positions overridden (max shift {maxDelta:0.###} m)");
         }
+        // Viewer parity: LLAvatarAppearance::addPelvisFixup (indra/llappearance/
+        // llavatarappearance.cpp) — this offset does NOT move the mPelvis joint's local
+        // position; it shifts the whole avatar's world RENDER position every frame
+        // (LLVOAvatar::getRenderPosition: "pos[VZ] += fixup", applied only when isRoot()).
+        // Store it keyed by mesh id (mirrors LLVector3OverrideMap) so it can be reverted if
+        // this mesh is un-worn (see the _attachmentMeshIds-driven cleanup in RemoveVisual /
+        // UpdateAttachment / UpdateHudAttachment) and combined with any other worn mesh's
+        // fixup via TryGetActivePelvisFixup — applied in UpdateVisual's root-position step.
         if (System.Math.Abs(skinData.PelvisOffset) > 0.0001f)
-            GD.Print($"[JointOverride] mesh {meshId}: pelvis offset {skinData.PelvisOffset:0.###} m (not yet applied)");
+        {
+            visual.PelvisFixups[meshId] = skinData.PelvisOffset;
+            GD.Print($"[JointOverride] mesh {meshId}: pelvis offset {skinData.PelvisOffset:0.###} m applied to avatar root");
+        }
+        else
+        {
+            // A previously-nonzero fixup for this exact mesh id could only become zero by the
+            // asset content changing under a stable id, which doesn't happen — but keep this
+            // symmetrical with "removed" cleanup rather than leaving a stale zero-ish entry.
+            visual.PelvisFixups.Remove(meshId);
+        }
+    }
+
+    /// <summary>
+    /// Picks the pelvis Z fixup to apply to the avatar root this frame, mirroring
+    /// <c>LLVector3OverrideMap::findActiveOverride</c> (indra/llcharacter/lljoint.cpp): when
+    /// more than one worn rigged mesh carries a nonzero pelvis offset simultaneously, exactly
+    /// ONE wins — the entry whose mesh id key compares greatest. That tie-break isn't
+    /// semantically meaningful in the viewer either (it's an artifact of using std::max_element
+    /// over the map's keys); the only real contract is "one deterministic winner", which Guid's
+    /// ordering gives us too. The overwhelmingly common case is a single contributor (one
+    /// fitted body/outfit mesh), where this is just that mesh's offset.
+    /// </summary>
+    private static bool TryGetActivePelvisFixup(AvatarVisual visual, out float fixupZ)
+    {
+        fixupZ = 0f;
+        bool found = false;
+        Guid bestKey = default;
+        foreach (var (meshId, z) in visual.PelvisFixups)
+        {
+            if (!found || meshId.CompareTo(bestKey) > 0)
+            {
+                bestKey = meshId;
+                fixupZ = z;
+                found = true;
+            }
+        }
+        return found;
     }
 
     private MeshInstance3D? BuildRiggedMeshInstance(MeshData meshData, Skeleton3D skeleton, Guid meshId, AvatarVisual visual, out int[] faceIndices)
