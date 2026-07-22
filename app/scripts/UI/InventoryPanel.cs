@@ -129,26 +129,18 @@ public partial class InventoryPanel : SLNGWindow
             var parts = metaStr.Split(',');
             if (!isFolder && parts.Length < 7) return default;
 
-            string itemIdStr = isFolder ? parts[0] : parts[0];
+            string itemIdStr = parts[0];
             bool canTransfer = isFolder ? true : bool.Parse(parts[3]);
             bool isLink = isFolder ? false : bool.Parse(parts[6]);
             int assetType = isFolder ? -1 : int.Parse(parts[4]);
+            string name = item.GetText(0).Replace("  ⇢", "");
 
-            var dragData = new Godot.Collections.Dictionary
-            {
-                { "type", "slng_inventory_item" },
-                { "id", itemIdStr },
-                { "name", item.GetText(0).Replace("  ⇢", "") },
-                { "canTransfer", canTransfer },
-                { "isFolder", isFolder },
-                { "isLink", isLink },
-                { "assetType", assetType }
-            };
+            string payload = $"slng_item|{itemIdStr}|{name}|{canTransfer}|{isFolder}|{assetType}";
 
-            var preview = new Label { Text = item.GetText(0) };
+            var preview = new Label { Text = name };
             SetDragPreview(preview);
 
-            return dragData;
+            return payload;
         }
     }
 

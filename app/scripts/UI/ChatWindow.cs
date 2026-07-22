@@ -115,6 +115,20 @@ public partial class ChatWindow : SLNGWindow
         }
     }
 
+    private partial class ChatDropPanel : PanelContainer
+    {
+        public ChatWindow? OwnerWindow;
+        public override bool _CanDropData(Vector2 atPosition, Variant data) => OwnerWindow != null && OwnerWindow.IsInventoryItemData(data);
+        public override void _DropData(Vector2 atPosition, Variant data) => OwnerWindow?.HandleInventoryDrop(data);
+    }
+
+    private partial class ChatDropVBox : VBoxContainer
+    {
+        public ChatWindow? OwnerWindow;
+        public override bool _CanDropData(Vector2 atPosition, Variant data) => OwnerWindow != null && OwnerWindow.IsInventoryItemData(data);
+        public override void _DropData(Vector2 atPosition, Variant data) => OwnerWindow?.HandleInventoryDrop(data);
+    }
+
     /// <summary>Wired by Boot to GridSession.SendChat -- the Main tab's send path. IM tabs get
     /// their own send routing once Phase 1c's net plumbing exists.</summary>
     public Action<string>? OnSendLocalChat;
@@ -478,25 +492,23 @@ public partial class ChatWindow : SLNGWindow
 
     public bool IsInventoryItemData(Variant data)
     {
-        if (data.VariantType == Variant.Type.Dictionary)
-        {
-            var dict = data.AsGodotDictionary();
-            return dict.ContainsKey("type") && dict["type"].AsString() == "slng_inventory_item";
-        }
-        if (data.Obj is Godot.Collections.Dictionary d)
-        {
-            return d.ContainsKey("type") && d["type"].ToString() == "slng_inventory_item";
-        }
-        return false;
+        string str = data.VariantType == Variant.Type.String ? data.AsString() : (data.Obj?.ToString() ?? "");
+        return str.StartsWith("slng_item|");
     }
 
     public void HandleInventoryDrop(Variant data)
     {
-        Godot.Collections.Dictionary? dict = null;
-        if (data.VariantType == Variant.Type.Dictionary) dict = data.AsGodotDictionary();
-        else if (data.Obj is Godot.Collections.Dictionary d) dict = d;
+        string str = data.VariantType == Variant.Type.String ? data.AsString() : (data.Obj?.ToString() ?? "");
+        if (!str.StartsWith("slng_item|")) return;
 
-        if (dict == null || !dict.ContainsKey("type") || dict["type"].ToString() != "slng_inventory_item") return;
+        var parts = str.Split('|');
+        if (parts.Length < 6) return;
+
+        if (!Guid.TryParse(parts[1], out var itemId)) return;
+        string itemName = parts[2];
+        bool canTransfer = bool.Parse(parts[3]);
+        bool isFolder = bool.Parse(parts[4]);
+        int assetType = int.Parse(parts[5]);
 
         if (_activeChatTab?.TargetAgentId is not { } recipientId)
         {
@@ -504,18 +516,11 @@ public partial class ChatWindow : SLNGWindow
             return;
         }
 
-        string itemName = dict.ContainsKey("name") ? dict["name"].ToString()! : "Item";
-        bool canTransfer = dict.ContainsKey("canTransfer") && Convert.ToBoolean(dict["canTransfer"]);
-
         if (!canTransfer)
         {
             AppendSystemNotice($"[System] '{itemName}' kann nicht übertragen werden (keine Transfer-Rechte).");
             return;
         }
-
-        if (!Guid.TryParse(dict.ContainsKey("id") ? dict["id"].ToString()! : "", out var itemId)) return;
-        bool isFolder = dict.ContainsKey("isFolder") && Convert.ToBoolean(dict["isFolder"]);
-        int assetType = dict.ContainsKey("assetType") ? Convert.ToInt32(dict["assetType"]) : 0;
 
         GiveInventoryItemToActiveTab(itemId, itemName, assetType, isFolder);
     }
