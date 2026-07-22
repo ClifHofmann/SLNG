@@ -57,7 +57,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.1.62-alpha";
+    public const string AppVersion = "v0.1.63-alpha";
 
     public override void _Ready()
     {
@@ -779,7 +779,7 @@ public partial class Boot : Control
             _avatarController.Name = "AvatarController";
             AddChild(_avatarController);
             if (_avatarRenderer != null)
-                _avatarController.Initialize(_world, _session);
+                _avatarController.Initialize(_world, _session, _avatarRenderer);
 
             _objectSelectionController = new ObjectSelectionController();
             AddChild(_objectSelectionController);

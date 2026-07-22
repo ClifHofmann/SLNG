@@ -1747,6 +1747,28 @@ public partial class AvatarRenderer : Node3D
         return found;
     }
 
+    /// <summary>Net vertical (Godot Y) shift <see cref="UpdateVisual"/> adds on top of an avatar's
+    /// raw <c>TransformComponent</c> position before rendering — <see cref="AvatarVisual.RootOffsetZ"/>
+    /// plus any active pelvis fixup (the same two terms UpdateVisual's root-position step applies).
+    /// AvatarController's ground-collision code needs this: it calibrates the raw network position
+    /// to sit exactly at a raycasted ground height with ZERO knowledge of this renderer-side
+    /// correction. Before RootOffsetZ existed that was fine (the skeleton's own geometry puts the
+    /// feet almost exactly at the root, ~6mm off — see the real avatar_skeleton.xml numbers checked
+    /// this session), but RootOffsetZ is a real, non-zero (~0.126 m for a default shape) addition on
+    /// top now, so without feeding it back here the ground-clamp and the renderer disagree on where
+    /// "at the ground" is by exactly this amount every frame — see AvatarController.cs's use of this
+    /// method for the fix. Returns false (correctionZ = 0) if this avatar isn't tracked yet, which
+    /// callers should treat as "no correction known yet", not "confirmed zero".</summary>
+    public bool TryGetVerticalRenderCorrection(Guid entityId, out float correctionZ)
+    {
+        correctionZ = 0f;
+        if (!_visuals.TryGetValue(entityId, out var visual)) return false;
+
+        correctionZ = visual.RootOffsetZ;
+        if (TryGetActivePelvisFixup(visual, out var fixupZ)) correctionZ += fixupZ;
+        return true;
+    }
+
     private MeshInstance3D? BuildRiggedMeshInstance(MeshData meshData, Skeleton3D skeleton, Guid meshId, AvatarVisual visual, out int[] faceIndices)
     {
         faceIndices = System.Array.Empty<int>();

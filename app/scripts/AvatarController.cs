@@ -10,6 +10,10 @@ public partial class AvatarController : Camera3D
 {
     private World? _world;
     private GridSession? _session;
+    // Set by Boot.cs so the ground-collision clamp can stay consistent with AvatarRenderer's
+    // per-frame root-position correction (RootOffsetZ / pelvis fixup) — see the ground-clamp
+    // block below and AvatarRenderer.TryGetVerticalRenderCorrection's doc comment.
+    private AvatarRenderer? _avatarRenderer;
     private float _pitch = 0f;
     private float _yaw = 0f;
     private double _timeSinceLastUpdate = 0;
@@ -128,10 +132,19 @@ public partial class AvatarController : Camera3D
     // suspended and E/C move vertically. Landing on the ground leaves fly mode.
     private bool _flying = false;
 
-    public void Initialize(World world, GridSession session)
+    // Throttles the ground-clamp diagnostic print below to ~1/sec instead of every frame.
+    private double _timeSinceGroundLog = 0;
+
+    // Bump alongside every fix so a fresh log line proves this exact build is running (see
+    // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
+    private const string BuildMarker = "2026-07-22-ground-clamp-compensates-render-correction";
+
+    public void Initialize(World world, GridSession session, AvatarRenderer? avatarRenderer = null)
     {
+        GD.Print($"[AvatarController] BUILD MARKER: {BuildMarker}");
         _world = world;
         _session = session;
+        _avatarRenderer = avatarRenderer;
     }
 
     public override void _Ready()
@@ -393,25 +406,50 @@ public partial class AvatarController : Camera3D
 
                 if (hasGround)
                 {
+                    // AvatarRenderer.UpdateVisual renders this SAME transform.Position shifted up
+                    // by RootOffsetZ (+ any active pelvis fixup) every frame — a real, non-zero
+                    // (~0.126 m for a default shape) correction now, not the ~0 it effectively was
+                    // before that mechanism existed. Clamping the raw position straight to
+                    // groundHeight (as this code did before) ignores that shift entirely, so the
+                    // RENDERED avatar ends up displaced from the ground by exactly this amount every
+                    // frame. Compensate by clamping to groundHeight MINUS that same correction, so
+                    // that after AvatarRenderer adds it back the rendered feet land at groundHeight.
+                    // See AvatarRenderer.TryGetVerticalRenderCorrection's doc comment.
+                    float renderCorrectionZ = 0f;
+                    bool haveCorrection = _avatarRenderer != null
+                        && _avatarRenderer.TryGetVerticalRenderCorrection(localAgent.Id, out renderCorrectionZ);
+                    float clampTargetZ = groundHeight - renderCorrectionZ;
+
+                    // Ground truth for diagnosing "feet in/above ground" reports: what the raycast
+                    // actually found, what we're compensating by, and where transform.Position ends
+                    // up — throttled to ~1/sec so it doesn't flood the log every frame.
+                    _timeSinceGroundLog += delta;
+                    if (_timeSinceGroundLog > 1.0)
+                    {
+                        _timeSinceGroundLog = 0;
+                        GD.Print($"[GroundClamp] groundHeight={groundHeight:0.####} renderCorrectionZ={renderCorrectionZ:0.####} " +
+                                 $"(haveCorrection={haveCorrection}) clampTargetZ={clampTargetZ:0.####} transform.Position.Z={transform.Position.Z:0.####}");
+                    }
+
                     if (_flying)
                     {
-                        if (transform.Position.Z < groundHeight)
+                        if (transform.Position.Z < clampTargetZ)
                         {
                             // Touched down — land and leave fly mode.
-                            transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, groundHeight);
+                            transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, clampTargetZ);
                             _flying = false;
                         }
                     }
-                    else if (transform.Position.Z < groundHeight)
+                    else if (transform.Position.Z < clampTargetZ)
                     {
                         // Push up out of terrain/object
-                        transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, groundHeight);
+                        transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, clampTargetZ);
                     }
-                    else if (transform.Position.Z > groundHeight)
+                    else if (transform.Position.Z > clampTargetZ)
                     {
                         // Fall down to terrain/object
                         float fallSpeed = 9.81f * (float)delta;
-                        transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, System.Math.Max(groundHeight, transform.Position.Z - fallSpeed));
+                        transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, System.Math.Max(clampTargetZ, transform.Position.Z - fallSpeed));
                     }
                 }
 
