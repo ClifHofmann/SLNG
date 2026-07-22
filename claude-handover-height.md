@@ -91,3 +91,26 @@ Why this matters: a remote avatar's ECS entity can be created from a bare `Terse
 ### Still unverified live
 
 I don't have GUI automation for the native Godot window in this environment (only browser automation), so I could not click through login and get a screenshot with both avatars in frame myself this round. **Next live session should**: rebuild clean (`tools/run-client.ps1` or the manual `dotnet build` + `godot --path app` sequence), get Reamon in view, and check the console for `[HeightDebug] entity=... (isLocal=False) hasShape=...`. If `hasShape=true` and the float persists, this fix didn't address the real cause and hypothesis 1 (remote-avatar network Z reference frame vs OpenSim protocol semantics) needs to be checked next — don't guess another constant, verify against real OpenSim/LibreMetaverse avatar update source.
+
+---
+
+## Round 3 (coordinator tested live, pointing back at hypothesis 1)
+
+The AgentId-fallback fix from round 2 worked exactly as intended — the coordinator confirmed `hasShape=True` for Reamon now. **This is a real, standalone fix and stays regardless of what follows** (a remote avatar's appearance data was genuinely being dropped by the AgentId race; that's fixed).
+
+But the float didn't go away: `simPos.Z=26.122`, `rootPos.Y=25.288`, `BodySizeZ=1.707`, `FootOffsetY=0.005`. Comparing against the local avatar's own `groundHeight=25.0035` logged earlier at the same platform: `25.288 - 25.0035 ≈ 0.28m` — Reamon renders ~28cm above ground. Real, consistent, non-trivial, and now clearly NOT (or not only) a missing-appearance-data problem, since the shape data is confirmed present.
+
+This is hypothesis 1 from the very first version of this doc: **nothing in the code ever queried ground height at a REMOTE avatar's own X/Y to check whether `simPos.Z` means the same thing (collision-cylinder-center) as the local avatar's `transform.Position.Z`** — which, unlike Reamon's, is OUR OWN construction (built by `AvatarController`'s `clampTargetZ = groundHeight + halfBodyZ`, using a raycast at the LOCAL avatar's position only). The formula in `AvatarRenderer.UpdateVisual` was applying that same "capsule-center" assumption to Reamon's raw network Z with zero verification.
+
+### What I added (diagnostic only, NOT wired into the render path)
+
+Two new logs in `app/scripts/AvatarRenderer.cs`, both requested by the coordinator before touching the formula again:
+
+1. **`[RemoteGroundDiag]`** — for every non-local avatar, throttled to ~1/sec per entity (new `_timeSinceRemoteGroundLog` dictionary), casts the SAME kind of ground raycast `AvatarController` already uses for the local avatar (Layer-1-only, from 5m above down to 100m below), but at the REMOTE avatar's own X/Y. Logs `simPos.Z`, `remoteGroundHeight` (the raycast hit's Godot Y — which is directly comparable to SL Z; `RenderConfig.ToGodot`/`FromGodot` only shift X/Y for the floating origin, height passes through unchanged), their difference, and `halfBodyZ` for comparison. This is the number that settles hypothesis 1: if `simPos.Z - remoteGroundHeight` comes out close to `halfBodyZ`, `simPos.Z` really is capsule-center and something else in how the formula gets applied is off by ~0.28m; if it comes out as something else entirely (e.g. close to 0, or close to a full body height), OpenSim genuinely sends something structurally different for remote agents.
+2. **`[ShapeDataDiag]`** — logged once per shape-apply (same `needsApply` gate `ApplyShape` already uses), reports `visualParamsLength`, `nonZeroBytes` (how much of the raw VisualParams byte array is non-default), and `boneModsTotal`/`nonTrivialBoneMods` (how many of the computed skeletal distortions actually came out non-trivial vs. zero). This answers the coordinator's sanity check directly: `BodySizeZ=1.707`/`FootOffsetY=0.005` are what an undistorted skeleton measures, so this distinguishes "Reamon's shape genuinely is close to default" (VisualParams populated, distortions correctly near-zero) from "hasShape=True but the array is still effectively empty" (a lingering variant of the same class of bug) (`nonZeroBytes`/`nonTrivialBoneMods` near 0 despite a full-length array would indicate the latter).
+
+Also completed a pre-existing half-written diagnostic in the same method: the local-avatar `[RootApply]` block computed a `footInfo` string every throttled tick but never printed it (dead code) — added the missing `GD.Print`.
+
+### Next step for whoever picks this up
+
+Rebuild clean, get Reamon in view again, and read the `[RemoteGroundDiag]` and `[ShapeDataDiag]` lines. Per the coordinator's framing: get the real `simPos.Z - remoteGroundHeight` number FIRST, then decide whether the fix is "the formula is right, something else contributes the missing ~0.28m" (keep digging in the render-side math) or "OpenSim really does send a different Z reference for remote avatars" (needs verification against real OpenSim/LibreMetaverse avatar-update source, per this project's house rule — don't guess another constant).

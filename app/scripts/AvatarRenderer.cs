@@ -124,6 +124,8 @@ public partial class AvatarRenderer : Node3D
     private AvatarSkeleton? _avatarSkeleton;
     // Throttles the [RootApply] ground-truth diagnostic in UpdateVisual to ~1/sec.
     private double _timeSinceRootPosLog = 0;
+    // Throttles the [RemoteGroundDiag] hypothesis-1 diagnostic (per remote avatar) to ~1/sec.
+    private readonly Dictionary<Guid, double> _timeSinceRemoteGroundLog = new();
     private readonly Dictionary<Guid, AvatarVisual> _visuals = new();
     // attachment entity ID → BoneAttachment3D node parented to the avatar skeleton
     private readonly Dictionary<Guid, BoneAttachment3D> _attachmentNodes = new();
@@ -432,7 +434,48 @@ public partial class AvatarRenderer : Node3D
                         }
                     }
 
+                    GD.Print($"[RootApply] entity={entity.Id} {footInfo}");
+                }
+            }
+            else
+            {
+                // Hypothesis-1 diagnostic (2026-07-22, round 3): does simPos.Z relate to the
+                // REMOTE avatar's own ground the same way the local avatar's
+                // clampTargetZ = groundHeight + halfBodyZ does (AvatarController.cs)? The local
+                // avatar's transform.Position.Z is OUR OWN construction (clamped to that formula);
+                // a remote avatar's simPos.Z comes straight from OpenSim with no such massaging on
+                // our side, and nothing before this queried ground height at a remote avatar's own
+                // X/Y to check the assumption that it means the same thing. Diagnostic-only --
+                // NOT wired into the render path. See claude-handover-height.md, round 3.
+                if (!_timeSinceRemoteGroundLog.TryGetValue(entity.Id, out var tRemote)) tRemote = 0;
+                tRemote += GetProcessDeltaTime();
+                if (tRemote > 1.0)
+                {
+                    _timeSinceRemoteGroundLog[entity.Id] = 0;
 
+                    var rawGodotPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
+                    var spaceState = GetWorld3D().DirectSpaceState;
+                    var rayFrom = rawGodotPos + new Godot.Vector3(0, 5.0f, 0);
+                    var rayTo = rawGodotPos - new Godot.Vector3(0, 100.0f, 0);
+                    var query = PhysicsRayQueryParameters3D.Create(rayFrom, rayTo);
+                    query.CollisionMask = 1; // terrain/objects only, same mask AvatarController uses
+                    var result = spaceState.IntersectRay(query);
+
+                    if (result.Count > 0)
+                    {
+                        // Godot Y == SL Z directly for this axis — see RenderConfig.ToGodot/FromGodot
+                        // (only X/Y get the floating-origin shift; height passes through unchanged).
+                        float remoteGroundHeight = result["position"].AsVector3().Y;
+                        float halfBodyZDiag = 0.5f * visual.BodySizeZ;
+                        GD.Print($"[RemoteGroundDiag] entity={entity.Id} simPos.Z={transform.Position.Z:F3} " +
+                                 $"remoteGroundHeight={remoteGroundHeight:F3} simPos.Z-remoteGroundHeight={transform.Position.Z - remoteGroundHeight:F3} " +
+                                 $"halfBodyZ={halfBodyZDiag:F3} FootOffsetY={visual.FootOffsetY:F3} " +
+                                 "(if simPos.Z were capsule-center like the local avatar's, simPos.Z-remoteGroundHeight should land near halfBodyZ)");
+                    }
+                    else
+                    {
+                        GD.Print($"[RemoteGroundDiag] entity={entity.Id} simPos.Z={transform.Position.Z:F3} ray missed ground (no Layer-1 collider under this avatar's X/Y)");
+                    }
                 }
             }
         }
@@ -460,6 +503,24 @@ public partial class AvatarRenderer : Node3D
                 var weights = AvatarShapeService.ComputeEffectiveWeights(avatar.VisualParams, charDir);
 
                 var distortions = AvatarShapeService.ComputeDistortions(avatar.VisualParams, charDir);
+
+                // Sanity check (2026-07-22, round 3): hasShape=True only proves the VisualParams
+                // byte array arrived, not that it carries genuinely non-default distortion data --
+                // a near-empty/degenerate array would look identical to a real "close to default
+                // shape" avatar in the [HeightDebug] log (BodySizeZ~1.707/FootOffsetY~0 IS what an
+                // undistorted skeleton measures). Log the raw byte spread plus how many bone
+                // distortions actually came out non-trivial, so "true default shape" and "shape
+                // data silently empty" don't look the same in the logs.
+                int nonZeroBytes = 0;
+                foreach (var b in avatar.VisualParams) if (b != 0) nonZeroBytes++;
+                int nonTrivialDistortions = 0;
+                foreach (var kv in distortions.BoneMods)
+                    if (kv.Value.Scale.LengthSquared() > 1e-6f || kv.Value.Position.LengthSquared() > 1e-6f)
+                        nonTrivialDistortions++;
+                GD.Print($"[ShapeDataDiag] entity={entity.Id} (isLocal={avatar.IsLocalAgent}) " +
+                         $"visualParamsLength={avatar.VisualParams.Length} nonZeroBytes={nonZeroBytes} " +
+                         $"boneModsTotal={distortions.BoneMods.Count} nonTrivialBoneMods={nonTrivialDistortions}");
+
                 ApplyShape(visual, visual.Skeleton, _avatarSkeleton, distortions.BoneMods, visual.JointPosOverrides);
                 visual.Skeleton.ResetBonePoses();
 
