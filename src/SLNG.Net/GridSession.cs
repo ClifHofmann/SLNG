@@ -1061,6 +1061,105 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Formats an SL AttachmentPoint enum value to a human-readable display string.
+    /// </summary>
+    public static string FormatAttachmentPoint(LibreMetaverse.AttachmentPoint point)
+    {
+        return point switch
+        {
+            LibreMetaverse.AttachmentPoint.Chest => "Brust",
+            LibreMetaverse.AttachmentPoint.Skull => "Kopf",
+            LibreMetaverse.AttachmentPoint.LeftShoulder => "Linke Schulter",
+            LibreMetaverse.AttachmentPoint.RightShoulder => "Rechte Schulter",
+            LibreMetaverse.AttachmentPoint.LeftHand => "Linke Hand",
+            LibreMetaverse.AttachmentPoint.RightHand => "Rechte Hand",
+            LibreMetaverse.AttachmentPoint.LeftFoot => "Linker Fuß",
+            LibreMetaverse.AttachmentPoint.RightFoot => "Rechter Fuß",
+            LibreMetaverse.AttachmentPoint.Spine => "Rücken",
+            LibreMetaverse.AttachmentPoint.Pelvis => "Becken",
+            LibreMetaverse.AttachmentPoint.Mouth => "Mund",
+            LibreMetaverse.AttachmentPoint.Chin => "Kinn",
+            LibreMetaverse.AttachmentPoint.LeftEar => "Linkes Ohr",
+            LibreMetaverse.AttachmentPoint.RightEar => "Rechtes Ohr",
+            LibreMetaverse.AttachmentPoint.LeftEyeball => "Linkes Auge",
+            LibreMetaverse.AttachmentPoint.RightEyeball => "Rechtes Auge",
+            LibreMetaverse.AttachmentPoint.Nose => "Nase",
+            LibreMetaverse.AttachmentPoint.RightUpperArm => "Rechter Oberarm",
+            LibreMetaverse.AttachmentPoint.RightForearm => "Rechter Unterarm",
+            LibreMetaverse.AttachmentPoint.LeftUpperArm => "Linker Oberarm",
+            LibreMetaverse.AttachmentPoint.LeftForearm => "Linker Unterarm",
+            LibreMetaverse.AttachmentPoint.RightHip => "Rechte Hüfte",
+            LibreMetaverse.AttachmentPoint.RightUpperLeg => "Rechtes Oberschenkel",
+            LibreMetaverse.AttachmentPoint.RightLowerLeg => "Rechtes Unterschenkel",
+            LibreMetaverse.AttachmentPoint.LeftHip => "Linke Hüfte",
+            LibreMetaverse.AttachmentPoint.LeftUpperLeg => "Linkes Oberschenkel",
+            LibreMetaverse.AttachmentPoint.LeftLowerLeg => "Linkes Unterschenkel",
+            LibreMetaverse.AttachmentPoint.Stomach => "Bauch",
+            LibreMetaverse.AttachmentPoint.LeftPec => "Linke Brust",
+            LibreMetaverse.AttachmentPoint.RightPec => "Rechte Brust",
+            LibreMetaverse.AttachmentPoint.HUDCenter2 => "Mitte 2",
+            LibreMetaverse.AttachmentPoint.HUDTopRight => "Oben rechts",
+            LibreMetaverse.AttachmentPoint.HUDTop => "Oben",
+            LibreMetaverse.AttachmentPoint.HUDTopLeft => "Oben links",
+            LibreMetaverse.AttachmentPoint.HUDCenter => "Mitte",
+            LibreMetaverse.AttachmentPoint.HUDBottomLeft => "Unten links",
+            LibreMetaverse.AttachmentPoint.HUDBottom => "Unten",
+            LibreMetaverse.AttachmentPoint.HUDBottomRight => "Unten rechts",
+            LibreMetaverse.AttachmentPoint.Neck => "Hals",
+            LibreMetaverse.AttachmentPoint.Root => "Stamm",
+            LibreMetaverse.AttachmentPoint.LeftWing => "Linker Flügel",
+            LibreMetaverse.AttachmentPoint.RightWing => "Rechter Flügel",
+            _ => point.ToString()
+        };
+    }
+
+    /// <summary>
+    /// Returns a dictionary mapping currently worn inventory item IDs (or link target IDs)
+    /// to their attachment point display string (e.g. "Linker Flügel", "Oben links") or "getragen".
+    /// </summary>
+    public Dictionary<Guid, string> GetWornItemsMap()
+    {
+        var result = new Dictionary<Guid, string>();
+
+        try
+        {
+            var atts = _client.Appearance.GetAttachmentsByItemId();
+            foreach (var kvp in atts)
+            {
+                result[kvp.Key.Guid] = FormatAttachmentPoint(kvp.Value);
+            }
+        }
+        catch { }
+
+        try
+        {
+            var store = _client.Inventory.Store;
+            var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+            if (cofUuid != LibreMetaverse.UUID.Zero)
+            {
+                var cofNode = store?.GetNodeOrDefault(cofUuid);
+                if (cofNode != null)
+                {
+                    foreach (var childNode in cofNode.Nodes.Values)
+                    {
+                        if (childNode.Data is LibreMetaverse.InventoryItem item)
+                        {
+                            var targetId = item.IsLink() ? item.ResolvedItemID.Guid : item.UUID.Guid;
+                            if (targetId != Guid.Empty && !result.ContainsKey(targetId))
+                            {
+                                result[targetId] = "getragen";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+
+        return result;
+    }
+
     /// <summary>Creates a new inventory subfolder — used for the Create Landmark dialog's
     /// "new folder" affordance, but generic. Note: the 3-arg <c>CreateFolder</c> overload that
     /// takes a <c>FolderType</c> de-dupes on preferred type and would hand back the *existing*

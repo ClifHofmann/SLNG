@@ -250,17 +250,26 @@ public partial class InventoryPanel : SLNGWindow
                     bool isLandmark = assetType == SLNG.Core.AssetTypeIds.Landmark && !isLink;
 
                     bool isWorn = false;
-                    var parent = item.GetParent();
-                    while (parent != null)
+                    var wornMap = _session?.GetWornItemsMap() ?? new System.Collections.Generic.Dictionary<Guid, string>();
+                    if (Guid.TryParse(parts[0], out var checkId))
                     {
-                        var pMeta = parent.GetMetadata(0).AsString();
-                        var pIdStr = pMeta.Contains(',') ? pMeta.Split(',')[0] : pMeta;
-                        if (Guid.TryParse(pIdStr, out var pId) && _session?.CurrentOutfitFolderId == pId)
+                        if (wornMap.ContainsKey(checkId)) isWorn = true;
+                        else if (parts.Length == 7 && Guid.TryParse(parts[6], out var linkTarget) && wornMap.ContainsKey(linkTarget)) isWorn = true;
+                    }
+                    if (!isWorn)
+                    {
+                        var parent = item.GetParent();
+                        while (parent != null)
                         {
-                            isWorn = true;
-                            break;
+                            var pMeta = parent.GetMetadata(0).AsString();
+                            var pIdStr = pMeta.Contains(',') ? pMeta.Split(',')[0] : pMeta;
+                            if (Guid.TryParse(pIdStr, out var pId) && _session?.CurrentOutfitFolderId == pId)
+                            {
+                                isWorn = true;
+                                break;
+                            }
+                            parent = parent.GetParent();
                         }
-                        parent = parent.GetParent();
                     }
 
                     _contextMenu.SetItemDisabled(0, isWorn); // Wear / Attach
@@ -373,6 +382,17 @@ public partial class InventoryPanel : SLNGWindow
             {
                 RefreshFolder(cofId);
             }
+            var selectedItem = _tree.GetSelected();
+            var parentItem = selectedItem?.GetParent();
+            if (parentItem != null)
+            {
+                var parentMetaStr = parentItem.GetMetadata(0).AsString();
+                var parentIdStr = parentMetaStr.Contains(',') ? parentMetaStr.Split(',')[0] : parentMetaStr;
+                if (Guid.TryParse(parentIdStr, out var parentId))
+                {
+                    RefreshFolder(parentId);
+                }
+            }
         }).CallDeferred();
     }
 
@@ -390,6 +410,17 @@ public partial class InventoryPanel : SLNGWindow
             if (_session.CurrentOutfitFolderId is { } cofId)
             {
                 RefreshFolder(cofId);
+            }
+            var selectedItem = _tree.GetSelected();
+            var parentItem = selectedItem?.GetParent();
+            if (parentItem != null)
+            {
+                var parentMetaStr = parentItem.GetMetadata(0).AsString();
+                var parentIdStr = parentMetaStr.Contains(',') ? parentMetaStr.Split(',')[0] : parentMetaStr;
+                if (Guid.TryParse(parentIdStr, out var parentId))
+                {
+                    RefreshFolder(parentId);
+                }
             }
         }).CallDeferred();
     }
@@ -479,6 +510,8 @@ public partial class InventoryPanel : SLNGWindow
             child = next;
         }
 
+        var wornMap = _session?.GetWornItemsMap() ?? new System.Collections.Generic.Dictionary<Guid, string>();
+
         // Folders first, then items — each group keeps the server's by-name order.
         foreach (var entry in children)
             if (entry.IsFolder)
@@ -491,6 +524,29 @@ public partial class InventoryPanel : SLNGWindow
             // apparently duplicated item is readable as the link it is.
             string text = entry.IsLink ? entry.Name + "  ⇢" : entry.Name;
             text += entry.GetPermissionSuffix();
+
+            bool isWorn = wornMap.TryGetValue(entry.Id, out var loc) || (entry.IsLink && wornMap.TryGetValue(entry.LinkTargetId, out loc));
+            if (!isWorn && _session?.CurrentOutfitFolderId is { } cofId && entry.ParentId == cofId)
+            {
+                isWorn = true;
+                loc = "getragen";
+            }
+
+            if (isWorn)
+            {
+                if (!string.IsNullOrEmpty(loc) && loc != "getragen")
+                {
+                    text += $" (getragen an {loc})";
+                }
+                else
+                {
+                    text += " (getragen)";
+                }
+
+                // Highlight worn items with a warm gold color so they stand out like Firestorm
+                row.SetCustomColor(0, new Color(1.0f, 0.88f, 0.4f));
+            }
+
             row.SetText(0, text);
             // See RefreshFolder's doc comment: a just-created item's own known-good asset id
             // (from the create response, not this fetch) wins over whatever this listing reports.
