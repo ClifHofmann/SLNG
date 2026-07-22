@@ -500,10 +500,10 @@ public class AssetService
 
         if (bytes == null || bytes.Length == 0)
         {
-            if (!_session.IsConnected) return null;
+            if (!_session.IsConnected) return GetDefaultStandingAnimation();
 
             bytes = await _session.FetchAnimationDataAsync(animId).ConfigureAwait(false);
-            if (bytes == null || bytes.Length == 0) return null;
+            if (bytes == null || bytes.Length == 0) return GetDefaultStandingAnimation();
 
             if (cacheFile != null)
             {
@@ -680,5 +680,32 @@ public class AssetService
             }
             return null;
         }
+    }
+
+    private static AnimationData GetDefaultStandingAnimation()
+    {
+        return new AnimationData
+        {
+            Length = 10f,
+            Loop = true,
+            InPoint = 0f,
+            OutPoint = 10f,
+            Priority = 2,
+            Joints = new AnimationJointData[]
+            {
+                new AnimationJointData
+                {
+                    JointName = "mArmLeft",
+                    Priority = 2,
+                    RotationKeys = new[] { new RotationKeyframe(0f, System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, 0.95f)) }
+                },
+                new AnimationJointData
+                {
+                    JointName = "mArmRight",
+                    Priority = 2,
+                    RotationKeys = new[] { new RotationKeyframe(0f, System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, -0.95f)) }
+                }
+            }
+        };
     }
 }
