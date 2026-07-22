@@ -142,6 +142,17 @@ public partial class InventoryPanel : SLNGWindow
 
         if (_session.LibraryRootId is { } libraryId)
             AddFolderItem(hidden, libraryId, "Library");
+
+        // Current Outfit folder: its children are link items pointing at whatever's actually
+        // worn/attached right now, by real name — the fastest way to identify a worn item (e.g.
+        // "which of these five identical mesh nodes is the hair?") without a dedicated worn-items
+        // UI. Pinned open by default since that's the whole point of surfacing it here.
+        if (_session.CurrentOutfitFolderId is { } cofId)
+        {
+            var cof = AddFolderItem(hidden, cofId, "Angezogen (Current Outfit)");
+            LoadFolder(cof, cofId);
+            cof.Collapsed = false;
+        }
     }
 
     private void OnSearchTextChanged(string newText)

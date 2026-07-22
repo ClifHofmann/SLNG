@@ -23,3 +23,16 @@ project/assembly_name="SLNG.App"
 
 file_logging/enable_file_logging=true
 file_logging/max_log_files=10
+
+[rendering]
+
+; Avatar/attachment materials (AvatarRenderer.cs) use AlphaHash for reliable, depth-tested
+; transparency (hair, alpha-layer cutouts) instead of true Alpha blend, which broke layered
+; occlusion between stacked worn items (see avatar-alpha-hash-vs-scissor investigation).
+; AlphaHash's dithered discard pattern only reads as smooth once MSAA is active — each
+; material already sets AlphaAntiAliasingMode=AlphaToCoverage, which is a no-op without this.
+; 4x is the standard middle ground per AGENTS.md's render-budget rule (8x measurably more
+; expensive for marginal extra smoothness; TAA was deliberately not enabled alongside it —
+; temporal accumulation ghosts/smears during the fast free-look camera whips this viewer's
+; orbit control does, which MSAA doesn't have as a failure mode).
+anti_aliasing/quality/msaa_3d=2

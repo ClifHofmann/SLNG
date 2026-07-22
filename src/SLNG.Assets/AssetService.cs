@@ -430,6 +430,20 @@ public class AssetService
                 asset.EmissiveFactor.Y,
                 asset.EmissiveFactor.Z);
 
+            // LibreMetaverse.Assets.AssetMaterial.AlphaMode mirrors glTF's own alphaMode 1:1
+            // (verified via metadata reflection against LibreMetaverse.dll 3.0.0: enum
+            // GltfAlphaMode { Opaque, Blend, Mask }) — an authoritative, creator-declared signal,
+            // never a pixel-content guess. Map by name rather than casting the underlying int:
+            // GltfAlphaMode's declaration order (Opaque=0, Blend=1, Mask=2) does NOT match our
+            // PbrAlphaMode's (Opaque=0, Mask=1, Blend=2), so a raw enum cast would silently swap
+            // Mask and Blend.
+            var alphaMode = asset.AlphaMode switch
+            {
+                LibreMetaverse.Assets.GltfAlphaMode.Blend => PbrAlphaMode.Blend,
+                LibreMetaverse.Assets.GltfAlphaMode.Mask => PbrAlphaMode.Mask,
+                _ => PbrAlphaMode.Opaque,
+            };
+
             return new PbrMaterialData(
                 baseColorTex,
                 normalTex,
@@ -438,7 +452,9 @@ public class AssetService
                 baseColor,
                 asset.MetallicFactor,
                 asset.RoughnessFactor,
-                emissive
+                emissive,
+                alphaMode,
+                asset.AlphaCutoff
             );
         }
         catch (Exception ex)
@@ -556,14 +572,43 @@ public class AssetService
                 }
             }
 
-            // Force Magick to extract RGBA. This is far more robust than manual channel mapping,
-            // as it handles OpenJPEG's internal layouts and automatically fills missing alpha with 255.
-            image.HasAlpha = true;
-            byte[]? rgba;
+            // Force Magick to decode into usable colorspaces before grabbing pixel values.
+            // Some SL/OpenSim J2K assets report ChannelCount==5 (an extra component beyond RGBA
+            // that Magick.NET doesn't itself flag via HasAlpha) rather than a clean 4 — using
+            // "== 4" here missed those, forcing them down the no-alpha sRGB path. That collapses
+            // GetPixels() to 3 channels, and the fallback below then defaults alpha to 255
+            // (opaque) — so a genuinely blank/transparent placeholder (alpha≈0 everywhere, e.g. an
+            // unfilled applier slot or a bake for a channel with nothing worn) rendered as a solid
+            // opaque white patch instead of being invisible. ">= 4" catches both cases.
+            //
+            // Do NOT "fix" this by forcing `image.HasAlpha = true` and calling
+            // `pixels.ToByteArray("RGBA")` instead of this manual channel walk — Magick.NET
+            // initializes a newly-forced alpha channel to fully OPAQUE on any image it doesn't
+            // already recognize as having one (exactly the ChannelCount==5 case above), silently
+            // discarding the real alpha-carrying data in that extra channel. That regression made
+            // every avatar bake/placeholder texture with real per-pixel alpha decode as fully
+            // opaque — no renderer-side Transparency/cutout setting can recover it once the
+            // source pixel data itself has been clobbered to alpha=255 here.
+            if (image.HasAlpha || image.ChannelCount >= 4) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
+            else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
+            byte[] rgba;
             using (var pixels = image.GetPixels())
             {
-                rgba = pixels.ToByteArray("RGBA");
-                if (rgba == null || rgba.Length < width * height * 4)
+                var raw = pixels.GetValues() ?? Array.Empty<byte>();
+                int ch = width > 0 && height > 0 ? raw.Length / (width * height) : 0;
+                if (ch >= 3 && raw.Length >= width * height * ch)
+                {
+                    rgba = new byte[width * height * 4];
+                    for (int p = 0; p < width * height; p++)
+                    {
+                        int s = p * ch, d = p * 4;
+                        rgba[d]     = raw[s];
+                        rgba[d + 1] = raw[s + 1];
+                        rgba[d + 2] = raw[s + 2];
+                        rgba[d + 3] = ch >= 4 ? raw[s + 3] : (byte)255;
+                    }
+                }
+                else
                     return null;
             }
 

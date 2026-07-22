@@ -95,13 +95,23 @@ public partial class AvatarRenderer : Node3D
     // mesh on its placeholder texture.
     private readonly Dictionary<Guid, (Guid MeshId, FaceTexture[]? Faces, FaceTexture DefaultFace)> _attachmentMeshIds = new();
 
+    // TEMP diagnostic (2026-07-22, hair-alpha investigation): entities we've already asked the
+    // sim for ObjectProperties on, so a redundant UpdateAttachment call (see _attachmentMeshIds'
+    // own doc comment on how often those fire) doesn't re-request the same name every time.
+    private readonly HashSet<Guid> _propertiesRequested = new();
+
+    // TEMP diagnostic (2026-07-22, hair-top-not-showing investigation): texture ids already
+    // dumped to <user_data_dir>/debug_textures/ so a texture shared by many faces (e.g. the same
+    // hair texture on multiple mesh instances) isn't re-saved on every single face build.
+    private static readonly HashSet<Guid> _dumpedTextures = new();
+
     // Bump this string with every fix and check it's actually printed at the top of the log
     // before trusting anything else in it — this session got burned repeatedly by stale/
     // incrementally-rebuilt assemblies silently running old code despite a fresh-looking
     // DLL timestamp. If this line is missing or shows an old tag, the client is NOT running
     // the code you think it is; close it fully (not just the window) and re-run
     // tools/run-client.ps1 before drawing any conclusion from the rest of the log.
-    private const string BuildMarker = "2026-07-05-session9o-prim-vflip-fix";
+    private const string BuildMarker = "2026-07-22-session-hair-alpha-blend-vs-hash";
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
     {
@@ -151,9 +161,17 @@ public partial class AvatarRenderer : Node3D
     {
         if (e.Component is AttachmentComponent || e.Component is PrimitiveComponent)
             CallDeferred(nameof(UpdateAttachment), e.Entity.Id.ToString());
-        
+
         if (e.Component is AvatarComponent || e.Component is TransformComponent)
             CallDeferred(nameof(UpdateVisual), e.Entity.Id.ToString());
+
+        // TEMP diagnostic (2026-07-22, hair-alpha investigation): the server never sends
+        // ObjectProperties (which carries Name) for a worn attachment unless something
+        // explicitly requests it — UpdateAttachment below now fires that request once per
+        // attachment. This is the async arrival: print the name against the mesh id so it can
+        // finally be matched to the [FaceAlpha] material logs.
+        if (e.Component is MetadataComponent meta && _attachmentMeshIds.TryGetValue(e.Entity.Id, out var loaded))
+            GD.Print($"[FaceAlpha] name resolved entity={e.Entity.Id:N} mesh={loaded.MeshId.ToString()[..8]} name='{meta.Name}'");
     }
 
     private void CreateVisual(string entityIdStr)
@@ -593,6 +611,7 @@ public partial class AvatarRenderer : Node3D
                     tcs.SetResult(null);
                     return;
                 }
+                image.GenerateMipmaps(); // match BuildFaceMaterialAsync/GetOrCreateGpuTextureAsync — avoids distance shimmer
                 var tex = ImageTexture.CreateFromImage(image);
                 
                 if (tex != null && _gpuCache != null)
@@ -650,12 +669,59 @@ public partial class AvatarRenderer : Node3D
                 }
                 mat.AlbedoTexture = godotTexture;
                 mat.AlbedoColor = Godot.Colors.White; // Reset placeholder tint!
-                
-                // SL avatars use baked alpha to hide the system body when wearing mesh bodies.
-                // Always enable AlphaScissor because DetectAlpha can be unreliable or slow,
-                // and transparent pixels in SL textures are often black RGB.
-                mat.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-                mat.AlphaScissorThreshold = 0.5f;
+
+                // SL avatars use baked alpha to hide the system body when wearing mesh bodies/
+                // clothing (alpha-layer wearables painted by the user, composited server-side
+                // into this bake's alpha channel; hidden RGB is conventionally black). Always
+                // enable AlphaHash — never gate on DetectAlpha() to decide whether to apply one
+                // at all, which is unreliable (see ApplyAlphaCutout below and the
+                // godot-material-transparency-gotchas note).
+                //
+                // Unconditional AlphaHash here, NOT the Blend-vs-Hash choice ApplyAlphaCutout
+                // uses for worn-mesh-attachment faces (2026-07-22, reverted after this system-
+                // bake path briefly used that same Blend branch and the system body/head reappeared
+                // fully opaque, replacing an "invisible bald head + patchy chest" for a visible
+                // one — plausible mechanism: `Transparency.Alpha` never writes depth in Godot even
+                // at high alpha, unlike AlphaHash/Scissor's discard-based opaque-queue depth write,
+                // so this material's draw-order relative to the enclosing mesh body/head — both now
+                // competing in the transparent queue — stopped being depth-test-safe). This bake's
+                // ENTIRE job is to disappear; a dithered discard pattern on something that's
+                // ~90%+ alpha=0 anyway costs nothing visually, so there's no tradeoff here worth
+                // risking reliability for — unlike hair, which is actually meant to be seen.
+                var bakeImg = godotTexture.GetImage();
+                var bakeAlphaMode = bakeImg?.DetectAlpha() ?? Image.AlphaMode.Bit;
+
+                // TEMP diagnostic (2026-07-22, base-avatar-visible-again investigation): print
+                // the bake's real decoded alpha stats so a "system body showing through again"
+                // report can be told apart from "the sim genuinely composited this bake as fully
+                // opaque this time" (an appearance-sync issue upstream of any client rendering
+                // choice) vs an actual regression in the Blend/Hash decision below.
+                if (bakeImg != null)
+                {
+                    var bd = bakeImg.GetData();
+                    long bsum = 0; int bmin = 255, bmax = 0;
+                    for (int i = 3; i < bd.Length; i += 4)
+                    {
+                        bsum += bd[i];
+                        if (bd[i] < bmin) bmin = bd[i];
+                        if (bd[i] > bmax) bmax = bd[i];
+                    }
+                    int bn = bd.Length / 4;
+                    float bavg = bn > 0 ? bsum / 255f / bn : -1f;
+                    GD.Print($"[FaceAlpha] bake {bakeIndex} tex={textureId.ToString()[..8]} mode={bakeAlphaMode} avgA={bavg:0.00} minA={bmin} maxA={bmax}");
+
+                    if (_dumpedTextures.Add(textureId))
+                    {
+                        var dir = Godot.OS.GetUserDataDir() + "/debug_textures";
+                        Godot.DirAccess.MakeDirRecursiveAbsolute(dir);
+                        bakeImg.SavePng($"{dir}/bake{bakeIndex}_{textureId}.png");
+                    }
+                }
+
+                mat.Transparency = BaseMaterial3D.TransparencyEnum.AlphaHash;
+                mat.AlphaHashScale = 1.0f;
+                // Free once MSAA 3D is enabled project-wide (currently off); harmless no-op until then.
+                mat.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
             }
         }).CallDeferred();
     }
@@ -702,6 +768,16 @@ public partial class AvatarRenderer : Node3D
 
         Logger.Debug($"[Attachment] pt {attachment.AttachmentPoint} bone {boneName} " +
                  $"mesh {(isMeshAttachment ? prim!.MeshId.ToString() : "no")} entity {entityId:N}");
+
+        // TEMP diagnostic (2026-07-22, hair-alpha investigation): the [FaceAlpha] material log
+        // only ever printed mesh id / node index, impossible to match back to "which worn item is
+        // this" across a whole outfit's worth of interleaved log lines. MetadataComponent.Name is
+        // USELESS here — it only populates from a server ObjectProperties reply, which SLNG never
+        // requests for attachments on login/wear (confirmed empty for every worn item in the first
+        // pass of this diagnostic). Print the SL attachment POINT instead: hair is conventionally
+        // worn at point 2 (Skull) — grep "pt=2" to find it without a name.
+        if (isMeshAttachment)
+            GD.Print($"[FaceAlpha] attachment pt={attachment.AttachmentPoint} entity={entityId:N} mesh={prim!.MeshId.ToString()[..8]}");
 
         // Avatar must already be rendered.
         if (!_visuals.TryGetValue(attachment.AvatarEntityId, out var avatarVisual)) return;
@@ -750,6 +826,14 @@ public partial class AvatarRenderer : Node3D
             oldRigged.QueueFree();
             _riggedAttachments.Remove(entityId);
         }
+
+        // TEMP diagnostic (2026-07-22, hair-alpha investigation): request the name/description
+        // the sim never sends unasked for a worn attachment, so it can be matched up with the
+        // [FaceAlpha] material logs (see OnComponentUpdated's MetadataComponent case above for
+        // where the async reply gets printed). One-shot per entity — cheap, but no reason to
+        // re-ask on every redundant UpdateAttachment call.
+        if (isMeshAttachment && _propertiesRequested.Add(entityId))
+            _session?.RequestObjectProperties(entityId);
 
         // Kick off mesh/texture load for mesh attachments.
         if (prim != null)
@@ -832,7 +916,7 @@ public partial class AvatarRenderer : Node3D
                 // the node is in the tree so Godot can resolve and drive the skinning.
                 mi.Skeleton = mi.GetPathTo(skeleton);
                 RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices, faces, defaultFace, meshId);
-                _ = ApplyFaceMaterialsAsync(mi, faceIndices, faces, defaultFace, avatarVisual);
+                _ = ApplyFaceMaterialsAsync(mi, faceIndices, faces, defaultFace, avatarVisual, meshId);
             }).CallDeferred();
             return;
         }
@@ -879,7 +963,7 @@ public partial class AvatarRenderer : Node3D
             mi.Quaternion = new Godot.Quaternion(slRot.X, slRot.Z, -slRot.Y, slRot.W);
             boneAttach.AddChild(mi);
             RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices.ToArray(), faces, defaultFace, meshId);
-            _ = ApplyFaceMaterialsAsync(mi, faceIndices.ToArray(), faces, defaultFace, avatarVisual);
+            _ = ApplyFaceMaterialsAsync(mi, faceIndices.ToArray(), faces, defaultFace, avatarVisual, meshId);
         }).CallDeferred();
     }
 
@@ -890,10 +974,11 @@ public partial class AvatarRenderer : Node3D
     /// Bakes-on-Mesh faces to that avatar's server-baked textures.</summary>
     private async System.Threading.Tasks.Task ApplyFaceMaterialsAsync(
         MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace,
-        AvatarVisual? avatarVisual = null)
+        AvatarVisual? avatarVisual = null, Guid meshId = default)
     {
         if (mi.Mesh is not ArrayMesh am) return;
         int surfaceCount = am.GetSurfaceCount();
+        GD.Print($"[FaceAlpha] mesh={meshId.ToString()[..8]} node='{mi.Name}' surfaces={surfaceCount} faceIndices=[{string.Join(",", faceIndices)}]");
 
         for (int surf = 0; surf < surfaceCount; surf++)
         {
@@ -969,6 +1054,39 @@ public partial class AvatarRenderer : Node3D
         if (tintTranslucent)
             material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
 
+        // Authoritative alpha signal: when this face carries a real glTF PBR material
+        // (RenderMaterialID != null, e.g. modern PBR-authored clothing), its own declared
+        // alphaMode is a CREATOR-DECLARED fact, not a pixel-content guess — exactly the signal
+        // LLDrawPoolAlpha uses to route MASK content through the opaque/depth-writing pass and
+        // only true BLEND content through the unsorted/no-depth-write pass (see this session's
+        // hair-alpha investigation notes). Skips the pixel-heuristic in ApplyAlphaCutout
+        // entirely below when present — no reason to guess when we were told. Legacy
+        // no-material content (this hair applier included) has no such record and falls through
+        // to that heuristic unchanged.
+        bool hasExplicitAlpha = false;
+        if (!tintTranslucent && ft.MaterialId != Guid.Empty && _assetService != null)
+        {
+            var pbrMat = await _assetService.GetMaterialAsync(ft.MaterialId).ConfigureAwait(false);
+            if (pbrMat != null)
+            {
+                hasExplicitAlpha = true;
+                switch (pbrMat.AlphaMode)
+                {
+                    case SLNG.Assets.PbrAlphaMode.Blend:
+                        material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                        break;
+                    case SLNG.Assets.PbrAlphaMode.Mask:
+                        material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+                        material.AlphaScissorThreshold = pbrMat.AlphaCutoff;
+                        material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
+                        break;
+                    default:
+                        material.Transparency = BaseMaterial3D.TransparencyEnum.Disabled;
+                        break;
+                }
+            }
+        }
+
         // Bakes-on-Mesh: a face carrying one of the IMG_USE_BAKED_* magic ids wants the AVATAR's
         // server-baked texture for that channel, not the magic id itself (which is just a red UV
         // placeholder asset). Viewer: LLViewerObject::getBakedTextureForMagicId. If the bake
@@ -983,10 +1101,11 @@ public partial class AvatarRenderer : Node3D
 
         var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
         ImageTexture? cached = _gpuCache?.Get(texId) as ImageTexture;
-        if (cached != null) { 
-            material.AlbedoTexture = cached; 
-            ApplyAlphaCutout(material, cached);
-            return material; 
+        if (cached != null) {
+            material.AlbedoTexture = cached;
+            if (!hasExplicitAlpha)
+                ApplyAlphaCutout(material, cached, texId);
+            return material;
         }
 
         var textureData = await _assetService.GetTextureAsync(texId).ConfigureAwait(false);
@@ -1012,32 +1131,119 @@ public partial class AvatarRenderer : Node3D
         var built = await tcs.Task.ConfigureAwait(false);
         if (built != null) {
             material.AlbedoTexture = built;
-            ApplyAlphaCutout(material, built);
+            if (!hasExplicitAlpha)
+                ApplyAlphaCutout(material, built, texId);
         }
         return material;
     }
 
-    private static void ApplyAlphaCutout(StandardMaterial3D material, ImageTexture tex)
+    // Fallback heuristic for LEGACY no-material content only — every face with a real glTF PBR
+    // material (RenderMaterialID present) is decided authoritatively in BuildFaceMaterialAsync
+    // from that material's own declared alphaMode and never reaches here (hasExplicitAlpha
+    // guard). This function only ever sees a face with NO material record: clothing, mesh
+    // body/head, and hair applied as an ordinary (non-BOM) face texture by a HUD applier are all
+    // indistinguishable at that point (a non-BOM hair applier just sets a normal texture id on a
+    // normal face, same as a shirt) — so classification has to come from the decoded pixels.
+    //
+    // 2026-07-22 (hair-alpha investigation), three-way split by REAL per-pixel alpha content,
+    // verified against ~65 real dumped avatar/attachment face textures on this machine (4
+    // confirmed hair variants, several confirmed-opaque controls, plus every other face texture
+    // this session's client happened to load):
+    //   - No transparent texel anywhere (min==255): fully opaque control textures measured this
+    //     session all show avgA=1.00 exactly. Skip transparency entirely — strictly cheaper and
+    //     sharper than running an always-passing AlphaHash test for nothing.
+    //   - Otherwise, compute fracMid = fraction of pixels with alpha STRICTLY between 16 and 239
+    //     (excludes both hard-transparent and hard-opaque texels, so an ordinary hard cutout's
+    //     AA-edge sliver doesn't count as "graded"). Real measured data clustered cleanly into
+    //     two groups with a wide, empty gap between them: hard-cutout content (boots, gloves,
+    //     accessories with an anti-aliased silhouette edge) topped out at fracMid<=0.032; every
+    //     genuinely graded-alpha sample (the 4 confirmed hair variants at 0.199-0.254, plus
+    //     several other worn parts with the same soft-gradient profile) started at fracMid>=0.101.
+    //     GradedThreshold=0.06 sits in the middle of that gap. This is NOT the same as Godot's own
+    //     binary DetectAlpha() verdict (kept only for the diagnostic log below) — DetectAlpha()
+    //     would call any texture with even one AA-edge pixel "Blend", which is wrong for "hard
+    //     cutout with soft edges" and was the proximate cause of the clothing-invisible regression
+    //     the first time a Blend/Hash split lived here.
+    //   - fracMid > threshold → genuinely graded (hair-like): real Alpha blend, no per-pixel
+    //     dithering. Deliberately NOT DepthDrawMode.Always (tried previously; breaks layered hair
+    //     cards) — left at Godot's default (no depth write) for true Alpha, same as before.
+    //   - Otherwise (ambiguous / hard-cutout-with-AA-edge): AlphaHash, unchanged from before —
+    //     dithered but still depth-tested/written like opaque geometry, so misclassifying
+    //     ordinary clothing here can never cause the cross-layer occlusion loss true Alpha did
+    //     (see godot-material-transparency-gotchas / avatar-alpha-hash-vs-scissor memory notes).
+    //
+    // Mip-safety: Image.GetData() returns Godot's raw internal buffer, which for an image that's
+    // already had GenerateMipmaps() called on it (both callers do, before this runs) is EVERY mip
+    // level concatenated starting at level 0 — verified against Godot 4.7's own core/io/image.cpp.
+    // Godot's OWN DetectAlpha() self-corrects for this (it recomputes its scan length via
+    // _get_mipmap_offset_and_size(1, ...) to mip 0's byte size before scanning), so it was never
+    // actually the source of a bad verdict here — but our manual per-pixel scan below did NOT have
+    // that guard before this fix, and blurred/graded alpha values from smaller generated mips could
+    // inflate a hard-edged cutout texture's apparent "graded pixel" fraction. Slice to mip 0 only
+    // (RGBA8 is uncompressed with no block padding, so mip 0's byte span is exactly
+    // width*height*4) to remove that risk regardless of call order.
+    private const float GradedAlphaThreshold = 0.06f;
+
+    private static void ApplyAlphaCutout(StandardMaterial3D material, ImageTexture tex, Guid texId = default)
     {
+        if (material.Transparency == BaseMaterial3D.TransparencyEnum.Alpha) return;
+
         var img = tex.GetImage();
-        if (img == null) return;
-
-        var alphaMode = img.DetectAlpha();
-        if (alphaMode == Image.AlphaMode.None) return; // fully opaque
-
-        if (material.Transparency != BaseMaterial3D.TransparencyEnum.Alpha)
+        if (img == null)
         {
-            if (alphaMode == Image.AlphaMode.Blend)
-            {
-                material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-            }
-            else
-            {
-                material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-                material.AlphaScissorThreshold = 0.5f;
-            }
+            material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaHash;
+            material.AlphaHashScale = 1.0f;
+            material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
+            return;
         }
-        material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+
+        var data = img.GetData();
+        int w = img.GetWidth(), h = img.GetHeight();
+        int mip0Bytes = Math.Min(data.Length, w * h * 4);
+        int pixelCount = mip0Bytes / 4;
+
+        long sum = 0; int min = 255, max = 0; int midCount = 0;
+        for (int i = 3; i < mip0Bytes; i += 4)
+        {
+            byte a = data[i];
+            sum += a;
+            if (a < min) min = a;
+            if (a > max) max = a;
+            if (a > 16 && a < 239) midCount++;
+        }
+        float avg = pixelCount > 0 ? sum / 255f / pixelCount : -1f;
+        float fracMid = pixelCount > 0 ? (float)midCount / pixelCount : 0f;
+
+        // Godot's own binary verdict, logged for comparison only — the real decision below uses
+        // fracMid, not this.
+        var alphaMode = img.DetectAlpha();
+        GD.Print($"[FaceAlpha] tex={texId.ToString()[..8]} size={w}x{h} mode={alphaMode} avgA={avg:0.00} minA={min} maxA={max} fracMid={fracMid:0.000}");
+
+        // TEMP diagnostic (2026-07-22, hair-top-not-showing investigation): dump every avatar
+        // face texture to disk (once each) so its actual UV-atlas layout can be inspected
+        // directly instead of guessed at from in-world screenshots.
+        if (texId != Guid.Empty && _dumpedTextures.Add(texId))
+        {
+            var dir = Godot.OS.GetUserDataDir() + "/debug_textures";
+            Godot.DirAccess.MakeDirRecursiveAbsolute(dir);
+            img.SavePng($"{dir}/{texId}.png");
+        }
+
+        if (min == 255)
+        {
+            material.Transparency = BaseMaterial3D.TransparencyEnum.Disabled;
+            return;
+        }
+
+        if (fracMid > GradedAlphaThreshold)
+        {
+            material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+            return;
+        }
+
+        material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaHash;
+        material.AlphaHashScale = 1.0f;
+        material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
     }
 
     /// <summary>Registers a worn mesh's Bakes-on-Mesh usage on its avatar and hides the system

@@ -154,6 +154,17 @@ public sealed class WorldSimulation : IDisposable
         }
         _world.NotifyComponentUpdated(entity, prim);
 
+        // TEMP diagnostic (2026-07-22, hair-applier-live-update investigation): confirm whether
+        // an ObjectUpdate is even RECEIVED for an already-worn attachment when its texture is
+        // changed live by a HUD script (llSetLinkPrimitiveParamsFast(PRIM_TEXTURE, ...) etc.) —
+        // reported as "switched hairstyle via HUD, no new [FaceAlpha] log lines at all". Gated to
+        // entities already known as attachments so this doesn't spam for the whole scene.
+        if (entity.GetComponent<AttachmentComponent>() != null)
+        {
+            var faceSummary = e.Faces == null ? "null" : string.Join(",", e.Faces.Select(f => f.TextureId.ToString()[..8]));
+            System.Console.WriteLine($"[FaceAlpha] ObjectUpdate entity={entity.Id:N} localId={e.LocalId} defaultTex={e.TextureId.ToString()[..8]} faces=[{faceSummary}]");
+        }
+
         // Seed the entity's real simulator object UUID (distinct from Entity.Id, which is an
         // internal ECS identity) so ApplyObjectProperties can later resolve the ObjectPropertiesFamily
         // response back to this entity. Never overwrite Name/Description/etc. here -- those only

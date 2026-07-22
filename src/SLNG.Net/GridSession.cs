@@ -64,7 +64,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         LibreMetaverse.Settings.LogLevel = Microsoft.Extensions.Logging.LogLevel.Error;
 
         _client = new GridClient();
-        _client.Settings.Agent.SendAppearance = false;
+        // MUST stay true. This single flag gates LibreMetaverse's entire appearance/bake
+        // workflow: Simulator_OnCapabilitiesReceived (the on-login / on-region-change trigger),
+        // the AgentWearablesUpdate bake trigger, and the sim's RebakeAvatarTextures request are
+        // ALL no-ops when it's false (see AppearanceManager.cs lines 3160, 2993, 3011). With it
+        // false the client never asks the sim to composite bakes (server-side baking) and never
+        // client-side bakes + uploads + AgentSetAppearance (OpenSim), so the LOCAL agent's baked
+        // textures are never produced. The only self AvatarAppearance we then receive is the sim's
+        // initial unprompted relay carrying a placeholder texture entry (a single blank,
+        // alpha=0 sentinel repeated across every bake channel), and nothing ever replaces it --
+        // the system body/head stays fully opaque instead of being hidden under a worn mesh body.
+        // Other avatars are unaffected because THEIR viewers produce their bakes and the sim
+        // relays them to us with real, per-channel ids.
+        _client.Settings.Agent.SendAppearance = true;
 
         // Use the HTTP GetTexture CAP instead of the legacy UDP image transfer. UDP transfers
         // time out and hand back truncated JPEG2000 streams on busy grids (the "Tile part
@@ -88,6 +100,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Network.SimDisconnected += OnSimDisconnected;
         _client.Avatars.AvatarAppearance += OnAvatarAppearance;
         _client.Avatars.AvatarAnimation += OnAvatarAnimation;
+        _client.Appearance.AppearanceSet += OnAppearanceSet;
         _client.Friends.FriendOnline += OnFriendOnline;
         _client.Friends.FriendOffline += OnFriendOffline;
         _client.Self.IM += OnInstantMessage;
@@ -350,6 +363,50 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             e.VisualParams?.ToArray() ?? Array.Empty<byte>(),
             textures
         ));
+    }
+
+    /// <summary>Fired when LibreMetaverse's appearance workflow (server-side bake POST on SL, or
+    /// client-side bake + AgentSetAppearance on OpenSim) completes for the LOCAL agent. The self
+    /// avatar's baked textures are produced by OUR viewer, not pushed unprompted by the sim, so
+    /// this is the authoritative moment the real bakes exist.
+    ///
+    /// On server-side-baking regions LibreMetaverse also re-raises Avatars.AvatarAppearance for us
+    /// with the composited ids (AppearanceManager.cs line 2323), so <see cref="OnAvatarAppearance"/>
+    /// would already cover that case. But the OpenSim client-side path only populates
+    /// <c>Appearance.MyTextures</c> and does NOT re-raise AvatarAppearance for self -- whether we
+    /// then see a self AvatarAppearance depends on the sim echoing one, which is grid-dependent.
+    /// Reading MyTextures here and emitting it through the same neutral event closes that gap so
+    /// the renderer picks up the real bakes regardless of grid. Redundant-but-identical on SSB.</summary>
+    private void OnAppearanceSet(object? sender, AppearanceSetEventArgs e)
+    {
+        if (!e.Success) return;
+
+        var te = _client.Appearance.MyTextures;
+        var faces = te?.FaceTextures;
+        if (faces == null) return;
+
+        // Mirror OnAvatarAppearance: key by face index, drop empty slots. Also drop the generic
+        // DEFAULT_AVATAR_TEXTURE that MyTextures carries for never-baked slots, so we only ever
+        // emit genuinely-composited bakes and never regress a real bake to the default skin.
+        var textures = new Dictionary<int, Guid>();
+        for (int i = 0; i < faces.Length; i++)
+        {
+            var face = faces[i];
+            if (face != null
+                && face.TextureID != LibreMetaverse.UUID.Zero
+                && face.TextureID != AppearanceManager.DEFAULT_AVATAR_TEXTURE)
+            {
+                textures[i] = face.TextureID.Guid;
+            }
+        }
+
+        if (textures.Count == 0) return;
+
+        RaiseAvatarAppearance(new AvatarAppearanceEvent(
+            _client.Network.CurrentSim?.Handle ?? 0,
+            _client.Self.AgentID.Guid,
+            _client.Appearance.MyVisualParameters ?? Array.Empty<byte>(),
+            textures));
     }
 
     private void OnAvatarAnimation(object? sender, LibreMetaverse.AvatarAnimationEventArgs e)
@@ -797,6 +854,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// the inventory root (LibreMetaverse's own FindFolderForType behavior) if the grid never
     /// sent one — same fallback shape as <see cref="TrashFolderId"/>.</summary>
     public Guid? LandmarksFolderId => _client.Inventory.FindFolderForType(FolderType.Landmark).Guid;
+
+    /// <summary>Folder id of the Current Outfit system folder (COF), or null until login. Its
+    /// children are LINK items pointing at whatever's actually worn/attached right now — the
+    /// same folder Firestorm's "Worn Items" tab reads, and the fastest way to identify a worn
+    /// attachment by name without a dedicated UI (browse to it in the existing inventory tree).</summary>
+    public Guid? CurrentOutfitFolderId => _client.Inventory.FindFolderForType(FolderType.CurrentOutfit).Guid;
 
     /// <summary>Checks if a folder is the Landmarks system folder or any descendant subfolder of it.</summary>
     public bool IsInLandmarksSubtree(Guid folderId)
@@ -1270,6 +1333,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Terrain.LandPatchReceived -= OnLandPatchReceived;
         _client.Network.SimConnected -= OnSimConnected;
         _client.Network.SimDisconnected -= OnSimDisconnected;
+        _client.Appearance.AppearanceSet -= OnAppearanceSet;
         _client.Friends.FriendOnline -= OnFriendOnline;
         _client.Friends.FriendOffline -= OnFriendOffline;
         _client.Self.IM -= OnInstantMessage;

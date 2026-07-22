@@ -612,6 +612,26 @@ public partial class ObjectRenderer : Node3D
                 material.EmissionEnabled = pbr.EmissiveFactor != System.Numerics.Vector3.Zero;
                 material.Emission = new Godot.Color(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z);
 
+                // glTF's own alphaMode is authoritative here — a real, creator-declared signal,
+                // never a pixel-content guess (see AvatarRenderer.BuildFaceMaterialAsync's
+                // identical use of this field, added alongside PbrMaterialData.AlphaMode this
+                // session — this branch previously never set Transparency at all for PBR-
+                // materialed faces, so a BLEND/MASK-authored glTF material rendered fully opaque
+                // regardless of its own alpha content). PbrAlphaMode.Opaque intentionally leaves
+                // Transparency untouched: colorTint may have already forced Alpha above for a
+                // translucent per-face tint, which is a separate SL signal from the material's
+                // own declared transparency and must not be downgraded back to opaque.
+                if (pbr.AlphaMode == SLNG.Assets.PbrAlphaMode.Blend)
+                {
+                    material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                }
+                else if (pbr.AlphaMode == SLNG.Assets.PbrAlphaMode.Mask)
+                {
+                    material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+                    material.AlphaScissorThreshold = pbr.AlphaCutoff;
+                    material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
+                }
+
                 var tasks = new List<System.Threading.Tasks.Task>();
                 if (pbr.BaseColorTextureId != Guid.Empty)
                 {
@@ -662,14 +682,27 @@ public partial class ObjectRenderer : Node3D
 
     /// <summary>Picks the right transparency mode from the texture's actual alpha:
     /// binary alpha (foliage/fences) → alpha-scissor cutout; graded alpha (glass, soft edges)
-    /// → alpha blend; fully opaque → left unchanged. Alpha surfaces render double-sided.</summary>
+    /// → alpha blend; fully opaque → left unchanged. Alpha surfaces render double-sided.
+    ///
+    /// Does NOT gate on DetectAlpha() == None to skip entirely — that heuristic is unreliable
+    /// (a fully alpha=0 placeholder texture, correct data, was reported opaque and rendered
+    /// solid instead of cut; see AvatarRenderer.ApplyAlphaCutout and the
+    /// godot-material-transparency-gotchas memory note for the avatar-side instance of this
+    /// exact bug). A "None" verdict here now falls through to the AlphaScissor branch below
+    /// instead of returning early, so a false negative degrades to a cheap no-op cutout test
+    /// rather than silently staying opaque. DetectAlpha is still used, lower-stakes, only to
+    /// choose BETWEEN Blend and Scissor once we know we're applying something.
+    ///
+    /// Deliberately stays on AlphaScissor (not AlphaHash) for the Bit case: this runs per-face
+    /// on potentially thousands of world prims, so it keeps the cheaper cutout mode. Avatar
+    /// content (bakes, worn mesh attachments) is bounded per-avatar and uses AlphaHash instead —
+    /// see AvatarRenderer for that reasoning.</summary>
     private static void ApplyAlphaCutout(StandardMaterial3D material, ImageTexture tex)
     {
         var img = tex.GetImage();
         if (img == null) return;
 
         var alphaMode = img.DetectAlpha();
-        if (alphaMode == Image.AlphaMode.None) return; // fully opaque — leave default
 
         // If the primitive is already explicitly translucent via color tint, keep true Alpha blending.
         // Otherwise, pick the right mode based on the texture's alpha content.
@@ -682,9 +715,12 @@ public partial class ObjectRenderer : Node3D
             }
             else
             {
-                // Binary alpha (fences, foliage)
+                // Binary alpha (fences, foliage) — and the safe fallback for a "None" verdict
+                // that might be a DetectAlpha() false negative.
                 material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
                 material.AlphaScissorThreshold = 0.5f;
+                // Free once MSAA 3D is enabled project-wide (currently off); harmless no-op until then.
+                material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
             }
         }
         material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
