@@ -36,3 +36,7 @@ Examples:
 
 - **Always update the version number**: When implementing a new feature, a fix, or significant UI change, you MUST update the `AppVersion` constant in `app/scripts/Boot.cs` (e.g. from `v0.1.54-alpha` to `v0.1.55-alpha`) to reflect the new state. This ensures the version is visible on the login screen and title bar.
 
+
+# UI Localization Rule
+
+- **Always localize new UI strings**: When creating or modifying UI elements (windows, panels, buttons, etc.), never hardcode user-facing strings. Always use SLNG.App.UI.L10n.Tr("ui.component.key") in C# or translation keys in .tscn files, and immediately add the corresponding keys to both pp/i18n/en-US.json and pp/i18n/de-DE.json.
