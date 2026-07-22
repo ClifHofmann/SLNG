@@ -473,7 +473,22 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// while actually falling/rolling.</summary>
     private void OnTerseObjectUpdate(object? sender, TerseObjectUpdateEventArgs e)
     {
-        if (e.Update.Avatar) return; // avatar terse updates: not covered by this event pipeline
+        if (e.Update.Avatar || e.Prim is Avatar)
+        {
+            bool isLocalAgent = e.Prim.ID == _client.Self.AgentID;
+            var av = e.Prim as Avatar;
+            AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
+                e.Simulator.Handle,
+                e.Prim.LocalID,
+                e.Prim.ID.Guid,
+                new System.Numerics.Vector3(e.Prim.Position.X, e.Prim.Position.Y, e.Prim.Position.Z),
+                new System.Numerics.Quaternion(e.Prim.Rotation.X, e.Prim.Rotation.Y, e.Prim.Rotation.Z, e.Prim.Rotation.W),
+                av?.FirstName ?? "",
+                av?.LastName ?? "",
+                isLocalAgent));
+            return;
+        }
+
         RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: false);
     }
 
