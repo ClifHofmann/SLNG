@@ -994,6 +994,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     break;
             }
         }
+
+        // Deduplicate entries under Current Outfit (COF) if multiple links/items point to the same target
+        if (folderUuid == _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit))
+        {
+            var seenTargets = new HashSet<Guid>();
+            var deduped = new List<InventoryEntry>(result.Count);
+            foreach (var item in result)
+            {
+                var target = item.IsLink ? item.LinkTargetId : item.Id;
+                if (target != Guid.Empty && !seenTargets.Add(target))
+                {
+                    continue; // Skip duplicate link/item pointing to same target
+                }
+                deduped.Add(item);
+            }
+            result = deduped;
+        }
+
         return result;
     }
 
@@ -1123,6 +1141,35 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 _client.Appearance.Detach(u);
             }
         }
+
+        // Clean up stale link nodes from local Store under COF
+        try
+        {
+            if (cofUuid != LibreMetaverse.UUID.Zero)
+            {
+                var cofNode = store?.GetNodeOrDefault(cofUuid);
+                if (cofNode != null)
+                {
+                    var staleKeys = new List<LibreMetaverse.UUID>();
+                    foreach (var childNode in cofNode.Nodes.Values)
+                    {
+                        if (childNode.Data is LibreMetaverse.InventoryItem cofItem)
+                        {
+                            var target = cofItem.IsLink() ? (cofItem.ResolvedItemID != LibreMetaverse.UUID.Zero ? cofItem.ResolvedItemID : cofItem.AssetUUID) : cofItem.UUID;
+                            if (uuidsToDetach.Contains(cofItem.UUID) || uuidsToDetach.Contains(target))
+                            {
+                                staleKeys.Add(cofItem.UUID);
+                            }
+                        }
+                    }
+                    foreach (var k in staleKeys)
+                    {
+                        cofNode.Nodes.Remove(k);
+                    }
+                }
+            }
+        }
+        catch { }
 
         return Task.CompletedTask;
     }

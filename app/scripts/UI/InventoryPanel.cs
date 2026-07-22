@@ -554,11 +554,6 @@ public partial class InventoryPanel : SLNGWindow
             text += entry.GetPermissionSuffix();
 
             bool isWorn = wornMap.TryGetValue(entry.Id, out var loc) || (entry.IsLink && wornMap.TryGetValue(entry.LinkTargetId, out loc));
-            if (!isWorn && _session?.CurrentOutfitFolderId is { } cofId && entry.ParentId == cofId)
-            {
-                isWorn = true;
-                loc = "getragen";
-            }
 
             if (isWorn)
             {
@@ -566,7 +561,7 @@ public partial class InventoryPanel : SLNGWindow
                 {
                     text += $" (getragen an {loc})";
                 }
-                else
+                else if (_session?.CurrentOutfitFolderId is { } cofId && entry.ParentId != cofId)
                 {
                     text += " (getragen)";
                 }
