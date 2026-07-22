@@ -98,7 +98,6 @@ public partial class InventoryPanel : SLNGWindow
         _contextMenu.AddItem("Delete", 4);
         _contextMenu.AddItem("Teleport", 5);
         _contextMenu.AddItem("Detach", 6);
-        _contextMenu.AddItem("Weitergeben / Give...", 7);
         _contextMenu.IdPressed += OnContextMenuIdPressed;
         
         _tree = new InventoryTree 
@@ -333,7 +332,6 @@ public partial class InventoryPanel : SLNGWindow
                     _contextMenu.SetItemDisabled(4, false); // Delete
                     _contextMenu.SetItemDisabled(5, !isLandmark); // Teleport
                     _contextMenu.SetItemDisabled(6, !isWorn); // Detach
-                    _contextMenu.SetItemDisabled(7, !canTransfer); // Weitergeben / Give...
 
                     _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
                     _contextMenu.Popup();
@@ -419,28 +417,6 @@ public partial class InventoryPanel : SLNGWindow
             if (isFolder) return;
             var parts = metaStr.Split(',');
             _ = DetachAndRefreshAsync(itemId, parts);
-        }
-        else if (id == 7) // Weitergeben / Give...
-        {
-            var parts = metaStr.Split(',');
-            if (!isFolder && parts.Length >= 4 && !bool.Parse(parts[3]))
-            {
-                _status.Text = "Item cannot be given: no transfer permissions.";
-                return;
-            }
-
-            var itemName = item.GetText(0).Replace("  ⇢", "");
-            int assetType = parts.Length >= 5 && int.TryParse(parts[4], out var at) ? at : 0;
-
-            var chatWin = GetTree().Root.FindChild("ChatWindow", true, false) as ChatWindow;
-            if (chatWin != null && chatWin.HasActiveImTab())
-            {
-                chatWin.GiveInventoryItemToActiveTab(itemId, itemName, assetType, isFolder);
-            }
-            else
-            {
-                _status.Text = "Open an IM chat tab with a recipient first.";
-            }
         }
     }
 
