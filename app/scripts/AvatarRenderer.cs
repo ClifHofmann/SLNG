@@ -387,12 +387,11 @@ public partial class AvatarRenderer : Node3D
             float halfBodyZ = 0.5f * visual.BodySizeZ;
             rootPos.Y -= (halfBodyZ + visual.FootOffsetY);
 
-            // Viewer parity: LLVOAvatar::getRenderPosition applies a worn rigged mesh's pelvis
-            // fixup (fitted-mesh skin data) to the avatar's world RENDER position every frame —
-            // "pos[VZ] += fixup" — not to the mPelvis joint. SL Z-up (VZ) is Godot's Y-up here
-            // since RenderConfig.ToGodot has already done the axis conversion above.
-            if (TryGetActivePelvisFixup(visual, out var pelvisFixupZ))
+            float pelvisFixupZ = 0f;
+            if (TryGetActivePelvisFixup(visual, out pelvisFixupZ))
                 rootPos.Y += pelvisFixupZ;
+
+            GD.Print($"[HeightDebug] entity={entity.Id} (isLocal={avatar.IsLocalAgent}) simPos.Z={transform.Position.Z:F3} rootPos.Y={rootPos.Y:F3} BodySizeZ={visual.BodySizeZ:F3} FootOffsetY={visual.FootOffsetY:F3} pelvisFixupZ={pelvisFixupZ:F3}");
 
             visual.Root.Position = rootPos;
 
