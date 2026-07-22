@@ -478,17 +478,6 @@ public partial class AvatarRenderer : Node3D
             // in this pipeline read or applied before now.
             rootPos.Y += avatar.HoverOffsetZ;
 
-            // hasShape=false means VisualParams never reached this AvatarComponent (see
-            // WorldSimulation.FindAvatarEntityByAgentId's doc comment for the AgentId-race gap
-            // this used to fall through) -- BodySizeZ/FootOffsetY below are then just the generic
-            // AvatarVisual field defaults (1.90 / 0), not this avatar's actual proportions, and
-            // the avatar will float/sink by whatever the real shape differs from that default.
-            // ScaleZ (round 9): the avatar's own wire-transmitted Scale.Z, diagnostic only -- see
-            // AvatarUpdateEvent's doc comment. Logged here so a live session can directly compare
-            // it against BodySizeZ and the real Firestorm-displayed height (both avatars measured
-            // ~14-15cm under that reference, ruling out a remote-specific cause).
-            GD.Print($"[HeightDebug] entity={entity.Id} (isLocal={avatar.IsLocalAgent}) hasShape={avatar.VisualParams != null} simPos.Z={transform.Position.Z:F3} rootPos.Y={rootPos.Y:F3} BodySizeZ={visual.BodySizeZ:F3} PelvisToFootZ={visual.PelvisToFootZ:F3} FootOffsetY={visual.FootOffsetY:F3} pelvisFixupZ={pelvisFixupZ:F3} hoverOffsetZ={avatar.HoverOffsetZ:F3} avatarHoverParamZ={visual.AvatarHoverParamZ:F3} ScaleZ={avatar.ScaleZ:F3}");
-
             visual.Root.Position = rootPos;
 
             var slQuat = new Godot.Quaternion(
@@ -496,85 +485,6 @@ public partial class AvatarRenderer : Node3D
                 -transform.Rotation.Y, transform.Rotation.W);
             visual.Root.Quaternion = slQuat;
 
-            // Ground-truth verification log (2026-07-22, round 5 of the ground-sinking
-            // investigation): confirms the NEW measured-offset approach actually lands the FOOT
-            // bone (not just Root) at the network Z / groundHeight — Root matching groundHeight was
-            // proven to be a tautology of the old subtract-then-re-add design in rounds 2-4 and is
-            // deliberately NOT what this checks anymore. Throttled to ~1/sec, local-agent-only.
-            if (avatar.IsLocalAgent)
-            {
-                _timeSinceRootPosLog += GetProcessDeltaTime();
-                if (_timeSinceRootPosLog > 1.0)
-                {
-                    _timeSinceRootPosLog = 0;
-                    string footInfo = "mFootLeft:no-skeleton";
-                    if (visual.Skeleton != null)
-                    {
-                        int footBone = visual.Skeleton.FindBone("mFootLeft");
-                        if (footBone >= 0)
-                        {
-                            var footGlobal = visual.Skeleton.GlobalTransform * visual.Skeleton.GetBoneGlobalPose(footBone);
-                            float footAsSlZ = RenderConfig.FromGodot(entity.RegionHandle, footGlobal.Origin).Z;
-                            footInfo = $"mFootLeft.GlobalTransform.Origin.Y={footGlobal.Origin.Y:0.####} (as SL Z)={footAsSlZ:0.####}";
-                        }
-                        else
-                        {
-                            footInfo = "mFootLeft:bone-not-found";
-                        }
-                    }
-
-                    GD.Print($"[RootApply] entity={entity.Id} {footInfo}");
-                }
-            }
-            else
-            {
-                // Hypothesis-1 diagnostic (2026-07-22, round 3): does simPos.Z relate to the
-                // REMOTE avatar's own ground the same way the local avatar's
-                // clampTargetZ = groundHeight + halfBodyZ does (AvatarController.cs)? The local
-                // avatar's transform.Position.Z is OUR OWN construction (clamped to that formula);
-                // a remote avatar's simPos.Z comes straight from OpenSim with no such massaging on
-                // our side, and nothing before this queried ground height at a remote avatar's own
-                // X/Y to check the assumption that it means the same thing. Diagnostic-only --
-                // NOT wired into the render path. See claude-handover-height.md, round 3.
-                //
-                // Deliberately UNTHROTTLED (round 5): UpdateVisual is not a per-frame _Process
-                // callback -- it fires per-entity from ECS component-update events, which for an
-                // idle remote avatar arrive in sparse bursts seconds apart, not every frame. A
-                // GetProcessDeltaTime()-based accumulator (rounds 3-4) only advances by one frame's
-                // delta PER ACTUAL CALL, so it could take dozens of real seconds to cross a 1s
-                // threshold even with wall-clock time clearly passing -- exactly what round 4's live
-                // test showed (one line in 35+ seconds). This is diagnostic-only and temporary; an
-                // idle remote avatar's UpdateVisual calls are already infrequent, so just print
-                // every time rather than fight frame-delta-vs-wall-clock throttling again.
-                var rawGodotPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
-                var spaceState = GetWorld3D().DirectSpaceState;
-                var rayFrom = rawGodotPos + new Godot.Vector3(0, 5.0f, 0);
-                var rayTo = rawGodotPos - new Godot.Vector3(0, 100.0f, 0);
-                var query = PhysicsRayQueryParameters3D.Create(rayFrom, rayTo);
-                query.CollisionMask = 1; // terrain/objects only, same mask AvatarController uses
-                var result = spaceState.IntersectRay(query);
-
-                if (result.Count > 0)
-                {
-                    // Godot Y == SL Z directly for this axis — see RenderConfig.ToGodot/FromGodot
-                    // (only X/Y get the floating-origin shift; height passes through unchanged).
-                    float remoteGroundHeight = result["position"].AsVector3().Y;
-                    float halfBodyZDiag = 0.5f * visual.BodySizeZ;
-                    // Round 6: settled hypothesis 1 via linden_llvoavatar.cpp source -- simPos.Z is
-                    // PELVIS, so simPos.Z-remoteGroundHeight should land near PelvisToFootZ (this
-                    // avatar's real SlJointComposer-computed pelvis-to-foot distance), NOT halfBodyZ.
-                    // Logging both so a live run can directly confirm the fix now applied above.
-                    GD.Print($"[RemoteGroundDiag] entity={entity.Id} simPos.Z={transform.Position.Z:F3} " +
-                             $"remoteGroundHeight={remoteGroundHeight:F3} simPos.Z-remoteGroundHeight={transform.Position.Z - remoteGroundHeight:F3} " +
-                             $"halfBodyZ={halfBodyZDiag:F3} PelvisToFootZ={visual.PelvisToFootZ:F3} FootOffsetY={visual.FootOffsetY:F3} " +
-                             $"hoverOffsetZ={avatar.HoverOffsetZ:F3} avatarHoverParamZ={visual.AvatarHoverParamZ:F3} " +
-                             "(simPos.Z+avatarHoverParamZ-remoteGroundHeight should now land near PelvisToFootZ + hoverOffsetZ -- round 11)");
-                }
-                else
-                {
-                    GD.Print($"[RemoteGroundDiag] entity={entity.Id} simPos.Z={transform.Position.Z:F3} ray missed ground (no Layer-1 collider under this avatar's X/Y)");
-                }
-            }
         }
 
         // 2. Apply Shape Morphs (Skeletal Distortions) — only when params actually changed.
@@ -610,27 +520,8 @@ public partial class AvatarRenderer : Node3D
 
                 var distortions = AvatarShapeService.ComputeDistortions(avatar.VisualParams, charDir);
 
-                // Sanity check (2026-07-22, round 3): hasShape=True only proves the VisualParams
-                // byte array arrived, not that it carries genuinely non-default distortion data --
-                // a near-empty/degenerate array would look identical to a real "close to default
-                // shape" avatar in the [HeightDebug] log (BodySizeZ~1.707/FootOffsetY~0 IS what an
-                // undistorted skeleton measures). Log the raw byte spread plus how many bone
-                // distortions actually came out non-trivial, so "true default shape" and "shape
-                // data silently empty" don't look the same in the logs.
-                int nonZeroBytes = 0;
-                foreach (var b in avatar.VisualParams) if (b != 0) nonZeroBytes++;
-                int nonTrivialDistortions = 0;
-                foreach (var kv in distortions.BoneMods)
-                    if (kv.Value.Scale.LengthSquared() > 1e-6f || kv.Value.Position.LengthSquared() > 1e-6f)
-                        nonTrivialDistortions++;
-                GD.Print($"[ShapeDataDiag] entity={entity.Id} (isLocal={avatar.IsLocalAgent}) " +
-                         $"visualParamsLength={avatar.VisualParams.Length} nonZeroBytes={nonZeroBytes} " +
-                         $"boneModsTotal={distortions.BoneMods.Count} nonTrivialBoneMods={nonTrivialDistortions}");
-
                 ApplyShape(visual, visual.Skeleton, _avatarSkeleton, distortions.BoneMods, visual.JointPosOverrides);
                 visual.Skeleton.ResetBonePoses();
-
-                LogJointParityCheck(visual, visual.Skeleton, _avatarSkeleton, distortions.BoneMods, entity.Id, avatar.IsLocalAgent);
 
                 RecomputeFootOffset(visual, distortions.BoneMods);
 
@@ -799,79 +690,6 @@ public partial class AvatarRenderer : Node3D
     {
         var scaleXform = new Transform3D(Basis.Identity.Scaled(new Godot.Vector3(ownScaleSl.X, ownScaleSl.Z, ownScaleSl.Y)), Vector3.Zero);
         return scaleXform * bind;
-    }
-
-    /// <summary>Standing regression check (M4-8): compares Godot's own composed bone poses —
-    /// <see cref="Skeleton3D.GetBoneGlobalPose"/>, which after ApplyShape + ResetBonePoses
-    /// reflects ONLY the Rest tree this renderer built — against <see cref="SlJointComposer"/>'s
-    /// independent, engine-neutral reference implementation of the exact same SL rule. The two are
-    /// separate code paths computing the same thing; any divergence means ApplyShape's Godot-space
-    /// position pre-scaling or axis conversion has a bug the engine-neutral unit tests can't see
-    /// (they never touch Skeleton3D). Runs on every shape update; logs ONLY bones that exceed the
-    /// M4-8 acceptance threshold (1 cm position / 1% scale) — silence means every bone is within
-    /// tolerance. Kept permanently (not removed after M4-8 shipped) as a cheap tripwire against
-    /// this exact class of bug recurring.
-    ///
-    /// <paramref name="entityId"/>/<paramref name="isLocal"/> (2026-07-22, round 8): tag every line
-    /// with WHICH avatar it's about — added because comparing two avatars live (e.g. is a remote
-    /// avatar's ACTUAL rendered bone scale reflecting their real shape, vs. a local avatar's) is
-    /// exactly the evidence needed to settle "proportions look wrong" complaints, but the untagged
-    /// output was ambiguous with more than one avatar in view. Also logs a directly-comparable
-    /// summary height (mSkull-to-mFootLeft global Y, i.e. what Godot ACTUALLY composed and will
-    /// render) next to BodySizeZ (the independently-computed SlJointComposer reference) — if a
-    /// visual "renders shorter/taller than expected" complaint is real (not perspective/distance),
-    /// this pair should diverge from each other even when both individually look plausible.</summary>
-    private void LogJointParityCheck(
-        AvatarVisual visual, Skeleton3D skeleton, AvatarSkeleton avatarSkeleton,
-        Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)> distortions,
-        Guid entityId, bool isLocal)
-    {
-        var slPoses = SlJointComposer.ComputePoses(avatarSkeleton, distortions, visual.JointPosOverrides);
-        int checkedCount = 0, deviatedCount = 0;
-
-        for (int idx = 0; idx < skeleton.GetBoneCount(); idx++)
-        {
-            string name = skeleton.GetBoneName(idx);
-            if (!slPoses.TryGetValue(name, out var slPose)) continue;
-            checkedCount++;
-
-            var godotPose = skeleton.GetBoneGlobalPose(idx);
-            var slPosGodot = new Godot.Vector3(slPose.WorldPosition.X, slPose.WorldPosition.Z, -slPose.WorldPosition.Y);
-            float posGapM = (godotPose.Origin - slPosGodot).Length();
-
-            var ownScale = visual.BoneOwnScale.TryGetValue(name, out var s) ? s : System.Numerics.Vector3.One;
-            float maxAbsGap = System.MathF.Max(System.MathF.Abs(ownScale.X - slPose.OwnScale.X),
-                System.MathF.Max(System.MathF.Abs(ownScale.Y - slPose.OwnScale.Y), System.MathF.Abs(ownScale.Z - slPose.OwnScale.Z)));
-            float maxSlComponent = System.MathF.Max(0.0001f,
-                System.MathF.Max(slPose.OwnScale.X, System.MathF.Max(slPose.OwnScale.Y, slPose.OwnScale.Z)));
-            float scaleGapPct = 100f * maxAbsGap / maxSlComponent;
-
-            if (posGapM >= 0.01f || scaleGapPct >= 1f)
-            {
-                deviatedCount++;
-                GD.PrintErr($"[DBG-PARITY] entity={entityId} (isLocal={isLocal}) {name}: posGap={posGapM:0.####}m godotPos={godotPose.Origin} slPos={slPosGodot} godotScale={ownScale} slScale={slPose.OwnScale} scaleGap={scaleGapPct:0.##}%");
-            }
-        }
-
-        // Directly-comparable rendered height: what Godot's OWN composed skeleton actually spans
-        // (mSkull to mFootLeft, global Y), vs. BodySizeZ (the independent SlJointComposer
-        // reference this avatar's root-placement math already trusts). If the visible mesh is
-        // genuinely rendering shorter/taller than BodySizeZ predicts, THIS is where it would show
-        // up — a real divergence here (not perspective/camera distance) would mean the skinned
-        // mesh isn't tracking the skeleton's own bone poses, a step downstream of everything
-        // ApplyShape/BoneOwnScale/the per-bone check above can see.
-        int skullIdx = skeleton.FindBone("mSkull");
-        int footIdx = skeleton.FindBone("mFootLeft");
-        string renderedHeightInfo = "n/a";
-        if (skullIdx >= 0 && footIdx >= 0)
-        {
-            float skullY = skeleton.GetBoneGlobalPose(skullIdx).Origin.Y;
-            float footY = skeleton.GetBoneGlobalPose(footIdx).Origin.Y;
-            renderedHeightInfo = $"{(skullY - footY):F3}";
-        }
-
-        GD.Print($"[DBG-PARITY] entity={entityId} (isLocal={isLocal}) checked {checkedCount} bones, {deviatedCount} deviated beyond 1cm/1% " +
-                 $"renderedSkullToFootY={renderedHeightInfo} BodySizeZ={visual.BodySizeZ:F3}");
     }
 
     private async System.Threading.Tasks.Task LoadAndApplyTextureAsync(AvatarVisual visual, int bakeIndex, Guid textureId)
