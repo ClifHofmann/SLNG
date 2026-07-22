@@ -14,6 +14,54 @@ public partial class CursorManager : Node
     {
         _world = world;
         _camera = camera;
+        _ = SetupMagnifierCursorAsync();
+    }
+
+    /// <summary>Rasterizes the "search" glyph from the Material Symbols icon font into a
+    /// bitmap and registers it as the OS cursor image for CursorShape.Cross, so Alt-zoom
+    /// shows a magnifying glass instead of the native crosshair.</summary>
+    private async System.Threading.Tasks.Task SetupMagnifierCursorAsync()
+    {
+        var iconFont = GD.Load<Font>("res://assets/fonts/MaterialSymbolsOutlined.ttf");
+
+        var subViewport = new SubViewport
+        {
+            Size = new Vector2I(32, 32),
+            TransparentBg = true,
+            RenderTargetUpdateMode = SubViewport.UpdateMode.Once,
+        };
+        AddChild(subViewport);
+
+        var label = new Label
+        {
+            Text = "search",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        label.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        label.AddThemeFontOverride("font", iconFont);
+        label.AddThemeFontSizeOverride("font_size", 28);
+        label.AddThemeColorOverride("font_color", Colors.White);
+        subViewport.AddChild(label);
+
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+
+        // DisplayServer reads the image into a native OS cursor synchronously inside
+        // SetCustomMouseCursor and keeps no reference to our Texture2D afterward, so every
+        // Resource created here must be disposed explicitly right after -- left for the GC to
+        // collect, their native RenderingServer RIDs otherwise outlive it at shutdown ("N of
+        // Texture RIDs leaked", "RenderingServer::get_singleton() is null" from a finalizer
+        // running during/after engine teardown).
+        var viewportTexture = subViewport.GetTexture();
+        var image = viewportTexture.GetImage();
+        var cursorTexture = ImageTexture.CreateFromImage(image);
+        Godot.Input.SetCustomMouseCursor(cursorTexture, Godot.Input.CursorShape.Cross, new Vector2(16, 16));
+
+        cursorTexture.Dispose();
+        image.Dispose();
+        viewportTexture.Dispose();
+        subViewport.QueueFree();
     }
 
     public override void _PhysicsProcess(double delta)
