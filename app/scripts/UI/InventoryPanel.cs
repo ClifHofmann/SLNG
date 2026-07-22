@@ -98,9 +98,10 @@ public partial class InventoryPanel : SLNGWindow
         _contextMenu.AddItem("Delete", 4);
         _contextMenu.AddItem("Teleport", 5);
         _contextMenu.AddItem("Detach", 6);
+        _contextMenu.AddItem("Weitergeben / Give...", 7);
         _contextMenu.IdPressed += OnContextMenuIdPressed;
         
-        _tree = new Tree 
+        _tree = new InventoryTree 
         { 
             SizeFlagsVertical = SizeFlags.ExpandFill, 
             HideRoot = true, 
@@ -112,6 +113,43 @@ public partial class InventoryPanel : SLNGWindow
         _tree.ItemCollapsed += OnItemCollapsed;
         _tree.GuiInput += OnTreeGuiInput;
         vbox.AddChild(_tree);
+    }
+
+    private partial class InventoryTree : Tree
+    {
+        public override Variant _GetDragData(Vector2 atPosition)
+        {
+            var item = GetItemAtPosition(atPosition);
+            if (item == null) return default;
+
+            var metaStr = item.GetMetadata(0).AsString();
+            if (string.IsNullOrEmpty(metaStr)) return default;
+
+            bool isFolder = !metaStr.Contains(',');
+            var parts = metaStr.Split(',');
+            if (!isFolder && parts.Length < 7) return default;
+
+            string itemIdStr = isFolder ? parts[0] : parts[0];
+            bool canTransfer = isFolder ? true : bool.Parse(parts[3]);
+            bool isLink = isFolder ? false : bool.Parse(parts[6]);
+            int assetType = isFolder ? -1 : int.Parse(parts[4]);
+
+            var dragData = new Godot.Collections.Dictionary
+            {
+                { "type", "slng_inventory_item" },
+                { "id", itemIdStr },
+                { "name", item.GetText(0).Replace("  ⇢", "") },
+                { "canTransfer", canTransfer },
+                { "isFolder", isFolder },
+                { "isLink", isLink },
+                { "assetType", assetType }
+            };
+
+            var preview = new Label { Text = item.GetText(0) };
+            SetDragPreview(preview);
+
+            return dragData;
+        }
     }
 
     public void Initialize(GridSession session) => _session = session;
@@ -303,6 +341,7 @@ public partial class InventoryPanel : SLNGWindow
                     _contextMenu.SetItemDisabled(4, false); // Delete
                     _contextMenu.SetItemDisabled(5, !isLandmark); // Teleport
                     _contextMenu.SetItemDisabled(6, !isWorn); // Detach
+                    _contextMenu.SetItemDisabled(7, !canTransfer); // Weitergeben / Give...
 
                     _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
                     _contextMenu.Popup();
@@ -388,6 +427,28 @@ public partial class InventoryPanel : SLNGWindow
             if (isFolder) return;
             var parts = metaStr.Split(',');
             _ = DetachAndRefreshAsync(itemId, parts);
+        }
+        else if (id == 7) // Weitergeben / Give...
+        {
+            var parts = metaStr.Split(',');
+            if (!isFolder && parts.Length >= 4 && !bool.Parse(parts[3]))
+            {
+                _status.Text = "Item cannot be given: no transfer permissions.";
+                return;
+            }
+
+            var itemName = item.GetText(0).Replace("  ⇢", "");
+            int assetType = parts.Length >= 5 && int.TryParse(parts[4], out var at) ? at : 0;
+
+            var chatWin = GetTree().Root.FindChild("ChatWindow", true, false) as ChatWindow;
+            if (chatWin != null && chatWin.HasActiveImTab())
+            {
+                chatWin.GiveInventoryItemToActiveTab(itemId, itemName, assetType, isFolder);
+            }
+            else
+            {
+                _status.Text = "Open an IM chat tab with a recipient first.";
+            }
         }
     }
 

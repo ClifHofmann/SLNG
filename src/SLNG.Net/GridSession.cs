@@ -1031,6 +1031,34 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>
+    /// Gives an inventory item to another agent (IM inventory offer).
+    /// </summary>
+    public Task GiveItemAsync(Guid itemId, string itemName, int assetType, Guid recipientAgentId)
+    {
+        _client.Inventory.GiveItem(
+            new LibreMetaverse.UUID(itemId),
+            itemName,
+            (LibreMetaverse.AssetType)assetType,
+            new LibreMetaverse.UUID(recipientAgentId),
+            doEffect: true);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Gives an inventory folder to another agent (IM inventory offer).
+    /// </summary>
+    public Task GiveFolderAsync(Guid folderId, string folderName, Guid recipientAgentId)
+    {
+        _client.Inventory.GiveItem(
+            new LibreMetaverse.UUID(folderId),
+            folderName,
+            LibreMetaverse.AssetType.Folder,
+            new LibreMetaverse.UUID(recipientAgentId),
+            doEffect: true);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
     /// Copies an inventory item to a new parent folder.
     /// </summary>
     public async Task CopyItemAsync(Guid itemId, Guid newParentId, string newName)

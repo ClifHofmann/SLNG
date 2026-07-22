@@ -383,11 +383,92 @@ public partial class ChatWindow : SLNGWindow
         row.AddThemeConstantOverride("separation", 2);
 
         row.AddChild(BuildIconButton("history", "History", OnHistoryPressed));
-        row.AddChild(BuildIconButton("card_giftcard", "Give Item (not implemented)", null));
+        row.AddChild(BuildIconButton("card_giftcard", "Give Item", OnGiveItemIconPressed));
         row.AddChild(BuildIconButton("call", "Voice Call (not implemented)", null));
         row.AddChild(BuildIconButton("search", "Search (not implemented)", null));
 
         return row;
+    }
+
+    public bool HasActiveImTab() => _activeChatTab?.TargetAgentId != null;
+
+    private void OnGiveItemIconPressed()
+    {
+        if (_activeChatTab?.TargetAgentId == null)
+        {
+            AppendSystemNotice("[System] Bitte wähle zuerst einen IM-Tab mit einem Gesprächspartner aus.");
+            return;
+        }
+
+        var invPanel = GetTree().Root.FindChild("InventoryPanel", true, false) as InventoryPanel;
+        if (invPanel != null && !invPanel.Visible)
+        {
+            invPanel.Toggle();
+        }
+        AppendSystemNotice($"[System] Wähle ein Objekt im Inventar aus und klicke 'Weitergeben...' oder ziehe es per Drag & Drop hierher, um es an {_activeChatTab.DisplayName} zu senden.");
+    }
+
+    public void GiveInventoryItemToActiveTab(Guid itemId, string itemName, int assetType, bool isFolder)
+    {
+        if (_session == null || _activeChatTab?.TargetAgentId is not { } recipientId)
+        {
+            AppendSystemNotice("[System] Bitte öffne zuerst einen IM-Tab mit dem Empfänger.");
+            return;
+        }
+
+        if (isFolder)
+        {
+            _ = _session.GiveFolderAsync(itemId, itemName, recipientId);
+        }
+        else
+        {
+            _ = _session.GiveItemAsync(itemId, itemName, assetType, recipientId);
+        }
+
+        AppendSystemNotice($"[System] '{itemName}' an {_activeChatTab.DisplayName} angeboten.");
+    }
+
+    private void AppendSystemNotice(string noticeText)
+    {
+        if (_activeChatTab != null)
+        {
+            AppendLineToTab(_activeChatTab, $"[color=#80c0ff]{noticeText}[/color]");
+        }
+    }
+
+    public override bool _CanDropData(Vector2 atPosition, Variant data)
+    {
+        if (data.VariantType != Variant.Type.Dictionary) return false;
+        var dict = data.AsGodotDictionary();
+        return dict.ContainsKey("type") && dict["type"].AsString() == "slng_inventory_item";
+    }
+
+    public override void _DropData(Vector2 atPosition, Variant data)
+    {
+        if (data.VariantType != Variant.Type.Dictionary) return;
+        var dict = data.AsGodotDictionary();
+        if (!dict.ContainsKey("type") || dict["type"].AsString() != "slng_inventory_item") return;
+
+        if (_activeChatTab?.TargetAgentId is not { } recipientId)
+        {
+            AppendSystemNotice("[System] Bitte wähle zuerst einen IM-Tab mit dem Empfänger aus.");
+            return;
+        }
+
+        string itemName = dict.ContainsKey("name") ? dict["name"].AsString() : "Item";
+        bool canTransfer = dict.ContainsKey("canTransfer") && dict["canTransfer"].AsBool();
+
+        if (!canTransfer)
+        {
+            AppendSystemNotice($"[System] '{itemName}' kann nicht übertragen werden (keine Transfer-Rechte).");
+            return;
+        }
+
+        if (!Guid.TryParse(dict.ContainsKey("id") ? dict["id"].AsString() : "", out var itemId)) return;
+        bool isFolder = dict.ContainsKey("isFolder") && dict["isFolder"].AsBool();
+        int assetType = dict.ContainsKey("assetType") ? dict["assetType"].AsInt32() : 0;
+
+        GiveInventoryItemToActiveTab(itemId, itemName, assetType, isFolder);
     }
 
     // Deliberately NOT using Button.Disabled for "not implemented yet" icons: a disabled
