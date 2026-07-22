@@ -36,6 +36,14 @@ public partial class ObjectRenderer : Node3D
         public Guid LoadedMeshId;
         public Guid LoadedTextureId = NotLoaded;
         public Guid LoadedMaterialId = NotLoaded;
+        // NaN so the very first UpdateVisual always counts as "changed" (a real ColorTint can
+        // never equal this). Needed alongside TextureId/RenderMaterialId below: a face-color/
+        // alpha-only edit (e.g. the build floater's Transparency slider) changes neither texture
+        // nor material id, so without tracking this too the re-apply gate never fires and the
+        // object keeps rendering its stale (e.g. opaque) color forever — see ApplyFaceMaterialsAsync.
+        public System.Numerics.Vector4 LoadedColorTint =
+            new(float.NaN, float.NaN, float.NaN, float.NaN);
+        public FaceTexture[]? LoadedFaces;
         public PrimShape? LoadedPrimShape;
 
         // GpuCache key of the mesh this object currently references (Guid.Empty = none).
@@ -73,8 +81,13 @@ public partial class ObjectRenderer : Node3D
         NoDepthTest = true, // See through walls slightly
     };
 
+    // Bump alongside every fix so a fresh log line proves this exact build is running (see
+    // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
+    private const string BuildMarker = "2026-07-22-face-color-reapply-gate-fixed";
+
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
+        GD.Print($"[ObjectRenderer] BUILD MARKER: {BuildMarker}");
         _world = world;
         _assetService = assetService;
         _gpuCache = gpuCache;
@@ -181,6 +194,8 @@ public partial class ObjectRenderer : Node3D
         state.LoadedPrimShape = null;
         state.LoadedTextureId = VisualState.NotLoaded;
         state.LoadedMaterialId = VisualState.NotLoaded;
+        state.LoadedColorTint = new System.Numerics.Vector4(float.NaN, float.NaN, float.NaN, float.NaN);
+        state.LoadedFaces = null;
         state.ResourcesReleased = true;
     }
 
@@ -342,14 +357,25 @@ public partial class ObjectRenderer : Node3D
                     _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve);
                 }
 
-                // Re-apply materials when the default texture/material changes (a proxy for "the
-                // object's appearance changed"). The mesh-assignment callback also re-applies once
-                // surfaces exist; here covers texture-only changes on an already-loaded mesh.
+                // Re-apply materials when the default texture/material/color changes (a proxy for
+                // "the object's appearance changed"). The mesh-assignment callback also re-applies
+                // once surfaces exist; here covers appearance-only changes on an already-loaded
+                // mesh. Must also watch ColorTint/Faces, not just TextureId/RenderMaterialId: a
+                // face-color or per-face-alpha edit (e.g. Object > Features > Transparency in the
+                // build floater) touches neither id, so a gate that only checked ids never noticed
+                // and the object kept rendering its original (often opaque) alpha forever — see
+                // BuildFaceMaterialAsync's colorTint.A < 0.99f Transparency branch, which was
+                // structurally correct but never re-ran after the initial load.
                 if (_assetService != null
-                    && (prim.TextureId != state.LoadedTextureId || prim.RenderMaterialId != state.LoadedMaterialId))
+                    && (prim.TextureId != state.LoadedTextureId
+                        || prim.RenderMaterialId != state.LoadedMaterialId
+                        || prim.ColorTint != state.LoadedColorTint
+                        || !FacesEqual(state.LoadedFaces, prim.Faces)))
                 {
                     state.LoadedTextureId = prim.TextureId;
                     state.LoadedMaterialId = prim.RenderMaterialId;
+                    state.LoadedColorTint = prim.ColorTint;
+                    state.LoadedFaces = prim.Faces;
                     if (state.LoadedMeshKey != Guid.Empty)
                         _ = ApplyFaceMaterialsAsync(state);
                 }
@@ -810,6 +836,19 @@ public partial class ObjectRenderer : Node3D
 
         // Geometry surfaces now exist — (re)apply per-face materials.
         _ = ApplyFaceMaterialsAsync(state);
+    }
+
+    /// <summary>Structural equality for the per-face texture/color array — used to detect a
+    /// face-color/alpha/texture edit that changed neither the object's default TextureId nor
+    /// RenderMaterialId (see the ColorTint/Faces re-apply gate in UpdateVisual). FaceTexture is a
+    /// record struct, so SequenceEqual already compares every field value-wise; this just adds the
+    /// null/length shortcuts SequenceEqual doesn't give you for free on two nullable arrays.</summary>
+    private static bool FacesEqual(FaceTexture[]? a, FaceTexture[]? b)
+    {
+        if (ReferenceEquals(a, b)) return true;
+        if (a == null || b == null) return false;
+        if (a.Length != b.Length) return false;
+        return a.AsSpan().SequenceEqual(b);
     }
 
     /// <summary>Drops this object's current shared-mesh reference (if any).</summary>
