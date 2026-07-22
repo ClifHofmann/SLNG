@@ -114,3 +114,17 @@ Also completed a pre-existing half-written diagnostic in the same method: the lo
 ### Next step for whoever picks this up
 
 Rebuild clean, get Reamon in view again, and read the `[RemoteGroundDiag]` and `[ShapeDataDiag]` lines. Per the coordinator's framing: get the real `simPos.Z - remoteGroundHeight` number FIRST, then decide whether the fix is "the formula is right, something else contributes the missing ~0.28m" (keep digging in the render-side math) or "OpenSim really does send a different Z reference for remote avatars" (needs verification against real OpenSim/LibreMetaverse avatar-update source, per this project's house rule — don't guess another constant).
+
+---
+
+## Round 4 (throttle bug in the round-3 diagnostic itself)
+
+Live test of round 3's diagnostics: `[ShapeDataDiag]` confirmed Reamon's shape data is genuinely rich (`visualParamsLength=253 nonZeroBytes=182 boneModsTotal=127 nonTrivialBoneMods=120`) — rules out "hasShape=True but effectively empty" as a lingering concern; the round-2 AgentId fix delivered real, non-degenerate shape data.
+
+But `[RemoteGroundDiag]` never printed once across several minutes with Reamon in view. Root cause (found by the coordinator reading the code, not by live testing): the per-entity throttle in `app/scripts/AvatarRenderer.cs` only ever wrote to `_timeSinceRemoteGroundLog[entity.Id]` on the FIRING branch (resetting it to 0). The non-firing path never persisted the incremented local `tRemote` back into the dictionary, so every call read back ~0 via `TryGetValue`, added one frame's delta (~0.016s), failed the `>1.0` check, and threw the incremented value away — `tRemote` could never accumulate across frames, so the log was effectively dead code (would only ever fire after a >1s single-frame stutter). Contrast with the working local-only `_timeSinceRootPosLog` throttle right above it in the same file: that one is a plain field mutated in place every call, so it doesn't have this problem — the dictionary-keyed version needed the equivalent explicit write-back in the else branch, which `TryGetValue` doesn't do for you.
+
+**Fix**: added an `else { _timeSinceRemoteGroundLog[entity.Id] = tRemote; }` branch so the incremented value persists across frames when the 1-second threshold hasn't been hit yet. `[ShapeDataDiag]` was unaffected (it isn't throttled by this dictionary — it fires on `needsApply`, which is why it already worked).
+
+Rebuilt clean (`dotnet build app/SLNG.App.csproj` after clearing `app/.godot/mono`), `dotnet build SLNG.sln` + `dotnet test SLNG.sln` both clean (76/76 tests pass). **Still could not trigger a live run myself** (no GUI automation for the native Godot window in this environment) — the actual `[RemoteGroundDiag]` numbers (the real `simPos.Z - remoteGroundHeight` vs. `halfBodyZ` comparison that settles hypothesis 1) still need a live session to capture. That is the concrete next step: rebuild, get a remote avatar in view for >1s, and read the `[RemoteGroundDiag]` line this time.
+
+Note for cross-referencing: `entity.Id` in these logs is an internal ECS id (not the real SL/OpenSim AgentId/AvatarID) — for this investigation's live test, Reamon's real UUID is `bed44511-6e29-4a04-934a-f9834737b68d`, distinct from whatever `entity.Id` happens to be that session (was `f2b0bfbb-9542-4e24-8631-c85772f01caa` in the round-3 test). Don't conflate the two if checking anything against a raw network capture or OpenSim-side data.

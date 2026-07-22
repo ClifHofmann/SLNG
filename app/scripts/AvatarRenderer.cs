@@ -451,6 +451,15 @@ public partial class AvatarRenderer : Node3D
                 tRemote += GetProcessDeltaTime();
                 if (tRemote > 1.0)
                 {
+                    // Bug fix (2026-07-22, round 4): this branch used to be the ONLY place that
+                    // wrote back to the dictionary (resetting to 0 on fire) -- the non-firing path
+                    // below never persisted the incremented local value, so every subsequent call
+                    // read back ~0, added one frame's delta, failed ">1.0", and discarded it. tRemote
+                    // could never accumulate past a single frame's delta, so this never fired outside
+                    // a multi-second stutter. Compare the local-only _timeSinceRootPosLog throttle
+                    // right above, which is a plain field mutated in place every call -- the
+                    // dictionary version needs the equivalent explicit write-back (see the else
+                    // branch below) since TryGetValue doesn't do that for you.
                     _timeSinceRemoteGroundLog[entity.Id] = 0;
 
                     var rawGodotPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
@@ -476,6 +485,10 @@ public partial class AvatarRenderer : Node3D
                     {
                         GD.Print($"[RemoteGroundDiag] entity={entity.Id} simPos.Z={transform.Position.Z:F3} ray missed ground (no Layer-1 collider under this avatar's X/Y)");
                     }
+                }
+                else
+                {
+                    _timeSinceRemoteGroundLog[entity.Id] = tRemote;
                 }
             }
         }
