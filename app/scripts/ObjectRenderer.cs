@@ -596,6 +596,11 @@ public partial class ObjectRenderer : Node3D
                 0.0f)
         };
 
+        if (colorTint.A < 0.99f)
+        {
+            material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+        }
+
         if (ft.MaterialId != Guid.Empty && _assetService != null)
         {
             var pbr = await _assetService.GetMaterialAsync(ft.MaterialId);
@@ -663,13 +668,25 @@ public partial class ObjectRenderer : Node3D
         var img = tex.GetImage();
         if (img == null) return;
 
-        if (img.DetectAlpha() == Image.AlphaMode.None) return; // fully opaque — leave default
+        var alphaMode = img.DetectAlpha();
+        if (alphaMode == Image.AlphaMode.None) return; // fully opaque — leave default
 
-        // Use alpha-scissor (cutout) for any texture with alpha. Foliage uses soft-edged alpha
-        // masks that read as "Blend", but they're meant to be cut to a leaf shape — true
-        // alpha-blend turns them into big translucent cards. Cutout is the right SL default.
-        material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-        material.AlphaScissorThreshold = 0.5f;
+        // If the primitive is already explicitly translucent via color tint, keep true Alpha blending.
+        // Otherwise, pick the right mode based on the texture's alpha content.
+        if (material.Transparency != BaseMaterial3D.TransparencyEnum.Alpha)
+        {
+            if (alphaMode == Image.AlphaMode.Blend)
+            {
+                // Smooth translucent edges (hair, glass, clouds)
+                material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+            }
+            else
+            {
+                // Binary alpha (fences, foliage)
+                material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+                material.AlphaScissorThreshold = 0.5f;
+            }
+        }
         material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
     }
 
