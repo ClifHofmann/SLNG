@@ -1,7 +1,7 @@
 # Feature Specification: FEAT-INV-02 — Give Inventory Items via Chat / IM Window
 
 **Feature ID:** `FEAT-INV-02`  
-**Status:** 🚧 In Progress  
+**Status:** ✅ Done  
 **Owner:** `gemini`  
 **Target Milestone:** Post-MVP3 / Utility Enhancements  
 
