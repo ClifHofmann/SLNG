@@ -152,3 +152,63 @@ Added regression test `AvatarUpdateEvent_DoesNotRegressAlreadyResolvedAgentId` (
 ### Still the actual next step
 
 Rebuild clean, get Reamon in view, and read the now-unthrottled `[RemoteGroundDiag]` lines — should print on every `UpdateVisual` call for him now, giving the real `simPos.Z - remoteGroundHeight` vs. `halfBodyZ` comparison needed to settle hypothesis 1. Also worth a look once there are more samples: the one sample captured in round 4 said "ray missed ground" at `simPos.Z=26.122` — is that a genuine collision gap near where remote avatars land on the platform, or just bad luck on that one frame (position mid-transition, platform collider not yet built, etc.)? Can't tell from one sample; the round-5 fix should now produce enough of them to see a pattern.
+
+---
+
+## Round 6 (hypothesis 1 SETTLED via real source; height formula fixed; proportions complaint likely explained)
+
+Live numbers finally came in: `simPos.Z=26.116`, `remoteGroundHeight=25.004`, `halfBodyZ=0.853` → `simPos.Z - remoteGroundHeight = 1.113`, which does NOT match `halfBodyZ` (off by ~0.26 m, matching the observed float exactly). Per the coordinator's instruction, chased this against real source instead of guessing a constant.
+
+### Source verification
+
+Read `linden_llvoavatar.cpp` (vendored in the repo root, UTF-16 — `Grep`/`Read` handle it fine, `head`/`wc` via bash choke on the encoding) — specifically `LLVOAvatar::updateRootPositionAndRotation` (~line 4607):
+
+```cpp
+root_pos = gAgent.getPosGlobalFromAgent(getRenderPosition());   // == getPositionAgent(), the raw network Position
+root_pos.mdV[VZ] += getVisualParamWeight(AVATAR_HOVER);
+resolveHeightGlobal(root_pos, ground_under_pelvis, normal);      // only used for an in_air check, doesn't touch root_pos.z
+// correct for the fact that the pelvis is not necessarily the center of the agent's physical representation
+root_pos.mdV[VZ] -= (0.5f * mBodySize.mV[VZ]) - mPelvisToFoot;
+...
+mRoot->setWorldPosition(gAgent.getPosAgentFromGlobal(root_pos));
+```
+
+This runs identically for `isSelf()` and remote avatars — the only branch on `isSelf()` is an extra `gAgent.setPositionAgent(getRenderPosition())` call, not the height math. Two things this settles:
+
+1. **The network `Position` for an avatar IS the pelvis**, not a "collision cylinder center" — confirmed by the comment itself ("correct for the fact that the pelvis is not... the center") and matching the well-documented SL/LSL fact that `llGetPos()`/`llGetObjectDetails(OBJECT_POS)` on an avatar UUID returns its pelvis position, not a bounding-box center. Our code's assumption (`"transform.Position is the SL simulator collision cylinder center (mPosition)"`, stated in the very comment this round replaces) was simply wrong for what the wire protocol actually carries.
+2. **`SlJointComposer.ComputeBodySize`'s `PelvisToFoot`** (`src/SLNG.Core/SlJointComposer.cs`) is EXACTLY `mPelvisToFoot` from this formula — someone already ported it correctly, verified line-by-line against the real `computeBodySize()`, including its documented weird asymmetric per-term signs. It just isn't being used for root placement anymore (superseded by the live `FootOffsetY` bone measurement, for reasons explained in that field's own doc comment).
+
+### Why round 1's "PelvisToFoot swap" test failed, explained
+
+The very first version of this doc records: swapping `FootOffsetY` for `-body.PelvisToFoot` "caused BOTH avatars to fly ~1 meter in the air." Re-deriving algebraically: at that time `transform.Position.Z` for the LOCAL avatar was `groundHeight + halfBodyZ` (`AvatarController`'s own invented "capsule-center" convention, NOT genuine SL pelvis semantics). Feeding that into `rootPos.Y = transform.Position.Z - halfBodyZ + PelvisToFoot` gives `rootPos.Y = groundHeight + PelvisToFoot` — i.e. floating by ~`PelvisToFoot` (~0.98 m for a default shape). That's exactly the "~1 m" symptom reported. **The formula itself was already correct** — it was being tested against a `transform.Position.Z` that didn't (and still doesn't, for local) carry the real semantic the formula assumes. That earlier test never actually disproved the formula; it disproved feeding it the WRONG kind of input.
+
+### The fix (this round)
+
+Rather than rewriting `AvatarController`'s local ground-clamp (empirically validated against Firestorm, zero desire to risk regressing it without being able to live-test), added a **remote-only conversion** in `AvatarRenderer.UpdateVisual` (`app/scripts/AvatarRenderer.cs`): before the existing (unchanged) `halfBodyZ`/`FootOffsetY` correction runs, a remote avatar's genuine pelvis-semantic `simPos.Z` gets converted into the SAME artificial "capsule-center" convention `AvatarController` already produces for local, using the real, source-verified relationship:
+
+```csharp
+if (!avatar.IsLocalAgent)
+{
+    rootPos.Y = transform.Position.Z - visual.PelvisToFootZ + halfBodyZ;
+}
+// unchanged formula follows, now fed a capsule-center-convention Z either way:
+rootPos.Y -= (halfBodyZ + visual.FootOffsetY);
+rootPos.Y += 0.025f;
+```
+
+Added `AvatarVisual.PelvisToFootZ`, populated in `RecomputeFootOffset` straight from `SlJointComposer.ComputeBodySize(...).PelvisToFoot` — the SAME call already computing `BodySizeZ`, no new data source. This changes **zero** local-avatar behavior (rootPos.Y still starts as `transform.Position.Z` via `RenderConfig.ToGodot` unchanged, then the existing formula runs exactly as before) — the conversion only executes in the `!IsLocalAgent` branch. Also added `PelvisToFootZ` to both `[HeightDebug]` and `[RemoteGroundDiag]` logs, with `[RemoteGroundDiag]` now stating the falsifiable prediction directly: `simPos.Z - remoteGroundHeight` should land near `PelvisToFootZ`, not `halfBodyZ`, once this fix is live.
+
+Build clean (`dotnet build app/SLNG.App.csproj` after clearing `app/.godot/mono`, `dotnet build SLNG.sln`), all 77 tests pass (`dotnet test SLNG.sln`) — no test coverage exists yet for this specific formula (it's Godot-side, `app/`, outside `src/`'s unit-testable surface), so live verification is still the real check.
+
+### The proportions complaint — likely already explained, not a new bug
+
+Checked `tests/SLNG.Core.Tests/SlJointComposerTests.cs`: the DEFAULT, undistorted skeleton's reference values are `PelvisToFoot ≈ 0.979` and **`BodySizeZ ≈ 1.7067`**. Reamon's round-3 log showed `BodySizeZ=1.707` — a near-exact match to the DEFAULT value, despite `[ShapeDataDiag]` confirming his `VisualParams` carries real, rich, non-default data (`nonZeroBytes=182/253`, `nonTrivialBoneMods=120/127`). The round-6 coordinator message shows the SAME near-default `halfBodyZ=0.853` (≈ half of 1.7067) for what looks like a possibly-different session. Two explanations, not yet distinguished:
+
+1. **Residue of the round-5 bug** (AgentId regressing to `Guid.Empty`, letting a later/unrelated avatar's data — or a stale re-application with an empty distortion cache — clobber his real `BodySizeZ`/`PelvisToFootZ` back toward default). The round-5 fix should prevent this going forward, but a session that was ALREADY running before that fix landed would still show the corrupted values until a fresh relogin.
+2. **Genuinely near-default leg/height proportions.** `nonTrivialBoneMods=120/127` counts ANY non-trivial distortion across the whole skeleton, not specifically the leg-height sliders `ComputeBodySize` consumes (`mHipLeft`/`mKneeLeft`/`mAnkleLeft`/`mFootLeft`) — Reamon could legitimately have heavy customization elsewhere (torso, head, etc.) while his actual height/leg-length sliders sit close to neutral, in which case `BodySizeZ≈1.7067` is simply correct and there's no bug here at all.
+
+**Did not chase this further this round** — it needs a FRESH live session (not a continuation of one that predates the round-5 fix) to tell these apart, and this round's fix (the pelvis/capsule-center conversion) may independently improve the visual proportions comparison too, since a floating avatar's apparent leg length reads differently (the gap under the feet eats into what looks like "leg") than a properly grounded one. Recommend checking `BodySizeZ`/`PelvisToFootZ` again post-fix, post-fresh-relogin, before treating this as a separate bug to chase.
+
+### Next step
+
+Rebuild clean, fresh relogin (not a continuation of an old session), get Reamon in view, and read `[RemoteGroundDiag]`: does `simPos.Z - remoteGroundHeight` now land near `PelvisToFootZ` (confirming the conversion fix is complete) or is there still a residual gap (meaning there's more to this than the pelvis/capsule-center semantic alone)? Also check whether `BodySizeZ`/`PelvisToFootZ` still read near-default for Reamon on this fresh session — if yes, the proportions complaint needs its own dedicated investigation; if no (now showing his real, distinct values), it was resolved as a side effect of the round-5 AgentId fix.

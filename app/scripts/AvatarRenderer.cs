@@ -91,6 +91,24 @@ public partial class AvatarRenderer : Node3D
         // uses that directly instead of porting the indirect formula.
         public float FootOffsetY { get; set; }
         public float BodySizeZ { get; set; } = 1.90f;
+        // SlJointComposer.ComputeBodySize's PelvisToFoot for THIS avatar's real shape — the exact
+        // quantity LLVOAvatar::updateRootPositionAndRotation uses (verified against
+        // linden_llvoavatar.cpp, 2026-07-22 round 6): root_pos starts at getRenderPosition() ==
+        // getPositionAgent(), i.e. the RAW NETWORK POSITION, which real SL/LSL semantics define as
+        // the avatar's PELVIS (llGetPos()/OBJECT_POS on an avatar UUID famously returns pelvis, not
+        // a capsule center) — confirmed the same correction runs for isSelf() and remote avatars
+        // alike, only the extra gAgent.setPositionAgent() call differs. Our LOCAL avatar's own
+        // transform.Position.Z is NOT this real semantic at all: it's an artificial "capsule-center"
+        // convention AvatarController's ground-clamp invented (groundHeight + halfBodyZ) purely for
+        // our own rendering convenience, which happens to be empirically validated (real user
+        // confirmation against Firestorm) for how THIS field's FootOffsetY sibling and BodySizeZ
+        // combine in UpdateVisual's root-position formula below. A REMOTE avatar's transform.Position.Z
+        // has no such massaging — it's the genuine wire value — so UpdateVisual converts it into
+        // our own capsule-center convention using THIS field before running that same formula,
+        // rather than rewriting the already-validated local path. See claude-handover-height.md,
+        // round 6, for the [RemoteGroundDiag] measurement (~0.26 m gap, matching neither halfBodyZ
+        // nor 0) that this fixes.
+        public float PelvisToFootZ { get; set; }
         // Per-avatar system-body-part Skin cache (bone binds + boneName->slot map), keyed by part
         // name. Used to be a single static dictionary shared across every avatar because the bind
         // matrices only depended on the neutral skeleton rest — true under the OLD (Godot-native
@@ -380,10 +398,33 @@ public partial class AvatarRenderer : Node3D
             // Position the avatar root node (floating-origin relative; see RenderConfig)
             var rootPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
 
-            // Viewer parity (LLVOAvatar::updateRootPositionAndRotation):
-            // transform.Position is the SL simulator collision cylinder center (mPosition).
-            // Subtract (halfBodyZ + FootOffsetY) and add 0.025m shoe-sole offset so boots sit on the floor.
             float halfBodyZ = 0.5f * visual.BodySizeZ;
+
+            if (!avatar.IsLocalAgent)
+            {
+                // Source-verified fix (2026-07-22, round 6 — see claude-handover-height.md): a
+                // REMOTE avatar's transform.Position.Z is the genuine SL/OpenSim wire value, which
+                // real SL semantics define as the avatar's PELVIS position (confirmed against
+                // linden_llvoavatar.cpp's updateRootPositionAndRotation — root_pos starts at
+                // getRenderPosition()==getPositionAgent(), the raw network Position; the correction
+                // -(0.5*BodySize.z - PelvisToFoot) runs identically for isSelf() and remote avatars,
+                // only the extra gAgent.setPositionAgent() call differs — and matches the well-known
+                // SL/LSL fact that llGetPos()/OBJECT_POS on an avatar UUID returns its pelvis, not a
+                // capsule center). [RemoteGroundDiag] measured this gap live at ~0.26 m, matching
+                // neither halfBodyZ nor zero — exactly what a pelvis-vs-capsule-center mismatch
+                // predicts. Our LOCAL avatar's transform.Position.Z has NO such real semantic at
+                // all — AvatarController's ground-clamp invented its own "capsule-center" convention
+                // (groundHeight + halfBodyZ) purely for our rendering, which the formula below
+                // (kept unchanged, empirically validated against Firestorm for local) expects.
+                // Converting the real pelvis-semantic remote value into that SAME convention here
+                // — rather than rewriting the already-working local formula/clamp — fixes the actual
+                // semantic mismatch with zero regression risk to the confirmed-correct local path.
+                rootPos.Y = transform.Position.Z - visual.PelvisToFootZ + halfBodyZ;
+            }
+
+            // Viewer parity (LLVOAvatar::updateRootPositionAndRotation):
+            // rootPos.Y is now in OUR OWN "capsule-center" convention for both local and remote.
+            // Subtract (halfBodyZ + FootOffsetY) and add 0.025m shoe-sole offset so boots sit on the floor.
             rootPos.Y -= (halfBodyZ + visual.FootOffsetY);
             rootPos.Y += 0.025f;
 
@@ -396,7 +437,7 @@ public partial class AvatarRenderer : Node3D
             // this used to fall through) -- BodySizeZ/FootOffsetY below are then just the generic
             // AvatarVisual field defaults (1.90 / 0), not this avatar's actual proportions, and
             // the avatar will float/sink by whatever the real shape differs from that default.
-            GD.Print($"[HeightDebug] entity={entity.Id} (isLocal={avatar.IsLocalAgent}) hasShape={avatar.VisualParams != null} simPos.Z={transform.Position.Z:F3} rootPos.Y={rootPos.Y:F3} BodySizeZ={visual.BodySizeZ:F3} FootOffsetY={visual.FootOffsetY:F3} pelvisFixupZ={pelvisFixupZ:F3}");
+            GD.Print($"[HeightDebug] entity={entity.Id} (isLocal={avatar.IsLocalAgent}) hasShape={avatar.VisualParams != null} simPos.Z={transform.Position.Z:F3} rootPos.Y={rootPos.Y:F3} BodySizeZ={visual.BodySizeZ:F3} PelvisToFootZ={visual.PelvisToFootZ:F3} FootOffsetY={visual.FootOffsetY:F3} pelvisFixupZ={pelvisFixupZ:F3}");
 
             visual.Root.Position = rootPos;
 
@@ -469,10 +510,14 @@ public partial class AvatarRenderer : Node3D
                     // (only X/Y get the floating-origin shift; height passes through unchanged).
                     float remoteGroundHeight = result["position"].AsVector3().Y;
                     float halfBodyZDiag = 0.5f * visual.BodySizeZ;
+                    // Round 6: settled hypothesis 1 via linden_llvoavatar.cpp source -- simPos.Z is
+                    // PELVIS, so simPos.Z-remoteGroundHeight should land near PelvisToFootZ (this
+                    // avatar's real SlJointComposer-computed pelvis-to-foot distance), NOT halfBodyZ.
+                    // Logging both so a live run can directly confirm the fix now applied above.
                     GD.Print($"[RemoteGroundDiag] entity={entity.Id} simPos.Z={transform.Position.Z:F3} " +
                              $"remoteGroundHeight={remoteGroundHeight:F3} simPos.Z-remoteGroundHeight={transform.Position.Z - remoteGroundHeight:F3} " +
-                             $"halfBodyZ={halfBodyZDiag:F3} FootOffsetY={visual.FootOffsetY:F3} " +
-                             "(if simPos.Z were capsule-center like the local avatar's, simPos.Z-remoteGroundHeight should land near halfBodyZ)");
+                             $"halfBodyZ={halfBodyZDiag:F3} PelvisToFootZ={visual.PelvisToFootZ:F3} FootOffsetY={visual.FootOffsetY:F3} " +
+                             "(simPos.Z-remoteGroundHeight should now land near PelvisToFootZ, not halfBodyZ -- confirmed via linden_llvoavatar.cpp source, round 6)");
                 }
                 else
                 {
@@ -1832,6 +1877,7 @@ public partial class AvatarRenderer : Node3D
 
         var body = SLNG.Core.SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions);
         visual.BodySizeZ = body.BodySizeZ;
+        visual.PelvisToFootZ = body.PelvisToFoot;
 
         if (visual.Skeleton == null) return;
         int footBone = visual.Skeleton.FindBone("mFootLeft");
