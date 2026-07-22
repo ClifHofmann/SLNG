@@ -98,7 +98,7 @@ Each task follows a **spec → test → implement → review** loop:
 |---|---|---|---|---|---|---|---|
 | M4-7 | Base-mesh Hiding Under Worn Mesh | render | | graphics-engineer | | M4-3 | System head/body parts hidden per worn alpha layers & BoM rules |
 | M5-1 | Inventory Browser v1 — Read-only ✅ | net/ui | claude | ux-designer | | M0-2 | Lazy tree view of folders & items |
-| MVP3-1 | Inventory v2 — Wear, Detach & Drag-Drop | net/ui | | ux-designer | claude | M5-1 | Wear/detach clothing & attachments, move/delete items |
+| MVP3-1 | Inventory v2 — Wear, Detach & Drag-Drop 🚧 | net/ui | gemini | ux-designer | gemini | M5-1 | Wear/detach clothing & attachments, move/delete items. [Spec](file:///E:/Git/SLNG/docs/specs/MVP3-1-inventory-wear-detach.md) |
 | MVP3-2 | Pose Stand & Animation Override (AO) | render/ui | | graphics-engineer | gemini | M4-2 | Play/stop custom poses, pose stands, basic AO system |
 | MVP3-3 | Shared Media / MOAP (Media on a Prim) | render/net | | graphics-engineer | claude | M2-3 | Web browser / video streaming on prim faces |
 | MVP3-4 | Snapshot & Photography Studio | ui/render | | graphics-engineer | gemini | M2-5 | High-res screenshot capture, DoF, FOV control, EEP/environment presets |
