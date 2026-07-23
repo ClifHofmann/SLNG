@@ -674,9 +674,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         // Convert the prim's construction data to a neutral PrimShape so the asset layer can
         // regenerate real geometry without seeing a LibreMetaverse type.
+        //
+        // IMPORTANT: pd.profileCurve (raw field, lowercase) is a single packed byte carrying BOTH
+        // the profile curve type (Circle/Square/Triangle/... in the low nibble, 0x00-0x05) AND the
+        // hollow-cut's own shape (HoleType Same/Circle/Square/Triangle, pre-shifted into the high
+        // nibble as 0x00/0x10/0x20/0x30 — see LibreMetaverse.Types.EnumsPrimitive). pd.ProfileCurve
+        // (the PROPERTY, capital P) masks that byte down to just the low nibble
+        // (`profileCurve & PROFILE_MASK`), silently discarding the hole-shape bits. Using the
+        // property here (as this line previously did) meant every hollow prim's hole shape got
+        // zeroed out end-to-end -- reconstructed as HoleType.Same regardless of what the creator
+        // actually chose, which is only coincidentally correct when "Same" was already picked.
+        // Passing the raw packed byte through lets PrimMeshService.Generate() assign it straight
+        // back onto ConstructionData.profileCurve (also the raw field) and get BOTH nibbles right.
         var pd = prim.PrimData;
         var shape = new PrimShape(
-            (byte)pd.ProfileCurve,
+            pd.profileCurve,
             (byte)pd.PathCurve,
             pd.PathBegin, pd.PathEnd,
             pd.PathScaleX, pd.PathScaleY,

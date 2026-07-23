@@ -66,8 +66,8 @@ public static class PrimMeshService
             var renderer = _renderer ??= new MeshFoundry();
             
             FacetedMesh? faceted = renderer.GenerateFacetedMesh(prim, lod);
-            
-            var mesh = Convert(faceted, prim.Scale);
+
+            var mesh = Convert(faceted);
 
             // LibreMetaverse.Rendering.MeshFoundry (as of the 3.0.0 package) only emits the
             // path's *last* end face (ViewerFace tagging in PrimMesh.Create is gated on
@@ -92,108 +92,16 @@ public static class PrimMeshService
     }
 
     /// <summary>
-    /// Detects a straight-extruded prim missing one of its two path end caps (see the comment
-    /// in <see cref="Generate"/>) and synthesizes the missing one from data that IS present and
-    /// correct: the side-wall submeshes already carry both the top and bottom ring of vertices
-    /// (that's how the top cap and side walls stay exactly welded at the shared edge), the
-    /// mesher just never assembles the bottom ring into its own cap face. Reusing those vertices
-    /// — rather than mirroring the existing cap's coordinates — keeps the fix correct even when
-    /// the prim has taper/shear (which make the bottom ring's X/Y differ from the top's).
+    /// Disabled: this used to synthesize a straight-extruded prim's missing bottom end cap by
+    /// mirroring the side-wall submeshes' shared vertex ring (see <see cref="Generate"/> for the
+    /// missing-cap bug this was meant to fix). It was pulled in commit 6ee14fe because, on some
+    /// prims, the nearest-vertex ring-matching produced degenerate/self-intersecting triangles
+    /// that propagated NaNs into the rest of the mesh. Left as a stub — rather than removing the
+    /// call site too — so straight-extruded prims (box/cylinder/prism) still have an open bottom
+    /// seam until this is properly reworked; that's a real but lower-severity bug than the NaN
+    /// spikes it used to cause, and is unrelated to sculpted-prim meshing.
     /// </summary>
-    private static MeshData? RepairMissingEndCap(MeshData? mesh)
-    {
-        return mesh;
-
-        const float epsZ = 1e-3f;
-        const float epsXY2 = 1e-6f;
-
-        float minZ = float.MaxValue, maxZ = float.MinValue;
-        foreach (var sm in mesh.Submeshes)
-            foreach (var p in sm.Positions)
-            {
-                if (p.Z < minZ) minZ = p.Z;
-                if (p.Z > maxZ) maxZ = p.Z;
-            }
-        if (maxZ - minZ < epsZ) return mesh; // no meaningful path extent (flat profile)
-
-        static bool IsCapAt(MeshSubmesh sm, float z, float eps)
-        {
-            if (sm.Positions.Length < 3) return false;
-            foreach (var p in sm.Positions)
-                if (MathF.Abs(p.Z - z) > eps) return false;
-            return true;
-        }
-
-        MeshSubmesh? capAtMax = null, capAtMin = null;
-        foreach (var sm in mesh.Submeshes)
-        {
-            if (capAtMax == null && IsCapAt(sm, maxZ, epsZ)) capAtMax = sm;
-            if (capAtMin == null && IsCapAt(sm, minZ, epsZ)) capAtMin = sm;
-        }
-
-        // Both caps present (healthy mesh) or both missing (nothing usable to reconstruct from).
-        if ((capAtMax != null) == (capAtMin != null)) return mesh;
-
-        var existingCap = capAtMax ?? capAtMin!;
-        float missingZ = capAtMax != null ? minZ : maxZ;
-
-        // Gather the missing ring's vertices from the side-wall submeshes (every submesh other
-        // than the existing cap), de-duplicating by position.
-        var ring = new List<Vector3>();
-        foreach (var sm in mesh.Submeshes)
-        {
-            if (ReferenceEquals(sm, existingCap)) continue;
-            foreach (var p in sm.Positions)
-            {
-                if (MathF.Abs(p.Z - missingZ) > epsZ) continue;
-                bool dup = false;
-                foreach (var r in ring)
-                {
-                    float dx = r.X - p.X, dy = r.Y - p.Y;
-                    if (dx * dx + dy * dy < epsXY2) { dup = true; break; }
-                }
-                if (!dup) ring.Add(p);
-            }
-        }
-
-        if (ring.Count != existingCap.Positions.Length)
-            return mesh; // topology doesn't match what we expect — don't guess, leave as-is
-
-        // Match each existing-cap vertex to its ring counterpart by nearest X/Y (exact for the
-        // common no-twist case; the side-wall data keeps taper/shear correct either way).
-        var newPositions = new Vector3[existingCap.Positions.Length];
-        for (int i = 0; i < existingCap.Positions.Length; i++)
-        {
-            var target = existingCap.Positions[i];
-            int best = 0; float bestD = float.MaxValue;
-            for (int j = 0; j < ring.Count; j++)
-            {
-                float dx = ring[j].X - target.X, dy = ring[j].Y - target.Y;
-                float d = dx * dx + dy * dy;
-                if (d < bestD) { bestD = d; best = j; }
-            }
-            newPositions[i] = ring[best];
-        }
-
-        var newNormals = new Vector3[existingCap.Normals.Length];
-        for (int i = 0; i < newNormals.Length; i++) newNormals[i] = -existingCap.Normals[i];
-
-        var newUVs = (Vector2[])existingCap.UVs.Clone();
-
-        // Reverse each triangle's winding so the mirrored cap faces outward.
-        var newIndices = new int[existingCap.Indices.Length];
-        for (int t = 0; t + 2 < existingCap.Indices.Length; t += 3)
-        {
-            newIndices[t] = existingCap.Indices[t];
-            newIndices[t + 1] = existingCap.Indices[t + 2];
-            newIndices[t + 2] = existingCap.Indices[t + 1];
-        }
-
-        var repaired = new List<MeshSubmesh>(mesh.Submeshes.Count + 1);
-        repaired.AddRange(mesh.Submeshes);
-        repaired.Add(new MeshSubmesh(newPositions, newNormals, newUVs, newIndices, existingCap.FaceIndex));
-        return mesh with { Submeshes = repaired };
-    }
+    private static MeshData? RepairMissingEndCap(MeshData? mesh) => mesh;
 
     /// <summary>
     /// Generates a sculpted-prim mesh from its decoded sculpt-map (RGBA). The map encodes
@@ -218,7 +126,7 @@ public static class PrimMeshService
 
             var renderer = _renderer ??= new MeshFoundry();
             var faceted = renderer.GenerateFacetedSculptMesh(prim, bmp, lod);
-            return Convert(faceted, prim.Scale);
+            return Convert(faceted);
         }
         catch (Exception ex)
         {
@@ -237,13 +145,9 @@ public static class PrimMeshService
     /// single-texture prims looked fine. GenerateFacetedMesh emits faces in SL face order
     /// (<c>for i in 0..numPrimFaces</c>, each picking <c>Textures.GetFace(i)</c>), so the list
     /// index is the true SL face number.</summary>
-    private static MeshData? Convert(FacetedMesh? faceted, LMVector3 originalScale)
+    private static MeshData? Convert(FacetedMesh? faceted)
     {
         if (faceted?.Faces == null || faceted.Faces.Count == 0) return null;
-
-        float sx = originalScale.X > 0.0001f ? originalScale.X : 1f;
-        float sy = originalScale.Y > 0.0001f ? originalScale.Y : 1f;
-        float sz = originalScale.Z > 0.0001f ? originalScale.Z : 1f;
 
         var submeshes = new List<MeshSubmesh>(faceted.Faces.Count);
         for (int faceNumber = 0; faceNumber < faceted.Faces.Count; faceNumber++)
@@ -258,10 +162,12 @@ public static class PrimMeshService
             for (int i = 0; i < n; i++)
             {
                 var v = face.Vertices[i];
-                // MeshFoundry baked the scale into the vertices. We must divide it out to emit a
-                // unit-scale mesh, because ObjectRenderer applies the prim scale at the Godot node
-                // level. If we don't un-bake it here, the mesh will be double-scaled (squared scale).
-                positions[i] = new Vector3(v.Position.X / sx, v.Position.Y / sy, v.Position.Z / sz);
+                // Both call sites build their Primitive with Scale = (1,1,1) (see Generate() and
+                // GenerateSculpt() below) — geometry is always generated in unit prim space on
+                // purpose, per the class doc comment, so MeshFoundry never bakes a real scale into
+                // these vertices and there is nothing to un-bake here. ObjectRenderer applies the
+                // prim's actual scale at the Godot node level.
+                positions[i] = new Vector3(v.Position.X, v.Position.Y, v.Position.Z);
                 normals[i] = new Vector3(v.Normal.X, v.Normal.Y, v.Normal.Z);
                 uvs[i] = new Vector2(v.TexCoord.X, v.TexCoord.Y);
             }

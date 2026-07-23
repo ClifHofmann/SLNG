@@ -28,7 +28,7 @@ public class AssetService
     private static readonly object _coreJ2kLogLock = new();
     private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _inflightMaterials = new();
     private readonly ConcurrentDictionary<Guid, Task<AnimationData?>> _inflightAnimations = new();
-    private readonly ConcurrentDictionary<PrimShape, Task<MeshData?>> _inflightPrimMeshes = new();
+    private readonly ConcurrentDictionary<(PrimShape Shape, MeshDetailLevel Lod), Task<MeshData?>> _inflightPrimMeshes = new();
     private readonly ConcurrentDictionary<Guid, Task<MeshData?>> _inflightSculptMeshes = new();
 
     public AssetService(GridSession session, string cacheDirectory)
@@ -52,29 +52,47 @@ public class AssetService
     /// requests for the same id share a single fetch/decode.
     /// </summary>
     /// <summary>
-    /// Generates (and caches) real prim geometry for a procedural <see cref="PrimShape"/>.
-    /// Meshing runs on a worker thread; identical shapes share one cached mesh. Returns null
-    /// if the shape can't be meshed (caller falls back to a placeholder).
+    /// Generates (and caches) real prim geometry for a procedural <see cref="PrimShape"/> at the
+    /// given <see cref="MeshDetailLevel"/>. Meshing runs on a worker thread; identical
+    /// (shape, lod) pairs share one cached mesh. Returns null if the shape can't be meshed
+    /// (caller falls back to a placeholder).
+    ///
+    /// <paramref name="lod"/> matters most for curved profiles (sphere/torus/ring): the side
+    /// count LibreMetaverse's mesher uses is directly tied to this level (6/12/24 sides for
+    /// Low/Medium/High+). Callers should pick it from the object's on-screen size (scale and
+    /// distance to camera) -- a large or heavily-scaled curved element meshed at the default
+    /// Medium renders as visibly faceted/angular ("origami") instead of a smooth curve. See
+    /// <see cref="MeshDetailLevel"/>.
     /// </summary>
-    public Task<MeshData?> GetPrimMeshAsync(PrimShape shape)
+    public Task<MeshData?> GetPrimMeshAsync(PrimShape shape, MeshDetailLevel lod = MeshDetailLevel.Medium)
     {
-        if (_memCache.TryGetValue(shape, out MeshData? cached))
+        var key = (shape, lod);
+        if (_memCache.TryGetValue(key, out MeshData? cached))
         {
             return Task.FromResult(cached);
         }
-        return _inflightPrimMeshes.GetOrAdd(shape, async s => {
+        return _inflightPrimMeshes.GetOrAdd(key, async k => {
             try {
-                var result = await Task.Run(() => PrimMeshService.Generate(s)).ConfigureAwait(false);
+                var result = await Task.Run(() => PrimMeshService.Generate(k.Shape, ToLibreMetaverseDetailLevel(k.Lod))).ConfigureAwait(false);
                 if (result != null) {
                     long size = EstimateMeshSize(result);
-                    _memCache.Set(s, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
+                    _memCache.Set(k, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
                 }
                 return result;
             } finally {
-                _inflightPrimMeshes.TryRemove(s, out _);
+                _inflightPrimMeshes.TryRemove(k, out _);
             }
         });
     }
+
+    private static LibreMetaverse.Rendering.DetailLevel ToLibreMetaverseDetailLevel(MeshDetailLevel lod) => lod switch
+    {
+        MeshDetailLevel.Low => LibreMetaverse.Rendering.DetailLevel.Low,
+        MeshDetailLevel.Medium => LibreMetaverse.Rendering.DetailLevel.Medium,
+        MeshDetailLevel.High => LibreMetaverse.Rendering.DetailLevel.High,
+        MeshDetailLevel.Highest => LibreMetaverse.Rendering.DetailLevel.Highest,
+        _ => LibreMetaverse.Rendering.DetailLevel.Medium,
+    };
 
     /// <summary>
     /// Generates (and caches) geometry for a sculpted prim from its sculpt-map texture. The map
@@ -322,6 +340,8 @@ public class AssetService
         });
     }
 
+    private static readonly SemaphoreSlim _textureFetchThrottle = new SemaphoreSlim(4, 4);
+
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, bool isSculpt)
     {
         string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v5.j2c");
@@ -342,7 +362,17 @@ public class AssetService
         {
             if (!_session.IsConnected) return null;
 
-            var bytes = await _session.FetchTextureDataAsync(textureId).ConfigureAwait(false);
+            await _textureFetchThrottle.WaitAsync().ConfigureAwait(false);
+            byte[]? bytes;
+            try
+            {
+                bytes = await _session.FetchTextureDataAsync(textureId).ConfigureAwait(false);
+            }
+            finally
+            {
+                _textureFetchThrottle.Release();
+            }
+
             if (bytes is { Length: > 0 })
             {
                 var result = await Task.Run(() => DecodeTexture(bytes, isSculpt)).ConfigureAwait(false);
@@ -352,7 +382,18 @@ public class AssetService
                     {
                         try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
                     }
-                    return result;
+
+                    // A "degraded" sculpt-map decode almost always means the J2C bytes we got over
+                    // the wire were truncated (dropped UDP packet — see docs/HANDOVER_CLAUDE.md) and
+                    // the CoreJ2K fallback filled the gaps with guessed/averaged pixel values. For a
+                    // normal texture that's a one-frame blur; for a sculpt map it corrupts every
+                    // vertex position, producing melted/collapsed geometry. Retry the fetch instead
+                    // of handing that geometry-corrupting data to the mesher, as long as we still
+                    // have attempts left — a re-fetch has a real chance of getting the complete
+                    // bytes. Only surrender to the degraded result on the last attempt (a wrong-but-
+                    // present mesh still beats no mesh at all).
+                    bool isLastAttempt = attempt == 2;
+                    if (!isSculpt || !result.IsDegraded || isLastAttempt) return result;
                 }
             }
 
@@ -522,33 +563,68 @@ public class AssetService
         }
     }
 
-    private static TextureData? DecodeTexture(byte[] bytes, bool isSculpt = false)
+    /// <summary>Internal (not private) solely so <c>SLNG.Assets.Tests</c> can exercise the
+    /// sculpt-map decode path directly — see <see cref="InternalsVisibleToAttribute"/> in the
+    /// project file. Not part of the public API.</summary>
+    internal static TextureData? DecodeTexture(byte[] bytes, bool isSculpt = false)
     {
         try
         {
-            // Magick.NET wraps OpenJPEG and seamlessly handles malformed J2C bitstreams (missing EOC, trailing padding, etc.) that crash CoreJ2K.
-            // HOWEVER, for Sculpt Maps (which are heavily dependent on exact pixel values), Magick.NET often silently
-            // corrupts the decode (producing "Codestream truncated in tile 0" warnings and zero-filled pixels),
-            // which causes the vertices to collapse to the origin (giant spikes!).
-            // Therefore, we ALWAYS force CoreJ2K for Sculpt Maps. It's perfectly fast enough for 64x64 images.
+            // Magick.NET wraps OpenJPEG. On a genuinely truncated/corrupt J2C bitstream (dropped
+            // UDP packets — see docs/HANDOVER_CLAUDE.md) it reliably throws (verified: truncating
+            // a real codestream to 90% of its length makes Magick.NET raise
+            // MagickCoderErrorException "Tile part length size inconsistent with stream length").
+            // That hard failure is a FEATURE for sculpt maps, not a bug to route around: it lets us
+            // fall through to the CoreJ2K path below and, more importantly, tells us the decode is
+            // untrustworthy. CoreJ2K does NOT make that distinction — verified: given the exact
+            // same truncated bytes, CoreJ2K.DecodeToImage returns a "successful", full-dimension
+            // bitmap with no exception and no warning, silently filling the missing wavelet data
+            // with the block's DC/low-frequency average. For a normal photo that's an unnoticeable
+            // blur; for a sculpt map, where each pixel is an independent, unrelated vertex XYZ, that
+            // averaging melts the whole vertex grid into smooth, edge-free blobs — the exact
+            // "melted ribbon" corruption this comment used to blame on Magick's "silent zero-fill".
+            // An earlier version of this code unconditionally forced ALL sculpt maps through
+            // CoreJ2K to dodge that Magick failure mode, which traded a loud, detectable failure
+            // (spiky garbage geometry, or a null decode) for a silent, confident, WRONG one on
+            // every sculpt whose bytes arrive incomplete — worse, not better. Verified via a
+            // byte-identical decode test with a realistic lossy-quality bitstream that CoreJ2K's
+            // decode is NOT otherwise lower fidelity than Magick's when the codestream is intact,
+            // so there is no quality reason to prefer it as the primary path. Sculpt maps now go
+            // through the same Magick-first, CoreJ2K-fallback path as every other texture.
+            var settings = new ImageMagick.MagickReadSettings();
+            if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F)
+            {
+                settings.Format = ImageMagick.MagickFormat.J2c;
+            }
+            using var image = new ImageMagick.MagickImage(bytes, settings);
+            image.Warning += (s, e) => { /* Suppress Magick.NET console spam */ };
+
+            int width = (int)image.Width;
+            int height = (int)image.Height;
+
+            // Sculpt maps encode vertex XYZ as RGB per pixel. A resize here MUST use nearest-
+            // neighbor (Point) — never linear/cubic — so we never blend two unrelated vertices'
+            // coordinates together, and MUST read pixels as linear RGB, not sRGB, so we don't
+            // gamma-warp spatial coordinates.
+            if (isSculpt)
+            {
+                image.ColorSpace = ImageMagick.ColorSpace.RGB;
+                if (width != 64 || height != 64)
+                {
+                    image.FilterType = ImageMagick.FilterType.Point;
+                    image.Resize(new ImageMagick.MagickGeometry("64x64!") { IgnoreAspectRatio = true });
+                    width = (int)image.Width;
+                    height = (int)image.Height;
+                }
+            }
+
+            bool isDegraded = false;
+
             if (!isSculpt)
             {
-                var settings = new ImageMagick.MagickReadSettings();
-                if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F)
-                {
-                    settings.Format = ImageMagick.MagickFormat.J2c;
-                }
-                using var image = new ImageMagick.MagickImage(bytes, settings);
-                image.Warning += (s, e) => { /* Suppress Magick.NET console spam */ };
-                
-                int width = (int)image.Width;
-                int height = (int)image.Height;
-
-                bool isDegraded = false;
-                
                 // For normal textures, verify if Magick.NET decoded a low-res thumbnail instead of the full image
                 int trueWidth = -1, trueHeight = -1;
-                
+
                 if (settings.Format == ImageMagick.MagickFormat.J2c)
                 {
                     for (int i = 0; i < bytes.Length - 13; i++)
@@ -561,7 +637,7 @@ public class AssetService
                         }
                     }
                 }
-                
+
                 if (trueWidth > 0 && trueHeight > 0 && (width * height < trueWidth * trueHeight))
                 {
                     // Accept the thumbnail but mark as degraded so it isn't cached
@@ -571,34 +647,30 @@ public class AssetService
 
                 if (image.HasAlpha || image.ChannelCount >= 4) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
                 else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
-
-                byte[] rgba;
-                using (var pixels = image.GetPixels())
-                {
-                    var raw = pixels.GetValues() ?? Array.Empty<byte>();
-                    int ch = width > 0 && height > 0 ? raw.Length / (width * height) : 0;
-                    if (ch >= 3 && raw.Length >= width * height * ch)
-                    {
-                        rgba = new byte[width * height * 4];
-                        for (int p = 0; p < width * height; p++)
-                        {
-                            int s = p * ch, d = p * 4;
-                            rgba[d]     = raw[s];
-                            rgba[d + 1] = raw[s + 1];
-                            rgba[d + 2] = raw[s + 2];
-                            rgba[d + 3] = ch >= 4 ? raw[s + 3] : (byte)255;
-                        }
-                    }
-                    else
-                        throw new Exception("Magick.NET decode invalid channels");
-                }
-
-                return new TextureData(width, height, rgba, isDegraded);
             }
-            else
+
+            byte[] rgba;
+            using (var pixels = image.GetPixels())
             {
-                throw new Exception("Force CoreJ2K for Sculpt Maps");
+                var raw = pixels.GetValues() ?? Array.Empty<byte>();
+                int ch = width > 0 && height > 0 ? raw.Length / (width * height) : 0;
+                if (ch >= 3 && raw.Length >= width * height * ch)
+                {
+                    rgba = new byte[width * height * 4];
+                    for (int p = 0; p < width * height; p++)
+                    {
+                        int s = p * ch, d = p * 4;
+                        rgba[d]     = raw[s];
+                        rgba[d + 1] = raw[s + 1];
+                        rgba[d + 2] = raw[s + 2];
+                        rgba[d + 3] = ch >= 4 ? raw[s + 3] : (byte)255;
+                    }
+                }
+                else
+                    throw new Exception("Magick.NET decode invalid channels");
             }
+
+            return new TextureData(width, height, rgba, isDegraded);
         }
         catch
         {

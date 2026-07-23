@@ -9,6 +9,12 @@ namespace SLNG.Core;
 /// "did the shape change?" comparison: two prims with identical shapes compare equal and
 /// share one generated mesh.
 /// </summary>
+/// <param name="ProfileCurve">The RAW packed profile-curve byte from LibreMetaverse's
+/// Primitive.ConstructionData.profileCurve -- NOT the masked ProfileCurve property. The low
+/// nibble is the profile curve type (Circle/Square/Triangle/...), the high nibble is the hollow
+/// cut's own shape (HoleType Same/Circle/Square/Triangle, pre-shifted by LibreMetaverse into
+/// 0x00/0x10/0x20/0x30). Both nibbles must survive intact so PrimMeshService can reconstruct a
+/// hollow prim's hole shape, not just its outer profile.</param>
 public readonly record struct PrimShape(
     byte ProfileCurve,
     byte PathCurve,
