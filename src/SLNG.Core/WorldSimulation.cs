@@ -79,13 +79,19 @@ public sealed class WorldSimulation : IDisposable
         }
     }
 
-    // Mirrors the real viewer's LLViewerObject::interpolateLinearMotion constants
-    // (sPhaseOutUpdateInterpolationTime / sMaxUpdateInterpolationTime): extrapolate at full
-    // velocity for the first 2s since the last network update, linearly fade the contribution to
-    // zero over the following second, then stop (a stalled/lost connection should freeze the
-    // avatar in place, not fling it forever along a possibly-stale velocity).
-    private const float ExtrapolationPhaseOutStartSeconds = 2.0f;
-    private const float ExtrapolationMaxSeconds = 3.0f;
+    // Deliberately much shorter than the real viewer's generic LLViewerObject::
+    // interpolateLinearMotion constants (sPhaseOutUpdateInterpolationTime=2s /
+    // sMaxUpdateInterpolationTime=3s -- appropriate for physics objects, whose velocity vector
+    // doesn't change direction abruptly). Live-tested console data (2026-07-23, [AvatarMove] diag)
+    // showed a healthy ~60-160ms packet cadence with occasional ~1.4s gaps; a walking avatar can
+    // change direction (the user turns) well within that gap, so holding the OLD velocity's
+    // direction at full weight for up to 2s -- as the generic constants would -- accumulates real
+    // position error in a now-wrong direction for over a second before the next packet corrects
+    // it, which is exactly what reads as a sideways pop. Freezing in place after a short gap
+    // (rather than continuing to fling the avatar along a stale direction) is the better failure
+    // mode here: a brief pause is much less visible than a growing-then-corrected sideways drift.
+    private const float ExtrapolationPhaseOutStartSeconds = 0.4f;
+    private const float ExtrapolationMaxSeconds = 0.8f;
 
     // Rotation has no reliable AngularVelocity to dead-reckon from for a turning avatar (see
     // TransformComponent.TargetRotation's doc comment), so instead of phase-out/cutoff timing it's

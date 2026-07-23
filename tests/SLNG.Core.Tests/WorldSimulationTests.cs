@@ -358,7 +358,7 @@ public class WorldSimulationTests
     }
 
     /// <summary>ExtrapolateMovement dead-reckons Position from Velocity at full weight before
-    /// ExtrapolationPhaseOutStartSeconds (2s) -- mirrors the real viewer's
+    /// ExtrapolationPhaseOutStartSeconds (0.4s) -- mirrors the real viewer's
     /// LLViewerObject::interpolateLinearMotion extrapolating from the last reported velocity
     /// between packets instead of holding Position static.</summary>
     [Fact]
@@ -375,13 +375,13 @@ public class WorldSimulationTests
 
         var transform = world.GetEntity(123ul, 42)!.GetComponent<TransformComponent>()!;
 
-        simulation.ExtrapolateMovement(0.1f); // well before the 2s phase-out start
+        simulation.ExtrapolateMovement(0.1f); // well before the 0.4s phase-out start
         Assert.Equal(new Vector3(0.2f, 0, 0), transform.Position);
     }
 
     /// <summary>Extrapolation must stop entirely once TimeSinceUpdate reaches
-    /// ExtrapolationMaxSeconds (3s) -- a stalled/lost connection should freeze the avatar in place
-    /// rather than fling it forever along a possibly-stale velocity.</summary>
+    /// ExtrapolationMaxSeconds (0.8s) -- a stalled/lost connection should freeze the avatar in
+    /// place rather than fling it forever along a possibly-stale velocity.</summary>
     [Fact]
     public void ExtrapolateMovement_StopsAfterMaxSeconds()
     {
@@ -396,7 +396,7 @@ public class WorldSimulationTests
 
         var transform = world.GetEntity(123ul, 42)!.GetComponent<TransformComponent>()!;
 
-        // Advance in small steps well past the 3s cutoff (mirrors real per-frame deltas).
+        // Advance in small steps well past the 0.8s cutoff (mirrors real per-frame deltas).
         for (int i = 0; i < 40; i++) // 40 * 0.1s = 4s
         {
             simulation.ExtrapolateMovement(0.1f);
