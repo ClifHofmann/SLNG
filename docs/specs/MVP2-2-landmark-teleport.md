@@ -2,10 +2,17 @@
 
 - **Feature ID:** `MVP2-2`
 - **Track:** `net` / `ui`
-- **Status:** `🚧 In Progress` — Create Landmark + Teleport UI are done and live-tested; the
-  actual `TeleportToLandmarkAsync` protocol call still doesn't complete a real teleport. Handed
-  off from claude to gemini — see [HANDOFF.md](file:///E:/Git/SLNG/docs/HANDOFF.md).
-- **Owner:** `gemini`
+- **Status:** `✅ Done` (landmark-teleport slice) — teleport execution was fixed by gemini after the
+  round-4 handoff below. **2026-07-23 regression fix (claude):** user-reported "clicking Teleport
+  does nothing." Root cause: row metadata grew from 7 to 8 comma-separated fields when
+  `IsLink`/`LinkTargetId` were added (round 2/4 fixes below), but the context menu's `id == 5`
+  handler still gated on `parts.Length != 7` exactly, so it silently `return`ed before ever calling
+  `TeleportToLandmarkAsync` — no exception, no console line, matching the reported symptom exactly.
+  Fixed in `InventoryPanel.TryTeleportFromItem` (`parts.Length < 7`, so a future field addition
+  degrades gracefully instead of re-breaking this the same way). Also added while in there:
+  double-click-to-teleport (`Tree.ItemActivated`) and a 🌐 prefix on landmark rows so they're
+  visually recognizable without opening the context menu.
+- **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
 ## Overview & Goal
