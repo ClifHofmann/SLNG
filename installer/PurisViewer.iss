@@ -1,5 +1,10 @@
 #define MyAppName "Puris Viewer"
-#define MyAppVersion "0.1.0-alpha"
+; Overridable via ISCC's /DMyAppVersion=... command-line define (the CI workflow passes the
+; git tag that triggered the build) so the installer filename/AppVersion always matches the
+; actual release instead of this hardcoded fallback, which is only for local manual builds.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.1.0-alpha"
+#endif
 #define MyAppPublisher "Puris"
 #define MyAppExeName "PurisViewer.exe"
 
@@ -14,7 +19,7 @@ DefaultGroupName={#MyAppName}
 ; Uncomment this line and ensure the icon.ico file is in your app folder before building!
 ; SetupIconFile=..\app\icon.ico
 OutputDir=..\Output
-OutputBaseFilename=PurisViewer_Setup
+OutputBaseFilename=PurisViewer_Setup_{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
