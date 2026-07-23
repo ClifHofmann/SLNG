@@ -27,6 +27,26 @@ public record NameResolvedEvent(Guid Id, string Name);
 /// side. Not world-state, so intentionally not an <see cref="IWorldEvent"/>.</summary>
 public record AlertMessageEvent(string Message);
 
+/// <summary>Stage of the login handshake, mirrored (by name) from LibreMetaverse's own
+/// <c>LoginStatus</c> enum so the real, server-driven handshake progress can be surfaced to the
+/// UI without an <c>OpenMetaverse</c>/<c>LibreMetaverse</c> type crossing the <c>SLNG.Net</c>
+/// boundary (see AGENTS.md's layering rules). Deliberately does not include <c>None</c> --
+/// callers only ever observe stages once a login attempt is actually in flight.</summary>
+public enum LoginStage
+{
+    ConnectingToLogin,
+    ReadingResponse,
+    Redirecting,
+    ConnectingToSim,
+    Success,
+    Failed,
+}
+
+/// <summary>A real, server-driven login handshake progress notification -- relayed 1:1 from
+/// LibreMetaverse's <c>NetworkManager.LoginProgress</c> event, not simulated/time-based. Not
+/// world-state, so intentionally not an <see cref="IWorldEvent"/>.</summary>
+public record LoginProgressEvent(LoginStage Stage, string Message);
+
 /// <summary>A friend's online/offline presence changed. Identity/social state, not world
 /// simulation state, so intentionally not an <see cref="IWorldEvent"/> -- consumers (UI)
 /// subscribe directly on GridSession, same as <see cref="NameResolvedEvent"/>.</summary>

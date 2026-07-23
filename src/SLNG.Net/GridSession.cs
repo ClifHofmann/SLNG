@@ -45,6 +45,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<AvatarAnimationEvent>? AvatarAnimationReceived;
     public event EventHandler<FriendStatusEvent>? FriendStatusChanged;
     public event EventHandler<InstantMessageEvent>? InstantMessageReceived;
+    /// <summary>Real, server-driven login handshake progress -- relayed 1:1 from LibreMetaverse's
+    /// own <c>NetworkManager.LoginProgress</c> (see <see cref="LoginAsync"/>), not simulated. UI
+    /// should treat these as advisory only: on a direct (non-redirected) login some stages
+    /// (notably <see cref="LoginStage.Redirecting"/>) never fire.</summary>
+    public event EventHandler<LoginProgressEvent>? LoginProgress;
     /// <summary>Fired when we connect to a NEW primary/current simulator -- i.e. on login and on
     /// every teleport/region-crossing that changes which region we're actually in. NOT fired for
     /// LibreMetaverse's other SimConnected occurrences, e.g. a neighbor sim connected only for
@@ -783,6 +788,27 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         ArgumentNullException.ThrowIfNull(credentials);
 
+        // Relays LibreMetaverse's own login handshake stages (ConnectingToLogin, ReadingResponse,
+        // Redirecting, ConnectingToSim, Success/Failed) out through the neutral LoginProgress event
+        // -- real server-driven progress, not a simulated/time-based fake (see FEAT-UI-08). Fires on
+        // whatever thread LibreMetaverse raises it on; subscribed for the duration of this one call.
+        void OnLmvLoginProgress(object? sender, LoginProgressEventArgs e)
+        {
+            var stage = e.Status switch
+            {
+                LoginStatus.ConnectingToLogin => LoginStage.ConnectingToLogin,
+                LoginStatus.ReadingResponse => LoginStage.ReadingResponse,
+                LoginStatus.Redirecting => LoginStage.Redirecting,
+                LoginStatus.ConnectingToSim => LoginStage.ConnectingToSim,
+                LoginStatus.Success => LoginStage.Success,
+                LoginStatus.Failed => LoginStage.Failed,
+                _ => (LoginStage?)null, // LoginStatus.None -- not a real in-flight stage, don't surface it
+            };
+            if (stage.HasValue)
+                LoginProgress?.Invoke(this, new LoginProgressEvent(stage.Value, e.Message));
+        }
+
+        _client.Network.LoginProgress += OnLmvLoginProgress;
         try
         {
             var login = new LoginParams(
@@ -814,6 +840,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             // Surface the failure through the result; do not swallow it silently.
             return LoginResult.Fail("exception", ex.Message);
+        }
+        finally
+        {
+            _client.Network.LoginProgress -= OnLmvLoginProgress;
         }
     }
 
