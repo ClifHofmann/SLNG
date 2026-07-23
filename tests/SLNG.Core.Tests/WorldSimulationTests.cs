@@ -405,6 +405,39 @@ public class WorldSimulationTests
         Assert.Equal(25f, transform.TargetPosition.Z); // NOT 999 -- ground-clamp Z wins for local agent
     }
 
+    /// <summary>Companion to the test above: ExtrapolateMovement's position-easing Lerp must also
+    /// leave the local agent's Z untouched. TargetPosition.Z is only re-pinned to Position.Z when a
+    /// packet arrives; between packets AvatarController's ground-clamp keeps moving Position.Z while
+    /// TargetPosition.Z stays frozen, so easing Position toward TargetPosition on Z would drag it
+    /// back toward the stale value every frame -- the same fight the network X/Y sync used to have
+    /// with the old client prediction, just on the vertical axis (would read as a vertical bob while
+    /// walking over uneven terrain). X/Y still ease normally.</summary>
+    [Fact]
+    public void ExtrapolateMovement_LocalAgent_DoesNotEaseZTowardStaleTarget()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(0, 0, 20), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var transform = world.GetEntity(123ul, 42)!.GetComponent<TransformComponent>()!;
+        // TargetPosition is now (0,0,20); Position was snapped there on first update.
+
+        // Give X/Y a target the render position lags behind, and have the ground-clamp move Z to a
+        // value TargetPosition.Z (still 20) doesn't know about.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(1, 0, 20), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+        transform.Position = new Vector3(transform.Position.X, transform.Position.Y, 25f); // ground-clamp raised Z
+
+        simulation.ExtrapolateMovement(0.05f);
+
+        Assert.Equal(25f, transform.Position.Z); // Z untouched by the ease -- clamp value preserved
+        Assert.NotEqual(0f, transform.Position.X); // X did ease toward the (1,0,20) target
+    }
+
     /// <summary>ApplyAvatarUpdate must record Velocity and reset TimeSinceUpdate to 0 on every
     /// update, so ExtrapolateMovement starts dead-reckoning fresh from the just-arrived position
     /// rather than compounding onto whatever it had already extrapolated from the previous one.</summary>

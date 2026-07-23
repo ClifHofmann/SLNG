@@ -131,6 +131,8 @@ public sealed class WorldSimulation : IDisposable
 
             transform.TimeSinceUpdate += deltaSeconds;
 
+            bool isLocalAgent = entity.GetComponent<AvatarComponent>()?.IsLocalAgent == true;
+
             if (transform.Velocity != Vector3.Zero && transform.TimeSinceUpdate < ExtrapolationMaxSeconds)
             {
                 float phaseOutT = System.Math.Clamp(
@@ -149,12 +151,25 @@ public sealed class WorldSimulation : IDisposable
             }
 
             float posT = 1f - MathF.Exp(-PositionSmoothingRate * deltaSeconds);
-            transform.Position = Vector3.Lerp(transform.Position, transform.TargetPosition, posT);
+            var easedPosition = Vector3.Lerp(transform.Position, transform.TargetPosition, posT);
+            if (isLocalAgent)
+            {
+                // Local Z is owned entirely by AvatarController's per-frame ground-clamp (see
+                // ApplyAvatarUpdate: TargetPosition.Z is pinned to whatever Position.Z the clamp
+                // last produced, and never taken from the network). But TargetPosition.Z only gets
+                // re-pinned when a packet arrives -- between packets the clamp keeps moving
+                // Position.Z (terrain height changes, gravity) while TargetPosition.Z stays frozen,
+                // so easing Position toward TargetPosition on Z would drag it back toward the stale
+                // value every frame, fighting the clamp exactly the way the network X/Y sync used
+                // to fight the old client prediction. Keep the clamp's Z untouched here; only X/Y
+                // ease toward the network target.
+                easedPosition.Z = transform.Position.Z;
+            }
+            transform.Position = easedPosition;
 
             // The local agent's Rotation is entirely owned by AvatarController (the player's own
-            // camera yaw, written directly every 100ms) -- see ApplyAvatarUpdate's matching guard
-            // on TargetRotation. Slerping it here too would fight those writes every frame.
-            bool isLocalAgent = entity.GetComponent<AvatarComponent>()?.IsLocalAgent == true;
+            // camera yaw, written directly EVERY FRAME now) -- see ApplyAvatarUpdate's matching
+            // guard on TargetRotation. Slerping it here too would fight those writes every frame.
             if (!isLocalAgent)
             {
                 float rotT = 1f - MathF.Exp(-RotationSmoothingRate * deltaSeconds);
