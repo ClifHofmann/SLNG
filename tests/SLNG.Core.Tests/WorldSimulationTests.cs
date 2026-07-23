@@ -368,6 +368,43 @@ public class WorldSimulationTests
         Assert.Equal(new Vector3(200, 0, 0), transform.Position); // snapped immediately, no easing
     }
 
+    /// <summary>Regression test (2026-07-23, round 3 of the OSGrid judder investigation): the local
+    /// agent's Z is never taken from the network. AvatarController's ground-clamp runs every frame
+    /// independent of any packet (a physics raycast producing groundHeight + halfBodyZ) and writes
+    /// straight into TransformComponent.Position.Z -- a separate, already-authoritative source for
+    /// local Z. Feeding the network's own e.Position.Z into TargetPosition as well made two
+    /// independent systems fight over Z every frame, continuously, not just at packet-arrival
+    /// moments -- live-test feedback ("genau so ruckelig") after every purely network-timing fix in
+    /// this file had already landed pointed at exactly this. X/Y remain fully network-driven; only Z
+    /// is pinned to whatever the ground-clamp has already put in Position.Z.</summary>
+    [Fact]
+    public void AvatarUpdateEvent_LocalAgent_IgnoresNetworkZ_KeepsLocalGroundClampZ()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(10, 10, 20), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        var transform = entity!.GetComponent<TransformComponent>()!;
+
+        // Simulate AvatarController's ground-clamp having independently moved local Z (e.g. the
+        // avatar stepped onto a platform) to a value the network doesn't know about yet.
+        transform.Position = new Vector3(transform.Position.X, transform.Position.Y, 25f);
+
+        // A network echo reports a totally different Z (its own separate wire convention/lag --
+        // see TargetPosition's doc comment on why local Z is never trusted from it).
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(10.5f, 10.5f, 999f), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        Assert.Equal(10.5f, transform.TargetPosition.X);
+        Assert.Equal(10.5f, transform.TargetPosition.Y);
+        Assert.Equal(25f, transform.TargetPosition.Z); // NOT 999 -- ground-clamp Z wins for local agent
+    }
+
     /// <summary>ApplyAvatarUpdate must record Velocity and reset TimeSinceUpdate to 0 on every
     /// update, so ExtrapolateMovement starts dead-reckoning fresh from the just-arrived position
     /// rather than compounding onto whatever it had already extrapolated from the previous one.</summary>

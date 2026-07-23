@@ -416,12 +416,49 @@ public sealed class WorldSimulation : IDisposable
             // toward TargetPosition over a few frames (ExtrapolateMovement/PositionSmoothingRate),
             // turning that catch-up into a quick glide. A genuinely large jump (teleport, sit/stand,
             // initial spawn) still snaps instantly -- those SHOULD look instant, not smoothed.
-            float targetDelta = Vector3.Distance(transform.TargetPosition, e.Position);
+            // The LOCAL agent's Z is NOT taken from the network at all. AvatarController's
+            // ground-clamp runs every frame independent of any packet (a physics raycast against
+            // the actual rendered scene, producing groundHeight + halfBodyZ -- see its own doc
+            // comment, "Second Life physics model: transform.Position.Z is the collision cylinder
+            // center") and writes straight into transform.Position.Z. That's a SEPARATE, already-
+            // authoritative source for local Z; feeding the network's e.Position.Z into
+            // TargetPosition as well made two independent systems fight over Z every single frame
+            // -- not just at packet-arrival moments like the X/Y fight this whole investigation
+            // fixed, but continuously, 60 times a second, regardless of network timing. That fight
+            // is the far more likely source of judder that persisted unchanged through every
+            // network-timing fix in this file (confirmed by live-test feedback: "genau so
+            // ruckelig" after the race fix, dilation scaling, phase-out tuning, and rotation
+            // smoothing had already landed -- none of which touch this). Remote avatars have no
+            // local ground-clamp, so they still take Z from the network as before.
+            var targetPosition = e.IsLocalAgent
+                ? new Vector3(e.Position.X, e.Position.Y, transform.Position.Z)
+                : e.Position;
+
+            float targetDelta = Vector3.Distance(transform.TargetPosition, targetPosition);
+
+            // TEMPORARY diagnostic (2026-07-23, OSGrid live-test round 3): re-added after
+            // accidentally deleting the original [AvatarMove] log during the TargetPosition
+            // refactor above (round 2's captures were silently empty because of that, not because
+            // anything was fixed). Reports, for the local agent only: how far the new authoritative
+            // targetPosition landed from where TargetPosition already was (targetDelta -- the raw
+            // network-sync story for X/Y now that Z is excluded) AND separately how far the
+            // RENDERED Position currently lags behind that (renderGap -- the easing catch-up
+            // distance PositionSmoothingRate now has to cover). Remove once the OSGrid cause is
+            // confirmed.
+            if (e.IsLocalAgent && targetDelta > 0.1f)
+            {
+                float renderGap = Vector3.Distance(transform.Position, transform.TargetPosition);
+                System.Console.WriteLine(
+                    $"[AvatarMove] targetDelta={targetDelta:0.###}m renderGap={renderGap:0.###}m " +
+                    $"packetGap={transform.TimeSinceUpdate:0.###}s dilation={e.TimeDilation:0.###} " +
+                    $"vel={e.Velocity.Length():0.###}m/s oldTarget={transform.TargetPosition} newTarget={targetPosition}");
+            }
+
             if (targetDelta > TeleportSnapDistanceMeters)
             {
-                transform.Position = e.Position;
+                transform.Position = targetPosition;
             }
-            transform.TargetPosition = e.Position;
+            transform.TargetPosition = targetPosition;
             // Rotation is NOT set directly here -- see TargetRotation's doc comment. Hard-snapping
             // it every packet (previously: transform.Rotation = e.Rotation) was fine for straight
             // walking but visibly choppy while turning; ExtrapolateMovement slerps Rotation toward
