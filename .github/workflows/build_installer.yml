@@ -83,7 +83,15 @@ jobs:
       # filename/AppVersion always matches the release instead of PurisViewer.iss's hardcoded
       # local-build fallback -- avoids ambiguous "which build is this" downloads support has
       # had to deal with across the v0.3.x round-trip debugging this session.
-      run: '"/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/DMyAppVersion=${{ github.ref_name }}" installer/PurisViewer.iss'
+      #
+      # MSYS_NO_PATHCONV=1 works around a Git-Bash/MSYS quirk: any argument starting with "/"
+      # (like /DMyAppVersion=...) gets auto-translated as if it were a Unix path before being
+      # handed to the native ISCC.exe, mangling the switch so ISCC no longer recognizes it as
+      # a switch and treats it as a second script filename instead -- confirmed live: "You may
+      # not specify more than one script filename." Without MSYS_NO_PATHCONV, the plain
+      # `installer/PurisViewer.iss` step (no /D args) worked fine, since nothing started
+      # with "/" to trigger the conversion.
+      run: MSYS_NO_PATHCONV=1 "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/DMyAppVersion=${{ github.ref_name }}" installer/PurisViewer.iss
 
     - name: Upload Release
       uses: softprops/action-gh-release@v2
