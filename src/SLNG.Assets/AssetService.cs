@@ -527,34 +527,24 @@ public class AssetService
         try
         {
             // Magick.NET wraps OpenJPEG and seamlessly handles malformed J2C bitstreams (missing EOC, trailing padding, etc.) that crash CoreJ2K.
-            var settings = new ImageMagick.MagickReadSettings();
-            if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F)
-            {
-                settings.Format = ImageMagick.MagickFormat.J2c;
-            }
-            using var image = new ImageMagick.MagickImage(bytes, settings);
-            
-            int width = (int)image.Width;
-            int height = (int)image.Height;
-
-            // Sculpt maps MUST be 64x64 for MeshFoundry to build the correct 3D topology.
-            // MUST use Point filtering (Nearest Neighbor) to prevent coordinate ringing/overshoot.
-            // MUST be treated as linear RGB, not sRGB, to prevent gamma warping of spatial coordinates.
-            if (isSculpt)
-            {
-                image.ColorSpace = ImageMagick.ColorSpace.RGB;
-                if (width != 64 || height != 64)
-                {
-                    image.FilterType = ImageMagick.FilterType.Point;
-                    image.Resize(new ImageMagick.MagickGeometry("64x64!") { IgnoreAspectRatio = true });
-                    width = (int)image.Width;
-                    height = (int)image.Height;
-                }
-            }
-            bool isDegraded = false;
-            
+            // HOWEVER, for Sculpt Maps (which are heavily dependent on exact pixel values), Magick.NET often silently
+            // corrupts the decode (producing "Codestream truncated in tile 0" warnings and zero-filled pixels),
+            // which causes the vertices to collapse to the origin (giant spikes!).
+            // Therefore, we ALWAYS force CoreJ2K for Sculpt Maps. It's perfectly fast enough for 64x64 images.
             if (!isSculpt)
             {
+                var settings = new ImageMagick.MagickReadSettings();
+                if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F)
+                {
+                    settings.Format = ImageMagick.MagickFormat.J2c;
+                }
+                using var image = new ImageMagick.MagickImage(bytes, settings);
+                
+                int width = (int)image.Width;
+                int height = (int)image.Height;
+
+                bool isDegraded = false;
+                
                 // For normal textures, verify if Magick.NET decoded a low-res thumbnail instead of the full image
                 int trueWidth = -1, trueHeight = -1;
                 
@@ -577,52 +567,37 @@ public class AssetService
                     Console.WriteLine($"[AssetService] Magick decoded thumbnail {width}x{height}, expected {trueWidth}x{trueHeight}. Marked as degraded.");
                     isDegraded = true;
                 }
-            }
 
-            // Force Magick to decode into usable colorspaces before grabbing pixel values.
-            // Some SL/OpenSim J2K assets report ChannelCount==5 (an extra component beyond RGBA
-            // that Magick.NET doesn't itself flag via HasAlpha) rather than a clean 4 — using
-            // "== 4" here missed those, forcing them down the no-alpha sRGB path. That collapses
-            // GetPixels() to 3 channels, and the fallback below then defaults alpha to 255
-            // (opaque) — so a genuinely blank/transparent placeholder (alpha≈0 everywhere, e.g. an
-            // unfilled applier slot or a bake for a channel with nothing worn) rendered as a solid
-            // opaque white patch instead of being invisible. ">= 4" catches both cases.
-            //
-            // Do NOT "fix" this by forcing `image.HasAlpha = true` and calling
-            // `pixels.ToByteArray("RGBA")` instead of this manual channel walk — Magick.NET
-            // initializes a newly-forced alpha channel to fully OPAQUE on any image it doesn't
-            // already recognize as having one (exactly the ChannelCount==5 case above), silently
-            // discarding the real alpha-carrying data in that extra channel. That regression made
-            // every avatar bake/placeholder texture with real per-pixel alpha decode as fully
-            // opaque — no renderer-side Transparency/cutout setting can recover it once the
-            // source pixel data itself has been clobbered to alpha=255 here.
-            if (!isSculpt)
-            {
                 if (image.HasAlpha || image.ChannelCount >= 4) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
                 else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
-            }
-            byte[] rgba;
-            using (var pixels = image.GetPixels())
-            {
-                var raw = pixels.GetValues() ?? Array.Empty<byte>();
-                int ch = width > 0 && height > 0 ? raw.Length / (width * height) : 0;
-                if (ch >= 3 && raw.Length >= width * height * ch)
-                {
-                    rgba = new byte[width * height * 4];
-                    for (int p = 0; p < width * height; p++)
-                    {
-                        int s = p * ch, d = p * 4;
-                        rgba[d]     = raw[s];
-                        rgba[d + 1] = raw[s + 1];
-                        rgba[d + 2] = raw[s + 2];
-                        rgba[d + 3] = ch >= 4 ? raw[s + 3] : (byte)255;
-                    }
-                }
-                else
-                    return null;
-            }
 
-            return new TextureData(width, height, rgba, isDegraded);
+                byte[] rgba;
+                using (var pixels = image.GetPixels())
+                {
+                    var raw = pixels.GetValues() ?? Array.Empty<byte>();
+                    int ch = width > 0 && height > 0 ? raw.Length / (width * height) : 0;
+                    if (ch >= 3 && raw.Length >= width * height * ch)
+                    {
+                        rgba = new byte[width * height * 4];
+                        for (int p = 0; p < width * height; p++)
+                        {
+                            int s = p * ch, d = p * 4;
+                            rgba[d]     = raw[s];
+                            rgba[d + 1] = raw[s + 1];
+                            rgba[d + 2] = raw[s + 2];
+                            rgba[d + 3] = ch >= 4 ? raw[s + 3] : (byte)255;
+                        }
+                    }
+                    else
+                        throw new Exception("Magick.NET decode invalid channels");
+                }
+
+                return new TextureData(width, height, rgba, isDegraded);
+            }
+            else
+            {
+                throw new Exception("Force CoreJ2K for Sculpt Maps");
+            }
         }
         catch
         {
@@ -654,13 +629,19 @@ public class AssetService
                     {
                         if (bitmap.Width > 0 && bitmap.Height > 0)
                         {
+                            var targetBitmap = bitmap;
+                            if (isSculpt && (bitmap.Width != 64 || bitmap.Height != 64))
+                            {
+                                targetBitmap = bitmap.Resize(new SkiaSharp.SKImageInfo(64, 64), SkiaSharp.SKSamplingOptions.Default);
+                            }
+
                             // Ensure the bitmap is converted to Rgba8888 for Godot's Image.CreateFromData
-                            using var rgbaBitmap = bitmap.ColorType == SkiaSharp.SKColorType.Rgba8888 
-                                ? bitmap 
-                                : bitmap.Copy(SkiaSharp.SKColorType.Rgba8888);
+                            var rgbaBitmap = targetBitmap.ColorType == SkiaSharp.SKColorType.Rgba8888 
+                                ? targetBitmap 
+                                : targetBitmap.Copy(SkiaSharp.SKColorType.Rgba8888);
                             
-                            int width = bitmap.Width;
-                            int height = bitmap.Height;
+                            int width = targetBitmap.Width;
+                            int height = targetBitmap.Height;
                             byte[] exactRgba = new byte[width * height * 4];
                             
                             if (rgbaBitmap.RowBytes == width * 4)
@@ -675,6 +656,9 @@ public class AssetService
                                     System.Runtime.InteropServices.Marshal.Copy(ptr + y * rgbaBitmap.RowBytes, exactRgba, y * width * 4, width * 4);
                                 }
                             }
+
+                            if (targetBitmap != bitmap) targetBitmap.Dispose();
+                            if (rgbaBitmap != targetBitmap && rgbaBitmap != bitmap) rgbaBitmap.Dispose();
 
                             // We intentionally use System.Diagnostics.Trace.Listeners to suppress CoreJ2K's internal Trace logs?
                             // Actually, just returning the exact array fixes the "sim looks weird" bug (skewed/failed textures).

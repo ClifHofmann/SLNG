@@ -307,6 +307,12 @@ public partial class ObjectRenderer : Node3D
 
     private void UpdateVisual(string entityIdStr)
     {
+        if (entityIdStr == "10f8c803-198a-4a56-82d2-cfb988abf291")
+        {
+            var e = _world?.GetEntity(Guid.Parse(entityIdStr));
+            var p = e?.GetComponent<PrimitiveComponent>();
+            GD.Print($"[DebugRenderer] UUID 10f8c803-198a-4a56-82d2-cfb988abf291 -> Scale: {p?.Scale}, IsSculpt: {p?.IsSculpt}, SculptId: {p?.SculptId}");
+        }
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
         if (_world == null) return;
         if (!_visuals.TryGetValue(entityId, out var state)) return;

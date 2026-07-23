@@ -78,7 +78,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.3.5-alpha";
+    public const string AppVersion = "v0.3.6-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -421,6 +421,10 @@ public partial class Boot : Control
         var displayPage = new SLNG.App.UI.DisplayPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_display"), displayPage);
         displayPage.Initialize(_uiSettings, _localizationManager);
+
+        var networkPage = new SLNG.App.UI.NetworkPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);
+        networkPage.Initialize(ProjectSettings.GlobalizePath("user://cache/assets"));
     }
 
     private void SetupEnvironment()
