@@ -564,28 +564,44 @@ public partial class AvatarRenderer : Node3D
             }
         }
 
-        // 4. Animation playback — detect changes in ActiveAnimations
+        // 4. Animation playback — detect changes in ActiveAnimations. Compared as a SET, not by
+        // list position: the sim resends the full active-animation list on every priority/state
+        // change, and nothing guarantees it repeats the same order for an otherwise-unchanged set
+        // (SL's animation priority handling can reorder the list server-side even when nothing the
+        // avatar is actually playing changed). The previous positional compare treated any reorder
+        // as a change, re-triggering LoadAndStartAnimationsAsync -> SetActiveAnimations on every
+        // such resend. SetActiveAnimations itself is set-based and doesn't restart an animation
+        // that's already in _active, so this was likely wasted work rather than a visible replay --
+        // but a transient async fetch hiccup on one entry (see LoadAndStartAnimationsAsync: a
+        // GetAnimationAsync that returns null this call but succeeds next) meant an unrelated
+        // reorder-only resend could momentarily hand SetActiveAnimations a SHORTER "loaded" list,
+        // making it drop and then immediately re-add that animation from InPoint on the very next
+        // real update -- a genuine pose restart with no actual change in what the avatar is doing,
+        // exactly the kind of discontinuity that reads as a pop while walking/turning (turning is
+        // when a new animation, e.g. a turn blend, would first need fetching and be most likely to
+        // race).
         if (avatar.ActiveAnimations != null && _assetService != null && visual.Skeleton != null)
         {
-            bool animsChanged = false;
-            if (visual.LoadedAnimationIds == null || visual.LoadedAnimationIds.Count != avatar.ActiveAnimations.Count)
-            {
-                animsChanged = true;
-            }
-            else
-            {
-                for (int i = 0; i < avatar.ActiveAnimations.Count; i++)
-                {
-                    if (avatar.ActiveAnimations[i] != visual.LoadedAnimationIds[i])
-                    {
-                        animsChanged = true;
-                        break;
-                    }
-                }
-            }
+            bool animsChanged = visual.LoadedAnimationIds == null
+                || !new HashSet<Guid>(visual.LoadedAnimationIds).SetEquals(avatar.ActiveAnimations);
 
             if (animsChanged)
             {
+                // TEMPORARY diagnostic (2026-07-23, OSGrid judder investigation, animation-side
+                // hypothesis): position/rotation sync now measures healthy in live-test data but
+                // the user still reports unchanged judder while walking, and specifically asked
+                // whether animation handling could differ from Firestorm's. Logs every actual
+                // active-animation-set change for the local agent, so a live capture shows whether
+                // this fires far more often than the avatar's real animation state should be
+                // changing (e.g. once per resent-but-reordered packet, before the fix above) or
+                // stays rare as expected. Remove once the OSGrid judder cause is confirmed.
+                if (avatar.IsLocalAgent)
+                {
+                    var oldIds = visual.LoadedAnimationIds == null ? "(none)" : string.Join(",", visual.LoadedAnimationIds);
+                    var newIds = string.Join(",", avatar.ActiveAnimations);
+                    GD.Print($"[AvatarAnim] active set changed: [{oldIds}] -> [{newIds}]");
+                }
+
                 visual.LoadedAnimationIds = new List<Guid>(avatar.ActiveAnimations);
                 var animIds = new List<Guid>(avatar.ActiveAnimations);
                 _ = LoadAndStartAnimationsAsync(visual, animIds);
