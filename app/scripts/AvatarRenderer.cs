@@ -1132,19 +1132,22 @@ public partial class AvatarRenderer : Node3D
                 // diffuse lighting while leaving shadows (depth-only) unaffected. Confirmed this
                 // session via a T-pose + debug shader + a gizmo pointing at the real light
                 // direction. Fix: submit each triangle's 3 vertices in reversed order.
+                for (int i = 0; i < sub.Positions.Length; i++)
+                {
+                    var p = sub.Positions[i];
+                    var n = sub.Normals[i];
+                    var uv = sub.UVs[i];
+                    
+                    st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+                    st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
+                    st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
+                }
+
                 for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
                 {
-                    Span<int> tri = stackalloc[] { sub.Indices[t], sub.Indices[t + 2], sub.Indices[t + 1] };
-                    foreach (int idx in tri)
-                    {
-                        var p = sub.Positions[idx];
-                        var n = sub.Normals[idx];
-                        var uv = sub.UVs[idx];
-                        st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-                        // SL→Godot V-flip, same as the body parts and rigged meshes.
-                        st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
-                        st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
-                    }
+                    st.AddIndex(sub.Indices[t]);
+                    st.AddIndex(sub.Indices[t + 2]);
+                    st.AddIndex(sub.Indices[t + 1]);
                 }
                 st.GenerateTangents();
                 st.Commit(arrayMesh);
@@ -1719,16 +1722,19 @@ public partial class AvatarRenderer : Node3D
             if (sub.Indices.Length == 0) continue;
             var st = new SurfaceTool();
             st.Begin(Mesh.PrimitiveType.Triangles);
+            for (int i = 0; i < sub.Positions.Length; i++)
+            {
+                var p = sub.Positions[i];
+                var uv = sub.UVs[i];
+                st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
+                st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
+            }
+
             for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
             {
-                Span<int> tri = stackalloc[] { sub.Indices[t], sub.Indices[t + 2], sub.Indices[t + 1] };
-                foreach (int idx in tri)
-                {
-                    var p = sub.Positions[idx];
-                    var uv = sub.UVs[idx];
-                    st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
-                    st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
-                }
+                st.AddIndex(sub.Indices[t]);
+                st.AddIndex(sub.Indices[t + 2]);
+                st.AddIndex(sub.Indices[t + 1]);
             }
             st.Commit(arrayMesh);
             faceList.Add(sub.FaceIndex);
@@ -2177,41 +2183,44 @@ public partial class AvatarRenderer : Node3D
             // triangle's 3 vertices in reversed order — every per-vertex step below (weight
             // resolution, bpMin/bpMax, slotWeightSum) is order-independent across the mesh, so
             // only the ORDER the 3 indices of each triangle are visited changes.
+            for (int i = 0; i < sub.Positions.Length; i++)
+            {
+                // Mesh-local → bind pose (SL coords) via the bind-shape matrix, then SL→Godot.
+                var pSL = System.Numerics.Vector3.Transform(sub.Positions[i], bindShape);
+                var nSL = System.Numerics.Vector3.TransformNormal(sub.Normals[i], bindShapeNormalMatrix);
+                if (nSL.LengthSquared() > 1e-8f) nSL = System.Numerics.Vector3.Normalize(nSL);
+                var uv = sub.UVs[i];
+                var w = sub.Weights[i];
+
+                bpMin = System.Numerics.Vector3.Min(bpMin, pSL);
+                bpMax = System.Numerics.Vector3.Max(bpMax, pSL);
+
+                var bones = new int[4];
+                var wts = new float[4];
+                int c = 0; float sum = 0f;
+                AddInfluence(w.Joint0, w.Weight0, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                AddInfluence(w.Joint1, w.Weight1, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                AddInfluence(w.Joint2, w.Weight2, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                AddInfluence(w.Joint3, w.Weight3, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                totalVerts++;
+                if (sum > 1e-5f) { for (int k = 0; k < 4; k++) wts[k] /= sum; }
+                else { bones[0] = 0; wts[0] = 1f; orphanedVerts++; } // orphaned vertex — pin to first bound bone
+                for (int k = 0; k < 4; k++) if (wts[k] > 0f) slotWeightSum[bones[k]] += wts[k];
+
+                st.SetBones(bones);
+                st.SetWeights(wts);
+                st.SetNormal(new Godot.Vector3(nSL.X, nSL.Z, -nSL.Y));
+                // Same SL→Godot V-flip as the system body parts (see BuildPartResources):
+                // SL UVs are authored bottom-left origin; Godot samples top-left.
+                st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
+                st.AddVertex(new Godot.Vector3(pSL.X, pSL.Z, -pSL.Y));
+            }
+
             for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
             {
-                Span<int> tri = stackalloc[] { sub.Indices[t], sub.Indices[t + 2], sub.Indices[t + 1] };
-                foreach (int idx in tri)
-                {
-                    // Mesh-local → bind pose (SL coords) via the bind-shape matrix, then SL→Godot.
-                    var pSL = System.Numerics.Vector3.Transform(sub.Positions[idx], bindShape);
-                    var nSL = System.Numerics.Vector3.TransformNormal(sub.Normals[idx], bindShapeNormalMatrix);
-                    if (nSL.LengthSquared() > 1e-8f) nSL = System.Numerics.Vector3.Normalize(nSL);
-                    var uv = sub.UVs[idx];
-                    var w = sub.Weights[idx];
-
-                    bpMin = System.Numerics.Vector3.Min(bpMin, pSL);
-                    bpMax = System.Numerics.Vector3.Max(bpMax, pSL);
-
-                    var bones = new int[4];
-                    var wts = new float[4];
-                    int c = 0; float sum = 0f;
-                    AddInfluence(w.Joint0, w.Weight0, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                    AddInfluence(w.Joint1, w.Weight1, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                    AddInfluence(w.Joint2, w.Weight2, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                    AddInfluence(w.Joint3, w.Weight3, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                    totalVerts++;
-                    if (sum > 1e-5f) { for (int k = 0; k < 4; k++) wts[k] /= sum; }
-                    else { bones[0] = 0; wts[0] = 1f; orphanedVerts++; } // orphaned vertex — pin to first bound bone
-                    for (int k = 0; k < 4; k++) if (wts[k] > 0f) slotWeightSum[bones[k]] += wts[k];
-
-                    st.SetBones(bones);
-                    st.SetWeights(wts);
-                    st.SetNormal(new Godot.Vector3(nSL.X, nSL.Z, -nSL.Y));
-                    // Same SL→Godot V-flip as the system body parts (see BuildPartResources):
-                    // SL UVs are authored bottom-left origin; Godot samples top-left.
-                    st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
-                    st.AddVertex(new Godot.Vector3(pSL.X, pSL.Z, -pSL.Y));
-                }
+                st.AddIndex(sub.Indices[t]);
+                st.AddIndex(sub.Indices[t + 2]);
+                st.AddIndex(sub.Indices[t + 1]);
             }
 
             st.GenerateTangents();
@@ -2349,39 +2358,42 @@ public partial class AvatarRenderer : Node3D
         // shader + a gizmo pointing at the real light direction. Fix: submit each triangle's 3
         // vertices in reversed order — every per-vertex step below is order-independent, so only
         // the ORDER the 3 indices of each triangle are visited changes.
+        for (int i = 0; i < part.Positions.Length; i++)
+        {
+            var p  = positions[i];
+            var n  = normals[i];
+            var uv = part.UVs[i];
+
+            // Resolve skin slot indices
+            int s1 = 0, s2 = 0;
+            if (part.Bone1Names[i] != null && skinSlots.TryGetValue(part.Bone1Names[i]!, out int ss1)) s1 = ss1;
+            if (part.Bone2Names[i] != null && skinSlots.TryGetValue(part.Bone2Names[i]!, out int ss2)) s2 = ss2;
+
+            float w1 = part.Bone1Weights[i];
+            float w2 = part.Bone2Weights[i];
+
+            // Normalize the two SL weights so they sum to 1 — Godot expects normalized
+            // skin weights and a zero-sum vertex would not deform at all.
+            float wsum = w1 + w2;
+            if (wsum > 0.0001f) { w1 /= wsum; w2 /= wsum; }
+            else { w1 = 1f; w2 = 0f; }
+
+            // SL is Z-up; Godot is Y-up: SL(X,Y,Z) → Godot(X,Z,−Y)
+            st.SetBones(new int[]   { s1,  s2,  0,   0   });
+            st.SetWeights(new float[]{ w1,  w2,  0f,  0f  });
+            st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+            // SL/OpenGL texture origin is bottom-left (V grows up); Godot/Vulkan is top-left
+            // (V grows down) and Magick decodes row 0 = top. Flip V so the baked skin lands
+            // on the correct body parts instead of mirrored (front texture on the back, etc).
+            st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
+            st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
+        }
+
         for (int t = 0; t + 2 < part.Indices.Length; t += 3)
         {
-            Span<int> tri = stackalloc[] { part.Indices[t], part.Indices[t + 2], part.Indices[t + 1] };
-            foreach (int vi in tri)
-            {
-                var p  = positions[vi];
-                var n  = normals[vi];
-                var uv = part.UVs[vi];
-
-                // Resolve skin slot indices
-                int s1 = 0, s2 = 0;
-                if (part.Bone1Names[vi] != null && skinSlots.TryGetValue(part.Bone1Names[vi]!, out int ss1)) s1 = ss1;
-                if (part.Bone2Names[vi] != null && skinSlots.TryGetValue(part.Bone2Names[vi]!, out int ss2)) s2 = ss2;
-
-                float w1 = part.Bone1Weights[vi];
-                float w2 = part.Bone2Weights[vi];
-
-                // Normalize the two SL weights so they sum to 1 — Godot expects normalized
-                // skin weights and a zero-sum vertex would not deform at all.
-                float wsum = w1 + w2;
-                if (wsum > 0.0001f) { w1 /= wsum; w2 /= wsum; }
-                else { w1 = 1f; w2 = 0f; }
-
-                // SL is Z-up; Godot is Y-up: SL(X,Y,Z) → Godot(X,Z,−Y)
-                st.SetBones(new int[]   { s1,  s2,  0,   0   });
-                st.SetWeights(new float[]{ w1,  w2,  0f,  0f  });
-                st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-                // SL/OpenGL texture origin is bottom-left (V grows up); Godot/Vulkan is top-left
-                // (V grows down) and Magick decodes row 0 = top. Flip V so the baked skin lands
-                // on the correct body parts instead of mirrored (front texture on the back, etc).
-                st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
-                st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
-            }
+            st.AddIndex(part.Indices[t]);
+            st.AddIndex(part.Indices[t + 2]);
+            st.AddIndex(part.Indices[t + 1]);
         }
 
         st.GenerateTangents();
