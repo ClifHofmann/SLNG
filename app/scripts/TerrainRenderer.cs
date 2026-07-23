@@ -15,6 +15,10 @@ public partial class TerrainRenderer : Node3D
         public StaticBody3D StaticBody { get; }
         public CollisionShape3D CollisionShape { get; }
 
+        // Detail texture ids currently pinned in the GpuCache for this region (see
+        // TerrainRenderer.SetTerrainTextureRefs for why terrain textures need this at all).
+        public List<Guid> UsedTextureIds = new();
+
         public RegionTerrainNode()
         {
             Root = new Node3D();
@@ -70,6 +74,21 @@ public partial class TerrainRenderer : Node3D
     {
         if (_world == null || _assetService == null || _gpuCache == null) return;
         if (!_world.Terrains.TryGetValue(regionHandle, out var terrain)) return;
+        if (!_regions.TryGetValue(regionHandle, out var node)) return;
+
+        // Register interest in these ids *before* awaiting the fetch, mirroring
+        // ObjectRenderer.BuildFaceMaterialAsync's AddRef-before-Put ordering (see GpuCache's
+        // _pendingRefDelta doc comment) -- the terrain detail ids are already known synchronously
+        // from RegionTerrain, same as ObjectRenderer already knows a face's texture id before its
+        // fire-and-forget decode completes. This pins each entry the instant Put() adds it to the
+        // cache. Without it, terrain detail textures sat at a permanent RefCount of 0 (unlike every
+        // other GPU resource in the renderer) and were the first thing EvictIfNeeded() reclaimed
+        // under a content-dense region's texture pressure -- the sibling gap to the object-texture
+        // race fixed in 4d1358d, just never plugged for terrain specifically.
+        SetTerrainTextureRefs(node, new List<Guid>(4)
+        {
+            terrain.TerrainDetail0, terrain.TerrainDetail1, terrain.TerrainDetail2, terrain.TerrainDetail3
+        });
 
         // Fetch textures concurrently
         var t0 = GetOrCreateGpuTextureAsync(terrain.TerrainDetail0);
@@ -80,6 +99,28 @@ public partial class TerrainRenderer : Node3D
         await System.Threading.Tasks.Task.WhenAll(t0, t1, t2, t3);
 
         CallDeferred(MethodName.ApplyTerrainTextures, regionHandle, t0.Result!, t1.Result!, t2.Result!, t3.Result!);
+    }
+
+    /// <summary>Diffs and applies the GpuCache ref-counts for a region's detail textures -- same
+    /// add/release-the-delta pattern as ObjectRenderer.SetTexturesForVisual, kept separate because
+    /// terrain tracks refs on RegionTerrainNode rather than a VisualState.</summary>
+    private void SetTerrainTextureRefs(RegionTerrainNode node, List<Guid> newTextureIds)
+    {
+        if (_gpuCache == null) return;
+
+        newTextureIds.RemoveAll(id => id == Guid.Empty);
+
+        foreach (var old in node.UsedTextureIds)
+        {
+            if (!newTextureIds.Contains(old)) _gpuCache.ReleaseRef(old);
+        }
+
+        foreach (var newTex in newTextureIds)
+        {
+            if (!node.UsedTextureIds.Contains(newTex)) _gpuCache.AddRef(newTex);
+        }
+
+        node.UsedTextureIds = newTextureIds;
     }
 
     private async System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
@@ -174,6 +215,8 @@ public partial class TerrainRenderer : Node3D
             // Region was removed
             if (_regions.TryGetValue(regionHandle, out var node))
             {
+                if (_gpuCache != null)
+                    foreach (var texId in node.UsedTextureIds) _gpuCache.ReleaseRef(texId);
                 node.QueueFree();
                 _regions.Remove(regionHandle);
             }
@@ -309,6 +352,11 @@ public partial class TerrainRenderer : Node3D
         if (_world != null)
         {
             _world.TerrainUpdated -= OnTerrainUpdated;
+        }
+        if (_gpuCache != null)
+        {
+            foreach (var node in _regions.Values)
+                foreach (var texId in node.UsedTextureIds) _gpuCache.ReleaseRef(texId);
         }
         _regions.Clear();
         _terrainMaterial?.Dispose();
