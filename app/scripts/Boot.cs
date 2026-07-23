@@ -59,7 +59,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.2.5-alpha";
+    public const string AppVersion = "v0.2.7-alpha";
 
     public override void _Ready()
     {
@@ -472,6 +472,21 @@ public partial class Boot : Control
 
     public override void _Process(double delta)
     {
+        // TEMPORARY diagnostic (2026-07-23, OSGrid movement-judder live-test round): delta is
+        // Godot's own measured wall-clock time since the last _Process call -- a large value here
+        // means the main thread itself stalled (GC pause, a synchronous decode/build slipping onto
+        // this thread, anything blocking _Process from running), not that the network had nothing
+        // to send. This directly distinguishes "our client hitched, so queued world events and
+        // ExtrapolateMovement sat unprocessed for that long" from "the sim genuinely didn't send us
+        // anything for that long" -- the two have identical symptoms in the [AvatarMove] correction
+        // log alone. User reports Firestorm looks smooth on the same OSGrid region, which points at
+        // a client-side stall rather than a real network/server characteristic. Remove once the
+        // cause is confirmed.
+        if (delta > 0.2)
+        {
+            GD.Print($"[FrameHitch] {delta:0.###}s since last _Process frame");
+        }
+
         // Drain queued world events on the main thread — the only place the world mutates.
         _worldSimulation?.Pump();
 
