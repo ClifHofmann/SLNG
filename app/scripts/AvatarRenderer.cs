@@ -140,13 +140,21 @@ public partial class AvatarRenderer : Node3D
         // which are vertex-morphed AND re-skinned every shape update via RebuildBodyMorphs — a worn
         // mesh's own vertices never change with shape, so nothing else would ever revisit its Skin.
         public List<(MeshInstance3D Mi, MeshData MeshData, Guid MeshId)> RiggedAttachments { get; } = new();
+        public Godot.Control? NameTag { get; set; }
 
         public AvatarVisual()
         {
             Root = new Node3D();
         }
 
-        public void QueueFree() => Root.QueueFree();
+        public void QueueFree()
+        {
+            if (Root != null && GodotObject.IsInstanceValid(Root)) Root.QueueFree();
+            if (NameTag != null && GodotObject.IsInstanceValid(NameTag))
+            {
+                NameTag.QueueFree();
+            }
+        }
     }
 
     private World? _world;
@@ -179,6 +187,7 @@ public partial class AvatarRenderer : Node3D
     // OnEntityRemoved only survives the CallDeferred hop as a bare Guid, so the owner has to be
     // captured here at attach time rather than re-looked-up from the (by-then-gone) entity.
     private readonly Dictionary<Guid, (Guid MeshId, FaceTexture[]? Faces, FaceTexture DefaultFace, Guid AvatarEntityId)> _attachmentMeshIds = new();
+    private Godot.CanvasLayer? _nameTagLayer;
 
     // Bump this string with every fix and check it's actually printed at the top of the log
     // before trusting anything else in it — this session got burned repeatedly by stale/
@@ -216,6 +225,9 @@ public partial class AvatarRenderer : Node3D
         _assetService = assetService;
         _session = session;
         _gpuCache = gpuCache;
+
+        _nameTagLayer = new Godot.CanvasLayer { Layer = 1, Name = "AvatarNameTags" };
+        AddChild(_nameTagLayer);
 
         // Load the SL Bento skeleton definition. Read via Godot's FileAccess so it works
         // both from source and from an exported .pck — System.IO + GlobalizePath cannot
@@ -294,6 +306,44 @@ public partial class AvatarRenderer : Node3D
         // Add the visual root to the tree first so all sub-nodes inherit the active scene tree lifecycle
         AddChild(visual.Root);
 
+        var nameText = avatar.FirstName;
+        if (!string.IsNullOrEmpty(avatar.LastName) && avatar.LastName != "Resident")
+        {
+            nameText += $" {avatar.LastName}";
+        }
+        if (!string.IsNullOrEmpty(avatar.DisplayName) && avatar.DisplayName != nameText)
+        {
+            nameText = $"{avatar.DisplayName}\n{nameText}";
+        }
+
+        var panel = new Godot.PanelContainer { Name = "NameTag" };
+        var styleBox = new Godot.StyleBoxFlat
+        {
+            BgColor = new Godot.Color(0, 0, 0, 0.5f),
+            CornerRadiusTopLeft = 6,
+            CornerRadiusTopRight = 6,
+            CornerRadiusBottomLeft = 6,
+            CornerRadiusBottomRight = 6,
+            ContentMarginLeft = 8,
+            ContentMarginRight = 8,
+            ContentMarginTop = 4,
+            ContentMarginBottom = 4
+        };
+        panel.AddThemeStyleboxOverride("panel", styleBox);
+
+        var label = new Godot.Label
+        {
+            Name = "Label",
+            Text = nameText,
+            HorizontalAlignment = Godot.HorizontalAlignment.Center,
+            VerticalAlignment = Godot.VerticalAlignment.Center
+        };
+        label.AddThemeFontSizeOverride("font_size", 14);
+        panel.AddChild(label);
+
+        visual.NameTag = panel;
+        if (_nameTagLayer != null) _nameTagLayer.AddChild(panel);
+
         // Neutral skin tone as placeholder — replaced by baked textures once they arrive.
         var color = new Color(0.76f, 0.60f, 0.46f);
 
@@ -371,7 +421,7 @@ public partial class AvatarRenderer : Node3D
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
         if (_visuals.TryGetValue(entityId, out var visual))
         {
-            if (GodotObject.IsInstanceValid(visual.Root)) visual.QueueFree();
+            visual.QueueFree();
             _visuals.Remove(entityId);
         }
         if (_attachmentNodes.TryGetValue(entityId, out var attachNode))
@@ -419,6 +469,22 @@ public partial class AvatarRenderer : Node3D
         if (entity == null || entity.GetComponent<AvatarComponent>() == null) return;
 
         var avatar = entity.GetComponent<AvatarComponent>()!;
+
+        if (visual.NameTag is Godot.PanelContainer panel)
+        {
+            var label = panel.GetNodeOrNull<Godot.Label>("Label");
+            if (label != null)
+            {
+                string nameText = avatar.FirstName;
+                if (!string.IsNullOrEmpty(avatar.LastName) && avatar.LastName != "Resident") 
+                    nameText += $" {avatar.LastName}";
+                if (!string.IsNullOrEmpty(avatar.DisplayName) && avatar.DisplayName != nameText)
+                    nameText = $"{avatar.DisplayName}\n{nameText}";
+
+                if (label.Text != nameText)
+                    label.Text = nameText;
+            }
+        }
 
         // 1. Transform root position/rotation
         var transform = entity.GetComponent<TransformComponent>();
@@ -2680,6 +2746,13 @@ void fragment() {
         }
 
         float maxSq = RenderConfig.DrawDistance * RenderConfig.DrawDistance;
+        
+        var viewport = GetViewport();
+        var camera = viewport?.GetCamera3D();
+        Godot.Vector3? camPos = camera?.GlobalPosition;
+        float nameTagMaxDist = 20.0f;
+        float nameTagFadeStart = 15.0f;
+
         foreach (var visual in _visuals.Values)
         {
             if (doCull && haveAgent)
@@ -2691,6 +2764,41 @@ void fragment() {
             if (visual.Root.Visible && visual.AnimPlayer.IsPlaying && !_tposeActive)
             {
                 visual.AnimPlayer.Advance(dt);
+            }
+
+            if (camPos.HasValue && visual.NameTag != null && IsInstanceValid(visual.NameTag))
+            {
+                float dist = visual.Root.GlobalPosition.DistanceTo(camPos.Value);
+                if (dist > nameTagMaxDist)
+                {
+                    if (visual.NameTag.Visible) visual.NameTag.Visible = false;
+                }
+                else
+                {
+                    var headPos3D = visual.Root.GlobalPosition + new Godot.Vector3(0, 2.3f, 0);
+                    if (camera!.IsPositionBehind(headPos3D))
+                    {
+                        if (visual.NameTag.Visible) visual.NameTag.Visible = false;
+                    }
+                    else
+                    {
+                        if (!visual.NameTag.Visible) visual.NameTag.Visible = true;
+                        
+                        var pos2D = camera.UnprojectPosition(headPos3D);
+                        var size = visual.NameTag.GetMinimumSize();
+                        visual.NameTag.Position = pos2D - (size / 2);
+
+                        if (dist > nameTagFadeStart)
+                        {
+                            float alpha = 1.0f - ((dist - nameTagFadeStart) / (nameTagMaxDist - nameTagFadeStart));
+                            visual.NameTag.Modulate = new Godot.Color(1, 1, 1, alpha);
+                        }
+                        else
+                        {
+                            visual.NameTag.Modulate = new Godot.Color(1, 1, 1, 1);
+                        }
+                    }
+                }
             }
         }
     }
@@ -2732,4 +2840,5 @@ void fragment() {
             visual.AnimPlayer.SetActiveAnimations(loaded);
         }).CallDeferred();
     }
+
 }

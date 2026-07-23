@@ -41,6 +41,7 @@ public sealed class WorldSimulation : IDisposable
         _source.AvatarAnimationReceived += OnAvatarAnimation;
         _source.ObjectPropertiesReceived += OnObjectProperties;
         _source.PhysicsPropertiesReceived += OnPhysicsProperties;
+        _source.DisplayNameResolved += OnDisplayNameResolved;
     }
 
     // These run on background network threads: enqueue only, never touch the world.
@@ -54,6 +55,7 @@ public sealed class WorldSimulation : IDisposable
     private void OnRegionDisconnected(object? sender, RegionDisconnectedEvent e) => _pending.Enqueue(e);
     private void OnAvatarAppearance(object? sender, AvatarAppearanceEvent e) => _pending.Enqueue(e);
     private void OnAvatarAnimation(object? sender, AvatarAnimationEvent e) => _pending.Enqueue(e);
+    private void OnDisplayNameResolved(object? sender, NameResolvedEvent e) => _pending.Enqueue(e);
 
     /// <summary>
     /// Applies all queued world events to the world. Call once per frame on the main
@@ -75,6 +77,7 @@ public sealed class WorldSimulation : IDisposable
                 case RegionDisconnectedEvent e: _world.RemoveRegion(e.RegionHandle); break;
                 case AvatarAppearanceEvent e: ApplyAvatarAppearance(e); break;
                 case AvatarAnimationEvent e: ApplyAvatarAnimation(e); break;
+                case NameResolvedEvent e: ApplyDisplayNameResolved(e); break;
             }
         }
     }
@@ -582,6 +585,18 @@ public sealed class WorldSimulation : IDisposable
             avatar.VisualParams = e.VisualParams;
             avatar.BakedTextures = e.BakedTextures;
             avatar.HoverOffsetZ = e.HoverOffsetZ;
+            entity.SetComponent(avatar);
+            _world.NotifyComponentUpdated(entity, avatar);
+        }
+    }
+
+    private void ApplyDisplayNameResolved(NameResolvedEvent e)
+    {
+        var entity = FindAvatarEntityByAgentId(e.Id);
+        if (entity != null)
+        {
+            var avatar = entity.GetComponent<AvatarComponent>()!;
+            avatar.DisplayName = e.Name;
             entity.SetComponent(avatar);
             _world.NotifyComponentUpdated(entity, avatar);
         }

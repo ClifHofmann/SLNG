@@ -37,6 +37,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<ObjectPropertiesEvent>? ObjectPropertiesReceived;
     public event EventHandler<PhysicsPropertiesEvent>? PhysicsPropertiesReceived;
     public event EventHandler<NameResolvedEvent>? NameResolved;
+    public event EventHandler<NameResolvedEvent>? DisplayNameResolved;
     public event EventHandler<AlertMessageEvent>? AlertMessageReceived;
     public event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
     public event EventHandler<TerrainSettingsEvent>? TerrainSettingsReceived;
@@ -146,6 +147,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Objects.ObjectProperties += OnObjectPropertiesFull;
         _client.Objects.PhysicsProperties += OnPhysicsProperties;
         _client.Avatars.UUIDNameReply += OnUUIDNameReply;
+        _client.Avatars.DisplayNameUpdate += OnDisplayNameUpdate;
         _client.Groups.GroupNamesReply += OnGroupNamesReply;
         _client.Self.AlertMessage += OnAlertMessage;
         _client.Objects.KillObject += OnKillObject;
@@ -308,11 +310,27 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private void OnUUIDNameReply(object? sender, UUIDNameReplyEventArgs e)
     {
+        var idsToRequest = new System.Collections.Generic.List<UUID>();
         foreach (var kvp in e.Names)
         {
             var id = kvp.Key.Guid;
             _nameCache[id] = kvp.Value;
             NameResolved?.Invoke(this, new NameResolvedEvent(id, kvp.Value));
+            idsToRequest.Add(kvp.Key);
+        }
+        if (idsToRequest.Count > 0)
+        {
+            try { _client.Avatars.GetDisplayNamesAsync(idsToRequest); } catch { /* Ignore if not supported/disabled */ }
+        }
+    }
+
+    private void OnDisplayNameUpdate(object? sender, DisplayNameUpdateEventArgs e)
+    {
+        var id = e.DisplayName.ID.Guid;
+        string displayName = e.DisplayName.DisplayName;
+        if (!string.IsNullOrEmpty(displayName))
+        {
+            DisplayNameResolved?.Invoke(this, new NameResolvedEvent(id, displayName));
         }
     }
 
@@ -1789,6 +1807,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Objects.ObjectProperties -= OnObjectPropertiesFull;
         _client.Objects.PhysicsProperties -= OnPhysicsProperties;
         _client.Avatars.UUIDNameReply -= OnUUIDNameReply;
+        _client.Avatars.DisplayNameUpdate -= OnDisplayNameUpdate;
         _client.Groups.GroupNamesReply -= OnGroupNamesReply;
         _client.Self.AlertMessage -= OnAlertMessage;
         _client.Objects.KillObject -= OnKillObject;

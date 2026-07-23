@@ -20,7 +20,7 @@ public record ChatMessageEvent(string FromName, string Message, byte ChatType);
 /// <summary>Resolves a user or group UUID (Creator, Owner, Group, ...) to a display name.
 /// Identity-cache data, not world simulation state, so intentionally not an
 /// <see cref="IWorldEvent"/> -- consumers (UI) subscribe directly on GridSession.</summary>
-public record NameResolvedEvent(Guid Id, string Name);
+public record NameResolvedEvent(Guid Id, string Name) : IWorldEvent;
 
 /// <summary>The simulator's urgent-message channel -- e.g. "Object physics cancelled because
 /// it exceeds limits for physical prims" when an ObjectFlagUpdate is silently rejected server-
