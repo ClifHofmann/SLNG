@@ -24,6 +24,7 @@ public partial class Boot : Control
     private SLNG.Core.ECS.World? _world;
     private SLNG.Core.Services.LocalizationManager _localizationManager = null!;
     private SLNG.Core.WorldSimulation _worldSimulation = null!;
+    private GpuCache? _gpuCache;
     private TerrainRenderer? _terrainRenderer;
     private ObjectRenderer? _objectRenderer;
     private AvatarRenderer? _avatarRenderer;
@@ -59,7 +60,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.1.98-alpha";
+    public const string AppVersion = "v0.3.0-alpha";
 
     public override void _Ready()
     {
@@ -472,8 +473,28 @@ public partial class Boot : Control
 
     public override void _Process(double delta)
     {
+        // TEMPORARY diagnostic (2026-07-23, OSGrid movement-judder live-test round): delta is
+        // Godot's own measured wall-clock time since the last _Process call -- a large value here
+        // means the main thread itself stalled (GC pause, a synchronous decode/build slipping onto
+        // this thread, anything blocking _Process from running), not that the network had nothing
+        // to send. This directly distinguishes "our client hitched, so queued world events and
+        // ExtrapolateMovement sat unprocessed for that long" from "the sim genuinely didn't send us
+        // anything for that long" -- the two have identical symptoms in the [AvatarMove] correction
+        // log alone. User reports Firestorm looks smooth on the same OSGrid region, which points at
+        // a client-side stall rather than a real network/server characteristic. Remove once the
+        // cause is confirmed.
+        if (delta > 0.2)
+        {
+            GD.Print($"[FrameHitch] {delta:0.###}s since last _Process frame");
+        }
+
         // Drain queued world events on the main thread — the only place the world mutates.
         _worldSimulation?.Pump();
+
+        // Dead-reckon avatar positions from their last known velocity between network updates
+        // (mirrors the real viewer's interpolateLinearMotion) — must run after Pump() so this
+        // frame's fresh Position/Velocity/TimeSinceUpdate are already applied before extrapolating.
+        _worldSimulation?.ExtrapolateMovement((float)delta);
 
         // Refresh the position HUD a few times a second (the agent lookup scans entities).
         _hudAccum += delta;
@@ -713,6 +734,10 @@ public partial class Boot : Control
             _session.Dispose();
         }
         if (_worldSimulation != null) _worldSimulation.Dispose();
+        // Relogging discards the whole cached GPU working set (new session, new region) -- dispose
+        // explicitly rather than dropping the reference, same reasoning as DisposeAll's own doc
+        // comment: leaving cleanup to the .NET GC risks a finalizer touching RenderingServer late.
+        _gpuCache?.DisposeAll();
 
         // Any ObjectEditWindows still open are bound to the session/world we're about to replace
         // (Initialize() is called once at creation, not re-bindable) -- free them rather than
@@ -736,11 +761,11 @@ public partial class Boot : Control
         // GPU budget shared by meshes and textures. Sized for the nearby working set on a
         // 12 GB card with headroom for post-FX; out-of-range content is released so the LRU
         // can reclaim under this cap.
-        var gpuCache = new GpuCache(1536L * 1024 * 1024);
+        _gpuCache = new GpuCache(1536L * 1024 * 1024);
 
-        _terrainRenderer?.Initialize(_world, _assetService, gpuCache);
-        _objectRenderer?.Initialize(_world, _assetService, gpuCache);
-        _avatarRenderer?.Initialize(_world, _assetService, gpuCache, _session);
+        _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
+        _objectRenderer?.Initialize(_world, _assetService, _gpuCache);
+        _avatarRenderer?.Initialize(_world, _assetService, _gpuCache, _session);
         _inventoryPanel?.Initialize(_session);
         _chatWindow.BindSession(_session);
 
@@ -749,6 +774,19 @@ public partial class Boot : Control
         // Surfaces sim-side rejections that otherwise fail silently, e.g. "Object physics
         // cancelled because it exceeds limits for physical prims" when a Physical toggle is denied.
         _session.AlertMessageReceived += (s, e) => CallDeferred(MethodName.LogMessage, $"[color=orange][Alert] {e.Message}[/color]");
+        // Recenter the floating origin every time we actually move to a new region -- login AND
+        // every subsequent teleport/region-crossing (GridSession.RegionConnected only fires for the
+        // primary sim, not neighbor sims connected near a border). Previously this was a single
+        // RenderConfig.SetRegionOrigin call made once right after login below; nothing ever
+        // recentered it again, so after teleporting to any other region OriginX/Y still reflected
+        // the LOGIN region's global coordinates -- ToGodot() then computed raw (often
+        // multi-thousand-metre) differences between the new region's global coords and the stale
+        // origin, blowing float32 precision exactly the way this whole mechanism exists to avoid.
+        // Reported symptom: judder/instability on any region other than the one first logged into,
+        // clearing up again on returning to it. Subscribed BEFORE LoginAsync below so the initial
+        // login's own connection is also caught by this, not just later teleports.
+        _session.RegionConnected += (s, regionHandle) =>
+            Godot.Callable.From(() => RenderConfig.SetRegionOrigin(regionHandle)).CallDeferred();
 
         var creds = new LoginCredentials
         {
@@ -757,18 +795,10 @@ public partial class Boot : Control
             LastName = _lastInput.Text,
             Password = _passInput.Text
         };
-        
+
         var animTask = SimulateLoadingAnimation();
 
         var result = await _session.LoginAsync(creds);
-        
-        if (result.Success)
-        {
-            // Set the floating origin to this region so everything renders near 0 (OSGrid
-            // global coordinates are in the millions and overflow float precision otherwise).
-            ulong regionHandle = _session.CurrentRegionHandle;
-            RenderConfig.SetRegionOrigin(regionHandle);
-        }
 
         await animTask;
 
@@ -879,7 +909,17 @@ public partial class Boot : Control
 
     public override void _ExitTree()
     {
+        // Dispose the GPU cache's Resources explicitly, before the engine's own shutdown teardown
+        // -- see GpuCache.DisposeAll's doc comment for why (a late .NET GC finalizer touching an
+        // already-destroyed RenderingServer is the documented cause of the "N RID allocations...
+        // leaked at exit" / "RenderingServer::get_singleton() is null" pair seen at close).
+        _gpuCache?.DisposeAll();
         _worldSimulation?.Dispose();
         _session?.Dispose();
+        
+        // Force GC now while the RenderingServer is still alive, so any floating Godot wrappers
+        // (like evicted cache entries) run their finalizers safely.
+        System.GC.Collect();
+        System.GC.WaitForPendingFinalizers();
     }
 }

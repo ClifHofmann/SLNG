@@ -343,22 +343,19 @@ public partial class AvatarController : Camera3D
                 // The orbit offset moves the camera around the avatar without turning it.
                 Rotation = new Vector3(_pitch + _orbitPitch, _yaw + _orbitYaw, 0);
 
-                var godotMoveDir = new Vector3();
-                if (isFwd) godotMoveDir += -Transform.Basis.Z;
-                if (isBack) godotMoveDir += Transform.Basis.Z;
-
-                godotMoveDir.Y = 0; // Constrain to Godot's ground plane
-                godotMoveDir = godotMoveDir.Normalized();
-
-                if (godotMoveDir.LengthSquared() > 0)
-                {
-                    float speed = _flying ? 12.0f : 4.0f; // fly faster than walk
-                    float slDx = godotMoveDir.X * speed * (float)delta; // Godot Right (+X) is SL East (+X)
-                    float slDy = -godotMoveDir.Z * speed * (float)delta; // Godot Forward (-Z) is SL North (+Y)
-                    float slDz = godotMoveDir.Y * speed * (float)delta;
-
-                    transform.Position += new System.Numerics.Vector3(slDx, slDy, slDz);
-                }
+                // Horizontal (X/Y) movement is NOT client-predicted here. It used to be (WASD dead
+                // reckoning added directly to transform.Position), but that fought the sim's own
+                // echo of our avatar's position -- which streams continuously while we're
+                // physically moving (see GridSession.OnTerseObjectUpdate) -- every time a packet
+                // landed, popping the avatar sideways mid-stride (worst on a diagonal heading,
+                // where the correction lands on both axes at once instead of just one). The real
+                // viewer doesn't predict its own position either: LLAgent::getPositionAgent()
+                // mirrors LLVOAvatarSelf's network-driven position, and smoothness between packets
+                // comes from velocity dead-reckoning (WorldSimulation.ExtrapolateMovement mirrors
+                // LLViewerObject::interpolateLinearMotion), not from a second local authority. W/A/
+                // S/D still drive movement -- via _session.SetMovement's control flags below, which
+                // the sim actually simulates; this block only used to add a purely cosmetic (and
+                // ultimately incorrect) local head start on top of that.
 
                 // Vertical movement while flying (E up / C down).
                 if (_flying && (isUp || isDown))
@@ -459,6 +456,17 @@ public partial class AvatarController : Camera3D
                     }
                 }
 
+                // Avatar body faces _yaw, updated EVERY FRAME -- not just at the 10 Hz AgentUpdate
+                // send rate below. The body rotation is pure local camera-yaw input (no network
+                // round-trip involved, same as local Z), so it must render at frame rate. Writing it
+                // only at 10 Hz made the body snap ~14 deg per step during a turn (2.5 rad/s * 0.1s)
+                // while the camera panned smoothly every frame -- the avatar appearing to "restart"
+                // every few degrees when turning, and the same stepping during walk-with-steering
+                // reading as left/right jitter. Same yaw-only quaternion the SetMovement send uses
+                // (see the 10 Hz block); WorldSimulation.ExtrapolateMovement deliberately skips the
+                // rotation slerp for the local agent so this per-frame write is the sole authority.
+                transform.Rotation = ComputeBodyRotation();
+
                 _world.NotifyComponentUpdated(localAgent, transform);
 
                 // Keyboard zoom polling (+ and - keys)
@@ -509,28 +517,25 @@ public partial class AvatarController : Camera3D
         {
             _timeSinceLastUpdate = 0;
 
-            // Avatar facing comes from _yaw ONLY — never the camera's full orientation.
-            // Using the camera quaternion would fold the orbit offset and pitch into the
-            // avatar's facing, making it spin/tilt while orbiting. A yaw-only quaternion
-            // keeps the avatar upright and facing where the player aims.
-            var godotQuat = Quaternion.FromEuler(new Vector3(0, _yaw, 0));
-            var slQuat = new System.Numerics.Quaternion(godotQuat.X, -godotQuat.Z, godotQuat.Y, godotQuat.W);
-            var offset = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, (float)System.Math.PI / 2.0f);
-            var finalQuat = offset * slQuat;
-
-            // Locally update the avatar's rotation so it visibly turns
-            if (localAgent != null)
-            {
-                var transform = localAgent.GetComponent<TransformComponent>();
-                if (transform != null)
-                {
-                    transform.Rotation = finalQuat;
-                    _world.NotifyComponentUpdated(localAgent, transform);
-                }
-            }
-
-            // We pass false for left/right because A/D are turning now, not strafing
-            _session.SetMovement(fwd, back, false, false, up, down, finalQuat, _flying);
+            // Same body-facing quaternion applied per-frame to transform.Rotation above -- here it
+            // only goes to the sim in the AgentUpdate. The rendered rotation is NOT set here anymore
+            // (that write moved to the per-frame follow block so turning renders smoothly instead of
+            // in 10 Hz steps).
+            // We pass false for left/right because A/D are turning now, not strafing.
+            _session.SetMovement(fwd, back, false, false, up, down, ComputeBodyRotation(), _flying);
         }
+    }
+
+    /// <summary>The avatar's body-facing orientation from <see cref="_yaw"/> ONLY -- never the
+    /// camera's full orientation, which would fold the orbit offset and pitch into the facing and
+    /// make the avatar spin/tilt while orbiting. A yaw-only quaternion keeps it upright and facing
+    /// where the player aims. Shared by the per-frame rendered-rotation write and the 10 Hz
+    /// AgentUpdate send so the two can never diverge.</summary>
+    private System.Numerics.Quaternion ComputeBodyRotation()
+    {
+        var godotQuat = Quaternion.FromEuler(new Vector3(0, _yaw, 0));
+        var slQuat = new System.Numerics.Quaternion(godotQuat.X, -godotQuat.Z, godotQuat.Y, godotQuat.W);
+        var offset = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, (float)System.Math.PI / 2.0f);
+        return offset * slQuat;
     }
 }

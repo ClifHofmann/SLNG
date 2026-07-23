@@ -45,6 +45,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<AvatarAnimationEvent>? AvatarAnimationReceived;
     public event EventHandler<FriendStatusEvent>? FriendStatusChanged;
     public event EventHandler<InstantMessageEvent>? InstantMessageReceived;
+    /// <summary>Fired when we connect to a NEW primary/current simulator -- i.e. on login and on
+    /// every teleport/region-crossing that changes which region we're actually in. NOT fired for
+    /// LibreMetaverse's other SimConnected occurrences, e.g. a neighbor sim connected only for
+    /// interest-list purposes near a region border (see OnSimConnected's e.Simulator ==
+    /// CurrentSim guard) -- those aren't "we moved," so recentering on them would be wrong.
+    /// Payload is the new region's handle. Consumers: RenderConfig.SetRegionOrigin (the floating-
+    /// origin recenter) is the reason this exists -- see Boot.cs's subscription.</summary>
+    public event EventHandler<ulong>? RegionConnected;
 
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
@@ -71,8 +79,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // -- so the lookup missed every time ("Failed opening resource ...\linden\static_assets\
         // head_color.tga"). Point it at the assembly's own directory instead, same fix
         // AvatarRenderer.cs already applies for the sibling "linden/character" mesh files.
-        var libremetaverseDir = System.IO.Path.GetDirectoryName(typeof(LibreMetaverse.Settings).Assembly.Location);
-        if (libremetaverseDir != null)
+        var asmLocation = typeof(LibreMetaverse.Settings).Assembly.Location;
+        var libremetaverseDir = string.IsNullOrEmpty(asmLocation) ? AppContext.BaseDirectory : System.IO.Path.GetDirectoryName(asmLocation);
+        if (string.IsNullOrEmpty(libremetaverseDir)) libremetaverseDir = AppContext.BaseDirectory;
+        
+        if (!string.IsNullOrEmpty(libremetaverseDir))
         {
             var lindenDir = System.IO.Path.Combine(libremetaverseDir, "linden");
             LibreMetaverse.Settings.ResourceDir = lindenDir;
@@ -194,6 +205,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             sim.WaterHeight,
             (int)sim.SizeX, (int)sim.SizeY
         ));
+
+        // LibreMetaverse also raises SimConnected for a neighbor sim connected only for
+        // interest-list purposes near a region border -- not a region WE moved into. Only treat
+        // this as "we moved" (and recenter the floating origin) when it's the primary sim; by this
+        // point NetworkManager.Connect has already called SetCurrentSim if this connection was the
+        // default one, so CurrentSim reliably reflects that.
+        if (sim == _client.Network.CurrentSim)
+        {
+            RegionConnected?.Invoke(this, sim.Handle);
+        }
     }
 
     private void OnChatFromSimulator(object? sender, ChatEventArgs e)
@@ -216,7 +237,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             e.Avatar.FirstName,
             e.Avatar.LastName,
             isLocalAgent,
-            e.Avatar.Scale.Z));
+            e.Avatar.Scale.Z,
+            new System.Numerics.Vector3(e.Avatar.Velocity.X, e.Avatar.Velocity.Y, e.Avatar.Velocity.Z),
+            e.TimeDilation / 65535.0f));
     }
 
     private void OnObjectPropertiesFamily(object? sender, ObjectPropertiesFamilyEventArgs e)
@@ -506,24 +529,70 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
 
             bool isLocalAgent = agentId == _client.Self.AgentID.Guid || e.Prim.LocalID == _client.Self.LocalID;
+            // Position/Rotation/Velocity come from e.Update (the freshly-decoded
+            // ObjectMovementUpdate for THIS packet), never from e.Prim: LibreMetaverse's
+            // ImprovedTerseObjectUpdateHandler fires this event via ThreadPool.QueueUserWorkItem
+            // BEFORE it writes the decoded values onto the shared, cached e.Prim object ("Fire the
+            // pre-emptive notice (before we stomp the object)" -- ObjectManager.PacketHandlers.cs
+            // ~line 619). Reading e.Prim here races that later write; under load (many queued
+            // avatar updates while walking) the handler can run before or after the stomp, so
+            // e.Prim.Velocity is sometimes last packet's value or zero. Since ExtrapolateMovement
+            // dead-reckons Position purely from Velocity between packets, a stale/zero read here
+            // silently killed the extrapolation for that interval -- the avatar would sit still
+            // until the next (correct) packet snapped it forward, reading as juddery/stuttering
+            // motion. e.Update is race-free: it's the packet's own decoded struct, not a shared
+            // mutable cache.
             AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
                 e.Simulator.Handle,
                 e.Prim.LocalID,
                 agentId,
-                new System.Numerics.Vector3(e.Prim.Position.X, e.Prim.Position.Y, e.Prim.Position.Z),
-                new System.Numerics.Quaternion(e.Prim.Rotation.X, e.Prim.Rotation.Y, e.Prim.Rotation.Z, e.Prim.Rotation.W),
+                new System.Numerics.Vector3(e.Update.Position.X, e.Update.Position.Y, e.Update.Position.Z),
+                new System.Numerics.Quaternion(e.Update.Rotation.X, e.Update.Rotation.Y, e.Update.Rotation.Z, e.Update.Rotation.W),
                 firstName,
                 lastName,
                 isLocalAgent,
-                e.Prim.Scale.Z));
+                e.Prim.Scale.Z,
+                new System.Numerics.Vector3(e.Update.Velocity.X, e.Update.Velocity.Y, e.Update.Velocity.Z),
+                e.TimeDilation / 65535.0f));
             return;
         }
 
-        RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: false);
+        // Position/Rotation/Velocity from e.Update, not e.Prim -- same race as the avatar branch
+        // above (LibreMetaverse fires this event before stomping the shared cached Primitive).
+        RaiseObjectUpdate(
+            e.Simulator, e.Prim, isFullUpdate: false,
+            positionOverride: new System.Numerics.Vector3(e.Update.Position.X, e.Update.Position.Y, e.Update.Position.Z),
+            rotationOverride: new System.Numerics.Quaternion(e.Update.Rotation.X, e.Update.Rotation.Y, e.Update.Rotation.Z, e.Update.Rotation.W),
+            velocityOverride: new System.Numerics.Vector3(e.Update.Velocity.X, e.Update.Velocity.Y, e.Update.Velocity.Z),
+            timeDilation: e.TimeDilation / 65535.0f);
     }
 
-    private void RaiseObjectUpdate(LibreMetaverse.Simulator simulator, Primitive prim, bool isFullUpdate)
+    /// <summary>Builds and raises an ObjectUpdateEvent from a LibreMetaverse Primitive.
+    /// <paramref name="positionOverride"/>, <paramref name="rotationOverride"/> and
+    /// <paramref name="velocityOverride"/>, when set, are used instead of the same-named field on
+    /// <paramref name="prim"/> -- required for a terse-sourced call (see OnTerseObjectUpdate):
+    /// LibreMetaverse's ImprovedTerseObjectUpdateHandler fires its event via
+    /// ThreadPool.QueueUserWorkItem BEFORE writing the decoded values onto the shared, cached
+    /// Primitive ("fire the pre-emptive notice before we stomp the object" --
+    /// ObjectManager.PacketHandlers.cs ~line 619), so reading prim.Position/Rotation/Velocity
+    /// directly races that later write (confirmed root cause of the identical avatar-side bug fixed
+    /// in OnTerseObjectUpdate's avatar branch). The full ObjectUpdate path has no such race --
+    /// ObjectUpdateHandler stomps the Primitive synchronously before queuing its event (same file,
+    /// ~line 371-385) -- so OnObjectUpdate's call leaves these null and reads straight off prim.
+    /// Every other field (mesh, texture, flags, ...) always reads off prim regardless: terse updates
+    /// don't carry them on the wire at all, so prim already holds the last full update's values
+    /// either way, override or not.</summary>
+    private void RaiseObjectUpdate(
+        LibreMetaverse.Simulator simulator, Primitive prim, bool isFullUpdate,
+        System.Numerics.Vector3? positionOverride = null,
+        System.Numerics.Quaternion? rotationOverride = null,
+        System.Numerics.Vector3? velocityOverride = null,
+        float timeDilation = 1f)
     {
+        var resolvedPosition = positionOverride ?? new System.Numerics.Vector3(prim.Position.X, prim.Position.Y, prim.Position.Z);
+        var resolvedRotation = rotationOverride ?? new System.Numerics.Quaternion(prim.Rotation.X, prim.Rotation.Y, prim.Rotation.Z, prim.Rotation.W);
+        var resolvedVelocity = velocityOverride ?? new System.Numerics.Vector3(prim.Velocity.X, prim.Velocity.Y, prim.Velocity.Z);
+
         bool isMesh = false;
         Guid meshId = Guid.Empty;
         bool isSculpt = false;
@@ -610,8 +679,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
             simulator.Handle,
             prim.LocalID,
-            new System.Numerics.Vector3(prim.Position.X, prim.Position.Y, prim.Position.Z),
-            new System.Numerics.Quaternion(prim.Rotation.X, prim.Rotation.Y, prim.Rotation.Z, prim.Rotation.W),
+            resolvedPosition,
+            resolvedRotation,
             new System.Numerics.Vector3(prim.Scale.X, prim.Scale.Y, prim.Scale.Z),
             (byte)prim.PrimData.ProfileCurve,
             isMesh,
@@ -652,7 +721,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // let an unnamed enum value reach the UI.
             (byte)prim.PrimData.Material <= 6 ? (SLNG.Core.PrimMaterial)(byte)prim.PrimData.Material : SLNG.Core.PrimMaterial.Wood,
             (byte)prim.ClickAction,
-            isFullUpdate));
+            isFullUpdate,
+            resolvedVelocity,
+            timeDilation));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)

@@ -109,9 +109,38 @@ public class GpuCache
                 _lruList.Remove(node);
                 _cache.Remove(entry.Id);
                 _currentSize -= entry.Size;
-                // Dropping C# reference allows Godot to free the resource when no nodes use it
+                // Explicitly dispose the C# wrapper so its finalizer won't run later (e.g. after RenderingServer is gone)
+                if (GodotObject.IsInstanceValid(entry.Res))
+                {
+                    entry.Res.Dispose();
+                }
             }
             node = next;
+        }
+    }
+
+    /// <summary>Explicitly frees every still-cached Resource's native RID (ImageTexture/ArrayMesh
+    /// both wrap RenderingServer-owned GPU objects). Call on app shutdown, before the engine tears
+    /// down -- otherwise cleanup falls to whenever the .NET GC gets around to finalizing each
+    /// object, which is not guaranteed to happen before RenderingServer itself is destroyed. A late
+    /// finalizer calling back into a gone RenderingServer is exactly the documented cause of the
+    /// "N RID allocations... leaked at exit" / "RenderingServer::get_singleton() is null" pair seen
+    /// at shutdown (see CursorManager's identical fix for its own transient cursor texture -- this
+    /// is the same failure mode for the long-lived cache instead).</summary>
+    public void DisposeAll()
+    {
+        lock (_cache)
+        {
+            foreach (var entry in _cache.Values)
+            {
+                if (GodotObject.IsInstanceValid(entry.Res))
+                {
+                    entry.Res.Dispose();
+                }
+            }
+            _cache.Clear();
+            _lruList.Clear();
+            _currentSize = 0;
         }
     }
 }

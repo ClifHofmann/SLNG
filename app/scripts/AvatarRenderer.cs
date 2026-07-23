@@ -564,28 +564,44 @@ public partial class AvatarRenderer : Node3D
             }
         }
 
-        // 4. Animation playback — detect changes in ActiveAnimations
+        // 4. Animation playback — detect changes in ActiveAnimations. Compared as a SET, not by
+        // list position: the sim resends the full active-animation list on every priority/state
+        // change, and nothing guarantees it repeats the same order for an otherwise-unchanged set
+        // (SL's animation priority handling can reorder the list server-side even when nothing the
+        // avatar is actually playing changed). The previous positional compare treated any reorder
+        // as a change, re-triggering LoadAndStartAnimationsAsync -> SetActiveAnimations on every
+        // such resend. SetActiveAnimations itself is set-based and doesn't restart an animation
+        // that's already in _active, so this was likely wasted work rather than a visible replay --
+        // but a transient async fetch hiccup on one entry (see LoadAndStartAnimationsAsync: a
+        // GetAnimationAsync that returns null this call but succeeds next) meant an unrelated
+        // reorder-only resend could momentarily hand SetActiveAnimations a SHORTER "loaded" list,
+        // making it drop and then immediately re-add that animation from InPoint on the very next
+        // real update -- a genuine pose restart with no actual change in what the avatar is doing,
+        // exactly the kind of discontinuity that reads as a pop while walking/turning (turning is
+        // when a new animation, e.g. a turn blend, would first need fetching and be most likely to
+        // race).
         if (avatar.ActiveAnimations != null && _assetService != null && visual.Skeleton != null)
         {
-            bool animsChanged = false;
-            if (visual.LoadedAnimationIds == null || visual.LoadedAnimationIds.Count != avatar.ActiveAnimations.Count)
-            {
-                animsChanged = true;
-            }
-            else
-            {
-                for (int i = 0; i < avatar.ActiveAnimations.Count; i++)
-                {
-                    if (avatar.ActiveAnimations[i] != visual.LoadedAnimationIds[i])
-                    {
-                        animsChanged = true;
-                        break;
-                    }
-                }
-            }
+            bool animsChanged = visual.LoadedAnimationIds == null
+                || !new HashSet<Guid>(visual.LoadedAnimationIds).SetEquals(avatar.ActiveAnimations);
 
             if (animsChanged)
             {
+                // TEMPORARY diagnostic (2026-07-23, OSGrid judder investigation, animation-side
+                // hypothesis): position/rotation sync now measures healthy in live-test data but
+                // the user still reports unchanged judder while walking, and specifically asked
+                // whether animation handling could differ from Firestorm's. Logs every actual
+                // active-animation-set change for the local agent, so a live capture shows whether
+                // this fires far more often than the avatar's real animation state should be
+                // changing (e.g. once per resent-but-reordered packet, before the fix above) or
+                // stays rare as expected. Remove once the OSGrid judder cause is confirmed.
+                if (avatar.IsLocalAgent)
+                {
+                    var oldIds = visual.LoadedAnimationIds == null ? "(none)" : string.Join(",", visual.LoadedAnimationIds);
+                    var newIds = string.Join(",", avatar.ActiveAnimations);
+                    GD.Print($"[AvatarAnim] active set changed: [{oldIds}] -> [{newIds}]");
+                }
+
                 visual.LoadedAnimationIds = new List<Guid>(avatar.ActiveAnimations);
                 var animIds = new List<Guid>(avatar.ActiveAnimations);
                 _ = LoadAndStartAnimationsAsync(visual, animIds);
@@ -717,6 +733,16 @@ public partial class AvatarRenderer : Node3D
             var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
             
             Godot.Callable.From(() => {
+                if (_gpuCache != null)
+                {
+                    var cached = _gpuCache.Get(textureId) as ImageTexture;
+                    if (cached != null)
+                    {
+                        tcs.SetResult(cached);
+                        return;
+                    }
+                }
+
                 var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
                 if (image == null)
                 {
@@ -730,9 +756,25 @@ public partial class AvatarRenderer : Node3D
                 if (tex != null && _gpuCache != null)
                 {
                     long size = textureData.Width * textureData.Height * 4;
-                    _gpuCache.Put(textureId, tex, size);
+                    // initialRefCount: 1 -- pins this bake texture so GpuCache.EvictIfNeeded can
+                    // never select it (RefCount<=0 is the eviction condition), unlike ObjectRenderer
+                    // (which properly AddRef/ReleaseRefs per-visual via SetTexturesForVisual).
+                    // AvatarRenderer has no equivalent per-avatar ref-counting yet, so an unpinned
+                    // (RefCount 0) bake texture was eligible for eviction the moment the shared
+                    // cache went over its 1.5 GB budget -- e.g. right after a teleport, when the new
+                    // region's terrain/objects/other-avatar textures arrive in a burst. Since
+                    // GpuCache now disposes an evicted Resource's native RID immediately (not just
+                    // drops it from the cache dict), evicting a bake texture still assigned to a
+                    // LIVE MeshInstance3D's material destroyed it out from under the renderer --
+                    // exactly the "RenderingServer::get_singleton() is null" error reported right
+                    // after teleporting. Trade-off: pinned avatar textures are never reclaimed for
+                    // the app's lifetime (a slow, bounded-by-avatars-seen leak) rather than a real
+                    // dispose-tracked lifecycle; safe default until AvatarRenderer gets proper
+                    // AddRef/ReleaseRef bookkeeping like ObjectRenderer's.
+                    _gpuCache.Put(textureId, tex, size, initialRefCount: 1);
                 }
                 tcs.SetResult(tex);
+                image.Dispose();
             }).CallDeferred();
 
             godotTexture = await tcs.Task;
@@ -1191,12 +1233,26 @@ public partial class AvatarRenderer : Node3D
 
         Godot.Callable.From(() =>
         {
+            if (_gpuCache != null)
+            {
+                var cachedInside = _gpuCache.Get(texId) as ImageTexture;
+                if (cachedInside != null)
+                {
+                    tcs.SetResult(cachedInside);
+                    return;
+                }
+            }
+
             var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
             image.GenerateMipmaps();
             var tex = ImageTexture.CreateFromImage(image);
             if (tex != null)
-                _gpuCache?.Put(texId, tex, (long)textureData.Width * textureData.Height * 4);
+                // initialRefCount: 1 -- see LoadAndApplyTextureAsync's identical Put for why (a
+                // per-face/attachment texture pinned here is just as capable of being live on a
+                // MeshInstance3D as a bake, so it needs the same eviction-immunity).
+                _gpuCache?.Put(texId, tex, (long)textureData.Width * textureData.Height * 4, initialRefCount: 1);
             tcs.SetResult(tex);
+            image.Dispose();
         }).CallDeferred();
 
         var built = await tcs.Task.ConfigureAwait(false);

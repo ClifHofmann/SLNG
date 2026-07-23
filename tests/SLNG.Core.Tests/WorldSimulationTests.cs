@@ -242,8 +242,10 @@ public class WorldSimulationTests
         Assert.Equal(realAgentId, avatar!.AgentId);
         Assert.Equal("Reamon", avatar.FirstName);
         Assert.Equal("Bullmer", avatar.LastName);
-        // Position/rotation should still update normally.
-        Assert.Equal(new Vector3(1, 2, 3), entity.GetComponent<TransformComponent>()!.Position);
+        // Position/rotation should still update normally. Checks TargetPosition, not the rendered
+        // Position -- Position now eases toward TargetPosition via ExtrapolateMovement rather than
+        // being set directly by Pump() alone (see TransformComponent.TargetPosition's doc comment).
+        Assert.Equal(new Vector3(1, 2, 3), entity.GetComponent<TransformComponent>()!.TargetPosition);
     }
 
     /// <summary>Regression test (round 9): AvatarComponent.ScaleZ (diagnostic-only, the avatar's
@@ -271,5 +273,361 @@ public class WorldSimulationTests
 
         avatar = entity.GetComponent<AvatarComponent>();
         Assert.Equal(2.19f, avatar!.ScaleZ);
+    }
+
+    /// <summary>Regression test (viewer-parity rebuild, 2026-07-23): the local agent's
+    /// TargetPosition is server-authoritative, exactly like every other avatar -- matching the real
+    /// viewer, where LLAgent::getPositionAgent() mirrors LLVOAvatarSelf's network-driven position
+    /// rather than reconciling it against a separate client-predicted one (see llagent.cpp). A
+    /// prior version of this fix gave the local agent a special "only snap on >1m divergence" gate
+    /// to protect an AvatarController-side WASD prediction; that prediction has since been removed
+    /// (it was the actual cause of the reported sideways popping while walking, not the network
+    /// echo itself), so the local agent must go through the exact same unconditional-overwrite path
+    /// as a remote one now. (The RENDERED Position is a separate, eased follower of TargetPosition
+    /// -- see the PositionEasesTowardTarget test below -- so this test checks TargetPosition, not
+    /// Position, which Pump() alone no longer touches for a small update.)</summary>
+    [Fact]
+    public void AvatarUpdateEvent_LocalAgent_TargetPositionIsServerAuthoritative()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(10, 10, 10), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        Assert.NotNull(entity);
+
+        // A later echo, even a small nudge, must be applied directly -- no local authority to
+        // reconcile against anymore.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(10.1f, 10.1f, 10f), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        Assert.Equal(new Vector3(10.1f, 10.1f, 10f), entity!.GetComponent<TransformComponent>()!.TargetPosition);
+    }
+
+    /// <summary>Regression test: a small/ordinary TargetPosition update (an in-range packet-gap
+    /// catch-up, not a teleport) must NOT snap the rendered Position instantly -- it should ease
+    /// toward TargetPosition over subsequent ExtrapolateMovement frames instead. Live-tested console
+    /// data (2026-07-23, OSGrid) showed 1-2+ second packet gaps recurring during ordinary walking;
+    /// hard-snapping Position the instant a delayed packet landed read as a repeated multi-metre pop
+    /// even though nothing was actually wrong with the sync -- this is what turns that into a quick
+    /// glide instead.</summary>
+    [Fact]
+    public void ExtrapolateMovement_PositionEasesTowardTarget_ForOrdinaryUpdates()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var transform = world.GetEntity(123ul, 42)!.GetComponent<TransformComponent>()!;
+
+        // A 3m catch-up (well under the 5m teleport-snap threshold) after a real packet gap.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(3, 0, 0), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        Assert.Equal(new Vector3(3, 0, 0), transform.TargetPosition);
+        Assert.Equal(Vector3.Zero, transform.Position); // not snapped yet
+
+        simulation.ExtrapolateMovement(0.05f);
+        Assert.NotEqual(Vector3.Zero, transform.Position); // visibly approaching...
+        Assert.NotEqual(new Vector3(3, 0, 0), transform.Position); // ...but not there yet
+
+        for (int i = 0; i < 20; i++) simulation.ExtrapolateMovement(0.05f); // 1s total, well past 95%-there
+        Assert.True(Vector3.Distance(transform.Position, new Vector3(3, 0, 0)) < 0.01f);
+    }
+
+    /// <summary>Companion to the easing test above: a genuinely large jump (teleport, sit/stand,
+    /// initial spawn) must still snap Position instantly -- the easing behavior is deliberately
+    /// scoped to ordinary packet-gap catch-ups, not real discontinuous moves, which should look
+    /// instant.</summary>
+    [Fact]
+    public void ApplyAvatarUpdate_LargeJump_SnapsPositionInstantly()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var transform = world.GetEntity(123ul, 42)!.GetComponent<TransformComponent>()!;
+
+        // Well past the 5m teleport-snap threshold.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(200, 0, 0), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        Assert.Equal(new Vector3(200, 0, 0), transform.TargetPosition);
+        Assert.Equal(new Vector3(200, 0, 0), transform.Position); // snapped immediately, no easing
+    }
+
+    /// <summary>Regression test (2026-07-23, round 3 of the OSGrid judder investigation): the local
+    /// agent's Z is never taken from the network. AvatarController's ground-clamp runs every frame
+    /// independent of any packet (a physics raycast producing groundHeight + halfBodyZ) and writes
+    /// straight into TransformComponent.Position.Z -- a separate, already-authoritative source for
+    /// local Z. Feeding the network's own e.Position.Z into TargetPosition as well made two
+    /// independent systems fight over Z every frame, continuously, not just at packet-arrival
+    /// moments -- live-test feedback ("genau so ruckelig") after every purely network-timing fix in
+    /// this file had already landed pointed at exactly this. X/Y remain fully network-driven; only Z
+    /// is pinned to whatever the ground-clamp has already put in Position.Z.</summary>
+    [Fact]
+    public void AvatarUpdateEvent_LocalAgent_IgnoresNetworkZ_KeepsLocalGroundClampZ()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(10, 10, 20), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        var transform = entity!.GetComponent<TransformComponent>()!;
+
+        // Simulate AvatarController's ground-clamp having independently moved local Z (e.g. the
+        // avatar stepped onto a platform) to a value the network doesn't know about yet.
+        transform.Position = new Vector3(transform.Position.X, transform.Position.Y, 25f);
+
+        // A network echo reports a totally different Z (its own separate wire convention/lag --
+        // see TargetPosition's doc comment on why local Z is never trusted from it).
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(10.5f, 10.5f, 999f), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        Assert.Equal(10.5f, transform.TargetPosition.X);
+        Assert.Equal(10.5f, transform.TargetPosition.Y);
+        Assert.Equal(25f, transform.TargetPosition.Z); // NOT 999 -- ground-clamp Z wins for local agent
+    }
+
+    /// <summary>Companion to the test above: ExtrapolateMovement's position-easing Lerp must also
+    /// leave the local agent's Z untouched. TargetPosition.Z is only re-pinned to Position.Z when a
+    /// packet arrives; between packets AvatarController's ground-clamp keeps moving Position.Z while
+    /// TargetPosition.Z stays frozen, so easing Position toward TargetPosition on Z would drag it
+    /// back toward the stale value every frame -- the same fight the network X/Y sync used to have
+    /// with the old client prediction, just on the vertical axis (would read as a vertical bob while
+    /// walking over uneven terrain). X/Y still ease normally.</summary>
+    [Fact]
+    public void ExtrapolateMovement_LocalAgent_DoesNotEaseZTowardStaleTarget()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(0, 0, 20), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var transform = world.GetEntity(123ul, 42)!.GetComponent<TransformComponent>()!;
+        // TargetPosition is now (0,0,20); Position was snapped there on first update.
+
+        // Give X/Y a target the render position lags behind, and have the ground-clamp move Z to a
+        // value TargetPosition.Z (still 20) doesn't know about.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(1, 0, 20), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+        transform.Position = new Vector3(transform.Position.X, transform.Position.Y, 25f); // ground-clamp raised Z
+
+        simulation.ExtrapolateMovement(0.05f);
+
+        Assert.Equal(25f, transform.Position.Z); // Z untouched by the ease -- clamp value preserved
+        Assert.NotEqual(0f, transform.Position.X); // X did ease toward the (1,0,20) target
+    }
+
+    /// <summary>ApplyAvatarUpdate must record Velocity and reset TimeSinceUpdate to 0 on every
+    /// update, so ExtrapolateMovement starts dead-reckoning fresh from the just-arrived position
+    /// rather than compounding onto whatever it had already extrapolated from the previous one.</summary>
+    [Fact]
+    public void AvatarUpdateEvent_StoresVelocityAndResetsExtrapolationClock()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        var velocity = new Vector3(1, 0, 0);
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true, Velocity: velocity));
+        simulation.Pump();
+
+        var transform = world.GetEntity(123ul, 42)!.GetComponent<TransformComponent>()!;
+        Assert.Equal(velocity, transform.Velocity);
+        Assert.Equal(0f, transform.TimeSinceUpdate);
+
+        simulation.ExtrapolateMovement(0.5f);
+        Assert.Equal(0.5f, transform.TimeSinceUpdate);
+
+        // A fresh network update resets the clock even if TimeSinceUpdate had already advanced.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(0.5f, 0, 0), Quaternion.Identity, "Local", "Agent", true, Velocity: velocity));
+        simulation.Pump();
+        Assert.Equal(0f, transform.TimeSinceUpdate);
+    }
+
+    /// <summary>ExtrapolateMovement must scale its per-frame dead-reckoning step by the
+    /// originating sim's TimeDilation -- mirrors LibreMetaverse's own InterpolationService
+    /// (`adjSeconds = seconds * sim.Stats.Dilation`). Reported motivation: movement judders more
+    /// on a busy OSGrid megaregion than the user's own (presumably quiet) sim -- a dilated sim
+    /// runs its own physics below real-time, so extrapolating at full real-time speed overshoots
+    /// what the sim actually simulated.</summary>
+    [Fact]
+    public void ExtrapolateMovement_ScalesByTimeDilation()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        var velocity = new Vector3(2, 0, 0); // 2 m/s along X
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true, Velocity: velocity, TimeDilation: 0.5f));
+        simulation.Pump();
+
+        var transform = world.GetEntity(123ul, 42)!.GetComponent<TransformComponent>()!;
+        Assert.Equal(0.5f, transform.TimeDilation);
+
+        // Checks TargetPosition -- what velocity dead-reckoning directly drives -- rather than the
+        // rendered Position, which separately eases toward TargetPosition (see
+        // ExtrapolateMovement_PositionEasesTowardTarget_ForOrdinaryUpdates).
+        simulation.ExtrapolateMovement(0.1f); // full weight (well before phase-out), half dilation
+        Assert.Equal(new Vector3(0.1f, 0, 0), transform.TargetPosition); // 2 m/s * 0.1s * 0.5 dilation
+    }
+
+    /// <summary>ExtrapolateMovement dead-reckons Position from Velocity at full weight before
+    /// ExtrapolationPhaseOutStartSeconds (0.4s) -- mirrors the real viewer's
+    /// LLViewerObject::interpolateLinearMotion extrapolating from the last reported velocity
+    /// between packets instead of holding Position static.</summary>
+    [Fact]
+    public void ExtrapolateMovement_AdvancesPositionByVelocity_BeforePhaseOut()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        var velocity = new Vector3(2, 0, 0); // 2 m/s along X
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true, Velocity: velocity));
+        simulation.Pump();
+
+        var transform = world.GetEntity(123ul, 42)!.GetComponent<TransformComponent>()!;
+
+        // Checks TargetPosition -- see the dilation test above for why.
+        simulation.ExtrapolateMovement(0.1f); // well before the 0.4s phase-out start
+        Assert.Equal(new Vector3(0.2f, 0, 0), transform.TargetPosition);
+    }
+
+    /// <summary>Extrapolation must stop entirely once TimeSinceUpdate reaches
+    /// ExtrapolationMaxSeconds (0.8s) -- a stalled/lost connection should freeze the avatar in
+    /// place rather than fling it forever along a possibly-stale velocity.</summary>
+    [Fact]
+    public void ExtrapolateMovement_StopsAfterMaxSeconds()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        var velocity = new Vector3(2, 0, 0);
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true, Velocity: velocity));
+        simulation.Pump();
+
+        var transform = world.GetEntity(123ul, 42)!.GetComponent<TransformComponent>()!;
+
+        // Advance in small steps well past the 0.8s cutoff (mirrors real per-frame deltas). Checks
+        // TargetPosition -- see the dilation test above for why.
+        for (int i = 0; i < 40; i++) // 40 * 0.1s = 4s
+        {
+            simulation.ExtrapolateMovement(0.1f);
+        }
+        var targetPositionAfterCutoff = transform.TargetPosition;
+
+        simulation.ExtrapolateMovement(0.1f); // fully decayed by now -- must no longer move
+        Assert.Equal(targetPositionAfterCutoff, transform.TargetPosition);
+    }
+
+    /// <summary>Regression test (REMOTE avatar -- the local agent's Rotation is excluded from this
+    /// system entirely, see the local-agent test below): turning must not hard-snap. Reported
+    /// symptom -- once Position's own judder was fixed, turning was still visibly choppy while
+    /// straight-line walking looked smooth. Root cause: ApplyAvatarUpdate used to write straight
+    /// into Rotation on every packet; unlike Position there's no reliable AngularVelocity to dead-
+    /// reckon a turning avatar from (SL's wire AngularVelocity is for llSetTargetOmega-spun
+    /// objects), so Rotation only ever changed in discrete per-packet jumps. Fixed by routing
+    /// network rotation through TargetRotation and slerping Rotation toward it every frame
+    /// instead.</summary>
+    [Fact]
+    public void AvatarUpdateEvent_RemoteAgent_RotationDoesNotSnap_SmoothsTowardTarget()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Remote", "Agent", false));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        var transform = entity!.GetComponent<TransformComponent>()!;
+        Assert.Equal(Quaternion.Identity, transform.Rotation); // starts facing identity, no smoothing needed on spawn
+
+        // Avatar turns 90 degrees around Z (SL up-axis pre-conversion doesn't matter for this test).
+        var turned = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f);
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, turned, "Remote", "Agent", false));
+        simulation.Pump();
+
+        // Must NOT have snapped straight to the target -- that's the bug being fixed.
+        Assert.NotEqual(turned, transform.Rotation);
+        Assert.Equal(Quaternion.Identity, transform.Rotation); // ApplyAvatarUpdate alone doesn't move it
+
+        // A few frames of extrapolation should visibly approach, but not yet reach, the target.
+        simulation.ExtrapolateMovement(0.05f);
+        Assert.NotEqual(Quaternion.Identity, transform.Rotation);
+        Assert.NotEqual(turned, transform.Rotation);
+
+        // Enough elapsed time (well past the ~0.36s to-95% window) converges on the target.
+        for (int i = 0; i < 20; i++) simulation.ExtrapolateMovement(0.05f); // 1s total
+        Assert.True(Quaternion.Dot(transform.Rotation, turned) > 0.999f);
+    }
+
+    /// <summary>Regression test (round 4 of the OSGrid judder investigation, 2026-07-23):
+    /// AvatarController writes the local agent's Rotation directly every 100ms from the player's
+    /// own camera yaw -- instant local input, not something that should wait on or blend with a
+    /// network round-trip (same reasoning as local Z). Before this fix, ApplyAvatarUpdate/
+    /// ExtrapolateMovement fed the network's echo of our own previously-sent rotation into
+    /// TargetRotation and slerped toward it for the local agent too, fighting AvatarController's
+    /// fresh writes on literally every frame (slerp pulls toward a latency-delayed echo of an
+    /// older yaw, then AvatarController snaps back to the current one 100ms later, repeat) --
+    /// unlike the X/Y position fight this whole investigation mostly addressed, this one wasn't
+    /// gated on packet timing at all, so it never showed any correlation with packet gaps in the
+    /// [AvatarMove] diagnostic despite being live the whole time. This test simulates
+    /// AvatarController's own write (direct field set, exactly what it does) and confirms a
+    /// network echo of a stale rotation afterward neither snaps nor drags Rotation away from it,
+    /// for both ApplyAvatarUpdate alone and after ExtrapolateMovement frames.</summary>
+    [Fact]
+    public void AvatarUpdateEvent_LocalAgent_RotationIsNeverNetworkDriven()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        var transform = entity!.GetComponent<TransformComponent>()!;
+
+        // AvatarController's own direct write of the player's current camera yaw.
+        var localYaw = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f);
+        transform.Rotation = localYaw;
+
+        // A network echo reports our own OLDER rotation, latency-delayed (Identity, from the
+        // initial creation) -- must not pull Rotation away from what AvatarController just set.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+        Assert.Equal(localYaw, transform.Rotation);
+
+        simulation.ExtrapolateMovement(0.1f);
+        Assert.Equal(localYaw, transform.Rotation);
     }
 }

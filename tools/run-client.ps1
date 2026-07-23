@@ -22,5 +22,14 @@ Write-Host "Building Godot App..."
 dotnet build (Join-Path $PSScriptRoot "..\app\SLNG.App.csproj")
 
 # 4. Start Godot
-Write-Host "[4/4] Starting Godot Client..." -ForegroundColor Green
-godot --path (Join-Path $PSScriptRoot "..\app")
+# Godot's windowed .exe is a GUI-subsystem process -- Console.WriteLine/GD.Print output isn't
+# visible in the launching terminal and isn't reliably flushed to Godot's own log file either
+# (observed: identical, unchanged log content across multiple play sessions). Explicitly
+# redirecting via PowerShell gives the child process real OS-level pipe handles for
+# stdout/stderr, which .NET's Console class can write to even though the exe has no console of
+# its own -- and Tee-Object writes through immediately rather than buffering until exit, so the
+# transcript survives even if the window is closed mid-session instead of exited cleanly.
+$transcriptPath = Join-Path $PSScriptRoot "..\client-output.log"
+Write-Host "[4/4] Starting Godot Client... (output also captured to $transcriptPath)" -ForegroundColor Green
+$ErrorActionPreference = 'Continue'
+godot --path (Join-Path $PSScriptRoot "..\app") *>&1 | Tee-Object -FilePath $transcriptPath

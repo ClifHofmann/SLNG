@@ -67,7 +67,12 @@ public record ObjectUpdateEvent(
     // full update said, which is stale the moment a flag was just changed locally. IsPhysical/
     // IsTemporary/IsPhantom/CastsShadows above are only trustworthy when this is true; a terse-
     // sourced event must not be allowed to overwrite them (see WorldSimulation.ApplyObjectUpdate).
-    bool IsFullUpdate = true
+    bool IsFullUpdate = true,
+    // World-space velocity (m/s) and the originating sim's time dilation (0-1), same purpose as
+    // AvatarUpdateEvent's identically-named fields: WorldSimulation.ExtrapolateMovement dead-
+    // reckons a physically-moving object's (falling, rolling, pushed) Position between packets
+    // from these, exactly like it already does for avatars.
+    Vector3 Velocity = default, float TimeDilation = 1f
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY
@@ -80,7 +85,21 @@ public record ObjectUpdateEvent(
 /// (analogous to llGetAgentSize()) matches Firestorm's number better than our own ComputeBodySize
 /// port does, before trusting either as ground truth. Not yet used in any rendering/position
 /// math. Defaults to 0f so existing call sites/tests keep compiling unchanged.</summary>
-public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent, float ScaleZ = 0f) : IWorldEvent;
+/// <param name="Velocity">Wire-transmitted world-space velocity (m/s), from the same ObjectUpdate/
+/// TerseObjectUpdate as Position. Drives WorldSimulation.ExtrapolateMovement's dead-reckoning
+/// between packets -- mirrors the real viewer's LLViewerObject::interpolateLinearMotion, which
+/// extrapolates from the last reported velocity rather than holding position static (or fighting
+/// it with client-side input prediction) until the next packet arrives.</param>
+/// <param name="TimeDilation">The originating simulator's time dilation (0-1; 1 = running at full
+/// real-time speed, lower under load -- LibreMetaverse's RegionData.TimeDilation, normalized from
+/// its raw ushort wire form the same way ObjectManager.UpdateDilation does). A busy/laggy sim
+/// (e.g. an OSGrid megaregion under load) can sit well below 1 while a quiet one stays near it.
+/// Scales ExtrapolateMovement's per-frame dead-reckoning step, exactly like LibreMetaverse's own
+/// InterpolationService (`adjSeconds = seconds * sim.Stats.Dilation`) -- without this, extrapolating
+/// at full real-time speed on a dilated sim overshoots what the sim actually simulated, so the next
+/// (correct, but now further away) packet reads as an extra correction pop on top of whatever
+/// packet-rate judder already exists.</param>
+public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent, float ScaleZ = 0f, Vector3 Velocity = default, float TimeDilation = 1f) : IWorldEvent;
 
 /// <summary>Represents the removal of an object from the simulator's interest list.</summary>
 public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent;

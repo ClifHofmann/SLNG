@@ -137,4 +137,10 @@ public partial class CursorManager : Node
 
         Godot.Input.SetDefaultCursorShape(desiredShape);
     }
+
+    public override void _ExitTree()
+    {
+        // Unset the custom cursor so Godot's Input server doesn't leak its Texture RID natively
+        Godot.Input.SetCustomMouseCursor(null, Godot.Input.CursorShape.Cross);
+    }
 }
