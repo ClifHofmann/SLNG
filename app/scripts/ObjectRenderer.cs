@@ -904,22 +904,19 @@ public partial class ObjectRenderer : Node3D
             // reverse each triangle's own winding by swapping its last two indices, so each group
             // of 3 becomes (i0, i2, i1) instead of (i0, i1, i2) — every other per-vertex step is
             // unchanged, only the ORDER the 3 vertices of each triangle are submitted in.
-            for (int i = 0; i < sub.Positions.Length; i++)
-            {
-                var p = sub.Positions[i];
-                var n = sub.Normals[i];
-                var uv = sub.UVs[i];
-
-                st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-                st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
-                st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
-            }
-
             for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
             {
-                st.AddIndex(sub.Indices[t]);
-                st.AddIndex(sub.Indices[t + 2]);
-                st.AddIndex(sub.Indices[t + 1]);
+                Span<int> tri = stackalloc[] { sub.Indices[t], sub.Indices[t + 2], sub.Indices[t + 1] };
+                foreach (int index in tri)
+                {
+                    var p = sub.Positions[index];
+                    var n = sub.Normals[index];
+                    var uv = sub.UVs[index];
+
+                    st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+                    st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
+                    st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
+                }
             }
 
             st.GenerateTangents();
