@@ -87,13 +87,20 @@ public sealed class WorldSimulation : IDisposable
     private const float ExtrapolationPhaseOutStartSeconds = 2.0f;
     private const float ExtrapolationMaxSeconds = 3.0f;
 
-    /// <summary>Dead-reckons every avatar's Position from its last network-reported Velocity,
-    /// phasing the contribution out over time instead of leaving Position static between packets.
-    /// Call once per frame on the main thread, after Pump() has applied this frame's network
-    /// updates. Position itself is only ever set authoritatively by ApplyAvatarUpdate (server-
-    /// driven, local agent included — see its doc comment); this method only smooths the visual
-    /// gap between those updates, matching the real viewer's approach instead of client-side input
-    /// prediction fighting the network echo.</summary>
+    // Rotation has no reliable AngularVelocity to dead-reckon from for a turning avatar (see
+    // TransformComponent.TargetRotation's doc comment), so instead of phase-out/cutoff timing it's
+    // a simple framerate-independent exponential approach toward TargetRotation: reaches ~95% of
+    // the way there in about 3/RotationSmoothingRate seconds (~0.36s at this rate) -- fast enough
+    // to feel responsive, slow enough to smooth over the sim's own packet gaps (typically
+    // 150-300ms).
+    private const float RotationSmoothingRate = 8.3f;
+
+    /// <summary>Dead-reckons every avatar's Position from its last network-reported Velocity
+    /// (phasing the contribution out over time) and smooths Rotation toward TargetRotation, instead
+    /// of leaving Position static / snapping Rotation between packets. Call once per frame on the
+    /// main thread, after Pump() has applied this frame's network updates. Position/TargetRotation
+    /// are only ever set authoritatively by ApplyAvatarUpdate (server-driven, local agent included —
+    /// see its doc comment); this method only smooths the visual gap between those updates.</summary>
     public void ExtrapolateMovement(float deltaSeconds)
     {
         foreach (var entity in _world.Query<AvatarComponent>())
@@ -102,22 +109,27 @@ public sealed class WorldSimulation : IDisposable
             if (transform == null) continue;
 
             transform.TimeSinceUpdate += deltaSeconds;
-            if (transform.Velocity == Vector3.Zero) continue;
-            if (transform.TimeSinceUpdate >= ExtrapolationMaxSeconds) continue; // fully decayed
 
-            float phaseOutT = System.Math.Clamp(
-                (transform.TimeSinceUpdate - ExtrapolationPhaseOutStartSeconds)
-                    / (ExtrapolationMaxSeconds - ExtrapolationPhaseOutStartSeconds),
-                0f, 1f);
-            float weight = 1f - phaseOutT;
+            if (transform.Velocity != Vector3.Zero && transform.TimeSinceUpdate < ExtrapolationMaxSeconds)
+            {
+                float phaseOutT = System.Math.Clamp(
+                    (transform.TimeSinceUpdate - ExtrapolationPhaseOutStartSeconds)
+                        / (ExtrapolationMaxSeconds - ExtrapolationPhaseOutStartSeconds),
+                    0f, 1f);
+                float weight = 1f - phaseOutT;
 
-            // Scale by the originating sim's TimeDilation, exactly like LibreMetaverse's own
-            // InterpolationService (`adjSeconds = seconds * sim.Stats.Dilation`) -- a busy/laggy
-            // sim (e.g. an OSGrid megaregion under load) runs its own physics below real-time, so
-            // extrapolating at full real-time speed overshoots what the sim actually simulated by
-            // the time its next (delayed) packet arrives, reading as an extra correction pop on a
-            // busy sim that a quiet one wouldn't show.
-            transform.Position += transform.Velocity * deltaSeconds * weight * transform.TimeDilation;
+                // Scale by the originating sim's TimeDilation, exactly like LibreMetaverse's own
+                // InterpolationService (`adjSeconds = seconds * sim.Stats.Dilation`) -- a busy/laggy
+                // sim (e.g. an OSGrid megaregion under load) runs its own physics below real-time,
+                // so extrapolating at full real-time speed overshoots what the sim actually
+                // simulated by the time its next (delayed) packet arrives, reading as an extra
+                // correction pop on a busy sim that a quiet one wouldn't show.
+                transform.Position += transform.Velocity * deltaSeconds * weight * transform.TimeDilation;
+            }
+
+            float rotT = 1f - MathF.Exp(-RotationSmoothingRate * deltaSeconds);
+            transform.Rotation = Quaternion.Slerp(transform.Rotation, transform.TargetRotation, rotT);
+
             _world.NotifyComponentUpdated(entity, transform);
         }
     }
@@ -370,7 +382,11 @@ public sealed class WorldSimulation : IDisposable
             // ExtrapolateMovement's velocity dead-reckoning below, not from overwriting this value
             // conditionally.
             transform.Position = e.Position;
-            transform.Rotation = e.Rotation;
+            // Rotation is NOT set directly here -- see TargetRotation's doc comment. Hard-snapping
+            // it every packet (previously: transform.Rotation = e.Rotation) was fine for straight
+            // walking but visibly choppy while turning; ExtrapolateMovement slerps Rotation toward
+            // TargetRotation every frame instead.
+            transform.TargetRotation = e.Rotation;
             entity.SetComponent(transform);
         }
         transform.Velocity = e.Velocity;

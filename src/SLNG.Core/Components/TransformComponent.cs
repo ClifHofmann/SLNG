@@ -43,11 +43,24 @@ public class TransformComponent : IComponent
     /// simulating. Defaults to 1 (full speed) for a freshly-created entity.</summary>
     public float TimeDilation { get; set; } = 1f;
 
+    /// <summary>Avatars only. The latest network-reported orientation. Unlike Position, this is
+    /// NOT written directly into Rotation by ApplyAvatarUpdate -- avatar turning is agent-driven
+    /// (not physics-integrated), so unlike linear motion there's no reliable AngularVelocity to
+    /// dead-reckon from between packets (SL's wire AngularVelocity is for llSetTargetOmega-spun
+    /// objects, not a turning avatar). Hard-snapping Rotation straight to each packet's value was
+    /// visibly choppy while turning (reported: smooth while walking straight, juddery while
+    /// turning -- once Position's own judder was fixed, this became the dominant remaining one).
+    /// ExtrapolateMovement instead slerps Rotation toward this target every frame, a generic
+    /// smoothing technique (not a viewer-parity port -- unlike the Position/Velocity work, no
+    /// exact match to LLVOAvatar's own turn handling was found/verified in the vendored source).</summary>
+    public Quaternion TargetRotation { get; set; }
+
     public TransformComponent()
     {
         Position = Vector3.Zero;
         Rotation = Quaternion.Identity;
         LocalRotation = Quaternion.Identity;
+        TargetRotation = Quaternion.Identity;
     }
 
     public TransformComponent(Vector3 position, Quaternion rotation)
@@ -56,5 +69,6 @@ public class TransformComponent : IComponent
         Rotation = rotation;
         LocalPosition = position;
         LocalRotation = rotation;
+        TargetRotation = rotation;
     }
 }

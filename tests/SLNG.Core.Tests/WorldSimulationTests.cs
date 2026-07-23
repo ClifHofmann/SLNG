@@ -406,4 +406,45 @@ public class WorldSimulationTests
         simulation.ExtrapolateMovement(0.1f); // fully decayed by now -- must no longer move
         Assert.Equal(positionAfterCutoff, transform.Position);
     }
+
+    /// <summary>Regression test: turning must not hard-snap. Reported symptom -- once Position's
+    /// own judder was fixed, turning was still visibly choppy while straight-line walking looked
+    /// smooth. Root cause: ApplyAvatarUpdate used to write straight into Rotation on every packet;
+    /// unlike Position there's no reliable AngularVelocity to dead-reckon a turning avatar from
+    /// (SL's wire AngularVelocity is for llSetTargetOmega-spun objects), so Rotation only ever
+    /// changed in discrete per-packet jumps. Fixed by routing network rotation through
+    /// TargetRotation and slerping Rotation toward it every frame instead.</summary>
+    [Fact]
+    public void AvatarUpdateEvent_RotationDoesNotSnap_SmoothsTowardTarget()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        var transform = entity!.GetComponent<TransformComponent>()!;
+        Assert.Equal(Quaternion.Identity, transform.Rotation); // starts facing identity, no smoothing needed on spawn
+
+        // Avatar turns 90 degrees around Z (SL up-axis pre-conversion doesn't matter for this test).
+        var turned = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f);
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, turned, "Local", "Agent", true));
+        simulation.Pump();
+
+        // Must NOT have snapped straight to the target -- that's the bug being fixed.
+        Assert.NotEqual(turned, transform.Rotation);
+        Assert.Equal(Quaternion.Identity, transform.Rotation); // ApplyAvatarUpdate alone doesn't move it
+
+        // A few frames of extrapolation should visibly approach, but not yet reach, the target.
+        simulation.ExtrapolateMovement(0.05f);
+        Assert.NotEqual(Quaternion.Identity, transform.Rotation);
+        Assert.NotEqual(turned, transform.Rotation);
+
+        // Enough elapsed time (well past the ~0.36s to-95% window) converges on the target.
+        for (int i = 0; i < 20; i++) simulation.ExtrapolateMovement(0.05f); // 1s total
+        Assert.True(Quaternion.Dot(transform.Rotation, turned) > 0.999f);
+    }
 }
