@@ -24,6 +24,7 @@ public partial class Boot : Control
     private SLNG.Core.ECS.World? _world;
     private SLNG.Core.Services.LocalizationManager _localizationManager = null!;
     private SLNG.Core.WorldSimulation _worldSimulation = null!;
+    private GpuCache? _gpuCache;
     private TerrainRenderer? _terrainRenderer;
     private ObjectRenderer? _objectRenderer;
     private AvatarRenderer? _avatarRenderer;
@@ -59,7 +60,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.3.0-alpha";
+    public const string AppVersion = "v0.3.1-alpha";
 
     public override void _Ready()
     {
@@ -733,6 +734,10 @@ public partial class Boot : Control
             _session.Dispose();
         }
         if (_worldSimulation != null) _worldSimulation.Dispose();
+        // Relogging discards the whole cached GPU working set (new session, new region) -- dispose
+        // explicitly rather than dropping the reference, same reasoning as DisposeAll's own doc
+        // comment: leaving cleanup to the .NET GC risks a finalizer touching RenderingServer late.
+        _gpuCache?.DisposeAll();
 
         // Any ObjectEditWindows still open are bound to the session/world we're about to replace
         // (Initialize() is called once at creation, not re-bindable) -- free them rather than
@@ -756,11 +761,11 @@ public partial class Boot : Control
         // GPU budget shared by meshes and textures. Sized for the nearby working set on a
         // 12 GB card with headroom for post-FX; out-of-range content is released so the LRU
         // can reclaim under this cap.
-        var gpuCache = new GpuCache(1536L * 1024 * 1024);
+        _gpuCache = new GpuCache(1536L * 1024 * 1024);
 
-        _terrainRenderer?.Initialize(_world, _assetService, gpuCache);
-        _objectRenderer?.Initialize(_world, _assetService, gpuCache);
-        _avatarRenderer?.Initialize(_world, _assetService, gpuCache, _session);
+        _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
+        _objectRenderer?.Initialize(_world, _assetService, _gpuCache);
+        _avatarRenderer?.Initialize(_world, _assetService, _gpuCache, _session);
         _inventoryPanel?.Initialize(_session);
         _chatWindow.BindSession(_session);
 
@@ -899,6 +904,11 @@ public partial class Boot : Control
 
     public override void _ExitTree()
     {
+        // Dispose the GPU cache's Resources explicitly, before the engine's own shutdown teardown
+        // -- see GpuCache.DisposeAll's doc comment for why (a late .NET GC finalizer touching an
+        // already-destroyed RenderingServer is the documented cause of the "N RID allocations...
+        // leaked at exit" / "RenderingServer::get_singleton() is null" pair seen at close).
+        _gpuCache?.DisposeAll();
         _worldSimulation?.Dispose();
         _session?.Dispose();
     }
