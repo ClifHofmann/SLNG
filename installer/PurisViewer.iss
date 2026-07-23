@@ -27,10 +27,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\build\windows\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\build\windows\*.pck"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\build\windows\*.dll"; DestDir: "{app}"; Flags: ignoreversion
-; Include any additional folders created by Godot export (e.g. .NET runtime folders)
+; A single recursive catch-all: Godot's .NET export puts PurisViewer.exe/.pck directly in
+; build\windows\ but the game-logic DLLs (SLNG.App/Core/Net/Assets) inside a
+; data_SLNG.App_windows_x86_64\ subfolder, not at the top level -- a separate top-level
+; "*.dll" line (this file's original round) matches zero files and hard-errors the compile
+; ("No files found matching ...\*.dll", live-tested), since Inno Setup treats a Source:
+; wildcard matching nothing as an error by default. recursesubdirs already covers the .exe,
+; .pck, and the DLL subfolder in one pass, so the specific lines were redundant besides.
 Source: "..\build\windows\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
