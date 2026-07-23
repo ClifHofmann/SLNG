@@ -186,7 +186,28 @@ public partial class AvatarRenderer : Node3D
     // DLL timestamp. If this line is missing or shows an old tag, the client is NOT running
     // the code you think it is; close it fully (not just the window) and re-run
     // tools/run-client.ps1 before drawing any conclusion from the rest of the log.
-    private const string BuildMarker = "2026-07-22-measured-footoffset-replaces-formula";
+    private const string BuildMarker = "2026-07-23-character-dir-empty-assembly-location-fix";
+
+    /// <summary>Resolves the "linden/character" directory the LibreMetaverse NuGet package
+    /// deploys .llm/.xml character files to, next to SLNG.Assets.dll in the build output.
+    /// Assembly.Location can be an EMPTY STRING (not null) for a published/exported .NET build --
+    /// confirmed live: an exported client rendered every avatar as the fallback capsule because
+    /// Path.GetDirectoryName("") also returns "" (not null), so a plain `?? AppContext.
+    /// BaseDirectory` null-coalesce never triggered and the computed directory silently became
+    /// the CWD-relative "linden\character", which doesn't exist next to an installed
+    /// PurisViewer.exe. Same failure mode already fixed for LibreMetaverse's own ResourceDir in
+    /// GridSession.cs -- this applies the identical IsNullOrEmpty-checked fallback. Previously
+    /// duplicated (with this same bug, twice) at both call sites -- CreateVisual's skeleton/body
+    /// load and RebuildBodyMorphs' shape-distortion computation both need this same directory.</summary>
+    private static string GetCharacterDir()
+    {
+        var asmLocation = typeof(AvatarBodyMeshService).Assembly.Location;
+        var asmDir = string.IsNullOrEmpty(asmLocation)
+            ? AppContext.BaseDirectory
+            : System.IO.Path.GetDirectoryName(asmLocation);
+        if (string.IsNullOrEmpty(asmDir)) asmDir = AppContext.BaseDirectory;
+        return System.IO.Path.Combine(asmDir, "linden", "character");
+    }
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
     {
@@ -294,13 +315,7 @@ public partial class AvatarRenderer : Node3D
             ApplyShape(visual, skeleton, _avatarSkeleton,
                 new Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)>());
 
-            // The LibreMetaverse NuGet package deploys .llm character files to the
-            // assembly output directory (linden/character/*.llm). Use the assembly
-            // location rather than AppContext.BaseDirectory — in the Godot editor the
-            // latter resolves to the editor executable directory, not the build output.
-            var asmDir = System.IO.Path.GetDirectoryName(
-                typeof(AvatarBodyMeshService).Assembly.Location) ?? AppContext.BaseDirectory;
-            var charDir = System.IO.Path.Combine(asmDir, "linden", "character");
+            var charDir = GetCharacterDir();
             GD.Print($"[AvatarRenderer] character dir: {charDir}");
             var bodyData = AvatarBodyMeshService.Load(charDir);
 
@@ -502,9 +517,7 @@ public partial class AvatarRenderer : Node3D
                 // CreateVisual) — needed here too so ComputeDistortions can read avatar_lad.xml's
                 // per-param sex tags (LibreMetaverse's generated VisualParam struct drops that
                 // attribute entirely; see AvatarShapeService).
-                var charDir = System.IO.Path.Combine(
-                    System.IO.Path.GetDirectoryName(typeof(AvatarBodyMeshService).Assembly.Location) ?? AppContext.BaseDirectory,
-                    "linden", "character");
+                var charDir = GetCharacterDir();
                 // One effective-weight map drives BOTH the skeletal distortions (bone scale/pos)
                 // and the vertex morphs (body silhouette) — so they can never disagree on a slider.
                 var weights = AvatarShapeService.ComputeEffectiveWeights(avatar.VisualParams, charDir);
