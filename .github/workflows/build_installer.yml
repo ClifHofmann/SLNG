@@ -42,10 +42,16 @@ jobs:
         # NOTE: Ensure you have an export preset named "Windows Desktop" in Godot.
         godot --headless --path app --export-release "Windows Desktop" ../build/windows/PurisViewer.exe
 
+    - name: Install Inno Setup
+      # minicrm/setup-inno-setup@v1 (this step's original action) doesn't exist -- GitHub
+      # rejected the workflow outright with "Unable to resolve action ..., repository not
+      # found" (verified: `gh api repos/minicrm/setup-inno-setup` 404s). Chocolatey is
+      # preinstalled on GitHub-hosted windows-latest runners, so installing Inno Setup
+      # through it avoids depending on an unverified third-party action for this.
+      run: choco install innosetup -y --no-progress
+
     - name: Compile Inno Setup Installer
-      uses: minicrm/setup-inno-setup@v1
-      with:
-        path: installer/PurisViewer.iss
+      run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\PurisViewer.iss'
 
     - name: Upload Release
       uses: softprops/action-gh-release@v2
