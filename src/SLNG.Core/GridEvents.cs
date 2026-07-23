@@ -67,7 +67,12 @@ public record ObjectUpdateEvent(
     // full update said, which is stale the moment a flag was just changed locally. IsPhysical/
     // IsTemporary/IsPhantom/CastsShadows above are only trustworthy when this is true; a terse-
     // sourced event must not be allowed to overwrite them (see WorldSimulation.ApplyObjectUpdate).
-    bool IsFullUpdate = true
+    bool IsFullUpdate = true,
+    // World-space velocity (m/s) and the originating sim's time dilation (0-1), same purpose as
+    // AvatarUpdateEvent's identically-named fields: WorldSimulation.ExtrapolateMovement dead-
+    // reckons a physically-moving object's (falling, rolling, pushed) Position between packets
+    // from these, exactly like it already does for avatars.
+    Vector3 Velocity = default, float TimeDilation = 1f
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY

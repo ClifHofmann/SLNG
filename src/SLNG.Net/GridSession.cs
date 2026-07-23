@@ -536,11 +536,42 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             return;
         }
 
-        RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: false);
+        // Position/Rotation/Velocity from e.Update, not e.Prim -- same race as the avatar branch
+        // above (LibreMetaverse fires this event before stomping the shared cached Primitive).
+        RaiseObjectUpdate(
+            e.Simulator, e.Prim, isFullUpdate: false,
+            positionOverride: new System.Numerics.Vector3(e.Update.Position.X, e.Update.Position.Y, e.Update.Position.Z),
+            rotationOverride: new System.Numerics.Quaternion(e.Update.Rotation.X, e.Update.Rotation.Y, e.Update.Rotation.Z, e.Update.Rotation.W),
+            velocityOverride: new System.Numerics.Vector3(e.Update.Velocity.X, e.Update.Velocity.Y, e.Update.Velocity.Z),
+            timeDilation: e.TimeDilation / 65535.0f);
     }
 
-    private void RaiseObjectUpdate(LibreMetaverse.Simulator simulator, Primitive prim, bool isFullUpdate)
+    /// <summary>Builds and raises an ObjectUpdateEvent from a LibreMetaverse Primitive.
+    /// <paramref name="positionOverride"/>, <paramref name="rotationOverride"/> and
+    /// <paramref name="velocityOverride"/>, when set, are used instead of the same-named field on
+    /// <paramref name="prim"/> -- required for a terse-sourced call (see OnTerseObjectUpdate):
+    /// LibreMetaverse's ImprovedTerseObjectUpdateHandler fires its event via
+    /// ThreadPool.QueueUserWorkItem BEFORE writing the decoded values onto the shared, cached
+    /// Primitive ("fire the pre-emptive notice before we stomp the object" --
+    /// ObjectManager.PacketHandlers.cs ~line 619), so reading prim.Position/Rotation/Velocity
+    /// directly races that later write (confirmed root cause of the identical avatar-side bug fixed
+    /// in OnTerseObjectUpdate's avatar branch). The full ObjectUpdate path has no such race --
+    /// ObjectUpdateHandler stomps the Primitive synchronously before queuing its event (same file,
+    /// ~line 371-385) -- so OnObjectUpdate's call leaves these null and reads straight off prim.
+    /// Every other field (mesh, texture, flags, ...) always reads off prim regardless: terse updates
+    /// don't carry them on the wire at all, so prim already holds the last full update's values
+    /// either way, override or not.</summary>
+    private void RaiseObjectUpdate(
+        LibreMetaverse.Simulator simulator, Primitive prim, bool isFullUpdate,
+        System.Numerics.Vector3? positionOverride = null,
+        System.Numerics.Quaternion? rotationOverride = null,
+        System.Numerics.Vector3? velocityOverride = null,
+        float timeDilation = 1f)
     {
+        var resolvedPosition = positionOverride ?? new System.Numerics.Vector3(prim.Position.X, prim.Position.Y, prim.Position.Z);
+        var resolvedRotation = rotationOverride ?? new System.Numerics.Quaternion(prim.Rotation.X, prim.Rotation.Y, prim.Rotation.Z, prim.Rotation.W);
+        var resolvedVelocity = velocityOverride ?? new System.Numerics.Vector3(prim.Velocity.X, prim.Velocity.Y, prim.Velocity.Z);
+
         bool isMesh = false;
         Guid meshId = Guid.Empty;
         bool isSculpt = false;
@@ -627,8 +658,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
             simulator.Handle,
             prim.LocalID,
-            new System.Numerics.Vector3(prim.Position.X, prim.Position.Y, prim.Position.Z),
-            new System.Numerics.Quaternion(prim.Rotation.X, prim.Rotation.Y, prim.Rotation.Z, prim.Rotation.W),
+            resolvedPosition,
+            resolvedRotation,
             new System.Numerics.Vector3(prim.Scale.X, prim.Scale.Y, prim.Scale.Z),
             (byte)prim.PrimData.ProfileCurve,
             isMesh,
@@ -669,7 +700,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // let an unnamed enum value reach the UI.
             (byte)prim.PrimData.Material <= 6 ? (SLNG.Core.PrimMaterial)(byte)prim.PrimData.Material : SLNG.Core.PrimMaterial.Wood,
             (byte)prim.ClickAction,
-            isFullUpdate));
+            isFullUpdate,
+            resolvedVelocity,
+            timeDilation));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)
