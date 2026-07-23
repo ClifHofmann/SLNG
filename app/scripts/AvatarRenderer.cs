@@ -733,6 +733,16 @@ public partial class AvatarRenderer : Node3D
             var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
             
             Godot.Callable.From(() => {
+                if (_gpuCache != null)
+                {
+                    var cached = _gpuCache.Get(textureId) as ImageTexture;
+                    if (cached != null)
+                    {
+                        tcs.SetResult(cached);
+                        return;
+                    }
+                }
+
                 var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
                 if (image == null)
                 {
@@ -746,9 +756,25 @@ public partial class AvatarRenderer : Node3D
                 if (tex != null && _gpuCache != null)
                 {
                     long size = textureData.Width * textureData.Height * 4;
-                    _gpuCache.Put(textureId, tex, size);
+                    // initialRefCount: 1 -- pins this bake texture so GpuCache.EvictIfNeeded can
+                    // never select it (RefCount<=0 is the eviction condition), unlike ObjectRenderer
+                    // (which properly AddRef/ReleaseRefs per-visual via SetTexturesForVisual).
+                    // AvatarRenderer has no equivalent per-avatar ref-counting yet, so an unpinned
+                    // (RefCount 0) bake texture was eligible for eviction the moment the shared
+                    // cache went over its 1.5 GB budget -- e.g. right after a teleport, when the new
+                    // region's terrain/objects/other-avatar textures arrive in a burst. Since
+                    // GpuCache now disposes an evicted Resource's native RID immediately (not just
+                    // drops it from the cache dict), evicting a bake texture still assigned to a
+                    // LIVE MeshInstance3D's material destroyed it out from under the renderer --
+                    // exactly the "RenderingServer::get_singleton() is null" error reported right
+                    // after teleporting. Trade-off: pinned avatar textures are never reclaimed for
+                    // the app's lifetime (a slow, bounded-by-avatars-seen leak) rather than a real
+                    // dispose-tracked lifecycle; safe default until AvatarRenderer gets proper
+                    // AddRef/ReleaseRef bookkeeping like ObjectRenderer's.
+                    _gpuCache.Put(textureId, tex, size, initialRefCount: 1);
                 }
                 tcs.SetResult(tex);
+                image.Dispose();
             }).CallDeferred();
 
             godotTexture = await tcs.Task;
@@ -1207,12 +1233,26 @@ public partial class AvatarRenderer : Node3D
 
         Godot.Callable.From(() =>
         {
+            if (_gpuCache != null)
+            {
+                var cachedInside = _gpuCache.Get(texId) as ImageTexture;
+                if (cachedInside != null)
+                {
+                    tcs.SetResult(cachedInside);
+                    return;
+                }
+            }
+
             var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
             image.GenerateMipmaps();
             var tex = ImageTexture.CreateFromImage(image);
             if (tex != null)
-                _gpuCache?.Put(texId, tex, (long)textureData.Width * textureData.Height * 4);
+                // initialRefCount: 1 -- see LoadAndApplyTextureAsync's identical Put for why (a
+                // per-face/attachment texture pinned here is just as capable of being live on a
+                // MeshInstance3D as a bake, so it needs the same eviction-immunity).
+                _gpuCache?.Put(texId, tex, (long)textureData.Width * textureData.Height * 4, initialRefCount: 1);
             tcs.SetResult(tex);
+            image.Dispose();
         }).CallDeferred();
 
         var built = await tcs.Task.ConfigureAwait(false);

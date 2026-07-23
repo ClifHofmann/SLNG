@@ -31,4 +31,5 @@ dotnet build (Join-Path $PSScriptRoot "..\app\SLNG.App.csproj")
 # transcript survives even if the window is closed mid-session instead of exited cleanly.
 $transcriptPath = Join-Path $PSScriptRoot "..\client-output.log"
 Write-Host "[4/4] Starting Godot Client... (output also captured to $transcriptPath)" -ForegroundColor Green
+$ErrorActionPreference = 'Continue'
 godot --path (Join-Path $PSScriptRoot "..\app") *>&1 | Tee-Object -FilePath $transcriptPath

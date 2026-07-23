@@ -60,7 +60,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.2.11-alpha";
+    public const string AppVersion = "v0.2.12-alpha";
 
     public override void _Ready()
     {
@@ -911,5 +911,10 @@ public partial class Boot : Control
         _gpuCache?.DisposeAll();
         _worldSimulation?.Dispose();
         _session?.Dispose();
+        
+        // Force GC now while the RenderingServer is still alive, so any floating Godot wrappers
+        // (like evicted cache entries) run their finalizers safely.
+        System.GC.Collect();
+        System.GC.WaitForPendingFinalizers();
     }
 }

@@ -101,6 +101,16 @@ public partial class TerrainRenderer : Node3D
 
         Godot.Callable.From(() =>
         {
+            if (_gpuCache != null)
+            {
+                var cached = _gpuCache.Get(textureId) as ImageTexture;
+                if (cached != null)
+                {
+                    tcs.SetResult(cached);
+                    return;
+                }
+            }
+
             var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
             var tex = ImageTexture.CreateFromImage(image);
 
@@ -110,6 +120,7 @@ public partial class TerrainRenderer : Node3D
                 _gpuCache.Put(textureId, tex, size);
             }
             tcs.SetResult(tex);
+            image.Dispose();
         }).CallDeferred();
 
         return await tcs.Task;
@@ -299,5 +310,8 @@ public partial class TerrainRenderer : Node3D
         {
             _world.TerrainUpdated -= OnTerrainUpdated;
         }
+        _regions.Clear();
+        _terrainMaterial?.Dispose();
+        _waterMaterial?.Dispose();
     }
 }

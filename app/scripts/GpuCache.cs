@@ -109,7 +109,11 @@ public class GpuCache
                 _lruList.Remove(node);
                 _cache.Remove(entry.Id);
                 _currentSize -= entry.Size;
-                // Dropping C# reference allows Godot to free the resource when no nodes use it
+                // Explicitly dispose the C# wrapper so its finalizer won't run later (e.g. after RenderingServer is gone)
+                if (GodotObject.IsInstanceValid(entry.Res))
+                {
+                    entry.Res.Dispose();
+                }
             }
             node = next;
         }

@@ -71,8 +71,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // -- so the lookup missed every time ("Failed opening resource ...\linden\static_assets\
         // head_color.tga"). Point it at the assembly's own directory instead, same fix
         // AvatarRenderer.cs already applies for the sibling "linden/character" mesh files.
-        var libremetaverseDir = System.IO.Path.GetDirectoryName(typeof(LibreMetaverse.Settings).Assembly.Location);
-        if (libremetaverseDir != null)
+        var asmLocation = typeof(LibreMetaverse.Settings).Assembly.Location;
+        var libremetaverseDir = string.IsNullOrEmpty(asmLocation) ? AppContext.BaseDirectory : System.IO.Path.GetDirectoryName(asmLocation);
+        if (string.IsNullOrEmpty(libremetaverseDir)) libremetaverseDir = AppContext.BaseDirectory;
+        
+        if (!string.IsNullOrEmpty(libremetaverseDir))
         {
             var lindenDir = System.IO.Path.Combine(libremetaverseDir, "linden");
             LibreMetaverse.Settings.ResourceDir = lindenDir;
