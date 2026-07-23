@@ -315,6 +315,27 @@ public sealed class WorldSimulation : IDisposable
             transform = new TransformComponent(e.Position, e.Rotation);
             entity.SetComponent(transform);
         }
+        else if (e.IsLocalAgent)
+        {
+            // The local agent's position is client-predicted every frame by AvatarController
+            // (WASD dead reckoning) for smooth movement. The sim echoes our own avatar's position
+            // back continuously while we're physically moving (see GridSession.OnTerseObjectUpdate's
+            // doc comment) — those echoes are latency-delayed relative to what the client already
+            // predicted, so hard-overwriting Position here on every packet fights the prediction and
+            // snaps the avatar back onto the (stale) server value each time one lands. Reported as
+            // visible sideways popping while walking, worst on a diagonal heading -- diagonal motion
+            // has a nonzero prediction/echo delta on BOTH axes at once instead of just one, so the
+            // same correction magnitude reads as a lateral pop instead of a barely-visible
+            // forward/back stutter. Only snap on a large divergence (teleport, sit/stand, a real
+            // server-side physics correction/push) — small drift is left to client prediction, which
+            // re-derives from the avatar's actual last-good position next frame anyway.
+            if (Vector3.Distance(transform.Position, e.Position) > 1.0f)
+            {
+                transform.Position = e.Position;
+            }
+            transform.Rotation = e.Rotation;
+            entity.SetComponent(transform);
+        }
         else
         {
             transform.Position = e.Position;

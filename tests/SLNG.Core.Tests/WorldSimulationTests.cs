@@ -272,4 +272,61 @@ public class WorldSimulationTests
         avatar = entity.GetComponent<AvatarComponent>();
         Assert.Equal(2.19f, avatar!.ScaleZ);
     }
+
+    /// <summary>Regression test: the local agent's client-predicted position (see
+    /// AvatarController's WASD dead reckoning) must not be fought by the sim's own echo of our
+    /// avatar's position -- a small divergence (normal prediction/network-latency drift while
+    /// walking) is left alone; only a large one (teleport, sit/stand, a real server-side push)
+    /// snaps to the network value. Before this fix, ApplyAvatarUpdate hard-overwrote Position on
+    /// every local-agent echo, popping the avatar sideways mid-stride every time one landed --
+    /// worst on a diagonal heading, since a diagonal prediction/echo delta lands on both axes at
+    /// once instead of just one.</summary>
+    [Fact]
+    public void AvatarUpdateEvent_LocalAgent_SmallPositionDrift_IsNotOverwritten()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(10, 10, 10), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        Assert.NotNull(entity);
+
+        // Client prediction has since moved the entity's own transform, exactly as
+        // AvatarController does every frame while WASD is held.
+        entity!.GetComponent<TransformComponent>()!.Position = new Vector3(10.3f, 10.2f, 10f);
+
+        // A network echo of our own avatar arrives, latency-delayed, close to but not exactly at
+        // the predicted position (well under the 1m snap threshold).
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(10.1f, 10.1f, 10f), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        Assert.Equal(new Vector3(10.3f, 10.2f, 10f), entity.GetComponent<TransformComponent>()!.Position);
+    }
+
+    /// <summary>Companion to the drift test above: a LARGE divergence (teleport, sit/stand, a real
+    /// physics correction) must still snap the local agent to the server position -- the fix only
+    /// suppresses small-drift fighting, it must not make the local agent immune to real
+    /// corrections.</summary>
+    [Fact]
+    public void AvatarUpdateEvent_LocalAgent_LargePositionDivergence_Snaps()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(10, 10, 10), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(200, 200, 30), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        Assert.Equal(new Vector3(200, 200, 30), entity!.GetComponent<TransformComponent>()!.Position);
+    }
 }
