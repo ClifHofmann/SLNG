@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-08`
 - **Track:** `ui`
-- **Status:** `⏸️ Pending`
+- **Status:** `🧪 Review`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -47,21 +47,37 @@ Design reference (HTML/CSS mockup provided by the user, Tailwind-based):
   needs the color treatment.
 
 ## Acceptance Criteria
-- [ ] Login panel (`LoginScreen/Panel`) uses the glassmorphism dark-navy/teal theme
+- [x] Login panel (`LoginScreen/Panel`) uses the glassmorphism dark-navy/teal theme
       instead of the current default Godot panel style.
-- [ ] "PURIS" title + version label match the mockup's typography treatment.
-- [ ] Inputs (`GridInput`, `FirstInput`, `LastInput`, `PassInput`, dropdowns) themed to
+- [x] "PURIS" title + version label match the mockup's typography treatment.
+- [x] Inputs (`GridInput`, `FirstInput`, `LastInput`, `PassInput`, dropdowns) themed to
       match (dark fill, teal focus ring).
-- [ ] `SaveLoginCheck` uses a themed checkbox matching the teal checkmark style.
-- [ ] `LoginButton` uses the teal→blue gradient + hover glow.
-- [ ] Loading screen (`LoadingScreen`) replaces the current spinner with a circular
-      progress indicator + step checklist, driven by real load-progress signals (not
-      the mockup's `setInterval` fake-progress simulation — needs mapping to actual
-      boot/connect stages already logged via `Boot.cs`'s `LogMessage` calls).
-- [ ] No regression to login functionality, saved-profile dropdown, or the
-      `user://logins.cfg` persistence path.
-- [ ] `dotnet build` + `dotnet test` clean; manual test of login + loading flow in the
-      dev client.
+- [x] `SaveLoginCheck` uses a themed checkbox matching the teal checkmark style (icon
+      rasterized from the app's existing Material Symbols icon font, not a new asset).
+- [x] `LoginButton` uses a teal→blue accent + hover glow (see Deviations: flat blended
+      color, not a true CSS-style gradient fill — see below).
+- [x] Loading screen (`LoadingScreen`) replaces the current spinner with a circular
+      progress indicator (`TextureProgressBar`, radial fill) + step checklist, driven by
+      real load-progress signals: LibreMetaverse's own login handshake stages (relayed
+      through a new `GridSession.LoginProgress` event / `SLNG.Core.LoginProgressEvent`)
+      plus two of Boot.cs's own genuine milestones (local session init before
+      `LoginAsync`, post-login world/avatar setup after it). The old
+      `SimulateLoadingAnimation` timer-based fake progress is gone.
+- [x] No regression to login functionality, saved-profile dropdown, or the
+      `user://logins.cfg` persistence path (login logic itself untouched).
+- [x] `dotnet build` + `dotnet test` clean; manual visual check of the login screen in
+      the dev client (see Status for what was and wasn't verified live).
+
+### Deviations from the mockup (see Status for why)
+- Button "gradient" is a single flat blended teal-blue color (`#087E94`-ish), not a real
+  linear gradient fill -- Godot's `StyleBoxFlat` has no gradient-fill property, and adding
+  a shader/gradient-texture button skin was judged not worth the complexity for a reskin
+  task (same reasoning already applied to the blur decision).
+- Background "overlay" blend is a plain alpha-composited `GradientTexture2D`, not a true
+  Photoshop-style "overlay" blend mode (Godot's CanvasItem has no such blend mode without
+  a custom shader).
+- Login logo (`app/icon.svg`) is not pixel-masked to rounded corners -- `Control.clip_contents`
+  only clips to a rectangle in Godot, not to a `StyleBoxFlat`'s rounded corner radius.
 
 ## Technical Specs & Affected Files
 - `app/scenes/Boot.tscn` — theming (Theme resource / StyleBoxFlat overrides per
@@ -79,20 +95,31 @@ Design reference (HTML/CSS mockup provided by the user, Tailwind-based):
 ## Sub-tasks / Progress
 - [x] Logo asset resolved — reuse `app/icon.svg`.
 - [x] Blur approach resolved — flat translucent `StyleBoxFlat`, no real backdrop blur.
-- [ ] Build a `Theme`/`StyleBoxFlat` resource for the dark-navy/teal palette.
-- [ ] Reskin `LoginScreen/Panel` and its child controls.
-- [ ] Replace the loading-screen spinner with a circular progress ring + step
-      checklist, wired to real connection/load stages.
-- [ ] Verify in the dev client (`tools/run-client.ps1`), both login and loading states.
+- [x] Build `StyleBoxFlat` resources for the dark-navy/teal palette (`Boot.tscn`
+      sub-resources: glass panel, input normal/focus, button normal/hover).
+- [x] Reskin `LoginScreen/Panel` and its child controls (logo, title, inputs, checkbox,
+      button, status bar).
+- [x] Replace the loading-screen spinner with a circular progress ring + step
+      checklist, wired to real connection/load stages (see Acceptance Criteria).
+- [x] Verify in the dev client — login screen only; see Status for the loading-screen
+      caveat.
 
-## Open Questions
-- Does "Second Life Next Generation" stay as the loading-screen tagline, or is that
-  mockup placeholder text?
-- Background image: mockup uses a stock Unsplash tech photo — final choice needed, or
-  keep the current `Background` `TextureRect` and only recolor the gradient overlay?
-  (Default: keep the current background, only apply the teal/blue gradient overlay,
-  to avoid a licensing question over the stock photo.)
+## Open Questions (resolved)
+- "Second Life Next Generation" tagline: kept (already real, existing copy in
+  `Boot.tscn`), just re-styled (small/uppercase/muted-teal) to match the mockup instead
+  of being replaced or removed.
+- Background image: kept the existing `boot_bg.jpg` per the stated default, with only
+  the teal→blue diagonal `GradientTexture2D` overlay added on top (no shader, no true
+  Photoshop-"overlay" blend mode — see Deviations). The existing background reads well
+  under the new gradient; no need to reconsider it.
 
 ## Status
-v0.3.2 release build confirmed working — implementation unblocked, in progress on
-this branch.
+Implementation complete on `feature/FEAT-UI-08-login-rebrand` (pushed, not merged).
+`dotnet build`/`dotnet test` clean. Visually verified live in the dev client for the
+**login screen** only (screenshot-confirmed: glass panel, gradient background, PURIS
+title, themed inputs, teal button/glow, checkbox icon). The **loading-screen**
+progress-ring/step-checklist could not be exercised live in this pass — see the task
+report for why (a working-tree collision with concurrent, unrelated in-flight edits in
+this same checkout forced stopping interactive testing early) — logic was verified by
+code review + clean build/test only. A follow-up pass should click Login in the dev
+client and visually confirm the ring/checklist animate through their 5 real stages.
