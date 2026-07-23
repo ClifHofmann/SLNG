@@ -62,12 +62,48 @@ public partial class Boot : Control
 
     public const string AppVersion = "v0.3.2-alpha";
 
+    // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
+    // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
+    // when running from source. An exported build packs the JSON files into the .pck, where
+    // GlobalizePath's result doesn't exist as a real file and LocalizationManager's
+    // System.IO-based loader silently found nothing, leaving every UI string showing its raw
+    // "[key]" fallback (confirmed live on an installed v0.3.2 build). Same failure class as
+    // the avatar skeleton XML fix in AvatarRenderer.cs -- FileAccess reads both loose files
+    // and packed .pck contents uniformly, so it works from source and from an export alike.
+    private static SLNG.Core.Services.LocalizationManager LoadLocalizationManager()
+    {
+        var manager = new SLNG.Core.Services.LocalizationManager();
+        using var dir = DirAccess.Open("res://i18n");
+        if (dir == null)
+        {
+            GD.PrintErr($"[Boot] Failed to open res://i18n: {DirAccess.GetOpenError()}");
+            return manager;
+        }
+
+        dir.ListDirBegin();
+        for (string fileName = dir.GetNext(); fileName != ""; fileName = dir.GetNext())
+        {
+            if (dir.CurrentIsDir() || !fileName.EndsWith(".json")) continue;
+
+            string localeName = fileName.Substring(0, fileName.Length - ".json".Length);
+            using var file = FileAccess.Open($"res://i18n/{fileName}", FileAccess.ModeFlags.Read);
+            if (file == null)
+            {
+                GD.PrintErr($"[Boot] Failed to open res://i18n/{fileName}: {FileAccess.GetOpenError()}");
+                continue;
+            }
+            manager.LoadLocaleFromJson(localeName, file.GetAsText());
+        }
+        dir.ListDirEnd();
+
+        return manager;
+    }
+
     public override void _Ready()
     {
         MouseFilter = MouseFilterEnum.Ignore;
 
-        string i18nDir = ProjectSettings.GlobalizePath("res://i18n");
-        _localizationManager = new SLNG.Core.Services.LocalizationManager(i18nDir);
+        _localizationManager = LoadLocalizationManager();
         SLNG.App.UI.L10n.Initialize(_localizationManager);
 
         // Godot debug builds hard-code an "(DEBUG)" window-title suffix that gets applied

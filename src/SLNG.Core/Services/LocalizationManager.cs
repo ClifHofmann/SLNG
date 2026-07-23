@@ -27,9 +27,10 @@ namespace SLNG.Core.Services
 
         public event Action? LanguageChanged;
 
-        public LocalizationManager(string i18nDirectoryPath)
+        public LocalizationManager(string? i18nDirectoryPath = null)
         {
-            LoadAllLocales(i18nDirectoryPath);
+            if (!string.IsNullOrEmpty(i18nDirectoryPath))
+                LoadAllLocales(i18nDirectoryPath);
         }
 
         public IReadOnlyList<string> GetAvailableLocales()
@@ -46,6 +47,11 @@ namespace SLNG.Core.Services
             return new Dictionary<string, string>();
         }
 
+        // Directory-based loading via System.IO -- only valid when the JSON files exist as
+        // real files on disk (running from source, or a test's temp directory). An exported
+        // Godot build packs res://i18n/*.json into the .pck, where System.IO simply can't see
+        // them; use LoadLocaleFromJson (fed by Godot's FileAccess/DirAccess, which reads both
+        // loose files and packed .pck contents) for that case instead -- see Boot.cs.
         public void LoadAllLocales(string directoryPath)
         {
             if (!Directory.Exists(directoryPath)) return;
@@ -53,18 +59,23 @@ namespace SLNG.Core.Services
             foreach (var file in Directory.GetFiles(directoryPath, "*.json"))
             {
                 string localeName = Path.GetFileNameWithoutExtension(file);
-                try
-                {
-                    string json = File.ReadAllText(file);
-                    using var doc = JsonDocument.Parse(json);
-                    var dict = new Dictionary<string, string>();
-                    FlattenJsonElement(doc.RootElement, "", dict);
-                    _locales[localeName] = dict;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[LocalizationManager] Failed to load locale {localeName}: {ex.Message}");
-                }
+                string json = File.ReadAllText(file);
+                LoadLocaleFromJson(localeName, json);
+            }
+        }
+
+        public void LoadLocaleFromJson(string localeName, string json)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var dict = new Dictionary<string, string>();
+                FlattenJsonElement(doc.RootElement, "", dict);
+                _locales[localeName] = dict;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[LocalizationManager] Failed to load locale {localeName}: {ex.Message}");
             }
         }
 
