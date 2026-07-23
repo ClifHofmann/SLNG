@@ -28,7 +28,10 @@
       "title": "EINSTELLUNGEN",
       "tab_toolbar": "Werkzeugleiste",
       "tab_display": "Anzeige",
-      "toolbar_heading": "Angezeigte Buttons auf der unteren Leiste:",
+      "tab_network": "Netzwerk",
+      "network_heading": "Netzwerk- und Cache-Einstellungen:",
+      "clear_cache": "Asset-Cache leeren",
+      "toolbar_heading": "Schaltflächen in der unteren Leiste:",
       "language_heading": "Sprache (Fenster müssen neu geöffnet werden):",
       "ui_scale_heading": "UI-Skalierung (Fenster & HUD):",
       "ui_scale_hint": "Skaliert freischwebende Fenster und das HUD live. Gilt auch für neu geöffnete Fenster."
