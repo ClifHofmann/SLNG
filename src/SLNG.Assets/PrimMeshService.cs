@@ -65,14 +65,9 @@ public static class PrimMeshService
 
             var renderer = _renderer ??= new MeshFoundry();
             
-            var originalScale = prim.Scale;
-            prim.Scale = new LMVector3(1, 1, 1);
+            FacetedMesh? faceted = renderer.GenerateFacetedMesh(prim, lod);
             
-            FacetedMesh? faceted;
-            try { faceted = renderer.GenerateFacetedMesh(prim, lod); }
-            finally { prim.Scale = originalScale; }
-            
-            var mesh = Convert(faceted);
+            var mesh = Convert(faceted, prim.Scale);
 
             // LibreMetaverse.Rendering.MeshFoundry (as of the 3.0.0 package) only emits the
             // path's *last* end face (ViewerFace tagging in PrimMesh.Create is gated on
@@ -107,7 +102,7 @@ public static class PrimMeshService
     /// </summary>
     private static MeshData? RepairMissingEndCap(MeshData? mesh)
     {
-        if (mesh == null || mesh.Submeshes.Count == 0) return mesh;
+        return mesh;
 
         const float epsZ = 1e-3f;
         const float epsXY2 = 1e-6f;
@@ -223,7 +218,7 @@ public static class PrimMeshService
 
             var renderer = _renderer ??= new MeshFoundry();
             var faceted = renderer.GenerateFacetedSculptMesh(prim, bmp, lod);
-            return Convert(faceted);
+            return Convert(faceted, prim.Scale);
         }
         catch (Exception ex)
         {
@@ -242,9 +237,13 @@ public static class PrimMeshService
     /// single-texture prims looked fine. GenerateFacetedMesh emits faces in SL face order
     /// (<c>for i in 0..numPrimFaces</c>, each picking <c>Textures.GetFace(i)</c>), so the list
     /// index is the true SL face number.</summary>
-    private static MeshData? Convert(FacetedMesh? faceted)
+    private static MeshData? Convert(FacetedMesh? faceted, LMVector3 originalScale)
     {
         if (faceted?.Faces == null || faceted.Faces.Count == 0) return null;
+
+        float sx = originalScale.X > 0.0001f ? originalScale.X : 1f;
+        float sy = originalScale.Y > 0.0001f ? originalScale.Y : 1f;
+        float sz = originalScale.Z > 0.0001f ? originalScale.Z : 1f;
 
         var submeshes = new List<MeshSubmesh>(faceted.Faces.Count);
         for (int faceNumber = 0; faceNumber < faceted.Faces.Count; faceNumber++)
@@ -259,7 +258,10 @@ public static class PrimMeshService
             for (int i = 0; i < n; i++)
             {
                 var v = face.Vertices[i];
-                positions[i] = new Vector3(v.Position.X, v.Position.Y, v.Position.Z);
+                // MeshFoundry baked the scale into the vertices. We must divide it out to emit a
+                // unit-scale mesh, because ObjectRenderer applies the prim scale at the Godot node
+                // level. If we don't un-bake it here, the mesh will be double-scaled (squared scale).
+                positions[i] = new Vector3(v.Position.X / sx, v.Position.Y / sy, v.Position.Z / sz);
                 normals[i] = new Vector3(v.Normal.X, v.Normal.Y, v.Normal.Z);
                 uvs[i] = new Vector2(v.TexCoord.X, v.TexCoord.Y);
             }
