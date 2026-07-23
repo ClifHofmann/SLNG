@@ -358,6 +358,19 @@ public sealed class WorldSimulation : IDisposable
             var oldAgent = _world.GetAllEntities().FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
             if (oldAgent != null && (oldAgent.RegionHandle != e.RegionHandle || oldAgent.LocalId != e.LocalId))
             {
+                // TEMPORARY diagnostic (2026-07-23, OSGrid sideways-pop live-test round): this
+                // branch drops and recreates the local-agent entity, discarding its Velocity/
+                // TimeSinceUpdate/TargetRotation and, more importantly, re-anchoring rendering to a
+                // DIFFERENT region-origin offset (RenderConfig.ToGodot keys off RegionHandle) --
+                // if this fires without an actual teleport (e.g. a megaregion internally reporting
+                // a different sub-region handle as the avatar crosses what used to be a region
+                // boundary before the regions were merged), the same physical point would render at
+                // a different Godot-space coordinate on either side of the flip, which would look
+                // exactly like a sideways pop. Only expected to legitimately fire right after a real
+                // teleport. Remove once the OSGrid cause is confirmed.
+                System.Console.WriteLine(
+                    $"[AvatarMove] local-agent entity re-anchored: oldRegion={oldAgent.RegionHandle} " +
+                    $"newRegion={e.RegionHandle} oldLocalId={oldAgent.LocalId} newLocalId={e.LocalId}");
                 _world.RemoveEntity(oldAgent.RegionHandle, oldAgent.LocalId);
             }
         }
@@ -372,6 +385,27 @@ public sealed class WorldSimulation : IDisposable
         }
         else
         {
+            // TEMPORARY diagnostic (2026-07-23, OSGrid sideways-pop live-test round): the fixes so
+            // far (server-authoritative Position, the terse-update race, TimeDilation-scaled
+            // extrapolation, Rotation smoothing) didn't fully resolve a sideways pop reported on
+            // OSGrid specifically, while the user's own sim looks smooth. Logs only the LOCAL
+            // agent's noticeable (>0.1m) corrections -- i.e. every time this packet's authoritative
+            // Position lands meaningfully away from where extrapolation had already predicted --
+            // together with the packet gap, dilation, and velocity either side of it, so a live
+            // OSGrid session's console output can show which of those actually correlates with the
+            // pop instead of guessing further. Remove once the OSGrid cause is confirmed.
+            if (e.IsLocalAgent)
+            {
+                float correction = Vector3.Distance(transform.Position, e.Position);
+                if (correction > 0.1f)
+                {
+                    System.Console.WriteLine(
+                        $"[AvatarMove] correction={correction:0.###}m packetGap={transform.TimeSinceUpdate:0.###}s " +
+                        $"dilation={e.TimeDilation:0.###} oldVel={transform.Velocity.Length():0.###}m/s " +
+                        $"newVel={e.Velocity.Length():0.###}m/s oldPos={transform.Position} newPos={e.Position}");
+                }
+            }
+
             // Server-authoritative for every avatar, local included — matches the real viewer
             // (LLAgent::getPositionAgent() mirrors LLVOAvatarSelf's network-driven position; there
             // is no separate client-predicted position it reconciles against, see
