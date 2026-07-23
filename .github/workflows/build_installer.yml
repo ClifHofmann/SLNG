@@ -9,6 +9,12 @@ on:
 jobs:
   build-and-release:
     runs-on: windows-latest
+    # softprops/action-gh-release needs write access to create the release; the default
+    # GITHUB_TOKEN's permissions are read-only unless a job/workflow explicitly opts in (this
+    # repo/org's default, confirmed live: "GitHub release failed with status: 403 - Resource
+    # not accessible by integration").
+    permissions:
+      contents: write
 
     # chickensoft-games/setup-godot's own README example uses `shell: bash` on ALL platforms,
     # Windows included -- this script was written in bash syntax throughout (mkdir -p, forward-
