@@ -101,12 +101,27 @@ public sealed class WorldSimulation : IDisposable
     // 150-300ms).
     private const float RotationSmoothingRate = 8.3f;
 
-    /// <summary>Dead-reckons every avatar's Position from its last network-reported Velocity
-    /// (phasing the contribution out over time) and smooths Rotation toward TargetRotation, instead
-    /// of leaving Position static / snapping Rotation between packets. Call once per frame on the
-    /// main thread, after Pump() has applied this frame's network updates. Position/TargetRotation
-    /// are only ever set authoritatively by ApplyAvatarUpdate (server-driven, local agent included —
-    /// see its doc comment); this method only smooths the visual gap between those updates.</summary>
+    // Same exponential-approach technique as RotationSmoothingRate, applied to Position easing
+    // toward TargetPosition (see TransformComponent.TargetPosition's doc comment): reaches ~95% of
+    // the way there in about 0.3s. Fast enough that ordinary small corrections are imperceptible,
+    // slow enough that a multi-metre catch-up (after a real packet gap) reads as a quick glide
+    // instead of an instant pop.
+    private const float PositionSmoothingRate = 10f;
+
+    // Above this distance, a TargetPosition update is treated as a genuinely discontinuous move
+    // (teleport, sit/stand, a large server-side correction) rather than an ordinary packet-gap
+    // catch-up, and Position snaps to it instantly instead of easing -- those moves SHOULD look
+    // instant. Comfortably above the largest catch-up distances seen in live-test data (~3.3m for
+    // a 2.2s gap at normal walk speed) so ordinary movement never snaps.
+    private const float TeleportSnapDistanceMeters = 5f;
+
+    /// <summary>Dead-reckons every avatar's TargetPosition from its last network-reported Velocity
+    /// (phasing the contribution out over time), eases the rendered Position toward TargetPosition,
+    /// and smooths Rotation toward TargetRotation -- instead of leaving Position static / snapping
+    /// Position or Rotation straight to each packet's value. Call once per frame on the main thread,
+    /// after Pump() has applied this frame's network updates. TargetPosition/TargetRotation are only
+    /// ever set authoritatively by ApplyAvatarUpdate (server-driven, local agent included — see its
+    /// doc comment); this method only smooths the visual gap between those updates.</summary>
     public void ExtrapolateMovement(float deltaSeconds)
     {
         foreach (var entity in _world.Query<AvatarComponent>())
@@ -130,8 +145,11 @@ public sealed class WorldSimulation : IDisposable
                 // so extrapolating at full real-time speed overshoots what the sim actually
                 // simulated by the time its next (delayed) packet arrives, reading as an extra
                 // correction pop on a busy sim that a quiet one wouldn't show.
-                transform.Position += transform.Velocity * deltaSeconds * weight * transform.TimeDilation;
+                transform.TargetPosition += transform.Velocity * deltaSeconds * weight * transform.TimeDilation;
             }
+
+            float posT = 1f - MathF.Exp(-PositionSmoothingRate * deltaSeconds);
+            transform.Position = Vector3.Lerp(transform.Position, transform.TargetPosition, posT);
 
             float rotT = 1f - MathF.Exp(-RotationSmoothingRate * deltaSeconds);
             transform.Rotation = Quaternion.Slerp(transform.Rotation, transform.TargetRotation, rotT);
@@ -364,19 +382,6 @@ public sealed class WorldSimulation : IDisposable
             var oldAgent = _world.GetAllEntities().FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
             if (oldAgent != null && (oldAgent.RegionHandle != e.RegionHandle || oldAgent.LocalId != e.LocalId))
             {
-                // TEMPORARY diagnostic (2026-07-23, OSGrid sideways-pop live-test round): this
-                // branch drops and recreates the local-agent entity, discarding its Velocity/
-                // TimeSinceUpdate/TargetRotation and, more importantly, re-anchoring rendering to a
-                // DIFFERENT region-origin offset (RenderConfig.ToGodot keys off RegionHandle) --
-                // if this fires without an actual teleport (e.g. a megaregion internally reporting
-                // a different sub-region handle as the avatar crosses what used to be a region
-                // boundary before the regions were merged), the same physical point would render at
-                // a different Godot-space coordinate on either side of the flip, which would look
-                // exactly like a sideways pop. Only expected to legitimately fire right after a real
-                // teleport. Remove once the OSGrid cause is confirmed.
-                System.Console.WriteLine(
-                    $"[AvatarMove] local-agent entity re-anchored: oldRegion={oldAgent.RegionHandle} " +
-                    $"newRegion={e.RegionHandle} oldLocalId={oldAgent.LocalId} newLocalId={e.LocalId}");
                 _world.RemoveEntity(oldAgent.RegionHandle, oldAgent.LocalId);
             }
         }
@@ -391,37 +396,32 @@ public sealed class WorldSimulation : IDisposable
         }
         else
         {
-            // TEMPORARY diagnostic (2026-07-23, OSGrid sideways-pop live-test round): the fixes so
-            // far (server-authoritative Position, the terse-update race, TimeDilation-scaled
-            // extrapolation, Rotation smoothing) didn't fully resolve a sideways pop reported on
-            // OSGrid specifically, while the user's own sim looks smooth. Logs only the LOCAL
-            // agent's noticeable (>0.1m) corrections -- i.e. every time this packet's authoritative
-            // Position lands meaningfully away from where extrapolation had already predicted --
-            // together with the packet gap, dilation, and velocity either side of it, so a live
-            // OSGrid session's console output can show which of those actually correlates with the
-            // pop instead of guessing further. Remove once the OSGrid cause is confirmed.
-            if (e.IsLocalAgent)
+            // TargetPosition is server-authoritative for every avatar, local included — matches the
+            // real viewer (LLAgent::getPositionAgent() mirrors LLVOAvatarSelf's network-driven
+            // position; there is no separate client-predicted position it reconciles against, see
+            // llagent.cpp/llviewerobject.cpp). AvatarController no longer predicts the local agent's
+            // position for this exact reason: two independent authorities (client dead reckoning +
+            // this network echo) fighting every packet was what originally caused the avatar to
+            // visibly pop sideways while walking.
+            //
+            // The RENDERED Position, however, is NOT set directly to e.Position here anymore. Live-
+            // tested console data (2026-07-23, OSGrid) showed 1-2+ second packet gaps recurring
+            // throughout ordinary walking -- a genuine server/network characteristic of a busy sim,
+            // not something extrapolation can hide (there's no data to extrapolate from during a
+            // real gap). ExtrapolateMovement's short phase-out window correctly freezes TargetPosition
+            // rather than drifting in a stale direction during such a gap, but hard-snapping Position
+            // straight to TargetPosition the instant a delayed packet finally lands still reads as a
+            // repeated multi-metre pop -- not an edge case on this kind of connection, a routine
+            // occurrence. Below a "clearly still normal movement" distance, Position instead eases
+            // toward TargetPosition over a few frames (ExtrapolateMovement/PositionSmoothingRate),
+            // turning that catch-up into a quick glide. A genuinely large jump (teleport, sit/stand,
+            // initial spawn) still snaps instantly -- those SHOULD look instant, not smoothed.
+            float targetDelta = Vector3.Distance(transform.TargetPosition, e.Position);
+            if (targetDelta > TeleportSnapDistanceMeters)
             {
-                float correction = Vector3.Distance(transform.Position, e.Position);
-                if (correction > 0.1f)
-                {
-                    System.Console.WriteLine(
-                        $"[AvatarMove] correction={correction:0.###}m packetGap={transform.TimeSinceUpdate:0.###}s " +
-                        $"dilation={e.TimeDilation:0.###} oldVel={transform.Velocity.Length():0.###}m/s " +
-                        $"newVel={e.Velocity.Length():0.###}m/s oldPos={transform.Position} newPos={e.Position}");
-                }
+                transform.Position = e.Position;
             }
-
-            // Server-authoritative for every avatar, local included — matches the real viewer
-            // (LLAgent::getPositionAgent() mirrors LLVOAvatarSelf's network-driven position; there
-            // is no separate client-predicted position it reconciles against, see
-            // llagent.cpp/llviewerobject.cpp). AvatarController no longer predicts the local
-            // agent's Position for this exact reason: two independent authorities (client dead
-            // reckoning + this network echo) fighting every packet was what caused the avatar to
-            // visibly pop sideways while walking. Smoothness between packets now comes from
-            // ExtrapolateMovement's velocity dead-reckoning below, not from overwriting this value
-            // conditionally.
-            transform.Position = e.Position;
+            transform.TargetPosition = e.Position;
             // Rotation is NOT set directly here -- see TargetRotation's doc comment. Hard-snapping
             // it every packet (previously: transform.Rotation = e.Rotation) was fine for straight
             // walking but visibly choppy while turning; ExtrapolateMovement slerps Rotation toward

@@ -55,12 +55,30 @@ public class TransformComponent : IComponent
     /// exact match to LLVOAvatar's own turn handling was found/verified in the vendored source).</summary>
     public Quaternion TargetRotation { get; set; }
 
+    /// <summary>Avatars only. The latest network-authoritative position, advanced by
+    /// ExtrapolateMovement's velocity dead-reckoning between packets -- i.e. exactly what Position
+    /// used to be set to directly. On a real OSGrid live-test capture, packet gaps of 1-2+ seconds
+    /// turned out to recur constantly during ordinary walking (a genuine server/network
+    /// characteristic of a busy sim, not a bug: nothing client-side can make missing data not
+    /// missing). ExtrapolateMovement's short phase-out window correctly freezes Position rather
+    /// than drifting in a stale direction during such a gap, but the moment a delayed packet
+    /// finally lands, TargetPosition jumps by however far the real avatar moved in that gap (up to
+    /// several metres) -- and hard-snapping the RENDERED Position straight there every time reads
+    /// as a repeated pop/rubber-band during normal movement on this kind of connection, not just an
+    /// edge case. Position now eases toward TargetPosition instead (see
+    /// ExtrapolateMovement/PositionSmoothingRate), turning that catch-up into a quick glide.
+    /// Genuinely discontinuous moves (teleport, sit/stand, initial spawn) still snap instantly --
+    /// see ApplyAvatarUpdate's TeleportSnapDistance guard -- since those SHOULD look instant, not
+    /// smoothed.</summary>
+    public Vector3 TargetPosition { get; set; }
+
     public TransformComponent()
     {
         Position = Vector3.Zero;
         Rotation = Quaternion.Identity;
         LocalRotation = Quaternion.Identity;
         TargetRotation = Quaternion.Identity;
+        TargetPosition = Vector3.Zero;
     }
 
     public TransformComponent(Vector3 position, Quaternion rotation)
@@ -70,5 +88,6 @@ public class TransformComponent : IComponent
         LocalPosition = position;
         LocalRotation = rotation;
         TargetRotation = rotation;
+        TargetPosition = position;
     }
 }
