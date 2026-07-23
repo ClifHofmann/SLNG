@@ -548,17 +548,30 @@ public partial class ObjectRenderer : Node3D
             return;
         }
 
-        var allUsed = new List<Guid>();
+        var faceTasks = new List<System.Threading.Tasks.Task<(int Surface, StandardMaterial3D Material, List<Guid> Used)>>();
+
         for (int surface = 0; surface < faceIndices.Length; surface++)
         {
             int faceIdx = faceIndices[surface];
             FaceTexture ft = (prim.Faces != null && faceIdx >= 0 && faceIdx < prim.Faces.Length)
                 ? prim.Faces[faceIdx] : defaultFace;
 
-            var (material, used) = await BuildFaceMaterialAsync(ft);
-            allUsed.AddRange(used);
-
             int surf = surface; // capture
+            faceTasks.Add(BuildFaceMaterialAsync(ft).ContinueWith(t => 
+            {
+                return (surf, t.Result.Material, t.Result.Used);
+            }, System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously));
+        }
+
+        var results = await System.Threading.Tasks.Task.WhenAll(faceTasks);
+        var allUsed = new List<Guid>();
+
+        foreach (var result in results)
+        {
+            allUsed.AddRange(result.Used);
+            int surf = result.Surface;
+            var material = result.Material;
+
             Godot.Callable.From(() =>
             {
                 if (!IsInstanceValid(state.MeshInstance) || state.MeshInstance.Mesh == null) return;

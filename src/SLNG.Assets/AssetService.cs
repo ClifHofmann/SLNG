@@ -539,6 +539,7 @@ public class AssetService
                     settings.Format = ImageMagick.MagickFormat.J2c;
                 }
                 using var image = new ImageMagick.MagickImage(bytes, settings);
+                image.Warning += (s, e) => { /* Suppress Magick.NET console spam */ };
                 
                 int width = (int)image.Width;
                 int height = (int)image.Height;
