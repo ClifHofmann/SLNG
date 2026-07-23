@@ -10,6 +10,18 @@ jobs:
   build-and-release:
     runs-on: windows-latest
 
+    # chickensoft-games/setup-godot's own README example uses `shell: bash` on ALL platforms,
+    # Windows included -- this script was written in bash syntax throughout (mkdir -p, forward-
+    # slash paths) but had no `shell:` set, so it ran under pwsh (GitHub's Windows default)
+    # instead. That's the confirmed root cause of a live failure where "Export Godot App"
+    # completed in <1s with zero Godot output and no visible error: `godot` wasn't actually
+    # invoked as expected under pwsh, even though `mkdir -p` was silently tolerated enough to
+    # not hard-fail the step. Matching the action's own tested/documented shell avoids relying
+    # on undocumented pwsh compatibility for a bash-authored script.
+    defaults:
+      run:
+        shell: bash
+
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
@@ -35,17 +47,21 @@ jobs:
         # original value) is a different major version with real API-compatibility risk.
         version: 4.7.0
         use-dotnet: true
+        # Export templates are required for `--export-release` to produce anything; the
+        # action's own README example doesn't set this because it never actually exports (only
+        # --build-solutions for C# binding generation), but we do.
+        include-templates: true
 
     - name: Export Godot App
       run: |
         mkdir -p build/windows
         # NOTE: Ensure you have an export preset named "Windows Desktop" in Godot.
-        # Absolute output path via github.workspace -- the previous relative
-        # "../build/windows/..." path was ambiguous (resolved against the shell's CWD, repo
-        # root, not against --path app the way it does when you cd into app/ first, which is
-        # how this was verified locally) and put the exported .exe one level ABOVE the repo
-        # checkout instead of inside it, which the next step's relative Source: path in
-        # PurisViewer.iss then couldn't find ("live" failure: exit code 1, "does not exist").
+        # Absolute output path via github.workspace -- a prior relative "../build/windows/..."
+        # path was ambiguous (resolved against the shell's CWD, repo root, not against --path
+        # app the way it does when you cd into app/ first, which is how this was verified
+        # locally) and put the exported .exe one level ABOVE the repo checkout instead of
+        # inside it, which the next step's relative Source: path in PurisViewer.iss then
+        # couldn't find.
         godot --headless --path app --export-release "Windows Desktop" "${{ github.workspace }}/build/windows/PurisViewer.exe"
 
     - name: Install Inno Setup
@@ -57,7 +73,7 @@ jobs:
       run: choco install innosetup -y --no-progress
 
     - name: Compile Inno Setup Installer
-      run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\PurisViewer.iss'
+      run: '"/c/Program Files (x86)/Inno Setup 6/ISCC.exe" installer/PurisViewer.iss'
 
     - name: Upload Release
       uses: softprops/action-gh-release@v2
