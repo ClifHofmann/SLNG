@@ -110,6 +110,7 @@ public partial class InventoryPanel : SLNGWindow
         _tree.AddChild(_contextMenu);
         
         _tree.ItemCollapsed += OnItemCollapsed;
+        _tree.ItemActivated += OnItemActivated;
         _tree.GuiInput += OnTreeGuiInput;
         vbox.AddChild(_tree);
     }
@@ -393,18 +394,7 @@ public partial class InventoryPanel : SLNGWindow
         else if (id == 5) // Teleport (landmark items only -- context menu already disables this otherwise)
         {
             if (isFolder) return;
-
-            var parts = metaStr.Split(',');
-            if (parts.Length != 7 || !Guid.TryParse(parts[5], out var assetId)) return;
-
-            var parentItem = item.GetParent();
-            Guid? parentFolderId = null;
-            var parentMetaStr = parentItem?.GetMetadata(0).AsString() ?? "";
-            var parentIdStr = parentMetaStr.Contains(',') ? parentMetaStr.Split(',')[0] : parentMetaStr;
-            if (Guid.TryParse(parentIdStr, out var pid)) parentFolderId = pid;
-
-            _status.Text = "Teleporting…";
-            _ = TeleportAsync(itemId, assetId, parentFolderId);
+            TryTeleportFromItem(item);
         }
         else if (id == 0) // Wear / Attach
         {
@@ -418,6 +408,42 @@ public partial class InventoryPanel : SLNGWindow
             var parts = metaStr.Split(',');
             _ = DetachAndRefreshAsync(itemId, parts);
         }
+    }
+
+    /// <summary>Double-click activation on a Tree row -- teleports immediately if it's a landmark,
+    /// otherwise no-ops (folders/other item types have no default double-click action yet).</summary>
+    private void OnItemActivated()
+    {
+        var item = _tree.GetSelected();
+        if (item == null || _session == null) return;
+        TryTeleportFromItem(item);
+    }
+
+    /// <summary>Parses a row's metadata and starts teleporting if it's a (non-link) landmark --
+    /// shared by the context menu's Teleport action and double-click activation. Metadata layout:
+    /// Id,CanCopy,CanModify,CanTransfer,AssetType,AssetId,IsLink,LinkTargetId (see Populate).
+    /// Uses "at least 7" rather than an exact count so adding further trailing fields later
+    /// doesn't silently re-break this the way LinkTargetId's addition did (parts.Length != 7).</summary>
+    private void TryTeleportFromItem(TreeItem item)
+    {
+        var metaStr = item.GetMetadata(0).AsString();
+        if (!metaStr.Contains(',')) return; // folder row -- metadata is just the folder id
+
+        var parts = metaStr.Split(',');
+        if (parts.Length < 7) return;
+        if (!Guid.TryParse(parts[0], out var itemId)) return;
+        if (!int.TryParse(parts[4], out var assetType) || assetType != SLNG.Core.AssetTypeIds.Landmark) return;
+        if (!bool.TryParse(parts[6], out var isLink) || isLink) return;
+        if (!Guid.TryParse(parts[5], out var assetId)) return;
+
+        var parentItem = item.GetParent();
+        Guid? parentFolderId = null;
+        var parentMetaStr = parentItem?.GetMetadata(0).AsString() ?? "";
+        var parentIdStr = parentMetaStr.Contains(',') ? parentMetaStr.Split(',')[0] : parentMetaStr;
+        if (Guid.TryParse(parentIdStr, out var pid)) parentFolderId = pid;
+
+        _status.Text = "Teleporting…";
+        _ = TeleportAsync(itemId, assetId, parentFolderId);
     }
 
     private async System.Threading.Tasks.Task AttachAndRefreshAsync(Guid itemId, string[] parts)
@@ -577,9 +603,23 @@ public partial class InventoryPanel : SLNGWindow
         {
             if (entry.IsFolder) continue;
             var row = _tree.CreateItem(item);
+
+            // See RefreshFolder's doc comment: a just-created item's own known-good asset id
+            // (from the create response, not this fetch) wins over whatever this listing reports.
+            // Live-tested proof the lag isn't limited to asset_id: a landmark refreshed right
+            // after creation came back with AssetType == 0 (not 3/Landmark) too, from the exact
+            // same indexing-lag fetch -- so AssetType gets the same known-good override here,
+            // hardcoded to Landmark since that's the only case this override path is used for.
+            bool isKnownItem = entry.Id == knownItemId && knownAssetId.HasValue;
+            bool isLandmarkSubtree = _session != null && _session.IsInLandmarksSubtree(entry.ParentId);
+            var assetId = isKnownItem ? knownAssetId!.Value : entry.AssetId;
+            int assetType = (isKnownItem || isLandmarkSubtree) ? SLNG.Core.AssetTypeIds.Landmark : entry.AssetType;
+
             // Links (Current Outfit etc.) point at another inventory item — mark them so an
-            // apparently duplicated item is readable as the link it is.
+            // apparently duplicated item is readable as the link it is. Landmarks get a globe
+            // prefix so they're recognizable in the tree without opening the context menu.
             string text = entry.IsLink ? entry.Name + "  ⇢" : entry.Name;
+            if (assetType == SLNG.Core.AssetTypeIds.Landmark) text = "🌐 " + text;
             text += entry.GetPermissionSuffix();
 
             bool isWorn = wornMap.TryGetValue(entry.Id, out var loc) || (entry.IsLink && wornMap.TryGetValue(entry.LinkTargetId, out loc));
@@ -600,16 +640,6 @@ public partial class InventoryPanel : SLNGWindow
             }
 
             row.SetText(0, text);
-            // See RefreshFolder's doc comment: a just-created item's own known-good asset id
-            // (from the create response, not this fetch) wins over whatever this listing reports.
-            // Live-tested proof the lag isn't limited to asset_id: a landmark refreshed right
-            // after creation came back with AssetType == 0 (not 3/Landmark) too, from the exact
-            // same indexing-lag fetch -- so AssetType gets the same known-good override here,
-            // hardcoded to Landmark since that's the only case this override path is used for.
-            bool isKnownItem = entry.Id == knownItemId && knownAssetId.HasValue;
-            bool isLandmarkSubtree = _session != null && _session.IsInLandmarksSubtree(entry.ParentId);
-            var assetId = isKnownItem ? knownAssetId!.Value : entry.AssetId;
-            int assetType = (isKnownItem || isLandmarkSubtree) ? SLNG.Core.AssetTypeIds.Landmark : entry.AssetType;
             row.SetMetadata(0, $"{entry.Id},{entry.CanCopy},{entry.CanModify},{entry.CanTransfer},{assetType},{assetId},{entry.IsLink},{entry.LinkTargetId}");
         }
 
