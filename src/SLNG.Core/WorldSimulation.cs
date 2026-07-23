@@ -151,8 +151,15 @@ public sealed class WorldSimulation : IDisposable
             float posT = 1f - MathF.Exp(-PositionSmoothingRate * deltaSeconds);
             transform.Position = Vector3.Lerp(transform.Position, transform.TargetPosition, posT);
 
-            float rotT = 1f - MathF.Exp(-RotationSmoothingRate * deltaSeconds);
-            transform.Rotation = Quaternion.Slerp(transform.Rotation, transform.TargetRotation, rotT);
+            // The local agent's Rotation is entirely owned by AvatarController (the player's own
+            // camera yaw, written directly every 100ms) -- see ApplyAvatarUpdate's matching guard
+            // on TargetRotation. Slerping it here too would fight those writes every frame.
+            bool isLocalAgent = entity.GetComponent<AvatarComponent>()?.IsLocalAgent == true;
+            if (!isLocalAgent)
+            {
+                float rotT = 1f - MathF.Exp(-RotationSmoothingRate * deltaSeconds);
+                transform.Rotation = Quaternion.Slerp(transform.Rotation, transform.TargetRotation, rotT);
+            }
 
             _world.NotifyComponentUpdated(entity, transform);
         }
@@ -462,8 +469,20 @@ public sealed class WorldSimulation : IDisposable
             // Rotation is NOT set directly here -- see TargetRotation's doc comment. Hard-snapping
             // it every packet (previously: transform.Rotation = e.Rotation) was fine for straight
             // walking but visibly choppy while turning; ExtrapolateMovement slerps Rotation toward
-            // TargetRotation every frame instead.
-            transform.TargetRotation = e.Rotation;
+            // TargetRotation every frame instead. EXCEPT for the local agent: AvatarController
+            // already hard-writes transform.Rotation directly, every 100ms, from the player's own
+            // camera yaw (instant local input, not something that should wait on/blend with a
+            // network round-trip -- same reasoning as local Z above). Feeding the network's echo of
+            // our own previously-sent rotation into TargetRotation too made THAT fight
+            // AvatarController's fresh writes every frame: slerp pulls toward a latency-delayed
+            // echo of an older yaw for up to 100ms, then AvatarController snaps to the current yaw,
+            // repeat -- a sawtooth on every single frame, not just at packet-arrival moments,
+            // regardless of turning. Remote avatars have no local camera input, so they keep the
+            // full network-driven TargetRotation/slerp path.
+            if (!e.IsLocalAgent)
+            {
+                transform.TargetRotation = e.Rotation;
+            }
             entity.SetComponent(transform);
         }
         transform.Velocity = e.Velocity;

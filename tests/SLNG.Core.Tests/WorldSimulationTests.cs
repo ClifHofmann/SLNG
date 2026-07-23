@@ -513,22 +513,24 @@ public class WorldSimulationTests
         Assert.Equal(targetPositionAfterCutoff, transform.TargetPosition);
     }
 
-    /// <summary>Regression test: turning must not hard-snap. Reported symptom -- once Position's
-    /// own judder was fixed, turning was still visibly choppy while straight-line walking looked
-    /// smooth. Root cause: ApplyAvatarUpdate used to write straight into Rotation on every packet;
-    /// unlike Position there's no reliable AngularVelocity to dead-reckon a turning avatar from
-    /// (SL's wire AngularVelocity is for llSetTargetOmega-spun objects), so Rotation only ever
-    /// changed in discrete per-packet jumps. Fixed by routing network rotation through
-    /// TargetRotation and slerping Rotation toward it every frame instead.</summary>
+    /// <summary>Regression test (REMOTE avatar -- the local agent's Rotation is excluded from this
+    /// system entirely, see the local-agent test below): turning must not hard-snap. Reported
+    /// symptom -- once Position's own judder was fixed, turning was still visibly choppy while
+    /// straight-line walking looked smooth. Root cause: ApplyAvatarUpdate used to write straight
+    /// into Rotation on every packet; unlike Position there's no reliable AngularVelocity to dead-
+    /// reckon a turning avatar from (SL's wire AngularVelocity is for llSetTargetOmega-spun
+    /// objects), so Rotation only ever changed in discrete per-packet jumps. Fixed by routing
+    /// network rotation through TargetRotation and slerping Rotation toward it every frame
+    /// instead.</summary>
     [Fact]
-    public void AvatarUpdateEvent_RotationDoesNotSnap_SmoothsTowardTarget()
+    public void AvatarUpdateEvent_RemoteAgent_RotationDoesNotSnap_SmoothsTowardTarget()
     {
         var world = new World();
         using var session = new GridSession();
         using var simulation = new WorldSimulation(world, session);
 
         var agentId = Guid.NewGuid();
-        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true));
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Remote", "Agent", false));
         simulation.Pump();
 
         var entity = world.GetEntity(123ul, 42);
@@ -537,7 +539,7 @@ public class WorldSimulationTests
 
         // Avatar turns 90 degrees around Z (SL up-axis pre-conversion doesn't matter for this test).
         var turned = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f);
-        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, turned, "Local", "Agent", true));
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, turned, "Remote", "Agent", false));
         simulation.Pump();
 
         // Must NOT have snapped straight to the target -- that's the bug being fixed.
@@ -552,5 +554,47 @@ public class WorldSimulationTests
         // Enough elapsed time (well past the ~0.36s to-95% window) converges on the target.
         for (int i = 0; i < 20; i++) simulation.ExtrapolateMovement(0.05f); // 1s total
         Assert.True(Quaternion.Dot(transform.Rotation, turned) > 0.999f);
+    }
+
+    /// <summary>Regression test (round 4 of the OSGrid judder investigation, 2026-07-23):
+    /// AvatarController writes the local agent's Rotation directly every 100ms from the player's
+    /// own camera yaw -- instant local input, not something that should wait on or blend with a
+    /// network round-trip (same reasoning as local Z). Before this fix, ApplyAvatarUpdate/
+    /// ExtrapolateMovement fed the network's echo of our own previously-sent rotation into
+    /// TargetRotation and slerped toward it for the local agent too, fighting AvatarController's
+    /// fresh writes on literally every frame (slerp pulls toward a latency-delayed echo of an
+    /// older yaw, then AvatarController snaps back to the current one 100ms later, repeat) --
+    /// unlike the X/Y position fight this whole investigation mostly addressed, this one wasn't
+    /// gated on packet timing at all, so it never showed any correlation with packet gaps in the
+    /// [AvatarMove] diagnostic despite being live the whole time. This test simulates
+    /// AvatarController's own write (direct field set, exactly what it does) and confirms a
+    /// network echo of a stale rotation afterward neither snaps nor drags Rotation away from it,
+    /// for both ApplyAvatarUpdate alone and after ExtrapolateMovement frames.</summary>
+    [Fact]
+    public void AvatarUpdateEvent_LocalAgent_RotationIsNeverNetworkDriven()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        var transform = entity!.GetComponent<TransformComponent>()!;
+
+        // AvatarController's own direct write of the player's current camera yaw.
+        var localYaw = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f);
+        transform.Rotation = localYaw;
+
+        // A network echo reports our own OLDER rotation, latency-delayed (Identity, from the
+        // initial creation) -- must not pull Rotation away from what AvatarController just set.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+        Assert.Equal(localYaw, transform.Rotation);
+
+        simulation.ExtrapolateMovement(0.1f);
+        Assert.Equal(localYaw, transform.Rotation);
     }
 }
