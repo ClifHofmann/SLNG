@@ -33,10 +33,11 @@ Design reference (HTML/CSS mockup provided by the user, Tailwind-based):
   needs a themed `CheckBox` icon override), teal checkmark, teal border when checked.
 - **Typography:** title "PURIS" — wide letter-spacing (`0.25em`), semibold, white.
   Version string directly under the title, small/uppercase/muted gray, wide tracking.
-- **Logo:** app icon, ~96×96, rounded (`2rem`), drop shadow. **Asset gap:** the
-  mockup references `Puris.ico.png`, which does not exist in the repo yet (only the
-  Godot default `app/icon.svg` is present) — needs to be supplied before this can be
-  fully implemented; flag to the user.
+- **Logo:** app icon, ~96×96, rounded (`2rem`), drop shadow. **Resolved:** `app/icon.svg`
+  IS the Puris logo (teal/blue gradient abstract mark, matches the mockup palette
+  already) — not the Godot default robot icon. No new asset needed; import it as a
+  `Texture2D` (Godot auto-imports `.svg`, already has `app/icon.svg.import`) and
+  render it in a `TextureRect` sized/rounded to match.
 - **Loading view:** replaces the current spinner (`LoadingScreen/VBox/HBox/SpinnerBox`)
   with a circular SVG progress ring (percentage centered inside) next to a 5-line
   step checklist that turns teal + `[✓]` as progress crosses 20/40/60/80/100%
@@ -69,17 +70,15 @@ Design reference (HTML/CSS mockup provided by the user, Tailwind-based):
   drives `LogPanel`/`ProgressLabel`/`SpinnerLabel` text directly — see existing
   `LogMessage` call sites for the stages to map to the 5 mockup steps).
 - New theme resource(s) under `app/` (e.g. `app/theme/puris_login_theme.tres`) for the
-  `StyleBoxFlat` glass-panel look, since Godot can't apply CSS `backdrop-filter`
-  directly — closest equivalent is a semi-transparent `StyleBoxFlat` + a blurred
-  background via a `BackBufferCopy`/shader, or accept a flat semi-transparent panel
-  without true blur (needs a design call, see Open Questions).
-- New logo asset (`Puris.ico.png` or a Godot-native equivalent, e.g. `.svg`/`.png`
-  imported as a `Texture2D`) — **not yet provided by the user**.
+  `StyleBoxFlat` glass-panel look. **Resolved:** no real backdrop blur — a
+  `SubViewport`/`BackBufferCopy`/shader blur isn't worth the complexity for a screen
+  shown briefly at boot; a flat semi-transparent `StyleBoxFlat` (dark navy fill,
+  ~55% alpha, 1px pale border, soft shadow) approximates the look closely enough.
+- `app/icon.svg` reused directly as the login logo — no new asset needed.
 
 ## Sub-tasks / Progress
-- [ ] Get the actual logo asset (`Puris.ico.png` or source) from the user.
-- [ ] Decide on the blur approach for the glass panel (see Open Questions) — actual
-      backdrop blur vs. a flat translucent panel.
+- [x] Logo asset resolved — reuse `app/icon.svg`.
+- [x] Blur approach resolved — flat translucent `StyleBoxFlat`, no real backdrop blur.
 - [ ] Build a `Theme`/`StyleBoxFlat` resource for the dark-navy/teal palette.
 - [ ] Reskin `LoginScreen/Panel` and its child controls.
 - [ ] Replace the loading-screen spinner with a circular progress ring + step
@@ -87,15 +86,13 @@ Design reference (HTML/CSS mockup provided by the user, Tailwind-based):
 - [ ] Verify in the dev client (`tools/run-client.ps1`), both login and loading states.
 
 ## Open Questions
-- Real `backdrop-filter: blur()` has no direct Godot `Control` equivalent — worth the
-  shader/`BackBufferCopy` complexity, or is a flat translucent `StyleBoxFlat` panel
-  (no blur) an acceptable simplification for v1?
 - Does "Second Life Next Generation" stay as the loading-screen tagline, or is that
   mockup placeholder text?
 - Background image: mockup uses a stock Unsplash tech photo — final choice needed, or
   keep the current `Background` `TextureRect` and only recolor the gradient overlay?
+  (Default: keep the current background, only apply the teal/blue gradient overlay,
+  to avoid a licensing question over the stock photo.)
 
 ## Status
-Preparation only (per explicit user instruction) — spec + design-token extraction
-done on this branch. Not implemented yet; the user wants to first confirm the
-v0.3.2 release build (pill-avatar fix) works before any further branch work lands.
+v0.3.2 release build confirmed working — implementation unblocked, in progress on
+this branch.
