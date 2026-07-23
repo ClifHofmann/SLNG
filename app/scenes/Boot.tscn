@@ -1,29 +1,41 @@
-[gd_scene load_steps=7 format=3 uid="uid://c8slng0bootui1"]
+[gd_scene load_steps=11 format=3 uid="uid://c8slng0bootui1"]
 
 [ext_resource type="Script" path="res://scripts/Boot.cs" id="1_script"]
 [ext_resource type="Texture2D" uid="uid://chnuxygx7if40" path="res://assets/images/boot_bg.jpg" id="2_bg"]
+[ext_resource type="Texture2D" uid="uid://dnu2pje24pms8" path="res://icon.svg" id="3_logo"]
+
+[sub_resource type="Gradient" id="Gradient_overlay"]
+offsets = PackedFloat32Array(0, 1)
+colors = PackedColorArray(0.0588235, 0.462745, 0.431373, 0.6, 0.117647, 0.227451, 0.541176, 0.8)
+
+[sub_resource type="GradientTexture2D" id="GradientTexture2D_overlay"]
+gradient = SubResource("Gradient_overlay")
+width = 512
+height = 512
+fill_from = Vector2(0, 0)
+fill_to = Vector2(1, 1)
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_glass"]
+bg_color = Color(0.0588235, 0.0901961, 0.164706, 0.55)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(1, 1, 1, 0.08)
+corner_radius_top_left = 16
+corner_radius_top_right = 16
+corner_radius_bottom_right = 16
+corner_radius_bottom_left = 16
+shadow_color = Color(0, 0, 0, 0.6)
+shadow_size = 40
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_input"]
 bg_color = Color(0, 0, 0, 0.5)
 border_width_left = 1
 border_width_top = 1
 border_width_right = 1
 border_width_bottom = 1
-border_color = Color(1, 1, 1, 0.1)
-corner_radius_top_left = 16
-corner_radius_top_right = 16
-corner_radius_bottom_right = 16
-corner_radius_bottom_left = 16
-shadow_color = Color(0, 0, 0, 0.5)
-shadow_size = 30
-
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_input"]
-bg_color = Color(1, 1, 1, 0.05)
-border_width_left = 1
-border_width_top = 1
-border_width_right = 1
-border_width_bottom = 1
-border_color = Color(1, 1, 1, 0.1)
+border_color = Color(0.580392, 0.639216, 0.721569, 0.15)
 corner_radius_top_left = 8
 corner_radius_top_right = 8
 corner_radius_bottom_right = 8
@@ -33,8 +45,26 @@ content_margin_top = 10
 content_margin_right = 12
 content_margin_bottom = 10
 
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_input_focus"]
+bg_color = Color(0, 0, 0, 0.7)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.0509804, 0.580392, 0.533333, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+content_margin_left = 12
+content_margin_top = 10
+content_margin_right = 12
+content_margin_bottom = 10
+shadow_color = Color(0.0509804, 0.580392, 0.533333, 0.3)
+shadow_size = 4
+
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_button"]
-bg_color = Color(0.1, 0.5, 0.8, 1)
+bg_color = Color(0.0313725, 0.496078, 0.582353, 1)
 corner_radius_top_left = 8
 corner_radius_top_right = 8
 corner_radius_bottom_right = 8
@@ -43,11 +73,11 @@ content_margin_left = 20
 content_margin_top = 10
 content_margin_right = 20
 content_margin_bottom = 10
-shadow_color = Color(0.2, 0.7, 1, 0.3)
+shadow_color = Color(0.0509804, 0.580392, 0.533333, 0.4)
 shadow_size = 15
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_button_hover"]
-bg_color = Color(0.15, 0.6, 0.9, 1)
+bg_color = Color(0.054902, 0.596078, 0.65098, 1)
 corner_radius_top_left = 8
 corner_radius_top_right = 8
 corner_radius_bottom_right = 8
@@ -56,7 +86,7 @@ content_margin_left = 20
 content_margin_top = 10
 content_margin_right = 20
 content_margin_bottom = 10
-shadow_color = Color(0.2, 0.7, 1, 0.5)
+shadow_color = Color(0.0509804, 0.580392, 0.533333, 0.6)
 shadow_size = 25
 
 [node name="Boot" type="Control"]
@@ -80,14 +110,16 @@ texture = ExtResource("2_bg")
 expand_mode = 1
 stretch_mode = 6
 
-[node name="Overlay" type="ColorRect" parent="Background"]
+[node name="Overlay" type="TextureRect" parent="Background"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-color = Color(0.02, 0.03, 0.05, 0.7)
+texture = SubResource("GradientTexture2D_overlay")
+expand_mode = 1
+stretch_mode = 0
 
 [node name="LoginScreen" type="CenterContainer" parent="."]
 unique_name_in_owner = true
@@ -114,18 +146,26 @@ theme_override_constants/margin_bottom = 32
 layout_mode = 2
 theme_override_constants/separation = 16
 
+[node name="Logo" type="TextureRect" parent="LoginScreen/Panel/Margin/VBox"]
+custom_minimum_size = Vector2(88, 88)
+layout_mode = 2
+size_flags_horizontal = 4
+texture = ExtResource("3_logo")
+expand_mode = 1
+stretch_mode = 5
+
 [node name="Title" type="Label" parent="LoginScreen/Panel/Margin/VBox"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.4, 0.8, 1, 1)
-theme_override_font_sizes/font_size = 36
-text = "S L N G"
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_font_sizes/font_size = 30
+text = "P U R I S"
 horizontal_alignment = 1
 
 [node name="VersionText" type="Label" parent="LoginScreen/Panel/Margin/VBox"]
 unique_name_in_owner = true
 layout_mode = 2
-theme_override_colors/font_color = Color(0.6, 0.6, 0.6, 1)
-theme_override_font_sizes/font_size = 14
+theme_override_colors/font_color = Color(0.580392, 0.639216, 0.721569, 1)
+theme_override_font_sizes/font_size = 12
 text = "v0.0.0"
 horizontal_alignment = 1
 
@@ -136,7 +176,10 @@ layout_mode = 2
 [node name="ProfileDropdown" type="OptionButton" parent="LoginScreen/Panel/Margin/VBox"]
 unique_name_in_owner = true
 layout_mode = 2
+theme_override_colors/font_color = Color(0.972549, 0.976471, 0.984314, 1)
 theme_override_styles/normal = SubResource("StyleBoxFlat_input")
+theme_override_styles/hover = SubResource("StyleBoxFlat_input")
+theme_override_styles/focus = SubResource("StyleBoxFlat_input_focus")
 tooltip_text = "Select a saved profile"
 
 [node name="GridHBox" type="HBoxContainer" parent="LoginScreen/Panel/Margin/VBox"]
@@ -147,14 +190,20 @@ theme_override_constants/separation = 12
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.972549, 0.976471, 0.984314, 1)
+theme_override_colors/font_placeholder_color = Color(0.580392, 0.639216, 0.721569, 1)
 theme_override_styles/normal = SubResource("StyleBoxFlat_input")
+theme_override_styles/focus = SubResource("StyleBoxFlat_input_focus")
 text = "http://hg.osgrid.org/"
 placeholder_text = "ui.login.grid_url"
 
 [node name="GridDropdown" type="OptionButton" parent="LoginScreen/Panel/Margin/VBox/GridHBox"]
 unique_name_in_owner = true
 layout_mode = 2
+theme_override_colors/font_color = Color(0.972549, 0.976471, 0.984314, 1)
 theme_override_styles/normal = SubResource("StyleBoxFlat_input")
+theme_override_styles/hover = SubResource("StyleBoxFlat_input")
+theme_override_styles/focus = SubResource("StyleBoxFlat_input_focus")
 
 [node name="HBox" type="HBoxContainer" parent="LoginScreen/Panel/Margin/VBox"]
 layout_mode = 2
@@ -164,7 +213,10 @@ theme_override_constants/separation = 12
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.972549, 0.976471, 0.984314, 1)
+theme_override_colors/font_placeholder_color = Color(0.580392, 0.639216, 0.721569, 1)
 theme_override_styles/normal = SubResource("StyleBoxFlat_input")
+theme_override_styles/focus = SubResource("StyleBoxFlat_input_focus")
 text = "Test"
 placeholder_text = "ui.login.first_name"
 
@@ -172,14 +224,20 @@ placeholder_text = "ui.login.first_name"
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.972549, 0.976471, 0.984314, 1)
+theme_override_colors/font_placeholder_color = Color(0.580392, 0.639216, 0.721569, 1)
 theme_override_styles/normal = SubResource("StyleBoxFlat_input")
+theme_override_styles/focus = SubResource("StyleBoxFlat_input_focus")
 text = "User"
 placeholder_text = "ui.login.last_name"
 
 [node name="PassInput" type="LineEdit" parent="LoginScreen/Panel/Margin/VBox"]
 unique_name_in_owner = true
 layout_mode = 2
+theme_override_colors/font_color = Color(0.972549, 0.976471, 0.984314, 1)
+theme_override_colors/font_placeholder_color = Color(0.580392, 0.639216, 0.721569, 1)
 theme_override_styles/normal = SubResource("StyleBoxFlat_input")
+theme_override_styles/focus = SubResource("StyleBoxFlat_input_focus")
 secret = true
 text = "secret"
 placeholder_text = "ui.login.password"
@@ -196,11 +254,14 @@ alignment = 1
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.815686, 0.835294, 0.858824, 1)
+theme_override_colors/font_hover_color = Color(1, 1, 1, 1)
 text = "ui.login.save_login"
 
 [node name="LoginButton" type="Button" parent="LoginScreen/Panel/Margin/VBox/Actions"]
 unique_name_in_owner = true
 layout_mode = 2
+theme_override_colors/font_color = Color(1, 1, 1, 1)
 theme_override_styles/normal = SubResource("StyleBoxFlat_button")
 theme_override_styles/hover = SubResource("StyleBoxFlat_button_hover")
 theme_override_styles/pressed = SubResource("StyleBoxFlat_button")
@@ -225,50 +286,58 @@ layout_mode = 2
 
 [node name="Title" type="Label" parent="LoadingScreen/VBox/TitleBox"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.4, 0.8, 1, 1)
-theme_override_font_sizes/font_size = 64
-text = "S L N G"
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_font_sizes/font_size = 56
+text = "P U R I S"
 horizontal_alignment = 1
 
 [node name="SubTitle" type="Label" parent="LoadingScreen/VBox/TitleBox"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.6, 0.6, 0.6, 1)
-theme_override_font_sizes/font_size = 14
+theme_override_colors/font_color = Color(0.176471, 0.831373, 0.74902, 0.6)
+theme_override_font_sizes/font_size = 12
 text = "SECOND LIFE NEXT GENERATION"
 horizontal_alignment = 1
 
 [node name="LoadingVersionText" type="Label" parent="LoadingScreen/VBox/TitleBox"]
 unique_name_in_owner = true
 layout_mode = 2
-theme_override_colors/font_color = Color(0.4, 0.4, 0.4, 1)
+theme_override_colors/font_color = Color(0.580392, 0.639216, 0.721569, 1)
 theme_override_font_sizes/font_size = 12
 text = "v0.0.0"
 horizontal_alignment = 1
 
 [node name="HBox" type="HBoxContainer" parent="LoadingScreen/VBox"]
 layout_mode = 2
-theme_override_constants/separation = 48
+theme_override_constants/separation = 32
 alignment = 1
 
-[node name="SpinnerBox" type="CenterContainer" parent="LoadingScreen/VBox/HBox"]
-custom_minimum_size = Vector2(160, 160)
-layout_mode = 2
-
-[node name="SpinnerLabel" type="Label" parent="LoadingScreen/VBox/HBox/SpinnerBox"]
+[node name="ProgressRing" type="TextureProgressBar" parent="LoadingScreen/VBox/HBox"]
 unique_name_in_owner = true
+custom_minimum_size = Vector2(96, 96)
 layout_mode = 2
-theme_override_colors/font_color = Color(0.4, 0.8, 1, 1)
-theme_override_font_sizes/font_size = 120
-text = "O"
+size_flags_vertical = 4
+value = 0.0
+fill_mode = 4
+radial_initial_angle = 270.0
+radial_fill_degrees = 360.0
+tint_under = Color(0.32549, 0.360784, 0.427451, 0.5)
+tint_progress = Color(0.176471, 0.831373, 0.74902, 1)
 
-[node name="ProgressLabel" type="Label" parent="LoadingScreen/VBox/HBox/SpinnerBox"]
+[node name="ProgressPercentLabel" type="Label" parent="LoadingScreen/VBox/HBox/ProgressRing"]
 unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.4, 0.8, 1, 1)
-theme_override_font_sizes/font_size = 24
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_colors/font_color = Color(0.176471, 0.831373, 0.74902, 1)
+theme_override_font_sizes/font_size = 20
 text = "0%"
+horizontal_alignment = 1
+vertical_alignment = 1
 
-[node name="TasksBox" type="VBoxContainer" parent="LoadingScreen/VBox/HBox"]
+[node name="StepList" type="VBoxContainer" parent="LoadingScreen/VBox/HBox"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 8
@@ -292,6 +361,8 @@ grow_vertical = 0
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 150)
 layout_mode = 2
+theme_override_colors/default_color = Color(0.580392, 0.639216, 0.721569, 1)
+theme_override_font_sizes/normal_font_size = 13
 scroll_following = true
 
 [node name="VersionLabel" type="Label" parent="."]
@@ -306,6 +377,8 @@ offset_left = -100.0
 offset_top = -26.0
 offset_right = -10.0
 offset_bottom = -10.0
+theme_override_colors/font_color = Color(0.580392, 0.639216, 0.721569, 1)
+theme_override_font_sizes/font_size = 12
 grow_horizontal = 0
 grow_vertical = 0
 text = "v0.0.0"

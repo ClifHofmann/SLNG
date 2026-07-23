@@ -17,6 +17,24 @@ public partial class Boot : Control
     private Button _loginButton = null!;
     private RichTextLabel _logPanel = null!;
 
+    // FEAT-UI-08: circular progress ring + step checklist on the loading screen, driven by
+    // real boot/login stages (see CompleteLoadingStep / OnLoginProgressStage) instead of the
+    // fake setInterval-style animation the original mockup used.
+    private TextureProgressBar _progressRing = null!;
+    private Label _progressPercentLabel = null!;
+    private VBoxContainer _stepList = null!;
+    private Label[] _stepLabels = System.Array.Empty<Label>();
+    private int _completedSteps;
+
+    private static readonly string[] LoadingSteps =
+    {
+        "Initializing session...",
+        "Connecting to login server...",
+        "Authenticating...",
+        "Connecting to region...",
+        "Entering world...",
+    };
+
     private ConfigFile _loginsConfig = new ConfigFile();
     private Godot.Collections.Array<string> _savedProfiles = new();
 
@@ -99,6 +117,43 @@ public partial class Boot : Control
         return manager;
     }
 
+    // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
+    // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
+    // when running from source. An exported build packs the JSON files into the .pck, where
+    // GlobalizePath's result doesn't exist as a real file and LocalizationManager's
+    // System.IO-based loader silently found nothing, leaving every UI string showing its raw
+    // "[key]" fallback (confirmed live on an installed v0.3.2 build). Same failure class as
+    // the avatar skeleton XML fix in AvatarRenderer.cs -- FileAccess reads both loose files
+    // and packed .pck contents uniformly, so it works from source and from an export alike.
+    private static SLNG.Core.Services.LocalizationManager LoadLocalizationManager()
+    {
+        var manager = new SLNG.Core.Services.LocalizationManager();
+        using var dir = DirAccess.Open("res://i18n");
+        if (dir == null)
+        {
+            GD.PrintErr($"[Boot] Failed to open res://i18n: {DirAccess.GetOpenError()}");
+            return manager;
+        }
+
+        dir.ListDirBegin();
+        for (string fileName = dir.GetNext(); fileName != ""; fileName = dir.GetNext())
+        {
+            if (dir.CurrentIsDir() || !fileName.EndsWith(".json")) continue;
+
+            string localeName = fileName.Substring(0, fileName.Length - ".json".Length);
+            using var file = FileAccess.Open($"res://i18n/{fileName}", FileAccess.ModeFlags.Read);
+            if (file == null)
+            {
+                GD.PrintErr($"[Boot] Failed to open res://i18n/{fileName}: {FileAccess.GetOpenError()}");
+                continue;
+            }
+            manager.LoadLocaleFromJson(localeName, file.GetAsText());
+        }
+        dir.ListDirEnd();
+
+        return manager;
+    }
+
     public override void _Ready()
     {
         MouseFilter = MouseFilterEnum.Ignore;
@@ -139,6 +194,12 @@ public partial class Boot : Control
         _saveLoginCheck = GetNode<CheckBox>("%SaveLoginCheck");
         _loginButton = GetNode<Button>("%LoginButton");
         _logPanel = GetNode<RichTextLabel>("%LogPanel");
+
+        _progressRing = GetNode<TextureProgressBar>("%ProgressRing");
+        _progressPercentLabel = GetNode<Label>("%ProgressPercentLabel");
+        _stepList = GetNode<VBoxContainer>("%StepList");
+        BuildLoadingSteps();
+        _ = SetupThemedIconsAsync();
 
         var versionLabel = GetNodeOrNull<Label>("%VersionLabel");
         if (versionLabel != null) versionLabel.Text = AppVersion;
@@ -693,70 +754,191 @@ public partial class Boot : Control
         }
     }
 
-    private async System.Threading.Tasks.Task SimulateLoadingAnimation()
+    /// <summary>Rasterizes the login screen's circular progress ring and the "Save Login"
+    /// checkbox's checked/unchecked glyphs from the same Material Symbols icon font already used
+    /// by ButtonBar/CameraHUD/CursorManager elsewhere in the app, instead of hand-authoring new
+    /// image assets (FEAT-UI-08) -- same off-screen-SubViewport-then-GetImage technique as
+    /// CursorManager.SetupMagnifierCursorAsync, needed because TextureProgressBar/CheckBox icon
+    /// slots take an actual Texture2D, not a font glyph directly.</summary>
+    private async System.Threading.Tasks.Task SetupThemedIconsAsync()
     {
-        GetNode<Control>("%LoginScreen").Visible = false;
-        var loadingScreen = GetNode<Control>("%LoadingScreen");
-        loadingScreen.Visible = true;
-        
-        var spinnerLabel = GetNode<Label>("%SpinnerLabel");
-        var progressLabel = GetNode<Label>("%ProgressLabel");
-        var tasksBox = GetNode<VBoxContainer>("%TasksBox");
-        
-        string[] tasks = {
-            "Stelle Grid-Verbindung her...",
-            "Lade Welt-Assets herunter...",
-            "Initialisiere Physik-Engine...",
-            "Synchronisiere Profildaten...",
-            "Optimiere visuelle Darstellung..."
-        };
-        
-        // Clear tasksBox and add new labels
-        foreach (Node child in tasksBox.GetChildren()) child.QueueFree();
-        var taskLabels = new System.Collections.Generic.List<Label>();
-        foreach (var t in tasks)
+        var iconFont = GD.Load<Font>("res://assets/fonts/MaterialSymbolsOutlined.ttf");
+
+        // One white ring, reused for both the ring's "track" and "progress" layers -- their
+        // distinct colors come from TextureProgressBar's own TintUnder/TintProgress (set in
+        // Boot.tscn) rather than baking two separately-colored textures.
+        var ring = await RasterizeIconGlyphAsync(iconFont, "radio_button_unchecked", 128, Colors.White);
+        if (ring != null)
         {
-            var lbl = new Label { Text = t + " [-]", Modulate = new Color(0.5f, 0.5f, 0.5f) };
-            lbl.AddThemeFontSizeOverride("font_size", 14);
-            tasksBox.AddChild(lbl);
-            taskLabels.Add(lbl);
+            _progressRing.TextureUnder = ring;
+            _progressRing.TextureProgress = ring;
         }
-        
-        int totalMs = 3000;
-        int steps = 60;
-        int interval = totalMs / steps;
-        
-        for (int i = 0; i <= steps; i++)
+
+        var checkedIcon = await RasterizeIconGlyphAsync(iconFont, "check_box", 20, StepColorDone);
+        if (checkedIcon != null) _saveLoginCheck.AddThemeIconOverride("checked", checkedIcon);
+
+        var uncheckedIcon = await RasterizeIconGlyphAsync(iconFont, "check_box_outline_blank", 20, StepColorPending);
+        if (uncheckedIcon != null) _saveLoginCheck.AddThemeIconOverride("unchecked", uncheckedIcon);
+    }
+
+    private async System.Threading.Tasks.Task<ImageTexture?> RasterizeIconGlyphAsync(Font iconFont, string glyphName, int size, Color color)
+    {
+        var subViewport = new SubViewport
         {
-            float progress = (float)i / steps;
-            progressLabel.Text = $"{Mathf.FloorToInt(progress * 100)}%";
-            
-            spinnerLabel.PivotOffset = spinnerLabel.Size / 2;
-            spinnerLabel.RotationDegrees += 15;
-            
-            int currentTaskIndex = Mathf.FloorToInt(progress * tasks.Length);
-            currentTaskIndex = Mathf.Min(currentTaskIndex, tasks.Length - 1);
-            
-            for (int j = 0; j < taskLabels.Count; j++)
+            Size = new Vector2I(size, size),
+            TransparentBg = true,
+            RenderTargetUpdateMode = SubViewport.UpdateMode.Once,
+        };
+        AddChild(subViewport);
+
+        var label = new Label
+        {
+            Text = glyphName,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        label.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        label.AddThemeFontOverride("font", iconFont);
+        label.AddThemeFontSizeOverride("font_size", Mathf.RoundToInt(size * 0.85f));
+        label.AddThemeColorOverride("font_color", color);
+        subViewport.AddChild(label);
+
+        // Same two-frame wait as CursorManager.SetupMagnifierCursorAsync -- the SubViewport
+        // needs a render pass to actually rasterize the label before GetImage() has content.
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+
+        ImageTexture? result = null;
+        var viewportTexture = subViewport.GetTexture();
+        var image = viewportTexture?.GetImage();
+        if (image != null)
+        {
+            result = ImageTexture.CreateFromImage(image);
+            image.Dispose();
+        }
+        viewportTexture?.Dispose();
+        subViewport.QueueFree();
+
+        return result;
+    }
+
+    private static readonly Color StepColorDone = new(0.176f, 0.831f, 0.749f);
+    private static readonly Color StepColorActive = new(0.925f, 0.937f, 0.953f);
+    private static readonly Color StepColorPending = new(0.5f, 0.55f, 0.62f);
+    private static readonly Color StepColorFailed = new(0.937f, 0.267f, 0.267f);
+
+    /// <summary>(Re)builds the step-checklist Labels under %StepList, one per <see
+    /// cref="LoadingSteps"/> entry. Called once from _Ready and again by <see
+    /// cref="ResetLoadingProgress"/> at the start of every login attempt.</summary>
+    private void BuildLoadingSteps()
+    {
+        foreach (Node child in _stepList.GetChildren()) child.QueueFree();
+
+        _stepLabels = new Label[LoadingSteps.Length];
+        for (int i = 0; i < LoadingSteps.Length; i++)
+        {
+            var lbl = new Label { Text = LoadingSteps[i] + "  [ ]" };
+            lbl.AddThemeFontSizeOverride("font_size", 13);
+            lbl.AddThemeColorOverride("font_color", StepColorPending);
+            _stepList.AddChild(lbl);
+            _stepLabels[i] = lbl;
+        }
+    }
+
+    /// <summary>Resets the loading screen's progress ring + checklist to their initial (0%,
+    /// all-pending) state at the start of a new login attempt.</summary>
+    private void ResetLoadingProgress()
+    {
+        _completedSteps = 0;
+        _progressRing.Value = 0;
+        _progressPercentLabel.Text = "0%";
+        BuildLoadingSteps();
+    }
+
+    /// <summary>Marks every step up to and including <paramref name="index"/> complete and
+    /// advances the progress ring to match -- driven by real boot/login milestones actually
+    /// finishing (see call sites in OnLoginPressed / ApplyLoginStage), never by elapsed time.
+    /// Monotonic and idempotent: a stage that fires out of order or repeats (e.g. LibreMetaverse
+    /// not raising every intermediate LoginStage on every grid) can't move the checklist
+    /// backwards or re-trigger an already-completed step.</summary>
+    private void CompleteLoadingStep(int index)
+    {
+        if (index < 0 || index >= _stepLabels.Length) return;
+        if (index + 1 <= _completedSteps) return;
+
+        _completedSteps = index + 1;
+        for (int i = 0; i < _stepLabels.Length; i++)
+        {
+            if (i < _completedSteps)
             {
-                if (j < currentTaskIndex)
-                {
-                    taskLabels[j].Text = tasks[j] + " [✓]";
-                    taskLabels[j].Modulate = new Color(0.4f, 1f, 0.4f);
-                }
-                else if (j == currentTaskIndex)
-                {
-                    taskLabels[j].Text = tasks[j] + " [...]";
-                    taskLabels[j].Modulate = new Color(0.4f, 0.8f, 1f);
-                }
-                else
-                {
-                    taskLabels[j].Text = tasks[j] + " [-]";
-                    taskLabels[j].Modulate = new Color(0.5f, 0.5f, 0.5f);
-                }
+                _stepLabels[i].Text = LoadingSteps[i] + "  [x]";
+                _stepLabels[i].AddThemeColorOverride("font_color", StepColorDone);
             }
-            
-            await ToSignal(GetTree().CreateTimer(interval / 1000f), SceneTreeTimer.SignalName.Timeout);
+            else if (i == _completedSteps)
+            {
+                _stepLabels[i].Text = LoadingSteps[i] + "  [...]";
+                _stepLabels[i].AddThemeColorOverride("font_color", StepColorActive);
+            }
+            else
+            {
+                _stepLabels[i].Text = LoadingSteps[i] + "  [ ]";
+                _stepLabels[i].AddThemeColorOverride("font_color", StepColorPending);
+            }
+        }
+
+        float pct = (float)_completedSteps / _stepLabels.Length * 100f;
+        _progressRing.Value = pct;
+        _progressPercentLabel.Text = $"{Mathf.RoundToInt(pct)}%";
+    }
+
+    /// <summary>Flags the current (first not-yet-completed) step as failed, e.g. on a rejected
+    /// login. Leaves earlier, already-completed steps as they were -- they genuinely did
+    /// complete before the failure.</summary>
+    private void MarkCurrentStepFailed()
+    {
+        if (_completedSteps < 0 || _completedSteps >= _stepLabels.Length) return;
+        _stepLabels[_completedSteps].Text = LoadingSteps[_completedSteps] + "  [!]";
+        _stepLabels[_completedSteps].AddThemeColorOverride("font_color", StepColorFailed);
+    }
+
+    /// <summary>Relays real, server-driven login handshake progress (see
+    /// <see cref="GridSession.LoginProgress"/>) onto the checklist. Fires on whatever thread
+    /// LibreMetaverse raises it on, so marshal to the main thread before touching Controls --
+    /// same pattern as OnChatMessage/OnInstantMessageReceived below.</summary>
+    private void OnLoginProgressStage(object? sender, LoginProgressEvent e)
+    {
+        CallDeferred(nameof(ApplyLoginStage), (int)e.Stage);
+    }
+
+    private void ApplyLoginStage(int stageInt)
+    {
+        switch ((LoginStage)stageInt)
+        {
+            case LoginStage.ConnectingToLogin:
+                CompleteLoadingStep(1);
+                break;
+            case LoginStage.ReadingResponse:
+                CompleteLoadingStep(2);
+                break;
+            case LoginStage.Redirecting:
+                // Only fires when the login server redirects to a different handler -- rare for
+                // OSGrid/local OpenSim, common enough on SL. Not its own checklist row (it would
+                // sit permanently unchecked on the common direct-login path, which reads as
+                // broken rather than accurate) -- treat it as still within the "Connecting to
+                // region" step.
+                break;
+            case LoginStage.ConnectingToSim:
+                CompleteLoadingStep(3);
+                break;
+            case LoginStage.Success:
+                // Step 4 ("Entering world") is completed explicitly once OnLoginPressed finishes
+                // its own post-login setup below -- LoginStage.Success only means the grid's
+                // login handshake itself succeeded, not that the client has finished spinning up
+                // the avatar/camera/world state.
+                break;
+            case LoginStage.Failed:
+                MarkCurrentStepFailed();
+                break;
         }
     }
 
@@ -764,6 +946,10 @@ public partial class Boot : Control
     {
         _loginButton.Disabled = true;
         LogMessage($"Connecting to {_gridInput.Text} as {_firstInput.Text} {_lastInput.Text}...");
+
+        ResetLoadingProgress();
+        GetNode<Control>("%LoginScreen").Visible = false;
+        GetNode<Control>("%LoadingScreen").Visible = true;
 
         if (_session != null)
         {
@@ -807,6 +993,10 @@ public partial class Boot : Control
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.InstantMessageReceived += OnInstantMessageReceived;
+        // Real server-driven login handshake progress (FEAT-UI-08) -- subscribed before
+        // LoginAsync below so the initial ConnectingToLogin/ReadingResponse/ConnectingToSim
+        // stages of THIS attempt are caught, not just a later re-login's.
+        _session.LoginProgress += OnLoginProgressStage;
         // Surfaces sim-side rejections that otherwise fail silently, e.g. "Object physics
         // cancelled because it exceeds limits for physical prims" when a Physical toggle is denied.
         _session.AlertMessageReceived += (s, e) => CallDeferred(MethodName.LogMessage, $"[color=orange][Alert] {e.Message}[/color]");
@@ -832,11 +1022,12 @@ public partial class Boot : Control
             Password = _passInput.Text
         };
 
-        var animTask = SimulateLoadingAnimation();
+        // Step 0 ("Initializing session") is genuinely done now -- everything above this line
+        // (World/GridSession/WorldSimulation/AssetService/GpuCache, renderer Initialize calls)
+        // already ran synchronously on the main thread.
+        CompleteLoadingStep(0);
 
         var result = await _session.LoginAsync(creds);
-
-        await animTask;
 
         if (result.Success)
         {
@@ -851,17 +1042,18 @@ public partial class Boot : Control
             _loginsConfig.SetValue("Settings", "last_profile", profileName);
             _loginsConfig.Save("user://logins.cfg");
 
-            LogMessage($"[color=green]Login SUCCESS[/color] - AgentID: {result.AgentId}");
+            LogMessage($"[color=#2dd4bf]Login SUCCESS[/color] - AgentID: {result.AgentId}");
             if (!string.IsNullOrEmpty(result.Message))
             {
                 LogMessage(result.Message);
             }
-            
-            // Hide the loading screen, background, and show the top menu
-            GetNode<Control>("%LoadingScreen").Visible = false;
+
+            // Hide the background and show the top menu. The loading screen itself stays up a
+            // little longer -- through the post-login setup below -- so its final "Entering
+            // world" step actually reflects that setup finishing, not just the login handshake.
             GetNode<Control>("%Background").Visible = false;
             _topMenu.Visible = true;
-            
+
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) hudLayer.Visible = true;
             _chatWindow.Visible = true;
@@ -893,6 +1085,11 @@ public partial class Boot : Control
             }
 
             _avatarController.MakeCurrent();
+
+            // Post-login setup above (avatar controller, selection/cursor, camera) has now
+            // genuinely finished -- the client is actually ready to render the world.
+            CompleteLoadingStep(4);
+            GetNode<Control>("%LoadingScreen").Visible = false;
 
             LogMessage($"[System] Login succeeded! Agent: {result.AgentId}");
         }
