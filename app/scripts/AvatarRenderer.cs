@@ -220,7 +220,7 @@ public partial class AvatarRenderer : Node3D
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
     {
-        GD.Print($"[AvatarRenderer] BUILD MARKER: {BuildMarker}");
+        // GD.Print($"[AvatarRenderer] BUILD MARKER: {BuildMarker}");
         _world = world;
         _assetService = assetService;
         _session = session;
@@ -242,11 +242,11 @@ public partial class AvatarRenderer : Node3D
             }
 
             _avatarSkeleton = AvatarSkeleton.LoadFromXml(file.GetAsText());
-            GD.Print($"[AvatarRenderer] Loaded Bento skeleton: {_avatarSkeleton.Bones.Count} entries");
+            // GD.Print($"[AvatarRenderer] Loaded Bento skeleton: {_avatarSkeleton.Bones.Count} entries");
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[AvatarRenderer] Failed to load skeleton: {ex.Message}. Falling back to capsule.");
+            // GD.PrintErr($"[AvatarRenderer] Failed to load skeleton: {ex.Message}. Falling back to capsule.");
             _avatarSkeleton = null;
         }
 
@@ -366,7 +366,7 @@ public partial class AvatarRenderer : Node3D
                 new Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)>());
 
             var charDir = GetCharacterDir();
-            GD.Print($"[AvatarRenderer] character dir: {charDir}");
+            // GD.Print($"[AvatarRenderer] character dir: {charDir}");
             var bodyData = AvatarBodyMeshService.Load(charDir);
 
             if (bodyData != null)
@@ -678,7 +678,7 @@ public partial class AvatarRenderer : Node3D
                 {
                     var oldIds = visual.LoadedAnimationIds == null ? "(none)" : string.Join(",", visual.LoadedAnimationIds);
                     var newIds = string.Join(",", avatar.ActiveAnimations);
-                    GD.Print($"[AvatarAnim] active set changed: [{oldIds}] -> [{newIds}]");
+                    // GD.Print($"[AvatarAnim] active set changed: [{oldIds}] -> [{newIds}]");
                 }
 
                 visual.LoadedAnimationIds = new List<Guid>(avatar.ActiveAnimations);
@@ -800,14 +800,14 @@ public partial class AvatarRenderer : Node3D
 
         if (godotTexture == null)
         {
-            GD.Print($"[AvatarRenderer] Fetching bake {bakeIndex} (ID: {textureId}) from AssetService...");
+            // GD.Print($"[AvatarRenderer] Fetching bake {bakeIndex} (ID: {textureId}) from AssetService...");
             var textureData = await _assetService.GetTextureAsync(textureId);
             if (textureData == null)
             {
-                GD.Print($"[AvatarRenderer] FAILED to fetch/decode bake {bakeIndex} (ID: {textureId})!");
+                // GD.Print($"[AvatarRenderer] FAILED to fetch/decode bake {bakeIndex} (ID: {textureId})!");
                 return;
             }
-            GD.Print($"[AvatarRenderer] Successfully fetched bake {bakeIndex} (ID: {textureId}), creating Godot image...");
+            // GD.Print($"[AvatarRenderer] Successfully fetched bake {bakeIndex} (ID: {textureId}), creating Godot image...");
 
             var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
             
@@ -825,7 +825,7 @@ public partial class AvatarRenderer : Node3D
                 var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
                 if (image == null)
                 {
-                    GD.Print($"[AvatarRenderer] Image.CreateFromData FAILED for bake {bakeIndex} (ID: {textureId})!");
+                    // GD.Print($"[AvatarRenderer] Image.CreateFromData FAILED for bake {bakeIndex} (ID: {textureId})!");
                     tcs.SetResult(null);
                     return;
                 }
@@ -861,7 +861,7 @@ public partial class AvatarRenderer : Node3D
 
         if (godotTexture == null)
         {
-            GD.Print($"[AvatarRenderer] Final godotTexture was null for bake {bakeIndex} (ID: {textureId})!");
+            // GD.Print($"[AvatarRenderer] Final godotTexture was null for bake {bakeIndex} (ID: {textureId})!");
             return;
         }
 
@@ -890,7 +890,7 @@ public partial class AvatarRenderer : Node3D
                 : visual.Parts.Values.Cast<MeshInstance3D>();
 
             var targetNames = string.Join(", ", targets.Select(m => m.Name));
-            GD.Print($"[AvatarRenderer] Applying bake {bakeIndex} (ID: {textureId}) to meshes: {targetNames}");
+            // GD.Print($"[AvatarRenderer] Applying bake {bakeIndex} (ID: {textureId}) to meshes: {targetNames}");
 
             foreach (var meshInstance in targets)
             {
@@ -2819,7 +2819,7 @@ void fragment() {
     {
         if (_assetService == null) return;
 
-        Logger.Debug($"[AvatarRenderer] Loading {animIds.Count} animation(s): {string.Join(", ", animIds)}");
+        // Logger.Debug($"[AvatarRenderer] Loading {animIds.Count} animation(s): {string.Join(", ", animIds)}");
 
         var loaded = new List<(Guid id, AnimationData data)>();
         foreach (var animId in animIds)
@@ -2830,21 +2830,21 @@ void fragment() {
                 if (data != null)
                 {
                     var jointNames = string.Join(", ", System.Linq.Enumerable.Select(data.Joints, j => j.JointName));
-                    Logger.Debug($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints ({jointNames}), {data.Length:F2}s");
+                    // Logger.Debug($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints ({jointNames}), {data.Length:F2}s");
                     loaded.Add((animId, data));
                 }
                 else
                 {
-                    GD.PrintErr($"[AvatarRenderer] Animation {animId}: fetch returned null (not in grid assets?)");
+                    // GD.PrintErr($"[AvatarRenderer] Animation {animId}: fetch returned null (not in grid assets?)");
                 }
             }
             catch (Exception ex)
             {
-                GD.PrintErr($"[AvatarRenderer] Failed to fetch animation {animId}: {ex.Message}");
+                // GD.PrintErr($"[AvatarRenderer] Failed to fetch animation {animId}: {ex.Message}");
             }
         }
 
-        Logger.Debug($"[AvatarRenderer] Starting {loaded.Count}/{animIds.Count} animation(s)");
+        // Logger.Debug($"[AvatarRenderer] Starting {loaded.Count}/{animIds.Count} animation(s)");
 
         // Apply on main thread via CallDeferred
         Godot.Callable.From(() => {
