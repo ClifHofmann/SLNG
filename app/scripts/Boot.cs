@@ -59,7 +59,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.1.99-alpha";
+    public const string AppVersion = "v0.2.0-alpha";
 
     public override void _Ready()
     {
@@ -474,6 +474,11 @@ public partial class Boot : Control
     {
         // Drain queued world events on the main thread — the only place the world mutates.
         _worldSimulation?.Pump();
+
+        // Dead-reckon avatar positions from their last known velocity between network updates
+        // (mirrors the real viewer's interpolateLinearMotion) — must run after Pump() so this
+        // frame's fresh Position/Velocity/TimeSinceUpdate are already applied before extrapolating.
+        _worldSimulation?.ExtrapolateMovement((float)delta);
 
         // Refresh the position HUD a few times a second (the agent lookup scans entities).
         _hudAccum += delta;

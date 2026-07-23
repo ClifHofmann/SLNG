@@ -343,22 +343,19 @@ public partial class AvatarController : Camera3D
                 // The orbit offset moves the camera around the avatar without turning it.
                 Rotation = new Vector3(_pitch + _orbitPitch, _yaw + _orbitYaw, 0);
 
-                var godotMoveDir = new Vector3();
-                if (isFwd) godotMoveDir += -Transform.Basis.Z;
-                if (isBack) godotMoveDir += Transform.Basis.Z;
-
-                godotMoveDir.Y = 0; // Constrain to Godot's ground plane
-                godotMoveDir = godotMoveDir.Normalized();
-
-                if (godotMoveDir.LengthSquared() > 0)
-                {
-                    float speed = _flying ? 12.0f : 4.0f; // fly faster than walk
-                    float slDx = godotMoveDir.X * speed * (float)delta; // Godot Right (+X) is SL East (+X)
-                    float slDy = -godotMoveDir.Z * speed * (float)delta; // Godot Forward (-Z) is SL North (+Y)
-                    float slDz = godotMoveDir.Y * speed * (float)delta;
-
-                    transform.Position += new System.Numerics.Vector3(slDx, slDy, slDz);
-                }
+                // Horizontal (X/Y) movement is NOT client-predicted here. It used to be (WASD dead
+                // reckoning added directly to transform.Position), but that fought the sim's own
+                // echo of our avatar's position -- which streams continuously while we're
+                // physically moving (see GridSession.OnTerseObjectUpdate) -- every time a packet
+                // landed, popping the avatar sideways mid-stride (worst on a diagonal heading,
+                // where the correction lands on both axes at once instead of just one). The real
+                // viewer doesn't predict its own position either: LLAgent::getPositionAgent()
+                // mirrors LLVOAvatarSelf's network-driven position, and smoothness between packets
+                // comes from velocity dead-reckoning (WorldSimulation.ExtrapolateMovement mirrors
+                // LLViewerObject::interpolateLinearMotion), not from a second local authority. W/A/
+                // S/D still drive movement -- via _session.SetMovement's control flags below, which
+                // the sim actually simulates; this block only used to add a purely cosmetic (and
+                // ultimately incorrect) local head start on top of that.
 
                 // Vertical movement while flying (E up / C down).
                 if (_flying && (isUp || isDown))

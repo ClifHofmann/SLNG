@@ -80,7 +80,12 @@ public record ObjectUpdateEvent(
 /// (analogous to llGetAgentSize()) matches Firestorm's number better than our own ComputeBodySize
 /// port does, before trusting either as ground truth. Not yet used in any rendering/position
 /// math. Defaults to 0f so existing call sites/tests keep compiling unchanged.</summary>
-public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent, float ScaleZ = 0f) : IWorldEvent;
+/// <param name="Velocity">Wire-transmitted world-space velocity (m/s), from the same ObjectUpdate/
+/// TerseObjectUpdate as Position. Drives WorldSimulation.ExtrapolateMovement's dead-reckoning
+/// between packets -- mirrors the real viewer's LLViewerObject::interpolateLinearMotion, which
+/// extrapolates from the last reported velocity rather than holding position static (or fighting
+/// it with client-side input prediction) until the next packet arrives.</param>
+public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent, float ScaleZ = 0f, Vector3 Velocity = default) : IWorldEvent;
 
 /// <summary>Represents the removal of an object from the simulator's interest list.</summary>
 public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent;

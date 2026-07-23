@@ -79,6 +79,43 @@ public sealed class WorldSimulation : IDisposable
         }
     }
 
+    // Mirrors the real viewer's LLViewerObject::interpolateLinearMotion constants
+    // (sPhaseOutUpdateInterpolationTime / sMaxUpdateInterpolationTime): extrapolate at full
+    // velocity for the first 2s since the last network update, linearly fade the contribution to
+    // zero over the following second, then stop (a stalled/lost connection should freeze the
+    // avatar in place, not fling it forever along a possibly-stale velocity).
+    private const float ExtrapolationPhaseOutStartSeconds = 2.0f;
+    private const float ExtrapolationMaxSeconds = 3.0f;
+
+    /// <summary>Dead-reckons every avatar's Position from its last network-reported Velocity,
+    /// phasing the contribution out over time instead of leaving Position static between packets.
+    /// Call once per frame on the main thread, after Pump() has applied this frame's network
+    /// updates. Position itself is only ever set authoritatively by ApplyAvatarUpdate (server-
+    /// driven, local agent included — see its doc comment); this method only smooths the visual
+    /// gap between those updates, matching the real viewer's approach instead of client-side input
+    /// prediction fighting the network echo.</summary>
+    public void ExtrapolateMovement(float deltaSeconds)
+    {
+        foreach (var entity in _world.Query<AvatarComponent>())
+        {
+            var transform = entity.GetComponent<TransformComponent>();
+            if (transform == null) continue;
+
+            transform.TimeSinceUpdate += deltaSeconds;
+            if (transform.Velocity == Vector3.Zero) continue;
+            if (transform.TimeSinceUpdate >= ExtrapolationMaxSeconds) continue; // fully decayed
+
+            float phaseOutT = System.Math.Clamp(
+                (transform.TimeSinceUpdate - ExtrapolationPhaseOutStartSeconds)
+                    / (ExtrapolationMaxSeconds - ExtrapolationPhaseOutStartSeconds),
+                0f, 1f);
+            float weight = 1f - phaseOutT;
+
+            transform.Position += transform.Velocity * deltaSeconds * weight;
+            _world.NotifyComponentUpdated(entity, transform);
+        }
+    }
+
     private void ApplyObjectUpdate(ObjectUpdateEvent e)
     {
         var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
@@ -315,33 +352,23 @@ public sealed class WorldSimulation : IDisposable
             transform = new TransformComponent(e.Position, e.Rotation);
             entity.SetComponent(transform);
         }
-        else if (e.IsLocalAgent)
-        {
-            // The local agent's position is client-predicted every frame by AvatarController
-            // (WASD dead reckoning) for smooth movement. The sim echoes our own avatar's position
-            // back continuously while we're physically moving (see GridSession.OnTerseObjectUpdate's
-            // doc comment) — those echoes are latency-delayed relative to what the client already
-            // predicted, so hard-overwriting Position here on every packet fights the prediction and
-            // snaps the avatar back onto the (stale) server value each time one lands. Reported as
-            // visible sideways popping while walking, worst on a diagonal heading -- diagonal motion
-            // has a nonzero prediction/echo delta on BOTH axes at once instead of just one, so the
-            // same correction magnitude reads as a lateral pop instead of a barely-visible
-            // forward/back stutter. Only snap on a large divergence (teleport, sit/stand, a real
-            // server-side physics correction/push) — small drift is left to client prediction, which
-            // re-derives from the avatar's actual last-good position next frame anyway.
-            if (Vector3.Distance(transform.Position, e.Position) > 1.0f)
-            {
-                transform.Position = e.Position;
-            }
-            transform.Rotation = e.Rotation;
-            entity.SetComponent(transform);
-        }
         else
         {
+            // Server-authoritative for every avatar, local included — matches the real viewer
+            // (LLAgent::getPositionAgent() mirrors LLVOAvatarSelf's network-driven position; there
+            // is no separate client-predicted position it reconciles against, see
+            // llagent.cpp/llviewerobject.cpp). AvatarController no longer predicts the local
+            // agent's Position for this exact reason: two independent authorities (client dead
+            // reckoning + this network echo) fighting every packet was what caused the avatar to
+            // visibly pop sideways while walking. Smoothness between packets now comes from
+            // ExtrapolateMovement's velocity dead-reckoning below, not from overwriting this value
+            // conditionally.
             transform.Position = e.Position;
             transform.Rotation = e.Rotation;
             entity.SetComponent(transform);
         }
+        transform.Velocity = e.Velocity;
+        transform.TimeSinceUpdate = 0f;
         _world.NotifyComponentUpdated(entity, transform);
 
         var avatar = entity.GetComponent<AvatarComponent>();

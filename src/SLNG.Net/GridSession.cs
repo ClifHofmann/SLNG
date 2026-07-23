@@ -216,7 +216,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             e.Avatar.FirstName,
             e.Avatar.LastName,
             isLocalAgent,
-            e.Avatar.Scale.Z));
+            e.Avatar.Scale.Z,
+            new System.Numerics.Vector3(e.Avatar.Velocity.X, e.Avatar.Velocity.Y, e.Avatar.Velocity.Z)));
     }
 
     private void OnObjectPropertiesFamily(object? sender, ObjectPropertiesFamilyEventArgs e)
@@ -515,7 +516,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 firstName,
                 lastName,
                 isLocalAgent,
-                e.Prim.Scale.Z));
+                e.Prim.Scale.Z,
+                new System.Numerics.Vector3(e.Prim.Velocity.X, e.Prim.Velocity.Y, e.Prim.Velocity.Z)));
             return;
         }
 

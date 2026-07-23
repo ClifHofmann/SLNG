@@ -26,6 +26,17 @@ public class TransformComponent : IComponent
     /// <summary>LocalID of the parent prim in a linkset, or 0 if this is a root/unlinked.</summary>
     public uint ParentLocalId { get; set; }
 
+    /// <summary>Last network-reported world-space velocity (m/s), for avatars only. Used by
+    /// WorldSimulation.ExtrapolateMovement to dead-reckon Position between packets instead of
+    /// leaving it static (or, for the local agent, fighting it with client-side input prediction —
+    /// see the real viewer's LLViewerObject::interpolateLinearMotion, which this mirrors).</summary>
+    public Vector3 Velocity { get; set; }
+
+    /// <summary>Seconds since Position/Velocity were last set from a network update. Reset to 0 by
+    /// WorldSimulation.ApplyAvatarUpdate; advanced every frame by ExtrapolateMovement, which phases
+    /// the velocity extrapolation out as this grows (see PhaseOutSeconds/MaxExtrapolationSeconds).</summary>
+    public float TimeSinceUpdate { get; set; }
+
     public TransformComponent()
     {
         Position = Vector3.Zero;
