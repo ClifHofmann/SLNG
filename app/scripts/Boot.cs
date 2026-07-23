@@ -60,7 +60,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.2.12-alpha";
+    public const string AppVersion = "v0.2.13-alpha";
 
     public override void _Ready()
     {
@@ -774,6 +774,19 @@ public partial class Boot : Control
         // Surfaces sim-side rejections that otherwise fail silently, e.g. "Object physics
         // cancelled because it exceeds limits for physical prims" when a Physical toggle is denied.
         _session.AlertMessageReceived += (s, e) => CallDeferred(MethodName.LogMessage, $"[color=orange][Alert] {e.Message}[/color]");
+        // Recenter the floating origin every time we actually move to a new region -- login AND
+        // every subsequent teleport/region-crossing (GridSession.RegionConnected only fires for the
+        // primary sim, not neighbor sims connected near a border). Previously this was a single
+        // RenderConfig.SetRegionOrigin call made once right after login below; nothing ever
+        // recentered it again, so after teleporting to any other region OriginX/Y still reflected
+        // the LOGIN region's global coordinates -- ToGodot() then computed raw (often
+        // multi-thousand-metre) differences between the new region's global coords and the stale
+        // origin, blowing float32 precision exactly the way this whole mechanism exists to avoid.
+        // Reported symptom: judder/instability on any region other than the one first logged into,
+        // clearing up again on returning to it. Subscribed BEFORE LoginAsync below so the initial
+        // login's own connection is also caught by this, not just later teleports.
+        _session.RegionConnected += (s, regionHandle) =>
+            Godot.Callable.From(() => RenderConfig.SetRegionOrigin(regionHandle)).CallDeferred();
 
         var creds = new LoginCredentials
         {
@@ -782,18 +795,10 @@ public partial class Boot : Control
             LastName = _lastInput.Text,
             Password = _passInput.Text
         };
-        
+
         var animTask = SimulateLoadingAnimation();
 
         var result = await _session.LoginAsync(creds);
-        
-        if (result.Success)
-        {
-            // Set the floating origin to this region so everything renders near 0 (OSGrid
-            // global coordinates are in the millions and overflow float precision otherwise).
-            ulong regionHandle = _session.CurrentRegionHandle;
-            RenderConfig.SetRegionOrigin(regionHandle);
-        }
 
         await animTask;
 

@@ -45,6 +45,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<AvatarAnimationEvent>? AvatarAnimationReceived;
     public event EventHandler<FriendStatusEvent>? FriendStatusChanged;
     public event EventHandler<InstantMessageEvent>? InstantMessageReceived;
+    /// <summary>Fired when we connect to a NEW primary/current simulator -- i.e. on login and on
+    /// every teleport/region-crossing that changes which region we're actually in. NOT fired for
+    /// LibreMetaverse's other SimConnected occurrences, e.g. a neighbor sim connected only for
+    /// interest-list purposes near a region border (see OnSimConnected's e.Simulator ==
+    /// CurrentSim guard) -- those aren't "we moved," so recentering on them would be wrong.
+    /// Payload is the new region's handle. Consumers: RenderConfig.SetRegionOrigin (the floating-
+    /// origin recenter) is the reason this exists -- see Boot.cs's subscription.</summary>
+    public event EventHandler<ulong>? RegionConnected;
 
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
@@ -197,6 +205,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             sim.WaterHeight,
             (int)sim.SizeX, (int)sim.SizeY
         ));
+
+        // LibreMetaverse also raises SimConnected for a neighbor sim connected only for
+        // interest-list purposes near a region border -- not a region WE moved into. Only treat
+        // this as "we moved" (and recenter the floating origin) when it's the primary sim; by this
+        // point NetworkManager.Connect has already called SetCurrentSim if this connection was the
+        // default one, so CurrentSim reliably reflects that.
+        if (sim == _client.Network.CurrentSim)
+        {
+            RegionConnected?.Invoke(this, sim.Handle);
+        }
     }
 
     private void OnChatFromSimulator(object? sender, ChatEventArgs e)
