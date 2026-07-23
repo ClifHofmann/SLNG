@@ -40,7 +40,13 @@ jobs:
       run: |
         mkdir -p build/windows
         # NOTE: Ensure you have an export preset named "Windows Desktop" in Godot.
-        godot --headless --path app --export-release "Windows Desktop" ../build/windows/PurisViewer.exe
+        # Absolute output path via github.workspace -- the previous relative
+        # "../build/windows/..." path was ambiguous (resolved against the shell's CWD, repo
+        # root, not against --path app the way it does when you cd into app/ first, which is
+        # how this was verified locally) and put the exported .exe one level ABOVE the repo
+        # checkout instead of inside it, which the next step's relative Source: path in
+        # PurisViewer.iss then couldn't find ("live" failure: exit code 1, "does not exist").
+        godot --headless --path app --export-release "Windows Desktop" "${{ github.workspace }}/build/windows/PurisViewer.exe"
 
     - name: Install Inno Setup
       # minicrm/setup-inno-setup@v1 (this step's original action) doesn't exist -- GitHub
