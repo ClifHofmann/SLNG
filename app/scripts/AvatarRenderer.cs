@@ -811,25 +811,27 @@ public partial class AvatarRenderer : Node3D
 
             var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
             
+            var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+            if (image != null) image.GenerateMipmaps(); // match BuildFaceMaterialAsync/GetOrCreateGpuTextureAsync — avoids distance shimmer
+            
             Godot.Callable.From(() => {
                 if (_gpuCache != null)
                 {
                     var cached = _gpuCache.Get(textureId) as ImageTexture;
                     if (cached != null)
                     {
+                        image?.Dispose();
                         tcs.SetResult(cached);
                         return;
                     }
                 }
 
-                var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
                 if (image == null)
                 {
                     // GD.Print($"[AvatarRenderer] Image.CreateFromData FAILED for bake {bakeIndex} (ID: {textureId})!");
                     tcs.SetResult(null);
                     return;
                 }
-                image.GenerateMipmaps(); // match BuildFaceMaterialAsync/GetOrCreateGpuTextureAsync — avoids distance shimmer
                 var tex = ImageTexture.CreateFromImage(image);
                 
                 if (tex != null && _gpuCache != null)

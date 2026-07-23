@@ -774,6 +774,10 @@ public partial class ObjectRenderer : Node3D
         // Create on main thread, but we can do it via CallDeferred and TaskCompletionSource
         var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
 
+        // Create the image and generate mipmaps on the thread pool, NOT the main thread!
+        var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+        if (image != null) image.GenerateMipmaps();
+
         Godot.Callable.From(() =>
         {
             if (_gpuCache != null)
@@ -781,13 +785,18 @@ public partial class ObjectRenderer : Node3D
                 var cached = _gpuCache.Get(textureId) as ImageTexture;
                 if (cached != null)
                 {
+                    image?.Dispose();
                     tcs.SetResult(cached);
                     return;
                 }
             }
 
-            var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-            image.GenerateMipmaps(); // so LinearWithMipmaps actually filters — no shimmer/aliasing at distance
+            if (image == null)
+            {
+                tcs.SetResult(null);
+                return;
+            }
+
             var tex = ImageTexture.CreateFromImage(image);
 
             if (tex != null && _gpuCache != null)
