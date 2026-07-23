@@ -73,6 +73,7 @@ Each task follows a **spec → test → implement → review** loop:
 | M1.5-3 | GitHub Actions Continuous Delivery | infra | | DevOps | claude | M1.5-2 | GitHub Workflow builds installer on `main` push & attaches artifact/release for testers |
 | FEAT-UI-03 | Boot Window Size & Profile Persistence ✅ | ui/infra | gemini | ux-designer | gemini | M0-4 | Client window resolution, grid profiles & user preferences persist across sessions in `user://logins.cfg`. [Spec](file:///E:/Git/SLNG/docs/specs/done/FEAT-UI-03-boot-window-persistence.md) |
 | FEAT-UI-07 | UI Scale Setting ✅ | ui | claude | ux-designer | claude | M5-3 | Preferences slider (80%–160%) scales every `SLNGWindow` live, persisted in `preferences.cfg`. [Spec](file:///E:/Git/SLNG/docs/specs/done/FEAT-UI-07-ui-scaling.md) |
+| FEAT-UI-08 | Login / Boot Screen Rebrand (Puris Glassmorphism Theme) ⏸️ | ui | claude | ux-designer | claude | FEAT-UI-03 | Reskin login + loading screen to match user-provided "Puris Viewer" mockup (dark navy/teal glassmorphism, circular progress ring, step checklist). Spec + design tokens prepared on `feature/FEAT-UI-08-login-rebrand`; implementation on hold pending v0.3.2 test confirmation and a logo asset. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-08-login-rebrand.md) |
 
 ---
 

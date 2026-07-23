@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Puris Viewer - Bootscreen</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom Styles für den Glassmorphismus und feine Details */
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #0f172a;
+            overflow: hidden;
+        }
+
+        .bg-image {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            /* Hochauflösendes Tech-Hintergrundbild mit einem Teal/Blau-Farbverlauf (passend zum Icon) */
+            background-image: 
+                linear-gradient(135deg, rgba(15, 118, 110, 0.6) 0%, rgba(30, 58, 138, 0.8) 100%),
+                url('https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=2560&auto=format&fit=crop');
+            background-size: cover;
+            background-position: center;
+            background-blend-mode: overlay;
+            z-index: 1;
+        }
+
+        .glass-panel {
+            position: relative;
+            z-index: 10;
+            background: rgba(15, 23, 42, 0.55);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255,255,255,0.1);
+            animation: fadeIn 0.8s ease-out forwards;
+            opacity: 0;
+            transform: translateY(15px);
+        }
+
+        .input-field {
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(148, 163, 184, 0.15);
+            color: #f8fafc;
+            transition: all 0.3s ease;
+        }
+
+        .input-field:focus {
+            outline: none;
+            border-color: #0d9488;
+            box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.3);
+            background: rgba(0, 0, 0, 0.7);
+        }
+
+        /* Styling für Select-Dropdowns (Pfeil anpassen) */
+        select.input-field {
+            appearance: none;
+            background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 0.75rem center;
+            background-size: 1em;
+            padding-right: 2.5rem;
+        }
+
+        .btn-glow {
+            background: linear-gradient(135deg, #0d9488, #0369a1);
+            box-shadow: 0 4px 15px rgba(13, 148, 136, 0.4);
+            transition: all 0.3s ease;
+        }
+
+        .btn-glow:hover {
+            box-shadow: 0 6px 25px rgba(13, 148, 136, 0.6);
+            transform: translateY(-1px);
+        }
+
+        @keyframes fadeIn {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .fade-out {
+            animation: fadeOut 0.5s ease-out forwards;
+        }
+
+        @keyframes fadeOut {
+            to {
+                opacity: 0;
+                transform: translateY(-15px);
+                visibility: hidden;
+            }
+        }
+        
+        .loading-text-glow {
+            text-shadow: 0 0 10px rgba(45, 212, 191, 0.5);
+        }
+
+        /* Checkbox Styling */
+        .custom-checkbox {
+            appearance: none;
+            background-color: rgba(0, 0, 0, 0.5);
+            margin: 0;
+            font: inherit;
+            color: currentColor;
+            width: 1.15em;
+            height: 1.15em;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 0.25em;
+            display: grid;
+            place-content: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .custom-checkbox::before {
+            content: "";
+            width: 0.65em;
+            height: 0.65em;
+            transform: scale(0);
+            transition: 120ms transform ease-in-out;
+            box-shadow: inset 1em 1em #2dd4bf;
+            background-color: transform;
+            transform-origin: center;
+            clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+        }
+
+        .custom-checkbox:checked::before {
+            transform: scale(1);
+        }
+
+        .custom-checkbox:checked {
+            border-color: #2dd4bf;
+        }
+    </style>
+</head>
+<body class="relative flex items-center justify-center min-h-screen text-gray-200">
+
+    <!-- Hintergrundbild -->
+    <div class="bg-image"></div>
+
+    <!-- Haupt-Login-Container -->
+    <div class="glass-panel w-full max-w-[420px] rounded-2xl p-8 flex flex-col items-center">
+        
+        <!-- Das echte Puris Icon -->
+        <img src="Puris.ico.png" alt="Puris Logo" class="w-24 h-24 mb-4 rounded-[2rem] shadow-2xl drop-shadow-lg object-contain">
+
+        <!-- Titel -->
+        <h1 class="text-3xl font-semibold tracking-[0.25em] text-white mb-1">PURIS</h1>
+        
+        <!-- Versionsnummer (Nur noch hier platziert) -->
+        <p class="text-xs text-gray-400 mb-8 tracking-widest uppercase">v0.2.0-alpha</p>
+
+        <!-- Container für Formular und Loading Screen -->
+        <div id="ui-container" class="w-full relative min-h-[320px]">
+            
+            <!-- Login Formular -->
+            <form id="login-form" class="w-full space-y-4 absolute top-0 left-0 transition-all duration-500" onsubmit="startLogin(event)">
+                
+                <!-- Row 1: Gespeichertes Konto -->
+                <div>
+                    <select class="input-field w-full rounded-md px-4 py-2.5 text-sm cursor-pointer">
+                        <option value="1">Clifton Howlett @ http://hg.osgrid.org/</option>
+                        <option value="2">New Account...</option>
+                    </select>
+                </div>
+
+                <!-- Row 2: Grid URL & Grid Name -->
+                <div class="flex gap-4">
+                    <div class="flex-1">
+                        <input type="text" value="http://hg.osgrid.org" id="grid-uri" class="input-field w-full rounded-md px-4 py-2.5 text-sm" placeholder="Login URI">
+                    </div>
+                    <div class="w-1/3">
+                        <select class="input-field w-full rounded-md px-3 py-2.5 text-sm cursor-pointer">
+                            <option value="osgrid">OSGrid</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Row 3: Vorname & Nachname -->
+                <div class="flex gap-4">
+                    <div class="flex-1">
+                        <input type="text" value="Clifton" id="first-name" class="input-field w-full rounded-md px-4 py-2.5 text-sm" placeholder="Vorname">
+                    </div>
+                    <div class="flex-1">
+                        <input type="text" value="Howlett" id="last-name" class="input-field w-full rounded-md px-4 py-2.5 text-sm" placeholder="Nachname">
+                    </div>
+                </div>
+
+                <!-- Row 4: Passwort -->
+                <div>
+                    <input type="password" value="password123" class="input-field w-full rounded-md px-4 py-2.5 text-sm" placeholder="Passwort">
+                </div>
+
+                <!-- Row 5: Checkbox & Button -->
+                <div class="flex items-center justify-between pt-4">
+                    <label class="flex items-center gap-2 cursor-pointer group">
+                        <input type="checkbox" class="custom-checkbox" checked>
+                        <span class="text-sm text-gray-300 group-hover:text-white transition-colors">Login speichern</span>
+                    </label>
+                    
+                    <button type="submit" class="btn-glow px-8 py-2.5 rounded-md text-sm font-semibold tracking-wide text-white">
+                        Anmelden
+                    </button>
+                </div>
+            </form>
+
+            <!-- Loading Screen (Standardmäßig versteckt) -->
+            <div id="loading-view" class="w-full hidden absolute top-0 left-0 flex-col items-center mt-6">
+                <p class="text-[10px] text-teal-400/60 tracking-widest uppercase mb-8">Second Life Next Generation</p>
+                
+                <div class="flex items-center justify-center w-full gap-8 pl-4">
+                    <!-- Progress Circle -->
+                    <div class="relative w-20 h-20 flex items-center justify-center flex-shrink-0">
+                        <svg class="transform -rotate-90 w-full h-full" viewBox="0 0 36 36">
+                            <path class="text-gray-700/50" stroke-width="3" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                            <path id="progress-circle" class="text-teal-400 transition-all duration-200 ease-linear" stroke-dasharray="0, 100" stroke-width="3" stroke="currentColor" fill="none" stroke-linecap="round" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                        </svg>
+                        <span id="progress-text" class="absolute text-lg font-bold text-teal-400 loading-text-glow">0%</span>
+                    </div>
+
+                    <!-- Loading Steps -->
+                    <ul id="loading-steps" class="text-[11px] font-mono text-gray-500 space-y-3 text-left w-full m-0 p-0 list-none">
+                        <li id="step-1" class="transition-colors duration-300">Stelle Grid-Verbindung her... <span class="status ml-1 text-gray-600">[...]</span></li>
+                        <li id="step-2" class="transition-colors duration-300">Lade Welt-Assets herunter... <span class="status ml-1 text-gray-600">[...]</span></li>
+                        <li id="step-3" class="transition-colors duration-300">Initialisiere Physik-Engine... <span class="status ml-1 text-gray-600">[...]</span></li>
+                        <li id="step-4" class="transition-colors duration-300">Synchronisiere Profildaten... <span class="status ml-1 text-gray-600">[...]</span></li>
+                        <li id="step-5" class="transition-colors duration-300">Optimiere visuelle Darstellung... <span class="status ml-1 text-gray-600">[...]</span></li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Statusanzeige Unten Links -->
+    <div id="status-bar" class="absolute bottom-4 left-4 z-20 text-xs text-gray-400 font-mono tracking-wide flex flex-col gap-1">
+        <span>Ready. Enter credentials and click Login.</span>
+    </div>
+
+    <!-- Logik für den Login-Ablauf -->
+    <script>
+        function startLogin(event) {
+            event.preventDefault(); // Verhindert das Neuladen der Seite
+            
+            const form = document.getElementById('login-form');
+            const loadingView = document.getElementById('loading-view');
+            const statusBar = document.getElementById('status-bar');
+            
+            const firstName = document.getElementById('first-name').value;
+            const lastName = document.getElementById('last-name').value;
+            const gridUri = document.getElementById('grid-uri').value;
+            
+            // 1. Formular sanft ausblenden
+            form.classList.add('fade-out');
+            
+            setTimeout(() => {
+                form.classList.add('hidden');
+                
+                // 2. Loading Screen einblenden
+                loadingView.classList.remove('hidden');
+                loadingView.classList.add('flex', 'animate-[fadeIn_0.5s_ease-out_forwards]');
+                
+                // 3. Status Text unten links aktualisieren (wie auf deinem Screenshot)
+                statusBar.innerHTML = `
+                    <span>Ready. Enter credentials and click Login.</span>
+                    <span class="text-teal-400">Connecting to ${gridUri} as ${firstName} ${lastName}...</span>
+                `;
+
+                // 4. Ladebalken-Animation starten
+                simulateLoadingProgress();
+            }, 500);
+        }
+
+        function simulateLoadingProgress() {
+            const progressText = document.getElementById('progress-text');
+            const progressCircle = document.getElementById('progress-circle');
+            let progress = 0;
+            let currentStep = 1;
+
+            // Simuliert den Ladefortschritt in zufälligen Schritten
+            const interval = setInterval(() => {
+                progress += Math.floor(Math.random() * 4) + 1; 
+                if (progress >= 100) progress = 100;
+
+                // Kreis SVG und Text updaten
+                progressText.innerText = `${progress}%`;
+                progressCircle.setAttribute('stroke-dasharray', `${progress}, 100`);
+
+                // Checkliste synchron aktualisieren
+                if (progress >= 20 && currentStep === 1) markStepDone(1);
+                if (progress >= 40 && currentStep === 2) markStepDone(2);
+                if (progress >= 60 && currentStep === 3) markStepDone(3);
+                if (progress >= 80 && currentStep === 4) markStepDone(4);
+                if (progress >= 100 && currentStep === 5) {
+                    markStepDone(5);
+                    clearInterval(interval);
+                    
+                    // Aktion nach 100%
+                    setTimeout(() => {
+                        document.getElementById('status-bar').innerHTML = '<span class="text-teal-400">Connected successfully. Entering world...</span>';
+                    }, 600);
+                }
+            }, 100); 
+
+            function markStepDone(stepNum) {
+                const stepEl = document.getElementById(`step-${stepNum}`);
+                if(stepEl) {
+                    // Zeile grün färben
+                    stepEl.classList.remove('text-gray-500');
+                    stepEl.classList.add('text-teal-400');
+                    // Haken setzen
+                    const statusSpan = stepEl.querySelector('.status');
+                    statusSpan.classList.remove('text-gray-600');
+                    statusSpan.classList.add('text-teal-400');
+                    statusSpan.innerText = '[✓]';
+                }
+                currentStep++;
+            }
+        }
+    </script>
+</body>
+</html>
