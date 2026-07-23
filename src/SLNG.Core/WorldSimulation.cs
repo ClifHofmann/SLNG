@@ -111,7 +111,13 @@ public sealed class WorldSimulation : IDisposable
                 0f, 1f);
             float weight = 1f - phaseOutT;
 
-            transform.Position += transform.Velocity * deltaSeconds * weight;
+            // Scale by the originating sim's TimeDilation, exactly like LibreMetaverse's own
+            // InterpolationService (`adjSeconds = seconds * sim.Stats.Dilation`) -- a busy/laggy
+            // sim (e.g. an OSGrid megaregion under load) runs its own physics below real-time, so
+            // extrapolating at full real-time speed overshoots what the sim actually simulated by
+            // the time its next (delayed) packet arrives, reading as an extra correction pop on a
+            // busy sim that a quiet one wouldn't show.
+            transform.Position += transform.Velocity * deltaSeconds * weight * transform.TimeDilation;
             _world.NotifyComponentUpdated(entity, transform);
         }
     }
@@ -369,6 +375,7 @@ public sealed class WorldSimulation : IDisposable
         }
         transform.Velocity = e.Velocity;
         transform.TimeSinceUpdate = 0f;
+        transform.TimeDilation = System.Math.Clamp(e.TimeDilation, 0f, 1f);
         _world.NotifyComponentUpdated(entity, transform);
 
         var avatar = entity.GetComponent<AvatarComponent>();

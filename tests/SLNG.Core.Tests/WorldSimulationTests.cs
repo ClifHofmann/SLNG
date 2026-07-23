@@ -332,6 +332,31 @@ public class WorldSimulationTests
         Assert.Equal(0f, transform.TimeSinceUpdate);
     }
 
+    /// <summary>ExtrapolateMovement must scale its per-frame dead-reckoning step by the
+    /// originating sim's TimeDilation -- mirrors LibreMetaverse's own InterpolationService
+    /// (`adjSeconds = seconds * sim.Stats.Dilation`). Reported motivation: movement judders more
+    /// on a busy OSGrid megaregion than the user's own (presumably quiet) sim -- a dilated sim
+    /// runs its own physics below real-time, so extrapolating at full real-time speed overshoots
+    /// what the sim actually simulated.</summary>
+    [Fact]
+    public void ExtrapolateMovement_ScalesByTimeDilation()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        var velocity = new Vector3(2, 0, 0); // 2 m/s along X
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true, Velocity: velocity, TimeDilation: 0.5f));
+        simulation.Pump();
+
+        var transform = world.GetEntity(123ul, 42)!.GetComponent<TransformComponent>()!;
+        Assert.Equal(0.5f, transform.TimeDilation);
+
+        simulation.ExtrapolateMovement(0.1f); // full weight (well before phase-out), half dilation
+        Assert.Equal(new Vector3(0.1f, 0, 0), transform.Position); // 2 m/s * 0.1s * 0.5 dilation
+    }
+
     /// <summary>ExtrapolateMovement dead-reckons Position from Velocity at full weight before
     /// ExtrapolationPhaseOutStartSeconds (2s) -- mirrors the real viewer's
     /// LLViewerObject::interpolateLinearMotion extrapolating from the last reported velocity
