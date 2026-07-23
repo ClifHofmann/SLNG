@@ -64,7 +64,14 @@ public static class PrimMeshService
             }
 
             var renderer = _renderer ??= new MeshFoundry();
-            var faceted = renderer.GenerateFacetedMesh(prim, lod);
+            
+            var originalScale = prim.Scale;
+            prim.Scale = new LMVector3(1, 1, 1);
+            
+            FacetedMesh? faceted;
+            try { faceted = renderer.GenerateFacetedMesh(prim, lod); }
+            finally { prim.Scale = originalScale; }
+            
             var mesh = Convert(faceted);
 
             // LibreMetaverse.Rendering.MeshFoundry (as of the 3.0.0 package) only emits the

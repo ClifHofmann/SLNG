@@ -538,11 +538,18 @@ public class AssetService
             int height = (int)image.Height;
 
             // Sculpt maps MUST be 64x64 for MeshFoundry to build the correct 3D topology.
-            if (isSculpt && (width != 64 || height != 64))
+            // MUST use Point filtering (Nearest Neighbor) to prevent coordinate ringing/overshoot.
+            // MUST be treated as linear RGB, not sRGB, to prevent gamma warping of spatial coordinates.
+            if (isSculpt)
             {
-                image.Resize(new ImageMagick.MagickGeometry("64x64!") { IgnoreAspectRatio = true });
-                width = (int)image.Width;
-                height = (int)image.Height;
+                image.ColorSpace = ImageMagick.ColorSpace.RGB;
+                if (width != 64 || height != 64)
+                {
+                    image.FilterType = ImageMagick.FilterType.Point;
+                    image.Resize(new ImageMagick.MagickGeometry("64x64!") { IgnoreAspectRatio = true });
+                    width = (int)image.Width;
+                    height = (int)image.Height;
+                }
             }
             bool isDegraded = false;
             
@@ -589,8 +596,11 @@ public class AssetService
             // every avatar bake/placeholder texture with real per-pixel alpha decode as fully
             // opaque — no renderer-side Transparency/cutout setting can recover it once the
             // source pixel data itself has been clobbered to alpha=255 here.
-            if (image.HasAlpha || image.ChannelCount >= 4) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
-            else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
+            if (!isSculpt)
+            {
+                if (image.HasAlpha || image.ChannelCount >= 4) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
+                else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
+            }
             byte[] rgba;
             using (var pixels = image.GetPixels())
             {
