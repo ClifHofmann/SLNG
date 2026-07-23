@@ -507,17 +507,30 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
 
             bool isLocalAgent = agentId == _client.Self.AgentID.Guid || e.Prim.LocalID == _client.Self.LocalID;
+            // Position/Rotation/Velocity come from e.Update (the freshly-decoded
+            // ObjectMovementUpdate for THIS packet), never from e.Prim: LibreMetaverse's
+            // ImprovedTerseObjectUpdateHandler fires this event via ThreadPool.QueueUserWorkItem
+            // BEFORE it writes the decoded values onto the shared, cached e.Prim object ("Fire the
+            // pre-emptive notice (before we stomp the object)" -- ObjectManager.PacketHandlers.cs
+            // ~line 619). Reading e.Prim here races that later write; under load (many queued
+            // avatar updates while walking) the handler can run before or after the stomp, so
+            // e.Prim.Velocity is sometimes last packet's value or zero. Since ExtrapolateMovement
+            // dead-reckons Position purely from Velocity between packets, a stale/zero read here
+            // silently killed the extrapolation for that interval -- the avatar would sit still
+            // until the next (correct) packet snapped it forward, reading as juddery/stuttering
+            // motion. e.Update is race-free: it's the packet's own decoded struct, not a shared
+            // mutable cache.
             AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
                 e.Simulator.Handle,
                 e.Prim.LocalID,
                 agentId,
-                new System.Numerics.Vector3(e.Prim.Position.X, e.Prim.Position.Y, e.Prim.Position.Z),
-                new System.Numerics.Quaternion(e.Prim.Rotation.X, e.Prim.Rotation.Y, e.Prim.Rotation.Z, e.Prim.Rotation.W),
+                new System.Numerics.Vector3(e.Update.Position.X, e.Update.Position.Y, e.Update.Position.Z),
+                new System.Numerics.Quaternion(e.Update.Rotation.X, e.Update.Rotation.Y, e.Update.Rotation.Z, e.Update.Rotation.W),
                 firstName,
                 lastName,
                 isLocalAgent,
                 e.Prim.Scale.Z,
-                new System.Numerics.Vector3(e.Prim.Velocity.X, e.Prim.Velocity.Y, e.Prim.Velocity.Z)));
+                new System.Numerics.Vector3(e.Update.Velocity.X, e.Update.Velocity.Y, e.Update.Velocity.Z)));
             return;
         }
 
