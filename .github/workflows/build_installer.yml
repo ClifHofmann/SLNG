@@ -1,0 +1,54 @@
+name: Build and Release Puris Viewer
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger only on version tags like v0.1.0
+  workflow_dispatch: # Allow manual trigger from GitHub Actions tab
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET 8
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Restore dependencies & Build Core/Net/Assets
+      run: |
+        dotnet restore SLNG.sln
+        dotnet build SLNG.sln -c Release
+
+    - name: Run Tests
+      run: dotnet test SLNG.sln -c Release
+
+    - name: Setup Godot
+      uses: chickensoft-games/setup-godot@v2
+      with:
+        # AGENTS.md's verified toolchain is Godot 4.7-stable (.NET/mono) -- matches what every
+        # build/smoke-test in this repo's history has actually run against; 4.3 (this step's
+        # original value) is a different major version with real API-compatibility risk.
+        version: 4.7.0
+        use-dotnet: true
+
+    - name: Export Godot App
+      run: |
+        mkdir -p build/windows
+        # NOTE: Ensure you have an export preset named "Windows Desktop" in Godot.
+        godot --headless --path app --export-release "Windows Desktop" ../build/windows/PurisViewer.exe
+
+    - name: Compile Inno Setup Installer
+      uses: minicrm/setup-inno-setup@v1
+      with:
+        path: installer/PurisViewer.iss
+
+    - name: Upload Release
+      uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: Output/PurisViewer_Setup.exe
