@@ -19,7 +19,7 @@ everything in the main thread — it keeps context focused and lets work paralle
 | `asset-pipeline` | J2K decode, mesh/LOD, material resolve, avatar bake, caching, threading |
 | `ux-designer` | Viewer UX/UI: HUD, inventory, chat, world map, settings |
 | `test-engineer` | Test strategy, xUnit suites, OpenSim integration harness |
-| `performance-engineer` | Profiling, frame budgets, memory/VRAM, draw-call reduction |
+| `performance-engineer` | Profiling, frame budgets, memory/VRAM, draw-call reduction, login/startup latency |
 | `code-reviewer` | Read-only review against AGENTS.md before merge |
 
 Invoke proactively. Example: when starting a networking task, hand the spec to
