@@ -634,7 +634,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 // Sphere/Torus/Plane/Cylinder sculpt: geometry comes from the sculpt-map texture.
                 isSculpt = true;
                 sculptId = prim.Sculpt.SculptTexture.Guid;
-                sculptType = (byte)prim.Sculpt.Type;
+                // The SL sculpt-type byte packs the base type (low 3 bits) with two render flags:
+                // Invert (0x40, render inside-out) and Mirror (0x80, mirror on X). LibreMetaverse's
+                // prim.Sculpt.Type PROPERTY masks those flags off (& 7), so reading it alone silently
+                // dropped them — a sculpt authored inverted/mirrored (very common for organic sculpts
+                // like trees) was then built with the wrong winding/handedness: internally clean
+                // geometry (no NaN, no spikes) but wrapped wrong, so it rendered "disintegrated".
+                // Re-pack the flags so the whole byte reaches the mesher (SculptData.Type's setter
+                // stores it verbatim, and its Invert/Mirror getters read the flag bits back).
+                sculptType = (byte)((byte)prim.Sculpt.Type
+                    | (prim.Sculpt.Invert ? (byte)LibreMetaverse.SculptType.Invert : 0)
+                    | (prim.Sculpt.Mirror ? (byte)LibreMetaverse.SculptType.Mirror : 0));
             }
         }
 

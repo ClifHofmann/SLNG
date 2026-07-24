@@ -29,7 +29,14 @@ public class AssetService
     private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _inflightMaterials = new();
     private readonly ConcurrentDictionary<Guid, Task<AnimationData?>> _inflightAnimations = new();
     private readonly ConcurrentDictionary<(PrimShape Shape, MeshDetailLevel Lod), Task<MeshData?>> _inflightPrimMeshes = new();
-    private readonly ConcurrentDictionary<Guid, Task<MeshData?>> _inflightSculptMeshes = new();
+    // Keyed by (map id, sculpt type) — NOT by map id alone. The type byte carries the stitching
+    // mode plus the Invert (0x40) / Mirror (0x80) flags, and the same sculpt map is routinely
+    // reused within one linkset with different flags (e.g. a tree's left and right branch share
+    // one map, one of them mirrored). Keying the in-flight table by id alone made the second
+    // request join the first's task and silently receive the FIRST prim's geometry — a mirrored
+    // branch rendered unmirrored, so the linkset came apart. See ObjectRenderer.KeyForSculpt for
+    // the matching GPU-side key.
+    private readonly ConcurrentDictionary<(Guid Id, byte Type), Task<MeshData?>> _inflightSculptMeshes = new();
 
     public AssetService(GridSession session, string cacheDirectory)
     {
@@ -106,20 +113,22 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightSculptMeshes.GetOrAdd(sculptId, async id => {
+        return _inflightSculptMeshes.GetOrAdd((sculptId, sculptType), async k => {
+            var id = k.Id;
             try {
                 var map = await GetTextureAsync(id, true).ConfigureAwait(false);
                 if (map == null) return null;
 
                 var result = await Task.Run(() =>
-                    PrimMeshService.GenerateSculpt(map.Rgba, map.Width, map.Height, sculptType)).ConfigureAwait(false);
+                    PrimMeshService.GenerateSculpt(map.Rgba, map.Width, map.Height, k.Type)).ConfigureAwait(false);
+
                 if (result != null) {
                     long size = EstimateMeshSize(result);
                     _memCache.Set(cacheKey, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
                 }
                 return result;
             } finally {
-                _inflightSculptMeshes.TryRemove(id, out _);
+                _inflightSculptMeshes.TryRemove(k, out _);
             }
         });
     }
@@ -220,6 +229,14 @@ public class AssetService
             for (int i = 0; i < vertexCount; i++)
             {
                 var v = face.Vertices[i];
+                if (float.IsNaN(v.Position.X) || float.IsNaN(v.Position.Y) || float.IsNaN(v.Position.Z) ||
+                    float.IsInfinity(v.Position.X) || float.IsInfinity(v.Position.Y) || float.IsInfinity(v.Position.Z) ||
+                    float.IsNaN(v.Normal.X) || float.IsNaN(v.Normal.Y) || float.IsNaN(v.Normal.Z) ||
+                    float.IsInfinity(v.Normal.X) || float.IsInfinity(v.Normal.Y) || float.IsInfinity(v.Normal.Z))
+                {
+                    Console.WriteLine($"[AssetService] Detected NaN/Infinity in vertex for face {face.ID}, rejecting mesh.");
+                    return null;
+                }
                 positions[i] = new System.Numerics.Vector3(v.Position.X, v.Position.Y, v.Position.Z);
                 normals[i] = new System.Numerics.Vector3(v.Normal.X, v.Normal.Y, v.Normal.Z);
                 uvs[i] = new System.Numerics.Vector2(v.TexCoord.X, v.TexCoord.Y);
@@ -366,7 +383,16 @@ public class AssetService
             byte[]? bytes;
             try
             {
-                bytes = await _session.FetchTextureDataAsync(textureId).ConfigureAwait(false);
+                var fetchTask = _session.FetchTextureDataAsync(textureId);
+                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(60));
+                if (await Task.WhenAny(fetchTask, timeoutTask).ConfigureAwait(false) == fetchTask)
+                {
+                    bytes = await fetchTask.ConfigureAwait(false);
+                }
+                else
+                {
+                    bytes = null; // Timeout, will retry or fail
+                }
             }
             finally
             {
@@ -392,8 +418,12 @@ public class AssetService
                     // have attempts left — a re-fetch has a real chance of getting the complete
                     // bytes. Only surrender to the degraded result on the last attempt (a wrong-but-
                     // present mesh still beats no mesh at all).
-                    bool isLastAttempt = attempt == 2;
-                    if (!isSculpt || !result.IsDegraded || isLastAttempt) return result;
+                    if (isSculpt && result.IsDegraded)
+                    {
+                        if (attempt < 2) continue; // retry
+                        return null; // Force fallback, a degraded sculpt is a giant shard that ruins the view!
+                    }
+                    return result;
                 }
             }
 
@@ -602,20 +632,23 @@ public class AssetService
             int width = (int)image.Width;
             int height = (int)image.Height;
 
-            // Sculpt maps encode vertex XYZ as RGB per pixel. A resize here MUST use nearest-
-            // neighbor (Point) — never linear/cubic — so we never blend two unrelated vertices'
-            // coordinates together, and MUST read pixels as linear RGB, not sRGB, so we don't
-            // gamma-warp spatial coordinates.
+            // Sculpt maps encode vertex XYZ as RGB per pixel. Read them as linear RGB (never
+            // sRGB — a gamma transfer would warp the spatial coordinates).
+            //
+            // Do NOT resize the sculpt map here. MeshFoundry's own SculptMap does the LOD
+            // downscaling internally with proper *linear* averaging of adjacent vertices (see
+            // vendored PrimMesher/SculptMap.cs — "the scaling is done in floating point ... the
+            // position will be averaged between pixel values"). An earlier version force-resized
+            // every non-64×64 sculpt to 64×64 with nearest-neighbor (FilterType.Point) here,
+            // BEFORE MeshFoundry ever saw it. On a 128×128 organic sculpt (a tree, say), nearest-
+            // neighbor keeps only 1 of every 4 pixels — collapsing adjacent branch vertices onto
+            // each other, producing zero-area triangles, which the degenerate-triangle filter in
+            // PrimMeshService.Convert then deleted, leaving holes the surviving triangles stretched
+            // across as long spikes/blades (exactly the "jagged tree" symptom). Passing native
+            // resolution through lets MeshFoundry build the correct grid and scale it properly.
             if (isSculpt)
             {
                 image.ColorSpace = ImageMagick.ColorSpace.RGB;
-                if (width != 64 || height != 64)
-                {
-                    image.FilterType = ImageMagick.FilterType.Point;
-                    image.Resize(new ImageMagick.MagickGeometry("64x64!") { IgnoreAspectRatio = true });
-                    width = (int)image.Width;
-                    height = (int)image.Height;
-                }
             }
 
             bool isDegraded = false;
@@ -702,11 +735,9 @@ public class AssetService
                     {
                         if (bitmap.Width > 0 && bitmap.Height > 0)
                         {
+                            // Do NOT resize sculpt maps (see the Magick path above for why) —
+                            // MeshFoundry downscales them itself with proper linear averaging.
                             var targetBitmap = bitmap;
-                            if (isSculpt && (bitmap.Width != 64 || bitmap.Height != 64))
-                            {
-                                targetBitmap = bitmap.Resize(new SkiaSharp.SKImageInfo(64, 64), SkiaSharp.SKSamplingOptions.Default);
-                            }
 
                             // Ensure the bitmap is converted to Rgba8888 for Godot's Image.CreateFromData
                             var rgbaBitmap = targetBitmap.ColorType == SkiaSharp.SKColorType.Rgba8888 

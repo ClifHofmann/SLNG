@@ -34,6 +34,11 @@ public partial class ObjectRenderer : Node3D
         // What we've already loaded, so position/scale updates don't rebuild the mesh or
         // re-create the material every frame. Guid.Empty means "not yet loaded".
         public Guid LoadedMeshId;
+        // The sculpt type byte the currently-loaded sculpt geometry was built with. Tracked
+        // alongside LoadedMeshId because an edit can change the stitching mode or the
+        // Invert/Mirror flags without touching the sculpt map's UUID; gating the reload on the
+        // id alone left the object rendering its previous (e.g. unmirrored) geometry forever.
+        public byte LoadedSculptType;
         public Guid LoadedTextureId = NotLoaded;
         public Guid LoadedMaterialId = NotLoaded;
         // NaN so the very first UpdateVisual always counts as "changed" (a real ColorTint can
@@ -48,11 +53,6 @@ public partial class ObjectRenderer : Node3D
 
         // GpuCache key of the mesh this object currently references (Guid.Empty = none).
         public Guid LoadedMeshKey;
-
-        // TEMPORARY (fix/broken-mesh-objects shard investigation): counts how many times
-        // LoadAndApplyPrimMeshAsync has actually assigned/attempted a mesh for this object, so
-        // the debug dump there can show whether a "second, different-result" load ever races in.
-        public int DebugPrimMeshLoadCount;
 
         // True while this object is beyond draw distance and we've dropped its mesh/texture
         // refs to free GPU memory. It reloads when it comes back into range.
@@ -69,6 +69,9 @@ public partial class ObjectRenderer : Node3D
     // asset id or by a stable id assigned per unique prim shape. Identical objects share one
     // upload; out-of-range objects release their ref so the cache can reclaim the VRAM.
     private readonly Dictionary<(PrimShape Shape, MeshDetailLevel Lod), Guid> _primShapeKeys = new();
+
+    // Same idea for sculpts: one GpuCache key per (sculpt map, sculpt type) pair. See KeyForSculpt.
+    private readonly Dictionary<(Guid SculptId, byte SculptType), Guid> _sculptKeys = new();
 
     // Per shared-mesh key: the SL face number of each surface, so any instance can apply that
     // face's texture via SetSurfaceOverrideMaterial.
@@ -88,7 +91,7 @@ public partial class ObjectRenderer : Node3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-07-23-mesh-and-sculpt-shard-debug-dump";
+    private const string BuildMarker = "2026-07-24-hollow-cap-and-sculpt-cache-fix";
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
@@ -322,32 +325,6 @@ public partial class ObjectRenderer : Node3D
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim != null)
         {
-            // TEMPORARY debug logging for the "crumpled/angular prim geometry" investigation
-            // (fix/broken-mesh-objects) -- gated on the specific root prim UUID the user reported.
-            // Remove once that bug is confirmed fixed. Dumps everything ObjectRenderer's dispatch
-            // (below) and PrimMeshService.Generate() need: classification (mesh/sculpt/procedural)
-            // and, for the procedural case, every ConstructionData field that drives the mesher.
-            //
-            // NOTE: gate on MetadataComponent.Id, NOT entityIdStr/entity.Id -- entity.Id is an
-            // internal ECS key derived from (RegionHandle, LocalId); it is NOT the simulator's
-            // real object UUID (see WorldSimulation.cs:643's comment). Comparing entityIdStr
-            // against a UUID copied from the viewer (Firestorm) never matches, no matter how
-            // close the object is -- this is why the first version of this debug line never
-            // printed anything.
-            if (entity.GetComponent<MetadataComponent>()?.Id.ToString() == "10f8c803-198a-4a56-82d2-cfb988abf291")
-            {
-                var s = prim.Shape;
-                GD.Print(
-                    $"[DebugRenderer] {entityIdStr}\n" +
-                    $"  Scale={prim.Scale} IsMesh={prim.IsMesh} MeshId={prim.MeshId} IsSculpt={prim.IsSculpt} SculptId={prim.SculptId} SculptType={prim.SculptType}\n" +
-                    $"  Shape: ProfileCurve(raw)=0x{s.ProfileCurve:X2} PathCurve=0x{s.PathCurve:X2} PCode={s.PCode}\n" +
-                    $"  ProfileBegin={s.ProfileBegin} ProfileEnd={s.ProfileEnd} ProfileHollow={s.ProfileHollow}\n" +
-                    $"  PathBegin={s.PathBegin} PathEnd={s.PathEnd} PathScaleX={s.PathScaleX} PathScaleY={s.PathScaleY}\n" +
-                    $"  PathShearX={s.PathShearX} PathShearY={s.PathShearY} PathTaperX={s.PathTaperX} PathTaperY={s.PathTaperY}\n" +
-                    $"  PathTwist={s.PathTwist} PathTwistBegin={s.PathTwistBegin} PathRadiusOffset={s.PathRadiusOffset}\n" +
-                    $"  PathSkew={s.PathSkew} PathRevolutions={s.PathRevolutions}");
-            }
-
             // Do not render attachments as standalone objects. They are handled by AvatarRenderer.
             if (entity.GetComponent<AttachmentComponent>() != null) return;
 
@@ -371,9 +348,10 @@ public partial class ObjectRenderer : Node3D
                 else if (prim.IsSculpt && _assetService != null && prim.SculptId != Guid.Empty)
                 {
                     // Sculpted prim: geometry comes from the sculpt-map texture, not the profile/path.
-                    if (state.LoadedMeshId != prim.SculptId)
+                    if (state.LoadedMeshId != prim.SculptId || state.LoadedSculptType != prim.SculptType)
                     {
                         state.LoadedMeshId = prim.SculptId;
+                        state.LoadedSculptType = prim.SculptType;
                         state.LoadedPrimShape = null;
                         _ = LoadAndApplySculptMeshAsync(state, prim.SculptId, prim.SculptType, prim.ProfileCurve);
                     }
@@ -413,7 +391,10 @@ public partial class ObjectRenderer : Node3D
                 }
             }
 
-            state.MeshInstance.Scale = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y);
+            var sx = float.IsNaN(prim.Scale.X) ? 1f : Mathf.Clamp(prim.Scale.X, 0.001f, 1000f);
+            var sy = float.IsNaN(prim.Scale.Y) ? 1f : Mathf.Clamp(prim.Scale.Y, 0.001f, 1000f);
+            var sz = float.IsNaN(prim.Scale.Z) ? 1f : Mathf.Clamp(prim.Scale.Z, 0.001f, 1000f);
+            state.MeshInstance.Scale = new Godot.Vector3(sx, sz, sy);
 
             // Phantom means "no collision" in SL: move off the terrain/objects layer so
             // AvatarController's ground ray (masked to layer 1) passes through, while staying
@@ -459,43 +440,12 @@ public partial class ObjectRenderer : Node3D
         if (_assetService == null) return;
 
         var mesh = await _assetService.GetMeshAsync(meshId);
-        if (mesh == null || mesh.Submeshes.Count == 0)
-        {
-            // TEMPORARY debug logging for the shard/blade investigation (fix/broken-mesh-objects):
-            // the procedural-prim path (LoadAndApplyPrimMeshAsync) has now been cleared three
-            // independent ways (index-bounds check, real-Godot ArrayMesh/AABB/tangent check,
-            // per-triangle area+edge check) -- if the shard shapes visible in-frame are a
-            // DIFFERENT prim in the same linkset, an uploaded LLMesh asset (this path) or a
-            // sculpt (LoadAndApplySculptMeshAsync below) are the remaining untested candidates.
-            // Remove once resolved.
-            string realId0 = _world?.GetEntity(state.EntityId)?.GetComponent<MetadataComponent>()?.Id.ToString() ?? "?";
-            GD.Print($"[DebugMeshAsset] {realId0} meshId={meshId} -> decode failed/empty (mesh {(mesh == null ? "null" : "empty")})");
-            return;
-        }
+        if (mesh == null || mesh.Submeshes.Count == 0) return;
 
         Godot.Callable.From(() =>
         {
             if (!IsInstanceValid(state.MeshInstance)) return;
             if (state.LoadedMeshId != meshId) return; // shape/asset changed while loading
-
-            string realId = _world?.GetEntity(state.EntityId)?.GetComponent<MetadataComponent>()?.Id.ToString() ?? "?";
-            var sb = new System.Text.StringBuilder();
-            sb.Append($"[DebugMeshAsset] {realId} meshId={meshId} -> MESH OK, submeshes={mesh.Submeshes.Count}");
-            for (int si = 0; si < mesh.Submeshes.Count; si++)
-            {
-                var sm = mesh.Submeshes[si];
-                int idxMin = int.MaxValue, idxMax = int.MinValue;
-                bool outOfRange = false;
-                foreach (var idx in sm.Indices)
-                {
-                    if (idx < idxMin) idxMin = idx;
-                    if (idx > idxMax) idxMax = idx;
-                    if (idx < 0 || idx >= sm.Positions.Length) outOfRange = true;
-                }
-                sb.Append($"\n    submesh[{si}] face={sm.FaceIndex} verts={sm.Positions.Length} indices={sm.Indices.Length}" +
-                          $" idxRange=[{(sm.Indices.Length > 0 ? idxMin : 0)},{(sm.Indices.Length > 0 ? idxMax : 0)}] OUT_OF_RANGE={outOfRange}");
-            }
-            GD.Print(sb.ToString());
 
             AssignSharedMesh(state, meshId, mesh, flipV: true);
         }).CallDeferred();
@@ -512,40 +462,12 @@ public partial class ObjectRenderer : Node3D
             if (!IsInstanceValid(state.MeshInstance)) return;
             if (state.LoadedMeshId != sculptId) return; // changed while meshing
 
-            // TEMPORARY debug logging for the shard/blade investigation (fix/broken-mesh-objects)
-            // -- see the identical note in LoadAndApplyMeshAsync above. Remove once resolved.
-            string realId = _world?.GetEntity(state.EntityId)?.GetComponent<MetadataComponent>()?.Id.ToString() ?? "?";
-            if (mesh == null || mesh.Submeshes.Count == 0)
-            {
-                GD.Print($"[DebugSculptMesh] {realId} sculptId={sculptId} sculptType={sculptType} -> FALLBACK PLACEHOLDER (mesh {(mesh == null ? "null" : "empty")})");
-            }
-            else
-            {
-                var sb = new System.Text.StringBuilder();
-                sb.Append($"[DebugSculptMesh] {realId} sculptId={sculptId} sculptType={sculptType} -> MESH OK, submeshes={mesh.Submeshes.Count}");
-                for (int si = 0; si < mesh.Submeshes.Count; si++)
-                {
-                    var sm = mesh.Submeshes[si];
-                    int idxMin = int.MaxValue, idxMax = int.MinValue;
-                    bool outOfRange = false;
-                    foreach (var idx in sm.Indices)
-                    {
-                        if (idx < idxMin) idxMin = idx;
-                        if (idx > idxMax) idxMax = idx;
-                        if (idx < 0 || idx >= sm.Positions.Length) outOfRange = true;
-                    }
-                    sb.Append($"\n    submesh[{si}] face={sm.FaceIndex} verts={sm.Positions.Length} indices={sm.Indices.Length}" +
-                              $" idxRange=[{(sm.Indices.Length > 0 ? idxMin : 0)},{(sm.Indices.Length > 0 ? idxMax : 0)}] OUT_OF_RANGE={outOfRange}");
-                }
-                GD.Print(sb.ToString());
-            }
-
             if (mesh != null && mesh.Submeshes.Count > 0)
             {
                 // LMV's SCULPT meshing path emits raw (bottom-left) UVs — unlike its prim path,
                 // which pre-flips; scenery sculpts (rocks etc.) rarely make the difference
                 // visible, so this leans on the SL-convention default rather than hard proof.
-                AssignSharedMesh(state, sculptId, mesh, flipV: true);
+                AssignSharedMesh(state, KeyForSculpt(sculptId, sculptType), mesh, flipV: true);
             }
             else
             {
@@ -612,42 +534,6 @@ public partial class ObjectRenderer : Node3D
             if (!IsInstanceValid(state.MeshInstance)) return;
             // Drop stale results: the shape may have changed again while we were meshing.
             if (state.LoadedPrimShape != shape) return;
-
-            // TEMPORARY debug logging for the shard/blade investigation (fix/broken-mesh-objects).
-            // Fires for EVERY procedural (non-mesh, non-sculpt) prim that actually reaches the live
-            // mesh-assignment point -- not gated to one hardcoded UUID -- so a still-broken sibling
-            // prim in the same linkset shows up here too, distinctly labeled by its own real UUID
-            // (MetadataComponent.Id -- NOT state.EntityId/entityIdStr, which is the internal ECS
-            // key, see the note on the other debug block above). Also counts how many times THIS
-            // object has actually reached this point, to catch two different-LOD loads racing and
-            // silently overwriting each other in an order we didn't intend. Remove once resolved.
-            int loadNum = ++state.DebugPrimMeshLoadCount;
-            string realId = _world?.GetEntity(state.EntityId)?.GetComponent<MetadataComponent>()?.Id.ToString() ?? "?";
-            if (mesh == null || mesh.Submeshes.Count == 0)
-            {
-                GD.Print($"[DebugPrimMesh] {realId} load#{loadNum} lod={lod} -> FALLBACK PLACEHOLDER (mesh {(mesh == null ? "null" : "empty")}), profileCurve={profileCurve}");
-            }
-            else
-            {
-                var sb = new System.Text.StringBuilder();
-                sb.Append($"[DebugPrimMesh] {realId} load#{loadNum} lod={lod} -> MESH OK, submeshes={mesh.Submeshes.Count}");
-                for (int si = 0; si < mesh.Submeshes.Count; si++)
-                {
-                    var sm = mesh.Submeshes[si];
-                    int idxMin = int.MaxValue, idxMax = int.MinValue;
-                    bool outOfRange = false;
-                    foreach (var idx in sm.Indices)
-                    {
-                        if (idx < idxMin) idxMin = idx;
-                        if (idx > idxMax) idxMax = idx;
-                        if (idx < 0 || idx >= sm.Positions.Length) outOfRange = true;
-                    }
-                    sb.Append($"\n    submesh[{si}] face={sm.FaceIndex} verts={sm.Positions.Length} indices={sm.Indices.Length}" +
-                              $" idxRange=[{(sm.Indices.Length > 0 ? idxMin : 0)},{(sm.Indices.Length > 0 ? idxMax : 0)}]" +
-                              $" OUT_OF_RANGE={outOfRange}");
-                }
-                GD.Print(sb.ToString());
-            }
 
             if (mesh != null && mesh.Submeshes.Count > 0)
             {
@@ -986,6 +872,32 @@ public partial class ObjectRenderer : Node3D
     /// version of this method) would silently reuse a stale, wrong-LOD ArrayMesh for every prim
     /// sharing that shape after the first one loads, since AssignSharedMesh trusts the cache over
     /// whatever MeshData it was just asked to assign.</summary>
+    /// <summary>Returns a stable GpuCache key for a (sculpt map, sculpt type) pair.
+    /// <para>MUST include the type byte. It carries the stitching mode (sphere/torus/plane/
+    /// cylinder) plus the Invert (0x40) and Mirror (0x80) flags, and every one of those changes
+    /// the generated geometry — Mirror negates X, Invert reverses the triangle winding, and the
+    /// stitching mode decides whether the vertex grid wraps, pinches at the poles, or stays an
+    /// open sheet. Reusing one sculpt map with different flags inside a single linkset is normal
+    /// SL content authoring (a tree's left and right branch are one map, one of them mirrored).</para>
+    /// <para>Keying this cache by the bare sculpt-map UUID — as it did — meant the FIRST prim to
+    /// finish uploading won, and every later prim sharing that map silently rendered the first
+    /// one's geometry no matter what its own flags said: AssignSharedMesh returns the cached
+    /// ArrayMesh and never looks at the MeshData it was just handed. That is what made the
+    /// Dangazi Forest tree read as three loose parts instead of one tree (its mirrored branch was
+    /// drawn unmirrored, pointing the wrong way), and it mis-shapes any scenery that reuses a
+    /// sculpt map with different flags. Exactly the failure mode <see cref="KeyForShape"/> already
+    /// documents for prim LOD.</para></summary>
+    private Guid KeyForSculpt(Guid sculptId, byte sculptType)
+    {
+        var key2 = (sculptId, sculptType);
+        if (!_sculptKeys.TryGetValue(key2, out var key))
+        {
+            key = Guid.NewGuid();
+            _sculptKeys[key2] = key;
+        }
+        return key;
+    }
+
     private Guid KeyForShape(PrimShape shape, MeshDetailLevel lod)
     {
         var key2 = (shape, lod);
@@ -1084,32 +996,28 @@ public partial class ObjectRenderer : Node3D
             var st = new SurfaceTool();
             st.Begin(Mesh.PrimitiveType.Triangles);
 
-            // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front. Left as-is,
-            // every triangle here rasterizes as a backface — masked by CullMode.Disabled (needed
-            // just to make anything render at all), but Godot's double-sided handling flips the
-            // normal for perceived backfaces, inverting diffuse lighting on every SL-sourced mesh
-            // in the scene while leaving shadows (depth-only, no normals) unaffected — exactly the
-            // "shadow one way, shading the other way" bug reported and confirmed this session via
-            // a T-pose + a debug shader + a gizmo pointing at the actual light direction. Fix:
-            // reverse each triangle's own winding by swapping its last two indices, so each group
-            // of 3 becomes (i0, i2, i1) instead of (i0, i1, i2) — every other per-vertex step is
-            // unchanged, only the ORDER the 3 vertices of each triangle are submitted in.
-            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
+            // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front.
+            // Reverse each triangle's winding by swapping its last two indices.
+            // We supply the vertices once, then supply the reversed indices.
+            for (int i = 0; i < sub.Positions.Length; i++)
             {
-                Span<int> tri = stackalloc[] { sub.Indices[t], sub.Indices[t + 2], sub.Indices[t + 1] };
-                foreach (int index in tri)
-                {
-                    var p = sub.Positions[index];
-                    var n = sub.Normals[index];
-                    var uv = sub.UVs[index];
+                var p = sub.Positions[i];
+                var n = sub.Normals[i];
+                var uv = sub.UVs[i];
 
-                    st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-                    st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
-                    st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
-                }
+                st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+                st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
+                st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
             }
 
-            st.GenerateTangents();
+            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
+            {
+                st.AddIndex(sub.Indices[t]);
+                st.AddIndex(sub.Indices[t + 2]);
+                st.AddIndex(sub.Indices[t + 1]);
+            }
+
+            // st.GenerateTangents(); // Disabled to prevent Vulkan driver NaN explosion on degenerate triangles
             st.Commit(arrayMesh);
             indices.Add(sub.FaceIndex);
         }
