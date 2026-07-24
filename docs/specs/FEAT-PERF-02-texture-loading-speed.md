@@ -35,15 +35,15 @@ Current-state audit (see file:line references below) found:
 
 ## Acceptance Criteria
 
-**Phase 1 (do first, low risk):**
-- [ ] `AssetService` fetch+decode in-flight dedup is a true single-execution guarantee (e.g.
+**Phase 1 (do first, low risk):** ✅ done
+- [x] `AssetService` fetch+decode in-flight dedup is a true single-execution guarantee (e.g.
       `Lazy<Task<T>>`), not just single-*storage*.
-- [ ] GPU-texture-upload path (`GetOrCreateGpuTextureAsync` equivalent) is centralized into one
+- [x] GPU-texture-upload path (`GetOrCreateGpuTextureAsync` equivalent) is centralized into one
       shared implementation used by `ObjectRenderer`, `AvatarRenderer`, and `TerrainRenderer`,
       and the CPU-side `Image`+mipmap build is deduplicated across concurrent callers for the
       same texture id (not just the network fetch).
-- [ ] Sculpt-map fetches use a separate throttle from decorative-texture fetches.
-- [ ] `dotnet build` + `dotnet test` clean; no behavior regression in existing texture/material
+- [x] Sculpt-map fetches use a separate throttle from decorative-texture fetches.
+- [x] `dotnet build` + `dotnet test` clean; no behavior regression in existing texture/material
       tests.
 
 **Phase 2 (needs protocol verification before implementing):**
@@ -69,9 +69,9 @@ Current-state audit (see file:line references below) found:
 
 ## Sub-tasks / Progress
 
-- [ ] Phase 1.1 — Single-flight fetch+decode dedup (`Lazy<Task<T>>`)
-- [ ] Phase 1.2 — Centralize + dedup GPU-upload path across the three renderers
-- [ ] Phase 1.3 — Separate sculpt-map fetch throttle from decorative-texture throttle
+- [x] Phase 1.1 — Single-flight fetch+decode dedup (`Lazy<Task<T>>`)
+- [x] Phase 1.2 — Centralize + dedup GPU-upload path across the three renderers
+- [x] Phase 1.3 — Separate sculpt-map fetch throttle from decorative-texture throttle
 - [ ] Phase 2.1 — `protocol-re`/`viewer-parity` verification of discard-level/priority semantics
 - [ ] Phase 2.2 — Implement distance/screen-size-driven progressive texture LOD
 - [ ] Phase 2.3 — Re-evaluate concurrent-fetch cap now that HTTP CAPS is preferred
