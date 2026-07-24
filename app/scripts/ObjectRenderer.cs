@@ -721,25 +721,25 @@ public partial class ObjectRenderer : Node3D
                 {
                     used.Add(pbr.BaseColorTextureId);
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId).ContinueWith(t =>
-                        Godot.Callable.From(() => material.AlbedoTexture = t.Result).CallDeferred()));
+                        Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) material.AlbedoTexture = t.Result; }).CallDeferred()));
                 }
                 if (pbr.NormalTextureId != Guid.Empty)
                 {
                     used.Add(pbr.NormalTextureId);
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId).ContinueWith(t =>
-                        Godot.Callable.From(() => { material.NormalEnabled = true; material.NormalTexture = t.Result; }).CallDeferred()));
+                        Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) { material.NormalEnabled = true; material.NormalTexture = t.Result; } }).CallDeferred()));
                 }
                 if (pbr.MetallicRoughnessTextureId != Guid.Empty)
                 {
                     used.Add(pbr.MetallicRoughnessTextureId);
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId).ContinueWith(t =>
-                        Godot.Callable.From(() => material.OrmTexture = t.Result).CallDeferred()));
+                        Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) material.OrmTexture = t.Result; }).CallDeferred()));
                 }
                 if (pbr.EmissiveTextureId != Guid.Empty)
                 {
                     used.Add(pbr.EmissiveTextureId);
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId).ContinueWith(t =>
-                        Godot.Callable.From(() => material.EmissionTexture = t.Result).CallDeferred()));
+                        Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) material.EmissionTexture = t.Result; }).CallDeferred()));
                 }
                 // No await Task.WhenAll(tasks) here! Let the textures populate asynchronously so the mesh renders immediately.
             }
@@ -754,6 +754,13 @@ public partial class ObjectRenderer : Node3D
                 {
                     Godot.Callable.From(() =>
                     {
+                        // The texture can legitimately be evicted+disposed by the GpuCache between
+                        // this continuation being scheduled and actually running on the main thread
+                        // -- e.g. the object this material belongs to went out of draw distance and
+                        // released its ref in the meantime, and nothing else was still holding one.
+                        // Checked here (inside the deferred callback, not before scheduling it) so
+                        // there's no gap left for a same-frame eviction to invalidate the check.
+                        if (!IsInstanceValid(tex)) return;
                         material.AlbedoTexture = tex;
                         ApplyAlphaCutout(material, tex);
                     }).CallDeferred();
