@@ -345,7 +345,16 @@ public class AssetService
         return _inflightTextures.GetOrAdd(textureId, async id => {
             try {
                 var result = await FetchAndDecodeTextureAsync(id, isSculpt).ConfigureAwait(false);
-                if (result != null) {
+                // Mirror the disk cache's own guard (see FetchAndDecodeTextureAsync) -- a degraded
+                // result can still be returned (better than nothing on the last retry attempt), but
+                // must never be memoized. Caching it here would pin the bad decode in memory for a
+                // full 5-minute sliding window, so every caller for this textureId during that
+                // window -- including a same-process relogin, which does NOT restart the app or
+                // clear this cache -- gets served the cached noise instead of ever getting a chance
+                // to retry. Only a full app restart (a fresh, empty _memCache) let a later fetch
+                // attempt succeed, which is why this looked like it needed a full relaunch to fix
+                // rather than just logging back in.
+                if (result != null && !result.IsDegraded) {
                     long size = result.Width * result.Height * 4;
                     if (size <= 0) size = 1024;
                     _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(5) });
