@@ -377,7 +377,15 @@ public class AssetService
         }
     }
 
-    private static readonly SemaphoreSlim _textureFetchThrottle = new SemaphoreSlim(4, 4);
+    // FEAT-PERF-02: two separate pools, not one shared SemaphoreSlim(4,4), so a burst of ordinary
+    // decorative-texture fetches can never make a sculpt map (which blocks the object's *shape*,
+    // not just its looks -- see GetSculptMeshAsync) queue behind them for up to 60s per attempt.
+    // Total stays at 4 (3+1), same as before this split, to avoid reopening the UDP-packet-drop
+    // risk that originally motivated capping this at 4 (a14229d) -- raising the total is a
+    // separate, protocol-re-reviewed decision (FEAT-PERF-02 Phase 2.3), not bundled into this
+    // low-risk reshuffle.
+    private static readonly SemaphoreSlim _textureFetchThrottle = new SemaphoreSlim(3, 3);
+    private static readonly SemaphoreSlim _sculptFetchThrottle = new SemaphoreSlim(1, 1);
 
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, bool isSculpt)
     {
@@ -395,11 +403,13 @@ public class AssetService
             }
         }
 
+        var throttle = isSculpt ? _sculptFetchThrottle : _textureFetchThrottle;
+
         for (int attempt = 0; attempt < 3; attempt++)
         {
             if (!_session.IsConnected) return null;
 
-            await _textureFetchThrottle.WaitAsync().ConfigureAwait(false);
+            await throttle.WaitAsync().ConfigureAwait(false);
             byte[]? bytes;
             try
             {
@@ -416,7 +426,7 @@ public class AssetService
             }
             finally
             {
-                _textureFetchThrottle.Release();
+                throttle.Release();
             }
 
             if (bytes is { Length: > 0 })
