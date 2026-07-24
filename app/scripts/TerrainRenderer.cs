@@ -123,56 +123,17 @@ public partial class TerrainRenderer : Node3D
         node.UsedTextureIds = newTextureIds;
     }
 
-    private async System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
+    // FEAT-PERF-02: thin wrapper delegating to GpuCache.GetOrUploadTextureAsync (single-flight
+    // fetch/decode/Image/upload shared across every renderer, not just terrain). generateMipmaps
+    // stays false here, matching this method's pre-existing behavior -- unlike ObjectRenderer/
+    // AvatarRenderer, terrain detail textures were never mipmapped (tiled many times across a
+    // large mesh via the terrain shader), so this preserves that rather than silently changing it.
+    private System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
     {
-        if (textureId == Guid.Empty) return null;
+        if (textureId == Guid.Empty || _gpuCache == null || _assetService == null)
+            return System.Threading.Tasks.Task.FromResult<ImageTexture?>(null);
 
-        if (_gpuCache != null)
-        {
-            var cached = _gpuCache.Get(textureId) as ImageTexture;
-            if (cached != null) return cached;
-        }
-
-        if (_assetService == null) return null;
-
-        var textureData = await _assetService.GetTextureAsync(textureId);
-        if (textureData == null) return null;
-
-        var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
-
-        var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-        
-        Godot.Callable.From(() =>
-        {
-            if (_gpuCache != null)
-            {
-                var cached = _gpuCache.Get(textureId) as ImageTexture;
-                if (cached != null)
-                {
-                    image?.Dispose();
-                    tcs.SetResult(cached);
-                    return;
-                }
-            }
-
-            if (image == null)
-            {
-                tcs.SetResult(null);
-                return;
-            }
-
-            var tex = ImageTexture.CreateFromImage(image);
-
-            if (tex != null && _gpuCache != null)
-            {
-                long size = textureData.Width * textureData.Height * 4;
-                _gpuCache.Put(textureId, tex, size);
-            }
-            tcs.SetResult(tex);
-            image.Dispose();
-        }).CallDeferred();
-
-        return await tcs.Task;
+        return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: false);
     }
 
     private void ApplyTerrainTextures(ulong regionHandle, ImageTexture? tex0, ImageTexture? tex1, ImageTexture? tex2, ImageTexture? tex3)

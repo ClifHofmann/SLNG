@@ -817,57 +817,15 @@ public partial class ObjectRenderer : Node3D
         material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
     }
 
-    private async System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
+    // FEAT-PERF-02: thin wrapper kept so the 5 call sites below don't need to change -- the real
+    // fetch/decode/Image/mipmap/upload work (and its single-flight dedup across every renderer,
+    // not just this one) now lives in GpuCache.GetOrUploadTextureAsync.
+    private System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
     {
-        if (_gpuCache != null)
-        {
-            var cached = _gpuCache.Get(textureId) as ImageTexture;
-            if (cached != null) return cached;
-        }
+        if (_gpuCache == null || _assetService == null)
+            return System.Threading.Tasks.Task.FromResult<ImageTexture?>(null);
 
-        if (_assetService == null) return null;
-
-        var textureData = await _assetService.GetTextureAsync(textureId);
-        if (textureData == null) return null;
-
-        // Create on main thread, but we can do it via CallDeferred and TaskCompletionSource
-        var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
-
-        // Create the image and generate mipmaps on the thread pool, NOT the main thread!
-        var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-        if (image != null) image.GenerateMipmaps();
-
-        Godot.Callable.From(() =>
-        {
-            if (_gpuCache != null)
-            {
-                var cached = _gpuCache.Get(textureId) as ImageTexture;
-                if (cached != null)
-                {
-                    image?.Dispose();
-                    tcs.SetResult(cached);
-                    return;
-                }
-            }
-
-            if (image == null)
-            {
-                tcs.SetResult(null);
-                return;
-            }
-
-            var tex = ImageTexture.CreateFromImage(image);
-
-            if (tex != null && _gpuCache != null)
-            {
-                long size = textureData.Width * textureData.Height * 4;
-                _gpuCache.Put(textureId, tex, size);
-            }
-            tcs.SetResult(tex);
-            image.Dispose();
-        }).CallDeferred();
-
-        return await tcs.Task;
+        return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true);
     }
 
     /// <summary>Returns a stable GpuCache key for a (shape, LOD) pair -- one id per unique
