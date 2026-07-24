@@ -409,19 +409,24 @@ public class AssetService
                         try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
                     }
 
-                    // A "degraded" sculpt-map decode almost always means the J2C bytes we got over
-                    // the wire were truncated (dropped UDP packet — see docs/HANDOVER_CLAUDE.md) and
-                    // the CoreJ2K fallback filled the gaps with guessed/averaged pixel values. For a
-                    // normal texture that's a one-frame blur; for a sculpt map it corrupts every
-                    // vertex position, producing melted/collapsed geometry. Retry the fetch instead
-                    // of handing that geometry-corrupting data to the mesher, as long as we still
-                    // have attempts left — a re-fetch has a real chance of getting the complete
-                    // bytes. Only surrender to the degraded result on the last attempt (a wrong-but-
-                    // present mesh still beats no mesh at all).
-                    if (isSculpt && result.IsDegraded)
+                    // A "degraded" decode almost always means the J2C bytes we got over the wire
+                    // were truncated (dropped UDP packet — see docs/HANDOVER_CLAUDE.md) and the
+                    // CoreJ2K fallback filled the gaps with guessed/averaged pixel values. For a
+                    // sculpt map that corrupts every vertex position, producing melted/collapsed
+                    // geometry — the original reason this retry existed, gated to `isSculpt` only.
+                    // That gate was wrong: it assumed a degraded REGULAR texture is just "a one-frame
+                    // blur", harmless enough to hand to the renderer as-is. Confirmed false on an
+                    // avatar bake texture — the fallback fill produced a full TV-static/noise pattern
+                    // across the skin, not a blur, because CoreJ2K's gap-fill degrades far worse than
+                    // a blur on some content/resolutions. Retry for every texture, not just sculpts,
+                    // as long as attempts remain — a re-fetch has a real chance of getting the
+                    // complete bytes. Only surrender to the degraded result on the last attempt (a
+                    // wrong-but-present texture still beats none at all).
+                    if (result.IsDegraded)
                     {
                         if (attempt < 2) continue; // retry
-                        return null; // Force fallback, a degraded sculpt is a giant shard that ruins the view!
+                        if (isSculpt) return null; // a degraded sculpt is a giant shard that ruins the view — force the caller's placeholder fallback instead
+                        return result; // no better option left for a regular texture; visibly wrong beats a permanently blank/placeholder surface
                     }
                     return result;
                 }
