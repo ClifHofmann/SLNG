@@ -34,6 +34,11 @@ public partial class ObjectRenderer : Node3D
         // What we've already loaded, so position/scale updates don't rebuild the mesh or
         // re-create the material every frame. Guid.Empty means "not yet loaded".
         public Guid LoadedMeshId;
+        // The sculpt type byte the currently-loaded sculpt geometry was built with. Tracked
+        // alongside LoadedMeshId because an edit can change the stitching mode or the
+        // Invert/Mirror flags without touching the sculpt map's UUID; gating the reload on the
+        // id alone left the object rendering its previous (e.g. unmirrored) geometry forever.
+        public byte LoadedSculptType;
         public Guid LoadedTextureId = NotLoaded;
         public Guid LoadedMaterialId = NotLoaded;
         // NaN so the very first UpdateVisual always counts as "changed" (a real ColorTint can
@@ -63,7 +68,10 @@ public partial class ObjectRenderer : Node3D
     // Meshes are shared and budgeted through the GpuCache (LRU + refcount), keyed by mesh
     // asset id or by a stable id assigned per unique prim shape. Identical objects share one
     // upload; out-of-range objects release their ref so the cache can reclaim the VRAM.
-    private readonly Dictionary<PrimShape, Guid> _primShapeKeys = new();
+    private readonly Dictionary<(PrimShape Shape, MeshDetailLevel Lod), Guid> _primShapeKeys = new();
+
+    // Same idea for sculpts: one GpuCache key per (sculpt map, sculpt type) pair. See KeyForSculpt.
+    private readonly Dictionary<(Guid SculptId, byte SculptType), Guid> _sculptKeys = new();
 
     // Per shared-mesh key: the SL face number of each surface, so any instance can apply that
     // face's texture via SetSurfaceOverrideMaterial.
@@ -83,7 +91,7 @@ public partial class ObjectRenderer : Node3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-07-22-face-color-reapply-gate-fixed";
+    private const string BuildMarker = "2026-07-24-hollow-cap-and-sculpt-cache-fix";
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
@@ -340,9 +348,10 @@ public partial class ObjectRenderer : Node3D
                 else if (prim.IsSculpt && _assetService != null && prim.SculptId != Guid.Empty)
                 {
                     // Sculpted prim: geometry comes from the sculpt-map texture, not the profile/path.
-                    if (state.LoadedMeshId != prim.SculptId)
+                    if (state.LoadedMeshId != prim.SculptId || state.LoadedSculptType != prim.SculptType)
                     {
                         state.LoadedMeshId = prim.SculptId;
+                        state.LoadedSculptType = prim.SculptType;
                         state.LoadedPrimShape = null;
                         _ = LoadAndApplySculptMeshAsync(state, prim.SculptId, prim.SculptType, prim.ProfileCurve);
                     }
@@ -354,7 +363,8 @@ public partial class ObjectRenderer : Node3D
                     // changes. Falls back to a primitive solid if meshing fails.
                     state.LoadedPrimShape = prim.Shape;
                     state.LoadedMeshId = Guid.Empty;
-                    _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve);
+                    var lod = PickPrimDetailLevel(entity, prim.Scale);
+                    _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve, lod);
                 }
 
                 // Re-apply materials when the default texture/material/color changes (a proxy for
@@ -381,7 +391,10 @@ public partial class ObjectRenderer : Node3D
                 }
             }
 
-            state.MeshInstance.Scale = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y);
+            var sx = float.IsNaN(prim.Scale.X) ? 1f : Mathf.Clamp(prim.Scale.X, 0.001f, 1000f);
+            var sy = float.IsNaN(prim.Scale.Y) ? 1f : Mathf.Clamp(prim.Scale.Y, 0.001f, 1000f);
+            var sz = float.IsNaN(prim.Scale.Z) ? 1f : Mathf.Clamp(prim.Scale.Z, 0.001f, 1000f);
+            state.MeshInstance.Scale = new Godot.Vector3(sx, sz, sy);
 
             // Phantom means "no collision" in SL: move off the terrain/objects layer so
             // AvatarController's ground ray (masked to layer 1) passes through, while staying
@@ -433,6 +446,7 @@ public partial class ObjectRenderer : Node3D
         {
             if (!IsInstanceValid(state.MeshInstance)) return;
             if (state.LoadedMeshId != meshId) return; // shape/asset changed while loading
+
             AssignSharedMesh(state, meshId, mesh, flipV: true);
         }).CallDeferred();
     }
@@ -453,7 +467,7 @@ public partial class ObjectRenderer : Node3D
                 // LMV's SCULPT meshing path emits raw (bottom-left) UVs — unlike its prim path,
                 // which pre-flips; scenery sculpts (rocks etc.) rarely make the difference
                 // visible, so this leans on the SL-convention default rather than hard proof.
-                AssignSharedMesh(state, sculptId, mesh, flipV: true);
+                AssignSharedMesh(state, KeyForSculpt(sculptId, sculptType), mesh, flipV: true);
             }
             else
             {
@@ -478,11 +492,42 @@ public partial class ObjectRenderer : Node3D
         }).CallDeferred();
     }
 
-    private async System.Threading.Tasks.Task LoadAndApplyPrimMeshAsync(VisualState state, PrimShape shape, byte profileCurve)
+    /// <summary>
+    /// Picks a <see cref="MeshDetailLevel"/> from the object's apparent (on-screen) size --
+    /// scale divided by distance to the local agent, approximating a real SL viewer's own
+    /// distance/size-based LOD. Needed because <see cref="SLNG.Assets.AssetService.GetPrimMeshAsync"/>
+    /// otherwise always defaults to Medium (12 sides for a curved profile) regardless of how
+    /// large or close the object is: a heavily-scaled sphere/torus/ring cut rendered at Medium is
+    /// visibly faceted -- flat, angular, "origami" -- compared to Firestorm's much smoother
+    /// curve. Flat-profile prims (box/prism) are unaffected either way: LibreMetaverse's mesher
+    /// only varies side count for curved profiles (Circle/HalfCircle/EqualTriangle), so this is
+    /// safe to compute unconditionally.
+    /// </summary>
+    private MeshDetailLevel PickPrimDetailLevel(Entity entity, System.Numerics.Vector3 scale)
+    {
+        if (_world == null || !RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos))
+            return MeshDetailLevel.Medium;
+
+        var transform = entity.GetComponent<TransformComponent>();
+        if (transform == null) return MeshDetailLevel.Medium;
+
+        var objectPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
+        float distance = objectPos.DistanceTo(agentPos);
+
+        float maxScale = Mathf.Max(scale.X, Mathf.Max(scale.Y, scale.Z));
+        float apparentSize = maxScale / Mathf.Max(distance, 0.1f);
+
+        if (apparentSize > 0.3f) return MeshDetailLevel.Highest;
+        if (apparentSize > 0.1f) return MeshDetailLevel.High;
+        if (apparentSize > 0.03f) return MeshDetailLevel.Medium;
+        return MeshDetailLevel.Low;
+    }
+
+    private async System.Threading.Tasks.Task LoadAndApplyPrimMeshAsync(VisualState state, PrimShape shape, byte profileCurve, MeshDetailLevel lod)
     {
         if (_assetService == null) return;
 
-        var mesh = await _assetService.GetPrimMeshAsync(shape);
+        var mesh = await _assetService.GetPrimMeshAsync(shape, lod);
 
         Godot.Callable.From(() =>
         {
@@ -499,7 +544,7 @@ public partial class ObjectRenderer : Node3D
                 // invisible on tiled/symmetric textures, but upside-down on anything oriented
                 // (a HUD's logo/text). This is the SAME flip mesh assets already use; prims were
                 // wrongly exempted on the assumption MeshFoundry's internal flip cancelled out.
-                AssignSharedMesh(state, KeyForShape(shape), mesh, flipV: true);
+                AssignSharedMesh(state, KeyForShape(shape, lod), mesh, flipV: true);
             }
             else
             {
@@ -542,17 +587,30 @@ public partial class ObjectRenderer : Node3D
             return;
         }
 
-        var allUsed = new List<Guid>();
+        var faceTasks = new List<System.Threading.Tasks.Task<(int Surface, StandardMaterial3D Material, List<Guid> Used)>>();
+
         for (int surface = 0; surface < faceIndices.Length; surface++)
         {
             int faceIdx = faceIndices[surface];
             FaceTexture ft = (prim.Faces != null && faceIdx >= 0 && faceIdx < prim.Faces.Length)
                 ? prim.Faces[faceIdx] : defaultFace;
 
-            var (material, used) = await BuildFaceMaterialAsync(ft);
-            allUsed.AddRange(used);
-
             int surf = surface; // capture
+            faceTasks.Add(BuildFaceMaterialAsync(ft).ContinueWith(t => 
+            {
+                return (surf, t.Result.Material, t.Result.Used);
+            }, System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously));
+        }
+
+        var results = await System.Threading.Tasks.Task.WhenAll(faceTasks);
+        var allUsed = new List<Guid>();
+
+        foreach (var result in results)
+        {
+            allUsed.AddRange(result.Used);
+            int surf = result.Surface;
+            var material = result.Material;
+
             Godot.Callable.From(() =>
             {
                 if (!IsInstanceValid(state.MeshInstance) || state.MeshInstance.Mesh == null) return;
@@ -768,6 +826,10 @@ public partial class ObjectRenderer : Node3D
         // Create on main thread, but we can do it via CallDeferred and TaskCompletionSource
         var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
 
+        // Create the image and generate mipmaps on the thread pool, NOT the main thread!
+        var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+        if (image != null) image.GenerateMipmaps();
+
         Godot.Callable.From(() =>
         {
             if (_gpuCache != null)
@@ -775,13 +837,18 @@ public partial class ObjectRenderer : Node3D
                 var cached = _gpuCache.Get(textureId) as ImageTexture;
                 if (cached != null)
                 {
+                    image?.Dispose();
                     tcs.SetResult(cached);
                     return;
                 }
             }
 
-            var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-            image.GenerateMipmaps(); // so LinearWithMipmaps actually filters — no shimmer/aliasing at distance
+            if (image == null)
+            {
+                tcs.SetResult(null);
+                return;
+            }
+
             var tex = ImageTexture.CreateFromImage(image);
 
             if (tex != null && _gpuCache != null)
@@ -796,13 +863,48 @@ public partial class ObjectRenderer : Node3D
         return await tcs.Task;
     }
 
-    /// <summary>Returns a stable GpuCache key for a prim shape (one id per unique shape).</summary>
-    private Guid KeyForShape(PrimShape shape)
+    /// <summary>Returns a stable GpuCache key for a (shape, LOD) pair -- one id per unique
+    /// shape+detail-level combination. MUST include lod: <see cref="AssetService.GetPrimMeshAsync"/>
+    /// generates different geometry (vertex/side count) for the same shape at different
+    /// MeshDetailLevel, and this cache is otherwise the ONLY thing standing between "the correct
+    /// mesh for this LOD" and "whatever mesh some other differently-scaled/positioned prim with
+    /// the identical PrimShape happened to cache first" -- shape-only keying (the pre-LOD-support
+    /// version of this method) would silently reuse a stale, wrong-LOD ArrayMesh for every prim
+    /// sharing that shape after the first one loads, since AssignSharedMesh trusts the cache over
+    /// whatever MeshData it was just asked to assign.</summary>
+    /// <summary>Returns a stable GpuCache key for a (sculpt map, sculpt type) pair.
+    /// <para>MUST include the type byte. It carries the stitching mode (sphere/torus/plane/
+    /// cylinder) plus the Invert (0x40) and Mirror (0x80) flags, and every one of those changes
+    /// the generated geometry — Mirror negates X, Invert reverses the triangle winding, and the
+    /// stitching mode decides whether the vertex grid wraps, pinches at the poles, or stays an
+    /// open sheet. Reusing one sculpt map with different flags inside a single linkset is normal
+    /// SL content authoring (a tree's left and right branch are one map, one of them mirrored).</para>
+    /// <para>Keying this cache by the bare sculpt-map UUID — as it did — meant the FIRST prim to
+    /// finish uploading won, and every later prim sharing that map silently rendered the first
+    /// one's geometry no matter what its own flags said: AssignSharedMesh returns the cached
+    /// ArrayMesh and never looks at the MeshData it was just handed. That is what made the
+    /// Dangazi Forest tree read as three loose parts instead of one tree (its mirrored branch was
+    /// drawn unmirrored, pointing the wrong way), and it mis-shapes any scenery that reuses a
+    /// sculpt map with different flags. Exactly the failure mode <see cref="KeyForShape"/> already
+    /// documents for prim LOD.</para></summary>
+    private Guid KeyForSculpt(Guid sculptId, byte sculptType)
     {
-        if (!_primShapeKeys.TryGetValue(shape, out var key))
+        var key2 = (sculptId, sculptType);
+        if (!_sculptKeys.TryGetValue(key2, out var key))
         {
             key = Guid.NewGuid();
-            _primShapeKeys[shape] = key;
+            _sculptKeys[key2] = key;
+        }
+        return key;
+    }
+
+    private Guid KeyForShape(PrimShape shape, MeshDetailLevel lod)
+    {
+        var key2 = (shape, lod);
+        if (!_primShapeKeys.TryGetValue(key2, out var key))
+        {
+            key = Guid.NewGuid();
+            _primShapeKeys[key2] = key;
         }
         return key;
     }
@@ -894,32 +996,28 @@ public partial class ObjectRenderer : Node3D
             var st = new SurfaceTool();
             st.Begin(Mesh.PrimitiveType.Triangles);
 
-            // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front. Left as-is,
-            // every triangle here rasterizes as a backface — masked by CullMode.Disabled (needed
-            // just to make anything render at all), but Godot's double-sided handling flips the
-            // normal for perceived backfaces, inverting diffuse lighting on every SL-sourced mesh
-            // in the scene while leaving shadows (depth-only, no normals) unaffected — exactly the
-            // "shadow one way, shading the other way" bug reported and confirmed this session via
-            // a T-pose + a debug shader + a gizmo pointing at the actual light direction. Fix:
-            // reverse each triangle's own winding by swapping its last two indices, so each group
-            // of 3 becomes (i0, i2, i1) instead of (i0, i1, i2) — every other per-vertex step is
-            // unchanged, only the ORDER the 3 vertices of each triangle are submitted in.
-            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
+            // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front.
+            // Reverse each triangle's winding by swapping its last two indices.
+            // We supply the vertices once, then supply the reversed indices.
+            for (int i = 0; i < sub.Positions.Length; i++)
             {
-                Span<int> tri = stackalloc[] { sub.Indices[t], sub.Indices[t + 2], sub.Indices[t + 1] };
-                foreach (int index in tri)
-                {
-                    var p = sub.Positions[index];
-                    var n = sub.Normals[index];
-                    var uv = sub.UVs[index];
+                var p = sub.Positions[i];
+                var n = sub.Normals[i];
+                var uv = sub.UVs[i];
 
-                    st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-                    st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
-                    st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
-                }
+                st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+                st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
+                st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
             }
 
-            st.GenerateTangents();
+            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
+            {
+                st.AddIndex(sub.Indices[t]);
+                st.AddIndex(sub.Indices[t + 2]);
+                st.AddIndex(sub.Indices[t + 1]);
+            }
+
+            // st.GenerateTangents(); // Disabled to prevent Vulkan driver NaN explosion on degenerate triangles
             st.Commit(arrayMesh);
             indices.Add(sub.FaceIndex);
         }

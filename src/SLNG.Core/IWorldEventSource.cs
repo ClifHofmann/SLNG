@@ -19,4 +19,6 @@ public interface IWorldEventSource
     event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
     event EventHandler<AvatarAppearanceEvent>? AvatarAppearanceReceived;
     event EventHandler<AvatarAnimationEvent>? AvatarAnimationReceived;
+    event EventHandler<NameResolvedEvent>? NameResolved;
+    event EventHandler<NameResolvedEvent>? DisplayNameResolved;
 }

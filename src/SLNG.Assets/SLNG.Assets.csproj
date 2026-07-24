@@ -22,4 +22,8 @@
     <ProjectReference Include="..\SLNG.Net\SLNG.Net.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="SLNG.Assets.Tests" />
+  </ItemGroup>
+
 </Project>

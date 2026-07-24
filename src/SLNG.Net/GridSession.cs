@@ -37,6 +37,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<ObjectPropertiesEvent>? ObjectPropertiesReceived;
     public event EventHandler<PhysicsPropertiesEvent>? PhysicsPropertiesReceived;
     public event EventHandler<NameResolvedEvent>? NameResolved;
+    public event EventHandler<NameResolvedEvent>? DisplayNameResolved;
     public event EventHandler<AlertMessageEvent>? AlertMessageReceived;
     public event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
     public event EventHandler<TerrainSettingsEvent>? TerrainSettingsReceived;
@@ -146,6 +147,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Objects.ObjectProperties += OnObjectPropertiesFull;
         _client.Objects.PhysicsProperties += OnPhysicsProperties;
         _client.Avatars.UUIDNameReply += OnUUIDNameReply;
+        _client.Avatars.DisplayNameUpdate += OnDisplayNameUpdate;
         _client.Groups.GroupNamesReply += OnGroupNamesReply;
         _client.Self.AlertMessage += OnAlertMessage;
         _client.Objects.KillObject += OnKillObject;
@@ -308,11 +310,27 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private void OnUUIDNameReply(object? sender, UUIDNameReplyEventArgs e)
     {
+        var idsToRequest = new System.Collections.Generic.List<UUID>();
         foreach (var kvp in e.Names)
         {
             var id = kvp.Key.Guid;
             _nameCache[id] = kvp.Value;
             NameResolved?.Invoke(this, new NameResolvedEvent(id, kvp.Value));
+            idsToRequest.Add(kvp.Key);
+        }
+        if (idsToRequest.Count > 0)
+        {
+            try { _client.Avatars.GetDisplayNamesAsync(idsToRequest); } catch { /* Ignore if not supported/disabled */ }
+        }
+    }
+
+    private void OnDisplayNameUpdate(object? sender, DisplayNameUpdateEventArgs e)
+    {
+        var id = e.DisplayName.ID.Guid;
+        string displayName = e.DisplayName.DisplayName;
+        if (!string.IsNullOrEmpty(displayName))
+        {
+            DisplayNameResolved?.Invoke(this, new NameResolvedEvent(id, displayName));
         }
     }
 
@@ -616,7 +634,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 // Sphere/Torus/Plane/Cylinder sculpt: geometry comes from the sculpt-map texture.
                 isSculpt = true;
                 sculptId = prim.Sculpt.SculptTexture.Guid;
-                sculptType = (byte)prim.Sculpt.Type;
+                // The SL sculpt-type byte packs the base type (low 3 bits) with two render flags:
+                // Invert (0x40, render inside-out) and Mirror (0x80, mirror on X). LibreMetaverse's
+                // prim.Sculpt.Type PROPERTY masks those flags off (& 7), so reading it alone silently
+                // dropped them — a sculpt authored inverted/mirrored (very common for organic sculpts
+                // like trees) was then built with the wrong winding/handedness: internally clean
+                // geometry (no NaN, no spikes) but wrapped wrong, so it rendered "disintegrated".
+                // Re-pack the flags so the whole byte reaches the mesher (SculptData.Type's setter
+                // stores it verbatim, and its Invert/Mirror getters read the flag bits back).
+                sculptType = (byte)((byte)prim.Sculpt.Type
+                    | (prim.Sculpt.Invert ? (byte)LibreMetaverse.SculptType.Invert : 0)
+                    | (prim.Sculpt.Mirror ? (byte)LibreMetaverse.SculptType.Mirror : 0));
             }
         }
 
@@ -656,9 +684,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         // Convert the prim's construction data to a neutral PrimShape so the asset layer can
         // regenerate real geometry without seeing a LibreMetaverse type.
+        //
+        // IMPORTANT: pd.profileCurve (raw field, lowercase) is a single packed byte carrying BOTH
+        // the profile curve type (Circle/Square/Triangle/... in the low nibble, 0x00-0x05) AND the
+        // hollow-cut's own shape (HoleType Same/Circle/Square/Triangle, pre-shifted into the high
+        // nibble as 0x00/0x10/0x20/0x30 — see LibreMetaverse.Types.EnumsPrimitive). pd.ProfileCurve
+        // (the PROPERTY, capital P) masks that byte down to just the low nibble
+        // (`profileCurve & PROFILE_MASK`), silently discarding the hole-shape bits. Using the
+        // property here (as this line previously did) meant every hollow prim's hole shape got
+        // zeroed out end-to-end -- reconstructed as HoleType.Same regardless of what the creator
+        // actually chose, which is only coincidentally correct when "Same" was already picked.
+        // Passing the raw packed byte through lets PrimMeshService.Generate() assign it straight
+        // back onto ConstructionData.profileCurve (also the raw field) and get BOTH nibbles right.
         var pd = prim.PrimData;
         var shape = new PrimShape(
-            (byte)pd.ProfileCurve,
+            pd.profileCurve,
             (byte)pd.PathCurve,
             pd.PathBegin, pd.PathEnd,
             pd.PathScaleX, pd.PathScaleY,
@@ -1789,6 +1829,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Objects.ObjectProperties -= OnObjectPropertiesFull;
         _client.Objects.PhysicsProperties -= OnPhysicsProperties;
         _client.Avatars.UUIDNameReply -= OnUUIDNameReply;
+        _client.Avatars.DisplayNameUpdate -= OnDisplayNameUpdate;
         _client.Groups.GroupNamesReply -= OnGroupNamesReply;
         _client.Self.AlertMessage -= OnAlertMessage;
         _client.Objects.KillObject -= OnKillObject;

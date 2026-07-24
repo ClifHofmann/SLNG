@@ -140,13 +140,21 @@ public partial class AvatarRenderer : Node3D
         // which are vertex-morphed AND re-skinned every shape update via RebuildBodyMorphs — a worn
         // mesh's own vertices never change with shape, so nothing else would ever revisit its Skin.
         public List<(MeshInstance3D Mi, MeshData MeshData, Guid MeshId)> RiggedAttachments { get; } = new();
+        public Godot.Control? NameTag { get; set; }
 
         public AvatarVisual()
         {
             Root = new Node3D();
         }
 
-        public void QueueFree() => Root.QueueFree();
+        public void QueueFree()
+        {
+            if (Root != null && GodotObject.IsInstanceValid(Root)) Root.QueueFree();
+            if (NameTag != null && GodotObject.IsInstanceValid(NameTag))
+            {
+                NameTag.QueueFree();
+            }
+        }
     }
 
     private World? _world;
@@ -179,6 +187,7 @@ public partial class AvatarRenderer : Node3D
     // OnEntityRemoved only survives the CallDeferred hop as a bare Guid, so the owner has to be
     // captured here at attach time rather than re-looked-up from the (by-then-gone) entity.
     private readonly Dictionary<Guid, (Guid MeshId, FaceTexture[]? Faces, FaceTexture DefaultFace, Guid AvatarEntityId)> _attachmentMeshIds = new();
+    private Godot.CanvasLayer? _nameTagLayer;
 
     // Bump this string with every fix and check it's actually printed at the top of the log
     // before trusting anything else in it — this session got burned repeatedly by stale/
@@ -211,11 +220,14 @@ public partial class AvatarRenderer : Node3D
 
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
     {
-        GD.Print($"[AvatarRenderer] BUILD MARKER: {BuildMarker}");
+        // GD.Print($"[AvatarRenderer] BUILD MARKER: {BuildMarker}");
         _world = world;
         _assetService = assetService;
         _session = session;
         _gpuCache = gpuCache;
+
+        _nameTagLayer = new Godot.CanvasLayer { Layer = 1, Name = "AvatarNameTags" };
+        AddChild(_nameTagLayer);
 
         // Load the SL Bento skeleton definition. Read via Godot's FileAccess so it works
         // both from source and from an exported .pck — System.IO + GlobalizePath cannot
@@ -230,11 +242,11 @@ public partial class AvatarRenderer : Node3D
             }
 
             _avatarSkeleton = AvatarSkeleton.LoadFromXml(file.GetAsText());
-            GD.Print($"[AvatarRenderer] Loaded Bento skeleton: {_avatarSkeleton.Bones.Count} entries");
+            // GD.Print($"[AvatarRenderer] Loaded Bento skeleton: {_avatarSkeleton.Bones.Count} entries");
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[AvatarRenderer] Failed to load skeleton: {ex.Message}. Falling back to capsule.");
+            // GD.PrintErr($"[AvatarRenderer] Failed to load skeleton: {ex.Message}. Falling back to capsule.");
             _avatarSkeleton = null;
         }
 
@@ -294,6 +306,44 @@ public partial class AvatarRenderer : Node3D
         // Add the visual root to the tree first so all sub-nodes inherit the active scene tree lifecycle
         AddChild(visual.Root);
 
+        var nameText = avatar.FirstName;
+        if (!string.IsNullOrEmpty(avatar.LastName) && avatar.LastName != "Resident")
+        {
+            nameText += $" {avatar.LastName}";
+        }
+        if (!string.IsNullOrEmpty(avatar.DisplayName) && avatar.DisplayName != nameText)
+        {
+            nameText = $"{avatar.DisplayName}\n{nameText}";
+        }
+
+        var panel = new Godot.PanelContainer { Name = "NameTag" };
+        var styleBox = new Godot.StyleBoxFlat
+        {
+            BgColor = new Godot.Color(0, 0, 0, 0.5f),
+            CornerRadiusTopLeft = 6,
+            CornerRadiusTopRight = 6,
+            CornerRadiusBottomLeft = 6,
+            CornerRadiusBottomRight = 6,
+            ContentMarginLeft = 8,
+            ContentMarginRight = 8,
+            ContentMarginTop = 4,
+            ContentMarginBottom = 4
+        };
+        panel.AddThemeStyleboxOverride("panel", styleBox);
+
+        var label = new Godot.Label
+        {
+            Name = "Label",
+            Text = nameText,
+            HorizontalAlignment = Godot.HorizontalAlignment.Center,
+            VerticalAlignment = Godot.VerticalAlignment.Center
+        };
+        label.AddThemeFontSizeOverride("font_size", 14);
+        panel.AddChild(label);
+
+        visual.NameTag = panel;
+        if (_nameTagLayer != null) _nameTagLayer.AddChild(panel);
+
         // Neutral skin tone as placeholder — replaced by baked textures once they arrive.
         var color = new Color(0.76f, 0.60f, 0.46f);
 
@@ -316,7 +366,7 @@ public partial class AvatarRenderer : Node3D
                 new Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)>());
 
             var charDir = GetCharacterDir();
-            GD.Print($"[AvatarRenderer] character dir: {charDir}");
+            // GD.Print($"[AvatarRenderer] character dir: {charDir}");
             var bodyData = AvatarBodyMeshService.Load(charDir);
 
             if (bodyData != null)
@@ -371,7 +421,7 @@ public partial class AvatarRenderer : Node3D
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
         if (_visuals.TryGetValue(entityId, out var visual))
         {
-            if (GodotObject.IsInstanceValid(visual.Root)) visual.QueueFree();
+            visual.QueueFree();
             _visuals.Remove(entityId);
         }
         if (_attachmentNodes.TryGetValue(entityId, out var attachNode))
@@ -419,6 +469,22 @@ public partial class AvatarRenderer : Node3D
         if (entity == null || entity.GetComponent<AvatarComponent>() == null) return;
 
         var avatar = entity.GetComponent<AvatarComponent>()!;
+
+        if (visual.NameTag is Godot.PanelContainer panel)
+        {
+            var label = panel.GetNodeOrNull<Godot.Label>("Label");
+            if (label != null)
+            {
+                string nameText = avatar.FirstName;
+                if (!string.IsNullOrEmpty(avatar.LastName) && avatar.LastName != "Resident") 
+                    nameText += $" {avatar.LastName}";
+                if (!string.IsNullOrEmpty(avatar.DisplayName) && avatar.DisplayName != nameText)
+                    nameText = $"{avatar.DisplayName}\n{nameText}";
+
+                if (label.Text != nameText)
+                    label.Text = nameText;
+            }
+        }
 
         // 1. Transform root position/rotation
         var transform = entity.GetComponent<TransformComponent>();
@@ -612,7 +678,7 @@ public partial class AvatarRenderer : Node3D
                 {
                     var oldIds = visual.LoadedAnimationIds == null ? "(none)" : string.Join(",", visual.LoadedAnimationIds);
                     var newIds = string.Join(",", avatar.ActiveAnimations);
-                    GD.Print($"[AvatarAnim] active set changed: [{oldIds}] -> [{newIds}]");
+                    // GD.Print($"[AvatarAnim] active set changed: [{oldIds}] -> [{newIds}]");
                 }
 
                 visual.LoadedAnimationIds = new List<Guid>(avatar.ActiveAnimations);
@@ -734,16 +800,19 @@ public partial class AvatarRenderer : Node3D
 
         if (godotTexture == null)
         {
-            GD.Print($"[AvatarRenderer] Fetching bake {bakeIndex} (ID: {textureId}) from AssetService...");
+            // GD.Print($"[AvatarRenderer] Fetching bake {bakeIndex} (ID: {textureId}) from AssetService...");
             var textureData = await _assetService.GetTextureAsync(textureId);
             if (textureData == null)
             {
-                GD.Print($"[AvatarRenderer] FAILED to fetch/decode bake {bakeIndex} (ID: {textureId})!");
+                // GD.Print($"[AvatarRenderer] FAILED to fetch/decode bake {bakeIndex} (ID: {textureId})!");
                 return;
             }
-            GD.Print($"[AvatarRenderer] Successfully fetched bake {bakeIndex} (ID: {textureId}), creating Godot image...");
+            // GD.Print($"[AvatarRenderer] Successfully fetched bake {bakeIndex} (ID: {textureId}), creating Godot image...");
 
             var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
+            
+            var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+            if (image != null) image.GenerateMipmaps(); // match BuildFaceMaterialAsync/GetOrCreateGpuTextureAsync — avoids distance shimmer
             
             Godot.Callable.From(() => {
                 if (_gpuCache != null)
@@ -751,19 +820,18 @@ public partial class AvatarRenderer : Node3D
                     var cached = _gpuCache.Get(textureId) as ImageTexture;
                     if (cached != null)
                     {
+                        image?.Dispose();
                         tcs.SetResult(cached);
                         return;
                     }
                 }
 
-                var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
                 if (image == null)
                 {
-                    GD.Print($"[AvatarRenderer] Image.CreateFromData FAILED for bake {bakeIndex} (ID: {textureId})!");
+                    // GD.Print($"[AvatarRenderer] Image.CreateFromData FAILED for bake {bakeIndex} (ID: {textureId})!");
                     tcs.SetResult(null);
                     return;
                 }
-                image.GenerateMipmaps(); // match BuildFaceMaterialAsync/GetOrCreateGpuTextureAsync — avoids distance shimmer
                 var tex = ImageTexture.CreateFromImage(image);
                 
                 if (tex != null && _gpuCache != null)
@@ -795,7 +863,7 @@ public partial class AvatarRenderer : Node3D
 
         if (godotTexture == null)
         {
-            GD.Print($"[AvatarRenderer] Final godotTexture was null for bake {bakeIndex} (ID: {textureId})!");
+            // GD.Print($"[AvatarRenderer] Final godotTexture was null for bake {bakeIndex} (ID: {textureId})!");
             return;
         }
 
@@ -824,7 +892,7 @@ public partial class AvatarRenderer : Node3D
                 : visual.Parts.Values.Cast<MeshInstance3D>();
 
             var targetNames = string.Join(", ", targets.Select(m => m.Name));
-            GD.Print($"[AvatarRenderer] Applying bake {bakeIndex} (ID: {textureId}) to meshes: {targetNames}");
+            // GD.Print($"[AvatarRenderer] Applying bake {bakeIndex} (ID: {textureId}) to meshes: {targetNames}");
 
             foreach (var meshInstance in targets)
             {
@@ -1066,19 +1134,22 @@ public partial class AvatarRenderer : Node3D
                 // diffuse lighting while leaving shadows (depth-only) unaffected. Confirmed this
                 // session via a T-pose + debug shader + a gizmo pointing at the real light
                 // direction. Fix: submit each triangle's 3 vertices in reversed order.
+                for (int i = 0; i < sub.Positions.Length; i++)
+                {
+                    var p = sub.Positions[i];
+                    var n = sub.Normals[i];
+                    var uv = sub.UVs[i];
+                    
+                    st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+                    st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
+                    st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
+                }
+
                 for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
                 {
-                    Span<int> tri = stackalloc[] { sub.Indices[t], sub.Indices[t + 2], sub.Indices[t + 1] };
-                    foreach (int idx in tri)
-                    {
-                        var p = sub.Positions[idx];
-                        var n = sub.Normals[idx];
-                        var uv = sub.UVs[idx];
-                        st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-                        // SL→Godot V-flip, same as the body parts and rigged meshes.
-                        st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
-                        st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
-                    }
+                    st.AddIndex(sub.Indices[t]);
+                    st.AddIndex(sub.Indices[t + 2]);
+                    st.AddIndex(sub.Indices[t + 1]);
                 }
                 st.GenerateTangents();
                 st.Commit(arrayMesh);
@@ -1653,16 +1724,19 @@ public partial class AvatarRenderer : Node3D
             if (sub.Indices.Length == 0) continue;
             var st = new SurfaceTool();
             st.Begin(Mesh.PrimitiveType.Triangles);
+            for (int i = 0; i < sub.Positions.Length; i++)
+            {
+                var p = sub.Positions[i];
+                var uv = sub.UVs[i];
+                st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
+                st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
+            }
+
             for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
             {
-                Span<int> tri = stackalloc[] { sub.Indices[t], sub.Indices[t + 2], sub.Indices[t + 1] };
-                foreach (int idx in tri)
-                {
-                    var p = sub.Positions[idx];
-                    var uv = sub.UVs[idx];
-                    st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
-                    st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
-                }
+                st.AddIndex(sub.Indices[t]);
+                st.AddIndex(sub.Indices[t + 2]);
+                st.AddIndex(sub.Indices[t + 1]);
             }
             st.Commit(arrayMesh);
             faceList.Add(sub.FaceIndex);
@@ -2111,41 +2185,44 @@ public partial class AvatarRenderer : Node3D
             // triangle's 3 vertices in reversed order — every per-vertex step below (weight
             // resolution, bpMin/bpMax, slotWeightSum) is order-independent across the mesh, so
             // only the ORDER the 3 indices of each triangle are visited changes.
+            for (int i = 0; i < sub.Positions.Length; i++)
+            {
+                // Mesh-local → bind pose (SL coords) via the bind-shape matrix, then SL→Godot.
+                var pSL = System.Numerics.Vector3.Transform(sub.Positions[i], bindShape);
+                var nSL = System.Numerics.Vector3.TransformNormal(sub.Normals[i], bindShapeNormalMatrix);
+                if (nSL.LengthSquared() > 1e-8f) nSL = System.Numerics.Vector3.Normalize(nSL);
+                var uv = sub.UVs[i];
+                var w = sub.Weights[i];
+
+                bpMin = System.Numerics.Vector3.Min(bpMin, pSL);
+                bpMax = System.Numerics.Vector3.Max(bpMax, pSL);
+
+                var bones = new int[4];
+                var wts = new float[4];
+                int c = 0; float sum = 0f;
+                AddInfluence(w.Joint0, w.Weight0, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                AddInfluence(w.Joint1, w.Weight1, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                AddInfluence(w.Joint2, w.Weight2, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                AddInfluence(w.Joint3, w.Weight3, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                totalVerts++;
+                if (sum > 1e-5f) { for (int k = 0; k < 4; k++) wts[k] /= sum; }
+                else { bones[0] = 0; wts[0] = 1f; orphanedVerts++; } // orphaned vertex — pin to first bound bone
+                for (int k = 0; k < 4; k++) if (wts[k] > 0f) slotWeightSum[bones[k]] += wts[k];
+
+                st.SetBones(bones);
+                st.SetWeights(wts);
+                st.SetNormal(new Godot.Vector3(nSL.X, nSL.Z, -nSL.Y));
+                // Same SL→Godot V-flip as the system body parts (see BuildPartResources):
+                // SL UVs are authored bottom-left origin; Godot samples top-left.
+                st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
+                st.AddVertex(new Godot.Vector3(pSL.X, pSL.Z, -pSL.Y));
+            }
+
             for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
             {
-                Span<int> tri = stackalloc[] { sub.Indices[t], sub.Indices[t + 2], sub.Indices[t + 1] };
-                foreach (int idx in tri)
-                {
-                    // Mesh-local → bind pose (SL coords) via the bind-shape matrix, then SL→Godot.
-                    var pSL = System.Numerics.Vector3.Transform(sub.Positions[idx], bindShape);
-                    var nSL = System.Numerics.Vector3.TransformNormal(sub.Normals[idx], bindShapeNormalMatrix);
-                    if (nSL.LengthSquared() > 1e-8f) nSL = System.Numerics.Vector3.Normalize(nSL);
-                    var uv = sub.UVs[idx];
-                    var w = sub.Weights[idx];
-
-                    bpMin = System.Numerics.Vector3.Min(bpMin, pSL);
-                    bpMax = System.Numerics.Vector3.Max(bpMax, pSL);
-
-                    var bones = new int[4];
-                    var wts = new float[4];
-                    int c = 0; float sum = 0f;
-                    AddInfluence(w.Joint0, w.Weight0, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                    AddInfluence(w.Joint1, w.Weight1, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                    AddInfluence(w.Joint2, w.Weight2, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                    AddInfluence(w.Joint3, w.Weight3, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                    totalVerts++;
-                    if (sum > 1e-5f) { for (int k = 0; k < 4; k++) wts[k] /= sum; }
-                    else { bones[0] = 0; wts[0] = 1f; orphanedVerts++; } // orphaned vertex — pin to first bound bone
-                    for (int k = 0; k < 4; k++) if (wts[k] > 0f) slotWeightSum[bones[k]] += wts[k];
-
-                    st.SetBones(bones);
-                    st.SetWeights(wts);
-                    st.SetNormal(new Godot.Vector3(nSL.X, nSL.Z, -nSL.Y));
-                    // Same SL→Godot V-flip as the system body parts (see BuildPartResources):
-                    // SL UVs are authored bottom-left origin; Godot samples top-left.
-                    st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
-                    st.AddVertex(new Godot.Vector3(pSL.X, pSL.Z, -pSL.Y));
-                }
+                st.AddIndex(sub.Indices[t]);
+                st.AddIndex(sub.Indices[t + 2]);
+                st.AddIndex(sub.Indices[t + 1]);
             }
 
             st.GenerateTangents();
@@ -2283,39 +2360,42 @@ public partial class AvatarRenderer : Node3D
         // shader + a gizmo pointing at the real light direction. Fix: submit each triangle's 3
         // vertices in reversed order — every per-vertex step below is order-independent, so only
         // the ORDER the 3 indices of each triangle are visited changes.
+        for (int i = 0; i < part.Positions.Length; i++)
+        {
+            var p  = positions[i];
+            var n  = normals[i];
+            var uv = part.UVs[i];
+
+            // Resolve skin slot indices
+            int s1 = 0, s2 = 0;
+            if (part.Bone1Names[i] != null && skinSlots.TryGetValue(part.Bone1Names[i]!, out int ss1)) s1 = ss1;
+            if (part.Bone2Names[i] != null && skinSlots.TryGetValue(part.Bone2Names[i]!, out int ss2)) s2 = ss2;
+
+            float w1 = part.Bone1Weights[i];
+            float w2 = part.Bone2Weights[i];
+
+            // Normalize the two SL weights so they sum to 1 — Godot expects normalized
+            // skin weights and a zero-sum vertex would not deform at all.
+            float wsum = w1 + w2;
+            if (wsum > 0.0001f) { w1 /= wsum; w2 /= wsum; }
+            else { w1 = 1f; w2 = 0f; }
+
+            // SL is Z-up; Godot is Y-up: SL(X,Y,Z) → Godot(X,Z,−Y)
+            st.SetBones(new int[]   { s1,  s2,  0,   0   });
+            st.SetWeights(new float[]{ w1,  w2,  0f,  0f  });
+            st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+            // SL/OpenGL texture origin is bottom-left (V grows up); Godot/Vulkan is top-left
+            // (V grows down) and Magick decodes row 0 = top. Flip V so the baked skin lands
+            // on the correct body parts instead of mirrored (front texture on the back, etc).
+            st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
+            st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
+        }
+
         for (int t = 0; t + 2 < part.Indices.Length; t += 3)
         {
-            Span<int> tri = stackalloc[] { part.Indices[t], part.Indices[t + 2], part.Indices[t + 1] };
-            foreach (int vi in tri)
-            {
-                var p  = positions[vi];
-                var n  = normals[vi];
-                var uv = part.UVs[vi];
-
-                // Resolve skin slot indices
-                int s1 = 0, s2 = 0;
-                if (part.Bone1Names[vi] != null && skinSlots.TryGetValue(part.Bone1Names[vi]!, out int ss1)) s1 = ss1;
-                if (part.Bone2Names[vi] != null && skinSlots.TryGetValue(part.Bone2Names[vi]!, out int ss2)) s2 = ss2;
-
-                float w1 = part.Bone1Weights[vi];
-                float w2 = part.Bone2Weights[vi];
-
-                // Normalize the two SL weights so they sum to 1 — Godot expects normalized
-                // skin weights and a zero-sum vertex would not deform at all.
-                float wsum = w1 + w2;
-                if (wsum > 0.0001f) { w1 /= wsum; w2 /= wsum; }
-                else { w1 = 1f; w2 = 0f; }
-
-                // SL is Z-up; Godot is Y-up: SL(X,Y,Z) → Godot(X,Z,−Y)
-                st.SetBones(new int[]   { s1,  s2,  0,   0   });
-                st.SetWeights(new float[]{ w1,  w2,  0f,  0f  });
-                st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-                // SL/OpenGL texture origin is bottom-left (V grows up); Godot/Vulkan is top-left
-                // (V grows down) and Magick decodes row 0 = top. Flip V so the baked skin lands
-                // on the correct body parts instead of mirrored (front texture on the back, etc).
-                st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
-                st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
-            }
+            st.AddIndex(part.Indices[t]);
+            st.AddIndex(part.Indices[t + 2]);
+            st.AddIndex(part.Indices[t + 1]);
         }
 
         st.GenerateTangents();
@@ -2680,6 +2760,13 @@ void fragment() {
         }
 
         float maxSq = RenderConfig.DrawDistance * RenderConfig.DrawDistance;
+        
+        var viewport = GetViewport();
+        var camera = viewport?.GetCamera3D();
+        Godot.Vector3? camPos = camera?.GlobalPosition;
+        float nameTagMaxDist = 20.0f;
+        float nameTagFadeStart = 15.0f;
+
         foreach (var visual in _visuals.Values)
         {
             if (doCull && haveAgent)
@@ -2692,6 +2779,41 @@ void fragment() {
             {
                 visual.AnimPlayer.Advance(dt);
             }
+
+            if (camPos.HasValue && visual.NameTag != null && IsInstanceValid(visual.NameTag))
+            {
+                float dist = visual.Root.GlobalPosition.DistanceTo(camPos.Value);
+                if (dist > nameTagMaxDist)
+                {
+                    if (visual.NameTag.Visible) visual.NameTag.Visible = false;
+                }
+                else
+                {
+                    var headPos3D = visual.Root.GlobalPosition + new Godot.Vector3(0, 2.3f, 0);
+                    if (camera!.IsPositionBehind(headPos3D))
+                    {
+                        if (visual.NameTag.Visible) visual.NameTag.Visible = false;
+                    }
+                    else
+                    {
+                        if (!visual.NameTag.Visible) visual.NameTag.Visible = true;
+                        
+                        var pos2D = camera.UnprojectPosition(headPos3D);
+                        var size = visual.NameTag.GetMinimumSize();
+                        visual.NameTag.Position = pos2D - (size / 2);
+
+                        if (dist > nameTagFadeStart)
+                        {
+                            float alpha = 1.0f - ((dist - nameTagFadeStart) / (nameTagMaxDist - nameTagFadeStart));
+                            visual.NameTag.Modulate = new Godot.Color(1, 1, 1, alpha);
+                        }
+                        else
+                        {
+                            visual.NameTag.Modulate = new Godot.Color(1, 1, 1, 1);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -2699,7 +2821,7 @@ void fragment() {
     {
         if (_assetService == null) return;
 
-        Logger.Debug($"[AvatarRenderer] Loading {animIds.Count} animation(s): {string.Join(", ", animIds)}");
+        // Logger.Debug($"[AvatarRenderer] Loading {animIds.Count} animation(s): {string.Join(", ", animIds)}");
 
         var loaded = new List<(Guid id, AnimationData data)>();
         foreach (var animId in animIds)
@@ -2710,21 +2832,21 @@ void fragment() {
                 if (data != null)
                 {
                     var jointNames = string.Join(", ", System.Linq.Enumerable.Select(data.Joints, j => j.JointName));
-                    Logger.Debug($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints ({jointNames}), {data.Length:F2}s");
+                    // Logger.Debug($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints ({jointNames}), {data.Length:F2}s");
                     loaded.Add((animId, data));
                 }
                 else
                 {
-                    GD.PrintErr($"[AvatarRenderer] Animation {animId}: fetch returned null (not in grid assets?)");
+                    // GD.PrintErr($"[AvatarRenderer] Animation {animId}: fetch returned null (not in grid assets?)");
                 }
             }
             catch (Exception ex)
             {
-                GD.PrintErr($"[AvatarRenderer] Failed to fetch animation {animId}: {ex.Message}");
+                // GD.PrintErr($"[AvatarRenderer] Failed to fetch animation {animId}: {ex.Message}");
             }
         }
 
-        Logger.Debug($"[AvatarRenderer] Starting {loaded.Count}/{animIds.Count} animation(s)");
+        // Logger.Debug($"[AvatarRenderer] Starting {loaded.Count}/{animIds.Count} animation(s)");
 
         // Apply on main thread via CallDeferred
         Godot.Callable.From(() => {
@@ -2732,4 +2854,5 @@ void fragment() {
             visual.AnimPlayer.SetActiveAnimations(loaded);
         }).CallDeferred();
     }
+
 }

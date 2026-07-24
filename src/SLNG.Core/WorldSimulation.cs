@@ -41,6 +41,7 @@ public sealed class WorldSimulation : IDisposable
         _source.AvatarAnimationReceived += OnAvatarAnimation;
         _source.ObjectPropertiesReceived += OnObjectProperties;
         _source.PhysicsPropertiesReceived += OnPhysicsProperties;
+        _source.DisplayNameResolved += OnDisplayNameResolved;
     }
 
     // These run on background network threads: enqueue only, never touch the world.
@@ -54,6 +55,7 @@ public sealed class WorldSimulation : IDisposable
     private void OnRegionDisconnected(object? sender, RegionDisconnectedEvent e) => _pending.Enqueue(e);
     private void OnAvatarAppearance(object? sender, AvatarAppearanceEvent e) => _pending.Enqueue(e);
     private void OnAvatarAnimation(object? sender, AvatarAnimationEvent e) => _pending.Enqueue(e);
+    private void OnDisplayNameResolved(object? sender, NameResolvedEvent e) => _pending.Enqueue(e);
 
     /// <summary>
     /// Applies all queued world events to the world. Call once per frame on the main
@@ -75,6 +77,7 @@ public sealed class WorldSimulation : IDisposable
                 case RegionDisconnectedEvent e: _world.RemoveRegion(e.RegionHandle); break;
                 case AvatarAppearanceEvent e: ApplyAvatarAppearance(e); break;
                 case AvatarAnimationEvent e: ApplyAvatarAnimation(e); break;
+                case NameResolvedEvent e: ApplyDisplayNameResolved(e); break;
             }
         }
     }
@@ -458,24 +461,6 @@ public sealed class WorldSimulation : IDisposable
 
             float targetDelta = Vector3.Distance(transform.TargetPosition, targetPosition);
 
-            // TEMPORARY diagnostic (2026-07-23, OSGrid live-test round 3): re-added after
-            // accidentally deleting the original [AvatarMove] log during the TargetPosition
-            // refactor above (round 2's captures were silently empty because of that, not because
-            // anything was fixed). Reports, for the local agent only: how far the new authoritative
-            // targetPosition landed from where TargetPosition already was (targetDelta -- the raw
-            // network-sync story for X/Y now that Z is excluded) AND separately how far the
-            // RENDERED Position currently lags behind that (renderGap -- the easing catch-up
-            // distance PositionSmoothingRate now has to cover). Remove once the OSGrid cause is
-            // confirmed.
-            if (e.IsLocalAgent && targetDelta > 0.1f)
-            {
-                float renderGap = Vector3.Distance(transform.Position, transform.TargetPosition);
-                System.Console.WriteLine(
-                    $"[AvatarMove] targetDelta={targetDelta:0.###}m renderGap={renderGap:0.###}m " +
-                    $"packetGap={transform.TimeSinceUpdate:0.###}s dilation={e.TimeDilation:0.###} " +
-                    $"vel={e.Velocity.Length():0.###}m/s oldTarget={transform.TargetPosition} newTarget={targetPosition}");
-            }
-
             if (targetDelta > TeleportSnapDistanceMeters)
             {
                 transform.Position = targetPosition;
@@ -582,6 +567,18 @@ public sealed class WorldSimulation : IDisposable
             avatar.VisualParams = e.VisualParams;
             avatar.BakedTextures = e.BakedTextures;
             avatar.HoverOffsetZ = e.HoverOffsetZ;
+            entity.SetComponent(avatar);
+            _world.NotifyComponentUpdated(entity, avatar);
+        }
+    }
+
+    private void ApplyDisplayNameResolved(NameResolvedEvent e)
+    {
+        var entity = FindAvatarEntityByAgentId(e.Id);
+        if (entity != null)
+        {
+            var avatar = entity.GetComponent<AvatarComponent>()!;
+            avatar.DisplayName = e.Name;
             entity.SetComponent(avatar);
             _world.NotifyComponentUpdated(entity, avatar);
         }

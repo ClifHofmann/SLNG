@@ -140,6 +140,8 @@ public partial class TerrainRenderer : Node3D
 
         var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
 
+        var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+        
         Godot.Callable.From(() =>
         {
             if (_gpuCache != null)
@@ -147,12 +149,18 @@ public partial class TerrainRenderer : Node3D
                 var cached = _gpuCache.Get(textureId) as ImageTexture;
                 if (cached != null)
                 {
+                    image?.Dispose();
                     tcs.SetResult(cached);
                     return;
                 }
             }
 
-            var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+            if (image == null)
+            {
+                tcs.SetResult(null);
+                return;
+            }
+
             var tex = ImageTexture.CreateFromImage(image);
 
             if (tex != null && _gpuCache != null)
