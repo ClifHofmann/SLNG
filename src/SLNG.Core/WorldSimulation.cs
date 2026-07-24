@@ -461,24 +461,6 @@ public sealed class WorldSimulation : IDisposable
 
             float targetDelta = Vector3.Distance(transform.TargetPosition, targetPosition);
 
-            // TEMPORARY diagnostic (2026-07-23, OSGrid live-test round 3): re-added after
-            // accidentally deleting the original [AvatarMove] log during the TargetPosition
-            // refactor above (round 2's captures were silently empty because of that, not because
-            // anything was fixed). Reports, for the local agent only: how far the new authoritative
-            // targetPosition landed from where TargetPosition already was (targetDelta -- the raw
-            // network-sync story for X/Y now that Z is excluded) AND separately how far the
-            // RENDERED Position currently lags behind that (renderGap -- the easing catch-up
-            // distance PositionSmoothingRate now has to cover). Remove once the OSGrid cause is
-            // confirmed.
-            if (e.IsLocalAgent && targetDelta > 0.1f)
-            {
-                float renderGap = Vector3.Distance(transform.Position, transform.TargetPosition);
-                System.Console.WriteLine(
-                    $"[AvatarMove] targetDelta={targetDelta:0.###}m renderGap={renderGap:0.###}m " +
-                    $"packetGap={transform.TimeSinceUpdate:0.###}s dilation={e.TimeDilation:0.###} " +
-                    $"vel={e.Velocity.Length():0.###}m/s oldTarget={transform.TargetPosition} newTarget={targetPosition}");
-            }
-
             if (targetDelta > TeleportSnapDistanceMeters)
             {
                 transform.Position = targetPosition;
