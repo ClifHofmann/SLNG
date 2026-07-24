@@ -24,7 +24,9 @@ public class AssetService
     private readonly MemoryCache _memCache;
     
     private readonly ConcurrentDictionary<Guid, Task<MeshData?>> _inflightMeshes = new();
-    private readonly ConcurrentDictionary<Guid, Task<TextureData?>> _inflightTextures = new();
+    // Lazy<Task<T>>, not a bare Task<T> -- see GetTextureAsync's comment for why this specific
+    // dictionary needs a real single-execution guarantee under a concurrent first-touch race.
+    private readonly ConcurrentDictionary<Guid, Lazy<Task<TextureData?>>> _inflightTextures = new();
     private static readonly object _coreJ2kLogLock = new();
     private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _inflightMaterials = new();
     private readonly ConcurrentDictionary<Guid, Task<AnimationData?>> _inflightAnimations = new();
@@ -342,19 +344,37 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightTextures.GetOrAdd(textureId, async id => {
-            try {
-                var result = await FetchAndDecodeTextureAsync(id, isSculpt).ConfigureAwait(false);
-                if (result != null) {
-                    long size = result.Width * result.Height * 4;
-                    if (size <= 0) size = 1024;
-                    _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(5) });
-                }
-                return result;
-            } finally {
-                _inflightTextures.TryRemove(id, out _);
+
+        // Lazy<Task<T>> (ExecutionAndPublication), not a bare ConcurrentDictionary.GetOrAdd
+        // factory -- GetOrAdd's factory delegate is not guaranteed single-execution under a
+        // genuine concurrent first-touch race (only the *stored result* is deduplicated, so
+        // several racing callers can each start a real fetch/decode before the dictionary
+        // settles on one winner). Lazy<T> guarantees the factory below runs at most once per
+        // key no matter how many callers hit .Value concurrently -- the property that matters
+        // when many objects/faces reference the same never-before-seen texture at once (e.g. a
+        // region populating on first login).
+        var lazy = _inflightTextures.GetOrAdd(textureId, id => new Lazy<Task<TextureData?>>(
+            () => FetchDecodeAndCacheTextureAsync(id, isSculpt), LazyThreadSafetyMode.ExecutionAndPublication));
+        return lazy.Value;
+    }
+
+    private async Task<TextureData?> FetchDecodeAndCacheTextureAsync(Guid id, bool isSculpt)
+    {
+        try
+        {
+            var result = await FetchAndDecodeTextureAsync(id, isSculpt).ConfigureAwait(false);
+            if (result != null)
+            {
+                long size = result.Width * result.Height * 4;
+                if (size <= 0) size = 1024;
+                _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(5) });
             }
-        });
+            return result;
+        }
+        finally
+        {
+            _inflightTextures.TryRemove(id, out _);
+        }
     }
 
     private static readonly SemaphoreSlim _textureFetchThrottle = new SemaphoreSlim(4, 4);
