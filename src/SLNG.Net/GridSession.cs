@@ -1869,6 +1869,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // of silently decoding (and, for Magick.NET, likely failing on) partial data.
             if (declaredLength.HasValue && bytes.Length < declaredLength.Value) return null;
 
+            // Content-Length only catches truncation when the server actually sends that
+            // header -- OpenSim's embedded HTTP server can respond chunked (no Content-Length)
+            // for texture bodies, which would let a short chunked read straight through the
+            // check above. A complete J2C codestream (SOC marker 0xFF4F at the start, verified
+            // by AssetService.DecodeTexture) always ends with an EOC marker (0xFFD9) -- that's
+            // true regardless of transport, so it catches the chunked-encoding gap. Only applies
+            // to a full (desiredDiscard 0) fetch: an intentional Range request never contains
+            // the EOC by design.
+            if (desiredDiscard == 0 && bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F
+                && (bytes[^2] != 0xFF || bytes[^1] != 0xD9))
+            {
+                return null;
+            }
+
             return bytes;
         }
         catch (Exception ex)
