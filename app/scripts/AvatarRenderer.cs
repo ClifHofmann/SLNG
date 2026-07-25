@@ -1385,10 +1385,20 @@ public partial class AvatarRenderer : Node3D
     //   - fracMid > threshold → genuinely graded (hair-like): real Alpha blend, no per-pixel
     //     dithering. Deliberately NOT DepthDrawMode.Always (tried previously; breaks layered hair
     //     cards) — left at Godot's default (no depth write) for true Alpha, same as before.
-    //   - Otherwise (ambiguous / hard-cutout-with-AA-edge): AlphaHash, unchanged from before —
-    //     dithered but still depth-tested/written like opaque geometry, so misclassifying
+    //   - Otherwise (hard cutout with an anti-aliased edge): alpha SCISSOR + alpha-to-coverage.
+    //     Like AlphaHash this stays in the depth-tested/written opaque queue, so misclassifying
     //     ordinary clothing here can never cause the cross-layer occlusion loss true Alpha did
-    //     (see godot-material-transparency-gotchas / avatar-alpha-hash-vs-scissor memory notes).
+    //     (see godot-material-transparency-gotchas / avatar-alpha-hash-vs-scissor memory notes) —
+    //     but it does NOT dither. AlphaHash decides each pixel by comparing alpha against a
+    //     per-pixel noise value, so a partially-transparent edge becomes a random stipple of fully
+    //     on/off pixels. On hair that is very visible: the strand tips break into a spray of
+    //     speckles with the background showing through the gaps (2026-07-25, reported directly
+    //     off a sculpt-hair render). Scissor makes the same binary decision from a fixed
+    //     threshold instead, so the silhouette is a clean edge, and alpha-to-coverage (MSAA 4x is
+    //     on project-wide) resolves that edge with real coverage-based AA. The real viewer never
+    //     dithers either — LLDrawPoolAlpha blends or masks, so this is also the closer parity.
+    //     Threshold deliberately well BELOW 0.5: hair strands are mostly low-alpha, and the
+    //     memory note above records 0.5 visibly eating soft SL alpha content.
     //
     // 2026-07-25: tried unconditionally forcing AlphaHash for graded/avatar-attachment alpha, on
     // the theory that a multi-piece hairstyle's several overlapping true-Alpha MeshInstance3D
@@ -1410,6 +1420,16 @@ public partial class AvatarRenderer : Node3D
     // width*height*4) to remove that risk regardless of call order.
     private const float GradedAlphaThreshold = 0.06f;
 
+    /// <summary>Alpha cutoff for the hard-cutout branch. Low on purpose — SL hair and lace keep a
+    /// lot of detail in the 0.2–0.4 alpha range, and a 0.5 cutoff visibly thins them out.</summary>
+    private const float HardCutoutScissorThreshold = 0.25f;
+
+    /// <summary>Fraction of fully-transparent texels above which a texture is treated as a cutout
+    /// SHEET (hair cards, lace, foliage) rather than a solid surface with a trimmed edge, and so
+    /// gets real alpha blending. Measured: the hair in the 2026-07-25 investigation is 97% clear;
+    /// ordinary opaque-bodied clothing and skin sit far below half.</summary>
+    private const float MostlyClearThreshold = 0.5f;
+
     private static void ApplyAlphaCutout(StandardMaterial3D material, ImageTexture tex)
     {
         if (material.Transparency == BaseMaterial3D.TransparencyEnum.Alpha) return;
@@ -1417,8 +1437,8 @@ public partial class AvatarRenderer : Node3D
         var img = tex.GetImage();
         if (img == null)
         {
-            material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaHash;
-            material.AlphaHashScale = 1.0f;
+            material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+            material.AlphaScissorThreshold = HardCutoutScissorThreshold;
             material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
             return;
         }
@@ -1428,14 +1448,16 @@ public partial class AvatarRenderer : Node3D
         int mip0Bytes = Math.Min(data.Length, w * h * 4);
         int pixelCount = mip0Bytes / 4;
 
-        int min = 255; int midCount = 0;
+        int min = 255; int midCount = 0; int clearCount = 0;
         for (int i = 3; i < mip0Bytes; i += 4)
         {
             byte a = data[i];
             if (a < min) min = a;
             if (a > 16 && a < 239) midCount++;
+            if (a <= 16) clearCount++;
         }
         float fracMid = pixelCount > 0 ? (float)midCount / pixelCount : 0f;
+        float fracClear = pixelCount > 0 ? (float)clearCount / pixelCount : 0f;
 
         if (min == 255)
         {
@@ -1443,14 +1465,25 @@ public partial class AvatarRenderer : Node3D
             return;
         }
 
-        if (fracMid > GradedAlphaThreshold)
+        // fracMid alone is not enough to recognise content that NEEDS blending. Hair measures
+        // only ~1.2% mid-alpha (97% fully clear, 2% fully opaque) and so reads as "hard cutout" —
+        // but those few percent of partial texels ARE the soft strand tips, and discarding them
+        // turns fine hair into thick, blocky tubes (confirmed side-by-side against Firestorm,
+        // 2026-07-25: "die transparenzen fehlen"). What actually distinguishes such an asset is
+        // that it is mostly HOLE: a texture whose pixels are predominantly fully transparent is a
+        // cutout sheet (hair cards, lace, foliage) whose whole appearance lives in its edges,
+        // whereas ordinary clothing/skin is predominantly opaque with a comparatively thin
+        // anti-aliased border. Blend the former, keep the cheap depth-correct scissor for the
+        // latter — which is also where the historical cross-layer occlusion regression came from,
+        // so the risky path stays limited to assets that visibly need it.
+        if (fracMid > GradedAlphaThreshold || fracClear > MostlyClearThreshold)
         {
             material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
             return;
         }
 
-        material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaHash;
-        material.AlphaHashScale = 1.0f;
+        material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+        material.AlphaScissorThreshold = HardCutoutScissorThreshold;
         material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
     }
 
