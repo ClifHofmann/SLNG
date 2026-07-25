@@ -177,36 +177,78 @@ public class AssetService
 
     private async Task<MeshData?> FetchAndDecodeMeshAsync(Guid meshId)
     {
-        byte[]? bytes = null;
         string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, meshId.ToString() + ".mesh");
 
         if (cacheFile != null && File.Exists(cacheFile))
         {
-            try { bytes = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
-        }
-
-        if (bytes == null || bytes.Length == 0)
-        {
-            if (!_session.IsConnected) return null;
-
-            bytes = await _session.FetchMeshDataAsync(meshId).ConfigureAwait(false);
-            if (bytes == null || bytes.Length == 0) return null;
-
-            if (cacheFile != null)
+            byte[]? cached = null;
+            try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
+            if (cached != null && cached.Length > 0)
             {
-                try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
+                var decodedFromCache = await Task.Run(() => Decode(meshId, cached)).ConfigureAwait(false);
+                if (decodedFromCache != null) return decodedFromCache;
+                // Cached bytes don't decode -- most likely a previously-truncated fetch (see
+                // below) that got written to disk before this retry logic existed, or the cache
+                // file is otherwise corrupt. Drop it so the fetch below has a clean shot, instead
+                // of returning null forever every time this mesh loads.
+                try { File.Delete(cacheFile); } catch { }
             }
         }
 
-        try
+        if (!_session.IsConnected) return null;
+
+        // FEAT-PERF-02-style retry: LibreMetaverse's own internal RequestMeshAsync HTTP fetch is
+        // susceptible to the exact same burst-load truncation OpenSim's embedded HTTP server
+        // showed for our own texture GetTexture fetches (see GridSession.
+        // FetchTextureViaHttpRangeAsync's doc comment) -- except LibreMetaverse doesn't detect it
+        // itself: AssetMesh.Decode() catches the resulting DecompressOSD InvalidDataException,
+        // logs "Failed to decode mesh asset", and returns false, which FacetedMesh.
+        // TryDecodeFromAsset (called from Decode() below) just turns into a plain null. A single
+        // failed attempt used to be permanent -- worse than the pre-fix texture bug, since the
+        // truncated bytes were cached to disk unconditionally BEFORE decoding was ever attempted,
+        // so every later load of that mesh kept re-reading and re-failing on the same corrupt
+        // bytes forever. Re-fetching (a fresh HTTP request) has a real chance of getting a
+        // complete stream, same reasoning as the texture retry loop; caching is now gated on a
+        // verified-successful decode.
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            return await Task.Run(() => Decode(meshId, bytes)).ConfigureAwait(false);
+            byte[]? bytes;
+            try
+            {
+                bytes = await _session.FetchMeshDataAsync(meshId).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AssetService] Mesh fetch failed for {meshId} (attempt {attempt + 1}/3): {ex.Message}");
+                bytes = null;
+            }
+
+            if (bytes is { Length: > 0 })
+            {
+                MeshData? result = null;
+                try
+                {
+                    result = await Task.Run(() => Decode(meshId, bytes)).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[AssetService] Failed to decode mesh {meshId} (attempt {attempt + 1}/3): {ex.Message}");
+                }
+
+                if (result != null)
+                {
+                    if (cacheFile != null)
+                    {
+                        try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
+                    }
+                    return result;
+                }
+            }
+
+            if (attempt < 2) await Task.Delay(250).ConfigureAwait(false);
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[AssetService] Failed to decode mesh {meshId}: {ex.Message}");
-            return null;
-        }
+
+        return null;
     }
 
     private static MeshData? Decode(Guid meshId, byte[] bytes)
