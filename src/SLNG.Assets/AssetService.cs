@@ -380,11 +380,15 @@ public class AssetService
     // FEAT-PERF-02: two separate pools, not one shared SemaphoreSlim(4,4), so a burst of ordinary
     // decorative-texture fetches can never make a sculpt map (which blocks the object's *shape*,
     // not just its looks -- see GetSculptMeshAsync) queue behind them for up to 60s per attempt.
-    // Total stays at 4 (3+1), same as before this split, to avoid reopening the UDP-packet-drop
-    // risk that originally motivated capping this at 4 (a14229d) -- raising the total is a
-    // separate, protocol-re-reviewed decision (FEAT-PERF-02 Phase 2.3), not bundled into this
-    // low-risk reshuffle.
-    private static readonly SemaphoreSlim _textureFetchThrottle = new SemaphoreSlim(3, 3);
+    // Decorative keeps the original 4 slots (the a14229d UDP-packet-drop-motivated cap) rather
+    // than being cut to 3 to carve out the sculpt lane -- an earlier version of this split did
+    // 3+1, but for a typical scene (mostly-or-all decorative textures, few/no sculpts) that's a
+    // net THROUGHPUT REGRESSION: the sculpt slot sits idle while decorative fetches, the
+    // overwhelming common case, lose a quarter of their concurrency. Sculpt gets its own
+    // ADDITIONAL slot on top (total 5, not 4) instead. A modest +1 over the original cap is a
+    // much smaller bet than the general "raise the cap" question, which stays a separate,
+    // protocol-re-reviewed decision (FEAT-PERF-02 Phase 2.3).
+    private static readonly SemaphoreSlim _textureFetchThrottle = new SemaphoreSlim(4, 4);
     private static readonly SemaphoreSlim _sculptFetchThrottle = new SemaphoreSlim(1, 1);
 
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, bool isSculpt)
