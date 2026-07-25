@@ -54,6 +54,13 @@ public class AssetService
             SizeLimit = 256 * 1024 * 1024 // 256 MB RAM cache
         };
         _memCache = new MemoryCache(opts);
+
+        // FEAT-PERF-02: unambiguous proof of which build is actually running -- this class has no
+        // Godot-side BuildMarker mechanism (SLNG.Assets stays engine-agnostic, no GD.Print), and
+        // the throttle capacities aren't otherwise visible anywhere at runtime. Printed once here
+        // so a live client log can be checked against the values in this file's source directly,
+        // instead of trusting a rebuild happened.
+        Console.WriteLine($"[AssetService] decorative fetch slots={_textureFetchThrottle.CurrentCount} sculpt fetch slots={_sculptFetchThrottle.CurrentCount}");
     }
 
     /// <summary>
