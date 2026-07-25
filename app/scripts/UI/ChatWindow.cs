@@ -579,6 +579,16 @@ public partial class ChatWindow : SLNGWindow
         }
 
         _inputEdit.Text = "";
+
+        // AvatarController disables ALL movement and camera rotation while a LineEdit/TextEdit
+        // holds Godot's control focus (hasUiFocus) -- deliberately, so typing "asdf" in chat
+        // doesn't also walk the avatar. But nothing ever released that focus again after a send,
+        // so once the chat input was clicked into once, movement stayed locked out permanently
+        // until the user happened to click back into the 3D viewport -- reported live as "ich
+        // kann die Kamera nicht mehr drehen bzw auch nicht laufen ... nur schreiben". Releasing
+        // focus here matches the classic SL/OS viewer convention: Enter sends chat AND returns
+        // keyboard control to the world.
+        _inputEdit.ReleaseFocus();
     }
 
     private void OnHistoryPressed()

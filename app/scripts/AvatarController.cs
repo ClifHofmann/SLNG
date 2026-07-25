@@ -192,6 +192,21 @@ public partial class AvatarController : Camera3D
             bool hasUiFocus = focusOwner is LineEdit || focusOwner is TextEdit
                 || GetViewport().GuiGetHoveredControl() != null;
 
+            // A click that reaches _UnhandledInput at all landed in the 3D viewport, not on any
+            // Control (see the method-level comment) -- so a stale LineEdit/TextEdit focus owner
+            // here means the user clicked into a text field earlier (chat, a search box, ...),
+            // then clicked back into the world without ever submitting/dismissing it. hasUiFocus
+            // gates WASD/orbit for as long as that focus sits there (see _Process below), which
+            // otherwise locks movement out until something else happens to steal focus. Release
+            // it on any click that actually reaches here so movement resumes immediately, same as
+            // clicking into the 3D view in every other viewer. ChatWindow.OnSendPressed already
+            // releases focus on submit; this covers every other way it can be left behind.
+            if (mouseBtn.Pressed && (focusOwner is LineEdit || focusOwner is TextEdit))
+            {
+                GetViewport().GuiReleaseFocus();
+                hasUiFocus = GetViewport().GuiGetHoveredControl() != null;
+            }
+
             if (!hasUiFocus && mouseBtn.ButtonIndex == MouseButton.WheelUp)
             {
                 ZoomTowardCursor(-0.5f, mouseBtn.Position);
