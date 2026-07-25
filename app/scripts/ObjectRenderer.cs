@@ -728,25 +728,41 @@ public partial class ObjectRenderer : Node3D
                 {
                     used.Add(pbr.BaseColorTextureId);
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId, desiredDiscard, priority).ContinueWith(t =>
-                        Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) material.AlbedoTexture = t.Result; }).CallDeferred()));
+                        Godot.Callable.From(() =>
+                        {
+                            if (IsInstanceValid(t.Result)) material.AlbedoTexture = t.Result;
+                            else GD.PrintErr($"[FaceTex] object PBR baseColor {pbr.BaseColorTextureId} discard={desiredDiscard} fetch/decode returned null");
+                        }).CallDeferred()));
                 }
                 if (pbr.NormalTextureId != Guid.Empty)
                 {
                     used.Add(pbr.NormalTextureId);
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId, desiredDiscard, priority).ContinueWith(t =>
-                        Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) { material.NormalEnabled = true; material.NormalTexture = t.Result; } }).CallDeferred()));
+                        Godot.Callable.From(() =>
+                        {
+                            if (IsInstanceValid(t.Result)) { material.NormalEnabled = true; material.NormalTexture = t.Result; }
+                            else GD.PrintErr($"[FaceTex] object PBR normal {pbr.NormalTextureId} discard={desiredDiscard} fetch/decode returned null");
+                        }).CallDeferred()));
                 }
                 if (pbr.MetallicRoughnessTextureId != Guid.Empty)
                 {
                     used.Add(pbr.MetallicRoughnessTextureId);
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId, desiredDiscard, priority).ContinueWith(t =>
-                        Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) material.OrmTexture = t.Result; }).CallDeferred()));
+                        Godot.Callable.From(() =>
+                        {
+                            if (IsInstanceValid(t.Result)) material.OrmTexture = t.Result;
+                            else GD.PrintErr($"[FaceTex] object PBR metallicRoughness {pbr.MetallicRoughnessTextureId} discard={desiredDiscard} fetch/decode returned null");
+                        }).CallDeferred()));
                 }
                 if (pbr.EmissiveTextureId != Guid.Empty)
                 {
                     used.Add(pbr.EmissiveTextureId);
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId, desiredDiscard, priority).ContinueWith(t =>
-                        Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) material.EmissionTexture = t.Result; }).CallDeferred()));
+                        Godot.Callable.From(() =>
+                        {
+                            if (IsInstanceValid(t.Result)) material.EmissionTexture = t.Result;
+                            else GD.PrintErr($"[FaceTex] object PBR emissive {pbr.EmissiveTextureId} discard={desiredDiscard} fetch/decode returned null");
+                        }).CallDeferred()));
                 }
                 // No await Task.WhenAll(tasks) here! Let the textures populate asynchronously so the mesh renders immediately.
             }
@@ -771,6 +787,15 @@ public partial class ObjectRenderer : Node3D
                         material.AlbedoTexture = tex;
                         ApplyAlphaCutout(material, tex);
                     }).CallDeferred();
+                }
+                else
+                {
+                    // FEAT-PERF-02: this branch previously failed completely silently -- unlike
+                    // AvatarRenderer's identical situation (see its "[FaceTex] ... fetch/decode
+                    // returned null" log), a world-object face that never got its texture just
+                    // rendered flat AlbedoColor forever with zero diagnostic trail. One line per
+                    // failed id (not per attempt) so this doesn't itself become log spam.
+                    GD.PrintErr($"[FaceTex] object texture {ft.TextureId} discard={desiredDiscard} fetch/decode returned null — face renders untextured");
                 }
             });
         }
@@ -898,6 +923,19 @@ public partial class ObjectRenderer : Node3D
 
         float apparentSize = radius / Mathf.Max(distance, 0.1f);
 
+        // FEAT-PERF-02: discard-level truncation is DISABLED for now (always 0 / full res) --
+        // live-tested and found to cause a serious regression, not the intended improvement.
+        // A single test session logged 6752 "[WARNING]: Codestream truncated in tile 0" lines
+        // out of 6786 total (99.5% of all output) -- Magick.NET (the primary decoder) does not
+        // tolerate a deliberately-Range-truncated J2C stream the way the discard-level design
+        // assumed, falls back to CoreJ2K en masse, and at the more aggressive discard levels
+        // that fallback frequently fails outright rather than degrading gracefully. Reported
+        // live as three symptoms that all trace back to this one cause: a wall of startup
+        // warnings, textures taking longer to load (CPU burned on repeated failed/fallback
+        // decodes instead of one clean full fetch), and ~80% of textures never appearing at all
+        // (vs. ~100% in Firestorm on the same region). The computation below is left in place,
+        // just not acted on, so re-enabling is a one-line change once the decode-side
+        // intolerance is actually fixed -- see the FEAT-PERF-02 spec's Phase 2 notes.
         int discard = apparentSize switch
         {
             >= 0.5f => 0,
@@ -907,6 +945,8 @@ public partial class ObjectRenderer : Node3D
             >= 0.03f => 4,
             _ => SLNG.Net.J2kByteSizeEstimator.MaxDiscardLevel,
         };
+        _ = discard; // computed for future re-enabling, not currently acted on -- see comment above
+        discard = 0;
 
         // Priority is apparent size, halved for anything behind the camera plane. Using the same
         // quantity for both keeps them consistent by construction: whatever we decided needs the
