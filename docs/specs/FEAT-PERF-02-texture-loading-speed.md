@@ -57,8 +57,17 @@ Current-state audit (see file:line references below) found:
       not just a client-side decode/display hint.
 - [x] Distance/size-driven discard implemented for `ObjectRenderer` (own HTTP Range fetch in
       `GridSession.FetchTextureDataAsync`, ported `calcDataSizeJ2C` byte-size estimator in
-      `SLNG.Net.J2kByteSizeEstimator`, threaded through `AssetService`/`GpuCache`, discard computed
-      per-object in `ObjectRenderer.ComputeDesiredDiscard` from apparent size = radius/distance).
+      `SLNG.Net.J2kByteSizeEstimator`, threaded through `AssetService`/`GpuCache`, discard+priority
+      computed per-object in `ObjectRenderer.ComputeTextureLod` from apparent size = radius/distance,
+      measured from the active **camera**, not the avatar — user-reported gap after live-testing:
+      zooming/orbiting away from your own body kept prioritizing detail around it instead of what's
+      actually on screen).
+      **Fetch order is now priority-aware, not just discard-aware:** `PriorityGate`
+      (`src/SLNG.Assets/PriorityGate.cs`) replaced the plain `SemaphoreSlim` throttles — admits the
+      highest-priority (most on-screen-prominent) queued texture next instead of strict arrival
+      order, so what the camera is pointed at resolves before background scenery that merely
+      happened to be requested first. Priority is captured at enqueue time and not re-evaluated
+      (same caveat as discard below).
       **Not yet covered:** `AvatarRenderer` (own-avatar bake should likely stay full-res like
       sculpts; other avatars' worn attachments are a real candidate), `TerrainRenderer` (detail
       textures are shared/tiled across a whole region, no single "distance to the texture").
