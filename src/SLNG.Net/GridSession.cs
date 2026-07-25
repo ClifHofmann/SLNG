@@ -227,6 +227,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private void OnChatFromSimulator(object? sender, ChatEventArgs e)
     {
+        // StartTyping/StopTyping are the "..." typing indicator other viewers show next to a
+        // name -- they carry no message text at all. Forwarding them here unfiltered showed up
+        // as a chat log line with a timestamp and sender name but nothing after the colon, once
+        // per keystroke-session per person (live-tested: reported as "irgendwie fehlen hier im
+        // chat texte" against a busy multi-avatar conversation, where every blank line lined up
+        // exactly with the sender starting/stopping typing right before/after a real message).
+        if (e.Type == ChatType.StartTyping || e.Type == ChatType.StopTyping) return;
+
         ChatMessageReceived?.Invoke(this, new ChatMessageEvent(
             e.FromName,
             e.Message,
