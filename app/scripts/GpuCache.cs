@@ -231,6 +231,22 @@ public class GpuCache
             // thread, via CallDeferred.
             var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
 
+            // Bleed visible colour outwards into the fully-transparent texels before anything
+            // downsamples this image. A transparent texel still HAS an RGB value, and in real SL
+            // content it is routinely arbitrary garbage left over from whatever the artist painted
+            // under the alpha mask -- bright orange in the case that motivated this. Both bilinear
+            // filtering and GenerateMipmaps below average RGB and A as independent channels, so
+            // that invisible garbage gets mixed into every partially-transparent edge texel and
+            // resurfaces as coloured speckles along the silhouette. It is most obvious on alpha-
+            // heavy content viewed at a distance (more mip levels in play): black hair fringed
+            // with orange dots. FixAlphaEdges is Godot's own remedy for exactly this -- it is what
+            // the engine's texture importer applies by default as "Fix Alpha Border" -- but
+            // nothing applies it to textures we build at runtime, so it has to happen here.
+            // Deliberately unconditional rather than gated on a DetectAlpha() check: that verdict
+            // is unreliable (see the notes in AvatarRenderer.ApplyAlphaCutout) and this is a no-op
+            // on an image with no transparent texels anyway.
+            image?.FixAlphaEdges();
+
             // FEAT-PERF-02: shrink the fully-decoded image before it ever reaches the GPU, for a
             // distant/small object that doesn't need full resolution on screen. Each discard
             // level halves both dimensions (SL/OpenSim discard semantics -- see

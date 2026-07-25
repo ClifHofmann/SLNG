@@ -809,6 +809,7 @@ public class AssetService
             }
 
             bool isDegraded = false;
+            int trueComponents = -1;
 
             if (!isSculpt)
             {
@@ -823,6 +824,18 @@ public class AssetService
                         {
                             trueWidth = (bytes[i + 6] << 24) | (bytes[i + 7] << 16) | (bytes[i + 8] << 8) | bytes[i + 9];
                             trueHeight = (bytes[i + 10] << 24) | (bytes[i + 11] << 16) | (bytes[i + 12] << 8) | bytes[i + 13];
+                            // Csiz (component count) follows XOsiz/YOsiz/XTsiz/YTsiz/XTOsiz/YTOsiz
+                            // (24 more bytes) per the SIZ marker layout (ITU-T T.800 Table A-4).
+                            // Read it so a decode that kept the right WIDTH/HEIGHT but silently
+                            // dropped the alpha plane (e.g. a byte-limited progressive fetch whose
+                            // alpha tile-part never arrived) is also caught below -- the
+                            // width*height check above only catches SPATIAL truncation, not a
+                            // missing component. An avatar bake decoded this way forces alpha=255
+                            // for every pixel further down (ch<4 branch), which defeats the bake's
+                            // alpha-cutout shaping entirely (e.g. system hair renders as its full,
+                            // uncut card silhouette instead of styled strands).
+                            if (i + 39 < bytes.Length)
+                                trueComponents = (bytes[i + 38] << 8) | bytes[i + 39];
                             break;
                         }
                     }
@@ -844,6 +857,13 @@ public class AssetService
             {
                 var raw = pixels.GetValues() ?? Array.Empty<byte>();
                 int ch = width > 0 && height > 0 ? raw.Length / (width * height) : 0;
+
+                if (!isSculpt && trueComponents >= 4 && ch < 4 && !isDegraded)
+                {
+                    Console.WriteLine($"[AssetService] Decoded {ch} channel(s) but header declares {trueComponents} -- alpha plane likely truncated. Marked as degraded.");
+                    isDegraded = true;
+                }
+
                 if (ch >= 3 && raw.Length >= width * height * ch)
                 {
                     rgba = new byte[width * height * 4];

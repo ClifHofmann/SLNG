@@ -807,9 +807,13 @@ public partial class AvatarRenderer : Node3D
 
         if (godotTexture == null)
         {
+            // Not silent: unlike BuildFaceMaterialAsync's equivalent guard, this used to fail
+            // quietly, leaving whichever body part this bake targets on its construction-time
+            // placeholder material (opaque, no alpha) -- indistinguishable at a glance from "the
+            // bake never arrived yet" but actually a decode/fetch failure that will never retry.
+            GD.PrintErr($"[AvatarRenderer] bake {bakeIndex} texture {textureId} fetch/decode returned null -- part stays on placeholder material");
             return;
         }
-
         // Map SL bake indices (AvatarTextureIndex) to which mesh parts they cover.
         // 8=HeadBaked, 9=UpperBaked, 10=LowerBaked, 11=EyesBaked, 19=SkirtBaked, 20=HairBaked —
         // per LibreMetaverse's AvatarTextureIndex enum (12/13 are LowerSocks/UpperJacket wearable
@@ -959,6 +963,20 @@ public partial class AvatarRenderer : Node3D
         {
             child.QueueFree();
         }
+
+        // An SL attachment point is not the joint's origin: it carries its own offset and
+        // rotation on that joint (Skull = 0.15 m above mHead, turned 90 degrees; see
+        // AttachmentPointMap's doc comment). BoneAttachment3D can't hold that itself — it
+        // overwrites its own transform from the bone pose every frame — so the offset lives on
+        // this intermediate node, and all worn visuals hang off it instead of off the bone
+        // directly. Rebuilt each time because the loop above frees every child.
+        var pointNode = new Node3D { Name = "PointOffset" };
+        if (AttachmentPointMap.GetPoint(attachment.AttachmentPoint) is { } apPoint)
+        {
+            pointNode.Position = new Godot.Vector3(apPoint.Position.X, apPoint.Position.Z, -apPoint.Position.Y);
+            pointNode.Basis = SkeletonBuilder.SlEulerDegToGodotBasis(apPoint.RotationDeg);
+        }
+        boneAttach.AddChild(pointNode);
         
         // Clear previous rigged attachment visuals
         if (_riggedAttachments.TryGetValue(entityId, out var oldRigged))
@@ -984,7 +1002,7 @@ public partial class AvatarRenderer : Node3D
                 // overlapping duplicate load.
                 _attachmentMeshIds[entityId] = (prim.MeshId, prim.Faces, defaultFace, attachment.AvatarEntityId);
                 Logger.Debug($"[Attachment] REQUESTING MESH {prim.MeshId} for entity {entityId}");
-                _ = LoadAndApplyAttachmentMeshAsync(boneAttach, avatarVisual, prim.MeshId,
+                _ = LoadAndApplyAttachmentMeshAsync(pointNode, avatarVisual, prim.MeshId,
                     prim.Faces, defaultFace,
                     new System.Numerics.Vector3(prim.Scale.X, prim.Scale.Y, prim.Scale.Z),
                     transform != null ? transform.Position : System.Numerics.Vector3.Zero,
@@ -996,28 +1014,31 @@ public partial class AvatarRenderer : Node3D
                 // Not a mesh (or reverted to a plain prim) — drop any stale mesh-id tracking so
                 // a later switch back to a mesh isn't blocked by a stale match.
                 _attachmentMeshIds.Remove(entityId);
-                // Prim attachment: show a scaled box placeholder.
-                var color = new Color(prim.ColorTint.X, prim.ColorTint.Y, prim.ColorTint.Z, prim.ColorTint.W);
-                var box = new MeshInstance3D
-                {
-                    Name = "AttachBox",
-                    Mesh = new BoxMesh { Size = new Godot.Vector3(prim.Scale.X, prim.Scale.Z, prim.Scale.Y) },
-                    MaterialOverride = new StandardMaterial3D { AlbedoColor = color },
-                    Position = transform != null ? new Godot.Vector3(transform.Position.X, transform.Position.Z, -transform.Position.Y) : Godot.Vector3.Zero,
-                    Quaternion = transform != null ? new Godot.Quaternion(transform.Rotation.X, transform.Rotation.Z, -transform.Rotation.Y, transform.Rotation.W) : Godot.Quaternion.Identity
-                };
-                boneAttach.AddChild(box);
+                // Prim or sculpt attachment: build its REAL geometry, the same way ObjectRenderer
+                // already does for world objects. This used to draw a solid BoxMesh placeholder,
+                // which on sculpt-prim content (classic SL hair especially) looked like a cluster
+                // of broken white shards around the head — see LoadAndApplyPrimAttachmentAsync.
+                _ = LoadAndApplyPrimAttachmentAsync(pointNode, avatarVisual, prim,
+                    prim.Faces, defaultFace,
+                    new System.Numerics.Vector3(prim.Scale.X, prim.Scale.Y, prim.Scale.Z),
+                    transform != null ? transform.Position : System.Numerics.Vector3.Zero,
+                    transform != null ? transform.Rotation : System.Numerics.Quaternion.Identity,
+                    entityId);
             }
         }
     }
 
+    /// <summary>Fetches and applies a rigged/static MESH attachment (an item with a real LLMesh
+    /// asset). Prim- and sculpt-based attachments go through
+    /// <see cref="LoadAndApplyPrimAttachmentAsync"/> instead — both end in the same
+    /// <see cref="ApplyAttachmentMeshDataAsync"/>, since all three geometry sources produce the
+    /// same neutral <see cref="MeshData"/>.</summary>
     private async System.Threading.Tasks.Task LoadAndApplyAttachmentMeshAsync(
-        BoneAttachment3D boneAttach, AvatarVisual avatarVisual, Guid meshId,
+        Node3D attachParent, AvatarVisual avatarVisual, Guid meshId,
         FaceTexture[]? faces, FaceTexture defaultFace, System.Numerics.Vector3 slScale,
         System.Numerics.Vector3 slPos, System.Numerics.Quaternion slRot, Guid entityId)
     {
         if (_assetService == null) return;
-        var skeleton = avatarVisual.Skeleton;
 
         var meshData = await _assetService.GetMeshAsync(meshId).ConfigureAwait(false);
         if (meshData == null)
@@ -1026,6 +1047,64 @@ public partial class AvatarRenderer : Node3D
             return;
         }
         Logger.Debug($"[Attachment] mesh {meshId}: {meshData.Submeshes.Count} submeshes, rigged={meshData.Skin != null}");
+        ApplyAttachmentMeshDataAsync(meshData, attachParent, avatarVisual, meshId,
+            faces, defaultFace, slScale, slPos, slRot, entityId);
+    }
+
+    /// <summary>Builds the geometry for a PRIM or SCULPT attachment — the classic, non-LLMesh
+    /// content that a great deal of worn SL content (notably older hair, which is typically a
+    /// cluster of sculpted prims) is still made of.
+    ///
+    /// Until this existed, <see cref="UpdateAttachment"/> drew such attachments as a solid
+    /// <c>BoxMesh</c> placeholder tinted with the prim's colour. On a sculpt-prim hairstyle that
+    /// renders as a cluster of flat, untextured white boxes clumped around the head — which reads
+    /// as "the hair mesh exploded into shards" rather than "this content type isn't implemented",
+    /// and is invisible to every mesh/texture/skinning diagnostic because none of that code ever
+    /// runs for it. The geometry pipeline itself was already there and already used for world
+    /// objects (see ObjectRenderer's sculpt/procedural-prim branches); it just was never wired
+    /// into the attachment path.</summary>
+    private async System.Threading.Tasks.Task LoadAndApplyPrimAttachmentAsync(
+        Node3D attachParent, AvatarVisual avatarVisual, PrimitiveComponent prim,
+        FaceTexture[]? faces, FaceTexture defaultFace, System.Numerics.Vector3 slScale,
+        System.Numerics.Vector3 slPos, System.Numerics.Quaternion slRot, Guid entityId)
+    {
+        if (_assetService == null) return;
+
+        MeshData? meshData;
+        if (prim.IsSculpt && prim.SculptId != Guid.Empty)
+        {
+            meshData = await _assetService.GetSculptMeshAsync(prim.SculptId, prim.SculptType).ConfigureAwait(false);
+            if (meshData == null)
+            {
+                Logger.Warn($"[Attachment] sculpt {prim.SculptId} failed to fetch/decode — skipped");
+                return;
+            }
+        }
+        else
+        {
+            meshData = await System.Threading.Tasks.Task.Run(
+                () => SLNG.Assets.PrimMeshService.Generate(prim.Shape)).ConfigureAwait(false);
+            if (meshData == null)
+            {
+                Logger.Warn($"[Attachment] prim shape for entity {entityId} failed to mesh — skipped");
+                return;
+            }
+        }
+
+        Logger.Debug($"[Attachment] prim/sculpt entity {entityId}: {meshData.Submeshes.Count} submeshes, sculpt={prim.IsSculpt}");
+        ApplyAttachmentMeshDataAsync(meshData, attachParent, avatarVisual, Guid.Empty,
+            faces, defaultFace, slScale, slPos, slRot, entityId);
+    }
+
+    /// <summary>Shared tail of both attachment paths: turns already-obtained
+    /// <paramref name="meshData"/> into a scene node — skinned to the avatar skeleton when it
+    /// carries skin data, otherwise bolted statically to its attachment bone.</summary>
+    private void ApplyAttachmentMeshDataAsync(
+        MeshData meshData, Node3D attachParent, AvatarVisual avatarVisual, Guid meshId,
+        FaceTexture[]? faces, FaceTexture defaultFace, System.Numerics.Vector3 slScale,
+        System.Numerics.Vector3 slPos, System.Numerics.Quaternion slRot, Guid entityId)
+    {
+        var skeleton = avatarVisual.Skeleton;
 
         // Rigged / fitted mesh (worn mesh bodies and clothing) carries skin data: skin it to
         // the avatar skeleton so it deforms and animates with the body, instead of bolting it
@@ -1054,14 +1133,14 @@ public partial class AvatarRenderer : Node3D
                 // the node is in the tree so Godot can resolve and drive the skinning.
                 mi.Skeleton = mi.GetPathTo(skeleton);
                 RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices, faces, defaultFace, meshId);
-                _ = ApplyFaceMaterialsAsync(mi, faceIndices, faces, defaultFace, avatarVisual);
+                _ = ApplyFaceMaterialsAsync(mi, faceIndices, faces, defaultFace, avatarVisual, meshId);
             }).CallDeferred();
             return;
         }
 
         Godot.Callable.From(() =>
         {
-            if (!IsInstanceValid(boneAttach)) return;
+            if (!IsInstanceValid(attachParent)) return;
 
             var arrayMesh = new ArrayMesh();
             var faceIndices = new List<int>();
@@ -1102,9 +1181,9 @@ public partial class AvatarRenderer : Node3D
             var mi = new MeshInstance3D { Name = "AttachMesh", Mesh = arrayMesh };
             mi.Position = new Godot.Vector3(slPos.X, slPos.Z, -slPos.Y);
             mi.Quaternion = new Godot.Quaternion(slRot.X, slRot.Z, -slRot.Y, slRot.W);
-            boneAttach.AddChild(mi);
+            attachParent.AddChild(mi);
             RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices.ToArray(), faces, defaultFace, meshId);
-            _ = ApplyFaceMaterialsAsync(mi, faceIndices.ToArray(), faces, defaultFace, avatarVisual);
+            _ = ApplyFaceMaterialsAsync(mi, faceIndices.ToArray(), faces, defaultFace, avatarVisual, meshId);
         }).CallDeferred();
     }
 
@@ -1115,7 +1194,7 @@ public partial class AvatarRenderer : Node3D
     /// Bakes-on-Mesh faces to that avatar's server-baked textures.</summary>
     private async System.Threading.Tasks.Task ApplyFaceMaterialsAsync(
         MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace,
-        AvatarVisual? avatarVisual = null)
+        AvatarVisual? avatarVisual = null, Guid meshId = default)
     {
         if (mi.Mesh is not ArrayMesh am) return;
         int surfaceCount = am.GetSurfaceCount();
@@ -1126,7 +1205,7 @@ public partial class AvatarRenderer : Node3D
             FaceTexture ft = (faces != null && faceIndex >= 0 && faceIndex < faces.Length)
                 ? faces[faceIndex] : defaultFace;
 
-            var material = await BuildFaceMaterialAsync(ft, avatarVisual).ConfigureAwait(false);
+            var material = await BuildFaceMaterialAsync(ft, avatarVisual, meshId, faceIndex).ConfigureAwait(false);
             int s = surf;
             Godot.Callable.From(() =>
             {
@@ -1140,7 +1219,7 @@ public partial class AvatarRenderer : Node3D
     /// face colour tint, with alpha-cutout when the texture has alpha. Texture decode runs off
     /// the main thread; only the GPU upload is marshalled back.</summary>
     private async System.Threading.Tasks.Task<StandardMaterial3D> BuildFaceMaterialAsync(
-        FaceTexture ft, AvatarVisual? avatarVisual = null)
+        FaceTexture ft, AvatarVisual? avatarVisual = null, Guid meshId = default, int faceIndex = -1)
     {
         var tint = ft.Color == default
             ? new Color(1, 1, 1, 1)
@@ -1233,11 +1312,28 @@ public partial class AvatarRenderer : Node3D
         // hasn't arrived yet, leave the face untextured — the bake-arrival hook in UpdateVisual
         // re-runs ApplyFaceMaterialsAsync for registered BoM meshes.
         Guid texId = ft.TextureId;
+        bool wasBom = false; int bomIndex = -1;
         if (avatarVisual != null && SLNG.Assets.BakedTextureIds.TryGetBakeIndex(texId, out int bakeIdx))
+        {
+            wasBom = true; bomIndex = bakeIdx;
             texId = avatarVisual.LoadedTextures.TryGetValue(bakeIdx, out var bakeTexId) ? bakeTexId : Guid.Empty;
+        }
 
         if (texId == Guid.Empty || _assetService == null || _gpuCache == null)
+        {
+            // This was the one blind spot in the face-material diagnostics: a face that ends up
+            // with no texture id renders as flat AlbedoColor -- pure opaque WHITE for the usual
+            // untinted face -- and used to return here without logging anything at all. For hair
+            // that is maximally misleading: hair geometry is a bundle of flat quad CARDS that only
+            // becomes strands because the alpha texture cuts them, so an untextured hair mesh
+            // renders as a spray of solid white rectangles that reads as "the geometry exploded"
+            // rather than "the texture is missing". Log it, distinguishing the two ways to get
+            // here: an unresolved Bakes-on-Mesh channel (magic id whose avatar bake hasn't
+            // arrived) versus a face that genuinely carries no texture id at all.
+            Logger.Debug($"[FaceTex] mesh {meshId} face {faceIndex} has no texture -> renders flat AlbedoColor" +
+                (wasBom ? $" (Bakes-on-Mesh channel {bomIndex} not resolved yet)" : " (face carries no texture id)"));
             return material;
+        }
 
         // initialRefCount: 1 -- see LoadAndApplyTextureAsync's identical call for why (a
         // per-face/attachment texture pinned here is just as capable of being live on a
@@ -1255,6 +1351,7 @@ public partial class AvatarRenderer : Node3D
         material.AlbedoTexture = built;
         if (!hasExplicitAlpha)
             ApplyAlphaCutout(material, built);
+
         return material;
     }
 
@@ -1288,10 +1385,28 @@ public partial class AvatarRenderer : Node3D
     //   - fracMid > threshold → genuinely graded (hair-like): real Alpha blend, no per-pixel
     //     dithering. Deliberately NOT DepthDrawMode.Always (tried previously; breaks layered hair
     //     cards) — left at Godot's default (no depth write) for true Alpha, same as before.
-    //   - Otherwise (ambiguous / hard-cutout-with-AA-edge): AlphaHash, unchanged from before —
-    //     dithered but still depth-tested/written like opaque geometry, so misclassifying
+    //   - Otherwise (hard cutout with an anti-aliased edge): alpha SCISSOR + alpha-to-coverage.
+    //     Like AlphaHash this stays in the depth-tested/written opaque queue, so misclassifying
     //     ordinary clothing here can never cause the cross-layer occlusion loss true Alpha did
-    //     (see godot-material-transparency-gotchas / avatar-alpha-hash-vs-scissor memory notes).
+    //     (see godot-material-transparency-gotchas / avatar-alpha-hash-vs-scissor memory notes) —
+    //     but it does NOT dither. AlphaHash decides each pixel by comparing alpha against a
+    //     per-pixel noise value, so a partially-transparent edge becomes a random stipple of fully
+    //     on/off pixels. On hair that is very visible: the strand tips break into a spray of
+    //     speckles with the background showing through the gaps (2026-07-25, reported directly
+    //     off a sculpt-hair render). Scissor makes the same binary decision from a fixed
+    //     threshold instead, so the silhouette is a clean edge, and alpha-to-coverage (MSAA 4x is
+    //     on project-wide) resolves that edge with real coverage-based AA. The real viewer never
+    //     dithers either — LLDrawPoolAlpha blends or masks, so this is also the closer parity.
+    //     Threshold deliberately well BELOW 0.5: hair strands are mostly low-alpha, and the
+    //     memory note above records 0.5 visibly eating soft SL alpha content.
+    //
+    // 2026-07-25: tried unconditionally forcing AlphaHash for graded/avatar-attachment alpha, on
+    // the theory that a multi-piece hairstyle's several overlapping true-Alpha MeshInstance3D
+    // pieces sort against each other unpredictably. REVERTED, confirmed live: the "looks like a
+    // scarf" artifact was completely unaffected, and AlphaHash's dithering visibly degraded the
+    // OTHER (previously correct) hair texture into a grainy/speckled hairline. Whatever causes
+    // the scarf artifact, it is NOT cross-instance alpha-blend sort order — do not re-attempt this
+    // fix without new evidence.
     //
     // Mip-safety: Image.GetData() returns Godot's raw internal buffer, which for an image that's
     // already had GenerateMipmaps() called on it (both callers do, before this runs) is EVERY mip
@@ -1305,6 +1420,16 @@ public partial class AvatarRenderer : Node3D
     // width*height*4) to remove that risk regardless of call order.
     private const float GradedAlphaThreshold = 0.06f;
 
+    /// <summary>Alpha cutoff for the hard-cutout branch. Low on purpose — SL hair and lace keep a
+    /// lot of detail in the 0.2–0.4 alpha range, and a 0.5 cutoff visibly thins them out.</summary>
+    private const float HardCutoutScissorThreshold = 0.25f;
+
+    /// <summary>Fraction of fully-transparent texels above which a texture is treated as a cutout
+    /// SHEET (hair cards, lace, foliage) rather than a solid surface with a trimmed edge, and so
+    /// gets real alpha blending. Measured: the hair in the 2026-07-25 investigation is 97% clear;
+    /// ordinary opaque-bodied clothing and skin sit far below half.</summary>
+    private const float MostlyClearThreshold = 0.5f;
+
     private static void ApplyAlphaCutout(StandardMaterial3D material, ImageTexture tex)
     {
         if (material.Transparency == BaseMaterial3D.TransparencyEnum.Alpha) return;
@@ -1312,8 +1437,8 @@ public partial class AvatarRenderer : Node3D
         var img = tex.GetImage();
         if (img == null)
         {
-            material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaHash;
-            material.AlphaHashScale = 1.0f;
+            material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+            material.AlphaScissorThreshold = HardCutoutScissorThreshold;
             material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
             return;
         }
@@ -1323,14 +1448,16 @@ public partial class AvatarRenderer : Node3D
         int mip0Bytes = Math.Min(data.Length, w * h * 4);
         int pixelCount = mip0Bytes / 4;
 
-        int min = 255; int midCount = 0;
+        int min = 255; int midCount = 0; int clearCount = 0;
         for (int i = 3; i < mip0Bytes; i += 4)
         {
             byte a = data[i];
             if (a < min) min = a;
             if (a > 16 && a < 239) midCount++;
+            if (a <= 16) clearCount++;
         }
         float fracMid = pixelCount > 0 ? (float)midCount / pixelCount : 0f;
+        float fracClear = pixelCount > 0 ? (float)clearCount / pixelCount : 0f;
 
         if (min == 255)
         {
@@ -1338,14 +1465,25 @@ public partial class AvatarRenderer : Node3D
             return;
         }
 
-        if (fracMid > GradedAlphaThreshold)
+        // fracMid alone is not enough to recognise content that NEEDS blending. Hair measures
+        // only ~1.2% mid-alpha (97% fully clear, 2% fully opaque) and so reads as "hard cutout" —
+        // but those few percent of partial texels ARE the soft strand tips, and discarding them
+        // turns fine hair into thick, blocky tubes (confirmed side-by-side against Firestorm,
+        // 2026-07-25: "die transparenzen fehlen"). What actually distinguishes such an asset is
+        // that it is mostly HOLE: a texture whose pixels are predominantly fully transparent is a
+        // cutout sheet (hair cards, lace, foliage) whose whole appearance lives in its edges,
+        // whereas ordinary clothing/skin is predominantly opaque with a comparatively thin
+        // anti-aliased border. Blend the former, keep the cheap depth-correct scissor for the
+        // latter — which is also where the historical cross-layer occlusion regression came from,
+        // so the risky path stays limited to assets that visibly need it.
+        if (fracMid > GradedAlphaThreshold || fracClear > MostlyClearThreshold)
         {
             material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
             return;
         }
 
-        material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaHash;
-        material.AlphaHashScale = 1.0f;
+        material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+        material.AlphaScissorThreshold = HardCutoutScissorThreshold;
         material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
     }
 
@@ -2074,6 +2212,13 @@ public partial class AvatarRenderer : Node3D
         // "candy-wrapper" skinning artifact that looks exactly like an elongated snout/spike.
         int totalVerts = 0, orphanedVerts = 0;
 
+        // Counts influences whose joint reference had to be remapped to stay in range (see
+        // AddInfluence). Before that method was fixed to match the viewer these were DROPPED, and
+        // the resulting renormalization snapped affected vertices onto an unrelated bone — the
+        // "hair tears into flat shards" bug. A nonzero count here means this mesh is one that
+        // relies on the viewer's clamping behavior.
+        int remappedInfluences = 0;
+
         // Diagnostic: which bone this mesh is mostly weighted to, and how much of its total
         // vertex weight lands there. Points straight at a shape/scale bug on a specific bone
         // (e.g. an unexpectedly huge mHead scale) without having to guess from bind-pose extent
@@ -2110,10 +2255,10 @@ public partial class AvatarRenderer : Node3D
                 var bones = new int[4];
                 var wts = new float[4];
                 int c = 0; float sum = 0f;
-                AddInfluence(w.Joint0, w.Weight0, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                AddInfluence(w.Joint1, w.Weight1, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                AddInfluence(w.Joint2, w.Weight2, slotForJoint, jointCount, bones, wts, ref c, ref sum);
-                AddInfluence(w.Joint3, w.Weight3, slotForJoint, jointCount, bones, wts, ref c, ref sum);
+                AddInfluence(w.Joint0, w.Weight0, slotForJoint, jointCount, bones, wts, ref c, ref sum, ref remappedInfluences);
+                AddInfluence(w.Joint1, w.Weight1, slotForJoint, jointCount, bones, wts, ref c, ref sum, ref remappedInfluences);
+                AddInfluence(w.Joint2, w.Weight2, slotForJoint, jointCount, bones, wts, ref c, ref sum, ref remappedInfluences);
+                AddInfluence(w.Joint3, w.Weight3, slotForJoint, jointCount, bones, wts, ref c, ref sum, ref remappedInfluences);
                 totalVerts++;
                 if (sum > 1e-5f) { for (int k = 0; k < 4; k++) wts[k] /= sum; }
                 else { bones[0] = 0; wts[0] = 1f; orphanedVerts++; } // orphaned vertex — pin to first bound bone
@@ -2159,8 +2304,10 @@ public partial class AvatarRenderer : Node3D
         float topShare = totalVerts > 0 && slotWeightSum.Length > 0 ? slotWeightSum[topSlot] / totalVerts : 0f;
         Logger.Debug($"[RiggedMesh] mesh {meshId} joints {resolved}/{jointCount} resolved, binds {skin.GetBindCount()}, " +
                  $"bind-pose size ({bpSize.X:0.##}, {bpSize.Y:0.##}, {bpSize.Z:0.##}) at ({bpCenter.X:0.#}, {bpCenter.Y:0.#}, {bpCenter.Z:0.#}), " +
-                 $"dominant joint \"{topBoneName}\" ({topShare:P0}), orphaned verts {orphanedVerts}/{totalVerts}" +
+                 $"dominant joint \"{topBoneName}\" ({topShare:P0}), orphaned verts {orphanedVerts}/{totalVerts}, " +
+                 $"remapped influences {remappedInfluences}" +
                  (orphanedVerts > 0 ? $" [PINNED TO SKIN SLOT 0 = bone \"{skeleton.GetBoneName(skin.GetBindBone(0))}\"]" : ""));
+
 
         faceIndices = faceList.ToArray();
         return new MeshInstance3D
@@ -2172,12 +2319,45 @@ public partial class AvatarRenderer : Node3D
         };
     }
 
+    /// <summary>Adds one of a vertex's up-to-4 bone influences, matching the real viewer's
+    /// handling of malformed joint references (verified against
+    /// scratch/slviewer/indra/newview/llskinningutil.cpp).
+    ///
+    /// Viewer parity, and the bug this used to have: an influence whose joint index is out of
+    /// range is CLAMPED into range and KEPT — never dropped. `getPerVertexSkinMatrix` (:250) does
+    /// `idx[k] = llclamp((S32) floorf(w), 0, max_joints-1)`, and `scrubSkinWeights` (:209-222)
+    /// pre-clamps the stored weights the same way; likewise `scrubInvalidJoints` (:112-125)
+    /// rewrites a joint NAME the avatar doesn't have to "mPelvis" and `initJointNums` (:314-315)
+    /// falls back to joint num 0 — again remapping, never discarding. This method previously
+    /// `return`ed early in both cases, silently discarding that influence. Because the caller then
+    /// renormalizes the surviving weights (`wts[k] /= sum`), a vertex that should have been, say,
+    /// 60% neck / 40% head became 100% head — snapping it to an unrelated bone while its
+    /// neighbours stayed put. Whole triangles get stretched between the two, which reads as the
+    /// mesh tearing into scattered flat shards even though its bind pose, textures, UVs and
+    /// position are all correct. It also leaves the `orphanedVerts` counter at 0 (at least one
+    /// influence survives per vertex), so the existing diagnostic could not see it.</summary>
     private static void AddInfluence(int joint, float weight, int[] slotForJoint, int jointCount,
-        int[] bones, float[] wts, ref int count, ref float sum)
+        int[] bones, float[] wts, ref int count, ref float sum, ref int remapped)
     {
-        if (weight <= 0f || joint < 0 || joint >= jointCount || count >= 4) return;
-        int slot = slotForJoint[joint];
-        if (slot < 0) return;
+        if (count >= 4 || weight <= 0f || jointCount <= 0) return;
+
+        int j = joint;
+        if (j < 0 || j >= jointCount)
+        {
+            j = System.Math.Clamp(j, 0, jointCount - 1);
+            remapped++;
+        }
+
+        int slot = slotForJoint[j];
+        if (slot < 0)
+        {
+            // The joint name resolved to no bone in OUR skeleton. Viewer: remap to mPelvis /
+            // joint 0 rather than dropping. Slot 0 is this mesh's first successfully bound joint
+            // — the nearest available analog to that fallback.
+            slot = 0;
+            remapped++;
+        }
+
         bones[count] = slot;
         wts[count] = weight;
         sum += weight;
