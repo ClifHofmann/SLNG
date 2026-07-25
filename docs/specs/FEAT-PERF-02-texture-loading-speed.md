@@ -55,27 +55,47 @@ Current-state audit (see file:line references below) found:
       SIMULATOR send fewer bytes for a higher discard level (~4x fewer bytes per level, confirmed
       against OpenSim's `GetTextureHandler`/`J2KImage` source) — this is real bandwidth savings,
       not just a client-side decode/display hint.
-- [x] Distance/size-driven discard implemented for `ObjectRenderer` (own HTTP Range fetch in
-      `GridSession.FetchTextureDataAsync`, ported `calcDataSizeJ2C` byte-size estimator in
-      `SLNG.Net.J2kByteSizeEstimator`, threaded through `AssetService`/`GpuCache`, discard+priority
-      computed per-object in `ObjectRenderer.ComputeTextureLod` from apparent size = radius/distance,
-      measured from the active **camera**, not the avatar — user-reported gap after live-testing:
-      zooming/orbiting away from your own body kept prioritizing detail around it instead of what's
-      actually on screen).
-      **Fetch order is now priority-aware, not just discard-aware:** `PriorityGate`
-      (`src/SLNG.Assets/PriorityGate.cs`) replaced the plain `SemaphoreSlim` throttles — admits the
-      highest-priority (most on-screen-prominent) queued texture next instead of strict arrival
-      order, so what the camera is pointed at resolves before background scenery that merely
-      happened to be requested first. Priority is captured at enqueue time and not re-evaluated
-      (same caveat as discard below).
+- [x] Distance/size-driven discard **implemented, then live-tested and found to cause a serious
+      regression, then disabled** (`ObjectRenderer.ComputeTextureLod` computes a discard level but
+      forces it to 0 / full resolution right before returning — one-line re-enable once fixed).
+      One test session: 6752 of 6786 total client-output.log lines (99.5%) were
+      `[WARNING]: Codestream truncated in tile 0` from CoreJ2K. Magick.NET (the primary decoder)
+      does not tolerate a deliberately-Range-truncated J2C stream the way the design assumed,
+      falls back to CoreJ2K en masse, and at the more aggressive discard levels that fallback
+      frequently fails outright instead of degrading gracefully. Reported live as three symptoms
+      tracing to this one cause: a wall of startup warnings, slower loading (CPU burned on
+      repeated failed/fallback decodes instead of one clean full fetch), and ~80% of textures
+      never appearing (vs. ~100% in Firestorm on the same region). **Root cause of the decode-side
+      intolerance is not yet understood** — the byte-size math is verified against the real
+      viewer's own `calcDataSizeJ2C`/OpenSim's `GetTextureHandler` source (Phase 2.1), so either
+      the estimate is wrong in practice, or Magick.NET/CoreJ2K need different handling for a
+      known-partial stream than for an accidentally-truncated one. Needs its own investigation
+      before re-enabling, not attempted under live-testing pressure.
+      **Fetch order is priority-aware regardless of the above, and unaffected by it:**
+      `PriorityGate` (`src/SLNG.Assets/PriorityGate.cs`) replaced the plain `SemaphoreSlim`
+      throttles — admits the highest-priority (most on-screen-prominent) queued texture next
+      instead of strict arrival order, so what the camera is pointed at resolves before background
+      scenery that merely happened to be requested first. Priority is computed the same way
+      discard was going to be (apparent size from the active **camera**, not the avatar — a
+      separate user-reported gap after live-testing: zooming/orbiting away from your own body kept
+      prioritizing detail around it instead of what's actually on screen) and is captured at
+      enqueue time, not re-evaluated if the camera later moves.
+      **Also found and fixed while investigating:** `ObjectRenderer`'s 5 texture-fetch
+      continuations failed completely silently (no log at all) — unlike `AvatarRenderer`'s
+      existing `[FaceTex] ... fetch/decode returned null` log. Added matching failure logging.
       **Not yet covered:** `AvatarRenderer` (own-avatar bake should likely stay full-res like
       sculpts; other avatars' worn attachments are a real candidate), `TerrainRenderer` (detail
-      textures are shared/tiled across a whole region, no single "distance to the texture").
-      **No runtime upgrade path:** once a texture is GPU-resident at some discard level it stays
-      there for the session even if later needed sharper (documented limitation, see
-      `GpuCache.GetOrUploadTextureAsync`'s doc comment) — deferred, needs a discard-aware cache key.
-      Progressive discrete *escalation* (fetch coarse, then finer, as an object approaches) is
-      also not implemented — only the initial discard choice.
+      textures are shared/tiled across a whole region, no single "distance to the texture") — both
+      moot until discard is actually re-enabled.
+      **No runtime upgrade path:** once a texture is GPU-resident it stays that way for the
+      session even if later needed sharper (documented limitation, see
+      `GpuCache.GetOrUploadTextureAsync`'s doc comment) — relevant again once discard is
+      re-enabled, deferred until then.
+      **Negative cache added:** genuinely dead/missing texture assets (confirmed via one session:
+      5 distinct ids, 4 of them retried 173-408 times each) now get a 45s cooldown after
+      exhausting all retry attempts instead of immediately re-entering the full retry cycle every
+      time something asks for them again — this is independent of the discard-level regression
+      and stays enabled.
 - [ ] Re-evaluate the 4-concurrent-fetch cap (`a14229d`, originally a UDP-packet-drop fix) now
       that HTTP CAPS texture fetch is preferred; tune upward only with `protocol-re` sign-off
       that the original truncation risk doesn't reapply over HTTP.
