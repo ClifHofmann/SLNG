@@ -1853,8 +1853,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             using var response = await _textureHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode) return null; // 4xx/5xx -- let the UDP fallback try
 
+            long? declaredLength = response.Content.Headers.ContentLength;
             var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-            return bytes.Length > 0 ? bytes : null;
+            if (bytes.Length == 0) return null;
+
+            // OpenSim's embedded HTTP server has been observed (empirically, right after a
+            // teleport/region-crossing burst of many simultaneous texture GETs) to close the
+            // connection early and return fewer bytes than its own declared Content-Length --
+            // with a 200/206 success status and no exception from HttpClient, since an early
+            // clean connection close is indistinguishable from "body complete" once the socket
+            // just stops sending. Handing that short body to the J2K decoder is exactly the
+            // "Codestream truncated" case this method exists to avoid (see the doc comment
+            // above) even though we never sent a Range header ourselves. Treat a short read as a
+            // failed fetch so the caller falls back to the UDP path in the SAME attempt, instead
+            // of silently decoding (and, for Magick.NET, likely failing on) partial data.
+            if (declaredLength.HasValue && bytes.Length < declaredLength.Value) return null;
+
+            return bytes;
         }
         catch (Exception ex)
         {
