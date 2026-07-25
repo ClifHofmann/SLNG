@@ -65,7 +65,7 @@ namespace SLNG.Assets.PrimMesher
         {
             numPrimFaces = 0;
 
-            string raw;
+            string? raw;
             while ((raw = s.ReadLine()) != null)
             {
                 var line = raw.Trim();

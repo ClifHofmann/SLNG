@@ -328,7 +328,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     private void OnDisplayNameUpdate(object? sender, DisplayNameUpdateEventArgs e)
     {
         var id = e.DisplayName.ID.Guid;
-        string displayName = e.DisplayName.DisplayName;
+        string? displayName = e.DisplayName.DisplayName;
         if (!string.IsNullOrEmpty(displayName))
         {
             DisplayNameResolved?.Invoke(this, new NameResolvedEvent(id, displayName));
