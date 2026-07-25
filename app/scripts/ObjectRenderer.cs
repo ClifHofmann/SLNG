@@ -577,12 +577,17 @@ public partial class ObjectRenderer : Node3D
         var prim = _world.GetEntity(state.EntityId)?.GetComponent<PrimitiveComponent>();
         if (prim == null) return;
 
+        // FEAT-PERF-02 Phase 2: one discard decision per object (not per face) -- computed once
+        // here from the mesh's already-applied Position/Scale (see UpdateVisual), before this
+        // object's faces potentially fan out into several concurrent texture requests below.
+        int desiredDiscard = ComputeDesiredDiscard(state.MeshInstance);
+
         var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint, prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation);
 
         // Fallback solid / mesh without per-surface face info: one material for the whole node.
         if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
         {
-            var (mat, used) = await BuildFaceMaterialAsync(defaultFace);
+            var (mat, used) = await BuildFaceMaterialAsync(defaultFace, desiredDiscard);
             ApplyOnMainThread(state, () => state.MeshInstance.MaterialOverride = mat, used);
             return;
         }
@@ -596,7 +601,7 @@ public partial class ObjectRenderer : Node3D
                 ? prim.Faces[faceIdx] : defaultFace;
 
             int surf = surface; // capture
-            faceTasks.Add(BuildFaceMaterialAsync(ft).ContinueWith(t => 
+            faceTasks.Add(BuildFaceMaterialAsync(ft, desiredDiscard).ContinueWith(t =>
             {
                 return (surf, t.Result.Material, t.Result.Used);
             }, System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously));
@@ -643,7 +648,7 @@ public partial class ObjectRenderer : Node3D
 
     /// <summary>Builds one face's material (classic texture or PBR) and returns the texture ids
     /// it references. Texture/material application is marshalled to the main thread.</summary>
-    private async System.Threading.Tasks.Task<(StandardMaterial3D Material, List<Guid> Used)> BuildFaceMaterialAsync(FaceTexture ft)
+    private async System.Threading.Tasks.Task<(StandardMaterial3D Material, List<Guid> Used)> BuildFaceMaterialAsync(FaceTexture ft, int desiredDiscard)
     {
         var used = new List<Guid>();
         var colorTint = new Godot.Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
@@ -720,25 +725,25 @@ public partial class ObjectRenderer : Node3D
                 if (pbr.BaseColorTextureId != Guid.Empty)
                 {
                     used.Add(pbr.BaseColorTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId).ContinueWith(t =>
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId, desiredDiscard).ContinueWith(t =>
                         Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) material.AlbedoTexture = t.Result; }).CallDeferred()));
                 }
                 if (pbr.NormalTextureId != Guid.Empty)
                 {
                     used.Add(pbr.NormalTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId).ContinueWith(t =>
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId, desiredDiscard).ContinueWith(t =>
                         Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) { material.NormalEnabled = true; material.NormalTexture = t.Result; } }).CallDeferred()));
                 }
                 if (pbr.MetallicRoughnessTextureId != Guid.Empty)
                 {
                     used.Add(pbr.MetallicRoughnessTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId).ContinueWith(t =>
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId, desiredDiscard).ContinueWith(t =>
                         Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) material.OrmTexture = t.Result; }).CallDeferred()));
                 }
                 if (pbr.EmissiveTextureId != Guid.Empty)
                 {
                     used.Add(pbr.EmissiveTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId).ContinueWith(t =>
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId, desiredDiscard).ContinueWith(t =>
                         Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) material.EmissionTexture = t.Result; }).CallDeferred()));
                 }
                 // No await Task.WhenAll(tasks) here! Let the textures populate asynchronously so the mesh renders immediately.
@@ -747,7 +752,7 @@ public partial class ObjectRenderer : Node3D
         else if (ft.TextureId != Guid.Empty)
         {
             used.Add(ft.TextureId);
-            _ = GetOrCreateGpuTextureAsync(ft.TextureId).ContinueWith(t =>
+            _ = GetOrCreateGpuTextureAsync(ft.TextureId, desiredDiscard).ContinueWith(t =>
             {
                 var tex = t.Result;
                 if (tex != null)
@@ -817,15 +822,55 @@ public partial class ObjectRenderer : Node3D
         material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
     }
 
-    // FEAT-PERF-02: thin wrapper kept so the 5 call sites below don't need to change -- the real
-    // fetch/decode/Image/mipmap/upload work (and its single-flight dedup across every renderer,
-    // not just this one) now lives in GpuCache.GetOrUploadTextureAsync.
-    private System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
+    // FEAT-PERF-02: thin wrapper -- the real fetch/decode/Image/mipmap/upload work (and its
+    // single-flight dedup across every renderer, not just this one) lives in
+    // GpuCache.GetOrUploadTextureAsync.
+    private System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId, int desiredDiscard = 0)
     {
         if (_gpuCache == null || _assetService == null)
             return System.Threading.Tasks.Task.FromResult<ImageTexture?>(null);
 
-        return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true);
+        return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, desiredDiscard: desiredDiscard);
+    }
+
+    /// <summary>
+    /// FEAT-PERF-02 Phase 2: approximates the real SL-viewer texture-discard formula (protocol-re
+    /// verified: real discard = floor(log4(textureTexelCount / onScreenPixelArea)), see
+    /// docs/specs/FEAT-PERF-02-texture-loading-speed.md's Phase 2.1 write-up) using only what's
+    /// cheaply available at this call site -- the mesh's already-applied world Position/Scale and
+    /// the local agent's position. The real formula needs the camera's actual FOV/viewport pixel
+    /// scale and the texture's real resolution (unknown before it's ever been fetched); this
+    /// instead uses <c>apparentSize = objectRadius / distance</c> (the small-angle approximation
+    /// of the same angular-size quantity the real formula is built on) against hand-picked
+    /// thresholds tuned by feel, not derived from measured pixel counts. Each threshold step is
+    /// roughly a halving of apparent linear size, matching the real formula's log4-of-AREA (=
+    /// log2-of-LINEAR-SIZE) structure -- the same *shape* of curve, not the same precise curve.
+    /// </summary>
+    private int ComputeDesiredDiscard(MeshInstance3D meshInstance)
+    {
+        if (_world == null || !RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos))
+            return 0; // No agent position yet (e.g. during initial login) -- stay conservative.
+
+        float distance = meshInstance.Position.DistanceTo(agentPos);
+
+        float radius = 1f;
+        if (meshInstance.Mesh != null)
+        {
+            var localAabb = meshInstance.Mesh.GetAabb();
+            var worldSize = localAabb.Size * meshInstance.Scale;
+            radius = worldSize.Length() * 0.5f;
+        }
+
+        float apparentSize = radius / Mathf.Max(distance, 0.1f);
+        return apparentSize switch
+        {
+            >= 0.5f => 0,
+            >= 0.25f => 1,
+            >= 0.12f => 2,
+            >= 0.06f => 3,
+            >= 0.03f => 4,
+            _ => SLNG.Net.J2kByteSizeEstimator.MaxDiscardLevel,
+        };
     }
 
     /// <summary>Returns a stable GpuCache key for a (shape, LOD) pair -- one id per unique
