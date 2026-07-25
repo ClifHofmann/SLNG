@@ -166,9 +166,13 @@ public partial class AvatarController : Camera3D
             }
             else if (keyEvt.Keycode == Key.Escape)
             {
-                _zoom = 4.0f;
-                _orbitYaw = 0f;
-                _orbitPitch = 0f;
+                // Was inlining just 2 of ResetCamera()'s 5 resets (zoom, orbit yaw/pitch) --
+                // missing _panOffset and, critically, _orbitTarget. With either still set (any
+                // prior Alt+LMB orbit-around-a-clicked-point, or a pan), Escape reset the zoom
+                // distance/angle but the camera stayed aimed at that stale pan/orbit point instead
+                // of snapping cleanly back to directly behind the avatar -- reported as "zooming
+                // back on Esc doesn't work cleanly, should jump to rear view."
+                ResetCamera();
                 GD.Print("[AvatarController] Camera reset");
             }
         }
