@@ -178,15 +178,21 @@ public class GpuCache
     /// caller's request actually performs the build for a given id -- if two callers ever request
     /// the same id with different values (not expected: different renderers use disjoint texture
     /// categories in practice), the first one to start the build wins for that id.
-    /// <para>FEAT-PERF-02 Phase 2: <paramref name="desiredDiscard"/> has the exact same
-    /// first-caller-wins caveat, now more likely to matter (two instances of the same object at
-    /// different distances CAN share a texture id). More importantly: once a texture is cached
-    /// here (<see cref="Get"/> above short-circuits before ever calling AssetService again), it
-    /// is NEVER re-fetched at a different discard level for the rest of the session -- a texture
-    /// first requested by a distant/small object stays at that resolution even if the same or
-    /// another instance later needs it sharp. Deliberate scope limit for this pass (a real fix
-    /// needs a discard-aware cache key here too, not just in AssetService) -- see the spec's
-    /// Phase 2 notes.</para>
+    /// <para>FEAT-PERF-02 Phase 2: <paramref name="desiredDiscard"/> drives a LOCAL post-decode
+    /// downsample, not the network fetch -- AssetService is always asked for the full asset
+    /// (discard 0) regardless of this value. Network-side discard (asking the simulator for
+    /// fewer bytes via HTTP Range) was tried and disabled: Magick.NET does not tolerate a
+    /// deliberately-truncated J2C stream, see ObjectRenderer.ComputeTextureLod's doc comment for
+    /// the live-tested failure mode. Shrinking the already-fully-decoded Image before it reaches
+    /// the GPU sidesteps that decoder bug entirely and still delivers a real VRAM reduction for
+    /// distant/small objects -- it just doesn't save any network bandwidth (full asset is always
+    /// downloaded), unlike the disabled network-discard path.
+    /// <para>Same first-caller-wins caveat as before (two instances of the same object at
+    /// different distances CAN share a texture id, and once cached here -- see <see cref="Get"/>
+    /// above short-circuiting before ever calling AssetService again -- a texture is NEVER
+    /// rebuilt at a different discard level for the rest of the session, a texture first seen
+    /// distant/small stays downsampled even if the same or another instance later needs it
+    /// sharp). Deliberate scope limit for this pass -- see the spec's Phase 2 notes.</para>
     /// </summary>
     public Task<ImageTexture?> GetOrUploadTextureAsync(
         Guid textureId,
@@ -214,13 +220,32 @@ public class GpuCache
     {
         try
         {
-            var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard, priority: priority).ConfigureAwait(false);
+            // desiredDiscard: 0 here, deliberately -- always fetch/decode the complete asset.
+            // See this method's/GetOrUploadTextureAsync's doc comments for why network-side
+            // truncation is disabled; the downsample below is purely local/post-decode.
+            var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority).ConfigureAwait(false);
             if (textureData == null) return null;
 
             // Image/mipmap build happens on this (worker) thread, matching the threading rule in
             // AGENTS.md -- only the final Resource creation + cache Put below touches the main
             // thread, via CallDeferred.
             var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+
+            // FEAT-PERF-02: shrink the fully-decoded image before it ever reaches the GPU, for a
+            // distant/small object that doesn't need full resolution on screen. Each discard
+            // level halves both dimensions (SL/OpenSim discard semantics -- see
+            // J2kByteSizeEstimator's doc comment), floored at 8px so GenerateMipmaps always has
+            // a sane base level to work from.
+            if (image != null && desiredDiscard > 0)
+            {
+                int targetW = Math.Max(8, image.GetWidth() >> desiredDiscard);
+                int targetH = Math.Max(8, image.GetHeight() >> desiredDiscard);
+                if (targetW < image.GetWidth() || targetH < image.GetHeight())
+                {
+                    image.Resize(targetW, targetH, Image.Interpolation.Lanczos);
+                }
+            }
+
             if (generateMipmaps) image?.GenerateMipmaps();
 
             var tcs = new TaskCompletionSource<ImageTexture?>();
@@ -246,7 +271,10 @@ public class GpuCache
                 var tex = ImageTexture.CreateFromImage(image);
                 if (tex != null)
                 {
-                    long size = (long)textureData.Width * textureData.Height * 4;
+                    // Actual (possibly downsampled -- see above) dimensions, not textureData's
+                    // original ones, so the VRAM budget this cache enforces reflects what's
+                    // really on the GPU.
+                    long size = (long)tex.GetWidth() * tex.GetHeight() * 4;
                     Put(textureId, tex, size, initialRefCount);
                 }
                 tcs.SetResult(tex);

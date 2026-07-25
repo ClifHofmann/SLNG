@@ -923,19 +923,19 @@ public partial class ObjectRenderer : Node3D
 
         float apparentSize = radius / Mathf.Max(distance, 0.1f);
 
-        // FEAT-PERF-02: discard-level truncation is DISABLED for now (always 0 / full res) --
-        // live-tested and found to cause a serious regression, not the intended improvement.
-        // A single test session logged 6752 "[WARNING]: Codestream truncated in tile 0" lines
-        // out of 6786 total (99.5% of all output) -- Magick.NET (the primary decoder) does not
-        // tolerate a deliberately-Range-truncated J2C stream the way the discard-level design
-        // assumed, falls back to CoreJ2K en masse, and at the more aggressive discard levels
-        // that fallback frequently fails outright rather than degrading gracefully. Reported
-        // live as three symptoms that all trace back to this one cause: a wall of startup
-        // warnings, textures taking longer to load (CPU burned on repeated failed/fallback
-        // decodes instead of one clean full fetch), and ~80% of textures never appearing at all
-        // (vs. ~100% in Firestorm on the same region). The computation below is left in place,
-        // just not acted on, so re-enabling is a one-line change once the decode-side
-        // intolerance is actually fixed -- see the FEAT-PERF-02 spec's Phase 2 notes.
+        // FEAT-PERF-02: this discard level now drives a LOCAL post-decode downsample only, not
+        // the network fetch -- see GpuCache.FetchAndUploadTextureAsync. Network-side discard
+        // truncation via HTTP Range was tried and disabled: Magick.NET does not tolerate a
+        // deliberately-Range-truncated J2C stream, falling back to CoreJ2K en masse and, at
+        // aggressive discard levels, frequently failing outright rather than degrading
+        // gracefully (one session: 6752 of 6786 total log lines were CoreJ2K "Codestream
+        // truncated" warnings; reported live as slow loading + ~80% of textures missing vs.
+        // ~100% in Firestorm on the same region). Always fetching+decoding the full asset
+        // sidesteps that bug entirely -- this level now only shrinks the already-decoded Image
+        // before it reaches the GPU, trading network bandwidth (still full, unresolved -- see
+        // the FEAT-PERF-02 spec) for a real VRAM reduction on distant/small objects, which is
+        // where a user-reported "GPU memory really filling up" (everything full-res now that
+        // fetches mostly succeed) actually needs the win right now.
         int discard = apparentSize switch
         {
             >= 0.5f => 0,
@@ -945,8 +945,6 @@ public partial class ObjectRenderer : Node3D
             >= 0.03f => 4,
             _ => SLNG.Net.J2kByteSizeEstimator.MaxDiscardLevel,
         };
-        _ = discard; // computed for future re-enabling, not currently acted on -- see comment above
-        discard = 0;
 
         // Priority is apparent size, halved for anything behind the camera plane. Using the same
         // quantity for both keeps them consistent by construction: whatever we decided needs the
