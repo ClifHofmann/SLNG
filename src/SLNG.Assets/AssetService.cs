@@ -22,7 +22,12 @@ public class AssetService
     private readonly GridSession _session;
     private readonly string _cacheDir;
     private readonly MemoryCache _memCache;
-    
+
+    // FEAT-PERF-02: separate small cache (no size limit needed -- entries are a trivial marker,
+    // not decoded pixel data) for texture ids that just exhausted every retry attempt. See
+    // GetTextureAsync's doc comment for why this exists.
+    private readonly MemoryCache _recentTextureFailures = new(new MemoryCacheOptions());
+
     private readonly ConcurrentDictionary<Guid, Task<MeshData?>> _inflightMeshes = new();
     // Lazy<Task<T>>, not a bare Task<T> -- see GetTextureAsync's comment for why this specific
     // dictionary needs a real single-execution guarantee under a concurrent first-touch race.
@@ -362,7 +367,7 @@ public class AssetService
     /// </param>
     /// <param name="priority">FEAT-PERF-02: fetch-queue ordering hint, higher = fetched sooner
     /// when more textures are pending than there are fetch slots. Callers should pass the
-    /// object's on-screen prominence (see ObjectRenderer.ComputeDesiredDiscard) so what the
+    /// object's on-screen prominence (see ObjectRenderer.ComputeTextureLod) so what the
     /// camera is pointed at resolves before distant background scenery. Same first-caller-wins
     /// caveat as <paramref name="desiredDiscard"/>, plus: priority is captured when the fetch is
     /// enqueued and never re-evaluated -- see <see cref="PriorityGate"/>'s doc comment.</param>
@@ -371,6 +376,21 @@ public class AssetService
         if (_memCache.TryGetValue(textureId, out TextureData? cached))
         {
             return Task.FromResult(cached);
+        }
+
+        // FEAT-PERF-02: short-lived negative cache for ids that just exhausted every retry
+        // attempt. Without this, a texture id that's genuinely gone from the sim (a deleted/
+        // missing asset -- common on older SL/OpenSim content, e.g. a shared freebie whose
+        // texture reference outlived the texture itself) pays the SAME full 3-attempt/60s-per-
+        // attempt retry cycle every single time something asks for it again. Live-tested: a
+        // handful of dead texture ids on one busy event region logged 170-400+ repeat failures
+        // EACH in a single session -- every one of those competed for the same scarce fetch-
+        // throttle slots that textures which could actually succeed needed. This does not
+        // change the eventual answer (still null after this cache expires and it's genuinely
+        // retried), it only stops hammering a known-hopeless id in the meantime.
+        if (_recentTextureFailures.TryGetValue(textureId, out _))
+        {
+            return Task.FromResult<TextureData?>(null);
         }
 
         int effectiveDiscard = isSculpt ? 0 : desiredDiscard;
@@ -398,6 +418,14 @@ public class AssetService
                 long size = result.Width * result.Height * 4;
                 if (size <= 0) size = 1024;
                 _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(5) });
+            }
+            else
+            {
+                // Exhausted all 3 attempts (see FetchAndDecodeTextureAsync) -- don't let the next
+                // caller pay that cost again immediately. 45s, not minutes: a texture that failed
+                // because the sim/connection was briefly overloaded should still recover this
+                // session; only truly-gone assets keep hitting this and keep getting deflected.
+                _recentTextureFailures.Set(id, true, TimeSpan.FromSeconds(45));
             }
             return result;
         }
