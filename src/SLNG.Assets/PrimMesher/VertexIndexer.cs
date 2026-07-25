@@ -61,8 +61,8 @@ namespace SLNG.Assets.PrimMesher
     public class VertexIndexer
     {
         public int numPrimFaces;
-        public List<List<ViewerPolygon>> viewerPolygons;
-        public List<List<ViewerVertex>> viewerVertices;
+        public List<List<ViewerPolygon>> viewerPolygons = new();
+        public List<List<ViewerVertex>> viewerVertices = new();
 
         public VertexIndexer()
         {

@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Godot;
 
 namespace SLNG.App;
@@ -49,6 +52,17 @@ public class GpuCache
 
     private long _currentSize = 0;
     private readonly long _maxSize;
+
+    // FEAT-PERF-02: single-flight coordination for GetOrUploadTextureAsync, shared by every
+    // renderer (Object/Avatar/Terrain) that uploads GPU textures through this one GpuCache
+    // instance. Lazy<Task<T>> (ExecutionAndPublication), not a bare Task, guarantees the
+    // fetch+decode+Image+mipmap+upload work below runs at most once per texture id even under a
+    // genuine concurrent race -- e.g. many faces/objects that all reference the same
+    // never-before-cached texture at once, which previously each independently ran
+    // Image.CreateFromData + GenerateMipmaps on the (already-deduplicated, see AssetService)
+    // decoded pixels, with only the first to reach the main-thread callback actually keeping its
+    // ImageTexture -- the other N-1 builds were pure waste.
+    private readonly ConcurrentDictionary<Guid, Lazy<Task<ImageTexture?>>> _inflightTextureUploads = new();
 
     /// <summary>
     /// Initializes a new GpuCache with a VRAM budget.
@@ -149,6 +163,129 @@ public class GpuCache
             _currentSize += size;
 
             EvictIfNeeded();
+        }
+    }
+
+    /// <summary>
+    /// Fetches/decodes (via <paramref name="assetService"/>) and uploads a texture as an
+    /// <see cref="ImageTexture"/>, or returns the already-cached one. Centralizes what
+    /// ObjectRenderer/AvatarRenderer/TerrainRenderer each used to implement separately (and had
+    /// already drifted slightly -- e.g. only some call sites pass <paramref name="initialRefCount"/>),
+    /// and adds a single-flight guarantee across ALL of them: concurrent callers requesting the
+    /// same <paramref name="textureId"/> from any renderer share one Image/mipmap build and one
+    /// upload, not just one network fetch (see AssetService.GetTextureAsync for that half).
+    /// <paramref name="generateMipmaps"/>/<paramref name="initialRefCount"/> apply to whichever
+    /// caller's request actually performs the build for a given id -- if two callers ever request
+    /// the same id with different values (not expected: different renderers use disjoint texture
+    /// categories in practice), the first one to start the build wins for that id.
+    /// <para>FEAT-PERF-02 Phase 2: <paramref name="desiredDiscard"/> drives a LOCAL post-decode
+    /// downsample, not the network fetch -- AssetService is always asked for the full asset
+    /// (discard 0) regardless of this value. Network-side discard (asking the simulator for
+    /// fewer bytes via HTTP Range) was tried and disabled: Magick.NET does not tolerate a
+    /// deliberately-truncated J2C stream, see ObjectRenderer.ComputeTextureLod's doc comment for
+    /// the live-tested failure mode. Shrinking the already-fully-decoded Image before it reaches
+    /// the GPU sidesteps that decoder bug entirely and still delivers a real VRAM reduction for
+    /// distant/small objects -- it just doesn't save any network bandwidth (full asset is always
+    /// downloaded), unlike the disabled network-discard path.
+    /// <para>Same first-caller-wins caveat as before (two instances of the same object at
+    /// different distances CAN share a texture id, and once cached here -- see <see cref="Get"/>
+    /// above short-circuiting before ever calling AssetService again -- a texture is NEVER
+    /// rebuilt at a different discard level for the rest of the session, a texture first seen
+    /// distant/small stays downsampled even if the same or another instance later needs it
+    /// sharp). Deliberate scope limit for this pass -- see the spec's Phase 2 notes.</para>
+    /// </summary>
+    public Task<ImageTexture?> GetOrUploadTextureAsync(
+        Guid textureId,
+        SLNG.Assets.AssetService? assetService,
+        bool generateMipmaps,
+        int initialRefCount = 0,
+        int desiredDiscard = 0,
+        float priority = 0f)
+    {
+        if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
+
+        var cached = Get(textureId) as ImageTexture;
+        if (cached != null) return Task.FromResult(cached)!;
+
+        if (assetService == null) return Task.FromResult<ImageTexture?>(null);
+
+        var lazy = _inflightTextureUploads.GetOrAdd(textureId, id => new Lazy<Task<ImageTexture?>>(
+            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, desiredDiscard, priority),
+            LazyThreadSafetyMode.ExecutionAndPublication));
+        return lazy.Value;
+    }
+
+    private async Task<ImageTexture?> FetchAndUploadTextureAsync(
+        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, int desiredDiscard, float priority)
+    {
+        try
+        {
+            // desiredDiscard: 0 here, deliberately -- always fetch/decode the complete asset.
+            // See this method's/GetOrUploadTextureAsync's doc comments for why network-side
+            // truncation is disabled; the downsample below is purely local/post-decode.
+            var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority).ConfigureAwait(false);
+            if (textureData == null) return null;
+
+            // Image/mipmap build happens on this (worker) thread, matching the threading rule in
+            // AGENTS.md -- only the final Resource creation + cache Put below touches the main
+            // thread, via CallDeferred.
+            var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+
+            // FEAT-PERF-02: shrink the fully-decoded image before it ever reaches the GPU, for a
+            // distant/small object that doesn't need full resolution on screen. Each discard
+            // level halves both dimensions (SL/OpenSim discard semantics -- see
+            // J2kByteSizeEstimator's doc comment), floored at 8px so GenerateMipmaps always has
+            // a sane base level to work from.
+            if (image != null && desiredDiscard > 0)
+            {
+                int targetW = Math.Max(8, image.GetWidth() >> desiredDiscard);
+                int targetH = Math.Max(8, image.GetHeight() >> desiredDiscard);
+                if (targetW < image.GetWidth() || targetH < image.GetHeight())
+                {
+                    image.Resize(targetW, targetH, Image.Interpolation.Lanczos);
+                }
+            }
+
+            if (generateMipmaps) image?.GenerateMipmaps();
+
+            var tcs = new TaskCompletionSource<ImageTexture?>();
+            Godot.Callable.From(() =>
+            {
+                // Re-check: a differently-triggered Put for this id (shouldn't normally happen
+                // given the single-flight dict above, but costs nothing to guard) may have
+                // already landed between the await above and this deferred callback running.
+                var raced = Get(textureId) as ImageTexture;
+                if (raced != null)
+                {
+                    image?.Dispose();
+                    tcs.SetResult(raced);
+                    return;
+                }
+
+                if (image == null)
+                {
+                    tcs.SetResult(null);
+                    return;
+                }
+
+                var tex = ImageTexture.CreateFromImage(image);
+                if (tex != null)
+                {
+                    // Actual (possibly downsampled -- see above) dimensions, not textureData's
+                    // original ones, so the VRAM budget this cache enforces reflects what's
+                    // really on the GPU.
+                    long size = (long)tex.GetWidth() * tex.GetHeight() * 4;
+                    Put(textureId, tex, size, initialRefCount);
+                }
+                tcs.SetResult(tex);
+                image.Dispose();
+            }).CallDeferred();
+
+            return await tcs.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            _inflightTextureUploads.TryRemove(textureId, out _);
         }
     }
 

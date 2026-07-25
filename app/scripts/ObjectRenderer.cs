@@ -577,12 +577,19 @@ public partial class ObjectRenderer : Node3D
         var prim = _world.GetEntity(state.EntityId)?.GetComponent<PrimitiveComponent>();
         if (prim == null) return;
 
+        // FEAT-PERF-02 Phase 2: one detail/priority decision per object (not per face) -- computed
+        // once here from the mesh's already-applied Position/Scale (see UpdateVisual) and the
+        // camera, before this object's faces potentially fan out into several concurrent texture
+        // requests below. Must stay ahead of the first await -- see ComputeTextureLod's note on
+        // main-thread-only access.
+        var (desiredDiscard, priority) = ComputeTextureLod(state.MeshInstance);
+
         var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint, prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation);
 
         // Fallback solid / mesh without per-surface face info: one material for the whole node.
         if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
         {
-            var (mat, used) = await BuildFaceMaterialAsync(defaultFace);
+            var (mat, used) = await BuildFaceMaterialAsync(defaultFace, desiredDiscard, priority);
             ApplyOnMainThread(state, () => state.MeshInstance.MaterialOverride = mat, used);
             return;
         }
@@ -596,7 +603,7 @@ public partial class ObjectRenderer : Node3D
                 ? prim.Faces[faceIdx] : defaultFace;
 
             int surf = surface; // capture
-            faceTasks.Add(BuildFaceMaterialAsync(ft).ContinueWith(t => 
+            faceTasks.Add(BuildFaceMaterialAsync(ft, desiredDiscard, priority).ContinueWith(t =>
             {
                 return (surf, t.Result.Material, t.Result.Used);
             }, System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously));
@@ -643,7 +650,7 @@ public partial class ObjectRenderer : Node3D
 
     /// <summary>Builds one face's material (classic texture or PBR) and returns the texture ids
     /// it references. Texture/material application is marshalled to the main thread.</summary>
-    private async System.Threading.Tasks.Task<(StandardMaterial3D Material, List<Guid> Used)> BuildFaceMaterialAsync(FaceTexture ft)
+    private async System.Threading.Tasks.Task<(StandardMaterial3D Material, List<Guid> Used)> BuildFaceMaterialAsync(FaceTexture ft, int desiredDiscard, float priority)
     {
         var used = new List<Guid>();
         var colorTint = new Godot.Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
@@ -720,26 +727,42 @@ public partial class ObjectRenderer : Node3D
                 if (pbr.BaseColorTextureId != Guid.Empty)
                 {
                     used.Add(pbr.BaseColorTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId).ContinueWith(t =>
-                        Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) material.AlbedoTexture = t.Result; }).CallDeferred()));
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId, desiredDiscard, priority).ContinueWith(t =>
+                        Godot.Callable.From(() =>
+                        {
+                            if (IsInstanceValid(t.Result)) material.AlbedoTexture = t.Result;
+                            else GD.PrintErr($"[FaceTex] object PBR baseColor {pbr.BaseColorTextureId} discard={desiredDiscard} fetch/decode returned null");
+                        }).CallDeferred()));
                 }
                 if (pbr.NormalTextureId != Guid.Empty)
                 {
                     used.Add(pbr.NormalTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId).ContinueWith(t =>
-                        Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) { material.NormalEnabled = true; material.NormalTexture = t.Result; } }).CallDeferred()));
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId, desiredDiscard, priority).ContinueWith(t =>
+                        Godot.Callable.From(() =>
+                        {
+                            if (IsInstanceValid(t.Result)) { material.NormalEnabled = true; material.NormalTexture = t.Result; }
+                            else GD.PrintErr($"[FaceTex] object PBR normal {pbr.NormalTextureId} discard={desiredDiscard} fetch/decode returned null");
+                        }).CallDeferred()));
                 }
                 if (pbr.MetallicRoughnessTextureId != Guid.Empty)
                 {
                     used.Add(pbr.MetallicRoughnessTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId).ContinueWith(t =>
-                        Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) material.OrmTexture = t.Result; }).CallDeferred()));
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId, desiredDiscard, priority).ContinueWith(t =>
+                        Godot.Callable.From(() =>
+                        {
+                            if (IsInstanceValid(t.Result)) material.OrmTexture = t.Result;
+                            else GD.PrintErr($"[FaceTex] object PBR metallicRoughness {pbr.MetallicRoughnessTextureId} discard={desiredDiscard} fetch/decode returned null");
+                        }).CallDeferred()));
                 }
                 if (pbr.EmissiveTextureId != Guid.Empty)
                 {
                     used.Add(pbr.EmissiveTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId).ContinueWith(t =>
-                        Godot.Callable.From(() => { if (IsInstanceValid(t.Result)) material.EmissionTexture = t.Result; }).CallDeferred()));
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId, desiredDiscard, priority).ContinueWith(t =>
+                        Godot.Callable.From(() =>
+                        {
+                            if (IsInstanceValid(t.Result)) material.EmissionTexture = t.Result;
+                            else GD.PrintErr($"[FaceTex] object PBR emissive {pbr.EmissiveTextureId} discard={desiredDiscard} fetch/decode returned null");
+                        }).CallDeferred()));
                 }
                 // No await Task.WhenAll(tasks) here! Let the textures populate asynchronously so the mesh renders immediately.
             }
@@ -747,7 +770,7 @@ public partial class ObjectRenderer : Node3D
         else if (ft.TextureId != Guid.Empty)
         {
             used.Add(ft.TextureId);
-            _ = GetOrCreateGpuTextureAsync(ft.TextureId).ContinueWith(t =>
+            _ = GetOrCreateGpuTextureAsync(ft.TextureId, desiredDiscard, priority).ContinueWith(t =>
             {
                 var tex = t.Result;
                 if (tex != null)
@@ -764,6 +787,15 @@ public partial class ObjectRenderer : Node3D
                         material.AlbedoTexture = tex;
                         ApplyAlphaCutout(material, tex);
                     }).CallDeferred();
+                }
+                else
+                {
+                    // FEAT-PERF-02: this branch previously failed completely silently -- unlike
+                    // AvatarRenderer's identical situation (see its "[FaceTex] ... fetch/decode
+                    // returned null" log), a world-object face that never got its texture just
+                    // rendered flat AlbedoColor forever with zero diagnostic trail. One line per
+                    // failed id (not per attempt) so this doesn't itself become log spam.
+                    GD.PrintErr($"[FaceTex] object texture {ft.TextureId} discard={desiredDiscard} fetch/decode returned null — face renders untextured");
                 }
             });
         }
@@ -817,57 +849,114 @@ public partial class ObjectRenderer : Node3D
         material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
     }
 
-    private async System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
+    // FEAT-PERF-02: thin wrapper -- the real fetch/decode/Image/mipmap/upload work (and its
+    // single-flight dedup across every renderer, not just this one) lives in
+    // GpuCache.GetOrUploadTextureAsync.
+    private System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId, int desiredDiscard = 0, float priority = 0f)
     {
-        if (_gpuCache != null)
+        if (_gpuCache == null || _assetService == null)
+            return System.Threading.Tasks.Task.FromResult<ImageTexture?>(null);
+
+        return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, desiredDiscard: desiredDiscard, priority: priority);
+    }
+
+    /// <summary>
+    /// FEAT-PERF-02 Phase 2: decides both how much texture detail this object needs (discard
+    /// level) and how urgently it should be fetched (queue priority), from one shared measure of
+    /// on-screen prominence.
+    ///
+    /// <para>Measured from the CAMERA, not the avatar: the two diverge whenever the user zooms or
+    /// orbits away from their own body, and it's what the camera is pointed at that needs to
+    /// resolve first. (This is why the local-agent position that an earlier revision used was
+    /// wrong -- zooming across the region kept prioritizing scenery around the avatar.) Falls back
+    /// to the agent position only when no active camera exists yet, e.g. mid-login before
+    /// AvatarController.MakeCurrent().</para>
+    ///
+    /// <para>Approximates the real SL-viewer discard formula (protocol-re verified: real discard =
+    /// floor(log4(textureTexelCount / onScreenPixelArea)), see the Phase 2.1 write-up in
+    /// docs/specs/FEAT-PERF-02-texture-loading-speed.md) using only what's cheap here. The real
+    /// formula needs the camera's FOV/viewport pixel scale and the texture's true resolution
+    /// (unknown before it has ever been fetched); this uses <c>apparentSize = radius / distance</c>
+    /// -- the small-angle approximation of the same angular-size quantity -- against thresholds
+    /// picked so each step is roughly a halving of apparent linear size, matching the real
+    /// formula's log4-of-AREA (= log2-of-LINEAR-SIZE) shape. Same curve shape, not the same curve.</para>
+    ///
+    /// <para>Objects behind the camera keep a real (if reduced) priority rather than being pushed
+    /// to the back of the queue: turning around is instant and common, and a hard cutoff would
+    /// mean everything behind you starts from scratch the moment you do.</para>
+    ///
+    /// <para>Caller must be on the main thread -- reads the viewport/camera and the mesh's
+    /// scene-graph state. Both call sites in ApplyFaceMaterialsAsync reach this before their
+    /// first await, from main-thread-deferred callers.</para>
+    /// </summary>
+    private (int Discard, float Priority) ComputeTextureLod(MeshInstance3D meshInstance)
+    {
+        Vector3 viewPoint;
+        Vector3 viewDirection = Vector3.Zero;
+
+        var camera = GetViewport()?.GetCamera3D();
+        if (camera != null && IsInstanceValid(camera))
         {
-            var cached = _gpuCache.Get(textureId) as ImageTexture;
-            if (cached != null) return cached;
+            viewPoint = camera.GlobalPosition;
+            // -Z is forward for a Godot Camera3D.
+            viewDirection = -camera.GlobalTransform.Basis.Z.Normalized();
+        }
+        else if (_world != null && RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos))
+        {
+            viewPoint = agentPos;
+        }
+        else
+        {
+            return (0, 0f); // Nothing to measure against yet -- stay conservative (full detail).
         }
 
-        if (_assetService == null) return null;
+        var toObject = meshInstance.Position - viewPoint;
+        float distance = toObject.Length();
 
-        var textureData = await _assetService.GetTextureAsync(textureId);
-        if (textureData == null) return null;
-
-        // Create on main thread, but we can do it via CallDeferred and TaskCompletionSource
-        var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
-
-        // Create the image and generate mipmaps on the thread pool, NOT the main thread!
-        var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-        if (image != null) image.GenerateMipmaps();
-
-        Godot.Callable.From(() =>
+        float radius = 1f;
+        if (meshInstance.Mesh != null)
         {
-            if (_gpuCache != null)
-            {
-                var cached = _gpuCache.Get(textureId) as ImageTexture;
-                if (cached != null)
-                {
-                    image?.Dispose();
-                    tcs.SetResult(cached);
-                    return;
-                }
-            }
+            var localAabb = meshInstance.Mesh.GetAabb();
+            var worldSize = localAabb.Size * meshInstance.Scale;
+            radius = worldSize.Length() * 0.5f;
+        }
 
-            if (image == null)
-            {
-                tcs.SetResult(null);
-                return;
-            }
+        float apparentSize = radius / Mathf.Max(distance, 0.1f);
 
-            var tex = ImageTexture.CreateFromImage(image);
+        // FEAT-PERF-02: this discard level now drives a LOCAL post-decode downsample only, not
+        // the network fetch -- see GpuCache.FetchAndUploadTextureAsync. Network-side discard
+        // truncation via HTTP Range was tried and disabled: Magick.NET does not tolerate a
+        // deliberately-Range-truncated J2C stream, falling back to CoreJ2K en masse and, at
+        // aggressive discard levels, frequently failing outright rather than degrading
+        // gracefully (one session: 6752 of 6786 total log lines were CoreJ2K "Codestream
+        // truncated" warnings; reported live as slow loading + ~80% of textures missing vs.
+        // ~100% in Firestorm on the same region). Always fetching+decoding the full asset
+        // sidesteps that bug entirely -- this level now only shrinks the already-decoded Image
+        // before it reaches the GPU, trading network bandwidth (still full, unresolved -- see
+        // the FEAT-PERF-02 spec) for a real VRAM reduction on distant/small objects, which is
+        // where a user-reported "GPU memory really filling up" (everything full-res now that
+        // fetches mostly succeed) actually needs the win right now.
+        int discard = apparentSize switch
+        {
+            >= 0.5f => 0,
+            >= 0.25f => 1,
+            >= 0.12f => 2,
+            >= 0.06f => 3,
+            >= 0.03f => 4,
+            _ => SLNG.Net.J2kByteSizeEstimator.MaxDiscardLevel,
+        };
 
-            if (tex != null && _gpuCache != null)
-            {
-                long size = textureData.Width * textureData.Height * 4;
-                _gpuCache.Put(textureId, tex, size);
-            }
-            tcs.SetResult(tex);
-            image.Dispose();
-        }).CallDeferred();
+        // Priority is apparent size, halved for anything behind the camera plane. Using the same
+        // quantity for both keeps them consistent by construction: whatever we decided needs the
+        // most detail is also what we fetch first.
+        float priority = apparentSize;
+        if (viewDirection != Vector3.Zero && distance > 0.001f
+            && viewDirection.Dot(toObject / distance) < 0f)
+        {
+            priority *= 0.5f;
+        }
 
-        return await tcs.Task;
+        return (discard, priority);
     }
 
     /// <summary>Returns a stable GpuCache key for a (shape, LOD) pair -- one id per unique

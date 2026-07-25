@@ -244,9 +244,8 @@ public partial class AvatarRenderer : Node3D
             _avatarSkeleton = AvatarSkeleton.LoadFromXml(file.GetAsText());
             // GD.Print($"[AvatarRenderer] Loaded Bento skeleton: {_avatarSkeleton.Bones.Count} entries");
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            // GD.PrintErr($"[AvatarRenderer] Failed to load skeleton: {ex.Message}. Falling back to capsule.");
             _avatarSkeleton = null;
         }
 
@@ -789,81 +788,25 @@ public partial class AvatarRenderer : Node3D
 
     private async System.Threading.Tasks.Task LoadAndApplyTextureAsync(AvatarVisual visual, int bakeIndex, Guid textureId)
     {
-        if (_assetService == null) return;
+        if (_assetService == null || _gpuCache == null) return;
 
-        // Try GPU Cache first
-        ImageTexture? godotTexture = null;
-        if (_gpuCache != null)
-        {
-            godotTexture = _gpuCache.Get(textureId) as ImageTexture;
-        }
-
-        if (godotTexture == null)
-        {
-            // GD.Print($"[AvatarRenderer] Fetching bake {bakeIndex} (ID: {textureId}) from AssetService...");
-            var textureData = await _assetService.GetTextureAsync(textureId);
-            if (textureData == null)
-            {
-                // GD.Print($"[AvatarRenderer] FAILED to fetch/decode bake {bakeIndex} (ID: {textureId})!");
-                return;
-            }
-            // GD.Print($"[AvatarRenderer] Successfully fetched bake {bakeIndex} (ID: {textureId}), creating Godot image...");
-
-            var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
-            
-            var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-            if (image != null) image.GenerateMipmaps(); // match BuildFaceMaterialAsync/GetOrCreateGpuTextureAsync — avoids distance shimmer
-            
-            Godot.Callable.From(() => {
-                if (_gpuCache != null)
-                {
-                    var cached = _gpuCache.Get(textureId) as ImageTexture;
-                    if (cached != null)
-                    {
-                        image?.Dispose();
-                        tcs.SetResult(cached);
-                        return;
-                    }
-                }
-
-                if (image == null)
-                {
-                    // GD.Print($"[AvatarRenderer] Image.CreateFromData FAILED for bake {bakeIndex} (ID: {textureId})!");
-                    tcs.SetResult(null);
-                    return;
-                }
-                var tex = ImageTexture.CreateFromImage(image);
-                
-                if (tex != null && _gpuCache != null)
-                {
-                    long size = textureData.Width * textureData.Height * 4;
-                    // initialRefCount: 1 -- pins this bake texture so GpuCache.EvictIfNeeded can
-                    // never select it (RefCount<=0 is the eviction condition), unlike ObjectRenderer
-                    // (which properly AddRef/ReleaseRefs per-visual via SetTexturesForVisual).
-                    // AvatarRenderer has no equivalent per-avatar ref-counting yet, so an unpinned
-                    // (RefCount 0) bake texture was eligible for eviction the moment the shared
-                    // cache went over its 1.5 GB budget -- e.g. right after a teleport, when the new
-                    // region's terrain/objects/other-avatar textures arrive in a burst. Since
-                    // GpuCache now disposes an evicted Resource's native RID immediately (not just
-                    // drops it from the cache dict), evicting a bake texture still assigned to a
-                    // LIVE MeshInstance3D's material destroyed it out from under the renderer --
-                    // exactly the "RenderingServer::get_singleton() is null" error reported right
-                    // after teleporting. Trade-off: pinned avatar textures are never reclaimed for
-                    // the app's lifetime (a slow, bounded-by-avatars-seen leak) rather than a real
-                    // dispose-tracked lifecycle; safe default until AvatarRenderer gets proper
-                    // AddRef/ReleaseRef bookkeeping like ObjectRenderer's.
-                    _gpuCache.Put(textureId, tex, size, initialRefCount: 1);
-                }
-                tcs.SetResult(tex);
-                image.Dispose();
-            }).CallDeferred();
-
-            godotTexture = await tcs.Task;
-        }
+        // initialRefCount: 1 -- pins this bake texture so GpuCache.EvictIfNeeded can never select
+        // it (RefCount<=0 is the eviction condition), unlike ObjectRenderer (which properly
+        // AddRef/ReleaseRefs per-visual via SetTexturesForVisual). AvatarRenderer has no
+        // equivalent per-avatar ref-counting yet, so an unpinned (RefCount 0) bake texture was
+        // eligible for eviction the moment the shared cache went over its 1.5 GB budget -- e.g.
+        // right after a teleport, when the new region's terrain/objects/other-avatar textures
+        // arrive in a burst. Since GpuCache disposes an evicted Resource's native RID immediately
+        // (not just drops it from the cache dict), evicting a bake texture still assigned to a
+        // LIVE MeshInstance3D's material destroyed it out from under the renderer -- exactly the
+        // "RenderingServer::get_singleton() is null" error reported right after teleporting.
+        // Trade-off: pinned avatar textures are never reclaimed for the app's lifetime (a slow,
+        // bounded-by-avatars-seen leak) rather than a real dispose-tracked lifecycle; safe default
+        // until AvatarRenderer gets proper AddRef/ReleaseRef bookkeeping like ObjectRenderer's.
+        var godotTexture = await _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, initialRefCount: 1);
 
         if (godotTexture == null)
         {
-            // GD.Print($"[AvatarRenderer] Final godotTexture was null for bake {bakeIndex} (ID: {textureId})!");
             return;
         }
 
@@ -1293,20 +1236,14 @@ public partial class AvatarRenderer : Node3D
         if (avatarVisual != null && SLNG.Assets.BakedTextureIds.TryGetBakeIndex(texId, out int bakeIdx))
             texId = avatarVisual.LoadedTextures.TryGetValue(bakeIdx, out var bakeTexId) ? bakeTexId : Guid.Empty;
 
-        if (texId == Guid.Empty || _assetService == null)
+        if (texId == Guid.Empty || _assetService == null || _gpuCache == null)
             return material;
 
-        var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
-        ImageTexture? cached = _gpuCache?.Get(texId) as ImageTexture;
-        if (cached != null) {
-            material.AlbedoTexture = cached;
-            if (!hasExplicitAlpha)
-                ApplyAlphaCutout(material, cached);
-            return material;
-        }
-
-        var textureData = await _assetService.GetTextureAsync(texId).ConfigureAwait(false);
-        if (textureData == null)
+        // initialRefCount: 1 -- see LoadAndApplyTextureAsync's identical call for why (a
+        // per-face/attachment texture pinned here is just as capable of being live on a
+        // MeshInstance3D as a bake, so it needs the same eviction-immunity).
+        var built = await _gpuCache.GetOrUploadTextureAsync(texId, _assetService, generateMipmaps: true, initialRefCount: 1).ConfigureAwait(false);
+        if (built == null)
         {
             // Not silent: an untextured face renders as flat AlbedoColor (usually white), which
             // is visually indistinguishable from a face-index mapping bug — that ambiguity cost a
@@ -1315,36 +1252,9 @@ public partial class AvatarRenderer : Node3D
             return material;
         }
 
-        Godot.Callable.From(() =>
-        {
-            if (_gpuCache != null)
-            {
-                var cachedInside = _gpuCache.Get(texId) as ImageTexture;
-                if (cachedInside != null)
-                {
-                    tcs.SetResult(cachedInside);
-                    return;
-                }
-            }
-
-            var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-            image.GenerateMipmaps();
-            var tex = ImageTexture.CreateFromImage(image);
-            if (tex != null)
-                // initialRefCount: 1 -- see LoadAndApplyTextureAsync's identical Put for why (a
-                // per-face/attachment texture pinned here is just as capable of being live on a
-                // MeshInstance3D as a bake, so it needs the same eviction-immunity).
-                _gpuCache?.Put(texId, tex, (long)textureData.Width * textureData.Height * 4, initialRefCount: 1);
-            tcs.SetResult(tex);
-            image.Dispose();
-        }).CallDeferred();
-
-        var built = await tcs.Task.ConfigureAwait(false);
-        if (built != null) {
-            material.AlbedoTexture = built;
-            if (!hasExplicitAlpha)
-                ApplyAlphaCutout(material, built);
-        }
+        material.AlbedoTexture = built;
+        if (!hasExplicitAlpha)
+            ApplyAlphaCutout(material, built);
         return material;
     }
 
@@ -2840,9 +2750,8 @@ void fragment() {
                     // GD.PrintErr($"[AvatarRenderer] Animation {animId}: fetch returned null (not in grid assets?)");
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                // GD.PrintErr($"[AvatarRenderer] Failed to fetch animation {animId}: {ex.Message}");
             }
         }
 

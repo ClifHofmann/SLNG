@@ -449,7 +449,7 @@ namespace SLNG.Assets.PrimMesher
                 _startAngle == other._startAngle &&
                 _stopAngle == other._stopAngle;
 
-            public override bool Equals(object obj) => obj is AngleCacheKey k && Equals(k);
+            public override bool Equals(object? obj) => obj is AngleCacheKey k && Equals(k);
 
             public override int GetHashCode()
             {
@@ -527,9 +527,9 @@ namespace SLNG.Assets.PrimMesher
             new Angle(1.0f, 1.0f, 0.0f)
         };
 
-        internal List<Angle> angles;
+        internal List<Angle> angles = new();
         private float iX, iY; // intersection point
-        internal List<Coord> normals;
+        internal List<Coord> normals = new();
 
         private static Angle interpolatePoints(float newPoint, Angle p1, Angle p2)
         {
@@ -689,18 +689,18 @@ namespace SLNG.Assets.PrimMesher
         public bool calcVertexNormals;
 
         public List<Coord> coords;
-        public List<int> cut1CoordIndices;
-        public List<int> cut2CoordIndices;
+        public List<int> cut1CoordIndices = new();
+        public List<int> cut2CoordIndices = new();
         public Coord cutNormal1;
         public Coord cutNormal2;
 
-        public string errorMessage;
+        public string errorMessage = "";
 
         public Coord faceNormal = new Coord(0.0f, 0.0f, 1.0f);
         public List<int> faceNumbers;
         public List<Face> faces;
         public List<UVCoord> faceUVs;
-        public List<int> hollowCoordIndices;
+        public List<int> hollowCoordIndices = new();
         public int hollowFaceNumber = -1;
         public int numHollowVerts;
 
@@ -708,7 +708,7 @@ namespace SLNG.Assets.PrimMesher
         public int numPrimFaces;
 
         // use these for making individual meshes for each prim face
-        public List<int> outerCoordIndices;
+        public List<int> outerCoordIndices = new();
 
         public int outerFaceNumber = -1;
         public List<float> us;
@@ -1156,10 +1156,12 @@ namespace SLNG.Assets.PrimMesher
                 copy.faceNumbers = new List<int>(faceNumbers.Count);
                 copy.faceNumbers.AddRange(faceNumbers);
 
-                copy.cut1CoordIndices = cut1CoordIndices != null ? new List<int>(cut1CoordIndices) : null;
-                copy.cut2CoordIndices = cut2CoordIndices != null ? new List<int>(cut2CoordIndices) : null;
-                copy.hollowCoordIndices = hollowCoordIndices != null ? new List<int>(hollowCoordIndices) : null;
-                copy.outerCoordIndices = outerCoordIndices != null ? new List<int>(outerCoordIndices) : null;
+                // cut1/cut2/hollow/outerCoordIndices are always non-null (initialized at
+                // declaration), so the copy is unconditional -- no null branch needed.
+                copy.cut1CoordIndices = new List<int>(cut1CoordIndices);
+                copy.cut2CoordIndices = new List<int>(cut2CoordIndices);
+                copy.hollowCoordIndices = new List<int>(hollowCoordIndices);
+                copy.outerCoordIndices = new List<int>(outerCoordIndices);
             }
             copy.numOuterVerts = numOuterVerts;
             copy.numHollowVerts = numHollowVerts;
@@ -1553,7 +1555,7 @@ namespace SLNG.Assets.PrimMesher
         public float holeSizeY = 0.25f;
         private readonly float hollow;
         private readonly int hollowSides = 4;
-        public List<Coord> normals;
+        public List<Coord>? normals;
         private bool normalsProcessed;
 
         public int numPrimFaces;
@@ -1576,7 +1578,7 @@ namespace SLNG.Assets.PrimMesher
         public int twistBegin;
         public int twistEnd;
 
-        public List<ViewerFace> viewerFaces;
+        public List<ViewerFace>? viewerFaces;
         public bool viewerMode;
 
 
@@ -1898,7 +1900,7 @@ namespace SLNG.Assets.PrimMesher
                         {
                             var n = profile.vertexNormals[ni];
                             n *= node.rotation;
-                            normals.Add(n);
+                            normals!.Add(n);
                         }
                     }
 
@@ -2048,7 +2050,7 @@ namespace SLNG.Assets.PrimMesher
                                 }
                             }
 
-                            viewerFaces.Add(vf1); viewerFaces.Add(vf2);
+                            viewerFaces!.Add(vf1); viewerFaces.Add(vf2);
                         }
                     }
 
@@ -2089,7 +2091,7 @@ namespace SLNG.Assets.PrimMesher
                                 nv.uv3.Flip();
                             }
 
-                            viewerFaces.Add(nv);
+                            viewerFaces!.Add(nv);
                         }
                     }
                 }
@@ -2157,8 +2159,8 @@ namespace SLNG.Assets.PrimMesher
                 viewerMode = viewerMode,
                 numPrimFaces = numPrimFaces,
                 errorMessage = errorMessage,
-                coords = coords != null ? new List<Coord>(coords) : null,
-                faces = faces != null ? new List<Face>(faces) : null,
+                coords = new List<Coord>(coords),
+                faces = new List<Face>(faces),
                 viewerFaces = viewerFaces != null ? new List<ViewerFace>(viewerFaces) : null,
                 normals = normals != null ? new List<Coord>(normals) : null
             };
@@ -2186,7 +2188,7 @@ namespace SLNG.Assets.PrimMesher
             {
                 var face = faces[i];
 
-                normals.Add(SurfaceNormal(i).Normalize());
+                normals!.Add(SurfaceNormal(i).Normalize());
 
                 var normIndex = normals.Count - 1;
                 face.n1 = normIndex;
@@ -2266,7 +2268,7 @@ namespace SLNG.Assets.PrimMesher
             }
         }
 
-        public VertexIndexer GetVertexIndexer()
+        public VertexIndexer? GetVertexIndexer()
         {
             if (viewerMode && viewerFaces != null && viewerFaces.Count > 0)
                 return new VertexIndexer(this);

@@ -43,12 +43,12 @@ namespace SLNG.Assets.PrimMesher
             cylinder = 4
         }
 
-        public List<Coord> coords;
-        public List<Face> faces;
-        public List<Coord> normals;
-        public List<UVCoord> uvs;
+        public List<Coord> coords = new();
+        public List<Face> faces = new();
+        public List<Coord> normals = new();
+        public List<UVCoord> uvs = new();
 
-        public List<ViewerFace> viewerFaces;
+        public List<ViewerFace> viewerFaces = new();
 
 
         public SculptMesh(string fileName, int sculptType, int lod, int viewerMode, int mirror, int invert)

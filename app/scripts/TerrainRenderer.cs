@@ -123,56 +123,17 @@ public partial class TerrainRenderer : Node3D
         node.UsedTextureIds = newTextureIds;
     }
 
-    private async System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
+    // FEAT-PERF-02: thin wrapper delegating to GpuCache.GetOrUploadTextureAsync (single-flight
+    // fetch/decode/Image/upload shared across every renderer, not just terrain). generateMipmaps
+    // stays false here, matching this method's pre-existing behavior -- unlike ObjectRenderer/
+    // AvatarRenderer, terrain detail textures were never mipmapped (tiled many times across a
+    // large mesh via the terrain shader), so this preserves that rather than silently changing it.
+    private System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
     {
-        if (textureId == Guid.Empty) return null;
+        if (textureId == Guid.Empty || _gpuCache == null || _assetService == null)
+            return System.Threading.Tasks.Task.FromResult<ImageTexture?>(null);
 
-        if (_gpuCache != null)
-        {
-            var cached = _gpuCache.Get(textureId) as ImageTexture;
-            if (cached != null) return cached;
-        }
-
-        if (_assetService == null) return null;
-
-        var textureData = await _assetService.GetTextureAsync(textureId);
-        if (textureData == null) return null;
-
-        var tcs = new System.Threading.Tasks.TaskCompletionSource<ImageTexture?>();
-
-        var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-        
-        Godot.Callable.From(() =>
-        {
-            if (_gpuCache != null)
-            {
-                var cached = _gpuCache.Get(textureId) as ImageTexture;
-                if (cached != null)
-                {
-                    image?.Dispose();
-                    tcs.SetResult(cached);
-                    return;
-                }
-            }
-
-            if (image == null)
-            {
-                tcs.SetResult(null);
-                return;
-            }
-
-            var tex = ImageTexture.CreateFromImage(image);
-
-            if (tex != null && _gpuCache != null)
-            {
-                long size = textureData.Width * textureData.Height * 4;
-                _gpuCache.Put(textureId, tex, size);
-            }
-            tcs.SetResult(tex);
-            image.Dispose();
-        }).CallDeferred();
-
-        return await tcs.Task;
+        return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: false);
     }
 
     private void ApplyTerrainTextures(ulong regionHandle, ImageTexture? tex0, ImageTexture? tex1, ImageTexture? tex2, ImageTexture? tex3)
@@ -249,11 +210,28 @@ public partial class TerrainRenderer : Node3D
         var st = new SurfaceTool();
         st.Begin(Mesh.PrimitiveType.Triangles);
 
-        // Generate vertices
+        // Generate vertices. Skip any quad touching a cell whose patch hasn't streamed in yet
+        // (see RegionTerrain.TryGetKnownHeight's doc comment) rather than building it from the
+        // array's 0.0f default -- this mesh's collider is what AvatarController's ground-clamp
+        // raycasts against, so baking in a flat, walkable surface at height 0 for not-yet-loaded
+        // terrain let the avatar spawn/land ON that false floor (usually well below the real
+        // ~20-25m terrain) instead of ever reaching the "raycast misses" fallback path that
+        // TryGetKnownHeight already protects. Leaving a hole here instead means the raycast
+        // genuinely misses, hasGround stays false, and the avatar holds position until the real
+        // patch arrives and a later rebuild fills it in -- same self-healing behavior as the
+        // fallback, just for the primary (raycast-hit) path too.
         for (int z = 0; z < height - 1; z++)
         {
             for (int x = 0; x < width - 1; x++)
             {
+                if (!regionTerrain.TryGetKnownHeight(x, z, out _) ||
+                    !regionTerrain.TryGetKnownHeight(x + 1, z, out _) ||
+                    !regionTerrain.TryGetKnownHeight(x, z + 1, out _) ||
+                    !regionTerrain.TryGetKnownHeight(x + 1, z + 1, out _))
+                {
+                    continue;
+                }
+
                 int i0 = z * width + x;
                 int i1 = z * width + (x + 1);
                 int i2 = (z + 1) * width + x;

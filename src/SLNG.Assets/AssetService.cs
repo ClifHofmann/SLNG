@@ -22,9 +22,16 @@ public class AssetService
     private readonly GridSession _session;
     private readonly string _cacheDir;
     private readonly MemoryCache _memCache;
-    
+
+    // FEAT-PERF-02: separate small cache (no size limit needed -- entries are a trivial marker,
+    // not decoded pixel data) for texture ids that just exhausted every retry attempt. See
+    // GetTextureAsync's doc comment for why this exists.
+    private readonly MemoryCache _recentTextureFailures = new(new MemoryCacheOptions());
+
     private readonly ConcurrentDictionary<Guid, Task<MeshData?>> _inflightMeshes = new();
-    private readonly ConcurrentDictionary<Guid, Task<TextureData?>> _inflightTextures = new();
+    // Lazy<Task<T>>, not a bare Task<T> -- see GetTextureAsync's comment for why this specific
+    // dictionary needs a real single-execution guarantee under a concurrent first-touch race.
+    private readonly ConcurrentDictionary<Guid, Lazy<Task<TextureData?>>> _inflightTextures = new();
     private static readonly object _coreJ2kLogLock = new();
     private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _inflightMaterials = new();
     private readonly ConcurrentDictionary<Guid, Task<AnimationData?>> _inflightAnimations = new();
@@ -52,6 +59,13 @@ public class AssetService
             SizeLimit = 256 * 1024 * 1024 // 256 MB RAM cache
         };
         _memCache = new MemoryCache(opts);
+
+        // FEAT-PERF-02: unambiguous proof of which build is actually running -- this class has no
+        // Godot-side BuildMarker mechanism (SLNG.Assets stays engine-agnostic, no GD.Print), and
+        // the throttle capacities aren't otherwise visible anywhere at runtime. Printed once here
+        // so a live client log can be checked against the values in this file's source directly,
+        // instead of trusting a rebuild happened.
+        Console.WriteLine($"[AssetService] decorative fetch slots={_textureFetchThrottle.Capacity} sculpt fetch slots={_sculptFetchThrottle.Capacity}");
     }
 
     /// <summary>
@@ -116,7 +130,7 @@ public class AssetService
         return _inflightSculptMeshes.GetOrAdd((sculptId, sculptType), async k => {
             var id = k.Id;
             try {
-                var map = await GetTextureAsync(id, true).ConfigureAwait(false);
+                var map = await GetTextureAsync(id, isSculpt: true).ConfigureAwait(false);
                 if (map == null) return null;
 
                 var result = await Task.Run(() =>
@@ -163,36 +177,78 @@ public class AssetService
 
     private async Task<MeshData?> FetchAndDecodeMeshAsync(Guid meshId)
     {
-        byte[]? bytes = null;
         string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, meshId.ToString() + ".mesh");
 
         if (cacheFile != null && File.Exists(cacheFile))
         {
-            try { bytes = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
-        }
-
-        if (bytes == null || bytes.Length == 0)
-        {
-            if (!_session.IsConnected) return null;
-
-            bytes = await _session.FetchMeshDataAsync(meshId).ConfigureAwait(false);
-            if (bytes == null || bytes.Length == 0) return null;
-
-            if (cacheFile != null)
+            byte[]? cached = null;
+            try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
+            if (cached != null && cached.Length > 0)
             {
-                try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
+                var decodedFromCache = await Task.Run(() => Decode(meshId, cached)).ConfigureAwait(false);
+                if (decodedFromCache != null) return decodedFromCache;
+                // Cached bytes don't decode -- most likely a previously-truncated fetch (see
+                // below) that got written to disk before this retry logic existed, or the cache
+                // file is otherwise corrupt. Drop it so the fetch below has a clean shot, instead
+                // of returning null forever every time this mesh loads.
+                try { File.Delete(cacheFile); } catch { }
             }
         }
 
-        try
+        if (!_session.IsConnected) return null;
+
+        // FEAT-PERF-02-style retry: LibreMetaverse's own internal RequestMeshAsync HTTP fetch is
+        // susceptible to the exact same burst-load truncation OpenSim's embedded HTTP server
+        // showed for our own texture GetTexture fetches (see GridSession.
+        // FetchTextureViaHttpRangeAsync's doc comment) -- except LibreMetaverse doesn't detect it
+        // itself: AssetMesh.Decode() catches the resulting DecompressOSD InvalidDataException,
+        // logs "Failed to decode mesh asset", and returns false, which FacetedMesh.
+        // TryDecodeFromAsset (called from Decode() below) just turns into a plain null. A single
+        // failed attempt used to be permanent -- worse than the pre-fix texture bug, since the
+        // truncated bytes were cached to disk unconditionally BEFORE decoding was ever attempted,
+        // so every later load of that mesh kept re-reading and re-failing on the same corrupt
+        // bytes forever. Re-fetching (a fresh HTTP request) has a real chance of getting a
+        // complete stream, same reasoning as the texture retry loop; caching is now gated on a
+        // verified-successful decode.
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            return await Task.Run(() => Decode(meshId, bytes)).ConfigureAwait(false);
+            byte[]? bytes;
+            try
+            {
+                bytes = await _session.FetchMeshDataAsync(meshId).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AssetService] Mesh fetch failed for {meshId} (attempt {attempt + 1}/3): {ex.Message}");
+                bytes = null;
+            }
+
+            if (bytes is { Length: > 0 })
+            {
+                MeshData? result = null;
+                try
+                {
+                    result = await Task.Run(() => Decode(meshId, bytes)).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[AssetService] Failed to decode mesh {meshId} (attempt {attempt + 1}/3): {ex.Message}");
+                }
+
+                if (result != null)
+                {
+                    if (cacheFile != null)
+                    {
+                        try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
+                    }
+                    return result;
+                }
+            }
+
+            if (attempt < 2) await Task.Delay(250).ConfigureAwait(false);
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[AssetService] Failed to decode mesh {meshId}: {ex.Message}");
-            return null;
-        }
+
+        return null;
     }
 
     private static MeshData? Decode(Guid meshId, byte[] bytes)
@@ -336,43 +392,128 @@ public class AssetService
     /// Fetches and decodes a texture (JPEG2000) by UUID into engine-neutral RGBA, or null
     /// if it cannot be decoded. Concurrent requests for the same id share one fetch/decode.
     /// </summary>
-    public Task<TextureData?> GetTextureAsync(Guid textureId, bool isSculpt = false)
+    /// <param name="desiredDiscard">FEAT-PERF-02 Phase 2: SL/OpenSim J2K discard level to request
+    /// -- 0 (default) is full resolution, higher values ask the simulator to send fewer bytes for
+    /// a distant/small object (see docs/specs/FEAT-PERF-02-texture-loading-speed.md's Phase 2.1
+    /// write-up). Ignored (forced to 0) when <paramref name="isSculpt"/> -- any truncation
+    /// corrupts every vertex position, see the degraded-decode retry logic below.
+    /// <para>Known limitation: the id-keyed single-flight dedup below means if two concurrent
+    /// callers request the *same* never-before-cached texture id at *different* discard levels
+    /// (e.g. two instances of the same object at different distances), only the first caller's
+    /// discard is actually fetched -- the second gets that same result. There is also no
+    /// "upgrade" path once a texture is cached/GPU-resident (see GpuCache.GetOrUploadTextureAsync):
+    /// a texture first seen far away stays at that resolution for the rest of the session even if
+    /// the same or another instance later gets closer. Fixing both needs a discard-aware cache
+    /// key plus re-fetch-on-upgrade logic -- deliberately deferred (correctness/no-wrong-data
+    /// first, smarter caching later), see the spec's Phase 2 notes.</para>
+    /// </param>
+    /// <param name="priority">FEAT-PERF-02: fetch-queue ordering hint, higher = fetched sooner
+    /// when more textures are pending than there are fetch slots. Callers should pass the
+    /// object's on-screen prominence (see ObjectRenderer.ComputeTextureLod) so what the
+    /// camera is pointed at resolves before distant background scenery. Same first-caller-wins
+    /// caveat as <paramref name="desiredDiscard"/>, plus: priority is captured when the fetch is
+    /// enqueued and never re-evaluated -- see <see cref="PriorityGate"/>'s doc comment.</param>
+    public Task<TextureData?> GetTextureAsync(Guid textureId, int desiredDiscard = 0, bool isSculpt = false, float priority = 0f)
     {
         if (_memCache.TryGetValue(textureId, out TextureData? cached))
         {
             return Task.FromResult(cached);
         }
-        return _inflightTextures.GetOrAdd(textureId, async id => {
-            try {
-                var result = await FetchAndDecodeTextureAsync(id, isSculpt).ConfigureAwait(false);
-                // Mirror the disk cache's own guard (see FetchAndDecodeTextureAsync) -- a degraded
-                // result can still be returned (better than nothing on the last retry attempt), but
-                // must never be memoized. Caching it here would pin the bad decode in memory for a
-                // full 5-minute sliding window, so every caller for this textureId during that
-                // window -- including a same-process relogin, which does NOT restart the app or
-                // clear this cache -- gets served the cached noise instead of ever getting a chance
-                // to retry. Only a full app restart (a fresh, empty _memCache) let a later fetch
-                // attempt succeed, which is why this looked like it needed a full relaunch to fix
-                // rather than just logging back in.
-                if (result != null && !result.IsDegraded) {
-                    long size = result.Width * result.Height * 4;
-                    if (size <= 0) size = 1024;
-                    _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(5) });
-                }
-                return result;
-            } finally {
-                _inflightTextures.TryRemove(id, out _);
-            }
-        });
+
+        // FEAT-PERF-02: short-lived negative cache for ids that just exhausted every retry
+        // attempt. Without this, a texture id that's genuinely gone from the sim (a deleted/
+        // missing asset -- common on older SL/OpenSim content, e.g. a shared freebie whose
+        // texture reference outlived the texture itself) pays the SAME full 3-attempt/60s-per-
+        // attempt retry cycle every single time something asks for it again. Live-tested: a
+        // handful of dead texture ids on one busy event region logged 170-400+ repeat failures
+        // EACH in a single session -- every one of those competed for the same scarce fetch-
+        // throttle slots that textures which could actually succeed needed. This does not
+        // change the eventual answer (still null after this cache expires and it's genuinely
+        // retried), it only stops hammering a known-hopeless id in the meantime.
+        if (_recentTextureFailures.TryGetValue(textureId, out _))
+        {
+            return Task.FromResult<TextureData?>(null);
+        }
+
+        int effectiveDiscard = isSculpt ? 0 : desiredDiscard;
+
+        // Lazy<Task<T>> (ExecutionAndPublication), not a bare ConcurrentDictionary.GetOrAdd
+        // factory -- GetOrAdd's factory delegate is not guaranteed single-execution under a
+        // genuine concurrent first-touch race (only the *stored result* is deduplicated, so
+        // several racing callers can each start a real fetch/decode before the dictionary
+        // settles on one winner). Lazy<T> guarantees the factory below runs at most once per
+        // key no matter how many callers hit .Value concurrently -- the property that matters
+        // when many objects/faces reference the same never-before-seen texture at once (e.g. a
+        // region populating on first login).
+        var lazy = _inflightTextures.GetOrAdd(textureId, id => new Lazy<Task<TextureData?>>(
+            () => FetchDecodeAndCacheTextureAsync(id, effectiveDiscard, isSculpt, priority), LazyThreadSafetyMode.ExecutionAndPublication));
+        return lazy.Value;
     }
 
-    private static readonly SemaphoreSlim _textureFetchThrottle = new SemaphoreSlim(4, 4);
-
-    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, bool isSculpt)
+    private async Task<TextureData?> FetchDecodeAndCacheTextureAsync(Guid id, int desiredDiscard, bool isSculpt, float priority)
     {
+        try
+        {
+            var result = await FetchAndDecodeTextureAsync(id, desiredDiscard, isSculpt, priority).ConfigureAwait(false);
+            // Mirror the disk cache's own guard (see FetchAndDecodeTextureAsync) -- a degraded
+            // result can still be returned (better than nothing on the last retry attempt), but
+            // must never be memoized. Caching it here would pin the bad decode in memory for a
+            // full 5-minute sliding window, so every caller for this textureId during that
+            // window -- including a same-process relogin, which does NOT restart the app or
+            // clear this cache -- gets served the cached noise instead of ever getting a chance
+            // to retry. Only a full app restart (a fresh, empty _memCache) let a later fetch
+            // attempt succeed, which is why this looked like it needed a full relaunch to fix
+            // rather than just logging back in.
+            if (result != null && !result.IsDegraded)
+            {
+                long size = result.Width * result.Height * 4;
+                if (size <= 0) size = 1024;
+                _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(5) });
+            }
+            else if (result == null)
+            {
+                // Exhausted all 3 attempts (see FetchAndDecodeTextureAsync) -- don't let the next
+                // caller pay that cost again immediately. 45s, not minutes: a texture that failed
+                // because the sim/connection was briefly overloaded should still recover this
+                // session; only truly-gone assets keep hitting this and keep getting deflected.
+                _recentTextureFailures.Set(id, true, TimeSpan.FromSeconds(45));
+            }
+            return result;
+        }
+        finally
+        {
+            _inflightTextures.TryRemove(id, out _);
+        }
+    }
+
+    // FEAT-PERF-02: two separate pools, not one shared 4-slot gate, so a burst of ordinary
+    // decorative-texture fetches can never make a sculpt map (which blocks the object's *shape*,
+    // not just its looks -- see GetSculptMeshAsync) queue behind them for up to 60s per attempt.
+    // Decorative keeps the original 4 slots (the a14229d UDP-packet-drop-motivated cap) rather
+    // than being cut to 3 to carve out the sculpt lane -- an earlier version of this split did
+    // 3+1, but for a typical scene (mostly-or-all decorative textures, few/no sculpts) that's a
+    // net THROUGHPUT REGRESSION: the sculpt slot sits idle while decorative fetches, the
+    // overwhelming common case, lose a quarter of their concurrency. Sculpt gets its own
+    // ADDITIONAL slot on top (total 5, not 4) instead. A modest +1 over the original cap is a
+    // much smaller bet than the general "raise the cap" question, which stays a separate,
+    // protocol-re-reviewed decision (FEAT-PERF-02 Phase 2.3).
+    //
+    // PriorityGate, not SemaphoreSlim: a plain semaphore admits strictly in arrival order, so
+    // whatever the camera is actually pointed at waits behind an arbitrary amount of scenery that
+    // merely happened to be requested first. See PriorityGate's doc comment.
+    private static readonly PriorityGate _textureFetchThrottle = new PriorityGate(4);
+    private static readonly PriorityGate _sculptFetchThrottle = new PriorityGate(1);
+
+    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority)
+    {
+        // FEAT-PERF-02 Phase 2: the disk cache only ever holds complete (discard 0) assets --
+        // both reading and writing are gated on desiredDiscard == 0 below. A partial/low-discard
+        // fetch is intentionally truncated (see GridSession.FetchTextureDataAsync), not the
+        // "whole texture" the cache file name promises; treating it as one would let a future
+        // full-resolution request silently get served a blurry cached partial forever.
         string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v5.j2c");
 
-        if (cacheFile != null && File.Exists(cacheFile))
+        if (desiredDiscard == 0 && cacheFile != null && File.Exists(cacheFile))
         {
             byte[]? cached = null;
             try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
@@ -384,15 +525,17 @@ public class AssetService
             }
         }
 
+        var throttle = isSculpt ? _sculptFetchThrottle : _textureFetchThrottle;
+
         for (int attempt = 0; attempt < 3; attempt++)
         {
             if (!_session.IsConnected) return null;
 
-            await _textureFetchThrottle.WaitAsync().ConfigureAwait(false);
+            await throttle.WaitAsync(priority).ConfigureAwait(false);
             byte[]? bytes;
             try
             {
-                var fetchTask = _session.FetchTextureDataAsync(textureId);
+                var fetchTask = _session.FetchTextureDataAsync(textureId, desiredDiscard);
                 var timeoutTask = Task.Delay(TimeSpan.FromSeconds(60));
                 if (await Task.WhenAny(fetchTask, timeoutTask).ConfigureAwait(false) == fetchTask)
                 {
@@ -405,7 +548,7 @@ public class AssetService
             }
             finally
             {
-                _textureFetchThrottle.Release();
+                throttle.Release();
             }
 
             if (bytes is { Length: > 0 })
@@ -413,7 +556,7 @@ public class AssetService
                 var result = await Task.Run(() => DecodeTexture(bytes, isSculpt)).ConfigureAwait(false);
                 if (result != null)
                 {
-                    if (cacheFile != null && !result.IsDegraded)
+                    if (desiredDiscard == 0 && cacheFile != null && !result.IsDegraded)
                     {
                         try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
                     }

@@ -33,10 +33,10 @@ namespace SLNG.Assets.PrimMesher
 {
     public class SculptMap
     {
-        public byte[] blueBytes;
-        public byte[] greenBytes;
+        public byte[] blueBytes = Array.Empty<byte>();
+        public byte[] greenBytes = Array.Empty<byte>();
         public int height;
-        public byte[] redBytes;
+        public byte[] redBytes = Array.Empty<byte>();
         public int width;
 
         public SculptMap()
@@ -69,7 +69,7 @@ namespace SLNG.Assets.PrimMesher
                 needsScaling = true;
             }
 
-            SKBitmap scaledBitmap = null;
+            SKBitmap? scaledBitmap = null;
             SKBitmap srcBitmap = bm;
 
             try

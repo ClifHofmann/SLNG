@@ -166,9 +166,13 @@ public partial class AvatarController : Camera3D
             }
             else if (keyEvt.Keycode == Key.Escape)
             {
-                _zoom = 4.0f;
-                _orbitYaw = 0f;
-                _orbitPitch = 0f;
+                // Was inlining just 2 of ResetCamera()'s 5 resets (zoom, orbit yaw/pitch) --
+                // missing _panOffset and, critically, _orbitTarget. With either still set (any
+                // prior Alt+LMB orbit-around-a-clicked-point, or a pan), Escape reset the zoom
+                // distance/angle but the camera stayed aimed at that stale pan/orbit point instead
+                // of snapping cleanly back to directly behind the avatar -- reported as "zooming
+                // back on Esc doesn't work cleanly, should jump to rear view."
+                ResetCamera();
                 GD.Print("[AvatarController] Camera reset");
             }
         }
@@ -187,6 +191,21 @@ public partial class AvatarController : Camera3D
             var focusOwner = GetViewport().GuiGetFocusOwner();
             bool hasUiFocus = focusOwner is LineEdit || focusOwner is TextEdit
                 || GetViewport().GuiGetHoveredControl() != null;
+
+            // A click that reaches _UnhandledInput at all landed in the 3D viewport, not on any
+            // Control (see the method-level comment) -- so a stale LineEdit/TextEdit focus owner
+            // here means the user clicked into a text field earlier (chat, a search box, ...),
+            // then clicked back into the world without ever submitting/dismissing it. hasUiFocus
+            // gates WASD/orbit for as long as that focus sits there (see _Process below), which
+            // otherwise locks movement out until something else happens to steal focus. Release
+            // it on any click that actually reaches here so movement resumes immediately, same as
+            // clicking into the 3D view in every other viewer. ChatWindow.OnSendPressed already
+            // releases focus on submit; this covers every other way it can be left behind.
+            if (mouseBtn.Pressed && (focusOwner is LineEdit || focusOwner is TextEdit))
+            {
+                GetViewport().GuiReleaseFocus();
+                hasUiFocus = GetViewport().GuiGetHoveredControl() != null;
+            }
 
             if (!hasUiFocus && mouseBtn.ButtonIndex == MouseButton.WheelUp)
             {
@@ -403,13 +422,21 @@ public partial class AvatarController : Camera3D
                 }
                 else
                 {
-                    // Fallback to terrain heightmap if raycast misses
+                    // Fallback to terrain heightmap if raycast misses. Right after a landmark
+                    // teleport, the physics raycast reliably misses for up to ~0.75s -- the new
+                    // region's collider isn't built yet (TerrainRenderer coalesces rebuilds, see
+                    // its _rebuildAccum). Trusting GetHeights() blindly here doesn't help: a cell
+                    // whose 16x16 patch hasn't streamed in yet defaults to 0.0f, which used to
+                    // read as "hasGround = true, ground is at Z=0" and drop the avatar toward it
+                    // -- a visible free-fall from the real (often ~20-25m) spawn height down to
+                    // ~1m, i.e. exactly "falls through the floor before it's there". Only trust a
+                    // cell that has actually received a real patch.
                     int rawX = (int)transform.Position.X;
                     int rawY = (int)transform.Position.Y;
                     if (_world.Terrains.TryGetValue(localAgent.RegionHandle, out var terrain)
-                        && rawX >= 0 && rawX < terrain.Width && rawY >= 0 && rawY < terrain.Height)
+                        && terrain.TryGetKnownHeight(rawX, rawY, out float knownHeight))
                     {
-                        groundHeight = terrain.GetHeights()[rawY * terrain.Width + rawX];
+                        groundHeight = knownHeight;
                         hasGround = true;
                         groundSource = "terrain-heightmap-fallback";
                     }

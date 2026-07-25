@@ -12,7 +12,7 @@
     <PackageReference Include="CoreJ2K.Skia" Version="2.3.3.91" />
     <PackageReference Include="LibreMetaverse" Version="3.0.0" />
     <PackageReference Include="LibreMetaverse.Rendering.MeshFoundry" Version="3.0.0" />
-    <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.14.0" />
+    <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.15.0" />
     <PackageReference Include="SkiaSharp" Version="3.119.4" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.9" />
   </ItemGroup>

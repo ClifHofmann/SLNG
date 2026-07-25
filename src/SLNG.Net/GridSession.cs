@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net.Http;
 using LibreMetaverse;
 using LibreMetaverse.Packets;
 using SLNG.Core;
@@ -226,6 +227,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private void OnChatFromSimulator(object? sender, ChatEventArgs e)
     {
+        // StartTyping/StopTyping are the "..." typing indicator other viewers show next to a
+        // name -- they carry no message text at all. Forwarding them here unfiltered showed up
+        // as a chat log line with a timestamp and sender name but nothing after the colon, once
+        // per keystroke-session per person (live-tested: reported as "irgendwie fehlen hier im
+        // chat texte" against a busy multi-avatar conversation, where every blank line lined up
+        // exactly with the sender starting/stopping typing right before/after a real message).
+        if (e.Type == ChatType.StartTyping || e.Type == ChatType.StopTyping) return;
+
         ChatMessageReceived?.Invoke(this, new ChatMessageEvent(
             e.FromName,
             e.Message,
@@ -327,7 +336,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     private void OnDisplayNameUpdate(object? sender, DisplayNameUpdateEventArgs e)
     {
         var id = e.DisplayName.ID.Guid;
-        string displayName = e.DisplayName.DisplayName;
+        string? displayName = e.DisplayName.DisplayName;
         if (!string.IsNullOrEmpty(displayName))
         {
             DisplayNameResolved?.Invoke(this, new NameResolvedEvent(id, displayName));
@@ -1743,12 +1752,39 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return asset?.AssetData;
     }
 
+    private static readonly HttpClient _textureHttpClient = new();
+
     /// <summary>
     /// Fetches the raw bytes of a texture asset (JPEG2000) from the simulator. Returns null
     /// if the fetch times out or fails.
     /// </summary>
-    public async Task<byte[]?> FetchTextureDataAsync(Guid textureId)
+    /// <param name="desiredDiscard">SL/OpenSim J2K discard level to request: 0 = full resolution
+    /// up to <see cref="J2kByteSizeEstimator.MaxDiscardLevel"/> = coarsest. FEAT-PERF-02 Phase 2:
+    /// a higher discard level makes the SIMULATOR send fewer bytes (verified against OpenSim's
+    /// GetTextureHandler/J2KImage source, see docs/specs/FEAT-PERF-02-texture-loading-speed.md's
+    /// Phase 2.1 write-up), not just a client-side decode/display hint.</param>
+    public async Task<byte[]?> FetchTextureDataAsync(Guid textureId, int desiredDiscard = 0)
     {
+        // FEAT-PERF-02 Phase 2: prefer our own HTTP GetTexture Range fetch over the UDP path
+        // below. Two wins over the pre-existing code: (1) HTTP is the faster transport (no UDP
+        // packet/ACK overhead or agent-throttle pacing) even for a full (discard 0) fetch --
+        // LibreMetaverse's own built-in HTTP texture path was configured as preferred
+        // (UseHttpTextures=true, see the TexturePipeline setup above) but was never actually
+        // reached, because the reflection call below always targets the UDP TexturePipeline
+        // regardless of that setting; (2) for discard > 0, a Range request makes the SIMULATOR
+        // send fewer bytes -- LibreMetaverse's built-in HTTP fetch (AssetManager.
+        // HttpRequestTexture) ignores discardLevel/priority entirely and always downloads the
+        // whole asset, so it can't do this at all, which is why this method builds the HTTP
+        // request itself instead of calling into LibreMetaverse's HTTP path.
+        var capUri = _client.Network.CurrentSim?.Caps?.GetTextureCapURI();
+        if (capUri != null)
+        {
+            var httpResult = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard, capUri).ConfigureAwait(false);
+            if (httpResult != null) return httpResult;
+            // Falls through to the UDP path below on any HTTP failure (network error,
+            // non-success status) -- never a hard failure just because HTTP didn't pan out.
+        }
+
         var tcs = new TaskCompletionSource<byte[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         try
@@ -1776,7 +1812,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
                     // RequestTexture(UUID textureID, ImageType imageType, float priority, int discardLevel,
                     //                uint packetStart, TextureDownloadCallback callback, bool progressive).
-                    reqMethod.Invoke(pipeline, new object[] { new UUID(textureId), ImageType.Normal, 100000.0f, 0, 0u, delegateObj, false });
+                    // discardLevel now passed through instead of hardcoded 0 -- this UDP path DOES
+                    // honor it server-side (unlike LibreMetaverse's HTTP path), so even this
+                    // fallback benefits from a non-zero desiredDiscard when HTTP isn't reachable.
+                    reqMethod.Invoke(pipeline, new object[] { new UUID(textureId), ImageType.Normal, 100000.0f, desiredDiscard, 0u, delegateObj, false });
                     return await tcs.Task;
                 }
             }
@@ -1794,8 +1833,71 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 var data = t.Result?.AssetData;
                 fallbackTcs.TrySetResult(data is { Length: > 0 } ? data : null);
             });
-            
+
         return await fallbackTcs.Task;
+    }
+
+    /// <summary>
+    /// Issues our own HTTP GET against the region's GetTexture capability, with a Range header
+    /// when <paramref name="desiredDiscard"/> is above 0 -- see <see cref="FetchTextureDataAsync"/>'s
+    /// doc comment for why LibreMetaverse's own HTTP path can't do this. A partial (206) response
+    /// is treated exactly like a full (200) one -- the caller (AssetService) knows this data may
+    /// be truncated-on-purpose and routes it to the tolerant decoder, same as any other incomplete
+    /// J2C stream. Returns null on ANY failure (non-success status, network error) so the caller
+    /// falls back to the UDP path -- never throws.
+    /// </summary>
+    private async Task<byte[]?> FetchTextureViaHttpRangeAsync(Guid textureId, int desiredDiscard, Uri capUri)
+    {
+        try
+        {
+            var url = new Uri($"{capUri}?texture_id={textureId}");
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            if (desiredDiscard > 0)
+            {
+                int byteLimit = J2kByteSizeEstimator.CalcDataSizeJ2C(0, 0, desiredDiscard);
+                request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, byteLimit - 1);
+            }
+
+            using var response = await _textureHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode) return null; // 4xx/5xx -- let the UDP fallback try
+
+            long? declaredLength = response.Content.Headers.ContentLength;
+            var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            if (bytes.Length == 0) return null;
+
+            // OpenSim's embedded HTTP server has been observed (empirically, right after a
+            // teleport/region-crossing burst of many simultaneous texture GETs) to close the
+            // connection early and return fewer bytes than its own declared Content-Length --
+            // with a 200/206 success status and no exception from HttpClient, since an early
+            // clean connection close is indistinguishable from "body complete" once the socket
+            // just stops sending. Handing that short body to the J2K decoder is exactly the
+            // "Codestream truncated" case this method exists to avoid (see the doc comment
+            // above) even though we never sent a Range header ourselves. Treat a short read as a
+            // failed fetch so the caller falls back to the UDP path in the SAME attempt, instead
+            // of silently decoding (and, for Magick.NET, likely failing on) partial data.
+            if (declaredLength.HasValue && bytes.Length < declaredLength.Value) return null;
+
+            // Content-Length only catches truncation when the server actually sends that
+            // header -- OpenSim's embedded HTTP server can respond chunked (no Content-Length)
+            // for texture bodies, which would let a short chunked read straight through the
+            // check above. A complete J2C codestream (SOC marker 0xFF4F at the start, verified
+            // by AssetService.DecodeTexture) always ends with an EOC marker (0xFFD9) -- that's
+            // true regardless of transport, so it catches the chunked-encoding gap. Only applies
+            // to a full (desiredDiscard 0) fetch: an intentional Range request never contains
+            // the EOC by design.
+            if (desiredDiscard == 0 && bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F
+                && (bytes[^2] != 0xFF || bytes[^1] != 0xD9))
+            {
+                return null;
+            }
+
+            return bytes;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[GridSession] HTTP range texture fetch failed for {textureId}: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>
