@@ -193,7 +193,8 @@ public class GpuCache
         SLNG.Assets.AssetService? assetService,
         bool generateMipmaps,
         int initialRefCount = 0,
-        int desiredDiscard = 0)
+        int desiredDiscard = 0,
+        float priority = 0f)
     {
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
 
@@ -203,17 +204,17 @@ public class GpuCache
         if (assetService == null) return Task.FromResult<ImageTexture?>(null);
 
         var lazy = _inflightTextureUploads.GetOrAdd(textureId, id => new Lazy<Task<ImageTexture?>>(
-            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, desiredDiscard),
+            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, desiredDiscard, priority),
             LazyThreadSafetyMode.ExecutionAndPublication));
         return lazy.Value;
     }
 
     private async Task<ImageTexture?> FetchAndUploadTextureAsync(
-        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, int desiredDiscard)
+        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, int desiredDiscard, float priority)
     {
         try
         {
-            var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard).ConfigureAwait(false);
+            var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard, priority: priority).ConfigureAwait(false);
             if (textureData == null) return null;
 
             // Image/mipmap build happens on this (worker) thread, matching the threading rule in

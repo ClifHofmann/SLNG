@@ -60,7 +60,7 @@ public class AssetService
         // the throttle capacities aren't otherwise visible anywhere at runtime. Printed once here
         // so a live client log can be checked against the values in this file's source directly,
         // instead of trusting a rebuild happened.
-        Console.WriteLine($"[AssetService] decorative fetch slots={_textureFetchThrottle.CurrentCount} sculpt fetch slots={_sculptFetchThrottle.CurrentCount}");
+        Console.WriteLine($"[AssetService] decorative fetch slots={_textureFetchThrottle.Capacity} sculpt fetch slots={_sculptFetchThrottle.Capacity}");
     }
 
     /// <summary>
@@ -360,7 +360,13 @@ public class AssetService
     /// key plus re-fetch-on-upgrade logic -- deliberately deferred (correctness/no-wrong-data
     /// first, smarter caching later), see the spec's Phase 2 notes.</para>
     /// </param>
-    public Task<TextureData?> GetTextureAsync(Guid textureId, int desiredDiscard = 0, bool isSculpt = false)
+    /// <param name="priority">FEAT-PERF-02: fetch-queue ordering hint, higher = fetched sooner
+    /// when more textures are pending than there are fetch slots. Callers should pass the
+    /// object's on-screen prominence (see ObjectRenderer.ComputeDesiredDiscard) so what the
+    /// camera is pointed at resolves before distant background scenery. Same first-caller-wins
+    /// caveat as <paramref name="desiredDiscard"/>, plus: priority is captured when the fetch is
+    /// enqueued and never re-evaluated -- see <see cref="PriorityGate"/>'s doc comment.</param>
+    public Task<TextureData?> GetTextureAsync(Guid textureId, int desiredDiscard = 0, bool isSculpt = false, float priority = 0f)
     {
         if (_memCache.TryGetValue(textureId, out TextureData? cached))
         {
@@ -378,15 +384,15 @@ public class AssetService
         // when many objects/faces reference the same never-before-seen texture at once (e.g. a
         // region populating on first login).
         var lazy = _inflightTextures.GetOrAdd(textureId, id => new Lazy<Task<TextureData?>>(
-            () => FetchDecodeAndCacheTextureAsync(id, effectiveDiscard, isSculpt), LazyThreadSafetyMode.ExecutionAndPublication));
+            () => FetchDecodeAndCacheTextureAsync(id, effectiveDiscard, isSculpt, priority), LazyThreadSafetyMode.ExecutionAndPublication));
         return lazy.Value;
     }
 
-    private async Task<TextureData?> FetchDecodeAndCacheTextureAsync(Guid id, int desiredDiscard, bool isSculpt)
+    private async Task<TextureData?> FetchDecodeAndCacheTextureAsync(Guid id, int desiredDiscard, bool isSculpt, float priority)
     {
         try
         {
-            var result = await FetchAndDecodeTextureAsync(id, desiredDiscard, isSculpt).ConfigureAwait(false);
+            var result = await FetchAndDecodeTextureAsync(id, desiredDiscard, isSculpt, priority).ConfigureAwait(false);
             if (result != null)
             {
                 long size = result.Width * result.Height * 4;
@@ -401,7 +407,7 @@ public class AssetService
         }
     }
 
-    // FEAT-PERF-02: two separate pools, not one shared SemaphoreSlim(4,4), so a burst of ordinary
+    // FEAT-PERF-02: two separate pools, not one shared 4-slot gate, so a burst of ordinary
     // decorative-texture fetches can never make a sculpt map (which blocks the object's *shape*,
     // not just its looks -- see GetSculptMeshAsync) queue behind them for up to 60s per attempt.
     // Decorative keeps the original 4 slots (the a14229d UDP-packet-drop-motivated cap) rather
@@ -412,10 +418,14 @@ public class AssetService
     // ADDITIONAL slot on top (total 5, not 4) instead. A modest +1 over the original cap is a
     // much smaller bet than the general "raise the cap" question, which stays a separate,
     // protocol-re-reviewed decision (FEAT-PERF-02 Phase 2.3).
-    private static readonly SemaphoreSlim _textureFetchThrottle = new SemaphoreSlim(4, 4);
-    private static readonly SemaphoreSlim _sculptFetchThrottle = new SemaphoreSlim(1, 1);
+    //
+    // PriorityGate, not SemaphoreSlim: a plain semaphore admits strictly in arrival order, so
+    // whatever the camera is actually pointed at waits behind an arbitrary amount of scenery that
+    // merely happened to be requested first. See PriorityGate's doc comment.
+    private static readonly PriorityGate _textureFetchThrottle = new PriorityGate(4);
+    private static readonly PriorityGate _sculptFetchThrottle = new PriorityGate(1);
 
-    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt)
+    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority)
     {
         // FEAT-PERF-02 Phase 2: the disk cache only ever holds complete (discard 0) assets --
         // both reading and writing are gated on desiredDiscard == 0 below. A partial/low-discard
@@ -442,7 +452,7 @@ public class AssetService
         {
             if (!_session.IsConnected) return null;
 
-            await throttle.WaitAsync().ConfigureAwait(false);
+            await throttle.WaitAsync(priority).ConfigureAwait(false);
             byte[]? bytes;
             try
             {
