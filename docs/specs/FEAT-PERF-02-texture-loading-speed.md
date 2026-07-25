@@ -55,22 +55,35 @@ Current-state audit (see file:line references below) found:
       SIMULATOR send fewer bytes for a higher discard level (~4x fewer bytes per level, confirmed
       against OpenSim's `GetTextureHandler`/`J2KImage` source) — this is real bandwidth savings,
       not just a client-side decode/display hint.
-- [x] Distance/size-driven discard **implemented, then live-tested and found to cause a serious
-      regression, then disabled** (`ObjectRenderer.ComputeTextureLod` computes a discard level but
-      forces it to 0 / full resolution right before returning — one-line re-enable once fixed).
-      One test session: 6752 of 6786 total client-output.log lines (99.5%) were
-      `[WARNING]: Codestream truncated in tile 0` from CoreJ2K. Magick.NET (the primary decoder)
-      does not tolerate a deliberately-Range-truncated J2C stream the way the design assumed,
-      falls back to CoreJ2K en masse, and at the more aggressive discard levels that fallback
-      frequently fails outright instead of degrading gracefully. Reported live as three symptoms
-      tracing to this one cause: a wall of startup warnings, slower loading (CPU burned on
-      repeated failed/fallback decodes instead of one clean full fetch), and ~80% of textures
-      never appearing (vs. ~100% in Firestorm on the same region). **Root cause of the decode-side
-      intolerance is not yet understood** — the byte-size math is verified against the real
-      viewer's own `calcDataSizeJ2C`/OpenSim's `GetTextureHandler` source (Phase 2.1), so either
-      the estimate is wrong in practice, or Magick.NET/CoreJ2K need different handling for a
-      known-partial stream than for an accidentally-truncated one. Needs its own investigation
-      before re-enabling, not attempted under live-testing pressure.
+- [x] Distance/size-driven discard **implemented as a network-fetch reduction, live-tested and
+      found to cause a serious regression, then re-implemented as a local post-decode downsample
+      instead.** One test session with network-side truncation: 6752 of 6786 total
+      client-output.log lines (99.5%) were `[WARNING]: Codestream truncated in tile 0` from
+      CoreJ2K. Magick.NET (the primary decoder) does not tolerate a deliberately-Range-truncated
+      J2C stream the way the design assumed, falls back to CoreJ2K en masse, and at the more
+      aggressive discard levels that fallback frequently fails outright instead of degrading
+      gracefully. Reported live as three symptoms tracing to this one cause: a wall of startup
+      warnings, slower loading (CPU burned on repeated failed/fallback decodes instead of one
+      clean full fetch), and ~80% of textures never appearing (vs. ~100% in Firestorm on the same
+      region). **Root cause of the decode-side intolerance is still not understood** — the
+      byte-size math is verified against the real viewer's own `calcDataSizeJ2C`/OpenSim's
+      `GetTextureHandler` source (Phase 2.1), so either the estimate is wrong in practice, or
+      Magick.NET/CoreJ2K need different handling for a known-partial stream than for an
+      accidentally-truncated one. `GridSession.FetchTextureViaHttpRangeAsync`/the UDP
+      discard-level parameter are left in place but effectively dormant (`AssetService` is always
+      called with `desiredDiscard: 0` from `GpuCache` now) — the network-bandwidth-reduction
+      angle from the Phase 2.1 protocol verification is unrealized until this is separately
+      root-caused; re-enabling network truncation is NOT what current discard values feed.
+      **What discard actually does today:** `GpuCache.FetchAndUploadTextureAsync` always fetches
+      the complete asset (sidestepping the decoder bug entirely), then shrinks the already-decoded
+      `Image` (`Resize`, Lanczos, halving each dimension per level) before it reaches the GPU, if
+      the object's apparent size warrants it. Live-tested after the network fix landed and
+      textures loading correctly surfaced a **second** real symptom -- "GPU memory really filling
+      up" (expected: full-res-everywhere now that fetches mostly succeed, and `GpuCache.
+      EvictIfNeeded` correctly refuses to evict anything still on screen, so a full-res visible
+      working set that itself exceeds the budget has nowhere to shrink) -- which this addresses
+      without reopening the network-side bug. Trades network bandwidth (still full, unresolved)
+      for real VRAM reduction.
       **Fetch order is priority-aware regardless of the above, and unaffected by it:**
       `PriorityGate` (`src/SLNG.Assets/PriorityGate.cs`) replaced the plain `SemaphoreSlim`
       throttles — admits the highest-priority (most on-screen-prominent) queued texture next
