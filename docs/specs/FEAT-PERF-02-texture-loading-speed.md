@@ -47,12 +47,26 @@ Current-state audit (see file:line references below) found:
       tests.
 
 **Phase 2 (needs protocol verification before implementing):**
-- [ ] `protocol-re`/`viewer-parity` confirm J2K discard-level semantics and how a real viewer
-      derives fetch priority (distance/screen-size) from vendored LibreMetaverse source and/or
-      `secondlife/viewer` source, not general knowledge.
-- [ ] Distance/screen-size-driven texture priority + progressive discard-level fetch
-      implemented: distant/small objects start at a lower discard level, escalate as they get
-      closer/larger on screen.
+- [x] `protocol-re` verified J2K discard-level semantics and the real viewer's distance/screen-
+      size formula against actual OpenSim + `secondlife/viewer` source (`gh api`, not general
+      knowledge). Headline finding: SLNG's texture fetch was always going through UDP regardless
+      of `UseHttpTextures`; LibreMetaverse's own HTTP path ignores discard/priority/range entirely
+      (always full download), while UDP *and* a hand-built HTTP Range request both make the
+      SIMULATOR send fewer bytes for a higher discard level (~4x fewer bytes per level, confirmed
+      against OpenSim's `GetTextureHandler`/`J2KImage` source) — this is real bandwidth savings,
+      not just a client-side decode/display hint.
+- [x] Distance/size-driven discard implemented for `ObjectRenderer` (own HTTP Range fetch in
+      `GridSession.FetchTextureDataAsync`, ported `calcDataSizeJ2C` byte-size estimator in
+      `SLNG.Net.J2kByteSizeEstimator`, threaded through `AssetService`/`GpuCache`, discard computed
+      per-object in `ObjectRenderer.ComputeDesiredDiscard` from apparent size = radius/distance).
+      **Not yet covered:** `AvatarRenderer` (own-avatar bake should likely stay full-res like
+      sculpts; other avatars' worn attachments are a real candidate), `TerrainRenderer` (detail
+      textures are shared/tiled across a whole region, no single "distance to the texture").
+      **No runtime upgrade path:** once a texture is GPU-resident at some discard level it stays
+      there for the session even if later needed sharper (documented limitation, see
+      `GpuCache.GetOrUploadTextureAsync`'s doc comment) — deferred, needs a discard-aware cache key.
+      Progressive discrete *escalation* (fetch coarse, then finer, as an object approaches) is
+      also not implemented — only the initial discard choice.
 - [ ] Re-evaluate the 4-concurrent-fetch cap (`a14229d`, originally a UDP-packet-drop fix) now
       that HTTP CAPS texture fetch is preferred; tune upward only with `protocol-re` sign-off
       that the original truncation risk doesn't reapply over HTTP.
@@ -72,7 +86,8 @@ Current-state audit (see file:line references below) found:
 - [x] Phase 1.1 — Single-flight fetch+decode dedup (`Lazy<Task<T>>`)
 - [x] Phase 1.2 — Centralize + dedup GPU-upload path across the three renderers
 - [x] Phase 1.3 — Separate sculpt-map fetch throttle from decorative-texture throttle
-- [ ] Phase 2.1 — `protocol-re`/`viewer-parity` verification of discard-level/priority semantics
-- [ ] Phase 2.2 — Implement distance/screen-size-driven progressive texture LOD
+- [x] Phase 2.1 — `protocol-re`/`viewer-parity` verification of discard-level/priority semantics
+- [x] Phase 2.2 — Implement distance/screen-size-driven texture LOD (`ObjectRenderer` only —
+      see acceptance criteria above for what's deferred)
 - [ ] Phase 2.3 — Re-evaluate concurrent-fetch cap now that HTTP CAPS is preferred
 - [ ] Phase 2.4 — Before/after baseline comparison
