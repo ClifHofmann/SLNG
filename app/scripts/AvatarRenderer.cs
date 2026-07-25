@@ -244,9 +244,8 @@ public partial class AvatarRenderer : Node3D
             _avatarSkeleton = AvatarSkeleton.LoadFromXml(file.GetAsText());
             // GD.Print($"[AvatarRenderer] Loaded Bento skeleton: {_avatarSkeleton.Bones.Count} entries");
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            // GD.PrintErr($"[AvatarRenderer] Failed to load skeleton: {ex.Message}. Falling back to capsule.");
             _avatarSkeleton = null;
         }
 
@@ -2751,9 +2750,8 @@ void fragment() {
                     // GD.PrintErr($"[AvatarRenderer] Animation {animId}: fetch returned null (not in grid assets?)");
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                // GD.PrintErr($"[AvatarRenderer] Failed to fetch animation {animId}: {ex.Message}");
             }
         }
 
