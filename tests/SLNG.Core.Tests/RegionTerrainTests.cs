@@ -90,4 +90,70 @@ public class RegionTerrainTests
         Assert.Equal(RegionTerrain.MaxRegionSize, terrain.Width);
         Assert.Equal(RegionTerrain.MaxRegionSize, terrain.Height);
     }
+
+    [Fact]
+    public void RegionTerrain_TryGetKnownHeight_FalseForCellWithoutAPatch()
+    {
+        // Regression test for the landmark-teleport "falls through the floor" bug: a freshly
+        // constructed heightmap defaults every cell to 0.0f before any patch arrives, which must
+        // NOT be reported as a known/trustworthy height -- see AvatarController's ground-clamp
+        // fallback, which used to treat this as "ground is at Z=0" and drop the avatar toward it.
+        var terrain = new RegionTerrain();
+
+        bool known = terrain.TryGetKnownHeight(5, 5, out float height);
+
+        Assert.False(known);
+        Assert.Equal(0f, height);
+    }
+
+    [Fact]
+    public void RegionTerrain_TryGetKnownHeight_TrueOnlyInsideAppliedPatch()
+    {
+        var terrain = new RegionTerrain();
+        float[] patchHeights = new float[16 * 16];
+        for (int i = 0; i < patchHeights.Length; i++)
+            patchHeights[i] = 22.5f;
+
+        // Patch (1, 1) covers world X/Y 16..31.
+        terrain.ApplyPatch(1, 1, patchHeights);
+
+        Assert.True(terrain.TryGetKnownHeight(20, 20, out float insideHeight));
+        Assert.Equal(22.5f, insideHeight);
+
+        Assert.False(terrain.TryGetKnownHeight(0, 0, out float outsideHeight));
+        Assert.Equal(0f, outsideHeight);
+    }
+
+    [Fact]
+    public void RegionTerrain_TryGetKnownHeight_FalseOutOfBounds()
+    {
+        var terrain = new RegionTerrain(256, 256);
+
+        Assert.False(terrain.TryGetKnownHeight(-1, 0, out _));
+        Assert.False(terrain.TryGetKnownHeight(0, -1, out _));
+        Assert.False(terrain.TryGetKnownHeight(256, 0, out _));
+        Assert.False(terrain.TryGetKnownHeight(0, 256, out _));
+    }
+
+    [Fact]
+    public void RegionTerrain_TryGetKnownHeight_SurvivesResize()
+    {
+        // Resize() (via a growing ApplyPatch) must carry the loaded-mask along with the height
+        // data, not just reallocate a fresh all-false mask that would un-mark already-loaded
+        // ground as unknown.
+        var terrain = new RegionTerrain(256, 256);
+        float[] patchHeights = new float[16 * 16];
+        for (int i = 0; i < patchHeights.Length; i++)
+            patchHeights[i] = 10.0f;
+        terrain.ApplyPatch(1, 1, patchHeights);
+
+        // Grow it via an out-of-bounds patch elsewhere.
+        float[] farPatchHeights = new float[16 * 16];
+        for (int i = 0; i < farPatchHeights.Length; i++)
+            farPatchHeights[i] = 30.0f;
+        terrain.ApplyPatch(20, 20, farPatchHeights);
+
+        Assert.True(terrain.TryGetKnownHeight(20, 20, out float survivedHeight));
+        Assert.Equal(10.0f, survivedHeight);
+    }
 }

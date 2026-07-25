@@ -31,6 +31,17 @@ public class RegionTerrain
     // The master heightmap (Y-up elevation).
     private float[] _heights;
 
+    // Parallel to _heights: whether a real patch has ever written this cell. A freshly-grown or
+    // freshly-constructed heightmap defaults every cell to 0.0f, which is indistinguishable from
+    // a legitimate sea-level-ish height -- callers that treat "present in this array" as "safe to
+    // stand on" (see AvatarController's ground-clamp fallback) need a way to tell "genuinely flat"
+    // apart from "patch for this cell hasn't arrived over the network yet". Right after a landmark
+    // teleport into a brand new region, most of the map is the latter for the first several
+    // LayerData packets -- treating it as height 0 made the avatar free-fall toward Z~1 before the
+    // real (often ~20-25m) terrain height streamed in, i.e. "falls through the floor that isn't
+    // there yet".
+    private bool[] _loaded;
+
     public int Width { get; private set; }
     public int Height { get; private set; }
 
@@ -39,18 +50,22 @@ public class RegionTerrain
         Width = width;
         Height = height;
         _heights = new float[Width * Height];
+        _loaded = new bool[Width * Height];
     }
 
     private void Resize(int newWidth, int newHeight)
     {
         float[] newHeights = new float[newWidth * newHeight];
+        bool[] newLoaded = new bool[newWidth * newHeight];
         for (int y = 0; y < Height; y++)
         {
             Array.Copy(_heights, y * Width, newHeights, y * newWidth, Width);
+            Array.Copy(_loaded, y * Width, newLoaded, y * newWidth, Width);
         }
         Width = newWidth;
         Height = newHeight;
         _heights = newHeights;
+        _loaded = newLoaded;
     }
 
     /// <summary>Grows the heightmap to at least the given dimensions (clamped to
@@ -110,6 +125,7 @@ public class RegionTerrain
                 int localIndex = y * PatchSize + x;
                 int globalIndex = (startY + y) * Width + (startX + x);
                 _heights[globalIndex] = patchHeights[localIndex];
+                _loaded[globalIndex] = true;
             }
         }
     }
@@ -122,5 +138,21 @@ public class RegionTerrain
         float[] copy = new float[_heights.Length];
         Array.Copy(_heights, copy, _heights.Length);
         return copy;
+    }
+
+    /// <summary>Returns the height at (x, y) only if a real patch has ever written that cell --
+    /// see <see cref="_loaded"/>'s doc comment for why a plain 0.0f default can't be trusted as
+    /// "ground is here". Out-of-bounds coordinates are always unknown.</summary>
+    public bool TryGetKnownHeight(int x, int y, out float height)
+    {
+        if (x < 0 || x >= Width || y < 0 || y >= Height)
+        {
+            height = 0f;
+            return false;
+        }
+
+        int index = y * Width + x;
+        height = _heights[index];
+        return _loaded[index];
     }
 }

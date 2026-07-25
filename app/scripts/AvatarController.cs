@@ -407,13 +407,21 @@ public partial class AvatarController : Camera3D
                 }
                 else
                 {
-                    // Fallback to terrain heightmap if raycast misses
+                    // Fallback to terrain heightmap if raycast misses. Right after a landmark
+                    // teleport, the physics raycast reliably misses for up to ~0.75s -- the new
+                    // region's collider isn't built yet (TerrainRenderer coalesces rebuilds, see
+                    // its _rebuildAccum). Trusting GetHeights() blindly here doesn't help: a cell
+                    // whose 16x16 patch hasn't streamed in yet defaults to 0.0f, which used to
+                    // read as "hasGround = true, ground is at Z=0" and drop the avatar toward it
+                    // -- a visible free-fall from the real (often ~20-25m) spawn height down to
+                    // ~1m, i.e. exactly "falls through the floor before it's there". Only trust a
+                    // cell that has actually received a real patch.
                     int rawX = (int)transform.Position.X;
                     int rawY = (int)transform.Position.Y;
                     if (_world.Terrains.TryGetValue(localAgent.RegionHandle, out var terrain)
-                        && rawX >= 0 && rawX < terrain.Width && rawY >= 0 && rawY < terrain.Height)
+                        && terrain.TryGetKnownHeight(rawX, rawY, out float knownHeight))
                     {
-                        groundHeight = terrain.GetHeights()[rawY * terrain.Width + rawX];
+                        groundHeight = knownHeight;
                         hasGround = true;
                         groundSource = "terrain-heightmap-fallback";
                     }
