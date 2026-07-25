@@ -125,7 +125,7 @@ public class AssetService
         return _inflightSculptMeshes.GetOrAdd((sculptId, sculptType), async k => {
             var id = k.Id;
             try {
-                var map = await GetTextureAsync(id, true).ConfigureAwait(false);
+                var map = await GetTextureAsync(id, isSculpt: true).ConfigureAwait(false);
                 if (map == null) return null;
 
                 var result = await Task.Run(() =>
@@ -345,12 +345,29 @@ public class AssetService
     /// Fetches and decodes a texture (JPEG2000) by UUID into engine-neutral RGBA, or null
     /// if it cannot be decoded. Concurrent requests for the same id share one fetch/decode.
     /// </summary>
-    public Task<TextureData?> GetTextureAsync(Guid textureId, bool isSculpt = false)
+    /// <param name="desiredDiscard">FEAT-PERF-02 Phase 2: SL/OpenSim J2K discard level to request
+    /// -- 0 (default) is full resolution, higher values ask the simulator to send fewer bytes for
+    /// a distant/small object (see docs/specs/FEAT-PERF-02-texture-loading-speed.md's Phase 2.1
+    /// write-up). Ignored (forced to 0) when <paramref name="isSculpt"/> -- any truncation
+    /// corrupts every vertex position, see the degraded-decode retry logic below.
+    /// <para>Known limitation: the id-keyed single-flight dedup below means if two concurrent
+    /// callers request the *same* never-before-cached texture id at *different* discard levels
+    /// (e.g. two instances of the same object at different distances), only the first caller's
+    /// discard is actually fetched -- the second gets that same result. There is also no
+    /// "upgrade" path once a texture is cached/GPU-resident (see GpuCache.GetOrUploadTextureAsync):
+    /// a texture first seen far away stays at that resolution for the rest of the session even if
+    /// the same or another instance later gets closer. Fixing both needs a discard-aware cache
+    /// key plus re-fetch-on-upgrade logic -- deliberately deferred (correctness/no-wrong-data
+    /// first, smarter caching later), see the spec's Phase 2 notes.</para>
+    /// </param>
+    public Task<TextureData?> GetTextureAsync(Guid textureId, int desiredDiscard = 0, bool isSculpt = false)
     {
         if (_memCache.TryGetValue(textureId, out TextureData? cached))
         {
             return Task.FromResult(cached);
         }
+
+        int effectiveDiscard = isSculpt ? 0 : desiredDiscard;
 
         // Lazy<Task<T>> (ExecutionAndPublication), not a bare ConcurrentDictionary.GetOrAdd
         // factory -- GetOrAdd's factory delegate is not guaranteed single-execution under a
@@ -361,15 +378,15 @@ public class AssetService
         // when many objects/faces reference the same never-before-seen texture at once (e.g. a
         // region populating on first login).
         var lazy = _inflightTextures.GetOrAdd(textureId, id => new Lazy<Task<TextureData?>>(
-            () => FetchDecodeAndCacheTextureAsync(id, isSculpt), LazyThreadSafetyMode.ExecutionAndPublication));
+            () => FetchDecodeAndCacheTextureAsync(id, effectiveDiscard, isSculpt), LazyThreadSafetyMode.ExecutionAndPublication));
         return lazy.Value;
     }
 
-    private async Task<TextureData?> FetchDecodeAndCacheTextureAsync(Guid id, bool isSculpt)
+    private async Task<TextureData?> FetchDecodeAndCacheTextureAsync(Guid id, int desiredDiscard, bool isSculpt)
     {
         try
         {
-            var result = await FetchAndDecodeTextureAsync(id, isSculpt).ConfigureAwait(false);
+            var result = await FetchAndDecodeTextureAsync(id, desiredDiscard, isSculpt).ConfigureAwait(false);
             if (result != null)
             {
                 long size = result.Width * result.Height * 4;
@@ -398,11 +415,16 @@ public class AssetService
     private static readonly SemaphoreSlim _textureFetchThrottle = new SemaphoreSlim(4, 4);
     private static readonly SemaphoreSlim _sculptFetchThrottle = new SemaphoreSlim(1, 1);
 
-    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, bool isSculpt)
+    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt)
     {
+        // FEAT-PERF-02 Phase 2: the disk cache only ever holds complete (discard 0) assets --
+        // both reading and writing are gated on desiredDiscard == 0 below. A partial/low-discard
+        // fetch is intentionally truncated (see GridSession.FetchTextureDataAsync), not the
+        // "whole texture" the cache file name promises; treating it as one would let a future
+        // full-resolution request silently get served a blurry cached partial forever.
         string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v5.j2c");
 
-        if (cacheFile != null && File.Exists(cacheFile))
+        if (desiredDiscard == 0 && cacheFile != null && File.Exists(cacheFile))
         {
             byte[]? cached = null;
             try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
@@ -424,7 +446,7 @@ public class AssetService
             byte[]? bytes;
             try
             {
-                var fetchTask = _session.FetchTextureDataAsync(textureId);
+                var fetchTask = _session.FetchTextureDataAsync(textureId, desiredDiscard);
                 var timeoutTask = Task.Delay(TimeSpan.FromSeconds(60));
                 if (await Task.WhenAny(fetchTask, timeoutTask).ConfigureAwait(false) == fetchTask)
                 {
@@ -445,7 +467,7 @@ public class AssetService
                 var result = await Task.Run(() => DecodeTexture(bytes, isSculpt)).ConfigureAwait(false);
                 if (result != null)
                 {
-                    if (cacheFile != null && !result.IsDegraded)
+                    if (desiredDiscard == 0 && cacheFile != null && !result.IsDegraded)
                     {
                         try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
                     }

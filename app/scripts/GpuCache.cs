@@ -178,12 +178,22 @@ public class GpuCache
     /// caller's request actually performs the build for a given id -- if two callers ever request
     /// the same id with different values (not expected: different renderers use disjoint texture
     /// categories in practice), the first one to start the build wins for that id.
+    /// <para>FEAT-PERF-02 Phase 2: <paramref name="desiredDiscard"/> has the exact same
+    /// first-caller-wins caveat, now more likely to matter (two instances of the same object at
+    /// different distances CAN share a texture id). More importantly: once a texture is cached
+    /// here (<see cref="Get"/> above short-circuits before ever calling AssetService again), it
+    /// is NEVER re-fetched at a different discard level for the rest of the session -- a texture
+    /// first requested by a distant/small object stays at that resolution even if the same or
+    /// another instance later needs it sharp. Deliberate scope limit for this pass (a real fix
+    /// needs a discard-aware cache key here too, not just in AssetService) -- see the spec's
+    /// Phase 2 notes.</para>
     /// </summary>
     public Task<ImageTexture?> GetOrUploadTextureAsync(
         Guid textureId,
         SLNG.Assets.AssetService? assetService,
         bool generateMipmaps,
-        int initialRefCount = 0)
+        int initialRefCount = 0,
+        int desiredDiscard = 0)
     {
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
 
@@ -193,17 +203,17 @@ public class GpuCache
         if (assetService == null) return Task.FromResult<ImageTexture?>(null);
 
         var lazy = _inflightTextureUploads.GetOrAdd(textureId, id => new Lazy<Task<ImageTexture?>>(
-            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount),
+            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, desiredDiscard),
             LazyThreadSafetyMode.ExecutionAndPublication));
         return lazy.Value;
     }
 
     private async Task<ImageTexture?> FetchAndUploadTextureAsync(
-        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount)
+        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, int desiredDiscard)
     {
         try
         {
-            var textureData = await assetService.GetTextureAsync(textureId).ConfigureAwait(false);
+            var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard).ConfigureAwait(false);
             if (textureData == null) return null;
 
             // Image/mipmap build happens on this (worker) thread, matching the threading rule in
