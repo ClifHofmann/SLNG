@@ -79,7 +79,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.3.54-alpha";
+    public const string AppVersion = "v0.3.55-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -143,12 +143,8 @@ public partial class Boot : Control
         // Populate Grid Dropdown
         _gridDropdown.AddItem("OSGrid");
         _gridDropdown.SetItemMetadata(0, "http://hg.osgrid.org/");
-        _gridDropdown.AddItem("Second Life (Agni)");
-        _gridDropdown.SetItemMetadata(1, "https://login.agni.lindenlab.com/cgi-bin/login.cgi");
-        _gridDropdown.AddItem("Second Life (Aditi)");
-        _gridDropdown.SetItemMetadata(2, "https://login.aditi.lindenlab.com/cgi-bin/login.cgi");
         _gridDropdown.AddItem("Localhost");
-        _gridDropdown.SetItemMetadata(3, "http://127.0.0.1:9000/");
+        _gridDropdown.SetItemMetadata(1, "http://127.0.0.1:9000/");
         
         _gridDropdown.ItemSelected += (index) => 
         {
