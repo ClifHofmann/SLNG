@@ -2,8 +2,8 @@
 
 - **Feature ID:** `M5-4`
 - **Track:** `ui/net`
-- **Status:** `⏸️ Pending`
-- **Owner:** `gemini`
+- **Status:** `🚧 In Progress`
+- **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
 ## Overview & Goal
