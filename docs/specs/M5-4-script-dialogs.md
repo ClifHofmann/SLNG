@@ -2,7 +2,7 @@
 
 - **Feature ID:** `M5-4`
 - **Track:** `ui/net`
-- **Status:** `🚧 In Progress`
+- **Status:** `✅ Done`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -41,11 +41,15 @@ Implement support for in-world script-triggered menu dialogs generated via LSL/S
 - Option to ignore dialogs per object/owner.
 
 ## Acceptance Criteria
-- [ ] LibreMetaverse `ScriptDialog` packet events are handled on background threads, buffered, and dispatched to the Godot main thread.
-- [ ] Dialog window derives from `SLNGWindow` and displays object name, owner, prompt text, and up to 12 dynamic buttons.
-- [ ] Clicking a button sends the selected text back on the specified channel and closes the dialog.
-- [ ] Multiple concurrent dialogs queue properly without UI overlaps or crashes.
-- [ ] Unit & integration tests written for packet parsing and channel reply formatting.
+- [x] LibreMetaverse `ScriptDialog` packet events are handled on background threads, buffered, and dispatched to the Godot main thread.
+- [x] Dialog window derives from `SLNGWindow` and displays object name, owner, prompt text, and up to 12 dynamic buttons.
+- [x] Clicking a button sends the selected text back on the specified channel and closes the dialog.
+- [x] Multiple concurrent dialogs queue properly without UI overlaps or crashes (cascading placement, same idiom as `ObjectEditWindow`).
+- [x] Unit & integration tests written for packet parsing and channel reply formatting (`GridSessionTests.OnScriptDialog_maps_wire_event_to_ScriptDialogEvent`, `ReplyToScriptDialog_without_connection_does_not_throw`).
+
+Live-verified 2026-07-31 against a `touch_start` -> `llDialog` test script: popup rendered with object/owner/message, button click sent the reply and closed the dialog, the script's `listen()` received it correctly.
+
+**Known gaps, deliberately out of scope for this pass:** LibreMetaverse's `ScriptDialogEventArgs` has no dialog-session UUID (the spec's `ID` field, item 22 below, doesn't exist on the wire event), no auto-expire timeout, and no per-object/owner "always ignore" option. None of these are required by the acceptance criteria above.
 
 ## Technical Specs & Affected Files
 - `app/scripts/UI/ScriptDialogWindow.cs` — UI modal window class inheriting from `SLNGWindow`.
@@ -54,8 +58,8 @@ Implement support for in-world script-triggered menu dialogs generated via LSL/S
 - `docs/specs/M5-4-script-dialogs.md` — Feature specification.
 
 ## Sub-tasks / Progress
-- [ ] Create `M5-4` spec & update `ROADMAP.md`
-- [ ] Subscribe to `ScriptDialog` events in `SLNG.Net`
-- [ ] Create `ScriptDialogWindow` UI inheriting from `SLNGWindow` with 3x4 button grid
-- [ ] Implement response dispatching on script channel
-- [ ] Implement `DialogQueueManager` for concurrent dialog popups
+- [x] Create `M5-4` spec & update `ROADMAP.md`
+- [x] Subscribe to `ScriptDialog` events in `SLNG.Net`
+- [x] Create `ScriptDialogWindow` UI inheriting from `SLNGWindow` with 3x4 button grid
+- [x] Implement response dispatching on script channel
+- [x] Implement `DialogQueueManager` for concurrent dialog popups
