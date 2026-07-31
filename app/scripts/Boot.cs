@@ -43,6 +43,7 @@ public partial class Boot : Control
     private SLNG.Core.ECS.World? _world;
     private SLNG.Core.Services.LocalizationManager _localizationManager = null!;
     private SLNG.Core.WorldSimulation _worldSimulation = null!;
+    private SLNG.App.UI.DialogQueueManager? _dialogQueueManager;
     private GpuCache? _gpuCache;
     private TerrainRenderer? _terrainRenderer;
     private ObjectRenderer? _objectRenderer;
@@ -79,7 +80,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.3.55-alpha";
+    public const string AppVersion = "v0.3.56-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -552,6 +553,10 @@ public partial class Boot : Control
         // Drain queued world events on the main thread — the only place the world mutates.
         _worldSimulation?.Pump();
 
+        // Drain queued llDialog popups (M5-4) on the main thread, same reasoning as
+        // WorldSimulation.Pump above — ScriptDialogReceived fires on a LibreMetaverse network thread.
+        _dialogQueueManager?.Pump();
+
         // Dead-reckon avatar positions from their last known velocity between network updates
         // (mirrors the real viewer's interpolateLinearMotion) — must run after Pump() so this
         // frame's fresh Position/Velocity/TimeSinceUpdate are already applied before extrapolating.
@@ -920,6 +925,7 @@ public partial class Boot : Control
             _session.Dispose();
         }
         if (_worldSimulation != null) _worldSimulation.Dispose();
+        _dialogQueueManager?.Dispose();
         // Relogging discards the whole cached GPU working set (new session, new region) -- dispose
         // explicitly rather than dropping the reference, same reasoning as DisposeAll's own doc
         // comment: leaving cleanup to the .NET GC risks a finalizer touching RenderingServer late.
@@ -957,6 +963,12 @@ public partial class Boot : Control
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.InstantMessageReceived += OnInstantMessageReceived;
+        // M5-4: llDialog popups. DialogQueueManager buffers ScriptDialogReceived (a network-
+        // thread event) itself and is drained once per frame from _Process, same as
+        // _worldSimulation above -- see its Pump() doc comment.
+        var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+        if (hudLayer != null)
+            _dialogQueueManager = new SLNG.App.UI.DialogQueueManager(_session, hudLayer);
         // Real server-driven login handshake progress (FEAT-UI-08) -- subscribed before
         // LoginAsync below so the initial ConnectingToLogin/ReadingResponse/ConnectingToSim
         // stages of THIS attempt are caught, not just a later re-login's.
@@ -1018,7 +1030,6 @@ public partial class Boot : Control
             GetNode<Control>("%Background").Visible = false;
             _topMenu.Visible = true;
 
-            var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) hudLayer.Visible = true;
             _chatWindow.Visible = true;
 

@@ -177,3 +177,11 @@ public record AvatarAppearanceEvent(ulong RegionHandle, Guid AgentId, byte[] Vis
 
 /// <summary>Represents the set of animations currently playing on an avatar.</summary>
 public record AvatarAnimationEvent(Guid AgentId, List<Guid> AnimationIds) : IWorldEvent;
+
+/// <summary>An LSL <c>llDialog</c> popup request from an in-world object's script. Carries the
+/// simulator-assigned reply <paramref name="Channel"/> (not a dialog-session UUID -- LibreMetaverse's
+/// ScriptDialogEventArgs has no such id) and up to 12 <paramref name="ButtonLabels"/>. Identity/UI
+/// state, not world simulation state, so intentionally not an <see cref="IWorldEvent"/>.</summary>
+public record ScriptDialogEvent(
+    Guid ObjectId, string ObjectName, Guid OwnerId, string OwnerName,
+    string Message, int Channel, IReadOnlyList<string> ButtonLabels);

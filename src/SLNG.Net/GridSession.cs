@@ -47,6 +47,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<AvatarAnimationEvent>? AvatarAnimationReceived;
     public event EventHandler<FriendStatusEvent>? FriendStatusChanged;
     public event EventHandler<InstantMessageEvent>? InstantMessageReceived;
+    public event EventHandler<ScriptDialogEvent>? ScriptDialogReceived;
     /// <summary>Real, server-driven login handshake progress -- relayed 1:1 from LibreMetaverse's
     /// own <c>NetworkManager.LoginProgress</c> (see <see cref="LoginAsync"/>), not simulated. UI
     /// should treat these as advisory only: on a direct (non-redirected) login some stages
@@ -162,6 +163,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Friends.FriendOnline += OnFriendOnline;
         _client.Friends.FriendOffline += OnFriendOffline;
         _client.Self.IM += OnInstantMessage;
+        _client.Self.ScriptDialog += OnScriptDialog;
 
         // Coexists with ObjectManager's own internal ObjectUpdate handler (packet callbacks are
         // multicast) -- see _lightPresentByLocalId for why this is needed.
@@ -435,6 +437,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         if (_client.Network.Connected)
             _client.Self.InstantMessage(new UUID(targetAgentId), message);
+    }
+
+    private void OnScriptDialog(object? sender, ScriptDialogEventArgs e)
+    {
+        ScriptDialogReceived?.Invoke(this, new ScriptDialogEvent(
+            e.ObjectID.Guid, e.ObjectName, e.OwnerID.Guid,
+            $"{e.FirstName} {e.LastName}".Trim(),
+            e.Message, e.Channel, e.ButtonLabels));
+    }
+
+    /// <summary>Answers an llDialog popup by sending the chosen button back over the proper
+    /// ScriptDialogReply protocol path (M5-4) -- NOT Self.Chat on the channel, which is a
+    /// separate internal helper for negative-channel gesture/debug chat, not dialog replies.</summary>
+    public void ReplyToScriptDialog(Guid objectId, int channel, int buttonIndex, string buttonLabel)
+    {
+        if (_client.Network.Connected)
+            _client.Self.ReplyToScriptDialog(channel, buttonIndex, buttonLabel, new UUID(objectId));
     }
 
     private void OnAvatarAppearance(object? sender, AvatarAppearanceEventArgs e)
@@ -1943,6 +1962,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Friends.FriendOnline -= OnFriendOnline;
         _client.Friends.FriendOffline -= OnFriendOffline;
         _client.Self.IM -= OnInstantMessage;
+        _client.Self.ScriptDialog -= OnScriptDialog;
         _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
         Logout();
     }

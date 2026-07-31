@@ -114,6 +114,15 @@ namespace SLNG.App
                                                 // We don't have localId for deselect here easily, but LibreMetaverse handles it
                                                 _lastClicked = null;
                                             }
+
+                                            // MVP2-1: a plain left-click is an SL "touch" (grab/de-grab
+                                            // pair), not a selection -- it's what fires touch_start/
+                                            // touch_end on the object's script (e.g. a vendor menu that
+                                            // calls llDialog, M5-4). Right-click still owns selection/
+                                            // Edit via the context menu below; this was previously a
+                                            // dead end that only deselected and never touched at all.
+                                            GD.Print($"[Touch] touched entity {guid:N} (LocalId {localId})");
+                                            _ = _session.ClickObjectAsync(localId);
                                             return;
                                         }
 
