@@ -1291,9 +1291,15 @@ public partial class AvatarRenderer : Node3D
             // repeat != 1 shifts the image off-center (a "scaling issue" on tiled faces). Negative
             // repeats (SL's mirror, and the half-turn above) also land correctly with this, via
             // texture wrap.
+            // Minus on V, plus on U: these meshes are built flipV (v = 1-t) and the texture rows
+            // are top-origin too, so v_tex = 1 - t_tex turns the viewer's
+            // t_tex = (t-0.5)*magT + 0.5 + offT (llface.cpp:734-756) into
+            // v_tex = (v-0.5)*magT + 0.5 - offT. The flip negates the offset and leaves the scale
+            // term alone; U, being unflipped, keeps its plus. Same fix as ObjectRenderer's — see
+            // the fuller derivation there.
             Uv1Offset = new Godot.Vector3(
                 0.5f - 0.5f * effRepeatU + ft.OffsetU,
-                0.5f - 0.5f * effRepeatV + ft.OffsetV,
+                0.5f - 0.5f * effRepeatV - ft.OffsetV,
                 0.0f),
         };
 

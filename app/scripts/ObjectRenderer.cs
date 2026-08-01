@@ -758,9 +758,21 @@ public partial class ObjectRenderer : Node3D
         // Centered like SL (u' = (u-0.5)*repeat + 0.5 + off) — the shader scales UVs from the
         // corner, so without the 0.5-0.5*repeat correction any repeat != 1 shifts the texture
         // off-center. Folded into the offset so the shader stays a plain multiply-add.
+        //
+        // NOTE THE MINUS ON V. The viewer transforms in SL's bottom-origin space
+        // (llface.cpp:734-756, xform): t_tex = (t-0.5)*magT + 0.5 + offT. Every world mesh here
+        // is built with flipV:true (see AssignSharedMesh), so our vertex V is v = 1-t and the
+        // texture's rows are likewise top-origin, giving v_tex = 1 - t_tex. Substituting:
+        //     v_tex = 1 - [ (t-0.5)*magT + 0.5 + offT ]
+        //           = (v-0.5)*magT + 0.5 - offT
+        // so the flip negates the OFFSET while leaving the scale term alone. U is unflipped and
+        // keeps its plus — and that asymmetry is the confirmation: a single flip predicts exactly
+        // one of the two axes changing sign, which is what the algebra produces. This line read
+        // "+ ft.OffsetV" until 2026-08-01, i.e. any face with a V offset had its texture shifted
+        // the wrong way by twice the offset.
         material.SetShaderParameter(PrimShaderFamily.UvOffset, new Godot.Vector2(
             0.5f - 0.5f * effRepeatU + ft.OffsetU,
-            0.5f - 0.5f * effRepeatV + ft.OffsetV));
+            0.5f - 0.5f * effRepeatV - ft.OffsetV));
 
         // Translucent per-face tint: pick the blending variant. This is the direct equivalent of
         // the old `material.Transparency = Alpha` — see PrimShaderFamily for why transparency is
