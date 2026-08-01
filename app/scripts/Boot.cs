@@ -62,6 +62,9 @@ public partial class Boot : Control
     private double _hudAccum;
     
     private SLNG.App.UI.TopMenu _topMenu = null!;
+    // Created lazily on first use -- see the Developer menu wiring below. Dev tooling only,
+    // costs nothing until someone actually takes a measurement.
+    private RenderBaselineSampler? _renderBaselineSampler;
     private SLNG.App.UI.ButtonBar _buttonBar = null!;
     private SLNG.App.UI.PreferencesWindow _preferencesWindow = null!;
     private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
@@ -80,7 +83,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.3.68-alpha";
+    public const string AppVersion = "v0.3.71-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -247,9 +250,18 @@ public partial class Boot : Control
 
         _topMenu.OnToggleWireframe = () => {
             var vp = GetViewport();
-            vp.DebugDraw = vp.DebugDraw == Viewport.DebugDrawEnum.Wireframe 
-                ? Viewport.DebugDrawEnum.Disabled 
+            vp.DebugDraw = vp.DebugDraw == Viewport.DebugDrawEnum.Wireframe
+                ? Viewport.DebugDrawEnum.Disabled
                 : Viewport.DebugDrawEnum.Wireframe;
+        };
+
+        // FEAT-RENDER-01: capture a comparable before/after render measurement -- see
+        // RenderBaselineSampler for why it is manual and stationary. The label records the
+        // build so two log lines can never be mixed up when comparing runs.
+        _topMenu.OnMeasureRenderBaseline = () => {
+            _renderBaselineSampler ??= new RenderBaselineSampler { Name = "RenderBaselineSampler" };
+            if (_renderBaselineSampler.GetParent() == null) AddChild(_renderBaselineSampler);
+            _renderBaselineSampler.StartSample(AppVersion);
         };
 
         _topMenu.OnOpenPreferences = () => {

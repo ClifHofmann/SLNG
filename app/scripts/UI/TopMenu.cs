@@ -11,6 +11,7 @@ namespace SLNG.App.UI
         public Action? OnToggleCameraHud;
         public Action<int>? OnCameraMode; // 0=First, 1=Third, 2=Free
         public Action? OnToggleWireframe;
+        public Action? OnMeasureRenderBaseline;
         public Action? OnOpenPreferences;
         public Action? OnCreateLandmark;
 
@@ -97,8 +98,10 @@ namespace SLNG.App.UI
             var devMenu = new PopupMenu();
             devMenu.Name = L10n.Tr("ui.menu.developer");
             devMenu.AddItem(L10n.Tr("ui.menu.toggle_wireframe"), 0);
+            devMenu.AddItem(L10n.Tr("ui.menu.measure_render_baseline"), 1);
             devMenu.IdPressed += (id) => {
                 if (id == 0) OnToggleWireframe?.Invoke();
+                else if (id == 1) OnMeasureRenderBaseline?.Invoke();
             };
             menuBar.AddChild(devMenu);
         }

@@ -22,7 +22,8 @@
       "world": "Welt",
       "create_landmark": "Landmarke erstellen...",
       "developer": "Entwickler",
-      "toggle_wireframe": "Drahtmodell umschalten"
+      "toggle_wireframe": "Drahtmodell umschalten",
+      "measure_render_baseline": "Render-Baseline messen (10s)"
     },
     "preferences": {
       "title": "EINSTELLUNGEN",

@@ -66,6 +66,36 @@ specifically so each step is independently verifiable. **Do not collapse phases.
   `Callable.From` / deferred pattern. This task changes *what* material is built, not
   *where*.
 
+## Pre-migration performance baseline
+
+Captured 2026-08-01 on `v0.3.71-alpha`, i.e. the last build before any shader work, via
+**Developer → Measure Render Baseline (10s)** (`app/scripts/RenderBaselineSampler.cs`).
+The after-measurement must use the same menu action, the same build machine, the same
+place and the same camera transform — a comparison is meaningless otherwise.
+
+```
+frames=835 medianMs=11.46 p95Ms=14.81 worstMs=91.45
+drawCalls=5867 primitives=32262752 objects=6698 videoMemMB=2573.6
+```
+
+Scene: OSGrid, The Dangazi Forest — the foreground-pillar view also used as the Phase 2
+rotation reference. (Record the exact position readout alongside this before re-measuring.)
+
+Notes on reading these:
+- The sampler disables V-Sync for its window on purpose. An earlier baseline taken with
+  V-Sync on reported `medianMs=31.25` — exactly two refresh periods on this ~64 Hz display.
+  Frame times snap to whole refresh intervals in that mode, so a change of ±40% can report
+  an identical figure. Any measurement showing a suspiciously round median is invalid.
+- Judge Phase 1 on **median and p95**, not on `worstMs`: the 91 ms outlier here is a
+  one-off hitch (asset upload or GC), and a single sample of it says nothing about the
+  shader swap either way.
+- `drawCalls` was byte-identical across two independent runs, so it is the most sensitive
+  regression signal available here: material-batch fragmentation would show up there long
+  before it moved a noisy timing figure.
+- `videoMemMB=2573` against the `GpuCache`'s nominal 256 MB budget is a pre-existing
+  finding, unrelated to this task and not caused by it. Recorded so a later reading of the
+  same number is not mistaken for a regression introduced by the shader family.
+
 ## Acceptance Criteria
 
 ### Phase 1 — Swap `ObjectRenderer` to the shader family, visually identical

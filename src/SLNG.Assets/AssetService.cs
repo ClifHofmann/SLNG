@@ -33,6 +33,32 @@ public class AssetService
     // dictionary needs a real single-execution guarantee under a concurrent first-touch race.
     private readonly ConcurrentDictionary<Guid, Lazy<Task<TextureData?>>> _inflightTextures = new();
     private static readonly object _coreJ2kLogLock = new();
+
+    /// <summary>Routes CoreJ2K's own diagnostics away from the console. Its decoder chatters
+    /// "Codestream truncated in tile N" (plus LOG/INFO noise) on every partially-received
+    /// asset, which on a busy region drowns the log -- one session had 6752 of 6786 lines from
+    /// this single message. Redirecting <see cref="Console"/> around the decode call, which the
+    /// CoreJ2K call site below already does, does NOT catch it: CoreJ2K writes through its own
+    /// FacilityManager logger, not Console. Truncated codestreams are already handled properly
+    /// by the caller (flagged degraded, retried, and refused outright for sculpt maps), so the
+    /// message carries no information the pipeline isn't acting on. ERROR is still forwarded,
+    /// since that indicates something the retry logic may not cover.</summary>
+    private sealed class QuietJ2kLogger : CoreJ2K.j2k.util.IMsgLogger
+    {
+        public void printmsg(int severity, string msg)
+        {
+            if (severity == CoreJ2K.j2k.util.MsgLogger_Fields.ERROR)
+                Console.Error.WriteLine($"[CoreJ2K] {msg}");
+        }
+
+        public void println(string str, int flind, int ind) { }
+        public void flush() { }
+    }
+
+    static AssetService()
+    {
+        CoreJ2K.j2k.util.FacilityManager.DefaultMsgLogger = new QuietJ2kLogger();
+    }
     private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _inflightMaterials = new();
     private readonly ConcurrentDictionary<Guid, Task<AnimationData?>> _inflightAnimations = new();
     private readonly ConcurrentDictionary<(PrimShape Shape, MeshDetailLevel Lod), Task<MeshData?>> _inflightPrimMeshes = new();

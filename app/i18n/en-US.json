@@ -22,7 +22,8 @@
       "world": "World",
       "create_landmark": "Create Landmark...",
       "developer": "Developer",
-      "toggle_wireframe": "Toggle Wireframe"
+      "toggle_wireframe": "Toggle Wireframe",
+      "measure_render_baseline": "Measure Render Baseline (10s)"
     },
     "preferences": {
       "title": "PREFERENCES",
