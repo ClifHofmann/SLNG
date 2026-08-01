@@ -89,6 +89,16 @@ namespace SLNG.App
                                     var entity = _world.GetEntity(guid);
                                     if (entity != null)
                                     {
+                                        // Texture-placement diagnostic (FEAT-RENDER-01 Phase 2).
+                                        // Deliberately here, on the RAW hit, and before both the
+                                        // root-walk below and the left-click touch/sit branch that
+                                        // returns early. Hanging it off selection instead was
+                                        // useless twice over: a left-click never selects at all,
+                                        // and with Edit Linked Parts off the selection resolves to
+                                        // the linkset ROOT, so it would have reported some other
+                                        // prim's faces than the one actually clicked.
+                                        ObjectRenderer.LogFaceTextureParams(entity);
+
                                         // Edit Linked Parts OFF (default): resolve up to the
                                         // linkset's root, matching pre-existing behavior. ON:
                                         // leave the specifically-clicked part as-is (FEAT-UI-06).

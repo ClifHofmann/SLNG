@@ -95,7 +95,7 @@ public partial class ObjectRenderer : Node3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-08-01-uv-transform-return-value";
+    private const string BuildMarker = "2026-08-01-faceparams-on-raw-hit";
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
@@ -274,8 +274,13 @@ public partial class ObjectRenderer : Node3D
     /// a mirror (negative repeat), from a plain offset. Select the object here, open the same
     /// object's Texture tab in Firestorm, and the two number sets either agree or they don't —
     /// which turns a visual impression into a decidable comparison. Firestorm shows rotation in
-    /// DEGREES, so it is printed both ways.</summary>
-    private void DumpFaceTextureParams(Entity entity)
+    /// DEGREES, so it is printed both ways.
+    ///
+    /// Note the Firestorm half of that comparison is unavailable for no-modify content, which is
+    /// most of what a real grid contains. These numbers are still authoritative on their own
+    /// though: the sim sends the full TextureEntry regardless of permissions, so this IS what SL
+    /// told us to draw — the open question is only whether we draw it the viewer's way.</summary>
+    public static void LogFaceTextureParams(Entity entity)
     {
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim == null) return;
@@ -304,8 +309,6 @@ public partial class ObjectRenderer : Node3D
 
         var entity = _world.GetEntity(id);
         if (entity == null) return;
-
-        if (isSelected) DumpFaceTextureParams(entity);
 
         // Edit Linked Parts ON (FEAT-UI-06): highlight only the specific part that was actually
         // selected -- grouping by root here would glow the WHOLE linkset regardless of which
