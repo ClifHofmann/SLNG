@@ -62,14 +62,20 @@ vec3 slng_apply_atmospherics(vec3 color, vec3 view_position) {
     return color;
 }
 
-void slng_transform_uv(inout vec2 uv) {
+// Takes and RETURNS the coordinate rather than using an `inout` parameter. The caller passes
+// the UV built-in, and Godot does not treat built-ins as ordinary variables inside user
+// functions -- assigning METALLIC/NORMAL_MAP from one is rejected outright ("Unknown identifier
+// in expression"). Whether an `inout` argument writes back INTO a built-in at the call site is
+// the same question, and it fails silently rather than erroring, which is the worst possible
+// failure mode: the transform would simply never be applied. Returning the value sidesteps it.
+vec2 slng_transform_uv(vec2 uv) {
     if (uv_rotation != 0.0) {
         float s = sin(uv_rotation);
         float c = cos(uv_rotation);
         vec2 centred = uv - vec2(0.5);
         uv = vec2(centred.x * c - centred.y * s, centred.x * s + centred.y * c) + vec2(0.5);
     }
-    uv = uv * uv_scale + uv_offset;
+    return uv * uv_scale + uv_offset;
 }
 
 // Samples everything a face needs and hands it back through out-params. It does NOT assign

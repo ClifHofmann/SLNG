@@ -95,7 +95,7 @@ public partial class ObjectRenderer : Node3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-08-01-faceparams-diagnostic";
+    private const string BuildMarker = "2026-08-01-uv-transform-return-value";
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {

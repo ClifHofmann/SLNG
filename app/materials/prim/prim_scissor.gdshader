@@ -22,7 +22,7 @@ uniform float alpha_scissor_threshold : hint_range(0.0, 1.0) = 0.5;
 varying vec3 v_view_position;
 
 void vertex() {
-    slng_transform_uv(UV);
+    UV = slng_transform_uv(UV);
     v_view_position = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
