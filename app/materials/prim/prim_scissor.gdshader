@@ -6,8 +6,12 @@
 // (avatar content uses alpha hashing instead; see AvatarRenderer).
 //
 // alpha_to_coverage mirrors the AlphaAntiAliasing.AlphaToCoverage the StandardMaterial3D path
-// set on exactly these faces. It is a no-op while 3D MSAA is off project-wide (it is), which is
-// also why it can be baked into the variant instead of being another compile-time axis.
+// set on exactly these faces, and it is NOT decorative: project.godot has
+// anti_aliasing/quality/msaa_3d=2 (4x), so this is what keeps cutout edges -- foliage, fences --
+// from turning into hard stair-steps. Dropping it would be a visible regression, not a no-op.
+// (Older comments in ObjectRenderer claimed MSAA was off project-wide; it isn't.)
+// It can be baked into this variant rather than being another compile-time axis because
+// ObjectRenderer sets it on every scissor face and never on any other.
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx, alpha_to_coverage;
 

@@ -104,19 +104,27 @@ Notes on reading these:
   finding, unrelated to this task and not caused by it. Recorded so a later reading of the
   same number is not mistaken for a regression introduced by the shader family.
 
-## Phase 1 implementation notes (hand-off)
+## Phase 1 implementation notes
 
-Shaders exist and compile (`app/materials/prim/`); **nothing uses them yet** — `ObjectRenderer`
-still builds `StandardMaterial3D`, so rendering is unchanged so far. What remains is the wiring
-in `ObjectRenderer.BuildFaceMaterialAsync` / `ApplyAlphaCutout`.
+**Status: implemented, awaiting the live visual + performance comparison.** `ObjectRenderer`
+now builds `ShaderMaterial`s from the family; `PrimShaderFamily` (`app/scripts/`) holds the three
+`Shader` resources and the cached uniform `StringName`s.
 
-**Structural gotcha, decide this first.** Today the material's transparency is *mutated after
-creation*: `ApplyAlphaCutout` runs in a deferred callback once the texture has loaded and flips
-`Transparency`. With `ShaderMaterial` the equivalent of "change transparency mode" is
-**swapping `material.Shader` to another variant**, since `render_mode` is compile-time. That is
-supported and cheap, but it means the variant decision happens in two places (creation, and again
-on texture arrival) and both must agree. Keep `ApplyAlphaCutout`'s existing logic and have it
-assign `Shader` instead of `Transparency`.
+**Structural gotcha, resolved as follows.** The material's transparency used to be *mutated after
+creation*: `ApplyAlphaCutout` runs in a deferred callback once the texture has loaded and flipped
+`Transparency`. With `ShaderMaterial` the equivalent is **swapping `material.Shader`**, since
+`render_mode` is compile-time. So the variant decision lives in two places (creation, and again on
+texture arrival) and they must agree. `ApplyAlphaCutout` now takes `tintIsTranslucent` as a
+parameter instead of reading the old `Transparency != Alpha` back off the material — the caller
+already knows the fact, and re-deriving it from "which shader is assigned" would be an indirect
+restatement that can silently drift.
+
+**Shader-parameter survival across a swap was verified, not assumed.** A throwaway headless probe
+set `albedo_color` / `uv_scale` / `albedo_texture` / `has_albedo_texture`, then reassigned
+`material.shader` twice; all values survived. This was worth checking because the failure mode is
+silent: every alpha-tested face would render untextured. Note that
+`RenderingServer.material_get_param` returns `<null>` under `--headless` (dummy renderer), so only
+the `ShaderMaterial` side of that probe is informative.
 
 Property mapping — every one of these must survive, they are the parity checklist:
 
@@ -138,15 +146,28 @@ Property mapping — every one of these must survive, they are the parity checkl
 | `EmissionTexture` | `emission_texture` + `has_emission_texture` |
 
 Notes:
-- The async PBR texture callbacks currently assign `material.XxxTexture` directly. They become
-  `SetShaderParameter("xxx_texture", tex)` **plus** the matching `has_xxx_texture` flag — forgetting
-  the flag renders the texture invisible rather than erroring, so it is the likely silent bug here.
-- `AlphaAntialiasingMode = AlphaToCoverage` has no direct uniform. It is a no-op today anyway
-  (MSAA 3D is enabled in `project.godot`, so re-check whether it now matters before dropping it).
+- The async PBR texture callbacks assign `SetShaderParameter("xxx_texture", tex)` **plus** the
+  matching `has_xxx_texture` flag — forgetting the flag renders the texture invisible rather than
+  erroring, so it is the likely silent bug in any future addition here.
+- `AlphaAntialiasingMode = AlphaToCoverage` became `alpha_to_coverage` in
+  `prim_scissor.gdshader`'s `render_mode`. It is **not** a no-op: `project.godot` sets
+  `msaa_3d=2` (4x MSAA), so it is what keeps cutout foliage/fence edges smooth. An older comment
+  in `ObjectRenderer` asserted MSAA 3D was off project-wide; that was simply wrong.
 - `_highlightMaterial` (selection overlay) stays a `StandardMaterial3D`; it is a `MaterialOverlay`,
   not a face material, and is out of scope.
-- `uv_rotation` must stay `0.0` in Phase 1. It is Phase 2's payload and wiring it early makes
+- `uv_rotation` stays `0.0` in Phase 1. It is Phase 2's payload and wiring it early makes
   "visually identical" unverifiable.
+
+**One deliberate deviation from "identical", and the reasoning for allowing it.** `OrmTexture`
+was being set on a `StandardMaterial3D`, which *never samples it* — Godot only reads
+`texture_orm` for an `ORMMaterial3D` — so glTF metallicRoughness maps were silently discarded on
+every world prim. The shader family honours the map, so those faces now get their authored
+roughness/metallic. Reproducing the Godot quirk deliberately in new code would have been worse
+than a documented one-line difference, but it does make "the scene looks identical" ambiguous, so
+`ObjectRenderer` logs once per ORM texture id at **Info** level (not `Debug` — `Logger`'s default
+level is `Info`, so a `Debug` line would never print and the note would be worthless exactly when
+it is needed). If the comparison shows a difference, that log says whether an ORM face was even
+involved.
 
 **Verify shaders by compiling them, not by reading them.** A throwaway `SceneTree` script run via
 `godot --headless --path app --script <file>` that `load()`s each `.gdshader` reports real compile
@@ -157,7 +178,7 @@ assigned from a user function — a mistake that reads as perfectly fine GLSL.
 
 ### Phase 1 — Swap `ObjectRenderer` to the shader family, visually identical
 
-- [ ] `ObjectRenderer` builds `ShaderMaterial`s from the new family instead of
+- [x] `ObjectRenderer` builds `ShaderMaterial`s from the new family instead of
       `StandardMaterial3D`; no `StandardMaterial3D` remains in its face path.
 - [ ] **The scene looks identical to today.** Any visible difference is by definition a
       regression. Verified by side-by-side comparison at the same camera transform on the

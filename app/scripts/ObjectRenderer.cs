@@ -975,7 +975,9 @@ public partial class ObjectRenderer : Node3D
             else
             {
                 // Binary alpha (fences, foliage). The alpha-to-coverage that used to be set
-                // here is baked into prim_scissor.gdshader's render_mode.
+                // here is baked into prim_scissor.gdshader's render_mode -- and it does real
+                // work: project.godot runs 4x MSAA (msaa_3d=2), despite an older comment here
+                // claiming 3D MSAA was off.
                 material.Shader = PrimShaderFamily.Scissor;
                 material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, 0.5f);
             }
