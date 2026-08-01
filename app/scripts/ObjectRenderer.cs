@@ -98,7 +98,7 @@ public partial class ObjectRenderer : Node3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-08-02-rotsite-scan";
+    private const string BuildMarker = "2026-08-02-rotsite-sl-coords";
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
@@ -682,9 +682,13 @@ public partial class ObjectRenderer : Node3D
             foreach (var f in prim.Faces) maxRot = Mathf.Max(maxRot, Mathf.Abs(f.Rotation));
             if (maxRot > 0.01f)
             {
-                var p = state.MeshInstance.GlobalPosition;
-                Logger.Info($"[RotSite] object {_world.GetEntity(state.EntityId)?.LocalId} " +
-                            $"at ({p.X:0.#},{p.Y:0.#},{p.Z:0.#}) rotation up to " +
+                // SL region-local position, NOT the Godot global one: the latter carries the
+                // region's world offset, so it reads as e.g. (523, 41, -879) and matches nothing
+                // you can type into a viewer's location bar or compare against Firestorm.
+                var ent = _world.GetEntity(state.EntityId);
+                var slPos = ent?.GetComponent<TransformComponent>()?.Position;
+                string where = slPos is { } sp ? $"<{sp.X:0.#}, {sp.Y:0.#}, {sp.Z:0.#}>" : "?";
+                Logger.Info($"[RotSite] object {ent?.LocalId} at {where} rotation up to " +
                             $"{Mathf.RadToDeg(maxRot):0.#}° — usable as a Phase 2 test target");
             }
         }
