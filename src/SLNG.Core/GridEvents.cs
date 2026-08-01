@@ -119,7 +119,12 @@ public record ObjectUpdateEvent(
 /// at full real-time speed on a dilated sim overshoots what the sim actually simulated, so the next
 /// (correct, but now further away) packet reads as an extra correction pop on top of whatever
 /// packet-rate judder already exists.</param>
-public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent, float ScaleZ = 0f, Vector3 Velocity = default, float TimeDilation = 1f) : IWorldEvent;
+/// <param name="SittingOnLocalId">MVP2-1: the seat prim's scene-local id if this avatar is sitting
+/// on an object, 0 if standing/ground-sitting. Position/Rotation above are already resolved to
+/// world space by GridSession (mirroring LibreMetaverse's own AgentManager.SimPosition/SimRotation
+/// walk of the parent chain) — nothing downstream needs to special-case a seated avatar's
+/// transform, only gate movement/ground-clamp on this flag.</param>
+public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent, float ScaleZ = 0f, Vector3 Velocity = default, float TimeDilation = 1f, uint SittingOnLocalId = 0) : IWorldEvent;
 
 /// <summary>Represents the removal of an object from the simulator's interest list.</summary>
 public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent;

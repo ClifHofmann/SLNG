@@ -55,6 +55,14 @@ public class AvatarComponent : IComponent
     /// its own <c>computeBodySize()</c> output. Not used in any rendering/position math yet.</summary>
     public float ScaleZ { get; set; }
 
+    /// <summary>MVP2-1: the seat prim's scene-local id this avatar is sitting on, 0 if standing
+    /// (ground-sitting also reads 0 here — OpenSim tracks ground-sit separately from ParentID and
+    /// never reports it back on the wire, so it isn't observable client-side; see GridSession's
+    /// RequestSit/SitOnGround doc comments). Position/Rotation on this entity's TransformComponent
+    /// are already resolved to world space regardless of this flag — it exists purely to gate
+    /// movement/ground-clamp (AvatarController) and to drive a "Stand" affordance in the UI.</summary>
+    public uint SittingOnLocalId { get; set; }
+
     public AvatarComponent(Guid agentId, string firstName, string lastName, bool isLocalAgent)
     {
         AgentId = agentId;

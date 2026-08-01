@@ -603,6 +603,95 @@ public class WorldSimulationTests
     /// AvatarController's own write (direct field set, exactly what it does) and confirms a
     /// network echo of a stale rotation afterward neither snaps nor drags Rotation away from it,
     /// for both ApplyAvatarUpdate alone and after ExtrapolateMovement frames.</summary>
+    /// <summary>MVP2-1: AvatarComponent.SittingOnLocalId must reflect the seat prim's local id
+    /// from the wire event, and clear back to 0 once the sim reports standing again (e.g. after
+    /// GridSession.Stand()) -- this is the sole flag AvatarController/UI use to know the local
+    /// agent is seated.</summary>
+    [Fact]
+    public void AvatarUpdateEvent_PopulatesAndClearsSittingOnLocalId()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        Assert.Equal(0u, entity!.GetComponent<AvatarComponent>()!.SittingOnLocalId);
+
+        // Sits on seat prim local id 7.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(0, 0, 0.5f), Quaternion.Identity, "Local", "Agent", true, SittingOnLocalId: 7));
+        simulation.Pump();
+        Assert.Equal(7u, entity.GetComponent<AvatarComponent>()!.SittingOnLocalId);
+
+        // Stands back up.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(1, 2, 3), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+        Assert.Equal(0u, entity.GetComponent<AvatarComponent>()!.SittingOnLocalId);
+    }
+
+    /// <summary>MVP2-1: while seated, AvatarController stops writing this entity's Z (its
+    /// ground-clamp is suspended -- see AvatarController's own isSitting gate), so a seated local
+    /// agent must take its FULL network Position -- including Z -- exactly like a remote avatar,
+    /// unlike the standing local-agent case (see AvatarUpdateEvent_LocalAgent_IgnoresNetworkZ_
+    /// KeepsLocalGroundClampZ above, which this directly contrasts with).</summary>
+    [Fact]
+    public void AvatarUpdateEvent_SeatedLocalAgent_TakesNetworkZ()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(10, 10, 20), Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        var transform = entity!.GetComponent<TransformComponent>()!;
+
+        // Ground-clamp had independently pushed local Z to 25 before sitting.
+        transform.Position = new Vector3(transform.Position.X, transform.Position.Y, 25f);
+
+        // Now seated on prim 7 -- the seat's resolved world Z (e.g. an elevated chair) must win,
+        // not the stale ground-clamp value.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, new Vector3(10.5f, 10.5f, 30f), Quaternion.Identity, "Local", "Agent", true, SittingOnLocalId: 7));
+        simulation.Pump();
+
+        Assert.Equal(30f, transform.TargetPosition.Z);
+    }
+
+    /// <summary>MVP2-1: while seated, AvatarController also stops writing this entity's Rotation
+    /// (the seat/script owns facing, not the player's camera yaw -- see AvatarController's own
+    /// isSitting gate), so a seated local agent must smooth toward the network's Rotation exactly
+    /// like a remote avatar, unlike the standing local-agent case (see
+    /// AvatarUpdateEvent_LocalAgent_RotationIsNeverNetworkDriven above).</summary>
+    [Fact]
+    public void AvatarUpdateEvent_SeatedLocalAgent_RotationIsNetworkDriven()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        var entity = world.GetEntity(123ul, 42);
+        var transform = entity!.GetComponent<TransformComponent>()!;
+        Assert.Equal(Quaternion.Identity, transform.Rotation);
+
+        var seatRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f);
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, seatRotation, "Local", "Agent", true, SittingOnLocalId: 7));
+        simulation.Pump();
+
+        // TargetRotation is now network-driven (unlike the un-seated local-agent path); smoothing
+        // toward it converges the same way a remote avatar's does.
+        for (int i = 0; i < 20; i++) simulation.ExtrapolateMovement(0.05f);
+        Assert.True(Quaternion.Dot(transform.Rotation, seatRotation) > 0.999f);
+    }
+
     [Fact]
     public void AvatarUpdateEvent_LocalAgent_RotationIsNeverNetworkDriven()
     {

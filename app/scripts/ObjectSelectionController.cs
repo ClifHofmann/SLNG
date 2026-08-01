@@ -115,14 +115,27 @@ namespace SLNG.App
                                                 _lastClicked = null;
                                             }
 
-                                            // MVP2-1: a plain left-click is an SL "touch" (grab/de-grab
-                                            // pair), not a selection -- it's what fires touch_start/
-                                            // touch_end on the object's script (e.g. a vendor menu that
-                                            // calls llDialog, M5-4). Right-click still owns selection/
-                                            // Edit via the context menu below; this was previously a
-                                            // dead end that only deselected and never touched at all.
-                                            GD.Print($"[Touch] touched entity {guid:N} (LocalId {localId})");
-                                            _ = _session.ClickObjectAsync(localId);
+                                            // MVP2-1: a plain left-click executes the object's ClickAction,
+                                            // same as the real viewer -- SL's ClickAction.Sit (byte 1) means
+                                            // sit down instead of touch, so a sit-target prim (chair, vehicle
+                                            // seat) doesn't fire a touch script it may not even have.
+                                            // Everything else still defaults to "touch" (grab/de-grab pair),
+                                            // which is what fires touch_start/touch_end on the object's
+                                            // script (e.g. a vendor menu that calls llDialog, M5-4). Right-
+                                            // click still owns selection/Edit via the context menu below;
+                                            // this was previously a dead end that only deselected and never
+                                            // touched at all.
+                                            var prim = entity.GetComponent<PrimitiveComponent>();
+                                            if (prim != null && prim.ClickAction == 1)
+                                            {
+                                                GD.Print($"[Sit] sitting on entity {guid:N} (LocalId {localId})");
+                                                _session.RequestSit(localId);
+                                            }
+                                            else
+                                            {
+                                                GD.Print($"[Touch] touched entity {guid:N} (LocalId {localId})");
+                                                _ = _session.ClickObjectAsync(localId);
+                                            }
                                             return;
                                         }
 

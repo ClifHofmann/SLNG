@@ -246,18 +246,65 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     private void OnAvatarUpdate(object? sender, AvatarUpdateEventArgs e)
     {
         bool isLocalAgent = e.Avatar.ID == _client.Self.AgentID;
+        ResolveSeatedTransform(e.Simulator, e.Avatar.Position, e.Avatar.Rotation, e.Avatar.ParentID,
+            out var worldPos, out var worldRot);
+
         AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
             e.Simulator.Handle,
             e.Avatar.LocalID,
             e.Avatar.ID.Guid,
-            new System.Numerics.Vector3(e.Avatar.Position.X, e.Avatar.Position.Y, e.Avatar.Position.Z),
-            new System.Numerics.Quaternion(e.Avatar.Rotation.X, e.Avatar.Rotation.Y, e.Avatar.Rotation.Z, e.Avatar.Rotation.W),
+            new System.Numerics.Vector3(worldPos.X, worldPos.Y, worldPos.Z),
+            new System.Numerics.Quaternion(worldRot.X, worldRot.Y, worldRot.Z, worldRot.W),
             e.Avatar.FirstName,
             e.Avatar.LastName,
             isLocalAgent,
             e.Avatar.Scale.Z,
             new System.Numerics.Vector3(e.Avatar.Velocity.X, e.Avatar.Velocity.Y, e.Avatar.Velocity.Z),
-            e.TimeDilation / 65535.0f));
+            e.TimeDilation / 65535.0f,
+            e.Avatar.ParentID));
+    }
+
+    /// <summary>MVP2-1: once an avatar sits, its wire Position/Rotation become relative to the
+    /// seat prim (0 if standing) -- mirrors LibreMetaverse's own AgentManager.SimPosition/
+    /// SimRotation walk (AgentManager.cs, verified against the vendored source), generalized here
+    /// to ANY avatar (not just the local agent, which is all LMV itself resolves) since GridSession
+    /// is the one seam where every avatar's transform gets converted to world space regardless of
+    /// who it belongs to -- nothing downstream (WorldSimulation, the renderer, the camera) needs to
+    /// know or special-case a seated avatar's transform at all. A no-op (returns the input
+    /// unchanged) when parentLocalId is 0.</summary>
+    private static void ResolveSeatedTransform(
+        LibreMetaverse.Simulator sim, LibreMetaverse.Vector3 relPos, LibreMetaverse.Quaternion relRot,
+        uint parentLocalId, out LibreMetaverse.Vector3 worldPos, out LibreMetaverse.Quaternion worldRot)
+    {
+        worldPos = relPos;
+        worldRot = relRot;
+        if (parentLocalId == 0) return;
+
+        if (!sim.ObjectsPrimitives.TryGetValue(parentLocalId, out var seat) || seat == null) return;
+
+        worldPos = seat.Position + relPos * seat.Rotation;
+        worldRot = relRot * seat.Rotation;
+
+        // Walk up a linked-seat's own parent chain (e.g. sitting on a child prim of a vehicle) --
+        // same loop LMV's SimPosition runs, position-only (LMV's own algorithm does not further
+        // rotate by each ancestor, so this deliberately doesn't either).
+        var p = seat;
+        while (p != null && p.ParentID != 0)
+        {
+            if (sim.ObjectsAvatars.TryGetValue(p.ParentID, out var av) && av != null)
+            {
+                p = av;
+                worldPos += p.Position;
+            }
+            else if (sim.ObjectsPrimitives.TryGetValue(p.ParentID, out p) && p != null)
+            {
+                worldPos += p.Position;
+            }
+            else
+            {
+                break;
+            }
+        }
     }
 
     private void OnObjectPropertiesFamily(object? sender, ObjectPropertiesFamilyEventArgs e)
@@ -593,18 +640,26 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // until the next (correct) packet snapped it forward, reading as juddery/stuttering
             // motion. e.Update is race-free: it's the packet's own decoded struct, not a shared
             // mutable cache.
+            //
+            // e.Prim.ParentID (MVP2-1 seat lookup) does NOT race that write: ImprovedTerseObjectUpdate
+            // never carries ParentID at all (only a full ObjectUpdate changes it), so unlike
+            // Position/Rotation/Velocity above, the cached e.Prim's ParentID is always current here.
+            ResolveSeatedTransform(e.Simulator, e.Update.Position, e.Update.Rotation, e.Prim.ParentID,
+                out var worldPos, out var worldRot);
+
             AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
                 e.Simulator.Handle,
                 e.Prim.LocalID,
                 agentId,
-                new System.Numerics.Vector3(e.Update.Position.X, e.Update.Position.Y, e.Update.Position.Z),
-                new System.Numerics.Quaternion(e.Update.Rotation.X, e.Update.Rotation.Y, e.Update.Rotation.Z, e.Update.Rotation.W),
+                new System.Numerics.Vector3(worldPos.X, worldPos.Y, worldPos.Z),
+                new System.Numerics.Quaternion(worldRot.X, worldRot.Y, worldRot.Z, worldRot.W),
                 firstName,
                 lastName,
                 isLocalAgent,
                 e.Prim.Scale.Z,
                 new System.Numerics.Vector3(e.Update.Velocity.X, e.Update.Velocity.Y, e.Update.Velocity.Z),
-                e.TimeDilation / 65535.0f));
+                e.TimeDilation / 65535.0f,
+                e.Prim.ParentID));
             return;
         }
 
@@ -1020,7 +1075,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             new System.Numerics.Quaternion(rot.X, rot.Y, rot.Z, rot.W),
             _client.Self.FirstName,
             _client.Self.LastName,
-            IsLocalAgent: true));
+            IsLocalAgent: true,
+            SittingOnLocalId: _client.Self.SittingOn));
     }
 
     private async Task<ulong?> ResolveRegionHandleAsync(UUID regionId, CancellationToken ct)
@@ -1090,6 +1146,38 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     private static LibreMetaverse.Vector3 ToOmv(System.Numerics.Vector3 v) => new(v.X, v.Y, v.Z);
+
+    /// <summary>MVP2-1: requests to sit on the object identified by its scene-local id. Sends
+    /// the same AgentRequestSit + AgentSit pair the real viewer sends (LMV's own examples send
+    /// both back-to-back with no wait) -- against OpenSim the second call is server-side
+    /// redundant (SendSitResponse already seats the avatar), but real SL requires the client's
+    /// own AgentSit to actually complete the sit. Fire-and-forget like SelectObject: LMV's
+    /// RequestSit/Sit are synchronous, and any failure (target out of SitActiveRange, wrong
+    /// distance -- see ScenePresence.SendSitResponse) is silent on the wire, so there is nothing
+    /// meaningful to await or return here. A no-op if the local id doesn't resolve to a
+    /// currently-known primitive.</summary>
+    public void RequestSit(uint localId)
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null || !_client.Network.Connected) return;
+        if (!sim.ObjectsPrimitives.TryGetValue(localId, out var prim) || prim == null) return;
+
+        _client.Self.RequestSit(prim.ID, LibreMetaverse.Vector3.Zero);
+        _client.Self.Sit();
+    }
+
+    /// <summary>MVP2-1: sits on the ground at the avatar's current position (no target object) --
+    /// the SL "Sit on Ground" action. Sets AGENT_CONTROL_SIT_ON_GROUND, which — unlike a prim
+    /// sit — the sim never reports back as a ParentID change (OpenSim tracks it in a separate
+    /// SitGround field), so <see cref="AvatarUpdateEvent.SittingOnLocalId"/> stays 0 for a ground
+    /// sit; the animation is the only client-visible signal.</summary>
+    public void SitOnGround() => _client.Self.SitOnGround();
+
+    /// <summary>MVP2-1: stands up from a prim sit or a ground sit alike. Returns false (and logs
+    /// a warning inside LibreMetaverse) only if agent updates are disabled entirely, which SLNG
+    /// never does -- included for completeness rather than swallowed, matching LMV's own
+    /// signature.</summary>
+    public bool Stand() => _client.Self.Stand();
 
     /// <summary>Root folder id of the agent's own inventory, or null until login has completed
     /// (LibreMetaverse builds the store — folders only, no items — from the login response's

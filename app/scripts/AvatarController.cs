@@ -20,6 +20,16 @@ public partial class AvatarController : Camera3D
 
     // We store the last sent movement to avoid spamming the network
     private bool _lastFwd, _lastBack, _lastLeft, _lastRight, _lastUp, _lastDown;
+
+    // MVP2-1: throttles GridSession.Stand() re-sends while a movement key is held seated (Stand()
+    // pulses two real AgentUpdate packets, so every frame would spam the network) WITHOUT
+    // permanently latching -- a fixed one-shot-per-sit flag (the original design) meant that if
+    // the very first Stand() attempt didn't actually register server-side for any reason (packet
+    // loss, a transient race), the player could never stand up again for the rest of that sit, no
+    // matter how many more times they pressed a movement key (live-tested: reported exactly this).
+    // Retrying on a short cooldown instead means a held/repeated key keeps trying until it works.
+    private double _timeSinceLastStandRequest = double.MaxValue;
+    private const double StandRequestCooldownSeconds = 1.0;
     private Vector3 _lastCameraRot;
     private float _zoom = 4.0f;
     private Vector3 _panOffset = Vector3.Zero;
@@ -329,6 +339,16 @@ public partial class AvatarController : Camera3D
         var localAgent = _world.GetAllEntities()
             .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
 
+        // MVP2-1: while sitting, the seat (not player input) owns facing/position -- WASD
+        // turning, fly, and the ground-clamp below are all suspended, and transform.Rotation is
+        // no longer written here at all (WorldSimulation.ApplyAvatarUpdate/ExtrapolateMovement
+        // pick up ownership instead, see their own isSeatedLocalAgent gates). The camera still
+        // follows the resolved seat position/zoom/orbit exactly as before -- GridSession already
+        // resolves a seated avatar's wire-relative Position/Rotation to world space, so nothing
+        // else here needs to change to "look at the seat" versus "look at standing avatar."
+        bool isSitting = localAgent?.GetComponent<AvatarComponent>()?.SittingOnLocalId != 0;
+        if (!isSitting) _timeSinceLastStandRequest = double.MaxValue;
+
         if (localAgent != null)
         {
             var transform = localAgent.GetComponent<TransformComponent>();
@@ -343,15 +363,20 @@ public partial class AvatarController : Camera3D
                 bool isDown = (Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
 
                 // Pressing up engages fly automatically (matches the "E = go up" instinct);
-                // Home toggles it off. See _Input.
-                if (isUp && !_flying) _flying = true;
+                // Home toggles it off. See _Input. Suspended while sitting -- see isSitting's
+                // doc comment above.
+                if (isUp && !_flying && !isSitting) _flying = true;
 
-                // In SL/Firestorm, A and D turn the avatar when not strafing
-                if (isLeft) _yaw += 2.5f * (float)delta;
-                if (isRight) _yaw -= 2.5f * (float)delta;
+                // In SL/Firestorm, A and D turn the avatar when not strafing -- not while
+                // sitting, where facing is the seat's, not the player's.
+                if (!isSitting)
+                {
+                    if (isLeft) _yaw += 2.5f * (float)delta;
+                    if (isRight) _yaw -= 2.5f * (float)delta;
+                }
 
                 // Any movement/turn snaps the orbit camera back behind the avatar.
-                if (isFwd || isBack || isLeft || isRight)
+                if (!isSitting && (isFwd || isBack || isLeft || isRight))
                 {
                     _orbitYaw = 0f;
                     _orbitPitch = 0f;
@@ -375,6 +400,13 @@ public partial class AvatarController : Camera3D
                 // S/D still drive movement -- via _session.SetMovement's control flags below, which
                 // the sim actually simulates; this block only used to add a purely cosmetic (and
                 // ultimately incorrect) local head start on top of that.
+
+                // Ground-clamp, fly, and the local body-rotation write below all assume the
+                // player is standing -- while sitting, the seat's own network transform (resolved
+                // by GridSession, applied by WorldSimulation) is the sole authority instead. See
+                // isSitting's doc comment.
+                if (!isSitting)
+                {
 
                 // Vertical movement while flying (E up / C down).
                 if (_flying && (isUp || isDown))
@@ -494,6 +526,8 @@ public partial class AvatarController : Camera3D
                 // rotation slerp for the local agent so this per-frame write is the sole authority.
                 transform.Rotation = ComputeBodyRotation();
 
+                } // !isSitting
+
                 _world.NotifyComponentUpdated(localAgent, transform);
 
                 // Keyboard zoom polling (+ and - keys)
@@ -539,6 +573,20 @@ public partial class AvatarController : Camera3D
 
         _timeSinceLastUpdate += delta;
 
+        // MVP2-1: any movement key stands the seated avatar up, matching the real viewer's
+        // convention. Retries on a cooldown rather than a permanent per-sit latch -- see
+        // _timeSinceLastStandRequest's doc comment for why a one-shot flag left the player unable
+        // to ever stand again if the first attempt didn't take.
+        _timeSinceLastStandRequest += delta;
+        if (isSitting)
+        {
+            if ((fwd || back || left || right || up || down) && _timeSinceLastStandRequest >= StandRequestCooldownSeconds)
+            {
+                _timeSinceLastStandRequest = 0;
+                _session.Stand();
+            }
+        }
+
         // Send AgentUpdate at 10 Hz (every 0.1s)
         if (_timeSinceLastUpdate >= 0.1)
         {
@@ -548,8 +596,13 @@ public partial class AvatarController : Camera3D
             // only goes to the sim in the AgentUpdate. The rendered rotation is NOT set here anymore
             // (that write moved to the per-frame follow block so turning renders smoothly instead of
             // in 10 Hz steps).
-            // We pass false for left/right because A/D are turning now, not strafing.
-            _session.SetMovement(fwd, back, false, false, up, down, ComputeBodyRotation(), _flying);
+            // We pass false for left/right because A/D are turning now, not strafing. While seated,
+            // the walk/fly flags are meaningless (the seat, not agent locomotion, owns position) --
+            // suppress them so a held key doesn't keep telling the sim we're trying to walk.
+            _session.SetMovement(
+                !isSitting && fwd, !isSitting && back, false, false,
+                !isSitting && up, !isSitting && down,
+                ComputeBodyRotation(), !isSitting && _flying);
         }
     }
 

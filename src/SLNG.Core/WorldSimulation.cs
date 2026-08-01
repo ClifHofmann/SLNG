@@ -134,7 +134,15 @@ public sealed class WorldSimulation : IDisposable
 
             transform.TimeSinceUpdate += deltaSeconds;
 
-            bool isLocalAgent = entity.GetComponent<AvatarComponent>()?.IsLocalAgent == true;
+            var avatarComponent = entity.GetComponent<AvatarComponent>();
+            bool isLocalAgent = avatarComponent?.IsLocalAgent == true;
+            // MVP2-1: while seated, AvatarController's ground-clamp/camera-yaw ownership of
+            // Z/Rotation (the two guards below) is suspended -- see AvatarController._Process's
+            // own isSitting gate, which stops writing transform.Rotation/Z entirely while seated.
+            // A seated local agent needs the exact same network-driven smoothing as a remote
+            // avatar instead (e.g. to follow a moving vehicle's seat), so it's excluded from both
+            // "local agent owns this" guards below.
+            bool isSeatedLocalAgent = isLocalAgent && avatarComponent!.SittingOnLocalId != 0;
 
             if (transform.Velocity != Vector3.Zero && transform.TimeSinceUpdate < ExtrapolationMaxSeconds)
             {
@@ -155,7 +163,7 @@ public sealed class WorldSimulation : IDisposable
 
             float posT = 1f - MathF.Exp(-PositionSmoothingRate * deltaSeconds);
             var easedPosition = Vector3.Lerp(transform.Position, transform.TargetPosition, posT);
-            if (isLocalAgent)
+            if (isLocalAgent && !isSeatedLocalAgent)
             {
                 // Local Z is owned entirely by AvatarController's per-frame ground-clamp (see
                 // ApplyAvatarUpdate: TargetPosition.Z is pinned to whatever Position.Z the clamp
@@ -173,7 +181,7 @@ public sealed class WorldSimulation : IDisposable
             // The local agent's Rotation is entirely owned by AvatarController (the player's own
             // camera yaw, written directly EVERY FRAME now) -- see ApplyAvatarUpdate's matching
             // guard on TargetRotation. Slerping it here too would fight those writes every frame.
-            if (!isLocalAgent)
+            if (!isLocalAgent || isSeatedLocalAgent)
             {
                 float rotT = 1f - MathF.Exp(-RotationSmoothingRate * deltaSeconds);
                 transform.Rotation = Quaternion.Slerp(transform.Rotation, transform.TargetRotation, rotT);
@@ -413,6 +421,13 @@ public sealed class WorldSimulation : IDisposable
 
         var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
 
+        // MVP2-1: while seated, AvatarController stops writing this entity's Z/Rotation each
+        // frame (its ground-clamp/camera-yaw ownership is suspended -- see its own isSitting
+        // gate), so the seated local agent needs the network's full Position/Rotation applied
+        // exactly like a remote avatar, not just X/Y with a stale local Z (see the two guards
+        // below, and their ExtrapolateMovement counterparts).
+        bool isSeatedLocalAgent = e.IsLocalAgent && e.SittingOnLocalId != 0;
+
         var transform = entity.GetComponent<TransformComponent>();
         if (transform == null)
         {
@@ -455,7 +470,7 @@ public sealed class WorldSimulation : IDisposable
             // ruckelig" after the race fix, dilation scaling, phase-out tuning, and rotation
             // smoothing had already landed -- none of which touch this). Remote avatars have no
             // local ground-clamp, so they still take Z from the network as before.
-            var targetPosition = e.IsLocalAgent
+            var targetPosition = (e.IsLocalAgent && !isSeatedLocalAgent)
                 ? new Vector3(e.Position.X, e.Position.Y, transform.Position.Z)
                 : e.Position;
 
@@ -479,7 +494,7 @@ public sealed class WorldSimulation : IDisposable
             // repeat -- a sawtooth on every single frame, not just at packet-arrival moments,
             // regardless of turning. Remote avatars have no local camera input, so they keep the
             // full network-driven TargetRotation/slerp path.
-            if (!e.IsLocalAgent)
+            if (!e.IsLocalAgent || isSeatedLocalAgent)
             {
                 transform.TargetRotation = e.Rotation;
             }
@@ -495,6 +510,7 @@ public sealed class WorldSimulation : IDisposable
         {
             avatar = new AvatarComponent(e.AgentId, e.FirstName, e.LastName, e.IsLocalAgent);
             avatar.ScaleZ = e.ScaleZ;
+            avatar.SittingOnLocalId = e.SittingOnLocalId;
             entity.SetComponent(avatar);
         }
         else
@@ -513,6 +529,7 @@ public sealed class WorldSimulation : IDisposable
             if (!string.IsNullOrEmpty(e.LastName)) avatar.LastName = e.LastName;
             avatar.IsLocalAgent = e.IsLocalAgent;
             if (e.ScaleZ > 0f) avatar.ScaleZ = e.ScaleZ;
+            avatar.SittingOnLocalId = e.SittingOnLocalId;
             entity.SetComponent(avatar);
         }
         _world.NotifyComponentUpdated(entity, avatar);

@@ -88,6 +88,16 @@ namespace SLNG.App.UI
         private Label _creatorLabel = null!, _ownerLabel = null!, _groupLabel = null!, _isOwnerLabel = null!;
         private CheckBox _lockedCheck = null!, _physicalCheck = null!, _tempCheck = null!, _phantomCheck = null!;
         private CheckBox _permModifyCheck = null!, _permCopyCheck = null!, _permTransferCheck = null!, _permMoveCheck = null!;
+        private Button _copyAssetUuidBtn = null!;
+
+        // TPV policy compliance (AGENTS.md Non-negotiable #1): recomputed by
+        // UpdatePermissionCheckboxes on every properties update, never just at button-press time
+        // -- true only when the local agent both OWNS this object AND has full permissions
+        // (Modify+Copy+Transfer) on it, mirroring the real viewer's own gate for exposing a raw
+        // asset UUID. OwnerCanModify/OwnerCanCopy/OwnerCanTransfer are the OBJECT OWNER's bits,
+        // not necessarily the local agent's own (see UpdatePermissionCheckboxes' doc comment) --
+        // requiring isOwner here is what makes them the same thing.
+        private bool _canCopyAssetUuid;
 
         private CheckBox _lightCheck = null!;
         private ColorPickerButton _lightColorPicker = null!;
@@ -172,6 +182,13 @@ namespace SLNG.App.UI
             _isOwnerLabel = new Label { Text = "Owner Permissions (unknown whether these are yours):" };
             generalVBox.AddChild(_isOwnerLabel);
             generalVBox.AddChild(permHBox);
+
+            // Only ever enabled for content the local agent owns AND has full permissions on --
+            // see _canCopyAssetUuid's doc comment. Disabled by default until the first real
+            // properties update confirms that.
+            _copyAssetUuidBtn = new Button { Text = "📋 Copy Asset UUID", Disabled = true, CustomMinimumSize = new Vector2(0, 30) };
+            _copyAssetUuidBtn.Pressed += OnCopyAssetUuidPressed;
+            generalVBox.AddChild(_copyAssetUuidBtn);
 
             // Object (Transform) Tab
             var objectTab = new MarginContainer { Name = "Object" };
@@ -881,6 +898,14 @@ namespace SLNG.App.UI
                 && string.Equals(_session.AgentId, ownerId.ToString(), System.StringComparison.OrdinalIgnoreCase);
             _isOwnerLabel.Text = isOwner ? "Owner Permissions (you are the owner):" : "Owner Permissions (NOT yours -- shown for reference only):";
 
+            // See _canCopyAssetUuid's doc comment: only true for full-permission content the
+            // local agent actually owns, never for someone else's restricted content.
+            _canCopyAssetUuid = isOwner && canModify && canCopy && canTransfer;
+            _copyAssetUuidBtn.Disabled = !_canCopyAssetUuid;
+            _copyAssetUuidBtn.TooltipText = _canCopyAssetUuid
+                ? "Copy this object's mesh/sculpt/texture asset UUID to the clipboard."
+                : "Requires full permissions (Modify + Copy + Transfer) on an object you own.";
+
             // Match the real SL viewer's llpanelobject.cpp: Position/Rotation fields are
             // literally disabled without Move permission (canMove == !Locked), not merely sent
             // and left to the server -- OpenSim's own position-update path (ClientChangeObject)
@@ -893,6 +918,38 @@ namespace SLNG.App.UI
             _rotX.Editable = canMove;
             _rotY.Editable = canMove;
             _rotZ.Editable = canMove;
+        }
+
+        /// <summary>Copies this object's underlying content asset UUID (mesh, sculpt map, or
+        /// default-face texture, in that priority order) to the OS clipboard. Re-checks
+        /// _canCopyAssetUuid rather than trusting the button's own Disabled state, since a
+        /// properties update could race the click. TPV policy compliance (AGENTS.md
+        /// Non-negotiable #1): never exposes an asset id for content the local agent doesn't both
+        /// own and hold full permissions on -- see _canCopyAssetUuid's doc comment.</summary>
+        private void OnCopyAssetUuidPressed()
+        {
+            if (!_canCopyAssetUuid || _currentEntity == null) return;
+
+            var prim = _currentEntity.GetComponent<PrimitiveComponent>();
+            if (prim == null) return;
+
+            System.Guid assetId =
+                prim.IsMesh && prim.MeshId != System.Guid.Empty ? prim.MeshId :
+                prim.IsSculpt && prim.SculptId != System.Guid.Empty ? prim.SculptId :
+                prim.TextureId;
+
+            if (assetId == System.Guid.Empty) return;
+
+            DisplayServer.ClipboardSet(assetId.ToString());
+
+            // Brief inline confirmation -- this window has no toast/notification mechanism, so
+            // flash the button's own label instead of adding one just for this.
+            var original = _copyAssetUuidBtn.Text;
+            _copyAssetUuidBtn.Text = "Copied!";
+            GetTree().CreateTimer(1.2).Timeout += () =>
+            {
+                if (IsInstanceValid(_copyAssetUuidBtn)) _copyAssetUuidBtn.Text = original;
+            };
         }
 
         /// <summary>Shows a user/group's display name for <paramref name="id"/>, using the

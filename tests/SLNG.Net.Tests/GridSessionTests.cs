@@ -112,4 +112,36 @@ public class GridSessionTests
 
         Assert.Null(exception);
     }
+
+    // MVP2-1: RequestSit resolves the local id via sim.ObjectsPrimitives before sending anything,
+    // so with no connection (CurrentSim is null) it must early-return rather than throw.
+    [Fact]
+    public void RequestSit_without_connection_does_not_throw()
+    {
+        using var session = new GridSession();
+        var exception = Record.Exception(() => session.RequestSit(localId: 12345));
+
+        Assert.Null(exception);
+    }
+
+    // MVP2-1: SitOnGround/Stand forward straight to AgentManager, which LibreMetaverse's own
+    // NetworkManager.SendPacket already guards against a null CurrentSim (logs a warning instead
+    // of throwing) -- same "no-op gracefully while disconnected" contract as every other send path.
+    [Fact]
+    public void SitOnGround_without_connection_does_not_throw()
+    {
+        using var session = new GridSession();
+        var exception = Record.Exception(() => session.SitOnGround());
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Stand_without_connection_does_not_throw()
+    {
+        using var session = new GridSession();
+        var exception = Record.Exception(() => session.Stand());
+
+        Assert.Null(exception);
+    }
 }

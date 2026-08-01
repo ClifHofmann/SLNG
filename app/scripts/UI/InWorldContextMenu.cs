@@ -11,6 +11,13 @@ namespace SLNG.App.UI
         public Action<Entity, uint>? OnTouchClicked;
         public Action<Entity, uint>? OnDeleteClicked;
         public Action<Entity, uint>? OnInspectClicked;
+        /// <summary>MVP2-1: right-click "Sit" on an object -- distinct from OnTouchClicked's
+        /// grab/de-grab pair.</summary>
+        public Action<Entity, uint>? OnSitClicked;
+
+        /// <summary>MVP2-1: right-click "Sit Here" on bare ground (see ShowGroundMenu) -- the
+        /// world position that was right-clicked, same one OnCreatePrimClicked receives.</summary>
+        public Action<Vector3>? OnSitOnGroundClicked;
 
         /// <summary>Fired for a ground-context "Create" pick: the world position that was
         /// right-clicked (already Godot-space; caller converts via RenderConfig.FromGodot) and
@@ -67,6 +74,7 @@ namespace SLNG.App.UI
             root.AddChild(_objectButtons);
             AddMenuButton(_objectButtons, "✏️ Edit", () => OnEditClicked?.Invoke(_currentEntity!, _currentLocalId));
             AddMenuButton(_objectButtons, "✋ Touch", () => OnTouchClicked?.Invoke(_currentEntity!, _currentLocalId));
+            AddMenuButton(_objectButtons, "🪑 Sit", () => OnSitClicked?.Invoke(_currentEntity!, _currentLocalId));
             AddMenuButton(_objectButtons, "🔍 Inspect", () => OnInspectClicked?.Invoke(_currentEntity!, _currentLocalId));
             AddMenuButton(_objectButtons, "🗑️ Delete", () => OnDeleteClicked?.Invoke(_currentEntity!, _currentLocalId));
             _objectButtons.AddChild(new HSeparator());
@@ -87,6 +95,11 @@ namespace SLNG.App.UI
             // the Build/Inspector window like any other object.
             _createRoot = new VBoxContainer { Visible = false };
             root.AddChild(_createRoot);
+
+            // MVP2-1: ground sit lives above "Create" in the same ground-menu block, not inside
+            // the collapsible shape list -- it's a single immediate action, not a sub-picker.
+            AddMenuButton(_createRoot, "🪑 Sit Here", () => OnSitOnGroundClicked?.Invoke(_pendingGroundPosition));
+            _createRoot.AddChild(new HSeparator());
 
             _createHeader = new Button { Text = CreateHeaderCollapsed, Flat = true, Alignment = HorizontalAlignment.Left };
             _createRoot.AddChild(_createHeader);
