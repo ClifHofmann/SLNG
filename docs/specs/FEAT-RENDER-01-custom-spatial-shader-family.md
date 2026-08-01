@@ -189,11 +189,19 @@ Same site, same protocol as the baseline (Dangazi Forest, logged in, stationary)
 | drawCalls | 5867 | 5841 |
 | objects | 6698 | 6724 |
 
-Not worse — the acceptance criterion — and in fact slightly faster. **Do not bank the ~7%
-median / ~16% p95 as a win of this change**: `objects` differs between the two runs (6698 vs
-6724), so the scenes were not byte-identical and part of that delta is scene state, not shading.
-The honest reading is "no regression, plausibly a small gain from a 3-variant family replacing
-StandardMaterial3D's much larger generated variant set". Phase 2 is where a real gain is expected.
+Not worse — the acceptance criterion — and in fact slightly faster.
+
+A **repeat run** of `v0.3.72` landed on `medianMs=10.61` again to the decimal, with identical
+`drawCalls=5841 / objects=6724`, and `p95Ms` at 12.96 (vs 12.50). So the median is highly
+repeatable and p95 carries roughly ±0.5 ms of noise. That makes the ~0.85 ms median gain over the
+baseline more credible than first assumed — but it is still not clean evidence, because the
+baseline run had a different object count (6698 vs 6724) and so was not the same scene. Treat it
+as "no regression, probably a small real gain"; Phase 2 is where a substantial gain is expected.
+
+**Method note for later phases:** median is the number to compare. It reproduced exactly across
+runs, while p95 moved and `worstMs` (91 / 78 / 83) is pure outlier noise. Always confirm
+`drawCalls` and `objects` match between the runs being compared — that is what tells you whether
+you measured the same scene at all.
 
 Log evidence from the same session (`client-output.log`):
 - `[ObjectRenderer] BUILD MARKER: 2026-08-01-prim-shader-family-phase1` — proves the shader path
