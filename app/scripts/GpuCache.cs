@@ -178,7 +178,7 @@ public class GpuCache
     /// caller's request actually performs the build for a given id -- if two callers ever request
     /// the same id with different values (not expected: different renderers use disjoint texture
     /// categories in practice), the first one to start the build wins for that id.
-    /// <para>FEAT-PERF-02 Phase 2: <paramref name="desiredDiscard"/> drives a LOCAL post-decode
+    /// <para>FEAT-PERF-02 Phase 2: <paramref name="screenPixelArea"/> drives a LOCAL post-decode
     /// downsample, not the network fetch -- AssetService is always asked for the full asset
     /// (discard 0) regardless of this value. Network-side discard (asking the simulator for
     /// fewer bytes via HTTP Range) was tried and disabled: Magick.NET does not tolerate a
@@ -187,36 +187,119 @@ public class GpuCache
     /// the GPU sidesteps that decoder bug entirely and still delivers a real VRAM reduction for
     /// distant/small objects -- it just doesn't save any network bandwidth (full asset is always
     /// downloaded), unlike the disabled network-discard path.
-    /// <para>Same first-caller-wins caveat as before (two instances of the same object at
-    /// different distances CAN share a texture id, and once cached here -- see <see cref="Get"/>
-    /// above short-circuiting before ever calling AssetService again -- a texture is NEVER
-    /// rebuilt at a different discard level for the rest of the session, a texture first seen
-    /// distant/small stays downsampled even if the same or another instance later needs it
-    /// sharp). Deliberate scope limit for this pass -- see the spec's Phase 2 notes.</para>
+    /// <para>The caller passes the object's on-screen area in PIXELS rather than a ready-made
+    /// discard level, because the correct level depends on the decoded texture's own resolution,
+    /// which only this method knows. 0 (the default) means "unknown / don't downsample".</para>
+    /// <para>A downsampled texture is no longer stuck that way: a later request from closer up
+    /// (larger <paramref name="screenPixelArea"/>) re-uploads it sharper in place -- see
+    /// <see cref="TryUpgradeCachedTexture"/>. The reverse does NOT happen; nothing ever
+    /// re-downsamples a texture once it has been sharpened, so a shared texture settles at the
+    /// resolution its closest/largest viewer needed and stays there for the session.</para>
     /// </summary>
     public Task<ImageTexture?> GetOrUploadTextureAsync(
         Guid textureId,
         SLNG.Assets.AssetService? assetService,
         bool generateMipmaps,
         int initialRefCount = 0,
-        int desiredDiscard = 0,
+        float screenPixelArea = 0f,
         float priority = 0f)
     {
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
 
         var cached = Get(textureId) as ImageTexture;
-        if (cached != null) return Task.FromResult(cached)!;
+        if (cached != null)
+        {
+            // A texture first seen small/distant was uploaded downsampled. Walking up to it used
+            // to leave it blurry for the rest of the session, because this early return handed
+            // back whatever was cached and nothing ever revisited the decision -- the "never
+            // rebuilt at a different discard level" limitation this class used to document as a
+            // deliberate scope limit. That reads as permanently soft textures on exactly the
+            // nearby objects the user is looking at (live-reported 2026-08-01 on a foreground
+            // pillar). The real viewer instead re-evaluates continuously and loads a sharper level
+            // when an object's on-screen size grows (LLViewerLODTexture::processTextureStats ->
+            // "current_discard < mDesiredDiscardLevel" handling), so do the same here.
+            TryUpgradeCachedTexture(textureId, cached, assetService, generateMipmaps, screenPixelArea, priority);
+            return Task.FromResult(cached)!;
+        }
 
         if (assetService == null) return Task.FromResult<ImageTexture?>(null);
 
         var lazy = _inflightTextureUploads.GetOrAdd(textureId, id => new Lazy<Task<ImageTexture?>>(
-            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, desiredDiscard, priority),
+            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, screenPixelArea, priority),
             LazyThreadSafetyMode.ExecutionAndPublication));
         return lazy.Value;
     }
 
+    /// <summary>Screen pixel area each cached texture's CURRENT upload was sized for, so a later
+    /// request from closer up can tell that a sharper level is now warranted. Only holds entries
+    /// for textures that were actually downsampled -- one uploaded at full resolution can never
+    /// be improved, so it is never a candidate.</summary>
+    private readonly ConcurrentDictionary<Guid, float> _uploadedForPixelArea = new();
+
+    /// <summary>Fire-and-forget in-place sharpening of an already-cached texture, when the object
+    /// requesting it now covers enough of the screen to deserve a lower discard level. Re-decodes
+    /// (usually straight from AssetService's own decoded-data cache, so no network) and pushes the
+    /// better image into the SAME <see cref="ImageTexture"/> via SetImage -- every material already
+    /// referencing it picks the sharper version up automatically, so nothing has to re-wire
+    /// materials or juggle refcounts.</summary>
+    private void TryUpgradeCachedTexture(
+        Guid textureId, ImageTexture cached, SLNG.Assets.AssetService? assetService,
+        bool generateMipmaps, float screenPixelArea, float priority)
+    {
+        if (assetService == null || screenPixelArea <= 0f) return;
+        if (!_uploadedForPixelArea.TryGetValue(textureId, out float builtFor)) return; // already full-res
+        // Require a clear step up before paying for a re-decode: one discard level is a 4x area
+        // change, so anything less than that can't lower the level and would just churn.
+        if (screenPixelArea < builtFor * 4f) return;
+        // Claim the upgrade so concurrent faces of the same object don't all start one.
+        if (!_uploadedForPixelArea.TryUpdate(textureId, screenPixelArea, builtFor)) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority).ConfigureAwait(false);
+                if (textureData == null) return;
+
+                var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+                image?.FixAlphaEdges();
+                if (image == null) return;
+
+                int discard = ComputeDiscardLevel(image.GetWidth(), image.GetHeight(), screenPixelArea);
+                if (discard > 0)
+                {
+                    int targetW = Math.Max(8, image.GetWidth() >> discard);
+                    int targetH = Math.Max(8, image.GetHeight() >> discard);
+                    if (targetW < image.GetWidth() || targetH < image.GetHeight())
+                        image.Resize(targetW, targetH, Image.Interpolation.Lanczos);
+                }
+                if (generateMipmaps) image.GenerateMipmaps();
+
+                Godot.Callable.From(() =>
+                {
+                    if (!GodotObject.IsInstanceValid(cached)) return;
+                    cached.SetImage(image);
+                    if (discard <= 0) _uploadedForPixelArea.TryRemove(textureId, out _);
+                }).CallDeferred();
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[GpuCache] texture {textureId} sharpen failed: {ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>The real viewer's texel-to-screen-pixel discard criterion -- see the call site in
+    /// <see cref="FetchAndUploadTextureAsync"/> for the full derivation and source citation.</summary>
+    private static int ComputeDiscardLevel(int width, int height, float screenPixelArea)
+    {
+        double texels = (double)width * height;
+        int discard = (int)Math.Floor(Math.Log(texels / Math.Max(screenPixelArea, 1f)) / Math.Log(4.0));
+        return Math.Clamp(discard, 0, SLNG.Net.J2kByteSizeEstimator.MaxDiscardLevel);
+    }
+
     private async Task<ImageTexture?> FetchAndUploadTextureAsync(
-        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, int desiredDiscard, float priority)
+        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, float screenPixelArea, float priority)
     {
         try
         {
@@ -252,13 +335,35 @@ public class GpuCache
             // level halves both dimensions (SL/OpenSim discard semantics -- see
             // J2kByteSizeEstimator's doc comment), floored at 8px so GenerateMipmaps always has
             // a sane base level to work from.
-            if (image != null && desiredDiscard > 0)
+            //
+            // The level is derived here, not by the caller, because it depends on THIS texture's
+            // decoded resolution. Ported from the real viewer's LLViewerLODTexture::
+            // processTextureStats (llviewertexture.cpp):
+            //     discard = floor( log(mTexelsPerImage / mMaxVirtualSize) / log(4) )
+            // i.e. compare the texture's texel count against the pixel area it actually covers on
+            // screen, in log-4 space because one discard level is a 4x area reduction. Full
+            // resolution results whenever the texture has no more texels than it has screen pixels
+            // to fill -- the "roughly one texel per pixel" criterion. The previous code instead had
+            // the caller pick a level from hardcoded `radius / distance` thresholds that never saw
+            // the texture's resolution at all, so a 64x64 and a 1024x1024 texture on the same prim
+            // were shrunk identically, and even a large nearby prim was routinely halved or
+            // quartered (user-reported "mega blurry", 2026-08-01).
+            if (image != null && screenPixelArea > 0f)
             {
-                int targetW = Math.Max(8, image.GetWidth() >> desiredDiscard);
-                int targetH = Math.Max(8, image.GetHeight() >> desiredDiscard);
-                if (targetW < image.GetWidth() || targetH < image.GetHeight())
+                int discard = ComputeDiscardLevel(image.GetWidth(), image.GetHeight(), screenPixelArea);
+
+                if (discard > 0)
                 {
-                    image.Resize(targetW, targetH, Image.Interpolation.Lanczos);
+                    int targetW = Math.Max(8, image.GetWidth() >> discard);
+                    int targetH = Math.Max(8, image.GetHeight() >> discard);
+                    if (targetW < image.GetWidth() || targetH < image.GetHeight())
+                    {
+                        image.Resize(targetW, targetH, Image.Interpolation.Lanczos);
+                    }
+                    // Remember what this upload was sized for, so approaching the object later can
+                    // detect that a sharper level is warranted -- see TryUpgradeCachedTexture.
+                    // Only downsampled uploads are tracked; a full-res one can never improve.
+                    _uploadedForPixelArea[textureId] = screenPixelArea;
                 }
             }
 

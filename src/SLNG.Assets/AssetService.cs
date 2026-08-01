@@ -789,65 +789,93 @@ public class AssetService
             int width = (int)image.Width;
             int height = (int)image.Height;
 
-            // Sculpt maps encode vertex XYZ as RGB per pixel. Read them as linear RGB (never
-            // sRGB — a gamma transfer would warp the spatial coordinates).
+            // Sculpt maps encode vertex XYZ as RGB per pixel, so their samples must reach the mesher
+            // as the EXACT bytes the codestream carries -- any tone/gamma transfer warps the spatial
+            // coordinates non-linearly.
             //
-            // Do NOT resize the sculpt map here. MeshFoundry's own SculptMap does the LOD
-            // downscaling internally with proper *linear* averaging of adjacent vertices (see
-            // vendored PrimMesher/SculptMap.cs — "the scaling is done in floating point ... the
-            // position will be averaged between pixel values"). An earlier version force-resized
-            // every non-64×64 sculpt to 64×64 with nearest-neighbor (FilterType.Point) here,
-            // BEFORE MeshFoundry ever saw it. On a 128×128 organic sculpt (a tree, say), nearest-
-            // neighbor keeps only 1 of every 4 pixels — collapsing adjacent branch vertices onto
-            // each other, producing zero-area triangles, which the degenerate-triangle filter in
+            // This block used to do `image.ColorSpace = ImageMagick.ColorSpace.RGB` here, intending
+            // "treat these samples as linear, don't apply an sRGB transfer". That is not what the
+            // property does: assigning ColorSpace CONVERTS the pixels into the target space (the
+            // `-colorspace` operator), it does not merely re-tag them (`-set colorspace`). Magick
+            // decodes a profile-less J2C as sRGB, so the assignment applied a full sRGB->linear
+            // transfer to what are actually raw coordinates -- exactly the warp the comment was
+            // trying to prevent. Measured on a real OSGrid sculpt (2026-08-01): with the assignment
+            // a mid-height ring's radius wandered between 0.27 and 0.68 (a round cushion rendered as
+            // a pointed teardrop); without it the same ring is a constant 0.50 -- a perfect circle,
+            // matching Firestorm. Cross-verified three ways on the same cached asset: Magick without
+            // the assignment and CoreJ2K (the independent fallback decoder) agree within +/-1 per
+            // channel, while the assignment's output differs by ~70 per channel and matches an
+            // sRGB->linear curve applied to their shared value to the byte.
+            //
+            // Leaving ColorSpace untouched is therefore the correct handling: GetPixels() below then
+            // returns the codestream's own sample values verbatim, which is what a sculpt map is.
+            //
+            // Do NOT resize the sculpt map here either. An earlier version force-resized every
+            // non-64×64 sculpt to 64×64 with nearest-neighbor (FilterType.Point) here, BEFORE the
+            // mesher ever saw it. On a 128×128 organic sculpt (a tree, say), nearest-neighbor keeps
+            // only 1 of every 4 pixels — collapsing adjacent branch vertices onto each other,
+            // producing zero-area triangles, which the degenerate-triangle filter in
             // PrimMeshService.Convert then deleted, leaving holes the surviving triangles stretched
             // across as long spikes/blades (exactly the "jagged tree" symptom). Passing native
-            // resolution through lets MeshFoundry build the correct grid and scale it properly.
-            if (isSculpt)
-            {
-                image.ColorSpace = ImageMagick.ColorSpace.RGB;
-            }
+            // resolution through lets the vendored PrimMesher/SculptMap.cs build the correct grid at
+            // full detail. (Its own LOD reduction used to bilinear-prescale the bitmap, which is a
+            // DIFFERENT bug of the same shape — averaging vertex positions instead of point-sampling
+            // them, verified against the real viewer's LLVolume::sculptGenerateMapVertices to always
+            // point-sample the native-resolution texel array and never filter/resample it — fixed
+            // directly in SculptMap.cs, 2026-08-01.)
 
             bool isDegraded = false;
             int trueComponents = -1;
 
-            if (!isSculpt)
-            {
-                // For normal textures, verify if Magick.NET decoded a low-res thumbnail instead of the full image
-                int trueWidth = -1, trueHeight = -1;
+            // Verify Magick.NET decoded the FULL codestream, not a low-res thumbnail reconstructed
+            // from only the low-frequency/DC wavelet data of a truncated fetch (dropped UDP packet
+            // -- see docs/HANDOVER_CLAUDE.md). This check used to be skipped entirely for sculpts
+            // (isSculpt gated it out), on the theory that only regular textures need it -- backwards:
+            // a sculpt map is exactly the case this matters MOST for. A truncated sculpt J2K decode
+            // can keep the declared pixel DIMENSIONS while still being reconstructed from incomplete
+            // wavelet data, silently compressing the genuine per-pixel Z (blue-channel) variation
+            // toward a narrow low-frequency average -- rendering a real shape (e.g. a tall drum) as
+            // a flattened dish, with no exception, no wrong dimensions, nothing else to catch it on.
+            // Skipping this check meant a degraded sculpt decode never set IsDegraded, so
+            // FetchAndDecodeTextureAsync's retry-on-degraded path (see its own doc comment, which
+            // already assumed sculpts WERE covered here) never fired for sculpts at all.
+            int trueWidth = -1, trueHeight = -1;
 
-                if (settings.Format == ImageMagick.MagickFormat.J2c)
+            if (settings.Format == ImageMagick.MagickFormat.J2c)
+            {
+                for (int i = 0; i < bytes.Length - 13; i++)
                 {
-                    for (int i = 0; i < bytes.Length - 13; i++)
+                    if (bytes[i] == 0xFF && bytes[i + 1] == 0x51) // SIZ marker
                     {
-                        if (bytes[i] == 0xFF && bytes[i + 1] == 0x51) // SIZ marker
-                        {
-                            trueWidth = (bytes[i + 6] << 24) | (bytes[i + 7] << 16) | (bytes[i + 8] << 8) | bytes[i + 9];
-                            trueHeight = (bytes[i + 10] << 24) | (bytes[i + 11] << 16) | (bytes[i + 12] << 8) | bytes[i + 13];
-                            // Csiz (component count) follows XOsiz/YOsiz/XTsiz/YTsiz/XTOsiz/YTOsiz
-                            // (24 more bytes) per the SIZ marker layout (ITU-T T.800 Table A-4).
-                            // Read it so a decode that kept the right WIDTH/HEIGHT but silently
-                            // dropped the alpha plane (e.g. a byte-limited progressive fetch whose
-                            // alpha tile-part never arrived) is also caught below -- the
-                            // width*height check above only catches SPATIAL truncation, not a
-                            // missing component. An avatar bake decoded this way forces alpha=255
-                            // for every pixel further down (ch<4 branch), which defeats the bake's
-                            // alpha-cutout shaping entirely (e.g. system hair renders as its full,
-                            // uncut card silhouette instead of styled strands).
-                            if (i + 39 < bytes.Length)
-                                trueComponents = (bytes[i + 38] << 8) | bytes[i + 39];
-                            break;
-                        }
+                        trueWidth = (bytes[i + 6] << 24) | (bytes[i + 7] << 16) | (bytes[i + 8] << 8) | bytes[i + 9];
+                        trueHeight = (bytes[i + 10] << 24) | (bytes[i + 11] << 16) | (bytes[i + 12] << 8) | bytes[i + 13];
+                        // Csiz (component count) follows XOsiz/YOsiz/XTsiz/YTsiz/XTOsiz/YTOsiz
+                        // (24 more bytes) per the SIZ marker layout (ITU-T T.800 Table A-4).
+                        // Read it so a decode that kept the right WIDTH/HEIGHT but silently
+                        // dropped the alpha plane (e.g. a byte-limited progressive fetch whose
+                        // alpha tile-part never arrived) is also caught below -- the
+                        // width*height check above only catches SPATIAL truncation, not a
+                        // missing component. An avatar bake decoded this way forces alpha=255
+                        // for every pixel further down (ch<4 branch), which defeats the bake's
+                        // alpha-cutout shaping entirely (e.g. system hair renders as its full,
+                        // uncut card silhouette instead of styled strands). Not meaningful for
+                        // sculpts (RGB-only, no alpha plane), but harmless to compute either way.
+                        if (i + 39 < bytes.Length)
+                            trueComponents = (bytes[i + 38] << 8) | bytes[i + 39];
+                        break;
                     }
                 }
+            }
 
-                if (trueWidth > 0 && trueHeight > 0 && (width * height < trueWidth * trueHeight))
-                {
-                    // Accept the thumbnail but mark as degraded so it isn't cached
-                    Console.WriteLine($"[AssetService] Magick decoded thumbnail {width}x{height}, expected {trueWidth}x{trueHeight}. Marked as degraded.");
-                    isDegraded = true;
-                }
+            if (trueWidth > 0 && trueHeight > 0 && (width * height < trueWidth * trueHeight))
+            {
+                // Accept the thumbnail but mark as degraded so it isn't cached
+                Console.WriteLine($"[AssetService] Magick decoded thumbnail {width}x{height}, expected {trueWidth}x{trueHeight}. Marked as degraded.");
+                isDegraded = true;
+            }
 
+            if (!isSculpt)
+            {
                 if (image.HasAlpha || image.ChannelCount >= 4) image.ColorSpace = ImageMagick.ColorSpace.Transparent;
                 else image.ColorSpace = ImageMagick.ColorSpace.sRGB;
             }

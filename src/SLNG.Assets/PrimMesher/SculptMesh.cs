@@ -323,23 +323,29 @@ namespace SLNG.Assets.PrimMesher
 
             int imageY;
 
-            // Close the horizontal (X/profile) wrap ring by duplicating column 0 at the end of
-            // every row. This must be UNCONDITIONAL, matching the real SL viewer's
-            // LLVolume::sculptGenerateMapVertices (llvolume.cpp): at the x==sculpt_width wrap
-            // boundary it always re-samples column 0, for every row, regardless of the mesh's
-            // row count. The original code here branched on `rows.Count % 2` and, for the (very
-            // common — any Highest-LOD sculpt whose pre-wrap height starts even, which is nearly
-            // all of them after repeated power-of-two halving) ODD case, instead OVERWROTE
-            // column 0 with the FAR (opposite) edge's sampled column — silently discarding the
-            // real left-edge pixel data and replacing it with the right edge's, for every row.
-            // Unless a sculpt map's left and right edges are pixel-identical (most aren't), this
-            // put a real, wrong discontinuity at the seam: a visible crease/kink on any organic
-            // sculpt (confirmed on a tree's branch sculpt, verified against the real viewer's
-            // algorithm above) instead of the intended smooth, seamless wrap.
+            // Close the horizontal (X/profile) wrap ring by making each row's LAST column re-sample
+            // column 0. Verified against LLVolume::sculptGenerateMapVertices (llvolume.cpp:
+            // 3101-3115): at the x == sculpt_width boundary, sphere/torus/cylinder REPLACE that
+            // index with x = 0 (plane instead clamps to sculpt_width - 1, which is why plane is
+            // excluded here and keeps its real last column). The viewer therefore never samples the
+            // map's own final column for a wrapping type -- its last output column IS column 0.
+            //
+            // This used to APPEND column 0 as an extra column instead of replacing the last one.
+            // SculptMap already emits a (width+1)-wide grid whose final column is the map's native
+            // last column, so appending produced ... 62, 63, 0 where the viewer has ... 62, 0 --
+            // an extra, viewer-invisible sliver of geometry spanning the seam. On a sculpt whose
+            // final column is not a near-duplicate of column 0 (most of them), that sliver drags
+            // the seam inward and pinches it: a round cushion rendered as a teardrop with a visible
+            // point on one side, live-confirmed 2026-08-01 against a Firestorm top-down reference.
+            //
+            // (The even/odd `rows.Count % 2` branch this replaced earlier was a separate, also-real
+            // bug: for the odd case it OVERWROTE column 0 with the FAR edge's data, discarding the
+            // real left-edge column and creasing any organic sculpt. Both are the same class of
+            // seam-handling error; this is the form the viewer actually implements.)
             if (sculptType != SculptType.plane)
             {
                 foreach (List<Coord> row in rows)
-                    row.Add(row[0]);
+                    row[row.Count - 1] = row[0];
             }
 
             var topPole = rows[0][width / 2];
@@ -374,8 +380,11 @@ namespace SLNG.Assets.PrimMesher
                     }
                 }
 
+            // Same replace-don't-append rule on the vertical wrap, for the one type that wraps in
+            // Y: llvolume.cpp:3083-3086 maps y == sculpt_height to y = 0 for TORUS (every other
+            // type clamps to sculpt_height - 1, which is what SculptMap's final row already holds).
             if (sculptType == SculptType.torus)
-                rows.Add(rows[0]);
+                rows[rows.Count - 1] = rows[0];
 
             var coordsDown = rows.Count;
             var coordsAcross = rows[0].Count;

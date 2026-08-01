@@ -1277,7 +1277,11 @@ public partial class AvatarRenderer : Node3D
         {
             AlbedoColor = tint,
             CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
+            // Anisotropic, for the same reason as ObjectRenderer's world-prim materials (see that
+            // material's TextureFilter comment): isotropic mip selection blurs any strongly
+            // stretched UV region, which worn/attached meshes hit routinely. Matches the real
+            // viewer's TFO_ANISOTROPIC path (llrender.cpp:530-540).
+            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmapsAnisotropic,
             // Per-face UV repeats/offsets, same as ObjectRenderer's world-prim materials — HUD
             // buttons in particular are classically ONE texture atlas with per-face repeat/offset
             // picking out each icon; without this every face shows the whole atlas.

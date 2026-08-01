@@ -56,7 +56,6 @@ namespace SLNG.Assets.PrimMesher
             // desired pixel budget for LOD
             var numLodPixels = (lod * 2) * (lod * 2);
 
-            var needsScaling = false;
             var smallMap = bmW * bmH <= lod * lod;
 
             // compute target width/height by repeatedly halving until under budget
@@ -66,40 +65,43 @@ namespace SLNG.Assets.PrimMesher
             {
                 width >>= 1;
                 height >>= 1;
-                needsScaling = true;
             }
 
-            SKBitmap? scaledBitmap = null;
-            SKBitmap srcBitmap = bm;
+            // final shrink if still larger than lod*lod
+            if (width * height > lod * lod)
+            {
+                width >>= 1;
+                height >>= 1;
+            }
 
             try
             {
-                if (needsScaling)
-                {
-                    scaledBitmap = ScaleImage(bm, width, height);
-                    // use scaled bitmap for pixel reads, keep original alive for caller
-                    srcBitmap = scaledBitmap;
-                }
-
-                // final shrink if still larger than lod*lod
-                if (width * height > lod * lod)
-                {
-                    width >>= 1;
-                    height >>= 1;
-                }
-
                 // allocate arrays: smallMap uses exact size, otherwise allocate (width+1)*(height+1)
                 var numBytes = smallMap ? width * height : (width + 1) * (height + 1);
                 redBytes = new byte[numBytes];
                 greenBytes = new byte[numBytes];
                 blueBytes = new byte[numBytes];
 
-                var pix = srcBitmap.PeekPixels(); // low-overhead access to pixel data
+                // Always sample the ORIGINAL, native-resolution bitmap -- never a pre-scaled copy.
+                // Verified against the real viewer (LLVolume::sculptGenerateMapVertices,
+                // llvolume.cpp:3070-3071): SL reduces a sculpt map's LOD purely by point-sampling
+                // fewer vertices at a computed integer stride into the native texel array; it never
+                // filters/averages RGB when producing a lower-resolution vertex grid. Each texel is
+                // an independent, unrelated vertex XYZ (not a photographic signal), so the previous
+                // bilinear pre-scale (ScaleImage, SKFilterMode.Linear) blended adjacent vertex
+                // positions together -- clipping extrema (a flat cap's peak height gets pulled down
+                // toward the side wall's) and chamfering sharp profile edges, rendering e.g. a tall
+                // drum-shaped seat as a visibly flattened, rounded-off dish. This also drops the
+                // ScaleImage/needsScaling machinery entirely, since it existed only to feed that
+                // now-removed pre-scale.
+                var pix = bm.PeekPixels(); // low-overhead access to pixel data
                 var byteNdx = 0;
 
                 if (smallMap)
                 {
-                    // tight loop: avoid bounds checks and repeated property access
+                    // smallMap means bmW*bmH <= lod*lod, so width==bmW and height==bmH exactly
+                    // (neither halving loop above can have fired) -- a direct 1:1 read already
+                    // matches the source pixel-for-pixel, same as before this fix.
                     for (var y = 0; y < height; y++)
                     {
                         for (var x = 0; x < width; x++)
@@ -114,14 +116,16 @@ namespace SLNG.Assets.PrimMesher
                 }
                 else
                 {
-                    // we sample a 2x grid into a (width+1)x(height+1) buffer as original logic
+                    // Proportional point-sample into a (width+1)x(height+1) buffer: the extra row/
+                    // column (index == width/height) duplicates the last real row/column, giving
+                    // SculptMesh's wrap-seam stitching (see its own doc comment) a clean edge to
+                    // close against instead of an out-of-range read.
                     for (var y = 0; y <= height; y++)
                     {
-                        // compute sample Y (clamped to source)
-                        var sy = (y < height) ? (y * 2) : (y * 2 - 1);
+                        var sy = Math.Min(bmH - 1, (int)((float)y / height * bmH));
                         for (var x = 0; x <= width; x++)
                         {
-                            var sx = (x < width) ? (x * 2) : (x * 2 - 1);
+                            var sx = Math.Min(bmW - 1, (int)((float)x / width * bmW));
                             var c = pix.GetPixelColor(sx, sy);
                             redBytes[byteNdx] = c.Red;
                             greenBytes[byteNdx] = c.Green;
@@ -129,11 +133,8 @@ namespace SLNG.Assets.PrimMesher
                             ++byteNdx;
                         }
                     }
-                }
 
-                // when not smallMap the consumer expects width/height to be incremented
-                if (!smallMap)
-                {
+                    // the consumer expects width/height incremented to match the buffer above
                     width++;
                     height++;
                 }
@@ -141,12 +142,6 @@ namespace SLNG.Assets.PrimMesher
             catch (Exception e)
             {
                 throw new Exception("Caught exception processing byte arrays in SculptMap(): e: " + e);
-            }
-            finally
-            {
-                // dispose only the scaled bitmap we created locally
-                if (scaledBitmap != null)
-                    scaledBitmap.Dispose();
             }
         }
 
@@ -175,14 +170,6 @@ namespace SLNG.Assets.PrimMesher
                 rows.Add(row);
             }
             return rows;
-        }
-
-        private SKBitmap ScaleImage(SKBitmap srcImage, int destWidth, int destHeight)
-        {
-            var info = new SKImageInfo(destWidth, destHeight);
-            var scaledImage = new SKBitmap(info);
-            srcImage.ScalePixels(scaledImage.PeekPixels(), new SKSamplingOptions(SKFilterMode.Linear));
-            return scaledImage;
         }
     }
 }

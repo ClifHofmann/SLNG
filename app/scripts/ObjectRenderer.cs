@@ -91,7 +91,7 @@ public partial class ObjectRenderer : Node3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-07-24-hollow-cap-and-sculpt-cache-fix";
+    private const string BuildMarker = "2026-08-01-backface-culling-matches-viewer";
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
@@ -180,6 +180,28 @@ public partial class ObjectRenderer : Node3D
             else if (dSq > releaseSq && !state.ResourcesReleased)
             {
                 ReleaseResources(state); // far enough that we reclaim its VRAM
+            }
+            else if (state.MeshInstance.Visible && !state.ResourcesReleased
+                     && state.UsedTextureIds.Count > 0 && _gpuCache != null && _assetService != null)
+            {
+                // Re-offer this object's current on-screen size to the GpuCache. A texture first
+                // uploaded while the object was small/distant was downsampled and, before this,
+                // stayed that way for the session however close the camera later got -- so
+                // walking up to something left it permanently soft. GpuCache decides whether that
+                // actually warrants a sharper re-upload (it ignores anything already at full
+                // resolution, and requires a full discard level of headroom), so this is a cheap
+                // no-op for the overwhelming majority of objects. Runs on the existing 4 Hz cull
+                // tick rather than per frame, which is ample for approach speed.
+                var (screenPixelArea, priority) = ComputeTextureLod(state.MeshInstance);
+                if (screenPixelArea > 0f)
+                {
+                    foreach (var texId in state.UsedTextureIds)
+                    {
+                        _ = _gpuCache.GetOrUploadTextureAsync(
+                            texId, _assetService, generateMipmaps: true,
+                            screenPixelArea: screenPixelArea, priority: priority);
+                    }
+                }
             }
         }
     }
@@ -582,14 +604,14 @@ public partial class ObjectRenderer : Node3D
         // camera, before this object's faces potentially fan out into several concurrent texture
         // requests below. Must stay ahead of the first await -- see ComputeTextureLod's note on
         // main-thread-only access.
-        var (desiredDiscard, priority) = ComputeTextureLod(state.MeshInstance);
+        var (screenPixelArea, priority) = ComputeTextureLod(state.MeshInstance);
 
         var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint, prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation);
 
         // Fallback solid / mesh without per-surface face info: one material for the whole node.
         if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
         {
-            var (mat, used) = await BuildFaceMaterialAsync(defaultFace, desiredDiscard, priority);
+            var (mat, used) = await BuildFaceMaterialAsync(defaultFace, screenPixelArea, priority, prim.IsSculpt);
             ApplyOnMainThread(state, () => state.MeshInstance.MaterialOverride = mat, used);
             return;
         }
@@ -603,7 +625,7 @@ public partial class ObjectRenderer : Node3D
                 ? prim.Faces[faceIdx] : defaultFace;
 
             int surf = surface; // capture
-            faceTasks.Add(BuildFaceMaterialAsync(ft, desiredDiscard, priority).ContinueWith(t =>
+            faceTasks.Add(BuildFaceMaterialAsync(ft, screenPixelArea, priority, prim.IsSculpt).ContinueWith(t =>
             {
                 return (surf, t.Result.Material, t.Result.Used);
             }, System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously));
@@ -650,10 +672,33 @@ public partial class ObjectRenderer : Node3D
 
     /// <summary>Builds one face's material (classic texture or PBR) and returns the texture ids
     /// it references. Texture/material application is marshalled to the main thread.</summary>
-    private async System.Threading.Tasks.Task<(StandardMaterial3D Material, List<Guid> Used)> BuildFaceMaterialAsync(FaceTexture ft, int desiredDiscard, float priority)
+    private async System.Threading.Tasks.Task<(StandardMaterial3D Material, List<Guid> Used)> BuildFaceMaterialAsync(FaceTexture ft, float screenPixelArea, float priority, bool isSculpted = false)
     {
         var used = new List<Guid>();
         var colorTint = new Godot.Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
+
+        // Scale the object's on-screen pixel area down to what ONE TILE of this face's texture
+        // actually covers, before it decides a discard level. Ported from LLFace::
+        // getTextureVirtualSize (llface.cpp:2245-2264):
+        //     tdim       = mTexExtents[1] - mTexExtents[0]     // the face's UV span
+        //     texel_area = |tdim * 0.5|^2 * PI
+        //     face_area  = mPixelArea / clamp(texel_area, 1/64, 128)
+        // A face's UV span IS its repeat count, so RepeatU/RepeatV stand in for tdim here. The
+        // effect is the intuitive one: a texture tiled 4x across a face has each tile covering a
+        // quarter of it, so one tile needs proportionally fewer texels and can take a higher
+        // discard; a face showing only part of a texture (repeat < 1) is effectively zoomed in and
+        // needs a LOWER discard to stay sharp. Without this, per-face texture scaling was ignored
+        // entirely and every face of an object shared the object's raw pixel area.
+        //
+        // Sculpts are deliberately exempt when texel_area > 1, exactly as the viewer notes
+        // ("sculpts can break assumptions about texel area") -- a sculpt's UV layout is generated
+        // from its map, not authored per face, so its repeats are not a reliable tiling signal.
+        float texelArea = new Godot.Vector2(ft.RepeatU * 0.5f, ft.RepeatV * 0.5f).LengthSquared() * Mathf.Pi;
+        if (texelArea <= 0f) texelArea = 1f; // probably animated -- viewer uses the same default
+        if (!(isSculpted && texelArea > 1f))
+        {
+            screenPixelArea /= Mathf.Clamp(texelArea, 0.015625f, 128f);
+        }
 
         // SL face rotation: only 0 and ±π are representable in a StandardMaterial3D UV transform
         // (no rotation, just scale/offset) — π is a point-mirror, i.e. negated repeats around the
@@ -668,15 +713,41 @@ public partial class ObjectRenderer : Node3D
         }
         else if (Mathf.Abs(wrappedRot) > 0.05f)
         {
-            Logger.Debug($"[FaceTex] unsupported face rotation {ft.Rotation:0.##} rad (tex {ft.TextureId.ToString()[..8]}) — rendered unrotated");
+            // NOT rare in real content: measured 49 faces at exactly pi/2 in a single view of
+            // OSGrid's Dangazi Forest (2026-08-01), where it visibly mis-places the texture --
+            // a pillar's light plaster patch sat top-RIGHT instead of Firestorm's top-LEFT.
+            // Kept at Debug level precisely because it is that common; the real fix is UV
+            // rotation support, which StandardMaterial3D cannot express (scale+offset only).
+            Logger.Debug($"[FaceTex] unsupported face rotation {ft.Rotation:0.###} rad (tex {ft.TextureId.ToString()[..8]}) — rendered unrotated");
         }
 
         var material = new StandardMaterial3D
         {
             AlbedoColor = colorTint,
-            // Linear + mipmaps: SL textures look smooth, not blocky/pixelated, and don't shimmer with distance.
-            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
-            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            // Linear + mipmaps: SL textures look smooth, not blocky/pixelated, and don't shimmer
+            // with distance. ANISOTROPIC specifically, matching the real viewer's TFO_ANISOTROPIC
+            // path (llrender.cpp:530-540, GL_TEXTURE_MAX_ANISOTROPY at the driver maximum): plain
+            // isotropic mip selection takes the LARGEST UV derivative for a pixel, so wherever a
+            // surface's UVs are strongly stretched in one direction it drops to a coarse mip across
+            // the whole region. A sphere-stitched sculpt is the worst case -- U compresses to a
+            // point at the pole -- and it showed exactly that: the cushion's fine leather grain
+            // smeared into a soft radial swirl over its entire top face while Firestorm kept the
+            // grain crisp (live-compared 2026-08-01, with the texture confirmed to be uploading at
+            // full 512x512, so it was never a resolution problem). Anisotropic filtering samples
+            // along the stretched axis instead and keeps that detail.
+            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmapsAnisotropic,
+            // Back-face culled, matching the real viewer's global default (llrender.cpp:863,
+            // `glCullFace(GL_BACK)`). The viewer re-enables double-sided rendering ONLY for
+            // particles (lldrawpoolalpha.cpp:643, `disable_cull = is_particle_or_hud_particle`)
+            // and for a GLTF material that explicitly declares mDoubleSided (lldrawpool.cpp:839,
+            // :856; lldrawpoolalpha.cpp:510, :557, :664) -- never blanket for ordinary prim faces,
+            // and notably NOT for alpha-blended ones either. This used to be CullModeEnum.Disabled
+            // for every face of every object: with no back-face culling, a closed prim draws its
+            // own far/interior surfaces on top of its near ones, so solid objects read as glassy,
+            // see-through shells (live-verified 2026-08-01 on a sculpted seat that renders as an
+            // opaque cushion in Firestorm). SLNG has no double-sided material signal yet -- when
+            // PBR double-sided support lands, that is the one place allowed to set Disabled again.
+            CullMode = BaseMaterial3D.CullModeEnum.Back,
             Uv1Scale = new Godot.Vector3(effRepeatU, effRepeatV, 1.0f),
             // Centered like SL (u' = (u-0.5)*repeat + 0.5 + off) — Godot scales UVs from the
             // corner, so without the 0.5-0.5*repeat correction any repeat != 1 shifts the
@@ -727,41 +798,41 @@ public partial class ObjectRenderer : Node3D
                 if (pbr.BaseColorTextureId != Guid.Empty)
                 {
                     used.Add(pbr.BaseColorTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId, desiredDiscard, priority).ContinueWith(t =>
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId, screenPixelArea, priority).ContinueWith(t =>
                         Godot.Callable.From(() =>
                         {
                             if (IsInstanceValid(t.Result)) material.AlbedoTexture = t.Result;
-                            else GD.PrintErr($"[FaceTex] object PBR baseColor {pbr.BaseColorTextureId} discard={desiredDiscard} fetch/decode returned null");
+                            else GD.PrintErr($"[FaceTex] object PBR baseColor {pbr.BaseColorTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }).CallDeferred()));
                 }
                 if (pbr.NormalTextureId != Guid.Empty)
                 {
                     used.Add(pbr.NormalTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId, desiredDiscard, priority).ContinueWith(t =>
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId, screenPixelArea, priority).ContinueWith(t =>
                         Godot.Callable.From(() =>
                         {
                             if (IsInstanceValid(t.Result)) { material.NormalEnabled = true; material.NormalTexture = t.Result; }
-                            else GD.PrintErr($"[FaceTex] object PBR normal {pbr.NormalTextureId} discard={desiredDiscard} fetch/decode returned null");
+                            else GD.PrintErr($"[FaceTex] object PBR normal {pbr.NormalTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }).CallDeferred()));
                 }
                 if (pbr.MetallicRoughnessTextureId != Guid.Empty)
                 {
                     used.Add(pbr.MetallicRoughnessTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId, desiredDiscard, priority).ContinueWith(t =>
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId, screenPixelArea, priority).ContinueWith(t =>
                         Godot.Callable.From(() =>
                         {
                             if (IsInstanceValid(t.Result)) material.OrmTexture = t.Result;
-                            else GD.PrintErr($"[FaceTex] object PBR metallicRoughness {pbr.MetallicRoughnessTextureId} discard={desiredDiscard} fetch/decode returned null");
+                            else GD.PrintErr($"[FaceTex] object PBR metallicRoughness {pbr.MetallicRoughnessTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }).CallDeferred()));
                 }
                 if (pbr.EmissiveTextureId != Guid.Empty)
                 {
                     used.Add(pbr.EmissiveTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId, desiredDiscard, priority).ContinueWith(t =>
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId, screenPixelArea, priority).ContinueWith(t =>
                         Godot.Callable.From(() =>
                         {
                             if (IsInstanceValid(t.Result)) material.EmissionTexture = t.Result;
-                            else GD.PrintErr($"[FaceTex] object PBR emissive {pbr.EmissiveTextureId} discard={desiredDiscard} fetch/decode returned null");
+                            else GD.PrintErr($"[FaceTex] object PBR emissive {pbr.EmissiveTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }).CallDeferred()));
                 }
                 // No await Task.WhenAll(tasks) here! Let the textures populate asynchronously so the mesh renders immediately.
@@ -770,7 +841,7 @@ public partial class ObjectRenderer : Node3D
         else if (ft.TextureId != Guid.Empty)
         {
             used.Add(ft.TextureId);
-            _ = GetOrCreateGpuTextureAsync(ft.TextureId, desiredDiscard, priority).ContinueWith(t =>
+            _ = GetOrCreateGpuTextureAsync(ft.TextureId, screenPixelArea, priority).ContinueWith(t =>
             {
                 var tex = t.Result;
                 if (tex != null)
@@ -795,7 +866,7 @@ public partial class ObjectRenderer : Node3D
                     // returned null" log), a world-object face that never got its texture just
                     // rendered flat AlbedoColor forever with zero diagnostic trail. One line per
                     // failed id (not per attempt) so this doesn't itself become log spam.
-                    GD.PrintErr($"[FaceTex] object texture {ft.TextureId} discard={desiredDiscard} fetch/decode returned null — face renders untextured");
+                    GD.PrintErr($"[FaceTex] object texture {ft.TextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null — face renders untextured");
                 }
             });
         }
@@ -805,16 +876,23 @@ public partial class ObjectRenderer : Node3D
 
     /// <summary>Picks the right transparency mode from the texture's actual alpha:
     /// binary alpha (foliage/fences) → alpha-scissor cutout; graded alpha (glass, soft edges)
-    /// → alpha blend; fully opaque → left unchanged. Alpha surfaces render double-sided.
+    /// → alpha blend; fully opaque → left fully opaque, single-sided. Only genuinely alpha
+    /// surfaces render double-sided.
     ///
-    /// Does NOT gate on DetectAlpha() == None to skip entirely — that heuristic is unreliable
-    /// (a fully alpha=0 placeholder texture, correct data, was reported opaque and rendered
-    /// solid instead of cut; see AvatarRenderer.ApplyAlphaCutout and the
-    /// godot-material-transparency-gotchas memory note for the avatar-side instance of this
-    /// exact bug). A "None" verdict here now falls through to the AlphaScissor branch below
-    /// instead of returning early, so a false negative degrades to a cheap no-op cutout test
-    /// rather than silently staying opaque. DetectAlpha is still used, lower-stakes, only to
-    /// choose BETWEEN Blend and Scissor once we know we're applying something.
+    /// A <c>DetectAlpha() == None</c> verdict is treated as authoritative "this texture is
+    /// opaque" and returns early, leaving Transparency and CullMode at their opaque defaults.
+    /// An earlier version deliberately fell THROUGH to the AlphaScissor branch on None, on the
+    /// theory that DetectAlpha() false negatives were the bigger risk and a cutout test on a
+    /// fully-opaque texture is a harmless no-op. Both halves of that were wrong (live-verified
+    /// 2026-08-01, [FaceMatDiag] logging): every ordinary opaque world prim reported
+    /// tintA=1.000/detectAlpha=None and still came out AlphaScissor + CullMode.Disabled, so
+    /// EVERY object in the world rendered double-sided in a discard pass — a sculpted seat
+    /// showed its own interior surfaces through its front, reading as a glassy, see-through
+    /// shell instead of the solid cushion the real viewer draws. The alpha=0-placeholder case
+    /// the fallback was protecting against is a DECODE-side problem (a texture whose alpha
+    /// plane never arrived has no alpha channel to detect, so it is correctly None here);
+    /// AssetService.DecodeTexture now flags those as degraded and retries instead — that is
+    /// the right layer for it, and it does not cost every opaque prim its backface culling.
     ///
     /// Deliberately stays on AlphaScissor (not AlphaHash) for the Bit case: this runs per-face
     /// on potentially thousands of world prims, so it keeps the cheaper cutout mode. Avatar
@@ -827,6 +905,16 @@ public partial class ObjectRenderer : Node3D
 
         var alphaMode = img.DetectAlpha();
 
+        // Fully opaque texture: leave the material exactly as-is (opaque, back-face culled).
+        // A translucent per-face color tint is a SEPARATE SL signal that BuildFaceMaterialAsync
+        // has already applied (Transparency == Alpha) and must survive, so only the
+        // genuinely-opaque case returns here.
+        if (alphaMode == Image.AlphaMode.None &&
+            material.Transparency != BaseMaterial3D.TransparencyEnum.Alpha)
+        {
+            return;
+        }
+
         // If the primitive is already explicitly translucent via color tint, keep true Alpha blending.
         // Otherwise, pick the right mode based on the texture's alpha content.
         if (material.Transparency != BaseMaterial3D.TransparencyEnum.Alpha)
@@ -838,26 +926,29 @@ public partial class ObjectRenderer : Node3D
             }
             else
             {
-                // Binary alpha (fences, foliage) — and the safe fallback for a "None" verdict
-                // that might be a DetectAlpha() false negative.
+                // Binary alpha (fences, foliage)
                 material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
                 material.AlphaScissorThreshold = 0.5f;
                 // Free once MSAA 3D is enabled project-wide (currently off); harmless no-op until then.
                 material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
             }
         }
-        material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+        // CullMode is deliberately NOT touched here -- see BuildFaceMaterialAsync's CullMode
+        // comment. The real viewer back-face culls alpha-blended and alpha-masked prim faces
+        // exactly like opaque ones (lldrawpoolalpha.cpp only lifts culling for particles and
+        // explicitly-double-sided GLTF materials), so an alpha face is not a reason to render
+        // an object's interior surfaces.
     }
 
     // FEAT-PERF-02: thin wrapper -- the real fetch/decode/Image/mipmap/upload work (and its
     // single-flight dedup across every renderer, not just this one) lives in
     // GpuCache.GetOrUploadTextureAsync.
-    private System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId, int desiredDiscard = 0, float priority = 0f)
+    private System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId, float screenPixelArea = 0f, float priority = 0f)
     {
         if (_gpuCache == null || _assetService == null)
             return System.Threading.Tasks.Task.FromResult<ImageTexture?>(null);
 
-        return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, desiredDiscard: desiredDiscard, priority: priority);
+        return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, screenPixelArea: screenPixelArea, priority: priority);
     }
 
     /// <summary>
@@ -889,7 +980,7 @@ public partial class ObjectRenderer : Node3D
     /// scene-graph state. Both call sites in ApplyFaceMaterialsAsync reach this before their
     /// first await, from main-thread-deferred callers.</para>
     /// </summary>
-    private (int Discard, float Priority) ComputeTextureLod(MeshInstance3D meshInstance)
+    private (float ScreenPixelArea, float Priority) ComputeTextureLod(MeshInstance3D meshInstance)
     {
         Vector3 viewPoint;
         Vector3 viewDirection = Vector3.Zero;
@@ -907,7 +998,7 @@ public partial class ObjectRenderer : Node3D
         }
         else
         {
-            return (0, 0f); // Nothing to measure against yet -- stay conservative (full detail).
+            return (0f, 0f); // Nothing to measure against yet -- stay conservative (full detail).
         }
 
         var toObject = meshInstance.Position - viewPoint;
@@ -923,32 +1014,60 @@ public partial class ObjectRenderer : Node3D
 
         float apparentSize = radius / Mathf.Max(distance, 0.1f);
 
-        // FEAT-PERF-02: this discard level now drives a LOCAL post-decode downsample only, not
-        // the network fetch -- see GpuCache.FetchAndUploadTextureAsync. Network-side discard
+        // Screen-space area this object covers, in PIXELS -- a direct port of the real viewer's
+        // LLFace::calcPixelArea (llface.cpp:2382-2398):
+        //     dist      = max(|center - camera| - |halfExtents|, 0.001)   // to the NEAR surface
+        //     app_angle = atan(|halfExtents| / dist)
+        //     radius    = app_angle * sCurPixelAngle
+        //     mPixelArea = radius^2 * PI
+        // with sCurPixelAngle = windowHeightRaw / camera vertical FOV in radians
+        // (lldrawable.cpp:90). This is the quantity the viewer feeds into its discard decision,
+        // and unlike a bare size/distance ratio it accounts for viewport resolution and FOV --
+        // the same object at the same distance genuinely needs more texels on a taller viewport.
+        float pixelsPerRadian = 1024f; // conservative fallback if no camera/viewport is available
+        var vp = GetViewport();
+        if (camera != null && IsInstanceValid(camera) && vp != null)
+        {
+            float viewportHeight = vp.GetVisibleRect().Size.Y;
+            // Camera3D.Fov is the VERTICAL fov in degrees under the default KeepHeight aspect mode.
+            float fovRadians = Mathf.DegToRad(camera.Fov);
+            if (viewportHeight > 0f && fovRadians > 0.0001f)
+                pixelsPerRadian = viewportHeight / fovRadians;
+        }
+
+        float nearDistance = Mathf.Max(distance - radius, 0.001f);
+        float appAngle = Mathf.Atan(radius / nearDistance);
+        float radiusPixels = appAngle * pixelsPerRadian;
+        float screenPixelArea = radiusPixels * radiusPixels * Mathf.Pi;
+
+        // FEAT-PERF-02: the downsample this drives is a LOCAL post-decode shrink only, not the
+        // network fetch -- see GpuCache.FetchAndUploadTextureAsync. Network-side discard
         // truncation via HTTP Range was tried and disabled: Magick.NET does not tolerate a
         // deliberately-Range-truncated J2C stream, falling back to CoreJ2K en masse and, at
         // aggressive discard levels, frequently failing outright rather than degrading
         // gracefully (one session: 6752 of 6786 total log lines were CoreJ2K "Codestream
         // truncated" warnings; reported live as slow loading + ~80% of textures missing vs.
         // ~100% in Firestorm on the same region). Always fetching+decoding the full asset
-        // sidesteps that bug entirely -- this level now only shrinks the already-decoded Image
-        // before it reaches the GPU, trading network bandwidth (still full, unresolved -- see
-        // the FEAT-PERF-02 spec) for a real VRAM reduction on distant/small objects, which is
-        // where a user-reported "GPU memory really filling up" (everything full-res now that
-        // fetches mostly succeed) actually needs the win right now.
-        int discard = apparentSize switch
-        {
-            >= 0.5f => 0,
-            >= 0.25f => 1,
-            >= 0.12f => 2,
-            >= 0.06f => 3,
-            >= 0.03f => 4,
-            _ => SLNG.Net.J2kByteSizeEstimator.MaxDiscardLevel,
-        };
-
-        // Priority is apparent size, halved for anything behind the camera plane. Using the same
-        // quantity for both keeps them consistent by construction: whatever we decided needs the
-        // most detail is also what we fetch first.
+        // sidesteps that bug entirely -- the shrink only trades network bandwidth (still full,
+        // unresolved -- see the FEAT-PERF-02 spec) for a real VRAM reduction on distant/small
+        // objects, which is where a user-reported "GPU memory really filling up" needs the win.
+        //
+        // This method deliberately does NOT decide the discard level itself anymore. It used to,
+        // from hardcoded thresholds on `radius / distance` -- which ignored both the viewport
+        // resolution and, more importantly, the TEXTURE'S OWN RESOLUTION, so a 64x64 and a 1024x1024
+        // texture on the same prim were shrunk by the same number of halvings. Those thresholds also
+        // demanded radius/distance >= 0.5 for full detail, i.e. full resolution only within roughly
+        // two radii of the object: an ordinary ~1m prim went to half resolution past ~1.6m away and
+        // quarter resolution past ~3.5m, which reads as "everything in the world is blurry"
+        // (user-reported, 2026-08-01). The real viewer instead compares texels to on-screen pixels
+        // (LLViewerLODTexture::processTextureStats, llviewertexture.cpp:
+        //     discard = floor( log(mTexelsPerImage / mMaxVirtualSize) / log(4) )
+        // ), which needs the decoded texture's dimensions -- known only inside GpuCache. So the
+        // screen-space pixel area travels down there and the discard is computed at that point.
+        //
+        // Priority stays on the old apparent-size scale (roughly 0..1, comparable across objects
+        // and unchanged in meaning for AssetService's fetch ordering), halved for anything behind
+        // the camera plane.
         float priority = apparentSize;
         if (viewDirection != Vector3.Zero && distance > 0.001f
             && viewDirection.Dot(toObject / distance) < 0f)
@@ -956,7 +1075,7 @@ public partial class ObjectRenderer : Node3D
             priority *= 0.5f;
         }
 
-        return (discard, priority);
+        return (screenPixelArea, priority);
     }
 
     /// <summary>Returns a stable GpuCache key for a (shape, LOD) pair -- one id per unique

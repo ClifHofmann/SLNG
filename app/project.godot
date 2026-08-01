@@ -28,3 +28,4 @@ project/assembly_name="SLNG.App"
 [rendering]
 
 anti_aliasing/quality/msaa_3d=2
+textures/default_filters/anisotropic_filtering_level=4

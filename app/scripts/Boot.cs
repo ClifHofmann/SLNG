@@ -80,7 +80,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.3.56-alpha";
+    public const string AppVersion = "v0.3.68-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -314,6 +314,8 @@ public partial class Boot : Control
         _inWorldContextMenu.OnTouchClicked = (entity, localId) => { /* Touch logic later */ };
         _inWorldContextMenu.OnInspectClicked = (entity, localId) => { /* Inspect logic later */ };
         _inWorldContextMenu.OnDeleteClicked = (entity, localId) => { /* Delete logic later */ };
+        _inWorldContextMenu.OnSitClicked = (entity, localId) => _session?.RequestSit(localId);
+        _inWorldContextMenu.OnSitOnGroundClicked = (godotPos) => _session?.SitOnGround();
         _inWorldContextMenu.OnCreatePrimClicked = (godotPos, type) =>
         {
             if (_session == null) return;
