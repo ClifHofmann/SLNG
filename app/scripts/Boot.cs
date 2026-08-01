@@ -83,7 +83,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.3.81-alpha";
+    public const string AppVersion = "v0.3.82-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -547,8 +547,40 @@ public partial class Boot : Control
         LogMessage($"Sun gizmo ON: beam/sphere point TOWARD the sun, dir={towardLight}");
     }
 
+    /// <summary>Aims the directional light along the region's real sun direction.
+    ///
+    /// Until now the sun sat at a hardcoded (-50, -130, 0) that had nothing to do with the region
+    /// or its time of day, while the real viewer uses the sim's sun. That is not a subtle
+    /// difference: on a rotationally symmetric object the highlight simply lands on the other
+    /// side, which reads exactly like a mirrored texture and sent this session's pillar
+    /// investigation through five dead ends (rotation, offset, sculpt invert/mirror, base UV
+    /// direction, winding) before the lighting itself became the suspect.
+    ///
+    /// This is not Windlight — sky colour, atmospherics and EEP are still Phase 5. It only fixes
+    /// WHERE the light comes from, which is the part that changes what you see on a surface.</summary>
+    private void UpdateSunFromRegion()
+    {
+        if (_sun == null || _session == null) return;
+
+        var d = _session.SunDirection;
+        if (d.LengthSquared() < 0.0001f) return; // no SimulatorViewerTimeMessage yet
+
+        // SL is Z-up, Godot is Y-up: the same (x, z, -y) mapping the mesh path uses. SunDirection
+        // points toward the sun, so the light travels the other way and the light node's forward
+        // (-Z, which is what LookAt aims) is the negated vector.
+        var toSun = new Godot.Vector3(d.X, d.Z, -d.Y).Normalized();
+
+        // Straight down would make LookAt's up-vector degenerate; skip that one frame rather than
+        // emit a NaN basis.
+        if (Mathf.Abs(toSun.Dot(Godot.Vector3.Up)) > 0.9999f) return;
+
+        _sun.LookAt(_sun.GlobalPosition - toSun, Godot.Vector3.Up);
+    }
+
     public override void _Process(double delta)
     {
+        UpdateSunFromRegion();
+
         // TEMPORARY diagnostic (2026-07-23, OSGrid movement-judder live-test round): delta is
         // Godot's own measured wall-clock time since the last _Process call -- a large value here
         // means the main thread itself stalled (GC pause, a synchronous decode/build slipping onto

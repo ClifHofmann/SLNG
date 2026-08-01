@@ -31,6 +31,28 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     // handler, since the high-level Primitive/PrimEventArgs API exposes no such signal.
     private readonly ConcurrentDictionary<uint, bool> _lightPresentByLocalId = new();
 
+    /// <summary>The region's current sun direction, in SL coordinates, pointing FROM the region
+    /// TOWARD the sun. Zero until the first SimulatorViewerTimeMessage arrives.
+    ///
+    /// The sim has been sending this all along (LibreMetaverse decodes it into
+    /// <c>GridManager.SunDirection</c>); nothing here ever read it, so the renderer lit every
+    /// region with one hardcoded angle regardless of the region's actual time of day. On a
+    /// rotationally symmetric object such as a column that puts the highlight on a different side
+    /// than the real viewer, which is indistinguishable from a mirrored texture by eye.
+    ///
+    /// Snapshotted into a local before being returned: LibreMetaverse writes this from a network
+    /// thread, and a Vector3 assignment is not atomic, so a caller reading the property directly
+    /// could observe a half-updated vector. The sun moves slowly enough that a one-frame-stale
+    /// value is irrelevant; a torn one is not.</summary>
+    public System.Numerics.Vector3 SunDirection
+    {
+        get
+        {
+            var d = _client.Grid.SunDirection;
+            return new System.Numerics.Vector3(d.X, d.Y, d.Z);
+        }
+    }
+
     public event EventHandler<ChatMessageEvent>? ChatMessageReceived;
     public event EventHandler<ObjectUpdateEvent>? ObjectUpdateReceived;
     public event EventHandler<AvatarUpdateEvent>? AvatarUpdateReceived;
