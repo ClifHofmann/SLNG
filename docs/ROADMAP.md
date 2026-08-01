@@ -106,6 +106,7 @@ Each task follows a **spec → test → implement → review** loop:
 | MVP3-2 | Pose Stand & Animation Override (AO) | render/ui | | graphics-engineer | gemini | M4-2 | Play/stop custom poses, pose stands, basic AO system |
 | MVP3-3 | Shared Media / MOAP (Media on a Prim) | render/net | | graphics-engineer | claude | M2-3 | Web browser / video streaming on prim faces |
 | MVP3-4 | Snapshot & Photography Studio | ui/render | | graphics-engineer | gemini | M2-5 | High-res screenshot capture, DoF, FOV control, EEP/environment presets |
+| FEAT-RENDER-01 | Custom Spatial Shader Family for World Surfaces ⏸️ | render | | graphics-engineer | | M2-3 | Replace `StandardMaterial3D` across `ObjectRenderer`/`AvatarRenderer`/terrain/water with one custom Godot spatial-shader family: UV scale/offset/**rotation** in the vertex shader, plus an atmospherics `#include` seam (no-op at first) fed by global shader uniforms. Forced by two findings: SL face rotation is unrepresentable in `StandardMaterial3D` (49 faces at exactly π/2 measured in one view of OSGrid's Dangazi Forest, visibly mis-placed vs Firestorm), and Windlight/EEP needs per-fragment atmospherics on *every* surface, which `StandardMaterial3D` has no seam for — so a hybrid is a dead end. Highest blast radius so far; staged in 5 independently verifiable phases, Phase 1 being a visually-identical swap. [ADR 0002](file:///E:/Git/SLNG/docs/adr/0002-custom-spatial-shader-family.md) · [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-RENDER-01-custom-spatial-shader-family.md) |
 
 ---
 
