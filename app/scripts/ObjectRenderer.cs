@@ -95,7 +95,7 @@ public partial class ObjectRenderer : Node3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-08-01-faceparams-on-raw-hit";
+    private const string BuildMarker = "2026-08-01-faceparams-sculpt-flags";
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
@@ -284,6 +284,24 @@ public partial class ObjectRenderer : Node3D
     {
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim == null) return;
+
+        if (prim.IsSculpt)
+        {
+            // The sculpt type byte decides horizontal mirroring, and SLNG and the viewer disagree
+            // about what to do with it. The viewer computes
+            //     reverse_horizontal = invert XOR mirror        (llvolume.cpp:3049, :6821)
+            // and when set it BOTH reads the sculpt map's columns backwards
+            // (sculptGenerateMapVertices, reversed_t = sizeT-t-1) AND flips the texture
+            // coordinate (createSide, ss = 1-ss). PrimMesher does neither: on `mirror` it only
+            // negates the X component of the sculpted position and flips triangle winding. So a
+            // sculpt carrying either flag is expected to come out horizontally mirrored here —
+            // which is exactly the reported symptom (plaster patch on the wrong side).
+            byte st = prim.SculptType;
+            bool invert = (st & 64) != 0, mirror = (st & 128) != 0;
+            Logger.Info($"[FaceParams]   SCULPT type=0x{st:X2} stitching={st & 0x07} " +
+                        $"invert={invert} mirror={mirror} reverse_horizontal={invert ^ mirror} " +
+                        $"map={prim.SculptId.ToString()[..8]}");
+        }
 
         Logger.Info($"[FaceParams] object {entity.LocalId} mesh={prim.IsMesh} sculpt={prim.IsSculpt} " +
                     $"default: repeat=({prim.RepeatU:0.###},{prim.RepeatV:0.###}) " +
