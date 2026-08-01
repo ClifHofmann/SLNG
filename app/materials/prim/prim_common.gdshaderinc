@@ -38,8 +38,17 @@ uniform bool has_emission_texture = false;
 // uv_offset, so here it is a plain multiply-add and stays identical to the
 // StandardMaterial3D behaviour it replaces.
 //
-// uv_rotation is present but MUST be left at 0.0 for Phase 1 -- it is Phase 2's payload.
-// Wiring it now would make a "visually identical" phase impossible to verify.
+// uv_rotation is SL's per-face texture rotation, in radians, passed through UNMODIFIED even
+// though the meshes are built flipV. The viewer rotates in bottom-origin space with [c, s; -s, c]
+// (llface.cpp:734-756); our centred V is the negation of the viewer's, and mapping back through
+// that negation flips both sine signs into [c, -s; s, c] -- what this file applies below. The two
+// inversions cancel, so the caller passes the raw angle.
+//
+// The order below is the viewer's: CENTRE, ROTATE, SCALE, OFFSET. Applying scale before rotation
+// would shear the texture on any non-square repeat instead of rotating it.
+//
+// Rotating per-vertex loses nothing: a rotated UV is still an affine function of position, so
+// interpolating it across the triangle gives exactly the per-fragment result.
 uniform vec2 uv_scale = vec2(1.0);
 uniform vec2 uv_offset = vec2(0.0);
 uniform float uv_rotation = 0.0;

@@ -95,7 +95,7 @@ public partial class ObjectRenderer : Node3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-08-01-prim-shader-family-phase1";
+    private const string BuildMarker = "2026-08-01-uv-rotation-phase2";
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
@@ -707,26 +707,24 @@ public partial class ObjectRenderer : Node3D
             screenPixelArea /= Mathf.Clamp(texelArea, 0.015625f, 128f);
         }
 
-        // SL face rotation: only 0 and ±π are representable in a StandardMaterial3D UV transform
-        // (no rotation, just scale/offset) — π is a point-mirror, i.e. negated repeats around the
-        // face center. Other angles logged, rendered unrotated. Same handling as
-        // AvatarRenderer.BuildFaceMaterialAsync — keep in sync.
-        float effRepeatU = ft.RepeatU, effRepeatV = ft.RepeatV;
-        float wrappedRot = Mathf.Wrap(ft.Rotation, -Mathf.Pi, Mathf.Pi);
-        if (Mathf.Abs(wrappedRot) > Mathf.Pi * 0.75f)
-        {
-            effRepeatU = -effRepeatU;
-            effRepeatV = -effRepeatV;
-        }
-        else if (Mathf.Abs(wrappedRot) > 0.05f)
-        {
-            // NOT rare in real content: measured 49 faces at exactly pi/2 in a single view of
-            // OSGrid's Dangazi Forest (2026-08-01), where it visibly mis-places the texture --
-            // a pillar's light plaster patch sat top-RIGHT instead of Firestorm's top-LEFT.
-            // Kept at Debug level precisely because it is that common; the real fix is UV
-            // rotation support, which StandardMaterial3D cannot express (scale+offset only).
-            Logger.Debug($"[FaceTex] unsupported face rotation {ft.Rotation:0.###} rad (tex {ft.TextureId.ToString()[..8]}) — rendered unrotated");
-        }
+        // SL face rotation, FEAT-RENDER-01 Phase 2: now rendered at its real angle. Until
+        // 2026-08-01 only 0 and ±π were representable, because a StandardMaterial3D UV transform
+        // is scale+offset with no rotation term; every other angle was rendered UNROTATED. That
+        // was not a corner case -- 49 faces at exactly pi/2 in a single view of OSGrid's Dangazi
+        // Forest, where it visibly mis-placed textures (a pillar's light plaster patch sat
+        // top-RIGHT instead of Firestorm's top-LEFT). The old ±π case negated both repeats, which
+        // is the same point-mirror a real π rotation produces, so those faces are unaffected by
+        // this change; angles between 0.75π and π, previously snapped to π, now render correctly.
+        //
+        // The angle goes to the shader unmodified even though the meshes are flipV. Deriving it:
+        // the viewer rotates in bottom-origin space with [c, s; -s, c] (llface.cpp:734-756), and
+        // our centred V is p_v = -p_t. Substituting p_t = -p_v and mapping back through
+        // p_v' = -t' flips BOTH sine signs, giving [c, -s; s, c] -- which is exactly what
+        // slng_transform_uv already applies. The two sign inversions cancel, so no negation here.
+        //
+        // AvatarRenderer still carries the old ±π approximation; it moves to this family in
+        // Phase 3.
+        float repeatU = ft.RepeatU, repeatV = ft.RepeatV;
 
         // FEAT-RENDER-01 Phase 1: a ShaderMaterial from the prim shader family instead of a
         // StandardMaterial3D. Two properties that used to be set here per material are now baked
@@ -754,7 +752,8 @@ public partial class ObjectRenderer : Node3D
         // automatically.
         var material = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
         material.SetShaderParameter(PrimShaderFamily.AlbedoColor, colorTint);
-        material.SetShaderParameter(PrimShaderFamily.UvScale, new Godot.Vector2(effRepeatU, effRepeatV));
+        material.SetShaderParameter(PrimShaderFamily.UvScale, new Godot.Vector2(repeatU, repeatV));
+        material.SetShaderParameter(PrimShaderFamily.UvRotation, ft.Rotation);
         // Centered like SL (u' = (u-0.5)*repeat + 0.5 + off) — the shader scales UVs from the
         // corner, so without the 0.5-0.5*repeat correction any repeat != 1 shifts the texture
         // off-center. Folded into the offset so the shader stays a plain multiply-add.
@@ -771,8 +770,8 @@ public partial class ObjectRenderer : Node3D
         // "+ ft.OffsetV" until 2026-08-01, i.e. any face with a V offset had its texture shifted
         // the wrong way by twice the offset.
         material.SetShaderParameter(PrimShaderFamily.UvOffset, new Godot.Vector2(
-            0.5f - 0.5f * effRepeatU + ft.OffsetU,
-            0.5f - 0.5f * effRepeatV - ft.OffsetV));
+            0.5f - 0.5f * repeatU + ft.OffsetU,
+            0.5f - 0.5f * repeatV - ft.OffsetV));
 
         // Translucent per-face tint: pick the blending variant. This is the direct equivalent of
         // the old `material.Transparency = Alpha` — see PrimShaderFamily for why transparency is
