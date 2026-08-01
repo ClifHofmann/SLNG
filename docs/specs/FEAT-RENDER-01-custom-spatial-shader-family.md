@@ -104,6 +104,55 @@ Notes on reading these:
   finding, unrelated to this task and not caused by it. Recorded so a later reading of the
   same number is not mistaken for a regression introduced by the shader family.
 
+## Phase 1 implementation notes (hand-off)
+
+Shaders exist and compile (`app/materials/prim/`); **nothing uses them yet** — `ObjectRenderer`
+still builds `StandardMaterial3D`, so rendering is unchanged so far. What remains is the wiring
+in `ObjectRenderer.BuildFaceMaterialAsync` / `ApplyAlphaCutout`.
+
+**Structural gotcha, decide this first.** Today the material's transparency is *mutated after
+creation*: `ApplyAlphaCutout` runs in a deferred callback once the texture has loaded and flips
+`Transparency`. With `ShaderMaterial` the equivalent of "change transparency mode" is
+**swapping `material.Shader` to another variant**, since `render_mode` is compile-time. That is
+supported and cheap, but it means the variant decision happens in two places (creation, and again
+on texture arrival) and both must agree. Keep `ApplyAlphaCutout`'s existing logic and have it
+assign `Shader` instead of `Transparency`.
+
+Property mapping — every one of these must survive, they are the parity checklist:
+
+| StandardMaterial3D | Shader uniform / variant |
+|---|---|
+| `AlbedoColor` | `albedo_color` |
+| `AlbedoTexture` | `albedo_texture` + `has_albedo_texture = true` |
+| `Uv1Scale = (rU, rV, 1)` | `uv_scale = (rU, rV)` |
+| `Uv1Offset = (0.5-0.5*rU+oU, …, 0)` | `uv_offset` — same first two components, unchanged formula |
+| `TextureFilter = LinearWithMipmapsAnisotropic` | baked into the sampler hints (`filter_linear_mipmap_anisotropic`) |
+| `CullMode = Back` | `render_mode cull_back` in all three variants |
+| `Transparency.Disabled` | `prim_opaque.gdshader` |
+| `Transparency.Alpha` | `prim_blend.gdshader` |
+| `Transparency.AlphaScissor` + `AlphaScissorThreshold` | `prim_scissor.gdshader` + `alpha_scissor_threshold` |
+| `Metallic` / `Roughness` | `metallic_factor` / `roughness_factor` |
+| `Emission` / `EmissionEnabled` | `emission_color` / `emission_enabled` |
+| `NormalTexture` + `NormalEnabled` | `normal_texture` + `has_normal_texture` |
+| `OrmTexture` | `orm_texture` + `has_orm_texture` |
+| `EmissionTexture` | `emission_texture` + `has_emission_texture` |
+
+Notes:
+- The async PBR texture callbacks currently assign `material.XxxTexture` directly. They become
+  `SetShaderParameter("xxx_texture", tex)` **plus** the matching `has_xxx_texture` flag — forgetting
+  the flag renders the texture invisible rather than erroring, so it is the likely silent bug here.
+- `AlphaAntialiasingMode = AlphaToCoverage` has no direct uniform. It is a no-op today anyway
+  (MSAA 3D is enabled in `project.godot`, so re-check whether it now matters before dropping it).
+- `_highlightMaterial` (selection overlay) stays a `StandardMaterial3D`; it is a `MaterialOverlay`,
+  not a face material, and is out of scope.
+- `uv_rotation` must stay `0.0` in Phase 1. It is Phase 2's payload and wiring it early makes
+  "visually identical" unverifiable.
+
+**Verify shaders by compiling them, not by reading them.** A throwaway `SceneTree` script run via
+`godot --headless --path app --script <file>` that `load()`s each `.gdshader` reports real compile
+errors. This immediately caught that `METALLIC`/`ROUGHNESS`/`NORMAL_MAP`/`EMISSION` cannot be
+assigned from a user function — a mistake that reads as perfectly fine GLSL.
+
 ## Acceptance Criteria
 
 ### Phase 1 — Swap `ObjectRenderer` to the shader family, visually identical
