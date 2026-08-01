@@ -95,7 +95,7 @@ public partial class ObjectRenderer : Node3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-08-01-uv-rotation-phase2";
+    private const string BuildMarker = "2026-08-01-faceparams-diagnostic";
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
@@ -266,6 +266,37 @@ public partial class ObjectRenderer : Node3D
         UpdateVisual(entityIdStr);
     }
 
+    /// <summary>Prints the per-face texture placement of a selected object, in the same terms
+    /// the SL build floater shows (repeats, offsets, rotation in degrees).
+    ///
+    /// Exists because "the texture looks wrong on that pillar" is not a debuggable statement:
+    /// it cannot distinguish a rotation that never arrives from one applied the wrong way, from
+    /// a mirror (negative repeat), from a plain offset. Select the object here, open the same
+    /// object's Texture tab in Firestorm, and the two number sets either agree or they don't —
+    /// which turns a visual impression into a decidable comparison. Firestorm shows rotation in
+    /// DEGREES, so it is printed both ways.</summary>
+    private void DumpFaceTextureParams(Entity entity)
+    {
+        var prim = entity.GetComponent<PrimitiveComponent>();
+        if (prim == null) return;
+
+        Logger.Info($"[FaceParams] object {entity.LocalId} mesh={prim.IsMesh} sculpt={prim.IsSculpt} " +
+                    $"default: repeat=({prim.RepeatU:0.###},{prim.RepeatV:0.###}) " +
+                    $"offset=({prim.OffsetU:0.###},{prim.OffsetV:0.###}) " +
+                    $"rot={prim.Rotation:0.####} rad = {Mathf.RadToDeg(prim.Rotation):0.##}°");
+
+        if (prim.Faces == null) { Logger.Info("[FaceParams]   (no per-face data — all faces use the default above)"); return; }
+
+        for (int i = 0; i < prim.Faces.Length; i++)
+        {
+            var f = prim.Faces[i];
+            Logger.Info($"[FaceParams]   face {i}: repeat=({f.RepeatU:0.###},{f.RepeatV:0.###}) " +
+                        $"offset=({f.OffsetU:0.###},{f.OffsetV:0.###}) " +
+                        $"rot={f.Rotation:0.####} rad = {Mathf.RadToDeg(f.Rotation):0.##}° " +
+                        $"tex={f.TextureId.ToString()[..8]}");
+        }
+    }
+
     private void HighlightVisual(string idStr, bool isSelected)
     {
         if (_world == null) return;
@@ -273,6 +304,8 @@ public partial class ObjectRenderer : Node3D
 
         var entity = _world.GetEntity(id);
         if (entity == null) return;
+
+        if (isSelected) DumpFaceTextureParams(entity);
 
         // Edit Linked Parts ON (FEAT-UI-06): highlight only the specific part that was actually
         // selected -- grouping by root here would glow the WHOLE linkset regardless of which
