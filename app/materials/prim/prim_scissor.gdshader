@@ -4,8 +4,12 @@
 // keeps the material in the OPAQUE pass and discards below the threshold, which is what makes
 // this cheaper than real blending -- the reason ObjectRenderer prefers it for world prims
 // (avatar content uses alpha hashing instead; see AvatarRenderer).
+//
+// alpha_to_coverage mirrors the AlphaAntiAliasing.AlphaToCoverage the StandardMaterial3D path
+// set on exactly these faces. It is a no-op while 3D MSAA is off project-wide (it is), which is
+// also why it can be baked into the variant instead of being another compile-time axis.
 shader_type spatial;
-render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
+render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx, alpha_to_coverage;
 
 #include "res://materials/prim/prim_common.gdshaderinc"
 

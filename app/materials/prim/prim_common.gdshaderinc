@@ -103,6 +103,9 @@ float slng_shade(vec2 uv, vec3 view_position,
 
     out_emission = vec3(0.0);
     if (emission_enabled) {
+        // MULTIPLIES factor by texture, which is what glTF specifies for
+        // emissiveFactor * emissiveTexture -- and what SLNG's only source of emission data
+        // (AssetService's glTF material resolve) means.
         vec3 emission = emission_color;
         if (has_emission_texture) {
             emission *= texture(emission_texture, uv).rgb;
