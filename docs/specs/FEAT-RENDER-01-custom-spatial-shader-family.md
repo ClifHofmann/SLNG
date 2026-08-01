@@ -78,8 +78,16 @@ frames=835 medianMs=11.46 p95Ms=14.81 worstMs=91.45
 drawCalls=5867 primitives=32262752 objects=6698 videoMemMB=2573.6
 ```
 
-Scene: OSGrid, The Dangazi Forest — the foreground-pillar view also used as the Phase 2
-rotation reference. (Record the exact position readout alongside this before re-measuring.)
+Protocol, and it must be followed exactly for the after-run: **log in to OSGrid's The
+Dangazi Forest, do not move the avatar or the camera at all, and take the measurement from
+the login spawn point.** Standing still at the spawn is what makes this reproducible —
+position and camera transform are then identical between runs by construction, with no
+attempt to walk back to a remembered spot.
+
+Wait for the scene to finish streaming before triggering it. `objects` climbed 6646 -> 6698
+between two runs taken at slightly different moments after login, and the 91 ms outlier is
+most likely an asset upload still in flight. Watching `drawCalls` settle (it was byte-identical
+at 5867 once loaded) is the cheapest way to tell the scene has stopped changing.
 
 Notes on reading these:
 - The sampler disables V-Sync for its window on purpose. An earlier baseline taken with
