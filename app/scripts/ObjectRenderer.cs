@@ -81,6 +81,9 @@ public partial class ObjectRenderer : Node3D
     // ORM branch in BuildFaceMaterialAsync). Main-thread only.
     private readonly HashSet<Guid> _ormMapsSeen = new();
 
+    // Objects already reported by the [SculptSite] scan. Main-thread only.
+    private readonly HashSet<Guid> _sculptSitesLogged = new();
+
     // Objects already reported by the [RotSite] scan. Main-thread only.
     private readonly HashSet<Guid> _rotationSitesLogged = new();
 
@@ -98,7 +101,7 @@ public partial class ObjectRenderer : Node3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-08-02-rotsite-sl-coords";
+    private const string BuildMarker = "2026-08-02-sculptsite-scan";
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
@@ -676,6 +679,22 @@ public partial class ObjectRenderer : Node3D
         // rotation cases are, so the acceptance check can be aimed at one instead of guessed at.
         // Once per object, and still on the main thread (before the first await) because it reads
         // the node's transform.
+        // Companion scan for the still-unexplained mirrored-texture sculpt. Everything analytic
+        // came out "equivalent to the viewer", so what is needed next is one observation that does
+        // not depend on that analysis being right: does a sculpt WITHOUT the invert flag look
+        // mirrored too? If yes the fault is in our base sculpt UV generation and affects every
+        // sculptie; if no, it is the invert path after all. Logging both groups with positions so
+        // one of each can be compared side by side against the real viewer.
+        if (prim.IsSculpt && _sculptSitesLogged.Add(state.EntityId))
+        {
+            var se = _world.GetEntity(state.EntityId);
+            var sp2 = se?.GetComponent<TransformComponent>()?.Position;
+            bool inv = (prim.SculptType & 64) != 0, mir = (prim.SculptType & 128) != 0;
+            Logger.Info($"[SculptSite] object {se?.LocalId} at " +
+                        $"{(sp2 is { } q ? $"<{q.X:0.#}, {q.Y:0.#}, {q.Z:0.#}>" : "?")} " +
+                        $"stitching={prim.SculptType & 0x07} invert={inv} mirror={mir}");
+        }
+
         if (prim.Faces != null && _rotationSitesLogged.Add(state.EntityId))
         {
             float maxRot = 0f;
