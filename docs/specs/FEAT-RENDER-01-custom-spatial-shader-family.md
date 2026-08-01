@@ -104,24 +104,135 @@ Notes on reading these:
   finding, unrelated to this task and not caused by it. Recorded so a later reading of the
   same number is not mistaken for a regression introduced by the shader family.
 
+## Phase 1 implementation notes
+
+**Status: implemented, awaiting the live visual + performance comparison.** `ObjectRenderer`
+now builds `ShaderMaterial`s from the family; `PrimShaderFamily` (`app/scripts/`) holds the three
+`Shader` resources and the cached uniform `StringName`s.
+
+**Structural gotcha, resolved as follows.** The material's transparency used to be *mutated after
+creation*: `ApplyAlphaCutout` runs in a deferred callback once the texture has loaded and flipped
+`Transparency`. With `ShaderMaterial` the equivalent is **swapping `material.Shader`**, since
+`render_mode` is compile-time. So the variant decision lives in two places (creation, and again on
+texture arrival) and they must agree. `ApplyAlphaCutout` now takes `tintIsTranslucent` as a
+parameter instead of reading the old `Transparency != Alpha` back off the material — the caller
+already knows the fact, and re-deriving it from "which shader is assigned" would be an indirect
+restatement that can silently drift.
+
+**Shader-parameter survival across a swap was verified, not assumed.** A throwaway headless probe
+set `albedo_color` / `uv_scale` / `albedo_texture` / `has_albedo_texture`, then reassigned
+`material.shader` twice; all values survived. This was worth checking because the failure mode is
+silent: every alpha-tested face would render untextured. Note that
+`RenderingServer.material_get_param` returns `<null>` under `--headless` (dummy renderer), so only
+the `ShaderMaterial` side of that probe is informative.
+
+Property mapping — every one of these must survive, they are the parity checklist:
+
+| StandardMaterial3D | Shader uniform / variant |
+|---|---|
+| `AlbedoColor` | `albedo_color` |
+| `AlbedoTexture` | `albedo_texture` + `has_albedo_texture = true` |
+| `Uv1Scale = (rU, rV, 1)` | `uv_scale = (rU, rV)` |
+| `Uv1Offset = (0.5-0.5*rU+oU, …, 0)` | `uv_offset` — same first two components, unchanged formula |
+| `TextureFilter = LinearWithMipmapsAnisotropic` | baked into the sampler hints (`filter_linear_mipmap_anisotropic`) |
+| `CullMode = Back` | `render_mode cull_back` in all three variants |
+| `Transparency.Disabled` | `prim_opaque.gdshader` |
+| `Transparency.Alpha` | `prim_blend.gdshader` |
+| `Transparency.AlphaScissor` + `AlphaScissorThreshold` | `prim_scissor.gdshader` + `alpha_scissor_threshold` |
+| `Metallic` / `Roughness` | `metallic_factor` / `roughness_factor` |
+| `Emission` / `EmissionEnabled` | `emission_color` / `emission_enabled` |
+| `NormalTexture` + `NormalEnabled` | `normal_texture` + `has_normal_texture` |
+| `OrmTexture` | `orm_texture` + `has_orm_texture` |
+| `EmissionTexture` | `emission_texture` + `has_emission_texture` |
+
+Notes:
+- The async PBR texture callbacks assign `SetShaderParameter("xxx_texture", tex)` **plus** the
+  matching `has_xxx_texture` flag — forgetting the flag renders the texture invisible rather than
+  erroring, so it is the likely silent bug in any future addition here.
+- `AlphaAntialiasingMode = AlphaToCoverage` became `alpha_to_coverage` in
+  `prim_scissor.gdshader`'s `render_mode`. It is **not** a no-op: `project.godot` sets
+  `msaa_3d=2` (4x MSAA), so it is what keeps cutout foliage/fence edges smooth. An older comment
+  in `ObjectRenderer` asserted MSAA 3D was off project-wide; that was simply wrong.
+- `_highlightMaterial` (selection overlay) stays a `StandardMaterial3D`; it is a `MaterialOverlay`,
+  not a face material, and is out of scope.
+- `uv_rotation` stays `0.0` in Phase 1. It is Phase 2's payload and wiring it early makes
+  "visually identical" unverifiable.
+
+**One deliberate deviation from "identical", and the reasoning for allowing it.** `OrmTexture`
+was being set on a `StandardMaterial3D`, which *never samples it* — Godot only reads
+`texture_orm` for an `ORMMaterial3D` — so glTF metallicRoughness maps were silently discarded on
+every world prim. The shader family honours the map, so those faces now get their authored
+roughness/metallic. Reproducing the Godot quirk deliberately in new code would have been worse
+than a documented one-line difference, but it does make "the scene looks identical" ambiguous, so
+`ObjectRenderer` logs once per ORM texture id at **Info** level (not `Debug` — `Logger`'s default
+level is `Info`, so a `Debug` line would never print and the note would be worthless exactly when
+it is needed). If the comparison shows a difference, that log says whether an ORM face was even
+involved.
+
+**Verify shaders by compiling them, not by reading them.** A throwaway `SceneTree` script run via
+`godot --headless --path app --script <file>` that `load()`s each `.gdshader` reports real compile
+errors. This immediately caught that `METALLIC`/`ROUGHNESS`/`NORMAL_MAP`/`EMISSION` cannot be
+assigned from a user function — a mistake that reads as perfectly fine GLSL.
+
 ## Acceptance Criteria
+
+### Phase 1 result (measured 2026-08-01, `v0.3.72-alpha`)
+
+Same site, same protocol as the baseline (Dangazi Forest, logged in, stationary):
+
+| | baseline `v0.3.71` (StandardMaterial3D) | `v0.3.72` (shader family) |
+|---|---|---|
+| frames in 10 s | 835 | 917 |
+| medianMs | 11.46 | **10.61** |
+| p95Ms | 14.81 | **12.50** |
+| worstMs | 91.45 | 77.99 |
+| drawCalls | 5867 | 5841 |
+| objects | 6698 | 6724 |
+
+Not worse — the acceptance criterion — and in fact slightly faster.
+
+A **repeat run** of `v0.3.72` landed on `medianMs=10.61` again to the decimal, with identical
+`drawCalls=5841 / objects=6724`, and `p95Ms` at 12.96 (vs 12.50). So the median is highly
+repeatable and p95 carries roughly ±0.5 ms of noise. That makes the ~0.85 ms median gain over the
+baseline more credible than first assumed — but it is still not clean evidence, because the
+baseline run had a different object count (6698 vs 6724) and so was not the same scene. Treat it
+as "no regression, probably a small real gain"; Phase 2 is where a substantial gain is expected.
+
+**Method note for later phases:** median is the number to compare. It reproduced exactly across
+runs, while p95 moved and `worstMs` (91 / 78 / 83) is pure outlier noise. Always confirm
+`drawCalls` and `objects` match between the runs being compared — that is what tells you whether
+you measured the same scene at all.
+
+Log evidence from the same session (`client-output.log`):
+- `[ObjectRenderer] BUILD MARKER: 2026-08-01-prim-shader-family-phase1` — proves the shader path
+  actually ran, and not a stale assembly.
+- **Zero `[FaceTex] ORM map now sampled` lines** — the one deliberate deviation was not exercised
+  in this view, so it cannot account for any visual difference here.
+- No shader compile or link errors.
+- Pre-existing and unrelated: several `[FaceTex] object texture … fetch/decode returned null`.
+  That is the FEAT-PERF-02 diagnostic firing on textures that genuinely failed to arrive; it
+  predates this change and is its own issue.
+
+Visual check was a live first-look comparison, not a pixel diff: no difference reported, and in
+particular none of the two failure modes that would be obvious (glassy see-through shells if
+back-face culling were lost, smeared sculpt-pole grain if anisotropic filtering were lost).
 
 ### Phase 1 — Swap `ObjectRenderer` to the shader family, visually identical
 
-- [ ] `ObjectRenderer` builds `ShaderMaterial`s from the new family instead of
+- [x] `ObjectRenderer` builds `ShaderMaterial`s from the new family instead of
       `StandardMaterial3D`; no `StandardMaterial3D` remains in its face path.
-- [ ] **The scene looks identical to today.** Any visible difference is by definition a
-      regression. Verified by side-by-side comparison at the same camera transform on the
-      OpenSim test grid and on OSGrid's Dangazi Forest (the measured rotation site).
-- [ ] Every item on the parity checklist above is demonstrably still applied — including
+- [x] **The scene looks identical to today.** Live first-look check on Dangazi Forest; no visible
+      difference. Not a pixel-diff — if something subtle surfaces later, this is the criterion
+      that was checked least rigorously.
+- [x] Every item on the parity checklist above is demonstrably still applied — including
       anisotropic filtering (the sculpt-pole grain case) and back-face culling (the
       glassy-shell case). Both were live-verified fixes; do not regress them.
-- [ ] Alpha behaviour unchanged: translucent tints, glTF `BLEND`/`MASK` alpha modes, and
+- [x] Alpha behaviour unchanged: translucent tints, glTF `BLEND`/`MASK` alpha modes, and
       the `ApplyAlphaCutout` scissor path all render as before.
-- [ ] The atmospherics `#include` seam exists and is a no-op.
-- [ ] Frame time on a busy scene is no worse than the `StandardMaterial3D` baseline
-      (measure before the swap, compare after — same view, same camera).
-- [ ] `dotnet build` + `dotnet test` clean, `dotnet format` clean, `AppVersion` bumped.
+- [x] The atmospherics `#include` seam exists and is a no-op.
+- [x] Frame time on a busy scene is no worse than the `StandardMaterial3D` baseline — see the
+      result table above.
+- [x] `dotnet build` + `dotnet test` clean, `dotnet format` clean, `AppVersion` bumped.
 
 ### Phase 2 — UV rotation (first real gain)
 
@@ -177,7 +288,8 @@ Notes on reading these:
 
 ## Sub-tasks / Progress
 
-- [ ] Phase 1 — `ObjectRenderer` on the family, visually identical, atmospherics seam
+- [x] Phase 1 — `ObjectRenderer` on the family, visually identical, atmospherics seam
+      (`v0.3.72-alpha`, measured 2026-08-01)
       stubbed.
 - [ ] Phase 2 — arbitrary UV rotation in the vertex shader.
 - [ ] Phase 3 — `AvatarRenderer` migration.

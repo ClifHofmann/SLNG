@@ -77,6 +77,10 @@ public partial class ObjectRenderer : Node3D
     // face's texture via SetSurfaceOverrideMaterial.
     private readonly Dictionary<Guid, int[]> _meshFaceIndices = new();
 
+    // glTF metallicRoughness maps that have been reported as "now actually sampled" (see the
+    // ORM branch in BuildFaceMaterialAsync). Main-thread only.
+    private readonly HashSet<Guid> _ormMapsSeen = new();
+
     private Mesh _boxMesh = new BoxMesh();
     private Mesh _sphereMesh = new SphereMesh();
     private Mesh _cylinderMesh = new CylinderMesh();
@@ -91,11 +95,14 @@ public partial class ObjectRenderer : Node3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-08-01-backface-culling-matches-viewer";
+    private const string BuildMarker = "2026-08-01-prim-shader-family-phase1";
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
         GD.Print($"[ObjectRenderer] BUILD MARKER: {BuildMarker}");
+        // Pull the shader family in (and trigger its compile) here on the main thread, rather
+        // than letting the first worker-thread material build do it mid-frame.
+        PrimShaderFamily.Preload();
         _world = world;
         _assetService = assetService;
         _gpuCache = gpuCache;
@@ -616,7 +623,7 @@ public partial class ObjectRenderer : Node3D
             return;
         }
 
-        var faceTasks = new List<System.Threading.Tasks.Task<(int Surface, StandardMaterial3D Material, List<Guid> Used)>>();
+        var faceTasks = new List<System.Threading.Tasks.Task<(int Surface, ShaderMaterial Material, List<Guid> Used)>>();
 
         for (int surface = 0; surface < faceIndices.Length; surface++)
         {
@@ -672,7 +679,7 @@ public partial class ObjectRenderer : Node3D
 
     /// <summary>Builds one face's material (classic texture or PBR) and returns the texture ids
     /// it references. Texture/material application is marshalled to the main thread.</summary>
-    private async System.Threading.Tasks.Task<(StandardMaterial3D Material, List<Guid> Used)> BuildFaceMaterialAsync(FaceTexture ft, float screenPixelArea, float priority, bool isSculpted = false)
+    private async System.Threading.Tasks.Task<(ShaderMaterial Material, List<Guid> Used)> BuildFaceMaterialAsync(FaceTexture ft, float screenPixelArea, float priority, bool isSculpted = false)
     {
         var used = new List<Guid>();
         var colorTint = new Godot.Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
@@ -721,46 +728,47 @@ public partial class ObjectRenderer : Node3D
             Logger.Debug($"[FaceTex] unsupported face rotation {ft.Rotation:0.###} rad (tex {ft.TextureId.ToString()[..8]}) — rendered unrotated");
         }
 
-        var material = new StandardMaterial3D
-        {
-            AlbedoColor = colorTint,
-            // Linear + mipmaps: SL textures look smooth, not blocky/pixelated, and don't shimmer
-            // with distance. ANISOTROPIC specifically, matching the real viewer's TFO_ANISOTROPIC
-            // path (llrender.cpp:530-540, GL_TEXTURE_MAX_ANISOTROPY at the driver maximum): plain
-            // isotropic mip selection takes the LARGEST UV derivative for a pixel, so wherever a
-            // surface's UVs are strongly stretched in one direction it drops to a coarse mip across
-            // the whole region. A sphere-stitched sculpt is the worst case -- U compresses to a
-            // point at the pole -- and it showed exactly that: the cushion's fine leather grain
-            // smeared into a soft radial swirl over its entire top face while Firestorm kept the
-            // grain crisp (live-compared 2026-08-01, with the texture confirmed to be uploading at
-            // full 512x512, so it was never a resolution problem). Anisotropic filtering samples
-            // along the stretched axis instead and keeps that detail.
-            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmapsAnisotropic,
-            // Back-face culled, matching the real viewer's global default (llrender.cpp:863,
-            // `glCullFace(GL_BACK)`). The viewer re-enables double-sided rendering ONLY for
-            // particles (lldrawpoolalpha.cpp:643, `disable_cull = is_particle_or_hud_particle`)
-            // and for a GLTF material that explicitly declares mDoubleSided (lldrawpool.cpp:839,
-            // :856; lldrawpoolalpha.cpp:510, :557, :664) -- never blanket for ordinary prim faces,
-            // and notably NOT for alpha-blended ones either. This used to be CullModeEnum.Disabled
-            // for every face of every object: with no back-face culling, a closed prim draws its
-            // own far/interior surfaces on top of its near ones, so solid objects read as glassy,
-            // see-through shells (live-verified 2026-08-01 on a sculpted seat that renders as an
-            // opaque cushion in Firestorm). SLNG has no double-sided material signal yet -- when
-            // PBR double-sided support lands, that is the one place allowed to set Disabled again.
-            CullMode = BaseMaterial3D.CullModeEnum.Back,
-            Uv1Scale = new Godot.Vector3(effRepeatU, effRepeatV, 1.0f),
-            // Centered like SL (u' = (u-0.5)*repeat + 0.5 + off) — Godot scales UVs from the
-            // corner, so without the 0.5-0.5*repeat correction any repeat != 1 shifts the
-            // texture off-center.
-            Uv1Offset = new Godot.Vector3(
-                0.5f - 0.5f * effRepeatU + ft.OffsetU,
-                0.5f - 0.5f * effRepeatV + ft.OffsetV,
-                0.0f)
-        };
+        // FEAT-RENDER-01 Phase 1: a ShaderMaterial from the prim shader family instead of a
+        // StandardMaterial3D. Two properties that used to be set here per material are now baked
+        // into the shaders themselves, and MUST NOT be assumed lost:
+        //
+        //  * Anisotropic filtering -- now the `filter_linear_mipmap_anisotropic` hint on every
+        //    texture uniform (prim_common.gdshaderinc). It matches the real viewer's
+        //    TFO_ANISOTROPIC path (llrender.cpp:530-540, GL_TEXTURE_MAX_ANISOTROPY at the driver
+        //    maximum). Plain isotropic mip selection takes the LARGEST UV derivative for a pixel,
+        //    so wherever UVs are strongly stretched in one direction it drops to a coarse mip
+        //    across the whole region. A sphere-stitched sculpt is the worst case -- U compresses
+        //    to a point at the pole -- and it showed exactly that: a cushion's fine leather grain
+        //    smeared into a soft radial swirl while Firestorm kept it crisp (live-compared
+        //    2026-08-01, texture confirmed uploading at full 512x512, so never a resolution
+        //    problem).
+        //  * Back-face culling -- now `cull_back` in each variant's render_mode, matching the
+        //    viewer's global default (llrender.cpp:863, `glCullFace(GL_BACK)`). The viewer lifts
+        //    it ONLY for particles (lldrawpoolalpha.cpp:643) and for a GLTF material that
+        //    declares mDoubleSided (lldrawpool.cpp:839, :856) -- never blanket for prim faces,
+        //    and notably not for alpha-blended ones either. With culling off, a closed prim draws
+        //    its own interior surfaces over its near ones and solid objects read as glassy shells
+        //    (live-verified 2026-08-01 on a sculpted seat).
+        //
+        // Both were expensive to find; if a future variant is added, it inherits neither
+        // automatically.
+        var material = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
+        material.SetShaderParameter(PrimShaderFamily.AlbedoColor, colorTint);
+        material.SetShaderParameter(PrimShaderFamily.UvScale, new Godot.Vector2(effRepeatU, effRepeatV));
+        // Centered like SL (u' = (u-0.5)*repeat + 0.5 + off) — the shader scales UVs from the
+        // corner, so without the 0.5-0.5*repeat correction any repeat != 1 shifts the texture
+        // off-center. Folded into the offset so the shader stays a plain multiply-add.
+        material.SetShaderParameter(PrimShaderFamily.UvOffset, new Godot.Vector2(
+            0.5f - 0.5f * effRepeatU + ft.OffsetU,
+            0.5f - 0.5f * effRepeatV + ft.OffsetV));
 
-        if (colorTint.A < 0.99f)
+        // Translucent per-face tint: pick the blending variant. This is the direct equivalent of
+        // the old `material.Transparency = Alpha` — see PrimShaderFamily for why transparency is
+        // a shader swap rather than a property.
+        bool tintIsTranslucent = colorTint.A < 0.99f;
+        if (tintIsTranslucent)
         {
-            material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+            material.Shader = PrimShaderFamily.Blend;
         }
 
         if (ft.MaterialId != Guid.Empty && _assetService != null)
@@ -768,11 +776,13 @@ public partial class ObjectRenderer : Node3D
             var pbr = await _assetService.GetMaterialAsync(ft.MaterialId);
             if (pbr != null)
             {
-                material.AlbedoColor = new Godot.Color(pbr.BaseColorFactor.X, pbr.BaseColorFactor.Y, pbr.BaseColorFactor.Z, pbr.BaseColorFactor.W) * colorTint;
-                material.Metallic = pbr.MetallicFactor;
-                material.Roughness = pbr.RoughnessFactor;
-                material.EmissionEnabled = pbr.EmissiveFactor != System.Numerics.Vector3.Zero;
-                material.Emission = new Godot.Color(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z);
+                var baseColor = new Godot.Color(pbr.BaseColorFactor.X, pbr.BaseColorFactor.Y, pbr.BaseColorFactor.Z, pbr.BaseColorFactor.W) * colorTint;
+                material.SetShaderParameter(PrimShaderFamily.AlbedoColor, baseColor);
+                material.SetShaderParameter(PrimShaderFamily.MetallicFactor, pbr.MetallicFactor);
+                material.SetShaderParameter(PrimShaderFamily.RoughnessFactor, pbr.RoughnessFactor);
+                material.SetShaderParameter(PrimShaderFamily.EmissionEnabled, pbr.EmissiveFactor != System.Numerics.Vector3.Zero);
+                material.SetShaderParameter(PrimShaderFamily.EmissionColor,
+                    new Godot.Color(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z));
 
                 // glTF's own alphaMode is authoritative here — a real, creator-declared signal,
                 // never a pixel-content guess (see AvatarRenderer.BuildFaceMaterialAsync's
@@ -785,13 +795,12 @@ public partial class ObjectRenderer : Node3D
                 // own declared transparency and must not be downgraded back to opaque.
                 if (pbr.AlphaMode == SLNG.Assets.PbrAlphaMode.Blend)
                 {
-                    material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                    material.Shader = PrimShaderFamily.Blend;
                 }
                 else if (pbr.AlphaMode == SLNG.Assets.PbrAlphaMode.Mask)
                 {
-                    material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-                    material.AlphaScissorThreshold = pbr.AlphaCutoff;
-                    material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
+                    material.Shader = PrimShaderFamily.Scissor;
+                    material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, pbr.AlphaCutoff);
                 }
 
                 var tasks = new List<System.Threading.Tasks.Task>();
@@ -801,7 +810,11 @@ public partial class ObjectRenderer : Node3D
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId, screenPixelArea, priority).ContinueWith(t =>
                         Godot.Callable.From(() =>
                         {
-                            if (IsInstanceValid(t.Result)) material.AlbedoTexture = t.Result;
+                            if (IsInstanceValid(t.Result))
+                            {
+                                material.SetShaderParameter(PrimShaderFamily.AlbedoTexture, t.Result);
+                                material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
+                            }
                             else GD.PrintErr($"[FaceTex] object PBR baseColor {pbr.BaseColorTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }).CallDeferred()));
                 }
@@ -811,7 +824,11 @@ public partial class ObjectRenderer : Node3D
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId, screenPixelArea, priority).ContinueWith(t =>
                         Godot.Callable.From(() =>
                         {
-                            if (IsInstanceValid(t.Result)) { material.NormalEnabled = true; material.NormalTexture = t.Result; }
+                            if (IsInstanceValid(t.Result))
+                            {
+                                material.SetShaderParameter(PrimShaderFamily.NormalTexture, t.Result);
+                                material.SetShaderParameter(PrimShaderFamily.HasNormalTexture, true);
+                            }
                             else GD.PrintErr($"[FaceTex] object PBR normal {pbr.NormalTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }).CallDeferred()));
                 }
@@ -821,7 +838,27 @@ public partial class ObjectRenderer : Node3D
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId, screenPixelArea, priority).ContinueWith(t =>
                         Godot.Callable.From(() =>
                         {
-                            if (IsInstanceValid(t.Result)) material.OrmTexture = t.Result;
+                            if (IsInstanceValid(t.Result))
+                            {
+                                // DELIBERATE Phase-1 behaviour change, and the only one: this used
+                                // to set BaseMaterial3D.OrmTexture, which a StandardMaterial3D
+                                // NEVER SAMPLES -- Godot only reads texture_orm when the material
+                                // is an ORMMaterial3D, so glTF metallicRoughness maps were silently
+                                // ignored on every world prim. The shader family honours it, so
+                                // such faces now get their authored roughness/metallic. Logged
+                                // because it makes the Phase-1 "visually identical" comparison
+                                // ambiguous otherwise: if the scene looks different, this line
+                                // tells you whether an ORM face was even involved.
+                                material.SetShaderParameter(PrimShaderFamily.OrmTexture, t.Result);
+                                material.SetShaderParameter(PrimShaderFamily.HasOrmTexture, true);
+                                // Info, not Debug: Logger's default level is Info, so a Debug line
+                                // here would never print and this note would be worthless exactly
+                                // when it's needed. Once per texture id (this callback is
+                                // main-thread via CallDeferred, so the set needs no lock) to keep
+                                // a heavily-reused ORM map from spamming.
+                                if (_ormMapsSeen.Add(pbr.MetallicRoughnessTextureId))
+                                    Logger.Info($"[FaceTex] ORM map now sampled (StandardMaterial3D ignored it): {pbr.MetallicRoughnessTextureId}");
+                            }
                             else GD.PrintErr($"[FaceTex] object PBR metallicRoughness {pbr.MetallicRoughnessTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }).CallDeferred()));
                 }
@@ -831,7 +868,11 @@ public partial class ObjectRenderer : Node3D
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId, screenPixelArea, priority).ContinueWith(t =>
                         Godot.Callable.From(() =>
                         {
-                            if (IsInstanceValid(t.Result)) material.EmissionTexture = t.Result;
+                            if (IsInstanceValid(t.Result))
+                            {
+                                material.SetShaderParameter(PrimShaderFamily.EmissionTexture, t.Result);
+                                material.SetShaderParameter(PrimShaderFamily.HasEmissionTexture, true);
+                            }
                             else GD.PrintErr($"[FaceTex] object PBR emissive {pbr.EmissiveTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }).CallDeferred()));
                 }
@@ -855,8 +896,9 @@ public partial class ObjectRenderer : Node3D
                         // Checked here (inside the deferred callback, not before scheduling it) so
                         // there's no gap left for a same-frame eviction to invalidate the check.
                         if (!IsInstanceValid(tex)) return;
-                        material.AlbedoTexture = tex;
-                        ApplyAlphaCutout(material, tex);
+                        material.SetShaderParameter(PrimShaderFamily.AlbedoTexture, tex);
+                        material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
+                        ApplyAlphaCutout(material, tex, tintIsTranslucent);
                     }).CallDeferred();
                 }
                 else
@@ -897,8 +939,15 @@ public partial class ObjectRenderer : Node3D
     /// Deliberately stays on AlphaScissor (not AlphaHash) for the Bit case: this runs per-face
     /// on potentially thousands of world prims, so it keeps the cheaper cutout mode. Avatar
     /// content (bakes, worn mesh attachments) is bounded per-avatar and uses AlphaHash instead —
-    /// see AvatarRenderer for that reasoning.</summary>
-    private static void ApplyAlphaCutout(StandardMaterial3D material, ImageTexture tex)
+    /// see AvatarRenderer for that reasoning.
+    ///
+    /// <paramref name="tintIsTranslucent"/> is passed in rather than read back off the material:
+    /// since FEAT-RENDER-01 the transparency mode IS the assigned shader, and asking "which
+    /// variant is this" would be an indirect re-derivation of a fact the caller already knows.
+    /// It is exactly the old <c>material.Transparency == Alpha</c> test — in this (non-PBR)
+    /// path the per-face color tint is the only thing that can have selected the blend variant
+    /// before now.</summary>
+    private static void ApplyAlphaCutout(ShaderMaterial material, ImageTexture tex, bool tintIsTranslucent)
     {
         var img = tex.GetImage();
         if (img == null) return;
@@ -907,30 +956,30 @@ public partial class ObjectRenderer : Node3D
 
         // Fully opaque texture: leave the material exactly as-is (opaque, back-face culled).
         // A translucent per-face color tint is a SEPARATE SL signal that BuildFaceMaterialAsync
-        // has already applied (Transparency == Alpha) and must survive, so only the
-        // genuinely-opaque case returns here.
-        if (alphaMode == Image.AlphaMode.None &&
-            material.Transparency != BaseMaterial3D.TransparencyEnum.Alpha)
+        // has already applied (the blend variant) and must survive, so only the genuinely-opaque
+        // case returns here.
+        if (alphaMode == Image.AlphaMode.None && !tintIsTranslucent)
         {
             return;
         }
 
         // If the primitive is already explicitly translucent via color tint, keep true Alpha blending.
-        // Otherwise, pick the right mode based on the texture's alpha content.
-        if (material.Transparency != BaseMaterial3D.TransparencyEnum.Alpha)
+        // Otherwise, pick the right variant based on the texture's alpha content.
+        if (!tintIsTranslucent)
         {
             if (alphaMode == Image.AlphaMode.Blend)
             {
                 // Smooth translucent edges (hair, glass, clouds)
-                material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                material.Shader = PrimShaderFamily.Blend;
             }
             else
             {
-                // Binary alpha (fences, foliage)
-                material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-                material.AlphaScissorThreshold = 0.5f;
-                // Free once MSAA 3D is enabled project-wide (currently off); harmless no-op until then.
-                material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
+                // Binary alpha (fences, foliage). The alpha-to-coverage that used to be set
+                // here is baked into prim_scissor.gdshader's render_mode -- and it does real
+                // work: project.godot runs 4x MSAA (msaa_3d=2), despite an older comment here
+                // claiming 3D MSAA was off.
+                material.Shader = PrimShaderFamily.Scissor;
+                material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, 0.5f);
             }
         }
         // CullMode is deliberately NOT touched here -- see BuildFaceMaterialAsync's CullMode
