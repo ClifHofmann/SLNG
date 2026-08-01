@@ -81,6 +81,9 @@ public partial class ObjectRenderer : Node3D
     // ORM branch in BuildFaceMaterialAsync). Main-thread only.
     private readonly HashSet<Guid> _ormMapsSeen = new();
 
+    // Objects already reported by the [RotSite] scan. Main-thread only.
+    private readonly HashSet<Guid> _rotationSitesLogged = new();
+
     private Mesh _boxMesh = new BoxMesh();
     private Mesh _sphereMesh = new SphereMesh();
     private Mesh _cylinderMesh = new CylinderMesh();
@@ -95,7 +98,7 @@ public partial class ObjectRenderer : Node3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-08-01-faceparams-sculpt-flags";
+    private const string BuildMarker = "2026-08-02-rotsite-scan";
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
@@ -666,6 +669,25 @@ public partial class ObjectRenderer : Node3D
         // requests below. Must stay ahead of the first await -- see ComputeTextureLod's note on
         // main-thread-only access.
         var (screenPixelArea, priority) = ComputeTextureLod(state.MeshInstance);
+
+        // FEAT-RENDER-01 Phase 2 needs an object that actually HAS a texture rotation to be
+        // testable at all. The one picked by eye turned out to have rot=0 on every face, so the
+        // feature could not possibly have changed anything there. This reports where the real
+        // rotation cases are, so the acceptance check can be aimed at one instead of guessed at.
+        // Once per object, and still on the main thread (before the first await) because it reads
+        // the node's transform.
+        if (prim.Faces != null && _rotationSitesLogged.Add(state.EntityId))
+        {
+            float maxRot = 0f;
+            foreach (var f in prim.Faces) maxRot = Mathf.Max(maxRot, Mathf.Abs(f.Rotation));
+            if (maxRot > 0.01f)
+            {
+                var p = state.MeshInstance.GlobalPosition;
+                Logger.Info($"[RotSite] object {_world.GetEntity(state.EntityId)?.LocalId} " +
+                            $"at ({p.X:0.#},{p.Y:0.#},{p.Z:0.#}) rotation up to " +
+                            $"{Mathf.RadToDeg(maxRot):0.#}° — usable as a Phase 2 test target");
+            }
+        }
 
         var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint, prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation);
 
