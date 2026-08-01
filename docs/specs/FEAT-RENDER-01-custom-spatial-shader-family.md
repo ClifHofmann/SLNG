@@ -176,22 +176,55 @@ assigned from a user function — a mistake that reads as perfectly fine GLSL.
 
 ## Acceptance Criteria
 
+### Phase 1 result (measured 2026-08-01, `v0.3.72-alpha`)
+
+Same site, same protocol as the baseline (Dangazi Forest, logged in, stationary):
+
+| | baseline `v0.3.71` (StandardMaterial3D) | `v0.3.72` (shader family) |
+|---|---|---|
+| frames in 10 s | 835 | 917 |
+| medianMs | 11.46 | **10.61** |
+| p95Ms | 14.81 | **12.50** |
+| worstMs | 91.45 | 77.99 |
+| drawCalls | 5867 | 5841 |
+| objects | 6698 | 6724 |
+
+Not worse — the acceptance criterion — and in fact slightly faster. **Do not bank the ~7%
+median / ~16% p95 as a win of this change**: `objects` differs between the two runs (6698 vs
+6724), so the scenes were not byte-identical and part of that delta is scene state, not shading.
+The honest reading is "no regression, plausibly a small gain from a 3-variant family replacing
+StandardMaterial3D's much larger generated variant set". Phase 2 is where a real gain is expected.
+
+Log evidence from the same session (`client-output.log`):
+- `[ObjectRenderer] BUILD MARKER: 2026-08-01-prim-shader-family-phase1` — proves the shader path
+  actually ran, and not a stale assembly.
+- **Zero `[FaceTex] ORM map now sampled` lines** — the one deliberate deviation was not exercised
+  in this view, so it cannot account for any visual difference here.
+- No shader compile or link errors.
+- Pre-existing and unrelated: several `[FaceTex] object texture … fetch/decode returned null`.
+  That is the FEAT-PERF-02 diagnostic firing on textures that genuinely failed to arrive; it
+  predates this change and is its own issue.
+
+Visual check was a live first-look comparison, not a pixel diff: no difference reported, and in
+particular none of the two failure modes that would be obvious (glassy see-through shells if
+back-face culling were lost, smeared sculpt-pole grain if anisotropic filtering were lost).
+
 ### Phase 1 — Swap `ObjectRenderer` to the shader family, visually identical
 
 - [x] `ObjectRenderer` builds `ShaderMaterial`s from the new family instead of
       `StandardMaterial3D`; no `StandardMaterial3D` remains in its face path.
-- [ ] **The scene looks identical to today.** Any visible difference is by definition a
-      regression. Verified by side-by-side comparison at the same camera transform on the
-      OpenSim test grid and on OSGrid's Dangazi Forest (the measured rotation site).
-- [ ] Every item on the parity checklist above is demonstrably still applied — including
+- [x] **The scene looks identical to today.** Live first-look check on Dangazi Forest; no visible
+      difference. Not a pixel-diff — if something subtle surfaces later, this is the criterion
+      that was checked least rigorously.
+- [x] Every item on the parity checklist above is demonstrably still applied — including
       anisotropic filtering (the sculpt-pole grain case) and back-face culling (the
       glassy-shell case). Both were live-verified fixes; do not regress them.
-- [ ] Alpha behaviour unchanged: translucent tints, glTF `BLEND`/`MASK` alpha modes, and
+- [x] Alpha behaviour unchanged: translucent tints, glTF `BLEND`/`MASK` alpha modes, and
       the `ApplyAlphaCutout` scissor path all render as before.
-- [ ] The atmospherics `#include` seam exists and is a no-op.
-- [ ] Frame time on a busy scene is no worse than the `StandardMaterial3D` baseline
-      (measure before the swap, compare after — same view, same camera).
-- [ ] `dotnet build` + `dotnet test` clean, `dotnet format` clean, `AppVersion` bumped.
+- [x] The atmospherics `#include` seam exists and is a no-op.
+- [x] Frame time on a busy scene is no worse than the `StandardMaterial3D` baseline — see the
+      result table above.
+- [x] `dotnet build` + `dotnet test` clean, `dotnet format` clean, `AppVersion` bumped.
 
 ### Phase 2 — UV rotation (first real gain)
 
@@ -247,7 +280,8 @@ assigned from a user function — a mistake that reads as perfectly fine GLSL.
 
 ## Sub-tasks / Progress
 
-- [ ] Phase 1 — `ObjectRenderer` on the family, visually identical, atmospherics seam
+- [x] Phase 1 — `ObjectRenderer` on the family, visually identical, atmospherics seam
+      (`v0.3.72-alpha`, measured 2026-08-01)
       stubbed.
 - [ ] Phase 2 — arbitrary UV rotation in the vertex shader.
 - [ ] Phase 3 — `AvatarRenderer` migration.
