@@ -512,6 +512,9 @@ public class AssetService
     {
         if (_memCache.TryGetValue(textureId, out TextureData? cached))
         {
+            if (rejectDegraded && cached != null)
+                Console.Error.WriteLine($"[TextureSource] {textureId}: served from MEMORY CACHE " +
+                    $"({cached.Width}x{cached.Height} degraded={cached.IsDegraded})");
             return Task.FromResult(cached);
         }
 
@@ -636,6 +639,14 @@ public class AssetService
                 }
                 else if (decodedFromCache != null)
                 {
+                    // Which SOURCE served a texture matters as much as whether it decoded: the
+                    // avatar's textures never appeared in the per-attempt trace at all, because
+                    // this early return happens before it. Without this line "the avatar looks
+                    // wrong" cannot be tied to any particular bytes.
+                    if (rejectDegraded)
+                        Console.Error.WriteLine($"[TextureSource] {textureId}: served from DISK CACHE " +
+                            $"({cached.Length} bytes -> {decodedFromCache.Width}x{decodedFromCache.Height} " +
+                            $"degraded={decodedFromCache.IsDegraded})");
                     return decodedFromCache;
                 }
                 else
