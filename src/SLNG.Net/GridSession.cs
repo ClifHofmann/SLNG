@@ -591,9 +591,53 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// then see a self AvatarAppearance depends on the sim echoing one, which is grid-dependent.
     /// Reading MyTextures here and emitting it through the same neutral event closes that gap so
     /// the renderer picks up the real bakes regardless of grid. Redundant-but-identical on SSB.</summary>
+    /// <summary>Reports the visual-parameter set LibreMetaverse holds for the local agent.
+    /// Read-only: it sends nothing and changes nothing. See its call site for why it exists.</summary>
+    private void LogVisualParamHealth()
+    {
+        try
+        {
+            var vp = _client.Appearance.MyVisualParameters;
+            if (vp == null || vp.Length == 0)
+            {
+                Console.Error.WriteLine("[VisualParams] LibreMetaverse holds NO visual parameters — " +
+                    "an appearance send would have replaced the stored shape with defaults");
+                return;
+            }
+
+            int zero = 0, mid = 0;
+            foreach (var b in vp)
+            {
+                if (b == 0) zero++;
+                else if (b == 128) mid++;
+            }
+
+            // 218 is the modern parameter count; a much shorter array means an incomplete set.
+            // All-zero or all-128 is the tell-tale of a never-populated (default) array rather
+            // than a real shape.
+            Console.Error.WriteLine($"[VisualParams] {vp.Length} params, {zero} zero, {mid} at 128 " +
+                $"(mid), first 12: {string.Join(",", vp.Take(12))}" +
+                ((zero + mid == vp.Length) ? "  <-- ALL DEFAULT: sending this would flatten the avatar" : ""));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[VisualParams] could not be inspected: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     private void OnAppearanceSet(object? sender, AppearanceSetEventArgs e)
     {
         if (!e.Success) return;
+
+        // Risk-free diagnostic for the avatar-corruption incident (2026-08-02). SendAppearance is
+        // OFF, so nothing here is transmitted -- this only records what LibreMetaverse WOULD have
+        // sent as AgentSetAppearance, which is what silently overwrote the user's stored shape.
+        //
+        // The suspicion is the visual parameters: if LMV holds an empty or default-filled array
+        // rather than the values the simulator sent us, then every appearance send replaces a real
+        // shape with a default one -- which is exactly what "avatar suddenly squat and deformed,
+        // in Firestorm too" looks like. A rebake feature must not be built until this reads sane.
+        LogVisualParamHealth();
 
         var te = _client.Appearance.MyTextures;
         var faces = te?.FaceTextures;
