@@ -580,6 +580,28 @@ public class AssetService
             if (bytes is { Length: > 0 })
             {
                 var result = await Task.Run(() => DecodeTexture(bytes, isSculpt)).ConfigureAwait(false);
+
+                // Both decoders (Magick.NET and the CoreJ2K fallback) refused these bytes, yet the
+                // real viewer draws the same assets, so the bytes themselves are the evidence and
+                // there is no other way to get at them -- the normal cache is only written on a
+                // SUCCESSFUL decode, so a failing texture leaves nothing behind to examine.
+                // Written once per id, next to the cache, for offline inspection of the raw
+                // codestream (markers, declared dimensions, where it actually ends).
+                if (result == null && cacheFile != null)
+                {
+                    try
+                    {
+                        string badFile = cacheFile + ".baddecode";
+                        if (!File.Exists(badFile))
+                        {
+                            await File.WriteAllBytesAsync(badFile, bytes).ConfigureAwait(false);
+                            Console.Error.WriteLine($"[TextureFetch] {textureId}: both decoders failed on " +
+                                $"{bytes.Length} bytes — saved to {System.IO.Path.GetFileName(badFile)}");
+                        }
+                    }
+                    catch { }
+                }
+
                 if (result != null)
                 {
                     if (desiredDiscard == 0 && cacheFile != null && !result.IsDegraded)
