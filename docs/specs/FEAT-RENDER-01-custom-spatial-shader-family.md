@@ -413,3 +413,80 @@ unchanged: the path between the decoded image and the sampled texel. The prime s
 `TryUpgradeCachedTexture` is supposed to restore detail on approach). That is also the natural
 explanation for the "blurry" half of the report, which has never been investigated separately from
 the "misplaced" half — and they may not be the same fault at all.
+
+## 2026-08-02 — the asset is truncated ON THE SIM (measured)
+
+`GpuCache` was not the suspect it looked like. `[GpuUpload]` reports `discard=1` for the statue's
+texture (1024x1024 source, screenPixelArea 244380, uploaded 512x512) — ordinary, and matching the
+viewer's own `ComputeDiscardLevel`. The interesting line was the one above it.
+
+### Both transports deliver the same short body
+
+v0.3.107 armed the existing `httpUndecodable` escape hatch for degraded decodes as well as null
+ones, so attempts #1/#2 fall through to UDP. Result:
+
+```
+[TextureAttempt] 6d9be86d #0 bytes=32000 -> 1024x1024 degraded=True    (HTTP)
+[TextureFetch]   6d9be86d: UDP delivered 32000 bytes
+[TextureAttempt] 6d9be86d #1 bytes=32000 -> 1024x1024 degraded=True    (UDP)
+```
+
+Byte-identical. All 14 affected textures are requested at `discard=0`. The sim's asset store holds
+partial data — no fetch path, retry or cache change can alter that.
+
+### The codestream says so itself
+
+Marker walk of the dumped body (`scratchpad/j2cmarkers.py`):
+
+| field | value |
+|---|---|
+| SIZ | 1024x1024, single tile, 3 components |
+| COD | LRCP, 6 layers, 5 decomposition levels |
+| SOT | **Psot (declared) = 392900, available = 31826 → 361074 bytes missing** |
+
+Psot vs. bytes present is a measurement, unlike Magick.NET's error text. 8.1% of the asset exists.
+392900 is almost exactly `1024*1024*3*0.125` — SL's uploader targets rate 1/8, which is also what
+`LLImageJ2C::calcDataSizeJ2C` assumes.
+
+Sibling evidence: other degraded bodies land on 600 / 1536 / 6144 bytes — the exact
+`calcDataSizeJ2C` budgets for discard 5 / 4 / 3. These are truncated at viewer discard boundaries,
+i.e. stored as partial progressive fetches, not randomly corrupted.
+
+### `IsDegraded` does not mean "incomplete"
+
+`DecodeTexture` sets it unconditionally on the CoreJ2K fallback path — it means "Magick.NET refused,
+CoreJ2K handled it". Any reasoning that treated `degraded=True` as evidence of truncation was
+reading a decoder-selection flag as a data-quality flag.
+
+### The decode is spatially correct
+
+Decoding the truncated 32000 bytes at every CoreJ2K resolution level
+(`scratchpad/TruncProbe`) produces a coherent ivy-over-stone atlas at full 1024x1024,
+`neighbourDelta=3.75` — a genuine low-pass image, not gap-fill speckle (which reads 8-9 when the
+same content is downscaled). **Truncation of an LRCP stream costs quality uniformly; it does not
+displace content.** So the truncated asset explains "unscharf" completely and "falsch platziert"
+not at all.
+
+### Sculpt V flip re-verified, and it is correct
+
+Suspicion fell on `ObjectRenderer.cs`'s `flipV: true` for sculpts, whose own comment admitted it
+"leans on the SL-convention default rather than hard proof". Worked through against
+`llvolume.cpp` rather than flipped-and-eyeballed:
+
+- viewer `sculptGenerateMapVertices`: map row `y = s/(sizeS-1) * H`; `createSide`: `tt =
+  path_data[s].mTexT = s/(sizeS-1)`. So the viewer pairs map row `y` with diffuse coord `tt = y/H`,
+  and since SL samples bottom-origin that is Godot row `H - y`.
+- ours: PrimMesher pairs map row `imageY` with `v = imageY/H`; `flipV` gives `1 - imageY/H`, which
+  Godot samples at row `H - imageY`.
+
+Same pairing. `flipV: true` stays. (It also reconciles with the V-offset minus sign and the prim
+path: everything is consistent with final V = 1 - viewer t uniformly, so the prim comment's
+*explanation* — a MeshFoundry internal flip being cancelled — is wrong even though its action is
+right.)
+
+### Open
+
+"Blurry" is explained and unfixable client-side. "Misplaced" is not explained, and the sculpt
+UV/geometry pipeline, the shader UV transform, repeat/offset/rotation, TexGen and now the V flip are
+all ruled out by measurement or source. The next discriminator is external: whether Firestorm shows
+*this* object correctly, since it receives the identical 32000 bytes.
