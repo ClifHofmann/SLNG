@@ -139,6 +139,7 @@ public class AssetService
     {
         _session = session;
         _cacheDir = cacheDirectory;
+        _sampleDir = cacheDirectory;
         if (!string.IsNullOrEmpty(_cacheDir) && !Directory.Exists(_cacheDir))
         {
             Directory.CreateDirectory(_cacheDir);
@@ -962,6 +963,27 @@ public class AssetService
     /// Returns a NON-degraded result: the pixels it produces are real decoded data, not
     /// reconstruction. It is smaller than the asset's nominal size, which the caller handles the
     /// same way it handles any texture that arrives at a lower detail level.</summary>
+    // Keeps one sample per distinct byte length of an asset Magick.NET refuses, next to the cache
+    // as <length>.magickfail. These streams are the only thing that can settle how to decode them
+    // cleanly, and they are otherwise unobtainable: the normal cache is written only on a
+    // SUCCESSFUL decode, so the interesting assets never leave a copy behind. Having them on disk
+    // means the CoreJ2K resolution-level work can be tried offline instead of through a live
+    // round-trip per attempt.
+    private static readonly ConcurrentDictionary<int, byte> _sampleSaved = new();
+    private static string? _sampleDir;
+
+    private static void SaveUndecodableSample(byte[] bytes)
+    {
+        if (bytes.Length < 512 || _sampleDir == null) return;
+        if (!_sampleSaved.TryAdd(bytes.Length, 0)) return;
+        try
+        {
+            var path = System.IO.Path.Combine(_sampleDir, $"{bytes.Length}.magickfail");
+            if (!File.Exists(path)) File.WriteAllBytes(path, bytes);
+        }
+        catch { }
+    }
+
     private static TextureData? TryDecodeReducedResolution(byte[] bytes)
     {
         for (int reduce = 1; reduce <= 5; reduce++)
@@ -1167,6 +1189,7 @@ public class AssetService
         catch (Exception magickEx)
         {
             LogDecodeFailure("Magick.NET", bytes, magickEx);
+            SaveUndecodableSample(bytes);
 
             // Decode FEWER RESOLUTION LEVELS instead of guessing the missing ones -- what the real
             // viewer does (llimagej2coj.cpp: parameters.cp_reduce = discardLevel, and
