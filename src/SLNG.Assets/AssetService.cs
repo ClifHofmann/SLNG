@@ -953,6 +953,48 @@ public class AssetService
                                     $"{ex.GetType().Name}: {ex.Message}");
     }
 
+    /// <summary>Re-decodes a J2C at progressively lower resolution levels until one succeeds.
+    ///
+    /// Ported in spirit from the viewer's OpenJPEG path (llimagej2coj.cpp:268, :418), which sets
+    /// a reduce factor rather than attempting full resolution on partial data. ImageMagick exposes
+    /// the same OpenJPEG knob as the `jp2:reduce-factor` define.
+    ///
+    /// Returns a NON-degraded result: the pixels it produces are real decoded data, not
+    /// reconstruction. It is smaller than the asset's nominal size, which the caller handles the
+    /// same way it handles any texture that arrives at a lower detail level.</summary>
+    private static TextureData? TryDecodeReducedResolution(byte[] bytes)
+    {
+        for (int reduce = 1; reduce <= 5; reduce++)
+        {
+            try
+            {
+                var settings = new ImageMagick.MagickReadSettings();
+                if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F)
+                    settings.Format = ImageMagick.MagickFormat.J2c;
+                settings.SetDefine(ImageMagick.MagickFormat.Jp2, "reduce-factor", reduce.ToString());
+
+                using var image = new ImageMagick.MagickImage(bytes, settings);
+                image.Warning += (s, e) => { };
+                if (image.Width == 0 || image.Height == 0) continue;
+
+                // Deliberately does NOT touch ColorSpace -- assigning it CONVERTS pixels rather
+                // than re-tagging them, which previously warped sculpt XYZ data.
+                using var pixels = image.GetPixelsUnsafe();
+                byte[] rgba = pixels.ToByteArray(ImageMagick.PixelMapping.RGBA) ?? Array.Empty<byte>();
+                if (rgba.Length < image.Width * image.Height * 4) continue;
+
+                Console.Error.WriteLine($"[DecodeReduced] recovered {bytes.Length} bytes at reduce-factor {reduce} " +
+                                        $"-> {image.Width}x{image.Height} (clean, not gap-filled)");
+                return new TextureData((int)image.Width, (int)image.Height, rgba, false);
+            }
+            catch
+            {
+                // Next, coarser level.
+            }
+        }
+        return null;
+    }
+
     internal static TextureData? DecodeTexture(byte[] bytes, bool isSculpt = false)
     {
         try
@@ -1113,6 +1155,20 @@ public class AssetService
         catch (Exception magickEx)
         {
             LogDecodeFailure("Magick.NET", bytes, magickEx);
+
+            // Decode FEWER RESOLUTION LEVELS instead of guessing the missing ones -- what the real
+            // viewer does (llimagej2coj.cpp: parameters.cp_reduce = discardLevel, and
+            // opj_set_decoded_resolution_factor). A progressive J2C carries its low resolution
+            // levels COMPLETE; only the highest is cut off. Asking for one level less therefore
+            // yields a smaller but genuinely CLEAN image, which is exactly why a still-loading
+            // texture in SL looks soft and never speckled.
+            //
+            // This is the difference between the two failure modes seen here: CoreJ2K's gap fill
+            // produced dense speckle noise (unusable on an avatar), while a reduced-resolution
+            // decode is simply a lower mip. Tried before the CoreJ2K fallback so the clean answer
+            // wins whenever it exists.
+            var reduced = TryDecodeReducedResolution(bytes);
+            if (reduced != null) return reduced;
             // Magick.NET (OpenJP2) is very strict and fails on missing EOC markers or bad header lengths
             // common in older SL/OpenSim assets. Fall back to CoreJ2K, which is much more forgiving.
             try 
