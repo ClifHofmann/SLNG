@@ -259,7 +259,7 @@ public class GpuCache
         {
             try
             {
-                var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded).ConfigureAwait(false);
+                var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority).ConfigureAwait(false);
                 if (textureData == null) return;
 
                 var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
@@ -307,7 +307,7 @@ public class GpuCache
             // desiredDiscard: 0 here, deliberately -- always fetch/decode the complete asset.
             // See this method's/GetOrUploadTextureAsync's doc comments for why network-side
             // truncation is disabled; the downsample below is purely local/post-decode.
-            var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority).ConfigureAwait(false);
+            var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded).ConfigureAwait(false);
             if (textureData == null) return null;
 
             // Image/mipmap build happens on this (worker) thread, matching the threading rule in
