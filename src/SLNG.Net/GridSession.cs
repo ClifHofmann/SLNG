@@ -156,7 +156,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // the system body/head stays fully opaque instead of being hidden under a worn mesh body.
         // Other avatars are unaffected because THEIR viewers produce their bakes and the sim
         // relays them to us with real, per-channel ids.
-        _client.Settings.Agent.SendAppearance = true;
+        // DISABLED 2026-08-02 -- this WRITES to the user's account, it does not merely render.
+        //
+        // With this on, LibreMetaverse computes its own bake and sends AgentSetAppearance, which
+        // the simulator PERSISTS. If that computation is wrong, it overwrites the real appearance
+        // server-side for every viewer, not just ours. Confirmed exactly that way: the user logged
+        // in with Firestorm and saw a correct avatar, which deformed again seconds later -- i.e.
+        // Firestorm was reading back what we had written.
+        //
+        // Turning it on originally fixed a genuine LOCAL problem (the self-avatar never baked and
+        // stayed visibly unbaked). That trade is not acceptable: a local rendering fault is
+        // recoverable by relogging, a corrupted stored appearance is not. Re-enable only once our
+        // bake output has been verified against the real viewer's, and preferably behind an
+        // explicit opt-in -- an experimental viewer should not silently rewrite account data.
+        _client.Settings.Agent.SendAppearance = false;
 
         // Use the HTTP GetTexture CAP instead of the legacy UDP image transfer. UDP transfers
         // time out and hand back truncated JPEG2000 streams on busy grids (the "Tile part
