@@ -207,7 +207,14 @@ public class GpuCache
     {
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
 
-        var cached = Get(textureId) as ImageTexture;
+        // A rejectDegraded caller (the avatar) must not be handed an upload that some OTHER
+        // caller produced from a gap-filled decode. This early return is a third cache layer on
+        // top of AssetService's memory and disk caches, and it bypasses AssetService entirely --
+        // which is why the avatar showed speckle noise while the logs recorded no degraded decode
+        // and no rejectDegraded give-up for it at all: the bytes were never re-examined, only the
+        // finished upload was reused. Route such callers through AssetService, where the contract
+        // is actually enforced.
+        var cached = rejectDegraded ? null : Get(textureId) as ImageTexture;
         if (cached != null)
         {
             // A texture first seen small/distant was uploaded downsampled. Walking up to it used
