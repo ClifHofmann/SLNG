@@ -839,6 +839,23 @@ public class AssetService
     /// <summary>Internal (not private) solely so <c>SLNG.Assets.Tests</c> can exercise the
     /// sculpt-map decode path directly — see <see cref="InternalsVisibleToAttribute"/> in the
     /// project file. Not part of the public API.</summary>
+    // Both decoders were wrapped in bare `catch { }`, so a texture that neither could read left no
+    // trace of WHY -- the caller only ever saw null and the surface rendered blank. Measured
+    // 2026-08-02: the same bytes, at the same length, with the same isSculpt/discard arguments,
+    // decode successfully in a plain console process and fail inside the client, which is not a
+    // question that can be answered without the exception itself. One line per texture per
+    // decoder.
+    private static readonly ConcurrentDictionary<string, byte> _decodeFailureLogged = new();
+
+    private static void LogDecodeFailure(string decoder, byte[] bytes, Exception ex)
+    {
+        string head = bytes.Length >= 4
+            ? $"{bytes[0]:X2}{bytes[1]:X2}{bytes[2]:X2}{bytes[3]:X2}" : "??";
+        if (_decodeFailureLogged.TryAdd($"{decoder}:{bytes.Length}:{head}:{ex.GetType().Name}", 0))
+            Console.Error.WriteLine($"[DecodeFail] {decoder} rejected {bytes.Length} bytes (head {head}): " +
+                                    $"{ex.GetType().Name}: {ex.Message}");
+    }
+
     internal static TextureData? DecodeTexture(byte[] bytes, bool isSculpt = false)
     {
         try
@@ -996,8 +1013,9 @@ public class AssetService
 
             return new TextureData(width, height, rgba, isDegraded);
         }
-        catch
+        catch (Exception magickEx)
         {
+            LogDecodeFailure("Magick.NET", bytes, magickEx);
             // Magick.NET (OpenJP2) is very strict and fails on missing EOC markers or bad header lengths
             // common in older SL/OpenSim assets. Fall back to CoreJ2K, which is much more forgiving.
             try 
@@ -1062,8 +1080,9 @@ public class AssetService
                     }
                 }
             }
-            catch
+            catch (Exception coreEx)
             {
+                LogDecodeFailure("CoreJ2K", bytes, coreEx);
                 // Both standard and CoreJ2K decode failed. This is a truly corrupt asset.
                 // We intentionally suppress the error logs here to avoid console spam during region crossings.
             }
