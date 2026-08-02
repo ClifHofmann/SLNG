@@ -490,3 +490,32 @@ right.)
 UV/geometry pipeline, the shader UV transform, repeat/offset/rotation, TexGen and now the V flip are
 all ruled out by measurement or source. The next discriminator is external: whether Firestorm shows
 *this* object correctly, since it receives the identical 32000 bytes.
+
+### Cross-checked against Firestorm's cache — the sim really does hold only 32000 bytes
+
+The one measurement that could not be made from inside our client: Firestorm's own texture cache.
+
+| | |
+|---|---|
+| our fetched body | 32000 bytes |
+| Firestorm `texturecache/6/6d9be86d-….texture` | 31400 bytes |
+| + `TEXTURE_CACHE_ENTRY_SIZE` header held in `texture.entries` | 600 |
+| total | **32000** |
+| byte-for-byte identical to ours | **yes** |
+
+Decisive part is the cache INDEX, not the body. `texture.entries` is an array of
+`LLUUID(16) + S32 mImageSize + S32 mBodySize + U32 mTime` (28 bytes, little-endian).
+For this texture: `mImageSize = 32000`, `mBodySize = 31400`. `mImageSize` is the full asset size
+**as reported by the sim** — so Firestorm does not consider the asset incomplete either. Without
+that field a short cached body would have been ambiguous between "asset is truncated" and
+"Firestorm never requested more".
+
+Conclusion: the asset on OSGrid is truncated to 8% of what its own SOT declares, both viewers
+receive all of it, and no client-side change can recover the missing data. The "blurry" half of the
+report is damaged content.
+
+One real difference remains in how the two clients handle it. Magick.NET (the same OpenJPEG the
+viewer uses) refuses these bytes at full resolution, so we fall back to CoreJ2K at 1024x1024; the
+viewer instead derives discard 2 from the byte count (`calcDiscardLevelBytes`) and decodes at
+256x256. Both were exported from the same bytes and compared: identical content and placement,
+differing only in sharpness. So this does not explain "misplaced" either.
