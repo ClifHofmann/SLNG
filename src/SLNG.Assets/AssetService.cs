@@ -553,6 +553,14 @@ public class AssetService
 
         var throttle = isSculpt ? _sculptFetchThrottle : _textureFetchThrottle;
 
+        // Set once an HTTP body has proven undecodable, to force the remaining attempts onto UDP.
+        // Retrying HTTP after a decode failure is pointless: the sim serves the identical bytes
+        // and the identical failure. Measured on OSGrid 2026-08-02 -- ten textures came back with
+        // valid SOC/SIZ headers but far too few bytes for their declared size (32000 for
+        // 1024x1024), failed both decoders, burned all three attempts on HTTP, and left their
+        // objects white. The UDP path was never reached for any of them.
+        bool httpUndecodable = false;
+
         for (int attempt = 0; attempt < 3; attempt++)
         {
             if (!_session.IsConnected) return null;
@@ -561,7 +569,7 @@ public class AssetService
             byte[]? bytes;
             try
             {
-                var fetchTask = _session.FetchTextureDataAsync(textureId, desiredDiscard);
+                var fetchTask = _session.FetchTextureDataAsync(textureId, desiredDiscard, httpUndecodable);
                 var timeoutTask = Task.Delay(TimeSpan.FromSeconds(60));
                 if (await Task.WhenAny(fetchTask, timeoutTask).ConfigureAwait(false) == fetchTask)
                 {
@@ -587,6 +595,12 @@ public class AssetService
                 // SUCCESSFUL decode, so a failing texture leaves nothing behind to examine.
                 // Written once per id, next to the cache, for offline inspection of the raw
                 // codestream (markers, declared dimensions, where it actually ends).
+                if (result == null)
+                {
+                    // Next attempt goes over UDP instead of asking HTTP for the same bytes again.
+                    httpUndecodable = true;
+                }
+
                 if (result == null && cacheFile != null)
                 {
                     try

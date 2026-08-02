@@ -1892,7 +1892,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// a higher discard level makes the SIMULATOR send fewer bytes (verified against OpenSim's
     /// GetTextureHandler/J2KImage source, see docs/specs/FEAT-PERF-02-texture-loading-speed.md's
     /// Phase 2.1 write-up), not just a client-side decode/display hint.</param>
-    public async Task<byte[]?> FetchTextureDataAsync(Guid textureId, int desiredDiscard = 0)
+    /// <param name="skipHttp">Forces the UDP path. Set by the caller when a previous attempt's
+    /// HTTP body arrived intact-looking but would not decode: retrying HTTP just re-fetches the
+    /// identical bytes, so without this the UDP fallback is unreachable for exactly the assets
+    /// that need it most (see AssetService's retry loop).</param>
+    public async Task<byte[]?> FetchTextureDataAsync(Guid textureId, int desiredDiscard = 0, bool skipHttp = false)
     {
         // FEAT-PERF-02 Phase 2: prefer our own HTTP GetTexture Range fetch over the UDP path
         // below. Two wins over the pre-existing code: (1) HTTP is the faster transport (no UDP
@@ -1905,7 +1909,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // HttpRequestTexture) ignores discardLevel/priority entirely and always downloads the
         // whole asset, so it can't do this at all, which is why this method builds the HTTP
         // request itself instead of calling into LibreMetaverse's HTTP path.
-        var capUri = _client.Network.CurrentSim?.Caps?.GetTextureCapURI();
+        var capUri = skipHttp ? null : _client.Network.CurrentSim?.Caps?.GetTextureCapURI();
         if (capUri != null)
         {
             var httpResult = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard, capUri).ConfigureAwait(false);
