@@ -299,6 +299,9 @@ public class GpuCache
 
     /// <summary>The real viewer's texel-to-screen-pixel discard criterion -- see the call site in
     /// <see cref="FetchAndUploadTextureAsync"/> for the full derivation and source citation.</summary>
+    // Textures already reported by [GpuUpload].
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _uploadSizeLogged = new();
+
     private static int ComputeDiscardLevel(int width, int height, float screenPixelArea)
     {
         double texels = (double)width * height;
@@ -359,6 +362,17 @@ public class GpuCache
             if (image != null && screenPixelArea > 0f)
             {
                 int discard = ComputeDiscardLevel(image.GetWidth(), image.GetHeight(), screenPixelArea);
+
+                // What actually reaches the GPU, once per texture. The sculpt pipeline has been
+                // measured equal to the viewer's, so the remaining difference has to be between
+                // the decoded image and the sampled texel -- and this is the only non-trivial step
+                // in between. It also separates the two halves of the report that have been
+                // treated as one fault: "blurry" would be a large discard here, "misplaced" would
+                // not show up at all.
+                if (_uploadSizeLogged.TryAdd(textureId, 0))
+                    Console.Error.WriteLine($"[GpuUpload] {textureId} source={image.GetWidth()}x{image.GetHeight()} " +
+                        $"screenPixelArea={screenPixelArea:F0} -> discard={discard} " +
+                        $"uploaded={(discard > 0 ? $"{Math.Max(8, image.GetWidth() >> discard)}x{Math.Max(8, image.GetHeight() >> discard)}" : "full")}");
 
                 if (discard > 0)
                 {
