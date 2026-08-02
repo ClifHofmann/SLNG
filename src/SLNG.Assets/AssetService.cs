@@ -708,9 +708,19 @@ public class AssetService
                 // SUCCESSFUL decode, so a failing texture leaves nothing behind to examine.
                 // Written once per id, next to the cache, for offline inspection of the raw
                 // codestream (markers, declared dimensions, where it actually ends).
-                if (result == null)
+                // Next attempt goes over UDP instead of asking HTTP for the same bytes again.
+                //
+                // A DEGRADED result belongs here just as much as a null one, and leaving it out was
+                // the bug: the retry below (`if (result.IsDegraded) continue`) re-entered the loop
+                // with httpUndecodable still false, so all three attempts asked HTTP for the same
+                // truncated body and got it, byte for byte. Measured on OSGrid 2026-08-02 --
+                // texture 6d9be86d (the ivy statue) fetched 32000 bytes on attempts #0, #1 and #2,
+                // Magick.NET rejecting each with "Tile part length size inconsistent with stream
+                // length" (the codestream's own SOT declares more data than arrived) while healthy
+                // 1024x1024 assets in the same view weigh 285-450 kB. Three retries, zero chance of
+                // a different answer, and the complete asset was sitting on the UDP path untouched.
+                if (result == null || result.IsDegraded)
                 {
-                    // Next attempt goes over UDP instead of asking HTTP for the same bytes again.
                     httpUndecodable = true;
                 }
 
@@ -758,7 +768,11 @@ public class AssetService
                                 Console.Error.WriteLine($"[TextureGiveUp] {textureId}: degraded {(isSculpt ? "SCULPT map" : "bake/avatar texture")} after 3 attempts — returning null rather than showing gap-fill noise");
                             return null;
                         }
-                        Console.Error.WriteLine($"[TextureGiveUp] {textureId}: returning DEGRADED {result.Width}x{result.Height} after 3 attempts (better than blank)");
+                        // Byte count included because it is what distinguishes the two causes of a
+                        // persistent degrade: if UDP also delivers this few bytes the asset really
+                        // is truncated on the sim and no fetch path can fix it; if UDP delivers a
+                        // full-size body that still degrades, the fault is in the decoder.
+                        Console.Error.WriteLine($"[TextureGiveUp] {textureId}: returning DEGRADED {result.Width}x{result.Height} after 3 attempts, last body {bytes.Length} bytes (better than blank)");
                         return result;
                     }
                     return result;
