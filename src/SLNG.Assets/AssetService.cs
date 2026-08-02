@@ -597,6 +597,14 @@ public class AssetService
             {
                 var result = await Task.Run(() => DecodeTexture(bytes, isSculpt)).ConfigureAwait(false);
 
+                // Per-attempt trace. The aggregate "no usable bytes" message could not
+                // distinguish "nothing arrived" from "bytes arrived and the decoder rejected
+                // them", and offline the very same saved bytes decode correctly -- so the exact
+                // inputs of each attempt are the thing to see.
+                Console.Error.WriteLine($"[TextureAttempt] {textureId} #{attempt} " +
+                    $"bytes={bytes.Length} isSculpt={isSculpt} discard={desiredDiscard} -> " +
+                    (result == null ? "DECODE NULL" : $"{result.Width}x{result.Height} degraded={result.IsDegraded}"));
+
                 // Both decoders (Magick.NET and the CoreJ2K fallback) refused these bytes, yet the
                 // real viewer draws the same assets, so the bytes themselves are the evidence and
                 // there is no other way to get at them -- the normal cache is only written on a
