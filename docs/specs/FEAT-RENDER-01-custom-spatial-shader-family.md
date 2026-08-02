@@ -325,3 +325,25 @@ texture (`14326c2a`) to PNG and locate the plaster patch *within the texture*, w
 expected on-screen position predictable instead of arguable. If that is inconclusive, render the
 sculpt offline from both our pipeline and a direct port of `sculptGenerateMapVertices` +
 `createSide` and diff the images — no live viewer needed either way.
+
+### 2026-08-02 update: a second instance of the sculpt placement bug
+
+Side-by-side at The Dangazi Forest `<516.6, 862.8, 38.8>` (Firestorm left, SLNG right) on the
+fallen log — one of the objects that used to render white:
+
+- Firestorm draws **brown bark** on the trunk.
+- SLNG draws **green moss across the whole surface**.
+
+That is not a sharpness difference, it is a different REGION of the texture, i.e. the same class
+of fault as the pillar (object 233207937): placement on a sculpt. Two independent instances now,
+which makes this worth solving properly rather than treating as a one-object oddity.
+
+Useful as a test case because far more is known about it than about the pillar: its texture
+(`6d9be86d`, 1024x1024) is one of the assets that only decodes via the reduced-resolution path, so
+the image handed to the material is **smaller than the asset's nominal size**. Whether anything
+downstream assumes nominal dimensions — texel-area/LOD maths, the GpuCache downsample, the
+per-face UV scale — has NOT been checked, and is the first thing to check, since it is the one
+factor this object has that the pillar does not.
+
+Verified in the same screenshot: the avatar renders correctly (SendAppearance=false holds), and
+the formerly-white objects are textured, which confirms the reduced-resolution decode (v0.3.98).
