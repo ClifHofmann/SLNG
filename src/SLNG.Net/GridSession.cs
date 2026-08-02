@@ -540,6 +540,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private void OnAvatarAppearance(object? sender, AvatarAppearanceEventArgs e)
     {
+        // Report the local agent's parameter set from an INCOMING appearance. This check first
+        // hung off AppearanceSet, which only fires when LibreMetaverse runs its own bake -- i.e.
+        // exactly the path SendAppearance=false disables -- so it could never fire in the
+        // configuration it was written to diagnose. This event arrives regardless.
+        if (e.AvatarID == _client.Self.AgentID && !_visualParamsLogged)
+        {
+            _visualParamsLogged = true;
+            LogVisualParamHealth();
+        }
+
         var textures = new Dictionary<int, Guid>();
         if (e.FaceTextures != null)
         {
@@ -593,6 +603,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// the renderer picks up the real bakes regardless of grid. Redundant-but-identical on SSB.</summary>
     /// <summary>Reports the visual-parameter set LibreMetaverse holds for the local agent.
     /// Read-only: it sends nothing and changes nothing. See its call site for why it exists.</summary>
+    private bool _visualParamsLogged;
+
     private void LogVisualParamHealth()
     {
         try
