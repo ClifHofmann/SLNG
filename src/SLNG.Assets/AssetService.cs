@@ -64,7 +64,65 @@ public class AssetService
     static AssetService()
     {
         CoreJ2K.j2k.util.FacilityManager.DefaultMsgLogger = new QuietJ2kLogger();
+
+        // Register CoreJ2K's SkiaSharp backend EXPLICITLY. Without this,
+        // J2kImage.DecodeToImage<SKBitmap> throws "No image creator registered for target type
+        // SkiaSharp.SKBitmap" -- and since the whole call sat behind a bare `catch { }`, the
+        // CoreJ2K fallback silently did not exist. Every texture Magick.NET refused therefore
+        // rendered blank, even though CoreJ2K reads those files perfectly well.
+        //
+        // That is exactly the class of asset SL is full of: a progressive J2C that simply stops,
+        // which Magick.NET (OpenJPEG) rejects with "Tile part length size inconsistent with
+        // stream length". Measured on OSGrid 2026-08-02 -- 14 textures in a single view, several
+        // objects fully white.
+        //
+        // It looked environment-dependent for a long time: the same bytes decoded fine in a plain
+        // console process and failed inside Godot. The reason is that the registration normally
+        // happens from CoreJ2K.Skia's module initializer, which only runs once the CLR actually
+        // loads that assembly -- something a console harness that touches the type does, and the
+        // client, which only ever names SKBitmap as a generic argument, does not. Registering
+        // here removes the dependency on load order entirely.
+        RegisterSkiaImageCreator();
     }
+
+    /// <summary>Registers CoreJ2K's SkiaSharp image creator by reflection.
+    ///
+    /// Reflection rather than a direct call because the creator types are not public API in
+    /// CoreJ2K.Skia 2.3.3 -- they are meant to self-register from the assembly's module
+    /// initializer. Forcing the assembly to load is the actual goal here; the explicit Register
+    /// call is the belt to that braces. Failing loudly matters: a silently missing registration
+    /// is what made every Magick-rejected texture render blank.</summary>
+    private static void RegisterSkiaImageCreator()
+    {
+        try
+        {
+            var asm = System.Reflection.Assembly.Load("CoreJ2K.Skia");
+            System.Runtime.CompilerServices.RuntimeHelpers.RunModuleConstructor(asm.ManifestModule.ModuleHandle);
+
+            foreach (var t in asm.GetTypes())
+            {
+                if (!t.Name.Contains("SKBitmap") || !t.Name.Contains("ImageCreator")) continue;
+                var inst = System.Activator.CreateInstance(t, nonPublic: true);
+                if (inst == null) continue;
+                foreach (var m in typeof(CoreJ2K.Util.ImageFactory).GetMethods())
+                {
+                    if (m.Name != "Register") continue;
+                    var ps = m.GetParameters();
+                    if (ps.Length == 1 && ps[0].ParameterType.IsInstanceOfType(inst))
+                    {
+                        m.Invoke(null, new[] { inst });
+                        return;
+                    }
+                }
+            }
+            Console.Error.WriteLine("[AssetService] CoreJ2K.Skia loaded but no SKBitmap image creator could be registered");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[AssetService] failed to register CoreJ2K's Skia backend: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     private readonly ConcurrentDictionary<Guid, Task<PbrMaterialData?>> _inflightMaterials = new();
     private readonly ConcurrentDictionary<Guid, Task<AnimationData?>> _inflightAnimations = new();
     private readonly ConcurrentDictionary<(PrimShape Shape, MeshDetailLevel Lod), Task<MeshData?>> _inflightPrimMeshes = new();
