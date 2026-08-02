@@ -2008,6 +2008,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
             if (bytes.Length == 0) return FetchFailed(textureId, "empty body");
 
+            // The body must actually BE a JPEG2000 codestream. Measured on OSGrid 2026-08-02: of
+            // 14 textures that rendered white, four came back as 1-3 byte bodies -- three of them
+            // the literal bytes 9E E9 65, one a single 00 -- with a success status and a matching
+            // Content-Length. Those were handed on as image data, failed both decoders, and the
+            // surface stayed blank.
+            //
+            // The damage was not the failed decode, it was that HTTP "succeeded": the caller only
+            // falls through to the UDP path when this method returns null, so a garbage body meant
+            // UDP was never tried at all and three retries just re-fetched the same rubbish. A raw
+            // J2C starts with SOC (FF 4F); a JP2-wrapped one starts with the 12-byte JP2 signature
+            // box. Anything else is not a texture, whatever the status line claimed.
+            bool isJ2c = bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F;
+            bool isJp2 = bytes.Length >= 12 && bytes[4] == 0x6A && bytes[5] == 0x50
+                         && bytes[6] == 0x20 && bytes[7] == 0x20;
+            if (!isJ2c && !isJp2)
+                return FetchFailed(textureId, $"not a JPEG2000 stream ({bytes.Length} bytes, " +
+                    $"head {string.Join("", bytes.Take(Math.Min(4, bytes.Length)).Select(b => b.ToString("X2")))})");
+
             // OpenSim's embedded HTTP server has been observed (empirically, right after a
             // teleport/region-crossing burst of many simultaneous texture GETs) to close the
             // connection early and return fewer bytes than its own declared Content-Length --
