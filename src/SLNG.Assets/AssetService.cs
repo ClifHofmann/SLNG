@@ -724,16 +724,22 @@ public class AssetService
                     httpUndecodable = true;
                 }
 
-                if (result == null && cacheFile != null)
+                // Extended from "decode returned null" to "decode was not clean". A degraded decode
+                // leaves nothing behind either -- the cache write below is gated on !IsDegraded --
+                // so the one artefact that could settle whether 32000 bytes is a whole small asset
+                // or a truncated large one was being thrown away on every run. Both cases now land
+                // on disk for offline marker inspection.
+                if ((result == null || result.IsDegraded) && cacheFile != null)
                 {
                     try
                     {
-                        string badFile = cacheFile + ".baddecode";
+                        string badFile = cacheFile + (result == null ? ".baddecode" : ".degraded");
                         if (!File.Exists(badFile))
                         {
                             await File.WriteAllBytesAsync(badFile, bytes).ConfigureAwait(false);
-                            Console.Error.WriteLine($"[TextureFetch] {textureId}: both decoders failed on " +
-                                $"{bytes.Length} bytes — saved to {System.IO.Path.GetFileName(badFile)}");
+                            Console.Error.WriteLine($"[TextureFetch] {textureId}: " +
+                                (result == null ? "both decoders failed" : "decoded DEGRADED") +
+                                $" on {bytes.Length} bytes — saved to {System.IO.Path.GetFileName(badFile)}");
                         }
                     }
                     catch { }
