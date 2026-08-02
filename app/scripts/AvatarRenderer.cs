@@ -833,7 +833,7 @@ public partial class AvatarRenderer : Node3D
         // Trade-off: pinned avatar textures are never reclaimed for the app's lifetime (a slow,
         // bounded-by-avatars-seen leak) rather than a real dispose-tracked lifecycle; safe default
         // until AvatarRenderer gets proper AddRef/ReleaseRef bookkeeping like ObjectRenderer's.
-        var godotTexture = await _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, initialRefCount: 1);
+        var godotTexture = await _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true);
 
         if (godotTexture == null)
         {
@@ -1378,7 +1378,7 @@ public partial class AvatarRenderer : Node3D
         // initialRefCount: 1 -- see LoadAndApplyTextureAsync's identical call for why (a
         // per-face/attachment texture pinned here is just as capable of being live on a
         // MeshInstance3D as a bake, so it needs the same eviction-immunity).
-        var built = await _gpuCache.GetOrUploadTextureAsync(texId, _assetService, generateMipmaps: true, initialRefCount: 1).ConfigureAwait(false);
+        var built = await _gpuCache.GetOrUploadTextureAsync(texId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true).ConfigureAwait(false);
         if (built == null)
         {
             // Not silent: an untextured face renders as flat AlbedoColor (usually white), which

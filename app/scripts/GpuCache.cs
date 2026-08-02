@@ -202,7 +202,8 @@ public class GpuCache
         bool generateMipmaps,
         int initialRefCount = 0,
         float screenPixelArea = 0f,
-        float priority = 0f)
+        float priority = 0f,
+        bool rejectDegraded = false)
     {
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
 
@@ -225,7 +226,7 @@ public class GpuCache
         if (assetService == null) return Task.FromResult<ImageTexture?>(null);
 
         var lazy = _inflightTextureUploads.GetOrAdd(textureId, id => new Lazy<Task<ImageTexture?>>(
-            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, screenPixelArea, priority),
+            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, screenPixelArea, priority, rejectDegraded),
             LazyThreadSafetyMode.ExecutionAndPublication));
         return lazy.Value;
     }
@@ -258,7 +259,7 @@ public class GpuCache
         {
             try
             {
-                var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority).ConfigureAwait(false);
+                var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded).ConfigureAwait(false);
                 if (textureData == null) return;
 
                 var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
@@ -299,7 +300,7 @@ public class GpuCache
     }
 
     private async Task<ImageTexture?> FetchAndUploadTextureAsync(
-        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, float screenPixelArea, float priority)
+        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, float screenPixelArea, float priority, bool rejectDegraded)
     {
         try
         {

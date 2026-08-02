@@ -503,7 +503,12 @@ public class AssetService
     /// camera is pointed at resolves before distant background scenery. Same first-caller-wins
     /// caveat as <paramref name="desiredDiscard"/>, plus: priority is captured when the fetch is
     /// enqueued and never re-evaluated -- see <see cref="PriorityGate"/>'s doc comment.</param>
-    public Task<TextureData?> GetTextureAsync(Guid textureId, int desiredDiscard = 0, bool isSculpt = false, float priority = 0f)
+    /// <param name="rejectDegraded">Refuse a gap-filled decode and return null instead. For an
+    /// avatar bake, CoreJ2K's fill is not a blur but dense speckle noise across skin and clothing
+    /// -- the "visibly wrong beats blank" trade-off the regular path makes was calibrated on
+    /// Magick's much gentler degradation and does not hold here. Sculpt maps refuse for the same
+    /// reason (a degraded map is a shard of geometry), which is why isSculpt already implies it.</param>
+    public Task<TextureData?> GetTextureAsync(Guid textureId, int desiredDiscard = 0, bool isSculpt = false, float priority = 0f, bool rejectDegraded = false)
     {
         if (_memCache.TryGetValue(textureId, out TextureData? cached))
         {
@@ -538,15 +543,15 @@ public class AssetService
         // when many objects/faces reference the same never-before-seen texture at once (e.g. a
         // region populating on first login).
         var lazy = _inflightTextures.GetOrAdd(textureId, id => new Lazy<Task<TextureData?>>(
-            () => FetchDecodeAndCacheTextureAsync(id, effectiveDiscard, isSculpt, priority), LazyThreadSafetyMode.ExecutionAndPublication));
+            () => FetchDecodeAndCacheTextureAsync(id, effectiveDiscard, isSculpt, priority, rejectDegraded), LazyThreadSafetyMode.ExecutionAndPublication));
         return lazy.Value;
     }
 
-    private async Task<TextureData?> FetchDecodeAndCacheTextureAsync(Guid id, int desiredDiscard, bool isSculpt, float priority)
+    private async Task<TextureData?> FetchDecodeAndCacheTextureAsync(Guid id, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false)
     {
         try
         {
-            var result = await FetchAndDecodeTextureAsync(id, desiredDiscard, isSculpt, priority).ConfigureAwait(false);
+            var result = await FetchAndDecodeTextureAsync(id, desiredDiscard, isSculpt, priority, rejectDegraded).ConfigureAwait(false);
             // Mirror the disk cache's own guard (see FetchAndDecodeTextureAsync) -- a degraded
             // result can still be returned (better than nothing on the last retry attempt), but
             // must never be memoized. Caching it here would pin the bad decode in memory for a
@@ -596,7 +601,7 @@ public class AssetService
     private static readonly PriorityGate _textureFetchThrottle = new PriorityGate(4);
     private static readonly PriorityGate _sculptFetchThrottle = new PriorityGate(1);
 
-    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority)
+    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false)
     {
         // FEAT-PERF-02 Phase 2: the disk cache only ever holds complete (discard 0) assets --
         // both reading and writing are gated on desiredDiscard == 0 below. A partial/low-discard
@@ -713,10 +718,10 @@ public class AssetService
                     if (result.IsDegraded)
                     {
                         if (attempt < 2) continue; // retry
-                        if (isSculpt)
+                        if (isSculpt || rejectDegraded)
                         {
                             if (_giveUpLogged.TryAdd(textureId, 0))
-                                Console.Error.WriteLine($"[TextureGiveUp] {textureId}: degraded SCULPT map after 3 attempts — returning null by design");
+                                Console.Error.WriteLine($"[TextureGiveUp] {textureId}: degraded {(isSculpt ? "SCULPT map" : "bake/avatar texture")} after 3 attempts — returning null rather than showing gap-fill noise");
                             return null;
                         }
                         Console.Error.WriteLine($"[TextureGiveUp] {textureId}: returning DEGRADED {result.Width}x{result.Height} after 3 attempts (better than blank)");
