@@ -1923,10 +1923,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         try
         {
             var pipeline = typeof(AssetManager).GetField("Texture", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(_client.Assets);
-            if (pipeline != null)
+            if (pipeline == null)
+                return UdpFailed(textureId, "AssetManager.Texture field not found (reflection)");
             {
                 var reqMethod = pipeline.GetType().GetMethod("RequestTexture", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                if (reqMethod != null)
+                if (reqMethod == null)
+                    return UdpFailed(textureId, "TexturePipeline.RequestTexture not found (reflection)");
                 {
                     var callbackType = reqMethod.GetParameters()[5].ParameterType;
                     Action<TextureRequestState, LibreMetaverse.Assets.AssetTexture> action = (state, assetTexture) =>
@@ -1938,6 +1940,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                         }
                         else if (state == TextureRequestState.NotFound || state == TextureRequestState.Aborted || state == TextureRequestState.Timeout)
                         {
+                            UdpFailed(textureId, $"pipeline reported {state}");
                             tcs.TrySetResult(null);
                         }
                     };
@@ -1949,7 +1952,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     // honor it server-side (unlike LibreMetaverse's HTTP path), so even this
                     // fallback benefits from a non-zero desiredDiscard when HTTP isn't reachable.
                     reqMethod.Invoke(pipeline, new object[] { new UUID(textureId), ImageType.Normal, 100000.0f, desiredDiscard, 0u, delegateObj, false });
-                    return await tcs.Task;
+
+                    // The pipeline can simply never call back -- e.g. if it was never started
+                    // because the client is configured to prefer HTTP textures. Awaiting the bare
+                    // TaskCompletionSource would then hang until AssetService's own 60 s timeout,
+                    // three times per texture, with nothing in the log to say why. Bound it here
+                    // and name it instead.
+                    var udpTimeout = Task.Delay(TimeSpan.FromSeconds(20));
+                    if (await Task.WhenAny(tcs.Task, udpTimeout).ConfigureAwait(false) != tcs.Task)
+                        return UdpFailed(textureId, "TexturePipeline never called back within 20s");
+
+                    var udpBytes = await tcs.Task.ConfigureAwait(false);
+                    if (udpBytes is { Length: > 0 })
+                        Console.Error.WriteLine($"[TextureFetch] {textureId}: UDP delivered {udpBytes.Length} bytes");
+                    return udpBytes;
                 }
             }
         }
@@ -1985,6 +2001,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     // consistently in one view with no way to tell a missing asset from a rejected codestream.
     // Deduped because a failing texture is retried and re-requested by every face that uses it.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _fetchFailureLogged = new();
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _udpFailureLogged = new();
+
+    private static byte[]? UdpFailed(Guid textureId, string reason)
+    {
+        if (_udpFailureLogged.TryAdd(textureId, 0))
+            Console.Error.WriteLine($"[TextureFetch] {textureId}: UDP fallback failed: {reason}");
+        return null;
+    }
 
     private static byte[]? FetchFailed(Guid textureId, string reason)
     {
