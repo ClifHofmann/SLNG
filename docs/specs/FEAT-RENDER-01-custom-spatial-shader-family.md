@@ -347,3 +347,39 @@ factor this object has that the pillar does not.
 
 Verified in the same screenshot: the avatar renders correctly (SendAppearance=false holds), and
 the formerly-white objects are textured, which confirms the reduced-resolution decode (v0.3.98).
+
+### Deep research: how the viewer builds sculpt UVs (2026-08-02)
+
+Requested after inspection-by-derivation kept concluding "already correct". Every stage below was
+read in the vendored viewer source and compared against ours. **All of them match.**
+
+| Stage | Viewer | SLNG | Verdict |
+|---|---|---|---|
+| Grid resolution | `sculpt_calc_mesh_resolution`: `vertices = min(sculpt_sides(detail)², w·h/4)`, split by aspect ratio. For 64×64 → 32×32. | `PrimMeshService` mesherLod 32, `SculptMap` halves 64→32 (+1 seam row/col) | same 32×32 sampling |
+| Profile texture coord | `genNGon`: `pt.set(cos(ang)·scale, sin(ang)·scale, t)` — the S coord IS the running parameter, linear in index | `uvs.Add(widthUnit·imageX, …)`, `widthUnit = 1/(coordsAcross-1)` | both linear 0..1 |
+| Path texture coord | `tt = path_data[t].mTexT`, 0..1 along the path | `heightUnit·imageY`, then flipV at mesh build | equivalent under the flip |
+| Seam at `x == sculpt_width` | wrap to 0 for sphere/torus/cylinder, **clamp to w-1 for PLANE** (llvolume.cpp:3101-3115) | `if (sculptType != SculptType.plane)` guard, already citing that line | same |
+| invert / mirror | `reverse_horizontal = invert XOR mirror`: read columns backwards **and** flip `ss` | PrimMesher flips triangle winding | algebraically the same (see the earlier table) |
+| Vertex order | profile fastest, path outer | `for imageY { for imageX }` — column fastest | same |
+
+**Sculpt map decode verified visually, not inferred.** Decoding the statue's map (`6c3d8605`)
+through the client's own `DecodeTexture(isSculpt: true)` and rendering it produces a healthy dense
+RGB field, `degraded=False`. The geometry input is sound.
+
+**A decoder-disagreement scare, and its correction.** The same map decoded via CoreJ2K appeared as
+a near-white starburst, which looked like proof that CoreJ2K mis-decodes the very assets Magick
+refuses. It was an artefact of the probe: CoreJ2K's SKBitmap carries alpha≈0, so the PNG export
+rendered white. A control over **60 assets both decoders can read found zero disagreements** (mean
+|CoreJ2K − Magick| ≤ 8 per channel). CoreJ2K is trustworthy; that theory is dead.
+
+**The texture is a baked atlas.** `6d9be86d` (1024×1024) is painted specifically for this sculpt —
+the statue's own forms are visible in it, pale stone in the middle, dense ivy toward the edges.
+So the placement error is not subtle tiling: we sample the ivy region where Firestorm samples the
+stone. It is also the right asset, so "wrong texture" is ruled out.
+
+**Conclusion.** Every structural comparison says our sculpt pipeline matches the viewer, and the
+inputs (map, texture) are correct. What has NOT been done is a **numerical** comparison — the checks
+above all ask "does the code do the same thing", never "do the arrays contain the same values". That
+is the next step, and the research above makes it cheap: port `sculpt_calc_mesh_resolution` +
+`LLProfile::genNGon` + `sculptGenerateMapVertices` + `createSide`'s tc loop, run both over map
+`6c3d8605`, and find the first index where the (position, uv) pairs diverge.
