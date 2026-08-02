@@ -139,7 +139,6 @@ public class AssetService
     {
         _session = session;
         _cacheDir = cacheDirectory;
-        _sampleDir = cacheDirectory;
         if (!string.IsNullOrEmpty(_cacheDir) && !Directory.Exists(_cacheDir))
         {
             Directory.CreateDirectory(_cacheDir);
@@ -963,71 +962,6 @@ public class AssetService
     /// Returns a NON-degraded result: the pixels it produces are real decoded data, not
     /// reconstruction. It is smaller than the asset's nominal size, which the caller handles the
     /// same way it handles any texture that arrives at a lower detail level.</summary>
-    // Keeps one sample per distinct byte length of an asset Magick.NET refuses, next to the cache
-    // as <length>.magickfail. These streams are the only thing that can settle how to decode them
-    // cleanly, and they are otherwise unobtainable: the normal cache is written only on a
-    // SUCCESSFUL decode, so the interesting assets never leave a copy behind. Having them on disk
-    // means the CoreJ2K resolution-level work can be tried offline instead of through a live
-    // round-trip per attempt.
-    private static readonly ConcurrentDictionary<int, byte> _sampleSaved = new();
-    private static string? _sampleDir;
-
-    private static void SaveUndecodableSample(byte[] bytes)
-    {
-        if (bytes.Length < 512 || _sampleDir == null) return;
-        if (!_sampleSaved.TryAdd(bytes.Length, 0)) return;
-        try
-        {
-            var path = System.IO.Path.Combine(_sampleDir, $"{bytes.Length}.magickfail");
-            if (!File.Exists(path)) File.WriteAllBytes(path, bytes);
-        }
-        catch { }
-    }
-
-    private static TextureData? TryDecodeReducedResolution(byte[] bytes)
-    {
-        for (int reduce = 1; reduce <= 5; reduce++)
-        {
-            try
-            {
-                var settings = new ImageMagick.MagickReadSettings();
-                if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F)
-                    settings.Format = ImageMagick.MagickFormat.J2c;
-                // Both spellings: ImageMagick scopes coder defines by format, and these assets
-                // are raw J2C codestreams rather than JP2 containers, so a define registered only
-                // under "jp2" may never reach the decoder at all.
-                settings.SetDefine(ImageMagick.MagickFormat.Jp2, "reduce-factor", reduce.ToString());
-                settings.SetDefine(ImageMagick.MagickFormat.J2c, "reduce-factor", reduce.ToString());
-
-                using var image = new ImageMagick.MagickImage(bytes, settings);
-                image.Warning += (s, e) => { };
-                if (image.Width == 0 || image.Height == 0) continue;
-
-                // Deliberately does NOT touch ColorSpace -- assigning it CONVERTS pixels rather
-                // than re-tagging them, which previously warped sculpt XYZ data.
-                using var pixels = image.GetPixelsUnsafe();
-                byte[] rgba = pixels.ToByteArray(ImageMagick.PixelMapping.RGBA) ?? Array.Empty<byte>();
-                if (rgba.Length < image.Width * image.Height * 4) continue;
-
-                Console.Error.WriteLine($"[DecodeReduced] recovered {bytes.Length} bytes at reduce-factor {reduce} " +
-                                        $"-> {image.Width}x{image.Height} (clean, not gap-filled)");
-                return new TextureData((int)image.Width, (int)image.Height, rgba, false);
-            }
-            catch (Exception ex)
-            {
-                // Silence here was a mistake: this path reported DecodeReduced 0 times across a
-                // whole session while DecodeFail fired 13 times, i.e. it never once worked and
-                // said nothing about it, so the textures kept coming from CoreJ2K's gap fill and
-                // the "fixed" decode was fiction. Report the first level's reason once.
-                if (reduce == 1 && _reduceFailureLogged.TryAdd($"{bytes.Length}:{ex.GetType().Name}", 0))
-                    Console.Error.WriteLine($"[DecodeReduced] reduce-factor 1 failed on {bytes.Length} bytes: " +
-                                            $"{ex.GetType().Name}: {ex.Message}");
-            }
-        }
-        return null;
-    }
-
-    private static readonly ConcurrentDictionary<string, byte> _reduceFailureLogged = new();
 
     internal static TextureData? DecodeTexture(byte[] bytes, bool isSculpt = false)
     {
@@ -1189,7 +1123,6 @@ public class AssetService
         catch (Exception magickEx)
         {
             LogDecodeFailure("Magick.NET", bytes, magickEx);
-            SaveUndecodableSample(bytes);
 
             // Decode FEWER RESOLUTION LEVELS instead of guessing the missing ones -- what the real
             // viewer does (llimagej2coj.cpp: parameters.cp_reduce = discardLevel, and
@@ -1202,8 +1135,12 @@ public class AssetService
             // produced dense speckle noise (unusable on an avatar), while a reduced-resolution
             // decode is simply a lower mip. Tried before the CoreJ2K fallback so the clean answer
             // wins whenever it exists.
-            var reduced = TryDecodeReducedResolution(bytes);
-            if (reduced != null) return reduced;
+            // No reduced-resolution retry here any more. It never once succeeded (ImageMagick
+            // rejects these streams while parsing tile-part headers, so no reduce factor can
+            // help), and measuring the CoreJ2K fallback below on ten real samples showed it
+            // decodes them CLEANLY at full resolution -- speckle 1.2-2.5 per channel, RISING when
+            // downscaled, which is the signature of an ordinary image rather than gap fill. The
+            // premise that these assets needed reconstruction at all was wrong.
             // Magick.NET (OpenJP2) is very strict and fails on missing EOC markers or bad header lengths
             // common in older SL/OpenSim assets. Fall back to CoreJ2K, which is much more forgiving.
             try 
