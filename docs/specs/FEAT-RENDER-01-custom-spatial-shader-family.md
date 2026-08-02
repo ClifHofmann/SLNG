@@ -383,3 +383,33 @@ above all ask "does the code do the same thing", never "do the arrays contain th
 is the next step, and the research above makes it cheap: port `sculpt_calc_mesh_resolution` +
 `LLProfile::genNGon` + `sculptGenerateMapVertices` + `createSide`'s tc loop, run both over map
 `6c3d8605`, and find the first index where the (position, uv) pairs diverge.
+
+### Numerical A/B: the sculpt pipeline is NOT the cause (2026-08-02)
+
+Ported `sculpt_calc_mesh_resolution` + `sculptGenerateMapVertices` + `createSide`'s tc loop and ran
+both against the statue's own map (`6c3d8605`, 64×64). For identical UVs, which map texel does each
+side read?
+
+| uv | viewer texel | our texel | \|Δpos\| |
+|---|---|---|---|
+| (0.00, 0.25) | (0, 16) | (0, 16) | 0.0000 |
+| (0.25, 0.25) | (16, 16) | (16, 16) | 0.0000 |
+| (0.50, 0.50) | (33, 33) | (32, 32) | 0.0454 |
+| (0.75, 0.75) | (47, 47) | (48, 48) | 0.1609 |
+| (1.00, 0.50) | (63, 33) | (63, 32) | 0.0088 |
+
+**At most one texel out of 64 apart, and identical at the edges.** The cause is known and harmless:
+our grid is 33×33 (SculptMap pads by one for seam stitching) against the viewer's 32×32, so our UV
+step is 1/32 where the viewer's is 1/31. Aggregate over all vertices: mean position difference
+0.0257, worst 0.1942, on a coordinate range of 1.0.
+
+1.5% of a texel grid cannot move a baked atlas whose stone and ivy regions are hundreds of pixels
+wide. **The sculpt UV/geometry pipeline is therefore ruled out as the cause of the misplaced
+texture** — measured, not derived, unlike the six earlier eliminations.
+
+What that leaves, given repeat/offset/rotation are neutral and the shader passes UVs through
+unchanged: the path between the decoded image and the sampled texel. The prime suspect is
+`GpuCache`'s per-object DOWNSAMPLE (it uploads a reduced texture based on on-screen pixel area, and
+`TryUpgradeCachedTexture` is supposed to restore detail on approach). That is also the natural
+explanation for the "blurry" half of the report, which has never been investigated separately from
+the "misplaced" half — and they may not be the same fault at all.
