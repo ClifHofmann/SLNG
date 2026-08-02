@@ -16,4 +16,10 @@ public readonly record struct FaceTexture(
     float RepeatV,
     float OffsetU,
     float OffsetV,
-    float Rotation);
+    float Rotation,
+    /// <summary>SL's per-face texture mapping mode. Default (0) uses the mesh's own UVs; Planar
+    /// (1) projects the texture from the face's plane instead, so the scale stays independent of
+    /// the prim's size. Planar is the norm on architectural content -- floors and walls -- which
+    /// is why ignoring it shows up as textures sitting in visibly the wrong place. The viewer
+    /// implements it in LLFace::getGeometryVolume (llface.cpp:914, TEX_GEN_PLANAR).</summary>
+    byte TexGen = 0);

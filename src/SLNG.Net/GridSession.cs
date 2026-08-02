@@ -857,7 +857,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     f.RepeatV,
                     f.OffsetU,
                     f.OffsetV,
-                    f.Rotation);
+                    f.Rotation,
+                    (byte)f.TexMapType);
             }
         }
 

@@ -101,7 +101,7 @@ public partial class ObjectRenderer : Node3D
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-08-02-sculptsite-scan";
+    private const string BuildMarker = "2026-08-02-texgen-diagnostic";
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
@@ -322,6 +322,7 @@ public partial class ObjectRenderer : Node3D
             Logger.Info($"[FaceParams]   face {i}: repeat=({f.RepeatU:0.###},{f.RepeatV:0.###}) " +
                         $"offset=({f.OffsetU:0.###},{f.OffsetV:0.###}) " +
                         $"rot={f.Rotation:0.####} rad = {Mathf.RadToDeg(f.Rotation):0.##}° " +
+                        $"texgen={(f.TexGen == 1 ? "PLANAR (not implemented!)" : "default")} " +
                         $"tex={f.TextureId.ToString()[..8]}");
         }
     }
