@@ -2032,8 +2032,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (desiredDiscard == 0 && bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F
                 && (bytes[^2] != 0xFF || bytes[^1] != 0xD9))
             {
-                return FetchFailed(textureId, $"no EOC marker ({bytes.Length} bytes, tail " +
-                    $"{bytes[^2]:X2}{bytes[^1]:X2})");
+                // A missing EOC used to REJECT the response outright. That threw away perfectly
+                // usable data: JPEG2000 is progressive and SL assets are routinely stored without
+                // a terminating EOC, so the real viewer decodes such streams on purpose. Measured
+                // 2026-08-02 on OSGrid: 14 textures in a single view failed here, every one of
+                // them having already passed the Content-Length check -- i.e. the body was
+                // complete, just not EOC-terminated -- and the objects using them rendered white
+                // while Firestorm drew them fine.
+                //
+                // Kept as a WARNING, not a failure: the check was added to catch chunked-encoding
+                // truncation that Content-Length cannot see, and that concern is real. It is just
+                // not decidable from the EOC alone. Hand the bytes to the tolerant decoder
+                // instead; AssetService already detects a degraded decode and retries, which
+                // distinguishes "genuinely truncated" from "simply not EOC-terminated" by the one
+                // thing that actually settles it -- whether it decodes.
+                if (_fetchFailureLogged.TryAdd(textureId, 0))
+                    Console.Error.WriteLine($"[TextureFetch] {textureId}: no EOC marker " +
+                        $"({bytes.Length} bytes, tail {bytes[^2]:X2}{bytes[^1]:X2}) — decoding anyway");
             }
 
             return bytes;
