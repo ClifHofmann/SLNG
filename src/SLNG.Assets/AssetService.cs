@@ -617,8 +617,31 @@ public class AssetService
             if (cached != null && cached.Length > 0)
             {
                 var decodedFromCache = await Task.Run(() => DecodeTexture(cached, isSculpt)).ConfigureAwait(false);
-                if (decodedFromCache != null) return decodedFromCache;
-                try { File.Delete(cacheFile); } catch { }
+
+                // The cache is only ever WRITTEN for a clean decode, so a degraded result here
+                // means the same bytes now decode worse than when they were stored -- which is
+                // exactly what happened when the CoreJ2K fallback started working: assets Magick
+                // used to read are now gap-filled by CoreJ2K instead, and on an avatar bake that
+                // fill is dense speckle noise rather than a blur.
+                //
+                // This early-return sits BEFORE the retry loop, so it used to bypass both the
+                // rejectDegraded contract and every log line -- an avatar could be covered in
+                // noise with no [TextureAttempt] and no [TextureGiveUp] entry to show for it,
+                // which is precisely how this hid. Drop the stale entry and fall through to a
+                // real fetch instead.
+                if (decodedFromCache != null && decodedFromCache.IsDegraded && (isSculpt || rejectDegraded))
+                {
+                    Console.Error.WriteLine($"[TextureCache] {textureId}: cached bytes now decode DEGRADED — discarding the cache entry and refetching");
+                    try { File.Delete(cacheFile); } catch { }
+                }
+                else if (decodedFromCache != null)
+                {
+                    return decodedFromCache;
+                }
+                else
+                {
+                    try { File.Delete(cacheFile); } catch { }
+                }
             }
         }
 

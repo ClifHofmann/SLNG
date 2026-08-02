@@ -83,7 +83,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.3.94-alpha";
+    public const string AppVersion = "v0.3.95-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -136,6 +136,11 @@ public partial class Boot : Control
         // sticks; the immediate call below just avoids a flash of the wrong title before then.
         DisplayServer.WindowSetTitle($"Puris Viewer {AppVersion}");
         RenderingServer.FramePostDraw += ReassertWindowTitleOnce;
+
+        // Log the version at startup. Renderer BUILD MARKERs only move when that renderer
+        // changes, so several rounds were spent unable to tell from a log which build had
+        // actually run.
+        GD.Print($"[Boot] {AppVersion}");
 
         _vboxContainer = GetNode<VBoxContainer>("%VBoxContainer");
         _profileDropdown = GetNode<OptionButton>("%ProfileDropdown");
