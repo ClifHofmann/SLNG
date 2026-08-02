@@ -971,7 +971,11 @@ public class AssetService
                 var settings = new ImageMagick.MagickReadSettings();
                 if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F)
                     settings.Format = ImageMagick.MagickFormat.J2c;
+                // Both spellings: ImageMagick scopes coder defines by format, and these assets
+                // are raw J2C codestreams rather than JP2 containers, so a define registered only
+                // under "jp2" may never reach the decoder at all.
                 settings.SetDefine(ImageMagick.MagickFormat.Jp2, "reduce-factor", reduce.ToString());
+                settings.SetDefine(ImageMagick.MagickFormat.J2c, "reduce-factor", reduce.ToString());
 
                 using var image = new ImageMagick.MagickImage(bytes, settings);
                 image.Warning += (s, e) => { };
@@ -987,13 +991,21 @@ public class AssetService
                                         $"-> {image.Width}x{image.Height} (clean, not gap-filled)");
                 return new TextureData((int)image.Width, (int)image.Height, rgba, false);
             }
-            catch
+            catch (Exception ex)
             {
-                // Next, coarser level.
+                // Silence here was a mistake: this path reported DecodeReduced 0 times across a
+                // whole session while DecodeFail fired 13 times, i.e. it never once worked and
+                // said nothing about it, so the textures kept coming from CoreJ2K's gap fill and
+                // the "fixed" decode was fiction. Report the first level's reason once.
+                if (reduce == 1 && _reduceFailureLogged.TryAdd($"{bytes.Length}:{ex.GetType().Name}", 0))
+                    Console.Error.WriteLine($"[DecodeReduced] reduce-factor 1 failed on {bytes.Length} bytes: " +
+                                            $"{ex.GetType().Name}: {ex.Message}");
             }
         }
         return null;
     }
+
+    private static readonly ConcurrentDictionary<string, byte> _reduceFailureLogged = new();
 
     internal static TextureData? DecodeTexture(byte[] bytes, bool isSculpt = false)
     {
