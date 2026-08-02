@@ -1018,7 +1018,7 @@ public partial class ObjectRenderer : Node3D
                     // returned null" log), a world-object face that never got its texture just
                     // rendered flat AlbedoColor forever with zero diagnostic trail. One line per
                     // failed id (not per attempt) so this doesn't itself become log spam.
-                    GD.PrintErr($"[FaceTex] object texture {ft.TextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null — face renders untextured");
+                    GD.PrintErr($"[FaceTex] object texture {ft.TextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null — face renders untextured (see [TextureFetch] for the HTTP reason)");
                 }
             });
         }

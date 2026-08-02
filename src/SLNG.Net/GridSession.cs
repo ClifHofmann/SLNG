@@ -1975,6 +1975,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// J2C stream. Returns null on ANY failure (non-success status, network error) so the caller
     /// falls back to the UDP path -- never throws.
     /// </summary>
+    // Why a texture fetch gave up, once per texture id. The HTTP path has five separate silent
+    // "return null" exits and the UDP fallback a sixth, all of which surfaced to the renderer as
+    // the same "fetch/decode returned null" line -- which is how 14 textures could fail
+    // consistently in one view with no way to tell a missing asset from a rejected codestream.
+    // Deduped because a failing texture is retried and re-requested by every face that uses it.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _fetchFailureLogged = new();
+
+    private static byte[]? FetchFailed(Guid textureId, string reason)
+    {
+        if (_fetchFailureLogged.TryAdd(textureId, 0))
+            Console.Error.WriteLine($"[TextureFetch] {textureId} HTTP fetch gave up: {reason} — falling back to UDP");
+        return null;
+    }
+
     private async Task<byte[]?> FetchTextureViaHttpRangeAsync(Guid textureId, int desiredDiscard, Uri capUri)
     {
         try
@@ -1988,11 +2002,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
 
             using var response = await _textureHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode) return null; // 4xx/5xx -- let the UDP fallback try
+            if (!response.IsSuccessStatusCode) return FetchFailed(textureId, $"HTTP {(int)response.StatusCode}");
 
             long? declaredLength = response.Content.Headers.ContentLength;
             var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-            if (bytes.Length == 0) return null;
+            if (bytes.Length == 0) return FetchFailed(textureId, "empty body");
 
             // OpenSim's embedded HTTP server has been observed (empirically, right after a
             // teleport/region-crossing burst of many simultaneous texture GETs) to close the
@@ -2004,7 +2018,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // above) even though we never sent a Range header ourselves. Treat a short read as a
             // failed fetch so the caller falls back to the UDP path in the SAME attempt, instead
             // of silently decoding (and, for Magick.NET, likely failing on) partial data.
-            if (declaredLength.HasValue && bytes.Length < declaredLength.Value) return null;
+            if (declaredLength.HasValue && bytes.Length < declaredLength.Value)
+                return FetchFailed(textureId, $"short read {bytes.Length}/{declaredLength.Value}");
 
             // Content-Length only catches truncation when the server actually sends that
             // header -- OpenSim's embedded HTTP server can respond chunked (no Content-Length)
@@ -2017,7 +2032,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (desiredDiscard == 0 && bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F
                 && (bytes[^2] != 0xFF || bytes[^1] != 0xD9))
             {
-                return null;
+                return FetchFailed(textureId, $"no EOC marker ({bytes.Length} bytes, tail " +
+                    $"{bytes[^2]:X2}{bytes[^1]:X2})");
             }
 
             return bytes;
