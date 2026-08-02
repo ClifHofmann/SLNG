@@ -32,6 +32,12 @@ public class AssetService
     // Lazy<Task<T>>, not a bare Task<T> -- see GetTextureAsync's comment for why this specific
     // dictionary needs a real single-execution guarantee under a concurrent first-touch race.
     private readonly ConcurrentDictionary<Guid, Lazy<Task<TextureData?>>> _inflightTextures = new();
+
+    // Ids already reported by [TextureGiveUp]. The texture path has several distinct ways to end
+    // in null -- exhausted attempts, a degraded sculpt map by design, and the negative-failure
+    // cache short-circuiting before anything is even tried -- and all of them reached the renderer
+    // as the same blank surface.
+    private readonly ConcurrentDictionary<Guid, byte> _giveUpLogged = new();
     private static readonly object _coreJ2kLogLock = new();
 
     /// <summary>Routes CoreJ2K's own diagnostics away from the console. Its decoder chatters
@@ -458,6 +464,8 @@ public class AssetService
         // retried), it only stops hammering a known-hopeless id in the meantime.
         if (_recentTextureFailures.TryGetValue(textureId, out _))
         {
+            if (_giveUpLogged.TryAdd(textureId, 0))
+                Console.Error.WriteLine($"[TextureGiveUp] {textureId}: short-circuited by the negative-failure cache");
             return Task.FromResult<TextureData?>(null);
         }
 
@@ -639,8 +647,14 @@ public class AssetService
                     if (result.IsDegraded)
                     {
                         if (attempt < 2) continue; // retry
-                        if (isSculpt) return null; // a degraded sculpt is a giant shard that ruins the view — force the caller's placeholder fallback instead
-                        return result; // no better option left for a regular texture; visibly wrong beats a permanently blank/placeholder surface
+                        if (isSculpt)
+                        {
+                            if (_giveUpLogged.TryAdd(textureId, 0))
+                                Console.Error.WriteLine($"[TextureGiveUp] {textureId}: degraded SCULPT map after 3 attempts — returning null by design");
+                            return null;
+                        }
+                        Console.Error.WriteLine($"[TextureGiveUp] {textureId}: returning DEGRADED {result.Width}x{result.Height} after 3 attempts (better than blank)");
+                        return result;
                     }
                     return result;
                 }
@@ -649,6 +663,8 @@ public class AssetService
             await Task.Delay(250).ConfigureAwait(false);
         }
 
+        if (_giveUpLogged.TryAdd(textureId, 0))
+            Console.Error.WriteLine($"[TextureGiveUp] {textureId}: all 3 attempts produced no usable bytes");
         return null;
     }
 
