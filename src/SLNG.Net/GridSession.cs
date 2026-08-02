@@ -169,6 +169,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // recoverable by relogging, a corrupted stored appearance is not. Re-enable only once our
         // bake output has been verified against the real viewer's, and preferably behind an
         // explicit opt-in -- an experimental viewer should not silently rewrite account data.
+        //
+        // CONFIRMED 2026-08-02 by LogVisualParamHealth(): Appearance.MyVisualParameters is EMPTY.
+        // So every AgentSetAppearance we sent carried no shape at all, and the simulator replaced
+        // the stored shape with defaults. That is the whole explanation for the squat, deformed
+        // avatar, and it is why a rebake feature must stay blocked -- it would take the same path.
         _client.Settings.Agent.SendAppearance = false;
 
         // Use the HTTP GetTexture CAP instead of the legacy UDP image transfer. UDP transfers
