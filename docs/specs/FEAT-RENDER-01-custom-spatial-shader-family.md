@@ -297,3 +297,31 @@ back-face culling were lost, smeared sculpt-pole grain if anisotropic filtering 
 - [ ] Phase 5 — Windlight / EEP atmospherics via global shader uniforms.
 - [ ] Follow-up (not this spec): `llSetTextureAnim` and media-on-a-prim as uniform
       updates instead of material rebuilds — enabled by, but not part of, this work.
+
+## Side investigation: the "mirrored texture" sculpt (object 233207937) — UNRESOLVED
+
+Reported as a light plaster patch sitting top-RIGHT where Firestorm shows it top-LEFT. Chosen as
+Phase 2's acceptance target on the assumption it was a UV-rotation case. It is not. Recorded here
+because six explanations were checked and eliminated, and none of them should be re-walked.
+
+Object: plane sculpt (stitching 3), `sculptType = 0x43` (INVERT set, MIRROR clear), map
+`757167bb`, at `<523.7, 855.9, 37.2>` in The Dangazi Forest.
+
+| # | Hypothesis | How it was killed |
+|---|---|---|
+| 1 | UV rotation not applied | `[FaceParams]`: `rot=0°` on **every** face. Also repeat=(1,1), offset=(0,0) — placement is entirely neutral, so no placement fix can change this object. |
+| 2 | `slng_transform_uv`'s `inout` on a built-in silently not writing back | Changed to a return value; no visual change. (Kept — it was a real hazard.) |
+| 3 | Sculpt invert/mirror handled differently than the viewer | The viewer's `reverse_horizontal` (llvolume.cpp:3049, :6821) reads map columns backwards **and** flips `ss`. Substituting `c = T-1-t` shows column `c` still pairs with `U = c/W`, i.e. it reduces to a pure traversal reversal — a winding change, which is exactly what PrimMesher applies. Confirmed a third time by llvolume.cpp:2622-2640, where `do_invert` = invert normals + reverse triangles and leaves UVs alone. |
+| 4 | Base sculpt U/V direction mirrored vs the viewer | Both map column→U and row→V ascending; with `flipV` the SL row-from-bottom `y` lands on Godot's row-from-top `H−y`. Matches. |
+| 5 | Highlight on the wrong side because the sun is wrong | Was true and **is now fixed** (region sun direction, previously hardcoded) — but it did not move the patch. User: "Ich kann schon eine Reflexion von falscher Textur unterscheiden." |
+| 6 | Sculpt surface generated inside-out, so back-face culling shows the mirrored far inner wall | Offline probe over all 63 cached sculpt maps meshed flag-free: 50 mostly outward, 13 mostly inward — and those 13 are ~50% cases, i.e. flat planes where a centroid-relative test is meaningless. No systematic reversal. This map alone is 0.9% outward, so it genuinely IS authored inside-out and its INVERT flag is the creator's correction, which we apply correctly (0x43 → 99% outward). |
+
+**What was never obtained:** a camera-matched screenshot pair. The one comparison taken had the
+two viewpoints ~11 m apart (`514,861` vs `525,856`), which is not close enough to judge a
+left-right swap on a symmetric column.
+
+**Suggested next step** — new evidence, not a seventh hypothesis. Cheapest first: dump the face's
+texture (`14326c2a`) to PNG and locate the plaster patch *within the texture*, which makes the
+expected on-screen position predictable instead of arguable. If that is inconclusive, render the
+sculpt offline from both our pipeline and a direct port of `sculptGenerateMapVertices` +
+`createSide` and diff the images — no live viewer needed either way.
