@@ -168,6 +168,81 @@ public class ViewerSculptParityTests
             $"sculpt surface deviates from the viewer's by {Math.Max(maxOT, maxTO):F4} units");
     }
 
+    /// <summary>The same comparison, for TEXTURE COORDINATES rather than positions.
+    ///
+    /// Positions already match (the test above), so a sculpt whose texture sits differently from
+    /// Firestorm's has to differ in its UVs. Measuring that is the point: four separate attempts
+    /// during this hunt to name a cause by reading viewer source were wrong, including two about
+    /// this very grid, and the answer to one of them was already sitting in this file.
+    ///
+    /// Reference: the viewer's path carries mTexT = t, a plain 0..1 lerp along the path
+    /// (llvolume.cpp:1508), and createSide reads it straight back as the V coordinate
+    /// (llvolume.cpp:6860, `tt = path_data[t].mTexT`). The profile contributes U the same way. So
+    /// for grid cell (s, t) the viewer's coordinate is simply (t/(sizeT-1), s/(sizeS-1)).
+    ///
+    /// Both meshes are emitted map-row-outer / map-column-inner, so this compares index by index
+    /// rather than by nearest neighbour -- an offset is exactly what is being looked for, and
+    /// nearest-neighbour matching would hide it.
+    ///
+    /// NOTE this compares the RAW mesh UVs. The vertical flip that ObjectRenderer applies when it
+    /// builds the Godot mesh is a renderer-convention question (SL samples bottom-origin, Godot
+    /// top-origin) and lives in app/, out of reach here; this test is about whether the two
+    /// parameterisations agree before that.</summary>
+    [Theory]
+    [InlineData("18129dff-d039-4ac3-a7ce-bfc786341367", (byte)4)]
+    [InlineData("44af13fe-bd70-4ab4-bd7f-65fd848eec44", (byte)(4 | 0x80))]
+    [InlineData("7f7173db-c802-4c7b-9870-48102b61b6a6", (byte)1)]
+    [InlineData("78d64a57-4020-4cb5-8c22-5076fc7f66f8", (byte)3)]
+    public void OurSculptUVs_MatchViewerAlgorithm(string id, byte sculptType)
+    {
+        string file = Path.Combine(CacheDir, id + "_v5.j2c");
+        if (!File.Exists(file))
+        {
+            _out.WriteLine($"SKIPPED (no local cache): {file}");
+            return;
+        }
+
+        var tex = AssetService.DecodeTexture(File.ReadAllBytes(file), isSculpt: true);
+        Assert.NotNull(tex);
+        int w = tex!.Width, h = tex.Height;
+
+        var ours = PrimMeshService.GenerateSculpt(tex.Rgba, w, h, sculptType);
+        Assert.NotNull(ours);
+        var ourUvs = new List<Vector2>();
+        foreach (var sm in ours!.Submeshes) ourUvs.AddRange(sm.UVs);
+
+        ViewerMesh(tex.Rgba, w, h, sculptType, out int sizeS, out int sizeT);
+
+        _out.WriteLine($"map {id} type={sculptType} native={w}x{h}");
+        _out.WriteLine($"  ours   uvs={ourUvs.Count,5}   viewer grid {sizeS}x{sizeT} = {sizeS * sizeT}");
+
+        if (ourUvs.Count != sizeS * sizeT)
+        {
+            _out.WriteLine("  GRID SIZE DIFFERS -- index-by-index comparison not meaningful");
+            Assert.Fail($"our grid holds {ourUvs.Count} vertices, the viewer's {sizeS * sizeT}");
+        }
+
+        float maxDu = 0, maxDv = 0;
+        int i = 0;
+        for (int sIdx = 0; sIdx < sizeS; sIdx++)
+        {
+            float tt = (float)sIdx / (sizeS - 1);
+            for (int tIdx = 0; tIdx < sizeT; tIdx++, i++)
+            {
+                float ss = (float)tIdx / (sizeT - 1);
+                maxDu = MathF.Max(maxDu, MathF.Abs(ourUvs[i].X - ss));
+                maxDv = MathF.Max(maxDv, MathF.Abs(ourUvs[i].Y - tt));
+            }
+        }
+
+        _out.WriteLine($"  max |du|={maxDu:F5}   max |dv|={maxDv:F5}");
+        _out.WriteLine($"  first  ours={ourUvs[0]}          viewer=(0, 0)");
+        _out.WriteLine($"  last   ours={ourUvs[^1]}         viewer=(1, 1)");
+
+        Assert.True(maxDu < 0.001f, $"U differs from the viewer by up to {maxDu:F5}");
+        Assert.True(maxDv < 0.001f, $"V differs from the viewer by up to {maxDv:F5}");
+    }
+
     /// <summary>
     /// Pins the invariant both mesh caches were violating: the sculpt TYPE byte materially changes
     /// the geometry, so it is part of the cache identity, not a detail of the map. One sculpt map
