@@ -293,14 +293,20 @@ public class GpuCache
                 if (generateMipmaps) image.GenerateMipmaps();
 
                 int finalW = image.GetWidth(), finalH = image.GetHeight();
-                Godot.Callable.From(() =>
+                // Budgeted rather than CallDeferred: SetImage is a full GPU texture upload on the
+                // main thread, and a session routinely completes hundreds of these (816 in one
+                // measured OSGrid session). Flushed unbudgeted they land in whatever frame they
+                // happen to finish in, several at a time, and spike it. Refine lane because the
+                // object is already on screen -- a slightly soft texture for another frame or two
+                // costs nothing, whereas delaying an object that has not appeared yet is visible.
+                MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine, () =>
                 {
                     if (!GodotObject.IsInstanceValid(cached)) return;
                     cached.SetImage(image);
                     if (discard <= 0) _uploadedForPixelArea.TryRemove(textureId, out _);
                     Logger.Info($"[GpuSharpen] {textureId.ToString()[..8]} now discard={discard} " +
                                 $"uploaded={finalW}x{finalH}");
-                }).CallDeferred();
+                }, label: "texture.sharpen");
             }
             catch (Exception ex)
             {

@@ -15,6 +15,7 @@
       "exit": "Beenden",
       "view": "Ansicht",
       "toggle_hud": "HUD umschalten",
+      "performance_stats": "Leistungsanzeige (Strg+Umschalt+1)",
       "camera_controls": "Kamerasteuerung",
       "first_person": "Ego-Perspektive",
       "third_person": "Verfolgerkamera",

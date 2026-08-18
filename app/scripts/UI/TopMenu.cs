@@ -11,6 +11,7 @@ namespace SLNG.App.UI
         public Action? OnToggleCameraHud;
         public Action<int>? OnCameraMode; // 0=First, 1=Third, 2=Free
         public Action? OnToggleWireframe;
+        public Action? OnToggleStats;
         public Action? OnMeasureRenderBaseline;
 
         /// <summary>Diagnostic sculpt-V nudge. The argument is the step in TEXTURE units; 0 means
@@ -83,6 +84,7 @@ namespace SLNG.App.UI
             viewMenu.Name = L10n.Tr("ui.menu.view");
             viewMenu.AddItem(L10n.Tr("ui.menu.toggle_hud"), 0);
             viewMenu.AddItem(L10n.Tr("ui.menu.camera_controls"), 4);
+            viewMenu.AddItem(L10n.Tr("ui.menu.performance_stats"), 5);
             viewMenu.AddSeparator();
             viewMenu.AddItem(L10n.Tr("ui.menu.first_person"), 1);
             viewMenu.AddItem(L10n.Tr("ui.menu.third_person"), 2);
@@ -90,6 +92,7 @@ namespace SLNG.App.UI
             viewMenu.IdPressed += (id) => {
                 if (id == 0) OnToggleHud?.Invoke();
                 if (id == 4) OnToggleCameraHud?.Invoke();
+                if (id == 5) OnToggleStats?.Invoke();
                 if (id >= 1 && id <= 3) OnCameraMode?.Invoke((int)id - 1);
             };
             menuBar.AddChild(viewMenu);

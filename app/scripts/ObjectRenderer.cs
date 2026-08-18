@@ -130,9 +130,20 @@ public partial class ObjectRenderer : Node3D
         CallDeferred(nameof(HighlightVisual), e.Entity.Id.ToString(), false);
     }
 
+    // These fire on LibreMetaverse's network threads. They used to marshal straight to the main
+    // thread with CallDeferred, which Godot flushes in full within the same frame -- so a burst of
+    // ObjectUpdates from walking into a dense parcel built every visual in one frame. See
+    // MainThreadWorkQueue for the measurements, including why budgeting alone was not enough.
+    //
+    // Removal is NOT queued: it stays on CallDeferred so an object that leaves the world disappears
+    // at once. Deleting a node is cheap, and letting a removal sit behind a backlog of creations
+    // would leave deleted objects standing in the scene.
+
     private void OnEntityAdded(object? sender, EntityEventArgs e)
     {
-        CallDeferred(nameof(CreateVisual), e.Entity.Id.ToString());
+        string id = e.Entity.Id.ToString();
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
+                                    () => CreateVisual(id), $"create:{id}", "visual.create");
     }
 
     private void OnEntityRemoved(object? sender, EntityEventArgs e)
@@ -144,7 +155,14 @@ public partial class ObjectRenderer : Node3D
     {
         if (e.Component is PrimitiveComponent || e.Component is TransformComponent)
         {
-            CallDeferred(nameof(UpdateVisual), e.Entity.Id.ToString());
+            // Coalesced per entity: UpdateVisual re-reads the entity's CURRENT state when it runs,
+            // so collapsing a burst of updates into one loses nothing. This matters most for
+            // physically moving objects, which emit a TerseObjectUpdate several times a second --
+            // without coalescing their updates would outpace any budget and the visuals would drift
+            // ever further behind the world.
+            string id = e.Entity.Id.ToString();
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
+                                        () => UpdateVisual(id), $"update:{id}", "visual.update");
         }
         else if (e.Component is AttachmentComponent)
         {
@@ -538,13 +556,13 @@ public partial class ObjectRenderer : Node3D
         var mesh = await _assetService.GetMeshAsync(meshId);
         if (mesh == null || mesh.Submeshes.Count == 0) return;
 
-        Godot.Callable.From(() =>
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (!IsInstanceValid(state.MeshInstance)) return;
             if (state.LoadedMeshId != meshId) return; // shape/asset changed while loading
 
             AssignSharedMesh(state, meshId, mesh, flipV: true);
-        }).CallDeferred();
+        }, label: "mesh.apply");
     }
 
     private async System.Threading.Tasks.Task LoadAndApplySculptMeshAsync(VisualState state, Guid sculptId, byte sculptType, byte profileCurve)
@@ -553,7 +571,7 @@ public partial class ObjectRenderer : Node3D
 
         var mesh = await _assetService.GetSculptMeshAsync(sculptId, sculptType);
 
-        Godot.Callable.From(() =>
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (!IsInstanceValid(state.MeshInstance)) return;
             if (state.LoadedMeshId != sculptId) return; // changed while meshing
@@ -609,7 +627,7 @@ public partial class ObjectRenderer : Node3D
                     state.CollisionShape.Shape = new Godot.BoxShape3D { Size = new Godot.Vector3(1, 1, 1) };
                 }
             }
-        }).CallDeferred();
+        }, label: "sculpt.apply");
     }
 
     /// <summary>
@@ -649,7 +667,7 @@ public partial class ObjectRenderer : Node3D
 
         var mesh = await _assetService.GetPrimMeshAsync(shape, lod);
 
-        Godot.Callable.From(() =>
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (!IsInstanceValid(state.MeshInstance)) return;
             // Drop stale results: the shape may have changed again while we were meshing.
@@ -686,7 +704,7 @@ public partial class ObjectRenderer : Node3D
                     state.CollisionShape.Shape = new Godot.BoxShape3D { Size = new Godot.Vector3(1, 1, 1) };
                 }
             }
-        }).CallDeferred();
+        }, label: "primmesh.apply");
     }
 
     /// <summary>Builds and applies a material per mesh surface from the prim's per-face textures
@@ -777,23 +795,26 @@ public partial class ObjectRenderer : Node3D
             int surf = result.Surface;
             var material = result.Material;
 
-            Godot.Callable.From(() =>
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
                 if (!IsInstanceValid(state.MeshInstance) || state.MeshInstance.Mesh == null) return;
                 if (surf >= state.MeshInstance.Mesh.GetSurfaceCount()) return;
                 state.MeshInstance.MaterialOverride = null; // per-surface overrides take effect
                 state.MeshInstance.SetSurfaceOverrideMaterial(surf, material);
-            }).CallDeferred();
+            }, label: "material.surface");
         }
 
         ApplyOnMainThread(state, null, allUsed.Distinct().ToList());
     }
 
     /// <summary>Marshals texture ref-count bookkeeping (and an optional action) to the main thread,
-    /// releasing refs if the node was freed mid-load.</summary>
+    /// releasing refs if the node was freed mid-load. Budgeted through the same lane as the surface
+    /// applies above rather than left on CallDeferred, so the two keep their relative order -- a
+    /// single queue is FIFO, whereas a mix of queued and deferred work would let the bookkeeping
+    /// overtake the apply it belongs to.</summary>
     private void ApplyOnMainThread(VisualState state, Action? action, List<Guid> usedTextures)
     {
-        Godot.Callable.From(() =>
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (IsInstanceValid(state.MeshInstance))
             {
@@ -804,7 +825,7 @@ public partial class ObjectRenderer : Node3D
             {
                 foreach (var id in usedTextures) _gpuCache.ReleaseRef(id);
             }
-        }).CallDeferred();
+        }, label: "material.refcount");
     }
 
     /// <summary>Builds one face's material (classic texture or PBR) and returns the texture ids

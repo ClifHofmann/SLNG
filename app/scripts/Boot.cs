@@ -65,6 +65,7 @@ public partial class Boot : Control
     // Created lazily on first use -- see the Developer menu wiring below. Dev tooling only,
     // costs nothing until someone actually takes a measurement.
     private RenderBaselineSampler? _renderBaselineSampler;
+    private SLNG.App.UI.StatsOverlay? _statsOverlay;
     private SLNG.App.UI.ButtonBar _buttonBar = null!;
     private SLNG.App.UI.PreferencesWindow _preferencesWindow = null!;
     private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
@@ -83,7 +84,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.3.116-alpha";
+    public const string AppVersion = "v0.4.1-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -253,6 +254,8 @@ public partial class Boot : Control
             LogMessage($"Camera mode changed to {mode}");
         };
 
+        _topMenu.OnToggleStats = () => _statsOverlay?.Toggle();
+
         _topMenu.OnToggleWireframe = () => {
             var vp = GetViewport();
             vp.DebugDraw = vp.DebugDraw == Viewport.DebugDrawEnum.Wireframe
@@ -303,6 +306,10 @@ public partial class Boot : Control
         // Position/altitude readout in the top-right corner, overlaying the 3D view.
         // On its own CanvasLayer so it always draws on top of the world and the login/chat
         // Controls, regardless of scene-tree order.
+        // Drains the budgeted main-thread work queue every frame (FEAT-PERF-01). Added before the
+        // renderer and HUD exist so any work enqueued during startup is already being drained.
+        AddChild(new MainThreadWorkPump());
+
         var hudLayer = new CanvasLayer { Name = "HudLayer", Layer = 10, Visible = false };
         AddChild(hudLayer);
 
@@ -330,6 +337,11 @@ public partial class Boot : Control
         var cameraHud = new SLNG.App.UI.CameraHUD();
         cameraHud.Name = "CameraHUD";
         hudLayer.AddChild(cameraHud);
+
+        // Performance readout (FEAT-PERF-01). Lives on HudLayer so "Toggle HUD" hides it along
+        // with the rest of the overlay, but it starts hidden and is opened on demand.
+        _statsOverlay = new SLNG.App.UI.StatsOverlay();
+        hudLayer.AddChild(_statsOverlay);
 
         _inventoryPanel = new SLNG.App.UI.InventoryPanel { Name = "InventoryPanel" };
         hudLayer.AddChild(_inventoryPanel);
@@ -775,6 +787,12 @@ public partial class Boot : Control
             else if (keyEvent.Keycode == Key.F5)
             {
                 ToggleSunGizmo();
+            }
+            else if (keyEvent.Keycode == Key.Key1 && keyEvent.CtrlPressed && keyEvent.ShiftPressed)
+            {
+                // Ctrl+Shift+1 is the statistics shortcut in SL/Firestorm, so muscle memory carries
+                // over. F-keys are already taken here by post-FX and the draw-distance nudges.
+                _statsOverlay?.Toggle();
             }
             else if (keyEvent.Keycode == Key.I && keyEvent.CtrlPressed)
             {
