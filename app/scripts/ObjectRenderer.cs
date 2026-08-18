@@ -1429,9 +1429,9 @@ public partial class ObjectRenderer : Node3D
             else
             {
                 state.CollisionShape.Shape = null;
-                var m = mesh;
                 var shapeKey = key;
                 var target = state;
+                var sourceData = data;
                 MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine, () =>
                 {
                     if (!IsInstanceValid(target.CollisionShape)) return;
@@ -1440,7 +1440,7 @@ public partial class ObjectRenderer : Node3D
                     // before the first one runs, and without this they would each pay for it.
                     if (!_meshCollisionShapes.TryGetValue(shapeKey, out var shape))
                     {
-                        shape = m.CreateTrimeshShape();
+                        shape = BuildTrimeshShape(sourceData);
                         _meshCollisionShapes[shapeKey] = shape;
                     }
 
@@ -1583,6 +1583,55 @@ public partial class ObjectRenderer : Node3D
             if (state.MeshInstance.GetSurfaceOverrideMaterial(i) is ShaderMaterial sm)
                 sm.SetShaderParameter(PrimShaderFamily.PrimScale, v);
         }
+    }
+
+    /// <summary>
+    /// Builds the trimesh collision shape from the SAME decoded CPU data the visual mesh was built
+    /// from, instead of calling <c>ArrayMesh.CreateTrimeshShape()</c>.
+    ///
+    /// That method looks free but is not: it calls the mesh's get_faces(), which pulls every vertex
+    /// array back OUT of the rendering server before it can build anything. Measured at 7.86 ms per
+    /// call and 9.87 s per session it was, by a wide margin, the most expensive thing the main thread
+    /// did -- to reconstruct data we already had sitting in MeshData the whole time.
+    ///
+    /// Winding is deliberately left as-authored. BuildArrayMesh swaps each triangle's last two
+    /// indices because SL authors CCW-front and Godot rasterizes CW-front, but a concave collision
+    /// shape is an unordered triangle soup with no front or back, so the swap would be pure work for
+    /// no effect. The SL-to-Godot axis change (Z-up to Y-up) does still apply, since that is the
+    /// coordinate system, not a rendering convention.
+    /// </summary>
+    private static ConcavePolygonShape3D BuildTrimeshShape(MeshData mesh)
+    {
+        int triangles = 0;
+        foreach (var sub in mesh.Submeshes) triangles += sub.Indices.Length / 3;
+
+        var faces = new Godot.Vector3[triangles * 3];
+        int w = 0;
+
+        foreach (var sub in mesh.Submeshes)
+        {
+            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
+            {
+                int i0 = sub.Indices[t], i1 = sub.Indices[t + 1], i2 = sub.Indices[t + 2];
+                // A malformed asset can index past its own vertex array; drop that triangle rather
+                // than throwing, which would abort the whole shape and leave the object non-solid.
+                if (i0 >= sub.Positions.Length || i1 >= sub.Positions.Length || i2 >= sub.Positions.Length)
+                    continue;
+
+                var a = sub.Positions[i0];
+                var b = sub.Positions[i1];
+                var c = sub.Positions[i2];
+                faces[w++] = new Godot.Vector3(a.X, a.Z, -a.Y);
+                faces[w++] = new Godot.Vector3(b.X, b.Z, -b.Y);
+                faces[w++] = new Godot.Vector3(c.X, c.Z, -c.Y);
+            }
+        }
+
+        // Dropped triangles leave a tail of zeroed entries, which would collide as degenerate
+        // triangles at the origin. Trim to what was actually written.
+        if (w != faces.Length) System.Array.Resize(ref faces, w);
+
+        return new ConcavePolygonShape3D { Data = faces };
     }
 
     private static ArrayMesh BuildArrayMesh(MeshData mesh, bool flipV, out int[] faceIndices)
