@@ -209,23 +209,62 @@ public partial class TerrainRenderer : Node3D
         int width = regionTerrain.Width;
         int height = regionTerrain.Height;
 
-        var st = new SurfaceTool();
-        st.Begin(Mesh.PrimitiveType.Triangles);
+        // Built as INDEXED arrays handed to Godot in one call, rather than per-vertex through
+        // SurfaceTool. The watchdog caught this method holding the main thread for up to 12.2 s
+        // (phase=terrain), and the old shape explains why: 6 unshared vertices per quad meant
+        // ~390,000 individual AddVertex interop calls for a 256x256 region -- and up to 6.3 million
+        // for a 1024x1024 varregion -- repeated every 0.75 s for as long as patches keep streaming
+        // in. Sharing vertices between adjacent quads also cuts the vertex count by about six.
+        //
+        // Normals are accumulated per vertex here instead of via GenerateNormals(). The face normal
+        // formula deliberately mirrors Godot's own (Plane's three-point constructor, which
+        // SurfaceTool uses): normal = (a - c) x (a - b). Getting this wrong would invert terrain
+        // lighting, and the winding below is likewise kept exactly as it was -- the collision shape
+        // is built from the same triangles, and a flipped winding makes a ConcavePolygonShape3D
+        // that the avatar's ground ray passes straight through.
+        var vertexOf = new int[width * height];
+        System.Array.Fill(vertexOf, -1);
 
-        // Generate vertices. Skip any quad touching a cell whose patch hasn't streamed in yet
-        // (see RegionTerrain.TryGetKnownHeight's doc comment) rather than building it from the
-        // array's 0.0f default -- this mesh's collider is what AvatarController's ground-clamp
-        // raycasts against, so baking in a flat, walkable surface at height 0 for not-yet-loaded
-        // terrain let the avatar spawn/land ON that false floor (usually well below the real
-        // ~20-25m terrain) instead of ever reaching the "raycast misses" fallback path that
-        // TryGetKnownHeight already protects. Leaving a hole here instead means the raycast
-        // genuinely misses, hasGround stays false, and the avatar holds position until the real
-        // patch arrives and a later rebuild fills it in -- same self-healing behavior as the
-        // fallback, just for the primary (raycast-hit) path too.
+        var verts = new List<Vector3>();
+        var normals = new List<Vector3>();
+        var indices = new List<int>();
+
+        int VertexFor(int x, int z)
+        {
+            int cell = z * width + x;
+            int existing = vertexOf[cell];
+            if (existing >= 0) return existing;
+
+            verts.Add(new Vector3(x, heights[cell], -z));
+            normals.Add(Vector3.Zero);
+            vertexOf[cell] = verts.Count - 1;
+            return vertexOf[cell];
+        }
+
+        void AddTriangle(int a, int b, int c)
+        {
+            indices.Add(a);
+            indices.Add(b);
+            indices.Add(c);
+
+            var n = (verts[a] - verts[c]).Cross(verts[a] - verts[b]);
+            normals[a] += n;
+            normals[b] += n;
+            normals[c] += n;
+        }
+
         for (int z = 0; z < height - 1; z++)
         {
             for (int x = 0; x < width - 1; x++)
             {
+                // Skip any quad touching a cell whose patch hasn't streamed in yet (see
+                // RegionTerrain.TryGetKnownHeight) rather than building it from the array's 0.0f
+                // default -- this mesh's collider is what AvatarController's ground-clamp raycasts
+                // against, so baking a flat walkable surface at height 0 for not-yet-loaded terrain
+                // let the avatar land ON that false floor, usually well below the real ~20-25 m
+                // terrain. Leaving a hole means the raycast genuinely misses, hasGround stays false,
+                // and the avatar holds position until the real patch arrives and a later rebuild
+                // fills it in.
                 if (!regionTerrain.TryGetKnownHeight(x, z, out _) ||
                     !regionTerrain.TryGetKnownHeight(x + 1, z, out _) ||
                     !regionTerrain.TryGetKnownHeight(x, z + 1, out _) ||
@@ -234,33 +273,52 @@ public partial class TerrainRenderer : Node3D
                     continue;
                 }
 
-                int i0 = z * width + x;
-                int i1 = z * width + (x + 1);
-                int i2 = (z + 1) * width + x;
-                int i3 = (z + 1) * width + (x + 1);
+                int v0 = VertexFor(x, z);
+                int v1 = VertexFor(x + 1, z);
+                int v2 = VertexFor(x, z + 1);
+                int v3 = VertexFor(x + 1, z + 1);
 
-                Vector3 v0 = new Vector3(x, heights[i0], -z);
-                Vector3 v1 = new Vector3(x + 1, heights[i1], -z);
-                Vector3 v2 = new Vector3(x, heights[i2], -(z + 1));
-                Vector3 v3 = new Vector3(x + 1, heights[i3], -(z + 1));
-
-                // Triangle 1
-                st.AddVertex(v0);
-                st.AddVertex(v2);
-                st.AddVertex(v1);
-
-                // Triangle 2
-                st.AddVertex(v1);
-                st.AddVertex(v2);
-                st.AddVertex(v3);
+                AddTriangle(v0, v2, v1);
+                AddTriangle(v1, v2, v3);
             }
         }
 
-        st.GenerateNormals();
-        var mesh = st.Commit();
+        if (indices.Count == 0)
+        {
+            // Nothing known yet. Clear rather than leave stale geometry, and leave no collider, so
+            // the ground ray misses and AvatarController holds position instead of landing on a
+            // surface that isn't there.
+            regionNode.MeshInstance.Mesh = null;
+            regionNode.CollisionShape.Shape = null;
+            return;
+        }
 
+        var vertArray = verts.ToArray();
+        var normalArray = new Vector3[normals.Count];
+        for (int i = 0; i < normals.Count; i++)
+        {
+            // A vertex only referenced by degenerate triangles accumulates a zero normal, which
+            // Normalized() would turn into NaN and the shader into a black hole in the terrain.
+            var n = normals[i];
+            normalArray[i] = n.LengthSquared() > 0f ? n.Normalized() : Vector3.Up;
+        }
+
+        var arrays = new Godot.Collections.Array();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+        arrays[(int)Mesh.ArrayType.Vertex] = vertArray;
+        arrays[(int)Mesh.ArrayType.Normal] = normalArray;
+        arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
+
+        var mesh = new ArrayMesh();
+        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
         regionNode.MeshInstance.Mesh = mesh;
-        regionNode.CollisionShape.Shape = mesh.CreateTrimeshShape();
+
+        // Collision from the same CPU triangles rather than CreateTrimeshShape(), which reads every
+        // face back out of the rendering server first -- the identical GPU-readback cost already
+        // removed from the object path, and far worse here because it is one enormous mesh.
+        var faces = new Vector3[indices.Count];
+        for (int i = 0; i < indices.Count; i++) faces[i] = vertArray[indices[i]];
+        regionNode.CollisionShape.Shape = new ConcavePolygonShape3D { Data = faces };
 
         // Use a per-region material instance
         ShaderMaterial mat;
