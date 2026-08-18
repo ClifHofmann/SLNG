@@ -10,12 +10,20 @@
 //   * this script
 // The script turns the prim into the sculpt itself; no manual building needed.
 //
-//   touch          -> next case
+//   touch            -> next case
 //   /43 next|prev|<n>|list
-//   /43 size 2 2 4 -> resize
+//   /43 plane        -> restitch as PLANE (what the Dangazi floor uses)
+//   /43 cylinder     -> restitch as CYLINDER
+//   /43 size 2 2 4   -> resize
 
 integer CHANNEL = 43;
 vector  PRIM_DIM = <2.0, 2.0, 4.0>;
+
+// Stitching is switchable because it is NOT a cosmetic variant: plane is the one type whose
+// wrap seam is deliberately left open, so it takes its own branch through the mesher. The two
+// Dangazi Forest objects still rendering wrong (the stone floor at repeat 20x20 and its
+// neighbour at 1x1) are both plane-stitched, while everything verified so far was cylinder.
+integer gStitch = PRIM_SCULPT_TYPE_CYLINDER;
 
 // The real OSGrid stone that started this (object 38399801) is a cylinder-stitched sculpt with
 // a 16x256 map and repeat <2.25, 6>. Case 1 reproduces exactly that; the others bracket it so a
@@ -26,7 +34,8 @@ list CASES = [
     "1 x 6  (V only)",      1.0,  6.0,
     "2.25 x 1  (U only)",   2.25, 1.0,
     "4 x 4",                4.0,  4.0,
-    "1 x 24 (V amplified)", 1.0,  24.0
+    "1 x 24 (V amplified)", 1.0,  24.0,
+    "FLOOR CASE 20 x 20",   20.0, 20.0
 ];
 integer STRIDE = 3;
 
@@ -54,7 +63,9 @@ apply(integer n)
     ]);
 
     string head = "case " + (string)gCase + "/" + (string)(total - 1) + " : " + name;
-    string detail = "repeat <" + (string)ru + ", " + (string)rv + ">   sculpt 16x256 cylinder";
+    string stitch = "cylinder";
+    if (gStitch == PRIM_SCULPT_TYPE_PLANE) stitch = "PLANE";
+    string detail = "repeat <" + (string)ru + ", " + (string)rv + ">   sculpt 16x256 " + stitch;
     llSetText(head + "\n" + detail, <0.4, 1.0, 0.4>, 1.0);
     llOwnerSay(head + "  |  " + detail);
 }
@@ -83,7 +94,7 @@ setup()
     }
 
     llSetLinkPrimitiveParamsFast(LINK_THIS, [
-        PRIM_TYPE, PRIM_TYPE_SCULPT, gMap, PRIM_SCULPT_TYPE_CYLINDER,
+        PRIM_TYPE, PRIM_TYPE_SCULPT, gMap, gStitch,
         PRIM_SIZE, PRIM_DIM,
         PRIM_COLOR, ALL_SIDES, <1.0, 1.0, 1.0>, 1.0,
         PRIM_FULLBRIGHT, ALL_SIDES, TRUE
@@ -105,7 +116,16 @@ default
     {
         msg = llToLower(llStringTrim(msg, STRING_TRIM));
 
-        if (msg == "next")       apply(gCase + 1);
+        if (msg == "plane" || msg == "cylinder")
+        {
+            if (msg == "plane") gStitch = PRIM_SCULPT_TYPE_PLANE;
+            else                gStitch = PRIM_SCULPT_TYPE_CYLINDER;
+            llSetLinkPrimitiveParamsFast(LINK_THIS,
+                [PRIM_TYPE, PRIM_TYPE_SCULPT, gMap, gStitch]);
+            llOwnerSay("stitching -> " + msg);
+            apply(gCase);
+        }
+        else if (msg == "next")  apply(gCase + 1);
         else if (msg == "prev")  apply(gCase - 1);
         else if (msg == "list")
         {

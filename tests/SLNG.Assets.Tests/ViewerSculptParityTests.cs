@@ -131,7 +131,13 @@ public class ViewerSculptParityTests
     // Its texture still sits differently from Firestorm's after the sculpt V-flip fix, while the
     // known-answer probe at the SAME stitching and the SAME repeat matches -- so the difference
     // has to be in this specific map, not in the pipeline the probe already exercises.
-    [InlineData("7ff4b74d-9851-480d-b00c-927ff4af64c7", (byte)4)]
+    // The two objects actually reported as still wrong in Dangazi Forest, read off their own
+    // [FaceParams] clicks: both PLANE-stitched (type 3), which takes the one branch that does NOT
+    // close the wrap seam. 8cc75818 is the stone floor (repeat 20x20); 6c3d8605 is its neighbour
+    // (repeat 1x1). Everything measured before this came from a cylinder-stitched object that was
+    // never the one in question.
+    [InlineData("8cc75818-e729-4d4c-ab46-1801b02fd9ca", (byte)3)]
+    [InlineData("6c3d8605-dd83-4f6e-8f05-e3af085fc148", (byte)3)]
     public void OurSculptMesh_MatchesViewerAlgorithm(string id, byte sculptType)
     {
         string file = Path.Combine(CacheDir, id + "_v5.j2c");
@@ -198,7 +204,8 @@ public class ViewerSculptParityTests
     [InlineData("44af13fe-bd70-4ab4-bd7f-65fd848eec44", (byte)(4 | 0x80))]
     [InlineData("7f7173db-c802-4c7b-9870-48102b61b6a6", (byte)1)]
     [InlineData("78d64a57-4020-4cb5-8c22-5076fc7f66f8", (byte)3)]
-    [InlineData("7ff4b74d-9851-480d-b00c-927ff4af64c7", (byte)4)]
+    [InlineData("8cc75818-e729-4d4c-ab46-1801b02fd9ca", (byte)3)]
+    [InlineData("6c3d8605-dd83-4f6e-8f05-e3af085fc148", (byte)3)]
     public void OurSculptUVs_MatchViewerAlgorithm(string id, byte sculptType)
     {
         string file = Path.Combine(CacheDir, id + "_v5.j2c");
