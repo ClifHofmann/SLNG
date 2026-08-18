@@ -563,7 +563,19 @@ public partial class ObjectRenderer : Node3D
                 // LMV's SCULPT meshing path emits raw (bottom-left) UVs — unlike its prim path,
                 // which pre-flips; scenery sculpts (rocks etc.) rarely make the difference
                 // visible, so this leans on the SL-convention default rather than hard proof.
-                AssignSharedMesh(state, KeyForSculpt(sculptId, sculptType), mesh, flipV: true);
+                //
+                // EXPERIMENT 2026-08-18: flipped to false. Measured on the known-answer sculpt
+                // probe (tools/testassets/, a 16x256 cylinder map) side by side with Firestorm at
+                // repeat 1x1: Firestorm puts the probe texture's BLUE edge at the object's top,
+                // we put the RED one there, and the row labels run A4->A3 downward in Firestorm
+                // against A1->A2->A3 in ours. V runs opposite. The shape itself matched in both
+                // (same bands, same bulge, no helix), so this is the texture axis and not the
+                // sculpt grid.
+                //
+                // Left as an experiment rather than a derivation on purpose: the spec's earlier
+                // pen-and-paper argument concluded flipV:true was correct here, and two other
+                // source-reading conclusions in this same hunt were wrong. The screenshot decides.
+                AssignSharedMesh(state, KeyForSculpt(sculptId, sculptType), mesh, flipV: false);
             }
             else
             {
