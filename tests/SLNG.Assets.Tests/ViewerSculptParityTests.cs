@@ -127,6 +127,11 @@ public class ViewerSculptParityTests
     // A plain sphere-stitched sculpt and a plane-stitched one, for cross-type coverage
     [InlineData("7f7173db-c802-4c7b-9870-48102b61b6a6", (byte)1)]
     [InlineData("78d64a57-4020-4cb5-8c22-5076fc7f66f8", (byte)3)]
+    // The Dangazi Forest stone floor (object 38399801): 16x256 cylinder map, repeat <2.25, 6>.
+    // Its texture still sits differently from Firestorm's after the sculpt V-flip fix, while the
+    // known-answer probe at the SAME stitching and the SAME repeat matches -- so the difference
+    // has to be in this specific map, not in the pipeline the probe already exercises.
+    [InlineData("7ff4b74d-9851-480d-b00c-927ff4af64c7", (byte)4)]
     public void OurSculptMesh_MatchesViewerAlgorithm(string id, byte sculptType)
     {
         string file = Path.Combine(CacheDir, id + "_v5.j2c");
@@ -193,6 +198,7 @@ public class ViewerSculptParityTests
     [InlineData("44af13fe-bd70-4ab4-bd7f-65fd848eec44", (byte)(4 | 0x80))]
     [InlineData("7f7173db-c802-4c7b-9870-48102b61b6a6", (byte)1)]
     [InlineData("78d64a57-4020-4cb5-8c22-5076fc7f66f8", (byte)3)]
+    [InlineData("7ff4b74d-9851-480d-b00c-927ff4af64c7", (byte)4)]
     public void OurSculptUVs_MatchViewerAlgorithm(string id, byte sculptType)
     {
         string file = Path.Combine(CacheDir, id + "_v5.j2c");
