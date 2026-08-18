@@ -66,6 +66,11 @@ public partial class Boot : Control
     // costs nothing until someone actually takes a measurement.
     private RenderBaselineSampler? _renderBaselineSampler;
     private SLNG.App.UI.StatsOverlay? _statsOverlay;
+
+    /// <summary>Threshold for the [AgentGap] log. Below the 0.8 s extrapolation cutoff, so a gap
+    /// shows up in the log slightly before it becomes visible as a stalled avatar.</summary>
+    private const float AgentGapWarnSeconds = 0.5f;
+    private bool _agentGapReported;
     private SLNG.App.UI.ButtonBar _buttonBar = null!;
     private SLNG.App.UI.PreferencesWindow _preferencesWindow = null!;
     private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
@@ -84,7 +89,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.4.8-alpha";
+    public const string AppVersion = "v0.4.9-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -634,6 +639,7 @@ public partial class Boot : Control
         // (mirrors the real viewer's interpolateLinearMotion) — must run after Pump() so this
         // frame's fresh Position/Velocity/TimeSinceUpdate are already applied before extrapolating.
         _worldSimulation?.ExtrapolateMovement((float)delta);
+        ReportAgentPacketGaps();
 
         // Refresh the position HUD a few times a second (the agent lookup scans entities).
         _hudAccum += delta;
@@ -641,6 +647,47 @@ public partial class Boot : Control
         {
             _hudAccum = 0;
             UpdateHud();
+        }
+    }
+
+    /// <summary>
+    /// Logs how long the sim has left the local agent without a position packet.
+    ///
+    /// Walking is server-authoritative -- AvatarController only sends SetMovement at 10 Hz and the
+    /// position comes back from the sim -- so "the avatar stops for about a second while the client
+    /// keeps rendering at 60 fps" cannot be a frame-rate problem, and the numbers agree: zero
+    /// [FrameHitch] lines (nothing over 0.2 s) with hitches=0 in the same session. What it looks
+    /// like instead is WorldSimulation's deliberate extrapolation cutoff: dead reckoning stops at
+    /// ExtrapolationMaxSeconds (0.8 s) and the avatar freezes in place rather than being flung along
+    /// a stale heading, which is the better failure mode but is exactly what a stalled walk feels
+    /// like. A ~1.4 s gap was already recorded by the 2026-07-23 [AvatarMove] investigation.
+    ///
+    /// Reports the work-queue depth alongside it, because the obvious suspect for a starved agent
+    /// packet is the client's own asset traffic while walking into new territory -- and if the gap
+    /// turns out to be independent of local load, that points at the sim or the link instead.
+    /// </summary>
+    private void ReportAgentPacketGaps()
+    {
+        if (_world == null) return;
+
+        var agent = _world.GetAllEntities()
+            .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+        var t = agent?.GetComponent<TransformComponent>();
+        if (t == null) { _agentGapReported = false; return; }
+
+        // Edge-triggered: one line per gap, not one per frame for as long as it lasts.
+        if (t.TimeSinceUpdate >= AgentGapWarnSeconds)
+        {
+            if (!_agentGapReported)
+            {
+                _agentGapReported = true;
+                GD.Print($"[AgentGap] no position packet for {t.TimeSinceUpdate:0.00}s " +
+                          $"(extrapolation gives up at 0.80s) queue={MainThreadWorkQueue.Depth}");
+            }
+        }
+        else
+        {
+            _agentGapReported = false;
         }
     }
 
