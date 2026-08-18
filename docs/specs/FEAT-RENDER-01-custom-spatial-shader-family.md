@@ -586,6 +586,28 @@ flag is not a shortcut — it IS the viewer's behaviour. LSL cannot express them
 (`PRIM_TEXGEN` exposes only `PRIM_TEXGEN_DEFAULT` and `PRIM_TEXGEN_PLANAR`), so no probe case for
 them is possible even in principle.
 
+#### The rest of the case table also matches
+
+The fix was confirmed on case 0 (identity) and case 14 (planar identity) before it was committed;
+the remaining cases were then stepped through against Firestorm and all match. That matters for
+one specific reason beyond thoroughness.
+
+Phase 1's rotation handling — the pivot, and the order of rotate/scale/offset — had until now been
+verified only ALGEBRAICALLY, by deriving that `slng_transform_uv` reproduces `xform`
+(llface.cpp:734-756) and that the centring correction folded into `uv_offset` on the C# side
+multiplies back out to `(uv - 0.5) * repeat + 0.5 + offset`. Nobody had ever LOOKED at it. The
+derivation was right, but a derivation and a rendered frame are different claims, and the cases
+that could have separated them are the combinations, not the pure ones:
+
+- case 12 (rot 90 + offset u .25) is the only one that distinguishes rotating about (0.5, 0.5)
+  from rotating about the origin — under pure rotation both look identical;
+- case 11 (rot 90 + repeat 2x2) is the only one that distinguishes rotate-then-scale from
+  scale-then-rotate, since the wrong order shears rather than rotates and a square result hides it;
+- case 4 (rot 45) separates "rotation ignored" from "rotation snapped to a right angle" without an
+  axis-aligned coincidence covering for either.
+
+All three match Firestorm. The rotation path is now verified twice over, by different means.
+
 #### Not covered by this
 
 The blurry half stands as previously measured: that asset is truncated to 8% on OSGrid and no
