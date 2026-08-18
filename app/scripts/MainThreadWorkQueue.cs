@@ -188,6 +188,23 @@ public static class MainThreadWorkQueue
         }
     }
 
+    /// <summary>Times an arbitrary main-thread operation into the same cost table as queued work.
+    /// Exists so a single queue item can be broken down into its parts without having to split it
+    /// into separate queue items -- the parts have to run together, but their costs do not have to
+    /// be reported together, and "which half of this is slow" is usually the whole question.</summary>
+    public static void Measure(string label, Action work)
+    {
+        long start = Stopwatch.GetTimestamp();
+        try
+        {
+            work();
+        }
+        finally
+        {
+            Record(label, (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency);
+        }
+    }
+
     private static void Record(string label, double ms)
     {
         if (!_costs.TryGetValue(label, out var c)) _costs[label] = c = new Cost();

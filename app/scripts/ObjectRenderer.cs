@@ -1373,9 +1373,20 @@ public partial class ObjectRenderer : Node3D
         }
         else
         {
-            mesh = BuildArrayMesh(data, flipV, out var faceIndices);
-            _meshFaceIndices[key] = faceIndices;
-            _gpuCache?.Put(key, mesh, EstimateMeshSize(data), initialRefCount: 1);
+            // Measured separately from the collision shape below: together they are "mesh.apply",
+            // which the cost table showed averaging 10.8 ms and peaking at 188 ms -- bigger than a
+            // whole 60 FPS frame, so no per-frame budget can hide it. Which of the two halves is
+            // responsible decides the fix, and they need very different ones.
+            ArrayMesh? built = null;
+            int[]? faceIndices = null;
+            MainThreadWorkQueue.Measure("mesh.build", () =>
+            {
+                built = BuildArrayMesh(data, flipV, out var fi);
+                faceIndices = fi;
+            });
+            mesh = built;
+            _meshFaceIndices[key] = faceIndices!;
+            if (mesh != null) _gpuCache?.Put(key, mesh, EstimateMeshSize(data), initialRefCount: 1);
         }
 
         state.MeshInstance.Mesh = mesh;
@@ -1383,7 +1394,12 @@ public partial class ObjectRenderer : Node3D
 
         if (mesh != null)
         {
-            state.CollisionShape.Shape = mesh.CreateTrimeshShape();
+            // CreateTrimeshShape copies every face into the physics server and builds a BVH over
+            // them. It is the classic hidden cost in a "just assign the mesh" path, and it is being
+            // paid for every object in the region regardless of whether anything will ever collide
+            // with or click it.
+            var m = mesh;
+            MainThreadWorkQueue.Measure("mesh.collision", () => state.CollisionShape.Shape = m.CreateTrimeshShape());
         }
         else
         {
