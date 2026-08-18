@@ -34,10 +34,11 @@ public partial class StatsOverlay : PanelContainer
     /// (small) cost to the thing being measured; 5 Hz still reacts instantly to the eye.</summary>
     private const double TextRefreshSeconds = 0.2;
 
-    /// <summary>How often the same figures are also written to the log while the panel is open. The
-    /// panel answers "is it bad right now"; the log line answers "what was it doing when it hitched",
-    /// which is the only form anyone can hand to someone else after the fact. 5 s keeps a long
-    /// session to a few hundred lines instead of drowning the asset logging around it.</summary>
+    /// <summary>How often the same figures are written to the log. Independent of whether the panel
+    /// is shown: the panel answers "is it bad right now", the log line answers "what was it doing
+    /// when it hitched", and the sessions worth diagnosing are exactly the ones nobody opened the
+    /// panel for. 5 s keeps a long session to a few hundred lines instead of drowning the asset
+    /// logging around it.</summary>
     private const double LogIntervalSeconds = 5.0;
 
     private const float GraphHeight = 46f;
@@ -85,7 +86,11 @@ public partial class StatsOverlay : PanelContainer
     public override void _Ready()
     {
         Name = "StatsOverlay";
-        Visible = false;
+        // On by default while FEAT-PERF-01 is open. The stutter investigation kept losing rounds of
+        // data because the panel was closed, and a closed panel used to mean no [Perf]/[WorkCost]
+        // lines either -- a whole session with a 12 s freeze in it produced no cost table at all.
+        // Ctrl+Shift+1 still hides it.
+        Visible = true;
         MouseFilter = MouseFilterEnum.Ignore;
 
         // Top-left, tucked under the TopMenu bar so it never covers the menus.
@@ -165,27 +170,21 @@ public partial class StatsOverlay : PanelContainer
         _values[key] = value;
     }
 
+    /// <summary>Shows or hides the panel. History is deliberately NOT reset on show any more: the
+    /// samples kept accumulating while it was hidden, so what appears is the real recent past rather
+    /// than an empty graph that has to fill up again.</summary>
     public void Toggle()
     {
         Visible = !Visible;
-        if (!Visible) return;
-
-        // Start from a clean window: history kept from before the panel was hidden would make the
-        // first reading describe a moment the user isn't looking at.
-        _frameCount = 0;
-        _frameHead = 0;
-        _textAccum = TextRefreshSeconds; // refresh on the very next frame instead of after 200 ms
-        _logAccum = 0;
-        _worstSinceLog = 0;
-        _hitchesSinceLog = 0;
-        _secondsSinceLog = 0;
-        Logger.Info($"[Perf] readout opened -- one summary line every {LogIntervalSeconds:0}s while it is visible");
+        if (Visible) _textAccum = TextRefreshSeconds; // repaint on the next frame, not in 200 ms
     }
 
     public override void _Process(double delta)
     {
-        if (!Visible) return;
-
+        // Sampling and logging run whether or not the panel is shown. Tying them to visibility was a
+        // mistake: hiding a readout should stop it taking up screen space, not stop it recording --
+        // and the sessions worth diagnosing are exactly the ones where nobody thought to open it
+        // first. Only the label and graph updates below are skipped while hidden.
         _frameMs[_frameHead] = delta * 1000.0;
         _frameHead = (_frameHead + 1) % HistoryFrames;
         if (_frameCount < HistoryFrames) _frameCount++;
@@ -340,13 +339,14 @@ public partial class StatsOverlay : PanelContainer
         // real headroom loss -- worth stating outright next to the FPS it constrains.
         SetValue("VSync", DisplayServer.WindowGetVsyncMode().ToString(), Neutral);
 
-        _graph.Update(_ordered, n, median);
+        if (Visible) _graph.Update(_ordered, n, median);
     }
 
     private static Color ColorForMs(double ms) => ms <= GoodMs * 1.1 ? Good : ms <= BadMs ? Caution : Warn;
 
     private void SetValue(string key, string text, Color color)
     {
+        if (!Visible) return; // stats still computed while hidden; only the UI write is pointless
         if (!_values.TryGetValue(key, out var label)) return;
         label.Text = text;
         label.AddThemeColorOverride("font_color", color);
