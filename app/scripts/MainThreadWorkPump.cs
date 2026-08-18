@@ -23,5 +23,11 @@ public partial class MainThreadWorkPump : Node
 
     public override void _ExitTree() => MainThreadWorkQueue.SetPumpActive(false);
 
-    public override void _Process(double delta) => MainThreadWorkQueue.Pump(RenderConfig.MainThreadWorkBudgetMs);
+    public override void _Process(double delta)
+    {
+        using (MainThreadPhase.Enter("workqueue"))
+        {
+            MainThreadWorkQueue.Pump(RenderConfig.MainThreadWorkBudgetMs);
+        }
+    }
 }

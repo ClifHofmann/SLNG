@@ -244,6 +244,7 @@ public partial class ObjectRenderer : Node3D
         float releaseSq = (draw * 1.25f) * (draw * 1.25f); // only free GPU memory well beyond the edge
         float collisionSq = RenderConfig.CollisionUrgentDistance * RenderConfig.CollisionUrgentDistance;
 
+        using var _phase = MainThreadPhase.Enter("cull");
         double texLodMs = 0;
         MainThreadWorkQueue.Measure("cull.scan", () =>
         {
@@ -1746,7 +1747,14 @@ public partial class ObjectRenderer : Node3D
                 faces = Array.Empty<Godot.Vector3>();
             }
 
-            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine, () =>
+            // Visual lane, not Refine. Refine is drained only after Visual is exhausted or the budget
+            // is spent, so under a backlog it receives exactly the one item per frame the pump
+            // guarantees against starvation -- with thousands of items queued that is minutes of
+            // delay, and the user experiences it as collision simply not working. Now that the GPU
+            // readback is gone the shape costs ~2.6 ms, which the Visual lane can carry; being late
+            // is worse than being slightly expensive when the consequence is falling through the
+            // world.
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
                 if (!_meshCollisionShapes.TryGetValue(key, out var shape))
                 {

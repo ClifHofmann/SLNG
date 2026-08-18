@@ -81,7 +81,8 @@ public sealed class MainThreadWatchdog
             // main thread is wedged, and it is the one place where a stall is worth a line no matter
             // what the log level says.
             GD.Print($"[Watchdog] main thread has not ticked for {stalledFor:0.0}s " +
-                      $"— lastWork={MainThreadWorkQueue.CurrentLabel ?? "(none, stall is outside the work queue)"} " +
+                      $"phase={MainThreadPhase.Current} " +
+                      $"lastWork={MainThreadWorkQueue.CurrentLabel ?? "(none)"} " +
                       $"queue={MainThreadWorkQueue.Depth}");
         }
     }
