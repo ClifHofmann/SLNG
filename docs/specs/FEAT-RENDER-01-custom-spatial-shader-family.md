@@ -578,9 +578,13 @@ of the same shape and different sizes (`AssignSharedMesh`), and `MODEL_MATRIX` w
 pick up an ancestor's scale. It is re-pushed on resize, since only the node scale moves on a
 resize and the materials would otherwise keep the previous size's tiling.
 
-Spherical (4) and cylindrical (6) are still unimplemented. They now fall back to the mesh's own
-UVs by construction — the C# side collapses the wire value to a 0/1 flag — rather than selecting
-a shader branch that does not exist.
+Spherical (4) and cylindrical (6) need no implementation, which was checked rather than assumed:
+`TEX_GEN_SPHERICAL` and `TEX_GEN_CYLINDRICAL` appear in the entire viewer source exactly once each,
+in the enum declaration itself (lltextureentry.h:80-81). No render branch, no build-floater UI. The
+real viewer ignores them and draws such faces as default, so collapsing the wire value to a 0/1
+flag is not a shortcut — it IS the viewer's behaviour. LSL cannot express them either
+(`PRIM_TEXGEN` exposes only `PRIM_TEXGEN_DEFAULT` and `PRIM_TEXGEN_PLANAR`), so no probe case for
+them is possible even in principle.
 
 #### Not covered by this
 

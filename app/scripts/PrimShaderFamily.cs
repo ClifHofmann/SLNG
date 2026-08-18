@@ -91,8 +91,11 @@ public static class PrimShaderFamily
 
     /// <summary>SL TexGen, NORMALISED for the shader: 0 = default, 1 = planar. The wire value
     /// for planar is 2 (see FaceTexture.TexGen); it is collapsed to a 0/1 flag here so the
-    /// shader branch stays a plain comparison and the unimplemented spherical/cylindrical modes
-    /// fall back to default rather than selecting a nonexistent branch.</summary>
+    /// shader branch stays a plain comparison and spherical/cylindrical fall back to default.
+    /// That fallback is viewer PARITY, not a shortcut: TEX_GEN_SPHERICAL and TEX_GEN_CYLINDRICAL
+    /// occur in the whole viewer source only in the enum declaration (lltextureentry.h:80-81) --
+    /// no render branch, no build-floater UI -- so the real viewer draws those faces as default
+    /// too. LSL cannot even set them (PRIM_TEXGEN exposes default and planar only).</summary>
     public static readonly StringName UvTexGen = "uv_texgen";
 
     /// <summary>The prim's SL-axis size in metres, needed because planar UVs are a function of
