@@ -256,6 +256,62 @@ public class ViewerSculptParityTests
         Assert.True(maxDv < 0.001f, $"V differs from the viewer by up to {maxDv:F5}");
     }
 
+    /// <summary>Positions and UVs each match the viewer -- but until this test, never the PAIRING
+    /// between them.
+    ///
+    /// The gap is easy to miss and exactly the shape of the remaining bug: OurSculptMesh compares
+    /// positions as a point SET (Hausdorff, order-insensitive) and OurSculptUVs compares
+    /// coordinates in index order against a formula. Both pass if our vertex ORDER differs from the
+    /// viewer's, because then every position still exists and every UV value still occurs -- just
+    /// attached to a different point. Which renders as: geometry right, texture coordinates right,
+    /// texture in the wrong place. Precisely what is still being chased.
+    ///
+    /// So this walks the grid the viewer's way and asserts that the position OUR mesh carries at
+    /// the same index is the same point.</summary>
+    [Theory]
+    [InlineData("18129dff-d039-4ac3-a7ce-bfc786341367", (byte)4)]
+    [InlineData("7f7173db-c802-4c7b-9870-48102b61b6a6", (byte)1)]
+    [InlineData("78d64a57-4020-4cb5-8c22-5076fc7f66f8", (byte)3)]
+    [InlineData("8cc75818-e729-4d4c-ab46-1801b02fd9ca", (byte)3)]
+    [InlineData("7ff4b74d-9851-480d-b00c-927ff4af64c7", (byte)4)]
+    public void OurSculptVertexOrder_MatchesViewerAlgorithm(string id, byte sculptType)
+    {
+        string file = Path.Combine(CacheDir, id + "_v5.j2c");
+        if (!File.Exists(file)) { _out.WriteLine($"SKIPPED (no local cache): {file}"); return; }
+
+        var tex = AssetService.DecodeTexture(File.ReadAllBytes(file), isSculpt: true);
+        Assert.NotNull(tex);
+        int w = tex!.Width, h = tex.Height;
+
+        var ours = PrimMeshService.GenerateSculpt(tex.Rgba, w, h, sculptType);
+        Assert.NotNull(ours);
+        var ourVerts = new List<Vector3>();
+        foreach (var sm in ours!.Submeshes) ourVerts.AddRange(sm.Positions);
+
+        var theirs = ViewerMesh(tex.Rgba, w, h, sculptType, out int sizeS, out int sizeT);
+        Assert.Equal(theirs.Count, ourVerts.Count);
+
+        float worst = 0;
+        int worstIdx = -1;
+        for (int i = 0; i < theirs.Count; i++)
+        {
+            float d = Vector3.Distance(ourVerts[i], theirs[i]);
+            if (d > worst) { worst = d; worstIdx = i; }
+        }
+
+        _out.WriteLine($"map {id} type={sculptType} native={w}x{h} grid {sizeS}x{sizeT}");
+        _out.WriteLine($"  worst index-aligned deviation {worst:F5} at vertex {worstIdx}" +
+                       (worstIdx >= 0 ? $" (row {worstIdx / sizeT}, col {worstIdx % sizeT})" : ""));
+        if (worstIdx >= 0)
+        {
+            _out.WriteLine($"    ours   {ourVerts[worstIdx]}");
+            _out.WriteLine($"    viewer {theirs[worstIdx]}");
+        }
+
+        Assert.True(worst < 0.001f,
+            $"vertex {worstIdx} differs by {worst:F5} -- our grid is ordered differently from the viewer's");
+    }
+
     /// <summary>
     /// Pins the invariant both mesh caches were violating: the sculpt TYPE byte materially changes
     /// the geometry, so it is part of the cache identity, not a detail of the map. One sculpt map
