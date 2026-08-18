@@ -608,6 +608,23 @@ that could have separated them are the combinations, not the pure ones:
 
 All three match Firestorm. The rotation path is now verified twice over, by different means.
 
+#### `isVolumeGlobal` — no exposure today, but a Phase 3 precondition
+
+`slng_planar_uv` multiplies the vertex position by `prim_scale` unconditionally. The viewer does
+not: `LLFace::getGeometryVolume` uses `scale = (1,1,1)` instead of `mVObjp->getScale()` whenever
+`isVolumeGlobal()` is true (llface.cpp:1363-1372), because such geometry already carries global
+units. That is true for exactly two things — a rigged volume (`mRiggedVolume.notNull()`) and
+anything with a `mVolumeImpl`, i.e. flexi prims (llvovolume.cpp:3698-3710).
+
+Checked rather than assumed: neither reaches this code today. SLNG has no flexi implementation at
+all, and rigged meshes render through `AvatarRenderer`, which has its own material path and never
+calls `slng_planar_uv`. So the unconditional multiply is correct for everything that currently
+uses it.
+
+It stops being correct the moment `AvatarRenderer` moves onto this shader family in Phase 3. At
+that point rigged faces must pass `prim_scale = (1,1,1)`, not the prim's size. Noted here rather
+than guarded in the shader now, because a guard with nothing to guard is a guard nobody can test.
+
 #### Not covered by this
 
 The blurry half stands as previously measured: that asset is truncated to 8% on OSGrid and no
