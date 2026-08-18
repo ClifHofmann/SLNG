@@ -2874,6 +2874,8 @@ void fragment() {
 
     public override void _Process(double delta)
     {
+        using var _phase = MainThreadPhase.Enter("avatar-render");
+
         float dt = (float)delta;
 
         // Recompute draw-distance visibility a few times a second (not every frame — the

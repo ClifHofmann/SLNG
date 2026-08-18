@@ -159,6 +159,8 @@ public partial class TerrainRenderer : Node3D
 
     public override void _Process(double delta)
     {
+        using var _phase = MainThreadPhase.Enter("terrain");
+
         if (_dirtyRegions.Count == 0) return;
 
         // Rebuilding regenerates the whole region mesh + trimesh collider. A varregion

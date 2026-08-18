@@ -242,6 +242,8 @@ public partial class AvatarController : Camera3D
 
     public override void _Process(double delta)
     {
+        using var _phase = MainThreadPhase.Enter("avatar-control");
+
         if (_world == null || _session == null) return;
 
         var focusOwner = GetViewport().GuiGetFocusOwner();

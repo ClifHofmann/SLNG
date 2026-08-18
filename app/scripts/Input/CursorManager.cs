@@ -66,6 +66,8 @@ public partial class CursorManager : Node
 
     public override void _PhysicsProcess(double delta)
     {
+        using var _phase = MainThreadPhase.Enter("cursor-pick");
+
         if (_world == null || _camera == null || !IsInstanceValid(_camera)) return;
 
         // 1. Alt key overrides hover with Cross/Zoom cursor
