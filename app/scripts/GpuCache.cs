@@ -260,14 +260,10 @@ public class GpuCache
         // change, so anything less than that can't lower the level and would just churn.
         if (screenPixelArea < builtFor * 4f)
         {
-            // Report only GROWTH that fell short, not every 4 Hz re-offer of a static scene, so
-            // this stays readable. Without it the sharpening path is invisible in the log and
-            // "the texture never got sharper" cannot be told apart from "it was never asked to" --
-            // a distinction that already cost one wrong conclusion, since [GpuUpload] covers first
-            // uploads only.
-            if (screenPixelArea > builtFor * 1.2f)
-                Logger.Info($"[GpuSharpen] {textureId.ToString()[..8]} grew {builtFor:0} -> " +
-                            $"{screenPixelArea:0} px^2, below the 4x step -- staying put");
+            // Deliberately silent. The first version of this logged every near-miss, which the
+            // 4 Hz re-offer turned into 178k lines in one session -- the re-offer fires per texture
+            // per tick forever in a static scene, so "growth that fell short" is the steady state,
+            // not an event. Actual upgrades below are rare and worth a line; near-misses are not.
             return;
         }
         // Claim the upgrade so concurrent faces of the same object don't all start one.
