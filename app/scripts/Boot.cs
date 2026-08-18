@@ -83,7 +83,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.3.110-alpha";
+    public const string AppVersion = "v0.3.114-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -267,6 +267,12 @@ public partial class Boot : Control
             _renderBaselineSampler ??= new RenderBaselineSampler { Name = "RenderBaselineSampler" };
             if (_renderBaselineSampler.GetParent() == null) AddChild(_renderBaselineSampler);
             _renderBaselineSampler.StartSample(AppVersion);
+        };
+
+        _topMenu.OnNudgeSculptV = (step) => {
+            _objectRenderer?.NudgeSculptV(step);
+            LogMessage($"Sculpt V offset: {ObjectRenderer.SculptVNudge:0.#####} " +
+                       $"({ObjectRenderer.SculptVNudge * 128f:0.##} grid rows)");
         };
 
         _topMenu.OnOpenPreferences = () => {

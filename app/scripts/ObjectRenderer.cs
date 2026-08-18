@@ -572,9 +572,21 @@ public partial class ObjectRenderer : Node3D
                 // (same bands, same bulge, no helix), so this is the texture axis and not the
                 // sculpt grid.
                 //
-                // Left as an experiment rather than a derivation on purpose: the spec's earlier
-                // pen-and-paper argument concluded flipV:true was correct here, and two other
-                // source-reading conclusions in this same hunt were wrong. The screenshot decides.
+                // false, settled by A/B against Firestorm rather than by argument.
+                //   true  -> red and blue frame edges swapped, letters upside down: a full mirror.
+                //   false -> orientation correct, but the pattern sits at a small constant offset
+                //            (a physical cube parked exactly on the red/blue seam in Firestorm
+                //            sits below it here).
+                // So the remaining defect is a SHIFT, not a mirror -- a distinction that needed
+                // two asymmetric features in one view to make, which is why the earlier
+                // single-line screenshots could not settle it.
+                //
+                // Worth writing down because the arithmetic argues the other way and is wrong:
+                // ViewerSculptParityTests proves our mesh UVs equal the viewer's tt exactly
+                // (0.00000 across seven real maps), and SL is usually described as sampling
+                // bottom-origin against Godot's top-origin, which would demand 1 - tt. Measurement
+                // says otherwise, twice. Whatever reconciles the two lives elsewhere in the chain
+                // and is what the remaining offset is pointing at.
                 AssignSharedMesh(state, KeyForSculpt(sculptId, sculptType), mesh, flipV: false);
             }
             else
@@ -879,6 +891,11 @@ public partial class ObjectRenderer : Node3D
         // slng_planar_uv reconstructs the SL-space position from the Godot vertex and then
         // multiplies component-wise, so it needs SL's own (X, Y, Z), not the node's (X, Z, Y).
         material.SetShaderParameter(PrimShaderFamily.UvTexGen, ft.IsPlanar ? 1 : 0);
+
+        // Diagnostic: sculpts only, because prims are already confirmed to match Firestorm and
+        // dragging them along would destroy the reference the measurement leans on.
+        if (isSculpted && SculptVNudge != 0f)
+            material.SetShaderParameter(PrimShaderFamily.UvExtraV, SculptVNudge);
         material.SetShaderParameter(PrimShaderFamily.PrimScale,
             new Godot.Vector3(primScale.X, primScale.Y, primScale.Z));
         // Centered like SL (u' = (u-0.5)*repeat + 0.5 + off) — the shader scales UVs from the
@@ -1398,6 +1415,43 @@ public partial class ObjectRenderer : Node3D
         6 => "cylindrical (not implemented — falls back to default)",
         _ => $"unknown ({texGen})"
     };
+
+    /// <summary>Live V offset applied to SCULPT faces only, in texture units (1.0 = one full
+    /// texture). Driven from F10/F11 so the constant offset sculpts still show against Firestorm
+    /// can be dialled in and READ OFF as a number, instead of being derived -- six derivations in
+    /// a row were wrong about this, while every measurement held.
+    ///
+    /// The step is 1/128, one row of a typical sculpt's vertex grid, since that is the size of
+    /// the most plausible candidates (a half or whole grid step). Coarse steps with Shift.</summary>
+    public static float SculptVNudge { get; private set; }
+
+    /// <summary>Developer menu entry point. <paramref name="step"/> is in texture units; passing
+    /// 0 resets. Reports the value three ways because which unit it lands on IS the finding: a
+    /// half or whole grid row points at the sculpt sampling, half a texture points at centring.</summary>
+    public void NudgeSculptV(float step)
+    {
+        SculptVNudge = step == 0f ? 0f : SculptVNudge + step;
+        PushSculptNudge();
+        Logger.Info($"[SculptNudge] V offset = {SculptVNudge:0.#####} textures  " +
+                    $"({SculptVNudge * 128f:0.##} grid rows, {SculptVNudge * 256f:0.##} map rows)");
+    }
+
+    /// <summary>Sets the nudge on every sculpt material currently in the scene. Cheap enough to do
+    /// on a keypress -- it is one uniform write per surface, no rebuild and no re-decode.</summary>
+    private void PushSculptNudge()
+    {
+        foreach (var state in _visuals.Values)
+        {
+            if (!IsInstanceValid(state.MeshInstance)) continue;
+            if (state.MeshInstance.MaterialOverride is ShaderMaterial mo)
+                mo.SetShaderParameter(PrimShaderFamily.UvExtraV, SculptVNudge);
+
+            int surfaces = state.MeshInstance.Mesh?.GetSurfaceCount() ?? 0;
+            for (int i = 0; i < surfaces; i++)
+                if (state.MeshInstance.GetSurfaceOverrideMaterial(i) is ShaderMaterial sm)
+                    sm.SetShaderParameter(PrimShaderFamily.UvExtraV, SculptVNudge);
+        }
+    }
 
     /// <summary>Pushes a new prim size into every material already on this visual. Only the
     /// planar projection reads it; for a default-texgen face the uniform is inert.</summary>

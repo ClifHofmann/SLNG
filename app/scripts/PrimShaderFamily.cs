@@ -96,6 +96,9 @@ public static class PrimShaderFamily
     /// occur in the whole viewer source only in the enum declaration (lltextureentry.h:80-81) --
     /// no render branch, no build-floater UI -- so the real viewer draws those faces as default
     /// too. LSL cannot even set them (PRIM_TEXGEN exposes default and planar only).</summary>
+    /// <summary>Diagnostic V nudge, applied after the full UV transform. See the shader.</summary>
+    public static readonly StringName UvExtraV = "uv_extra_v";
+
     public static readonly StringName UvTexGen = "uv_texgen";
 
     /// <summary>The prim's SL-axis size in metres, needed because planar UVs are a function of

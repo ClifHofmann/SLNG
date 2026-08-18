@@ -258,9 +258,22 @@ public class GpuCache
         if (!_uploadedForPixelArea.TryGetValue(textureId, out float builtFor)) return; // already full-res
         // Require a clear step up before paying for a re-decode: one discard level is a 4x area
         // change, so anything less than that can't lower the level and would just churn.
-        if (screenPixelArea < builtFor * 4f) return;
+        if (screenPixelArea < builtFor * 4f)
+        {
+            // Report only GROWTH that fell short, not every 4 Hz re-offer of a static scene, so
+            // this stays readable. Without it the sharpening path is invisible in the log and
+            // "the texture never got sharper" cannot be told apart from "it was never asked to" --
+            // a distinction that already cost one wrong conclusion, since [GpuUpload] covers first
+            // uploads only.
+            if (screenPixelArea > builtFor * 1.2f)
+                Logger.Info($"[GpuSharpen] {textureId.ToString()[..8]} grew {builtFor:0} -> " +
+                            $"{screenPixelArea:0} px^2, below the 4x step -- staying put");
+            return;
+        }
         // Claim the upgrade so concurrent faces of the same object don't all start one.
         if (!_uploadedForPixelArea.TryUpdate(textureId, screenPixelArea, builtFor)) return;
+
+        Logger.Info($"[GpuSharpen] {textureId.ToString()[..8]} {builtFor:0} -> {screenPixelArea:0} px^2 -- re-decoding");
 
         _ = Task.Run(async () =>
         {
@@ -283,11 +296,14 @@ public class GpuCache
                 }
                 if (generateMipmaps) image.GenerateMipmaps();
 
+                int finalW = image.GetWidth(), finalH = image.GetHeight();
                 Godot.Callable.From(() =>
                 {
                     if (!GodotObject.IsInstanceValid(cached)) return;
                     cached.SetImage(image);
                     if (discard <= 0) _uploadedForPixelArea.TryRemove(textureId, out _);
+                    Logger.Info($"[GpuSharpen] {textureId.ToString()[..8]} now discard={discard} " +
+                                $"uploaded={finalW}x{finalH}");
                 }).CallDeferred();
             }
             catch (Exception ex)

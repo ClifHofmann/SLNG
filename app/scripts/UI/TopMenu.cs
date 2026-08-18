@@ -12,6 +12,12 @@ namespace SLNG.App.UI
         public Action<int>? OnCameraMode; // 0=First, 1=Third, 2=Free
         public Action? OnToggleWireframe;
         public Action? OnMeasureRenderBaseline;
+
+        /// <summary>Diagnostic sculpt-V nudge. The argument is the step in TEXTURE units; 0 means
+        /// reset. Lives in the menu rather than on a function key because the useful workflow is
+        /// clicking repeatedly while watching the object, and because a key nobody remembers is a
+        /// key nobody uses.</summary>
+        public Action<float>? OnNudgeSculptV;
         public Action? OnOpenPreferences;
         public Action? OnCreateLandmark;
 
@@ -99,9 +105,23 @@ namespace SLNG.App.UI
             devMenu.Name = L10n.Tr("ui.menu.developer");
             devMenu.AddItem(L10n.Tr("ui.menu.toggle_wireframe"), 0);
             devMenu.AddItem(L10n.Tr("ui.menu.measure_render_baseline"), 1);
+            devMenu.AddSeparator();
+            // One grid row of a typical 129-row sculpt, and a x16 coarse step for finding the
+            // ballpark before homing in.
+            devMenu.AddItem(L10n.Tr("ui.menu.sculpt_v_nudge_up"), 2);
+            devMenu.AddItem(L10n.Tr("ui.menu.sculpt_v_nudge_down"), 3);
+            devMenu.AddItem(L10n.Tr("ui.menu.sculpt_v_nudge_up_coarse"), 4);
+            devMenu.AddItem(L10n.Tr("ui.menu.sculpt_v_nudge_down_coarse"), 5);
+            devMenu.AddItem(L10n.Tr("ui.menu.sculpt_v_nudge_reset"), 6);
             devMenu.IdPressed += (id) => {
+                const float step = 1.0f / 128.0f;
                 if (id == 0) OnToggleWireframe?.Invoke();
                 else if (id == 1) OnMeasureRenderBaseline?.Invoke();
+                else if (id == 2) OnNudgeSculptV?.Invoke(step);
+                else if (id == 3) OnNudgeSculptV?.Invoke(-step);
+                else if (id == 4) OnNudgeSculptV?.Invoke(step * 16f);
+                else if (id == 5) OnNudgeSculptV?.Invoke(-step * 16f);
+                else if (id == 6) OnNudgeSculptV?.Invoke(0f);
             };
             menuBar.AddChild(devMenu);
         }

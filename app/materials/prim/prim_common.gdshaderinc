@@ -64,6 +64,13 @@ uniform float uv_rotation = 0.0;
 // uniform (instead of reading MODEL_MATRIX) keeps meshes shareable between prims of the same
 // shape and different sizes, which is the whole point of AssignSharedMesh, and avoids silently
 // picking up an ancestor's scale from the node hierarchy.
+// DIAGNOSTIC. Added to V after the full transform, so it shifts the finished result rather than
+// the source coordinate -- which is what makes it directly readable as "the pattern sits N
+// textures too low". Driven live from F10/F11 (ObjectRenderer) and applied to SCULPT faces only,
+// to measure the constant offset those still show against Firestorm once the mirror question was
+// settled. Zero by default; it exists to turn an argument into a number.
+uniform float uv_extra_v = 0.0;
+
 uniform int uv_texgen = 0;
 uniform vec3 prim_scale = vec3(1.0);
 
@@ -136,7 +143,9 @@ vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
         vec2 centred = uv - vec2(0.5);
         uv = vec2(centred.x * c - centred.y * s, centred.x * s + centred.y * c) + vec2(0.5);
     }
-    return uv * uv_scale + uv_offset;
+    uv = uv * uv_scale + uv_offset;
+    uv.y += uv_extra_v;
+    return uv;
 }
 
 // Samples everything a face needs and hands it back through out-params. It does NOT assign
