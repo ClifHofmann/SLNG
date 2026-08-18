@@ -1630,11 +1630,20 @@ public partial class ObjectRenderer : Node3D
     /// call and 9.87 s per session it was, by a wide margin, the most expensive thing the main thread
     /// did -- to reconstruct data we already had sitting in MeshData the whole time.
     ///
-    /// Winding is deliberately left as-authored. BuildArrayMesh swaps each triangle's last two
-    /// indices because SL authors CCW-front and Godot rasterizes CW-front, but a concave collision
-    /// shape is an unordered triangle soup with no front or back, so the swap would be pure work for
-    /// no effect. The SL-to-Godot axis change (Z-up to Y-up) does still apply, since that is the
-    /// coordinate system, not a rendering convention.
+    /// Winding MUST match BuildArrayMesh, and an earlier version of this got that wrong. The comment
+    /// then claimed a concave shape is "an unordered triangle soup with no front or back", so the
+    /// swap could be skipped. That is false: ConcavePolygonShape3D has BackfaceCollision, it defaults
+    /// to false, and with it off a ray only registers a hit on a triangle's FRONT face. Leaving SL's
+    /// CCW winding in place therefore built a shape whose surfaces all faced away from the world --
+    /// physically present, correctly positioned, and invisible to the avatar's downward ground ray,
+    /// which is exactly "the collision shapes exist but collision does not work".
+    ///
+    /// The old CreateTrimeshShape() never hit this because it read its faces back out of the
+    /// ArrayMesh, which had already been built with the swap applied. Reading the same source data
+    /// directly means applying it here instead.
+    ///
+    /// The SL-to-Godot axis change (Z-up to Y-up) applies as well -- that one is the coordinate
+    /// system rather than a rendering convention.
     /// </summary>
     private static Godot.Vector3[] BuildTrimeshFaces(MeshData mesh)
     {
@@ -1654,9 +1663,10 @@ public partial class ObjectRenderer : Node3D
                 if (i0 >= sub.Positions.Length || i1 >= sub.Positions.Length || i2 >= sub.Positions.Length)
                     continue;
 
+                // Same last-two swap as BuildArrayMesh: i0, i2, i1.
                 var a = sub.Positions[i0];
-                var b = sub.Positions[i1];
-                var c = sub.Positions[i2];
+                var b = sub.Positions[i2];
+                var c = sub.Positions[i1];
                 faces[w++] = new Godot.Vector3(a.X, a.Z, -a.Y);
                 faces[w++] = new Godot.Vector3(b.X, b.Z, -b.Y);
                 faces[w++] = new Godot.Vector3(c.X, c.Z, -c.Y);

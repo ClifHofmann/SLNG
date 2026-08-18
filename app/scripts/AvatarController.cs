@@ -145,6 +145,11 @@ public partial class AvatarController : Camera3D
     // Throttles the ground-clamp diagnostic print below to ~1/sec instead of every frame.
     private double _timeSinceGroundLog = 0;
 
+    /// <summary>Last ground source seen, so the diagnostic above fires on transitions instead of
+    /// every frame. "collider" collapses the per-object detail -- which object it is matters far
+    /// less than whether an object was hit at all.</summary>
+    private string _lastGroundKind = "";
+
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
     private const string BuildMarker = "2026-07-22-groundclamp-reverted-to-simple-clamp";
@@ -472,6 +477,25 @@ public partial class AvatarController : Camera3D
                         hasGround = true;
                         groundSource = "terrain-heightmap-fallback";
                     }
+                }
+
+                // Ground-source diagnostic, re-armed for FEAT-PERF-01. groundSource was already being
+                // computed here but never printed, so "collision doesn't work" had no evidence
+                // behind it either way -- and the cost tables prove the shapes ARE being built
+                // (collision.shape n=810, collision.urgent n=62, no exceptions), which means the
+                // question is not whether they exist but whether this ray finds them.
+                //
+                // Logged on CHANGE rather than periodically: the interesting event is the moment the
+                // ray stops hitting an object collider and falls through to the terrain heightmap
+                // (or nothing at all), and a periodic line would either miss it or bury it.
+                _timeSinceGroundLog += delta;
+                string groundKind = groundSource.StartsWith("collider:") ? "collider" : groundSource;
+                if (groundKind != _lastGroundKind || _timeSinceGroundLog >= 10.0)
+                {
+                    _lastGroundKind = groundKind;
+                    _timeSinceGroundLog = 0;
+                    GD.Print($"[GroundClamp] source={groundSource} hasGround={hasGround} " +
+                              $"groundZ={groundHeight:0.00} agentZ={transform.Position.Z:0.00}");
                 }
 
                 if (hasGround)
