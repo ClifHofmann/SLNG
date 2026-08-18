@@ -219,6 +219,8 @@ public partial class ObjectRenderer : Node3D
         // count itself; this attacks the spike, which is what is actually hurting.
         if (_world == null) return;
         if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
+        _agentPos = agentPos;
+        _agentPosKnown = true;
 
         if (_cullCursor >= _cullOrder.Count)
         {
@@ -240,6 +242,7 @@ public partial class ObjectRenderer : Node3D
         float showSq = draw * draw;
         float hideSq = (draw * 1.15f) * (draw * 1.15f);  // hide a bit past the edge (visibility hysteresis)
         float releaseSq = (draw * 1.25f) * (draw * 1.25f); // only free GPU memory well beyond the edge
+        float collisionSq = RenderConfig.CollisionUrgentDistance * RenderConfig.CollisionUrgentDistance;
 
         double texLodMs = 0;
         MainThreadWorkQueue.Measure("cull.scan", () =>
@@ -257,6 +260,18 @@ public partial class ObjectRenderer : Node3D
             // objects sitting near the edge don't flicker on/off every tick while moving.
             if (dSq <= showSq && !state.MeshInstance.Visible) state.MeshInstance.Visible = true;
             else if (dSq > hideSq && state.MeshInstance.Visible) state.MeshInstance.Visible = false;
+
+            // Repair pass for the deferral above: an object that was far away when its mesh landed got
+            // its shape queued in the background, and by the time the avatar walks over to it the
+            // shape may well be built (another object shares the mesh, or the queue simply caught
+            // up). Claiming it here costs a dictionary lookup and closes the window in which you can
+            // walk onto something that is drawn but not yet solid.
+            if (dSq <= collisionSq && state.CollisionShape.Shape == null
+                && state.LoadedMeshKey != Guid.Empty
+                && _meshCollisionShapes.TryGetValue(state.LoadedMeshKey, out var readyShape))
+            {
+                state.CollisionShape.Shape = readyShape;
+            }
 
             if (dSq <= showSq && state.ResourcesReleased)
             {
@@ -1654,6 +1669,19 @@ public partial class ObjectRenderer : Node3D
         return faces;
     }
 
+    // Agent position as of the last frame, cached because TryGetLocalAgentGodotPos scans every
+    // entity in the world to find the local agent. Calling it per mesh assign would be an O(objects
+    // x entities) sweep -- roughly 1,700 x 24,000 on the region this was measured on -- to answer a
+    // question a single distance test settles. One frame of staleness is nothing against a 24 m
+    // radius; the avatar cannot cross it in 16 ms.
+    private Godot.Vector3 _agentPos;
+    private bool _agentPosKnown;
+
+    /// <summary>Distance test against the local agent, false until the agent is in the world -- which
+    /// correctly makes nothing urgent during login, since there is nobody yet to fall.</summary>
+    private bool IsNearLocalAgent(Godot.Vector3 godotPos, float radius)
+        => _agentPosKnown && godotPos.DistanceSquaredTo(_agentPos) <= radius * radius;
+
     /// <summary>Objects waiting for a collision shape that is currently being built on a worker.
     /// Keyed by mesh key, so the many objects that share one mesh cause exactly one build and all of
     /// them get the result. Main-thread only.</summary>
@@ -1681,6 +1709,19 @@ public partial class ObjectRenderer : Node3D
         }
 
         state.CollisionShape.Shape = null;
+
+        // Close enough to stand on: build it here and now. Waiting even a few frames for this one is
+        // what makes the avatar fall through a prim it just walked onto.
+        if (IsNearLocalAgent(state.MeshInstance.Position, RenderConfig.CollisionUrgentDistance))
+        {
+            MainThreadWorkQueue.Measure("collision.urgent", () =>
+            {
+                var urgent = new ConcavePolygonShape3D { Data = BuildTrimeshFaces(data) };
+                _meshCollisionShapes[key] = urgent;
+                state.CollisionShape.Shape = urgent;
+            });
+            return;
+        }
 
         // A build for this mesh is already running: join it rather than starting a second one.
         if (_collisionWaiters.TryGetValue(key, out var waiters))

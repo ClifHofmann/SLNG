@@ -29,6 +29,18 @@ public static class RenderConfig
     /// </summary>
     public static double MainThreadWorkBudgetMs = 3.0;
 
+    /// <summary>
+    /// Radius within which an object's collision shape must exist IMMEDIATELY rather than being
+    /// built in the background.
+    ///
+    /// Deferring the shape is what makes a busy region load without stuttering, but it has one
+    /// unacceptable consequence: the avatar's ground check is a downward raycast, so an object whose
+    /// shape has not landed yet is not merely unclickable, it is not there to stand on -- you walk
+    /// onto a prim and drop through it. Anything you could be standing on is by definition close, so
+    /// a small radius buys back correctness for a tiny fraction of the objects.
+    /// </summary>
+    public static float CollisionUrgentDistance = 24f;
+
     // Floating origin: the global metre coordinates of the region we render relative to.
     // OSGrid regions sit at global coordinates in the millions; rendering at those raw
     // coordinates blows float32 precision (objects jitter / Z-fight / look shattered). We
