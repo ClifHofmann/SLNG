@@ -31,7 +31,9 @@ That splits the search space in one click:
 ## Files
 
 - `gen_uv_probe.py` → `out/uvprobe_1024.png` (and `_512`). Run `python tools/testassets/gen_uv_probe.py`.
-- `uv_probe.lsl` — the in-world driver.
+- `uv_probe.lsl` — the in-world driver for texture placement on a box.
+- `gen_sculpt_probe.py` → `out/sculptprobe_16x256.png`, plus `sculpt_probe.lsl` — the same
+  known-answer idea for SCULPT geometry. See "Sculpt probe" below.
 
 The texture is built so a screenshot alone identifies the transform:
 
@@ -88,3 +90,48 @@ repeat, offset and rotation are all correct — which is the reported symptom.
 Cases 14–16 are the direct test. If they diverge from Firestorm while 0–13 match, the
 "misplaced" half of FEAT-RENDER-01 is planar texgen, and it is an implementation gap
 rather than a bug.
+
+
+---
+
+## Sculpt probe
+
+The texture-transform half of FEAT-RENDER-01 is closed. What is not closed is a stone on OSGrid
+(object 38399801) whose texture sits differently in SLNG than in Firestorm: a cylinder-stitched
+sculpt, **16 x 256** map, `repeat <2.25, 6>`, default texgen — so the planar fix does not apply.
+
+That object is not ours, so there is no known answer to check against. This probe supplies one.
+
+`gen_sculpt_probe.py` builds a sculpt map with the **same 16 x 256 shape** as the problem case —
+deliberately, because a sculpt map's aspect ratio drives the vertex grid both viewers build, and
+a square map would not exercise the same arithmetic. The encoded shape makes the two candidate
+failures separable by eye:
+
+- **8 stacked bands** of alternating radius → vertical drift in the sampling moves the band
+  edges, and they can be counted.
+- **A strongly asymmetric ("egg") cross-section**, fattest a quarter turn from the seam → if the
+  sampling rotates row by row, the fat side winds into a helix instead of running straight up.
+  It is a smooth bulge rather than a one-column marker on purpose: both viewers sample only
+  about 7 of the map's 16 columns, so a narrow feature would fall between samples. Keeping it
+  off the seam separates a twist from a seam-stitching artifact.
+
+### Upload
+
+| file | lossless? |
+|---|---|
+| `sculptprobe_16x256.png` | **YES** — it is geometry; every pixel is a vertex position and JPEG2000 ringing moves the surface |
+| `uvprobe_1024.png` | no — ordinary diffuse map |
+
+Rez any prim, drop in both textures and `sculpt_probe.lsl`. The script turns the prim into the
+sculpt itself. Touch to step; `/43 list`, `/43 <n>`, `/43 size 2 2 4`.
+
+Case 1 reproduces the real object exactly (`repeat <2.25, 6>`); the others bracket it so a
+disagreement can be pinned to one axis. Case 5 (`1 x 24`) exists to amplify vertical error.
+
+### What is known so far
+
+SLNG builds a **9 x 129** vertex grid for this map where the viewer builds **8 x 128**, and the
+two therefore read different columns of the map (ours 8/10/12/14, the viewer's 9/11/13). That
+difference is measured and real. Whether it is what makes the stone look wrong is **not**
+established — two earlier attempts to name a cause from reading viewer source were both wrong,
+which is why this probe exists instead of a third guess.
