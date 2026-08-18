@@ -312,7 +312,8 @@ public partial class ObjectRenderer : Node3D
         Logger.Info($"[FaceParams] object {entity.LocalId} mesh={prim.IsMesh} sculpt={prim.IsSculpt} " +
                     $"default: repeat=({prim.RepeatU:0.###},{prim.RepeatV:0.###}) " +
                     $"offset=({prim.OffsetU:0.###},{prim.OffsetV:0.###}) " +
-                    $"rot={prim.Rotation:0.####} rad = {Mathf.RadToDeg(prim.Rotation):0.##}°");
+                    $"rot={prim.Rotation:0.####} rad = {Mathf.RadToDeg(prim.Rotation):0.##}° " +
+                    $"texgen={DescribeTexGen(prim.TexGen)}");
 
         if (prim.Faces == null) { Logger.Info("[FaceParams]   (no per-face data — all faces use the default above)"); return; }
 
@@ -322,7 +323,7 @@ public partial class ObjectRenderer : Node3D
             Logger.Info($"[FaceParams]   face {i}: repeat=({f.RepeatU:0.###},{f.RepeatV:0.###}) " +
                         $"offset=({f.OffsetU:0.###},{f.OffsetV:0.###}) " +
                         $"rot={f.Rotation:0.####} rad = {Mathf.RadToDeg(f.Rotation):0.##}° " +
-                        $"texgen={(f.TexGen == 1 ? "PLANAR (not implemented!)" : "default")} " +
+                        $"texgen={DescribeTexGen(f.TexGen)} " +
                         $"tex={f.TextureId.ToString()[..8]}");
         }
     }
@@ -485,6 +486,11 @@ public partial class ObjectRenderer : Node3D
             var sy = float.IsNaN(prim.Scale.Y) ? 1f : Mathf.Clamp(prim.Scale.Y, 0.001f, 1000f);
             var sz = float.IsNaN(prim.Scale.Z) ? 1f : Mathf.Clamp(prim.Scale.Z, 0.001f, 1000f);
             state.MeshInstance.Scale = new Godot.Vector3(sx, sz, sy);
+
+            // Planar UVs are derived from vertex position in metres, so a resize changes them.
+            // The mesh and the materials both survive a resize untouched (only the node scale
+            // moves), so without this a planar face keeps the tiling of its previous size.
+            UpdatePrimScaleUniform(state, prim.Scale);
 
             // Phantom means "no collision" in SL: move off the terrain/objects layer so
             // AvatarController's ground ray (masked to layer 1) passes through, while staying
@@ -713,12 +719,12 @@ public partial class ObjectRenderer : Node3D
             }
         }
 
-        var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint, prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation);
+        var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint, prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation, prim.TexGen);
 
         // Fallback solid / mesh without per-surface face info: one material for the whole node.
         if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
         {
-            var (mat, used) = await BuildFaceMaterialAsync(defaultFace, screenPixelArea, priority, prim.IsSculpt);
+            var (mat, used) = await BuildFaceMaterialAsync(defaultFace, prim.Scale, screenPixelArea, priority, prim.IsSculpt);
             ApplyOnMainThread(state, () => state.MeshInstance.MaterialOverride = mat, used);
             return;
         }
@@ -732,7 +738,7 @@ public partial class ObjectRenderer : Node3D
                 ? prim.Faces[faceIdx] : defaultFace;
 
             int surf = surface; // capture
-            faceTasks.Add(BuildFaceMaterialAsync(ft, screenPixelArea, priority, prim.IsSculpt).ContinueWith(t =>
+            faceTasks.Add(BuildFaceMaterialAsync(ft, prim.Scale, screenPixelArea, priority, prim.IsSculpt).ContinueWith(t =>
             {
                 return (surf, t.Result.Material, t.Result.Used);
             }, System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously));
@@ -779,7 +785,7 @@ public partial class ObjectRenderer : Node3D
 
     /// <summary>Builds one face's material (classic texture or PBR) and returns the texture ids
     /// it references. Texture/material application is marshalled to the main thread.</summary>
-    private async System.Threading.Tasks.Task<(ShaderMaterial Material, List<Guid> Used)> BuildFaceMaterialAsync(FaceTexture ft, float screenPixelArea, float priority, bool isSculpted = false)
+    private async System.Threading.Tasks.Task<(ShaderMaterial Material, List<Guid> Used)> BuildFaceMaterialAsync(FaceTexture ft, System.Numerics.Vector3 primScale, float screenPixelArea, float priority, bool isSculpted = false)
     {
         var used = new List<Guid>();
         var colorTint = new Godot.Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
@@ -854,6 +860,15 @@ public partial class ObjectRenderer : Node3D
         material.SetShaderParameter(PrimShaderFamily.AlbedoColor, colorTint);
         material.SetShaderParameter(PrimShaderFamily.UvScale, new Godot.Vector2(repeatU, repeatV));
         material.SetShaderParameter(PrimShaderFamily.UvRotation, ft.Rotation);
+
+        // TexGen. Collapsed from the raw wire value to a 0/1 flag, so the two SL modes we do not
+        // implement (spherical=4, cylindrical=6) fall back to the mesh's own UVs instead of
+        // selecting a shader branch that does not exist. prim_scale is in SL axes, unswizzled:
+        // slng_planar_uv reconstructs the SL-space position from the Godot vertex and then
+        // multiplies component-wise, so it needs SL's own (X, Y, Z), not the node's (X, Z, Y).
+        material.SetShaderParameter(PrimShaderFamily.UvTexGen, ft.IsPlanar ? 1 : 0);
+        material.SetShaderParameter(PrimShaderFamily.PrimScale,
+            new Godot.Vector3(primScale.X, primScale.Y, primScale.Z));
         // Centered like SL (u' = (u-0.5)*repeat + 0.5 + off) — the shader scales UVs from the
         // corner, so without the 0.5-0.5*repeat correction any repeat != 1 shifts the texture
         // off-center. Folded into the offset so the shader stays a plain multiply-add.
@@ -1359,6 +1374,37 @@ public partial class ObjectRenderer : Node3D
 
     /// <summary>Builds a Godot <see cref="ArrayMesh"/> from neutral mesh data (one surface per
     /// submesh) and returns the SL face number of each surface (parallel to surface order).</summary>
+    /// <summary>Human-readable texgen for the diagnostic log, from the RAW wire value.
+    /// Spelled out because the previous version tested <c>== 1</c> against a field that holds
+    /// SL's enum, where planar is 2 -- so it reported "default" for every planar face there has
+    /// ever been, and the missing implementation looked like it was never being hit.</summary>
+    private static string DescribeTexGen(byte texGen) => texGen switch
+    {
+        FaceTexture.TexGenDefault => "default",
+        FaceTexture.TexGenPlanar => "PLANAR",
+        4 => "spherical (not implemented — falls back to default)",
+        6 => "cylindrical (not implemented — falls back to default)",
+        _ => $"unknown ({texGen})"
+    };
+
+    /// <summary>Pushes a new prim size into every material already on this visual. Only the
+    /// planar projection reads it; for a default-texgen face the uniform is inert.</summary>
+    private static void UpdatePrimScaleUniform(VisualState state, System.Numerics.Vector3 scale)
+    {
+        if (!IsInstanceValid(state.MeshInstance)) return;
+        var v = new Godot.Vector3(scale.X, scale.Y, scale.Z);
+
+        if (state.MeshInstance.MaterialOverride is ShaderMaterial mo)
+            mo.SetShaderParameter(PrimShaderFamily.PrimScale, v);
+
+        int surfaces = state.MeshInstance.Mesh?.GetSurfaceCount() ?? 0;
+        for (int i = 0; i < surfaces; i++)
+        {
+            if (state.MeshInstance.GetSurfaceOverrideMaterial(i) is ShaderMaterial sm)
+                sm.SetShaderParameter(PrimShaderFamily.PrimScale, v);
+        }
+    }
+
     private static ArrayMesh BuildArrayMesh(MeshData mesh, bool flipV, out int[] faceIndices)
     {
         var arrayMesh = new ArrayMesh();

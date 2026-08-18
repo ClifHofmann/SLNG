@@ -12,7 +12,7 @@ render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_sc
 varying vec3 v_view_position;
 
 void vertex() {
-    UV = slng_transform_uv(UV);
+    UV = slng_transform_uv(UV, VERTEX, NORMAL);
     v_view_position = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 

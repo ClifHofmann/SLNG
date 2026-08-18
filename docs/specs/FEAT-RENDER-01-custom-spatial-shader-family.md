@@ -519,3 +519,71 @@ viewer uses) refuses these bytes at full resolution, so we fall back to CoreJ2K 
 viewer instead derives discard 2 from the byte count (`calcDiscardLevelBytes`) and decodes at
 256x256. Both were exported from the same bytes and compared: identical content and placement,
 differing only in sharpness. So this does not explain "misplaced" either.
+
+### "Misplaced" is planar texgen — found, and it was three defects, not one
+
+The open half of this task closed on 2026-08-18 with the known-answer rig in
+`tools/testassets/` (a UV probe texture plus `uv_probe.lsl`, which steps one full-perm prim
+through a table of texture placements with the active case rendered over the object). The
+decisive property is that the object is **ours**: every earlier comparison died on no-modify
+content, where Firestorm's Texture tab is unreadable, so "what the sim sent" could never be
+checked against "what the other viewer drew".
+
+Case 0 (identity) matched Firestorm exactly. Case 14 (planar identity) did not: Firestorm
+projects and tiles the texture across the face, SLNG rendered it identically to case 0.
+
+Three independent defects were stacked behind that one symptom.
+
+**1. The projection was never implemented.** Known, but recorded as a note rather than a cause.
+
+**2. The diagnostic could not report it.** `FaceTexture.TexGen` stores SL's raw enum, where
+`TEX_GEN_PLANAR = 2` (lltextureentry.h:79; LibreMetaverse `MappingType`, TextureEntry.cs:98).
+Its own doc comment said planar was 1, and `ObjectRenderer` tested `f.TexGen == 1`. So the
+`PLANAR (not implemented!)` line could not fire on a planar face — it printed "default" for
+every one there has ever been, and `client-output.log` held zero PLANAR hits while a planar
+object was on screen. The gap looked untriggered rather than unimplemented, which is why it
+survived being written down in `f4d6643` and then not pursued.
+
+**3. Prims with no per-face entries lost texgen entirely.** `GridSession` passed
+`f.TexMapType` for entries in the per-face array, but the default face — the only carrier for
+a prim whose faces are all identical, which is most of them — had no texgen field on
+`ObjectUpdateEvent` or `PrimitiveComponent` at all.
+
+#### The projection
+
+Ported from `planarProjection` (llface.cpp:88-120) into `slng_planar_uv`:
+
+```
+binormal = |n.x| >= 0.5 ? (0, sign(n.x), 0) : (n.y > 0 ? (-1,0,0) : (1,0,0))
+tangent  = cross(binormal, normal)
+s = 1.0 + (dot(binormal, p) * 2 - 0.5)
+t =     -((dot(tangent,  p) * 2 - 0.5))
+```
+
+`p` is the vertex position in **metres** (`vec.mul(scalea)`, llface.cpp:1789, where `scale =
+mVObjp->getScale()` at :1371). The factor 2 is why a planar face tiles with prim size, and that
+size-independence is the entire reason builders use it: adjacent walls line up regardless of
+their individual dimensions. `center` is in the viewer signature but its body never reads it.
+
+It lands in the vertex stage, ahead of the existing transform, behind a `uv_texgen` uniform —
+the same shape the viewer has, where `getGeometryVolume` computes planar `tc` and then calls the
+very same `xform()` the default path uses (llface.cpp:1808-1812). Two conversions are folded in:
+the SL↔Godot axis swizzle `(g.x, -g.z, g.y)` that `BuildArrayMesh` applies to positions and
+normals alike, and `v = 1 - t` for the flipV meshes. Doing the V conversion inside the projection
+is what lets `slng_transform_uv` stay byte-identical for both modes — its rotation-sign
+derivation only ever assumed `v = 1 - t`, never where the UV came from.
+
+`prim_scale` is a uniform rather than a read of `MODEL_MATRIX`: meshes are shared between prims
+of the same shape and different sizes (`AssignSharedMesh`), and `MODEL_MATRIX` would silently
+pick up an ancestor's scale. It is re-pushed on resize, since only the node scale moves on a
+resize and the materials would otherwise keep the previous size's tiling.
+
+Spherical (4) and cylindrical (6) are still unimplemented. They now fall back to the mesh's own
+UVs by construction — the C# side collapses the wire value to a 0/1 flag — rather than selecting
+a shader branch that does not exist.
+
+#### Not covered by this
+
+The blurry half stands as previously measured: that asset is truncated to 8% on OSGrid and no
+client-side change recovers it. `AvatarRenderer` has its own material path and does not get
+planar texgen here.

@@ -948,7 +948,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             (byte)prim.ClickAction,
             isFullUpdate,
             resolvedVelocity,
-            timeDilation));
+            timeDilation,
+            // The DEFAULT face's texgen. LibreMetaverse's MappingType is already the raw SL
+            // value (Default=0, Planar=2, ...), and FaceTexture.TexGen stores it unconverted,
+            // so this is a straight cast -- see FaceTexture.TexGen on why it is NOT 1.
+            defaultFace != null ? (byte)defaultFace.TexMapType : FaceTexture.TexGenDefault));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)

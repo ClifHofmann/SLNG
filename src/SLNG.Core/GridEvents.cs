@@ -92,7 +92,11 @@ public record ObjectUpdateEvent(
     // AvatarUpdateEvent's identically-named fields: WorldSimulation.ExtrapolateMovement dead-
     // reckons a physically-moving object's (falling, rolling, pushed) Position between packets
     // from these, exactly like it already does for avatars.
-    Vector3 Velocity = default, float TimeDilation = 1f
+    Vector3 Velocity = default, float TimeDilation = 1f,
+    // The DEFAULT face's texgen. The per-face array in Faces carries its own, but a prim whose
+    // faces are all identical sends no per-face entries at all, and without this such a prim
+    // loses its texgen completely. Raw SL value -- see FaceTexture.TexGen.
+    byte TexGen = 0
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY

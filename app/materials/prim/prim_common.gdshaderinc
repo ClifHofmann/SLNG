@@ -53,6 +53,61 @@ uniform vec2 uv_scale = vec2(1.0);
 uniform vec2 uv_offset = vec2(0.0);
 uniform float uv_rotation = 0.0;
 
+// --- TexGen -------------------------------------------------------------------------------
+// SL's per-face texture GENERATION mode, which decides where the base UV comes from BEFORE the
+// transform above runs. 0 = TEX_GEN_DEFAULT (the mesh's own UVs), 1 = TEX_GEN_PLANAR. The wire
+// value for planar is 2, not 1 -- the C# side normalises it, see PrimShaderFamily.UvTexGen.
+//
+// prim_scale is the prim's SL-axis size in metres. Planar UVs are a function of vertex POSITION,
+// and the viewer measures that position in metres, so the projection needs the size that
+// ObjectRenderer applies as a Godot node scale rather than baking into the mesh. Passing it as a
+// uniform (instead of reading MODEL_MATRIX) keeps meshes shareable between prims of the same
+// shape and different sizes, which is the whole point of AssignSharedMesh, and avoids silently
+// picking up an ancestor's scale from the node hierarchy.
+uniform int uv_texgen = 0;
+uniform vec3 prim_scale = vec3(1.0);
+
+// SL's planar texture projection, ported from planarProjection (llface.cpp:88-120).
+//
+// The viewer picks one of four AXIS-ALIGNED binormals from the face normal's dominant axis,
+// takes the tangent as their cross product, and projects the vertex position onto that pair:
+//
+//     binormal = |n.x| >= 0.5  ?  (0, sign(n.x), 0)  :  (n.y > 0 ? (-1,0,0) : (1,0,0))
+//     tangent  = cross(binormal, normal)
+//     s = 1.0 + (dot(binormal, p) * 2 - 0.5)
+//     t =     -((dot(tangent,  p) * 2 - 0.5))
+//
+// The factor 2 is why a planar face tiles with prim size: p is in metres, so a 2m face spans 4
+// units of texture. That size-independence is the entire reason builders use planar -- adjacent
+// walls line up regardless of their individual dimensions.
+//
+// `center` is in planarProjection's signature but its body never reads it; it is not an omission
+// here.
+//
+// Two coordinate conversions are folded in:
+//  * AXES. ObjectRenderer.BuildArrayMesh stores SL (x,y,z) as Godot (x, z, -y), for positions and
+//    normals alike, so SL space is recovered as (g.x, -g.z, g.y).
+//  * V ORIGIN. planarProjection returns SL's bottom-origin t, while every mesh here is built
+//    flipV so the rest of this file works in top-origin v = 1 - t. Converting here rather than
+//    downstream is what lets slng_transform_uv stay identical for both texgen modes -- its
+//    rotation-sign derivation only ever assumed v = 1 - t, never where the UV came from.
+vec2 slng_planar_uv(vec3 vertex, vec3 normal) {
+    vec3 p = vec3(vertex.x, -vertex.z, vertex.y) * prim_scale;
+    vec3 n = vec3(normal.x, -normal.z, normal.y);
+
+    vec3 binormal;
+    if (n.x >= 0.5 || n.x <= -0.5) {
+        binormal = vec3(0.0, n.x < 0.0 ? -1.0 : 1.0, 0.0);
+    } else {
+        binormal = vec3(n.y > 0.0 ? -1.0 : 1.0, 0.0, 0.0);
+    }
+    vec3 tangent = cross(binormal, n);
+
+    float s = 1.0 + (dot(binormal, p) * 2.0 - 0.5);
+    float t = -((dot(tangent, p) * 2.0 - 0.5));
+    return vec2(s, 1.0 - t);
+}
+
 // --- Atmospherics seam ------------------------------------------------------------------
 // Windlight / EEP goes here (Phase 5). Deliberately a no-op today: it exists so that filling
 // it later is an edit to one function shared by prims, avatars, terrain and water, rather
@@ -68,7 +123,13 @@ vec3 slng_apply_atmospherics(vec3 color, vec3 view_position) {
 // in expression"). Whether an `inout` argument writes back INTO a built-in at the call site is
 // the same question, and it fails silently rather than erroring, which is the worst possible
 // failure mode: the transform would simply never be applied. Returning the value sidesteps it.
-vec2 slng_transform_uv(vec2 uv) {
+vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
+    // TexGen chooses the base coordinate; the transform below is identical either way. The
+    // viewer has the same shape: getGeometryVolume computes planar tc and then calls the very
+    // same xform() the default path uses (llface.cpp:1808-1812).
+    if (uv_texgen == 1) {
+        uv = slng_planar_uv(vertex, normal);
+    }
     if (uv_rotation != 0.0) {
         float s = sin(uv_rotation);
         float c = cos(uv_rotation);

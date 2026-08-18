@@ -17,9 +17,27 @@ public readonly record struct FaceTexture(
     float OffsetU,
     float OffsetV,
     float Rotation,
-    /// <summary>SL's per-face texture mapping mode. Default (0) uses the mesh's own UVs; Planar
-    /// (1) projects the texture from the face's plane instead, so the scale stays independent of
-    /// the prim's size. Planar is the norm on architectural content -- floors and walls -- which
-    /// is why ignoring it shows up as textures sitting in visibly the wrong place. The viewer
-    /// implements it in LLFace::getGeometryVolume (llface.cpp:914, TEX_GEN_PLANAR).</summary>
-    byte TexGen = 0);
+    /// <summary>SL's per-face texture mapping mode, stored as the RAW protocol value:
+    /// Default = 0, Planar = 2, Spherical = 4, Cylindrical = 6 (LLTextureEntry::eTexGen,
+    /// lltextureentry.h:79; LibreMetaverse MappingType, TextureEntry.cs:98). Default uses the
+    /// mesh's own UVs; Planar projects the texture from the face's plane instead, so the texture
+    /// scale stays independent of the prim's size. Planar is the norm on architectural content --
+    /// floors and walls -- which is why ignoring it shows up as textures sitting in visibly the
+    /// wrong place. The viewer implements it in LLFace::getGeometryVolume (llface.cpp:914).
+    ///
+    /// COMPARE AGAINST <see cref="TexGenPlanar"/>, NEVER AGAINST 1. This field carried the raw
+    /// enum from the day it was added while its own doc comment and the renderer's diagnostic
+    /// both said planar was 1. The two never met, so the "PLANAR (not implemented!)" log line
+    /// could not fire even on a face that was demonstrably planar -- which is why the missing
+    /// implementation stayed invisible for as long as it did.</summary>
+    byte TexGen = 0)
+{
+    /// <summary>SL TEX_GEN_DEFAULT -- the face uses the mesh's own UVs.</summary>
+    public const byte TexGenDefault = 0;
+
+    /// <summary>SL TEX_GEN_PLANAR. Two, not one.</summary>
+    public const byte TexGenPlanar = 2;
+
+    /// <summary>True when this face wants the planar projection rather than the mesh UVs.</summary>
+    public bool IsPlanar => TexGen == TexGenPlanar;
+}
