@@ -188,37 +188,67 @@ public partial class ObjectRenderer : Node3D
         }
     }
 
-    private double _cullAccum = 0;
+    /// <summary>How long one complete pass over every visual may take. Unchanged from the 4 Hz tick
+    /// this replaced -- an object still reacts to the draw distance within a quarter second.</summary>
+    private const double CullSweepSeconds = 0.25;
+
+    // The sweep walks a SNAPSHOT of the keys rather than the live dictionary, because it now spans
+    // many frames and objects are created and destroyed throughout. Ids that vanish mid-sweep are
+    // skipped by the TryGetValue below; ids that appear are picked up by the next snapshot.
+    private readonly List<Guid> _cullOrder = new();
+    private int _cullCursor;
+    private double _cullCarry;
 
     public override void _Process(double delta)
     {
-        // Draw-distance management, throttled to ~4 Hz. Beyond the radius an object is hidden;
-        // beyond the radius + hysteresis its GPU resources (mesh + texture refs) are released
-        // so VRAM stays bounded to the nearby working set — without this, every object ever
-        // seen keeps its texture pinned and memory grows without bound. Re-enters reload when
-        // it comes back into range.
-        _cullAccum += delta;
-        if (_cullAccum < 0.25) return;
-        _cullAccum = 0;
-
+        // Draw-distance management: beyond the radius an object is hidden; beyond the radius +
+        // hysteresis its GPU resources (mesh + texture refs) are released so VRAM stays bounded to
+        // the nearby working set — without this, every object ever seen keeps its texture pinned and
+        // memory grows without bound. Re-enters reload when it comes back into range.
+        //
+        // Spread across frames rather than done in one 4 Hz burst. Measured as a single burst it cost
+        // 14.24 ms on average and peaked at 350.6 ms -- on its own more than a whole 60 FPS frame,
+        // four times a second, which matched the ~3.4 hitches/s that survived every earlier fix while
+        // the work queue sat empty. The total (~57 ms per second) is affordable; it was purely the
+        // burstiness that broke the frame, and unlike the object queue this really is a distribution
+        // problem, so spreading it is the whole fix rather than half of one.
+        //
+        // The cost is inherent to the walk being O(every visual the client has ever created) -- 24k
+        // on a busy region against the few thousand on screen -- and every entry touches Godot node
+        // properties, which are interop calls, not field reads. A spatial index would attack the
+        // count itself; this attacks the spike, which is what is actually hurting.
         if (_world == null) return;
         if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
+
+        if (_cullCursor >= _cullOrder.Count)
+        {
+            _cullOrder.Clear();
+            _cullOrder.AddRange(_visuals.Keys);
+            _cullCursor = 0;
+            _cullCarry = 0;
+        }
+        if (_cullOrder.Count == 0) return;
+
+        // Entries to visit this frame so one full pass still completes in CullSweepSeconds. The carry
+        // keeps the fractional remainder, so a small set does not stall on truncation to zero.
+        _cullCarry += _cullOrder.Count * delta / CullSweepSeconds;
+        int budget = (int)_cullCarry;
+        _cullCarry -= budget;
+        if (budget <= 0) return;
 
         float draw = RenderConfig.DrawDistance;
         float showSq = draw * draw;
         float hideSq = (draw * 1.15f) * (draw * 1.15f);  // hide a bit past the edge (visibility hysteresis)
         float releaseSq = (draw * 1.25f) * (draw * 1.25f); // only free GPU memory well beyond the edge
 
-        // Instrumented because the hitch rate survived every queue fix at ~3.4/s with the work queue
-        // empty -- suspiciously close to this loop's own 4 Hz tick. It walks EVERY visual the client
-        // has ever created (tens of thousands on a busy region, not just the few thousand on screen)
-        // and re-offers each visible one's textures to the GpuCache, so its cost scales with the
-        // whole region rather than with what is in view.
         double texLodMs = 0;
         MainThreadWorkQueue.Measure("cull.scan", () =>
         {
-        foreach (var (id, state) in _visuals)
+        int end = Math.Min(_cullCursor + budget, _cullOrder.Count);
+        for (int ci = _cullCursor; ci < end; ci++)
         {
+            var id = _cullOrder[ci];
+            if (!_visuals.TryGetValue(id, out var state)) continue; // removed since the snapshot
             if (!IsInstanceValid(state.MeshInstance)) continue;
 
             float dSq = state.MeshInstance.Position.DistanceSquaredTo(agentPos);
@@ -246,8 +276,9 @@ public partial class ObjectRenderer : Node3D
                 // walking up to something left it permanently soft. GpuCache decides whether that
                 // actually warrants a sharper re-upload (it ignores anything already at full
                 // resolution, and requires a full discard level of headroom), so this is a cheap
-                // no-op for the overwhelming majority of objects. Runs on the existing 4 Hz cull
-                // tick rather than per frame, which is ample for approach speed.
+                // no-op for the overwhelming majority of objects. Rides the same spread sweep as
+                // the rest of this loop, so each object is re-offered about four times a second --
+                // ample for approach speed, and no longer all in the same frame.
                 long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 var (screenPixelArea, priority) = ComputeTextureLod(state.MeshInstance);
                 if (screenPixelArea > 0f)
@@ -263,6 +294,7 @@ public partial class ObjectRenderer : Node3D
                             / System.Diagnostics.Stopwatch.Frequency;
             }
         }
+        _cullCursor = end;
         });
 
         // Reported apart from the scan so the two possible culprits are separable: walking the
