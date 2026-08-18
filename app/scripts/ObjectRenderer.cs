@@ -1470,38 +1470,7 @@ public partial class ObjectRenderer : Node3D
             //    needed for the object to be VISIBLE -- only to walk into it or click it -- so making
             //    the user wait for it before the object appears gets the priority backwards. The
             //    object shows up now and becomes solid a few frames later.
-            if (_meshCollisionShapes.TryGetValue(key, out var cachedShape))
-            {
-                state.CollisionShape.Shape = cachedShape;
-            }
-            else
-            {
-                state.CollisionShape.Shape = null;
-                var shapeKey = key;
-                var target = state;
-                var sourceData = data;
-                MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine, () =>
-                {
-                    if (!IsInstanceValid(target.CollisionShape)) return;
-
-                    // Re-check the cache: several objects sharing this mesh can all queue a build
-                    // before the first one runs, and without this they would each pay for it.
-                    if (!_meshCollisionShapes.TryGetValue(shapeKey, out var shape))
-                    {
-                        shape = BuildTrimeshShape(sourceData);
-                        _meshCollisionShapes[shapeKey] = shape;
-                    }
-
-                    // Only if this object still wants THIS mesh -- it may have been re-shaped, moved
-                    // out of range and released, or freed while the build sat in the queue.
-                    if (target.LoadedMeshKey == shapeKey) target.CollisionShape.Shape = shape;
-                    // NOT coalesced by shape key, deliberately. Several objects can share one mesh,
-                    // and a coalesced item would build the shape once but only ever hand it to the
-                    // single object whose closure survived -- every other object sharing that mesh
-                    // would silently stay non-solid and unclickable. One item per object is correct,
-                    // and all but the first are just the dictionary lookup above.
-                }, label: "mesh.collision");
-            }
+            EnsureCollisionShape(state, key, data);
         }
         else
         {
@@ -1634,8 +1603,11 @@ public partial class ObjectRenderer : Node3D
     }
 
     /// <summary>
-    /// Builds the trimesh collision shape from the SAME decoded CPU data the visual mesh was built
+    /// Builds the collision triangle soup from the SAME decoded CPU data the visual mesh was built
     /// from, instead of calling <c>ArrayMesh.CreateTrimeshShape()</c>.
+    ///
+    /// Touches no engine object, so it is safe to call from a worker thread -- which is the point:
+    /// this half of the old mesh.collision cost can leave the main thread entirely.
     ///
     /// That method looks free but is not: it calls the mesh's get_faces(), which pulls every vertex
     /// array back OUT of the rendering server before it can build anything. Measured at 7.86 ms per
@@ -1648,7 +1620,7 @@ public partial class ObjectRenderer : Node3D
     /// no effect. The SL-to-Godot axis change (Z-up to Y-up) does still apply, since that is the
     /// coordinate system, not a rendering convention.
     /// </summary>
-    private static ConcavePolygonShape3D BuildTrimeshShape(MeshData mesh)
+    private static Godot.Vector3[] BuildTrimeshFaces(MeshData mesh)
     {
         int triangles = 0;
         foreach (var sub in mesh.Submeshes) triangles += sub.Indices.Length / 3;
@@ -1679,7 +1651,81 @@ public partial class ObjectRenderer : Node3D
         // triangles at the origin. Trim to what was actually written.
         if (w != faces.Length) System.Array.Resize(ref faces, w);
 
-        return new ConcavePolygonShape3D { Data = faces };
+        return faces;
+    }
+
+    /// <summary>Objects waiting for a collision shape that is currently being built on a worker.
+    /// Keyed by mesh key, so the many objects that share one mesh cause exactly one build and all of
+    /// them get the result. Main-thread only.</summary>
+    private readonly Dictionary<Guid, List<VisualState>> _collisionWaiters = new();
+
+    /// <summary>
+    /// Gives <paramref name="state"/> its trimesh collision shape, building one only if this mesh has
+    /// never produced one.
+    ///
+    /// The build is split across threads by cost. Turning MeshData into the triangle-soup array is
+    /// plain arithmetic over plain arrays that never touches an engine object, so it runs on a worker.
+    /// Handing that array to ConcavePolygonShape3D goes into the physics server, which builds its
+    /// acceleration structure, and that has to stay on the main thread.
+    ///
+    /// Collision is deliberately absent until the build lands. It is not needed for the object to be
+    /// VISIBLE -- only to walk into it or click it -- so blocking its appearance on it would get the
+    /// priority backwards.
+    /// </summary>
+    private void EnsureCollisionShape(VisualState state, Guid key, MeshData data)
+    {
+        if (_meshCollisionShapes.TryGetValue(key, out var cached))
+        {
+            state.CollisionShape.Shape = cached;
+            return;
+        }
+
+        state.CollisionShape.Shape = null;
+
+        // A build for this mesh is already running: join it rather than starting a second one.
+        if (_collisionWaiters.TryGetValue(key, out var waiters))
+        {
+            waiters.Add(state);
+            return;
+        }
+        _collisionWaiters[key] = new List<VisualState> { state };
+
+        _ = System.Threading.Tasks.Task.Run(() =>
+        {
+            Godot.Vector3[] faces;
+            try
+            {
+                faces = BuildTrimeshFaces(data);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[ObjectRenderer] collision faces for {key} failed: {ex.Message}");
+                // Still has to come back to the main thread, or every object waiting on this mesh
+                // would sit in _collisionWaiters forever and never become solid.
+                faces = Array.Empty<Godot.Vector3>();
+            }
+
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine, () =>
+            {
+                if (!_meshCollisionShapes.TryGetValue(key, out var shape))
+                {
+                    shape = new ConcavePolygonShape3D { Data = faces };
+                    _meshCollisionShapes[key] = shape;
+                }
+
+                if (_collisionWaiters.Remove(key, out var pending))
+                {
+                    foreach (var w in pending)
+                    {
+                        // Skip anything that was freed, re-shaped, or released out of range while the
+                        // build was in flight.
+                        if (!IsInstanceValid(w.CollisionShape)) continue;
+                        if (w.LoadedMeshKey != key) continue;
+                        w.CollisionShape.Shape = shape;
+                    }
+                }
+            }, label: "collision.shape");
+        });
     }
 
     private static ArrayMesh BuildArrayMesh(MeshData mesh, bool flipV, out int[] faceIndices)
