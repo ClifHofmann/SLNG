@@ -71,6 +71,13 @@ public partial class Boot : Control
     /// shows up in the log slightly before it becomes visible as a stalled avatar.</summary>
     private const float AgentGapWarnSeconds = 0.5f;
     private bool _agentGapReported;
+
+    /// <summary>Peak of the current gap, so the log can report how long it ACTUALLY lasted rather
+    /// than the 0.5 s at which it was first noticed -- the first version reported the crossing value
+    /// and made every gap look like exactly 0.5 s.</summary>
+    private float _agentGapPeak;
+
+    private readonly MainThreadWatchdog _watchdog = new();
     private SLNG.App.UI.ButtonBar _buttonBar = null!;
     private SLNG.App.UI.PreferencesWindow _preferencesWindow = null!;
     private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
@@ -89,7 +96,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.4.9-alpha";
+    public const string AppVersion = "v0.4.10-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -314,6 +321,10 @@ public partial class Boot : Control
         // Drains the budgeted main-thread work queue every frame (FEAT-PERF-01). Added before the
         // renderer and HUD exist so any work enqueued during startup is already being drained.
         AddChild(new MainThreadWorkPump());
+
+        // Off-thread stall detector (FEAT-PERF-01). Started here rather than in _Ready so it covers
+        // the world-loading phase, which is when the client is reported to freeze.
+        _watchdog.Start();
 
         var hudLayer = new CanvasLayer { Name = "HudLayer", Layer = 10, Visible = false };
         AddChild(hudLayer);
@@ -623,6 +634,8 @@ public partial class Boot : Control
         // log alone. User reports Firestorm looks smooth on the same OSGrid region, which points at
         // a client-side stall rather than a real network/server characteristic. Remove once the
         // cause is confirmed.
+        _watchdog.Beat();
+
         if (delta > 0.2)
         {
             GD.Print($"[FrameHitch] {delta:0.###}s since last _Process frame");
@@ -678,16 +691,20 @@ public partial class Boot : Control
         // Edge-triggered: one line per gap, not one per frame for as long as it lasts.
         if (t.TimeSinceUpdate >= AgentGapWarnSeconds)
         {
-            if (!_agentGapReported)
-            {
-                _agentGapReported = true;
-                GD.Print($"[AgentGap] no position packet for {t.TimeSinceUpdate:0.00}s " +
-                          $"(extrapolation gives up at 0.80s) queue={MainThreadWorkQueue.Depth}");
-            }
+            _agentGapReported = true;
+            if (t.TimeSinceUpdate > _agentGapPeak) _agentGapPeak = t.TimeSinceUpdate;
         }
-        else
+        else if (_agentGapReported)
         {
+            // Reported when the gap ENDS, so the figure is the gap's real length. Reporting at the
+            // moment it crossed the threshold made every gap read as 0.50-0.54 s regardless of how
+            // long it went on -- which mattered, because whether it exceeded the 0.80 s
+            // extrapolation cutoff is the difference between a smooth walk and a visible stall.
+            GD.Print($"[AgentGap] no position packet for {_agentGapPeak:0.00}s " +
+                      $"({(_agentGapPeak > 0.8f ? "OVER" : "within")} the 0.80s extrapolation cutoff) " +
+                      $"queue={MainThreadWorkQueue.Depth}");
             _agentGapReported = false;
+            _agentGapPeak = 0;
         }
     }
 

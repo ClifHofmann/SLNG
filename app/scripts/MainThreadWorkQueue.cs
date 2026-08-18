@@ -97,6 +97,13 @@ public static class MainThreadWorkQueue
 
     public static int Depth => Volatile.Read(ref _depth);
 
+    /// <summary>Label of the work item the pump is running right now, or null between items. Read by
+    /// the watchdog from ANOTHER thread, which is the whole point: if the main thread never comes
+    /// back, this is the only record of what it went into.</summary>
+    private static volatile string? _currentLabel;
+
+    public static string? CurrentLabel => _currentLabel;
+
     /// <summary>
     /// Queues <paramref name="work"/> to run on the main thread within the frame budget.
     ///
@@ -171,6 +178,7 @@ public static class MainThreadWorkQueue
                 if (item.CoalesceKey != null) ReleaseKey(item.CoalesceKey);
 
                 double before = _clock.Elapsed.TotalMilliseconds;
+                _currentLabel = item.Label;
                 try
                 {
                     item.Work();
@@ -181,6 +189,7 @@ public static class MainThreadWorkQueue
                     // in the queue silently never appears.
                     GD.PrintErr($"[MainThreadWork] item threw: {ex.Message}");
                 }
+                _currentLabel = null;
                 Record(item.Label, _clock.Elapsed.TotalMilliseconds - before);
 
                 ranOne = true;
