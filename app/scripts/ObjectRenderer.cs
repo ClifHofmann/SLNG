@@ -77,6 +77,23 @@ public partial class ObjectRenderer : Node3D
     // face's texture via SetSurfaceOverrideMaterial.
     private readonly Dictionary<Guid, int[]> _meshFaceIndices = new();
 
+    /// <summary>Trimesh collision shapes, cached against the SAME key as the shared mesh they were
+    /// derived from. Measured: CreateTrimeshShape ran 1830 times for only 701 mesh builds, i.e. two
+    /// thirds of the calls rebuilt a shape that was byte-for-byte identical to one already made --
+    /// the mesh itself was correctly served from the shared cache, but the shape hanging off it was
+    /// thrown away and recomputed anyway. It was also 15x more expensive than building the mesh:
+    /// 11.21 s against 0.74 s, 6.12 ms per call against 1.06 ms.
+    ///
+    /// Sharing one Shape3D across many bodies is normal in Godot -- a shape is immutable geometry and
+    /// the owning CollisionShape3D supplies its own transform and scale, exactly as the shared
+    /// ArrayMesh above already does.
+    ///
+    /// Same lifetime caveat as _meshFaceIndices, which this deliberately mirrors: entries outlive
+    /// GpuCache eviction of the mesh. Bounded by the number of DISTINCT shapes seen, not by object
+    /// count, so it is a slow leak rather than an unbounded one -- worth fixing with the same sweep
+    /// that fixes _meshFaceIndices, not before.</summary>
+    private readonly Dictionary<Guid, ConcavePolygonShape3D> _meshCollisionShapes = new();
+
     // glTF metallicRoughness maps that have been reported as "now actually sampled" (see the
     // ORM branch in BuildFaceMaterialAsync). Main-thread only.
     private readonly HashSet<Guid> _ormMapsSeen = new();
@@ -1395,11 +1412,48 @@ public partial class ObjectRenderer : Node3D
         if (mesh != null)
         {
             // CreateTrimeshShape copies every face into the physics server and builds a BVH over
-            // them. It is the classic hidden cost in a "just assign the mesh" path, and it is being
-            // paid for every object in the region regardless of whether anything will ever collide
-            // with or click it.
-            var m = mesh;
-            MainThreadWorkQueue.Measure("mesh.collision", () => state.CollisionShape.Shape = m.CreateTrimeshShape());
+            // them. At 6.12 ms per call it was 94% of all mesh work and the single reason the frame
+            // budget could not help: the pump has to run at least one item per frame, so a 6 ms floor
+            // is a 6 ms floor. Two changes, in order of effect:
+            //
+            // 1. Serve it from the cache when this shape has been built before. That alone removes
+            //    two thirds of the calls, and a cache hit is free rather than merely cheaper.
+            // 2. Build a genuinely new one in the Refine lane instead of here. Collision is not
+            //    needed for the object to be VISIBLE -- only to walk into it or click it -- so making
+            //    the user wait for it before the object appears gets the priority backwards. The
+            //    object shows up now and becomes solid a few frames later.
+            if (_meshCollisionShapes.TryGetValue(key, out var cachedShape))
+            {
+                state.CollisionShape.Shape = cachedShape;
+            }
+            else
+            {
+                state.CollisionShape.Shape = null;
+                var m = mesh;
+                var shapeKey = key;
+                var target = state;
+                MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine, () =>
+                {
+                    if (!IsInstanceValid(target.CollisionShape)) return;
+
+                    // Re-check the cache: several objects sharing this mesh can all queue a build
+                    // before the first one runs, and without this they would each pay for it.
+                    if (!_meshCollisionShapes.TryGetValue(shapeKey, out var shape))
+                    {
+                        shape = m.CreateTrimeshShape();
+                        _meshCollisionShapes[shapeKey] = shape;
+                    }
+
+                    // Only if this object still wants THIS mesh -- it may have been re-shaped, moved
+                    // out of range and released, or freed while the build sat in the queue.
+                    if (target.LoadedMeshKey == shapeKey) target.CollisionShape.Shape = shape;
+                    // NOT coalesced by shape key, deliberately. Several objects can share one mesh,
+                    // and a coalesced item would build the shape once but only ever hand it to the
+                    // single object whose closure survived -- every other object sharing that mesh
+                    // would silently stay non-solid and unclickable. One item per object is correct,
+                    // and all but the first are just the dictionary lookup above.
+                }, label: "mesh.collision");
+            }
         }
         else
         {
