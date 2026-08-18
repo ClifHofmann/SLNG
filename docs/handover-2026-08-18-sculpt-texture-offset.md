@@ -1,10 +1,13 @@
 # Handover — sculpt texture placement (FEAT-RENDER-01), 2026-08-18
 
-**Branch:** `feature/FEAT-RENDER-01-planar-texgen` (13 commits over `main`, 12 of them unpushed —
-origin still has only `3856ed5`)
+**Branch:** all of this is on `main` (`d67bd44`), 14 commits ahead of `origin/main` — **not pushed**
 **Version:** `v0.3.116-alpha`
-**Build/tests:** clean, 153 green, `dotnet format` clean for everything touched
+**Build/tests:** clean (solution + `app/`), 153 green, `dotnet format` clean for everything touched
 **Working tree:** clean
+
+> **Start here.** Section 6 ("Ruled out") is the important one — six hypotheses were advanced in the
+> session that produced this, and all six were wrong. Reading it first is worth more than reading
+> the code.
 
 ---
 
@@ -205,16 +208,33 @@ question.
 
 ---
 
-## 8. Git
+## 8. Diagnostic scaffolding to remove once this is solved
+
+These are measurement tools, not product code. They are inert by default (both uniforms default to
+0, the nudge applies to sculpt faces only) so they cost nothing, but they should come out with the
+fix:
+
+- `uv_extra_u` / `uv_extra_v` uniforms in `app/materials/prim/prim_common.gdshaderinc`, and the two
+  lines applying them in `slng_transform_uv`
+- `PrimShaderFamily.UvExtraU` / `UvExtraV`
+- `ObjectRenderer.SculptUNudge` / `SculptVNudge`, `NudgeSculptU/V`, `PushSculptNudge`, `LogNudge`
+- the five developer-menu entries in `UI/TopMenu.cs`, their handlers in `Boot.cs`, and the
+  `sculpt_u_nudge_*` / `sculpt_v_nudge_*` keys in both `app/i18n/*.json`
+
+The probes in `tools/testassets/` and `ViewerSculptParityTests` are **not** scaffolding — they stay.
+
+---
+
+## 9. Git
 
 ```
-main                                     37efa77   in sync with origin/main
-feature/FEAT-RENDER-01-planar-texgen     4e205d6   13 commits over main
-origin/feature/FEAT-RENDER-01-planar-*   3856ed5   12 commits behind local
+main            d67bd44   14 commits ahead of origin/main, NOT pushed
+origin/main     37efa77
 ```
 
-To publish the rest:
+`feature/FEAT-RENDER-01-planar-texgen` was fast-forward merged into `main` and is now redundant
+locally; `origin` still holds an old tip of it (`3856ed5`).
 
 ```
-git push origin feature/FEAT-RENDER-01-planar-texgen
+git push origin main
 ```
