@@ -18,6 +18,9 @@ namespace SLNG.App.UI
         /// clicking repeatedly while watching the object, and because a key nobody remembers is a
         /// key nobody uses.</summary>
         public Action<float>? OnNudgeSculptV;
+
+        /// <summary>Same for the horizontal axis.</summary>
+        public Action<float>? OnNudgeSculptU;
         public Action? OnOpenPreferences;
         public Action? OnCreateLandmark;
 
@@ -112,6 +115,10 @@ namespace SLNG.App.UI
             devMenu.AddItem(L10n.Tr("ui.menu.sculpt_v_nudge_down"), 3);
             devMenu.AddItem(L10n.Tr("ui.menu.sculpt_v_nudge_up_coarse"), 4);
             devMenu.AddItem(L10n.Tr("ui.menu.sculpt_v_nudge_down_coarse"), 5);
+            devMenu.AddItem(L10n.Tr("ui.menu.sculpt_u_nudge_right"), 7);
+            devMenu.AddItem(L10n.Tr("ui.menu.sculpt_u_nudge_left"), 8);
+            devMenu.AddItem(L10n.Tr("ui.menu.sculpt_u_nudge_right_coarse"), 9);
+            devMenu.AddItem(L10n.Tr("ui.menu.sculpt_u_nudge_left_coarse"), 10);
             devMenu.AddItem(L10n.Tr("ui.menu.sculpt_v_nudge_reset"), 6);
             devMenu.IdPressed += (id) => {
                 const float step = 1.0f / 128.0f;
@@ -121,7 +128,11 @@ namespace SLNG.App.UI
                 else if (id == 3) OnNudgeSculptV?.Invoke(-step);
                 else if (id == 4) OnNudgeSculptV?.Invoke(step * 16f);
                 else if (id == 5) OnNudgeSculptV?.Invoke(-step * 16f);
-                else if (id == 6) OnNudgeSculptV?.Invoke(0f);
+                else if (id == 6) { OnNudgeSculptV?.Invoke(0f); OnNudgeSculptU?.Invoke(0f); }
+                else if (id == 7) OnNudgeSculptU?.Invoke(step);
+                else if (id == 8) OnNudgeSculptU?.Invoke(-step);
+                else if (id == 9) OnNudgeSculptU?.Invoke(step * 16f);
+                else if (id == 10) OnNudgeSculptU?.Invoke(-step * 16f);
             };
             menuBar.AddChild(devMenu);
         }

@@ -894,8 +894,11 @@ public partial class ObjectRenderer : Node3D
 
         // Diagnostic: sculpts only, because prims are already confirmed to match Firestorm and
         // dragging them along would destroy the reference the measurement leans on.
-        if (isSculpted && SculptVNudge != 0f)
+        if (isSculpted)
+        {
+            material.SetShaderParameter(PrimShaderFamily.UvExtraU, SculptUNudge);
             material.SetShaderParameter(PrimShaderFamily.UvExtraV, SculptVNudge);
+        }
         material.SetShaderParameter(PrimShaderFamily.PrimScale,
             new Godot.Vector3(primScale.X, primScale.Y, primScale.Z));
         // Centered like SL (u' = (u-0.5)*repeat + 0.5 + off) — the shader scales UVs from the
@@ -1425,6 +1428,11 @@ public partial class ObjectRenderer : Node3D
     /// the most plausible candidates (a half or whole grid step). Coarse steps with Shift.</summary>
     public static float SculptVNudge { get; private set; }
 
+    /// <summary>Same, for U. Added once the real stone turned out to be shifted HORIZONTALLY too:
+    /// a comparable offset on both axes would point at something displacing the texture as a
+    /// whole, which is a very different suspect from an error in one axis.</summary>
+    public static float SculptUNudge { get; private set; }
+
     /// <summary>Developer menu entry point. <paramref name="step"/> is in texture units; passing
     /// 0 resets. Reports the value three ways because which unit it lands on IS the finding: a
     /// half or whole grid row points at the sculpt sampling, half a texture points at centring.</summary>
@@ -1432,9 +1440,20 @@ public partial class ObjectRenderer : Node3D
     {
         SculptVNudge = step == 0f ? 0f : SculptVNudge + step;
         PushSculptNudge();
-        Logger.Info($"[SculptNudge] V offset = {SculptVNudge:0.#####} textures  " +
-                    $"({SculptVNudge * 128f:0.##} grid rows, {SculptVNudge * 256f:0.##} map rows)");
+        LogNudge();
     }
+
+    /// <summary>As <see cref="NudgeSculptV"/>, for the horizontal axis.</summary>
+    public void NudgeSculptU(float step)
+    {
+        SculptUNudge = step == 0f ? 0f : SculptUNudge + step;
+        PushSculptNudge();
+        LogNudge();
+    }
+
+    private static void LogNudge() =>
+        Logger.Info($"[SculptNudge] U = {SculptUNudge:0.#####} ({SculptUNudge * 128f:0.##} rows)   " +
+                    $"V = {SculptVNudge:0.#####} ({SculptVNudge * 128f:0.##} rows)");
 
     /// <summary>Sets the nudge on every sculpt material currently in the scene. Cheap enough to do
     /// on a keypress -- it is one uniform write per surface, no rebuild and no re-decode.</summary>
@@ -1443,13 +1462,17 @@ public partial class ObjectRenderer : Node3D
         foreach (var state in _visuals.Values)
         {
             if (!IsInstanceValid(state.MeshInstance)) continue;
-            if (state.MeshInstance.MaterialOverride is ShaderMaterial mo)
-                mo.SetShaderParameter(PrimShaderFamily.UvExtraV, SculptVNudge);
+            if (state.MeshInstance.MaterialOverride is ShaderMaterial mo) Apply(mo);
 
             int surfaces = state.MeshInstance.Mesh?.GetSurfaceCount() ?? 0;
             for (int i = 0; i < surfaces; i++)
-                if (state.MeshInstance.GetSurfaceOverrideMaterial(i) is ShaderMaterial sm)
-                    sm.SetShaderParameter(PrimShaderFamily.UvExtraV, SculptVNudge);
+                if (state.MeshInstance.GetSurfaceOverrideMaterial(i) is ShaderMaterial sm) Apply(sm);
+        }
+
+        static void Apply(ShaderMaterial m)
+        {
+            m.SetShaderParameter(PrimShaderFamily.UvExtraU, SculptUNudge);
+            m.SetShaderParameter(PrimShaderFamily.UvExtraV, SculptVNudge);
         }
     }
 

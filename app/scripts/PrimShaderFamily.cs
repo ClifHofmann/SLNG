@@ -98,6 +98,7 @@ public static class PrimShaderFamily
     /// too. LSL cannot even set them (PRIM_TEXGEN exposes default and planar only).</summary>
     /// <summary>Diagnostic V nudge, applied after the full UV transform. See the shader.</summary>
     public static readonly StringName UvExtraV = "uv_extra_v";
+    public static readonly StringName UvExtraU = "uv_extra_u";
 
     public static readonly StringName UvTexGen = "uv_texgen";
 

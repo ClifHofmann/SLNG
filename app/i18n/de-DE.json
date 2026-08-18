@@ -28,7 +28,11 @@
       "sculpt_v_nudge_up": "Sculpt-V verschieben: +1 Rasterzeile",
       "sculpt_v_nudge_down_coarse": "Sculpt-V verschieben: -16 Rasterzeilen",
       "sculpt_v_nudge_up_coarse": "Sculpt-V verschieben: +16 Rasterzeilen",
-      "sculpt_v_nudge_reset": "Sculpt-V zuruecksetzen"
+      "sculpt_v_nudge_reset": "Sculpt-V zuruecksetzen",
+      "sculpt_u_nudge_left": "Sculpt-U verschieben: -1 Rasterspalte",
+      "sculpt_u_nudge_right": "Sculpt-U verschieben: +1 Rasterspalte",
+      "sculpt_u_nudge_left_coarse": "Sculpt-U verschieben: -16 Rasterspalten",
+      "sculpt_u_nudge_right_coarse": "Sculpt-U verschieben: +16 Rasterspalten"
     },
     "preferences": {
       "title": "EINSTELLUNGEN",

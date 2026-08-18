@@ -28,7 +28,11 @@
       "sculpt_v_nudge_up": "Nudge sculpt V: +1 grid row",
       "sculpt_v_nudge_down_coarse": "Nudge sculpt V: -16 grid rows",
       "sculpt_v_nudge_up_coarse": "Nudge sculpt V: +16 grid rows",
-      "sculpt_v_nudge_reset": "Reset sculpt V"
+      "sculpt_v_nudge_reset": "Reset sculpt V",
+      "sculpt_u_nudge_left": "Nudge sculpt U: -1 grid column",
+      "sculpt_u_nudge_right": "Nudge sculpt U: +1 grid column",
+      "sculpt_u_nudge_left_coarse": "Nudge sculpt U: -16 grid columns",
+      "sculpt_u_nudge_right_coarse": "Nudge sculpt U: +16 grid columns"
     },
     "preferences": {
       "title": "PREFERENCES",

@@ -70,6 +70,7 @@ uniform float uv_rotation = 0.0;
 // to measure the constant offset those still show against Firestorm once the mirror question was
 // settled. Zero by default; it exists to turn an argument into a number.
 uniform float uv_extra_v = 0.0;
+uniform float uv_extra_u = 0.0;
 
 uniform int uv_texgen = 0;
 uniform vec3 prim_scale = vec3(1.0);
@@ -144,6 +145,7 @@ vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
         uv = vec2(centred.x * c - centred.y * s, centred.x * s + centred.y * c) + vec2(0.5);
     }
     uv = uv * uv_scale + uv_offset;
+    uv.x += uv_extra_u;
     uv.y += uv_extra_v;
     return uv;
 }
