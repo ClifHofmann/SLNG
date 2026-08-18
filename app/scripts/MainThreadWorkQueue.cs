@@ -205,6 +205,11 @@ public static class MainThreadWorkQueue
         }
     }
 
+    /// <summary>Files an already-measured duration under a label. For costs accumulated across a loop,
+    /// where wrapping each iteration in <see cref="Measure"/> would add more overhead than the thing
+    /// being measured. Main thread only, same as everything else that writes the cost table.</summary>
+    public static void RecordExternal(string label, double ms) => Record(label, ms);
+
     private static void Record(string label, double ms)
     {
         if (!_costs.TryGetValue(label, out var c)) _costs[label] = c = new Cost();

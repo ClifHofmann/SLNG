@@ -209,6 +209,14 @@ public partial class ObjectRenderer : Node3D
         float hideSq = (draw * 1.15f) * (draw * 1.15f);  // hide a bit past the edge (visibility hysteresis)
         float releaseSq = (draw * 1.25f) * (draw * 1.25f); // only free GPU memory well beyond the edge
 
+        // Instrumented because the hitch rate survived every queue fix at ~3.4/s with the work queue
+        // empty -- suspiciously close to this loop's own 4 Hz tick. It walks EVERY visual the client
+        // has ever created (tens of thousands on a busy region, not just the few thousand on screen)
+        // and re-offers each visible one's textures to the GpuCache, so its cost scales with the
+        // whole region rather than with what is in view.
+        double texLodMs = 0;
+        MainThreadWorkQueue.Measure("cull.scan", () =>
+        {
         foreach (var (id, state) in _visuals)
         {
             if (!IsInstanceValid(state.MeshInstance)) continue;
@@ -240,6 +248,7 @@ public partial class ObjectRenderer : Node3D
                 // resolution, and requires a full discard level of headroom), so this is a cheap
                 // no-op for the overwhelming majority of objects. Runs on the existing 4 Hz cull
                 // tick rather than per frame, which is ample for approach speed.
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 var (screenPixelArea, priority) = ComputeTextureLod(state.MeshInstance);
                 if (screenPixelArea > 0f)
                 {
@@ -250,8 +259,15 @@ public partial class ObjectRenderer : Node3D
                             screenPixelArea: screenPixelArea, priority: priority);
                     }
                 }
+                texLodMs += (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0
+                            / System.Diagnostics.Stopwatch.Frequency;
             }
         }
+        });
+
+        // Reported apart from the scan so the two possible culprits are separable: walking the
+        // dictionary and doing distance maths, versus the texture re-offer inside it.
+        MainThreadWorkQueue.RecordExternal("cull.texlod", texLodMs);
     }
 
     /// <summary>Drops an out-of-range object's GPU resources so VRAM can be reclaimed. The
