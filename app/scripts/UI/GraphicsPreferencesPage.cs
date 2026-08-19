@@ -143,11 +143,25 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         var row = new HBoxContainer();
         row.AddThemeConstantOverride("separation", 12);
 
-        var name = new Label { Text = label, CustomMinimumSize = new Vector2(130, 0) };
+        var name = new Label
+        {
+            Text = label,
+            CustomMinimumSize = new Vector2(120, 0),
+            // The label must be allowed to shrink below its text width, or the row's minimum width
+            // is the sum of two pieces of text that neither wrap nor clip.
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            SizeFlagsHorizontal = SizeFlags.Fill,
+        };
         name.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
         row.AddChild(name);
 
         control.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        if (control is OptionButton option)
+        {
+            // Otherwise the dropdown's minimum width is its longest entry's full text.
+            option.ClipText = true;
+            option.CustomMinimumSize = new Vector2(120, 0);
+        }
         row.AddChild(control);
 
         AddChild(row);
@@ -155,7 +169,10 @@ public partial class GraphicsPreferencesPage : VBoxContainer
 
     private void AddCheck(string label, bool value, Action<bool> onToggled)
     {
+        // A CheckBox does not wrap or clip its text, so its label is a hard floor on the page's
+        // width. Long explanations belong in a hint underneath, not in the caption.
         var check = new CheckBox { Text = label, ButtonPressed = value, FocusMode = FocusModeEnum.None };
+        check.SizeFlagsHorizontal = SizeFlags.Fill;
         check.Toggled += pressed => onToggled(pressed);
         AddChild(check);
     }

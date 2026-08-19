@@ -61,8 +61,8 @@
       "msaa": "Kantenglättung",
       "off": "Aus",
       "shadows": "Schatten",
-      "post_fx": "Nachbearbeitung (SSAO, SSIL, Glühen, Volumennebel)",
-      "post_fx_hint": "Dieselbe Effektgruppe wie die F2-Taste."
+      "post_fx": "Nachbearbeitung",
+      "post_fx_hint": "SSAO, SSIL, Glühen und Volumennebel — dieselbe Gruppe wie die F2-Taste."
     }
   }
 }

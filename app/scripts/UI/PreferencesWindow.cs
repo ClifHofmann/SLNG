@@ -93,7 +93,12 @@ public partial class PreferencesWindow : SLNGWindow
         var scroll = new ScrollContainer
         {
             Visible = isFirst,
-            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+            // ShowNever, not Disabled. Disabled makes the ScrollContainer adopt its content's
+            // minimum WIDTH -- it cannot scroll horizontally, so the content has to fit -- and that
+            // minimum then propagates up through the margin, the row and the window's own box until
+            // the dialog's contents are wider than the dialog. A single long label was enough to do
+            // it. ShowNever keeps the horizontal bar hidden without making that demand.
+            HorizontalScrollMode = ScrollContainer.ScrollMode.ShowNever,
             ClipContents = true,
         };
         scroll.SetAnchorsPreset(Control.LayoutPreset.FullRect);

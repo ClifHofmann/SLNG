@@ -166,6 +166,11 @@ public partial class SLNGWindow : MarginContainer
         // Content
         _contentContainer = new MarginContainer();
         _contentContainer.SizeFlagsVertical = SizeFlags.ExpandFill;
+        // Content that is larger than the window must be cut off at the frame, not painted over the
+        // 3D world beyond it. Without this a page whose minimum size exceeds the window simply
+        // overflows and draws outside -- which is exactly what the Preferences dialog did once the
+        // Graphics tab grew. Clipping here fixes it for every window rather than one page at a time.
+        _contentContainer.ClipContents = true;
         vbox.AddChild(_contentContainer);
 
         // Resize Handle
