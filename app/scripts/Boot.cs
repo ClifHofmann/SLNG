@@ -97,7 +97,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.5.3-alpha";
+    public const string AppVersion = "v0.5.4-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -702,9 +702,7 @@ public partial class Boot : Control
     {
         if (_world == null) return;
 
-        var agent = _world.GetAllEntities()
-            .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
-        var t = agent?.GetComponent<TransformComponent>();
+        var t = GetLocalAgentTransform();
         if (t == null) { _agentGapReported = false; return; }
 
         // Edge-triggered: one line per gap, not one per frame for as long as it lasts.
@@ -733,15 +731,37 @@ public partial class Boot : Control
     private void ApplyGraphicsSettings()
         => _graphicsSettings.Apply(GetViewport(), _worldEnvironment, _sun);
 
+    /// <summary>
+    /// The local agent's transform, with the entity cached.
+    ///
+    /// Finding it means scanning every entity for the one whose AvatarComponent is the local agent,
+    /// and this runs once per frame -- on a 24,000-entity region that is the same class of cost that
+    /// [PhaseCost] caught in ExtrapolateMovement. The agent entity is stable for the whole session,
+    /// so it is looked up once and re-resolved only if it ever goes away (a disconnect replaces the
+    /// world).
+    /// </summary>
+    private TransformComponent? GetLocalAgentTransform()
+    {
+        if (_world == null) return null;
+
+        if (_localAgent == null || _world.GetEntity(_localAgent.Id) == null)
+        {
+            _localAgent = _world.GetAllEntities()
+                .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+        }
+
+        return _localAgent?.GetComponent<TransformComponent>();
+    }
+
+    private SLNG.Core.ECS.Entity? _localAgent;
+
     private void UpdateHud()
     {
         if (_world == null || _session == null) { return; }
 
         string region = string.IsNullOrEmpty(_session.CurrentRegionName) ? "(connecting)" : _session.CurrentRegionName;
 
-        var agent = _world.GetAllEntities()
-            .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
-        var t = agent?.GetComponent<TransformComponent>();
+        var t = GetLocalAgentTransform();
         if (t == null)
         {
             _hudLabel.Text = $"{region}\nawaiting position…   ·   Draw {RenderConfig.DrawDistance:0} m";

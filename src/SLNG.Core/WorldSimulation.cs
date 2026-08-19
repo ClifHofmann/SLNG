@@ -125,9 +125,40 @@ public sealed class WorldSimulation : IDisposable
     /// after Pump() has applied this frame's network updates. TargetPosition/TargetRotation are only
     /// ever set authoritatively by ApplyAvatarUpdate (server-driven, local agent included — see its
     /// doc comment); this method only smooths the visual gap between those updates.</summary>
+    // Avatars, cached. Rebuilt only when the world's entity count changes, which covers every way
+    // an avatar can appear or leave, and is an O(1) test rather than the O(entities) scan Query
+    // performs. See the field's use below for the measurement that forced this.
+    private readonly List<Entity> _avatarCache = new();
+    private int _avatarCacheEntityCount = -1;
+
+    /// <summary>Safety net for the count test above. One entity arriving in the same frame another
+    /// leaves keeps the count identical while the membership has changed, so the cache is also
+    /// rebuilt on a slow timer. Two seconds is far below anything a person would notice in an
+    /// avatar's motion and far above the per-frame rate that made the scan expensive.</summary>
+    private const float AvatarCacheMaxAgeSeconds = 2f;
+    private float _avatarCacheAge;
+
+    /// <summary>
+    /// Dead-reckons avatar positions between network updates. Runs every frame.
+    ///
+    /// The avatar list is cached because Query&lt;AvatarComponent&gt; is a linear scan over every
+    /// entity in the world. On a 24,000-entity region at 160 fps that is ~3.8 million dictionary
+    /// probes per second, and [PhaseCost] measured this method at 226 ms per second of wall clock --
+    /// more than every other main-thread phase in the client put together, to move a handful of
+    /// avatars.
+    /// </summary>
     public void ExtrapolateMovement(float deltaSeconds)
     {
-        foreach (var entity in _world.Query<AvatarComponent>())
+        _avatarCacheAge += deltaSeconds;
+        if (_avatarCacheEntityCount != _world.EntityCount || _avatarCacheAge >= AvatarCacheMaxAgeSeconds)
+        {
+            _avatarCacheAge = 0f;
+            _avatarCache.Clear();
+            _avatarCache.AddRange(_world.Query<AvatarComponent>());
+            _avatarCacheEntityCount = _world.EntityCount;
+        }
+
+        foreach (var entity in _avatarCache)
         {
             var transform = entity.GetComponent<TransformComponent>();
             if (transform == null) continue;

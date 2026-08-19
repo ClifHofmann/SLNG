@@ -154,6 +154,12 @@ public class World
     /// <summary>
     /// Retrieves all entities currently in the world.
     /// </summary>
+    /// <summary>Number of entities currently in the world. Exists so callers that cache a filtered
+    /// subset can tell, in O(1), whether the membership they cached could still be current --
+    /// <see cref="Query{T}"/> is a full linear scan and is far too expensive to repeat per frame on
+    /// a busy region.</summary>
+    public int EntityCount => _entities.Count;
+
     public IEnumerable<Entity> GetAllEntities()
     {
         return _entities.Values;
@@ -161,6 +167,15 @@ public class World
 
     /// <summary>
     /// Queries the world for all entities possessing a specific component type.
+    /// </summary>
+    /// <summary>
+    /// All entities carrying component T.
+    ///
+    /// A full linear scan with a dictionary probe per entity, and it allocates a LINQ iterator per
+    /// call. That is fine for occasional lookups and emphatically not fine per frame: measured on a
+    /// 24,000-entity region it was the single largest main-thread cost in the client, 226 ms per
+    /// second of wall clock. Callers on the frame path must cache the result -- see
+    /// WorldSimulation.ExtrapolateMovement -- rather than calling this repeatedly.
     /// </summary>
     public IEnumerable<Entity> Query<T>() where T : class, IComponent
     {
