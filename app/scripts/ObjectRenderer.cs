@@ -277,7 +277,14 @@ public partial class ObjectRenderer : Node3D
             if (dSq <= showSq && state.ResourcesReleased)
             {
                 state.ResourcesReleased = false;
-                UpdateVisual(id.ToString()); // reload mesh + material now that it's near again
+                // Queued, not called inline. Running it here put a full mesh+material reload inside
+                // the sweep, and the sweep is walked in slices sized for cheap distance maths -- one
+                // slice that happened to contain several returning objects took 346.9 ms, which is
+                // what pushed cull.scan's average from 0.78 ms back up to 3.22 ms. Coalesced on the
+                // same key as the ordinary update path, so a re-entering object cannot queue twice.
+                string reloadId = id.ToString();
+                MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
+                                            () => UpdateVisual(reloadId), $"update:{reloadId}", "visual.update");
             }
             else if (dSq > releaseSq && !state.ResourcesReleased)
             {

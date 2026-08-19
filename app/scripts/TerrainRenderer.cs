@@ -157,24 +157,56 @@ public partial class TerrainRenderer : Node3D
 
     private double _rebuildAccum;
 
+    /// <summary>Baseline coalescing window. Patches stream in over many frames, so a rebuild per
+    /// patch would be absurd; this is the floor, not the actual interval -- see _nextRebuildDelay.</summary>
+    private const double MinRebuildInterval = 0.75;
+
+    /// <summary>Hard ceiling on the adaptive backoff, so a pathological region cannot stop updating
+    /// its terrain altogether.</summary>
+    private const double MaxRebuildInterval = 10.0;
+
+    /// <summary>
+    /// How long to wait before the next rebuild, grown from how long the LAST one actually took.
+    ///
+    /// Without this the rebuild rate is a death spiral, and the watchdog logged it: a rebuild that
+    /// costs 2 s against a fixed 0.75 s interval means the next one is already due the moment the
+    /// last finishes, so the main thread does nothing else for as long as patches keep arriving --
+    /// phase=terrain stalls of 2.1 to 7.1 s while the work queue backed up to 11,849 items behind
+    /// them. Scaling the wait to the observed cost makes the terrain self-limiting: cheap rebuilds
+    /// stay responsive at the 0.75 s floor, expensive ones automatically get out of the way.
+    /// </summary>
+    private double _nextRebuildDelay = MinRebuildInterval;
+
     public override void _Process(double delta)
     {
         using var _phase = MainThreadPhase.Enter("terrain");
 
         if (_dirtyRegions.Count == 0) return;
 
-        // Rebuilding regenerates the whole region mesh + trimesh collider. A varregion
-        // (up to 1024x1024) is huge, and patches stream in over many frames, so coalesce
-        // into a rebuild at most every ~0.75s instead of once per frame.
         _rebuildAccum += delta;
-        if (_rebuildAccum < 0.75) return;
+        if (_rebuildAccum < _nextRebuildDelay) return;
         _rebuildAccum = 0;
+
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
 
         foreach (var regionHandle in _dirtyRegions)
         {
             RebuildTerrain(regionHandle);
         }
         _dirtyRegions.Clear();
+
+        double tookSeconds = (System.Diagnostics.Stopwatch.GetTimestamp() - started)
+                             / (double)System.Diagnostics.Stopwatch.Frequency;
+
+        // Spend at most ~20% of wall-clock time rebuilding terrain: wait four times as long as the
+        // rebuild itself took, never less than the floor or more than the ceiling.
+        _nextRebuildDelay = Math.Clamp(tookSeconds * 4.0, MinRebuildInterval, MaxRebuildInterval);
+
+        if (tookSeconds > 0.1)
+        {
+            Logger.Info($"[TerrainRebuild] {_regions.Count} region(s) in {tookSeconds * 1000:0} ms " +
+                        $"— next rebuild in {_nextRebuildDelay:0.00}s");
+        }
     }
 
     private void RebuildTerrain(ulong regionHandle)
@@ -222,6 +254,11 @@ public partial class TerrainRenderer : Node3D
         // lighting, and the winding below is likewise kept exactly as it was -- the collision shape
         // is built from the same triangles, and a flipped winding makes a ConcavePolygonShape3D
         // that the avatar's ground ray passes straight through.
+        // Timed with a timestamp pair rather than a Measure() scope: the vertex and index lists built
+        // here are used well past the end of this section, and wrapping them in a lambda purely to
+        // time them would mean hoisting every one of them out by hand.
+        long geometryStart = System.Diagnostics.Stopwatch.GetTimestamp();
+
         var vertexOf = new int[width * height];
         System.Array.Fill(vertexOf, -1);
 
@@ -293,6 +330,10 @@ public partial class TerrainRenderer : Node3D
             return;
         }
 
+        MainThreadWorkQueue.RecordExternal("terrain.geometry",
+            (System.Diagnostics.Stopwatch.GetTimestamp() - geometryStart) * 1000.0
+            / System.Diagnostics.Stopwatch.Frequency);
+
         var vertArray = verts.ToArray();
         var normalArray = new Vector3[normals.Count];
         for (int i = 0; i < normals.Count; i++)
@@ -309,16 +350,27 @@ public partial class TerrainRenderer : Node3D
         arrays[(int)Mesh.ArrayType.Normal] = normalArray;
         arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
 
-        var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-        regionNode.MeshInstance.Mesh = mesh;
+        MainThreadWorkQueue.Measure("terrain.mesh", () =>
+        {
+            var built = new ArrayMesh();
+            built.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+            regionNode.MeshInstance.Mesh = built;
+        });
 
         // Collision from the same CPU triangles rather than CreateTrimeshShape(), which reads every
         // face back out of the rendering server first -- the identical GPU-readback cost already
         // removed from the object path, and far worse here because it is one enormous mesh.
-        var faces = new Vector3[indices.Count];
-        for (int i = 0; i < indices.Count; i++) faces[i] = vertArray[indices[i]];
-        regionNode.CollisionShape.Shape = new ConcavePolygonShape3D { Data = faces };
+        // Measured separately from the mesh because they are very different operations on the same
+        // data: the mesh is a buffer upload, the shape is a BVH built over every triangle inside the
+        // physics server. With ~130,000 triangles for a 256x256 region that is the obvious suspect
+        // for what is left of the terrain stall, and guessing which half it is has gone wrong
+        // before in this investigation.
+        MainThreadWorkQueue.Measure("terrain.collision", () =>
+        {
+            var faces = new Vector3[indices.Count];
+            for (int i = 0; i < indices.Count; i++) faces[i] = vertArray[indices[i]];
+            regionNode.CollisionShape.Shape = new ConcavePolygonShape3D { Data = faces };
+        });
 
         // Use a per-region material instance
         ShaderMaterial mat;
@@ -344,7 +396,7 @@ public partial class TerrainRenderer : Node3D
         mat.SetShaderParameter("region_size", (float)regionTerrain.Width);
 
         // Build water plane
-        BuildWaterPlane(regionNode, regionTerrain);
+        MainThreadWorkQueue.Measure("terrain.water", () => BuildWaterPlane(regionNode, regionTerrain));
 
         // Fetch/apply textures in case RebuildTerrain runs after settings arrived,
         // or if settings arrived very quickly and were missed before the mesh existed.
