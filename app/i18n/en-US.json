@@ -45,7 +45,24 @@
       "toolbar_heading": "Buttons shown on the bottom bar:",
       "language_heading": "Language (requires reopening windows):",
       "ui_scale_heading": "UI Scale (windows & HUD):",
-      "ui_scale_hint": "Resizes floating windows and the HUD live. Applies to newly opened windows too."
+      "ui_scale_hint": "Resizes floating windows and the HUD live. Applies to newly opened windows too.",
+      "tab_graphics": "Graphics",
+      "graphics_heading": "Frame pacing:",
+      "vsync": "V-Sync",
+      "vsync_off": "Off",
+      "vsync_on": "On",
+      "vsync_adaptive": "Adaptive",
+      "vsync_mailbox": "Mailbox",
+      "vsync_hint": "With V-Sync on, a frame that just misses the refresh deadline waits for the next one, so a client short of 60 FPS reads as a steady 30. Turn it off to see the real frame rate.",
+      "fps_limit": "FPS limit",
+      "fps_unlimited": "Unlimited",
+      "draw_distance_heading": "Draw distance:",
+      "quality_heading": "Quality:",
+      "msaa": "Anti-aliasing",
+      "off": "Off",
+      "shadows": "Shadows",
+      "post_fx": "Post-processing (SSAO, SSIL, glow, volumetric fog)",
+      "post_fx_hint": "Same group of effects as the F2 shortcut."
     }
   }
 }

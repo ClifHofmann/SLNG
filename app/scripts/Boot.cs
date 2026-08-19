@@ -53,7 +53,6 @@ public partial class Boot : Control
     private VBoxContainer _vboxContainer = null!;
     
     private WorldEnvironment? _worldEnvironment;
-    private bool _postFxEnabled = true;
     private DirectionalLight3D? _sun;
     private SLNG.App.UI.InventoryPanel? _inventoryPanel;
     private Node3D? _sunGizmo;
@@ -66,6 +65,7 @@ public partial class Boot : Control
     // costs nothing until someone actually takes a measurement.
     private RenderBaselineSampler? _renderBaselineSampler;
     private SLNG.App.UI.StatsOverlay? _statsOverlay;
+    private SLNG.App.UI.GraphicsSettings _graphicsSettings = new();
 
     /// <summary>Threshold for the [AgentGap] log. Below the 0.8 s extrapolation cutoff, so a gap
     /// shows up in the log slightly before it becomes visible as a stalled avatar.</summary>
@@ -96,7 +96,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.4.18-alpha";
+    public const string AppVersion = "v0.5.0-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -386,6 +386,12 @@ public partial class Boot : Control
         _chatWindow.OnSendLocalChat = (text) => _session?.SendChat(text);
 
         SetupButtonBarAndPreferences(hudLayer, cameraHud);
+
+        // Loaded and applied after the tab exists so the page shows the saved values, and applied
+        // again here because the window-level ones (V-Sync, frame cap) must hold even if the user
+        // never opens Preferences.
+        _graphicsSettings.Load();
+        ApplyGraphicsSettings();
     }
 
     /// <summary>
@@ -476,6 +482,10 @@ public partial class Boot : Control
         var displayPage = new SLNG.App.UI.DisplayPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_display"), displayPage);
         displayPage.Initialize(_uiSettings, _localizationManager);
+
+        var graphicsPage = new SLNG.App.UI.GraphicsPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_graphics"), graphicsPage);
+        graphicsPage.Initialize(_graphicsSettings, ApplyGraphicsSettings);
 
         var networkPage = new SLNG.App.UI.NetworkPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);
@@ -708,6 +718,12 @@ public partial class Boot : Control
         }
     }
 
+    /// <summary>Pushes the saved graphics options into the live scene. Passed to
+    /// GraphicsPreferencesPage as a callback so the page never has to reach for the viewport, the
+    /// environment or the sun itself -- it only knows the settings object.</summary>
+    private void ApplyGraphicsSettings()
+        => _graphicsSettings.Apply(GetViewport(), _worldEnvironment, _sun);
+
     private void UpdateHud()
     {
         if (_world == null || _session == null) { return; }
@@ -828,24 +844,27 @@ public partial class Boot : Control
         {
             if (keyEvent.Keycode == Key.F2)
             {
-                _postFxEnabled = !_postFxEnabled;
-                if (_worldEnvironment?.Environment != null)
-                {
-                    _worldEnvironment.Environment.SsaoEnabled = _postFxEnabled;
-                    _worldEnvironment.Environment.SsilEnabled = _postFxEnabled;
-                    _worldEnvironment.Environment.GlowEnabled = _postFxEnabled;
-                    _worldEnvironment.Environment.VolumetricFogEnabled = _postFxEnabled;
-                    LogMessage($"Post-FX {(_postFxEnabled ? "enabled" : "disabled")}");
-                }
+                // Routed through GraphicsSettings rather than toggling the environment directly, so
+                // the shortcut and the Graphics tab's checkbox can never end up disagreeing about
+                // the same four flags -- and so the state survives a restart like every other
+                // graphics option does.
+                _graphicsSettings.SetPostFx(!_graphicsSettings.PostFx);
+                ApplyGraphicsSettings();
+                LogMessage($"Post-FX {(_graphicsSettings.PostFx ? "enabled" : "disabled")}");
             }
             else if (keyEvent.Keycode == Key.F3)
             {
-                RenderConfig.DrawDistance = Mathf.Max(16f, RenderConfig.DrawDistance - 16f);
+                // Through GraphicsSettings for the same reason as F2 above: the Graphics tab's
+                // slider reads from it, and a key that wrote RenderConfig directly would leave the
+                // slider showing a stale number and overwrite the change on the next apply.
+                _graphicsSettings.SetDrawDistance(Mathf.Max(32f, _graphicsSettings.DrawDistance - 16f));
+                ApplyGraphicsSettings();
                 LogMessage($"Draw distance: {RenderConfig.DrawDistance:0} m");
             }
             else if (keyEvent.Keycode == Key.F4)
             {
-                RenderConfig.DrawDistance = Mathf.Min(512f, RenderConfig.DrawDistance + 16f);
+                _graphicsSettings.SetDrawDistance(Mathf.Min(512f, _graphicsSettings.DrawDistance + 16f));
+                ApplyGraphicsSettings();
                 LogMessage($"Draw distance: {RenderConfig.DrawDistance:0} m");
             }
             else if (keyEvent.Keycode == Key.F5)
