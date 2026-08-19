@@ -74,7 +74,10 @@ public sealed class WorldSimulation : IDisposable
                 case PhysicsPropertiesEvent e: ApplyPhysicsProperties(e); break;
                 case TerrainPatchEvent e: ApplyTerrainPatch(e); break;
                 case TerrainSettingsEvent e: ApplyTerrainSettings(e); break;
-                case RegionDisconnectedEvent e: _world.RemoveRegion(e.RegionHandle); break;
+                case RegionDisconnectedEvent e:
+                    _world.RemoveRegion(e.RegionHandle);
+                    _avatarCacheDirty = true; // takes every avatar in that region with it
+                    break;
                 case AvatarAppearanceEvent e: ApplyAvatarAppearance(e); break;
                 case AvatarAnimationEvent e: ApplyAvatarAnimation(e); break;
                 case NameResolvedEvent e: ApplyDisplayNameResolved(e); break;
@@ -129,12 +132,24 @@ public sealed class WorldSimulation : IDisposable
     // an avatar can appear or leave, and is an O(1) test rather than the O(entities) scan Query
     // performs. See the field's use below for the measurement that forced this.
     private readonly List<Entity> _avatarCache = new();
-    private int _avatarCacheEntityCount = -1;
 
-    /// <summary>Safety net for the count test above. One entity arriving in the same frame another
-    /// leaves keeps the count identical while the membership has changed, so the cache is also
-    /// rebuilt on a slow timer. Two seconds is far below anything a person would notice in an
-    /// avatar's motion and far above the per-frame rate that made the scan expensive.</summary>
+    /// <summary>
+    /// Set whenever an avatar could have appeared or gone away, which is the only thing that changes
+    /// this cache's contents.
+    ///
+    /// The first version keyed invalidation on the world's total entity count instead, which was
+    /// wrong in exactly the situation the cache exists for: while a region streams in, objects arrive
+    /// continuously, so the count changed nearly every frame and the cache was rebuilt every frame.
+    /// It measured as an improvement only because loading eventually stops -- extrapolate fell from
+    /// 226 to 49 ms per second, when it should have fallen much further. Avatars come and go rarely;
+    /// objects constantly. Watch the former.
+    /// </summary>
+    private bool _avatarCacheDirty = true;
+
+    /// <summary>Safety net in case some path adds or removes an avatar without going through the
+    /// handlers below. Two seconds is far below anything a person would notice in an avatar's motion
+    /// -- extrapolation only smooths between network packets -- and far above the per-frame rate that
+    /// made the scan expensive.</summary>
     private const float AvatarCacheMaxAgeSeconds = 2f;
     private float _avatarCacheAge;
 
@@ -150,12 +165,12 @@ public sealed class WorldSimulation : IDisposable
     public void ExtrapolateMovement(float deltaSeconds)
     {
         _avatarCacheAge += deltaSeconds;
-        if (_avatarCacheEntityCount != _world.EntityCount || _avatarCacheAge >= AvatarCacheMaxAgeSeconds)
+        if (_avatarCacheDirty || _avatarCacheAge >= AvatarCacheMaxAgeSeconds)
         {
+            _avatarCacheDirty = false;
             _avatarCacheAge = 0f;
             _avatarCache.Clear();
             _avatarCache.AddRange(_world.Query<AvatarComponent>());
-            _avatarCacheEntityCount = _world.EntityCount;
         }
 
         foreach (var entity in _avatarCache)
@@ -441,6 +456,11 @@ public sealed class WorldSimulation : IDisposable
 
     private void ApplyAvatarUpdate(AvatarUpdateEvent e)
     {
+        // Cheap and unconditional: an avatar update is rare compared with an object update, and
+        // deciding here whether the entity is genuinely new would cost more than the rebuild it
+        // avoids.
+        _avatarCacheDirty = true;
+
         if (e.IsLocalAgent)
         {
             // Ensure no other entity is marked as the local agent (e.g. leftover from a previous region after teleport)
@@ -723,6 +743,9 @@ public sealed class WorldSimulation : IDisposable
 
     private void ApplyObjectRemoved(ObjectRemovedEvent e)
     {
+        // A removal event does not say whether it was an avatar, so assume it might have been.
+        _avatarCacheDirty = true;
+
         RemoveEntityRecursive(e.RegionHandle, e.LocalId);
     }
 

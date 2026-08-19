@@ -154,10 +154,7 @@ public class World
     /// <summary>
     /// Retrieves all entities currently in the world.
     /// </summary>
-    /// <summary>Number of entities currently in the world. Exists so callers that cache a filtered
-    /// subset can tell, in O(1), whether the membership they cached could still be current --
-    /// <see cref="Query{T}"/> is a full linear scan and is far too expensive to repeat per frame on
-    /// a busy region.</summary>
+    /// <summary>Number of entities currently in the world.</summary>
     public int EntityCount => _entities.Count;
 
     public IEnumerable<Entity> GetAllEntities()
