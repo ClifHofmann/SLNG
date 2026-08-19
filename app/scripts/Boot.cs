@@ -66,6 +66,7 @@ public partial class Boot : Control
     private RenderBaselineSampler? _renderBaselineSampler;
     private SLNG.App.UI.StatsOverlay? _statsOverlay;
     private SLNG.App.UI.GraphicsSettings _graphicsSettings = new();
+    private SLNG.App.UI.GraphicsPreferencesPage? _graphicsPage;
 
     /// <summary>Threshold for the [AgentGap] log. Below the 0.8 s extrapolation cutoff, so a gap
     /// shows up in the log slightly before it becomes visible as a stalled avatar.</summary>
@@ -96,7 +97,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.5.2-alpha";
+    public const string AppVersion = "v0.5.3-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -295,6 +296,9 @@ public partial class Boot : Control
         };
 
         _topMenu.OnOpenPreferences = () => {
+            // Re-read on open: F2 and F3/F4 change these settings from outside the dialog, so
+            // controls built once at startup would otherwise show stale values.
+            _graphicsPage?.Refresh();
             _preferencesWindow.Visible = true;
         };
 
@@ -311,6 +315,12 @@ public partial class Boot : Control
         // flashing at 1.0x first (FEAT-UI-07).
         _uiSettings = new SLNG.App.UI.UiSettings();
         _uiSettings.Load();
+
+        // Same reason, one bug later: the Graphics tab builds its checkboxes and dropdowns from
+        // whatever the settings object holds AT CONSTRUCTION. Loading afterwards left the world
+        // correctly following the saved value while the controls still showed the defaults --
+        // shadows genuinely off after login, with the checkbox ticked.
+        _graphicsSettings.Load();
         
         // Apply saved language setting
         _localizationManager.CurrentLocale = _uiSettings.Language;
@@ -387,10 +397,9 @@ public partial class Boot : Control
 
         SetupButtonBarAndPreferences(hudLayer, cameraHud);
 
-        // Loaded and applied after the tab exists so the page shows the saved values, and applied
-        // again here because the window-level ones (V-Sync, frame cap) must hold even if the user
-        // never opens Preferences.
-        _graphicsSettings.Load();
+        // Applied here rather than at Load time above, because SetupEnvironment has run by now and
+        // the sun and environment exist to receive it. The window-level settings (V-Sync, frame cap)
+        // are applied by the same call and must hold even if Preferences is never opened.
         ApplyGraphicsSettings();
     }
 
@@ -483,9 +492,9 @@ public partial class Boot : Control
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_display"), displayPage);
         displayPage.Initialize(_uiSettings, _localizationManager);
 
-        var graphicsPage = new SLNG.App.UI.GraphicsPreferencesPage();
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_graphics"), graphicsPage);
-        graphicsPage.Initialize(_graphicsSettings, ApplyGraphicsSettings);
+        _graphicsPage = new SLNG.App.UI.GraphicsPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_graphics"), _graphicsPage);
+        _graphicsPage.Initialize(_graphicsSettings, ApplyGraphicsSettings);
 
         var networkPage = new SLNG.App.UI.NetworkPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);

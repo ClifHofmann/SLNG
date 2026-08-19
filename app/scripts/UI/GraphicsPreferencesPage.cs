@@ -17,6 +17,20 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     private Action _apply = null!;
     private Label _drawDistanceValue = null!;
 
+    // Kept so Refresh can push changed values back into the controls.
+    private OptionButton _vsyncOption = null!;
+    private OptionButton _fpsOption = null!;
+    private HSlider _drawSlider = null!;
+    private OptionButton _msaaOption = null!;
+    private CheckBox _shadowsCheck = null!;
+    private CheckBox _postFxCheck = null!;
+
+    /// <summary>Set while Refresh writes into the controls. HSlider.Value and CheckBox.ButtonPressed
+    /// emit their change signals on assignment, so without this a refresh would re-enter the very
+    /// handlers it is trying to synchronise -- saving and re-applying a value that never changed.
+    /// (OptionButton.Select is exempt, but the flag covers it anyway rather than relying on that.)</summary>
+    private bool _refreshing;
+
     /// <summary>Offered frame caps. 0 is "unlimited" and comes first because it is the default and
     /// the only one that matters while V-Sync is on.</summary>
     private static readonly int[] FpsChoices = { 0, 30, 60, 90, 120, 144, 240 };
@@ -46,7 +60,8 @@ public partial class GraphicsPreferencesPage : VBoxContainer
                 L10n.Tr("ui.preferences.vsync_mailbox"),
             },
             _settings.VSyncMode,
-            index => { _settings.SetVSyncMode(index); _apply(); }));
+            index => { if (!_refreshing) { _settings.SetVSyncMode(index); _apply(); } },
+            out _vsyncOption));
 
         AddHint(L10n.Tr("ui.preferences.vsync_hint"));
 
@@ -59,7 +74,8 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         AddRow(L10n.Tr("ui.preferences.fps_limit"), BuildOption(
             fpsLabels,
             fpsIndex < 0 ? 0 : fpsIndex,
-            index => { _settings.SetMaxFps(FpsChoices[index]); _apply(); }));
+            index => { if (!_refreshing) { _settings.SetMaxFps(FpsChoices[index]); _apply(); } },
+            out _fpsOption));
 
         AddChild(new HSeparator());
 
@@ -72,7 +88,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         drawRow.AddThemeConstantOverride("separation", 12);
         AddChild(drawRow);
 
-        var drawSlider = new HSlider
+        _drawSlider = new HSlider
         {
             MinValue = 32,
             MaxValue = 512,
@@ -81,7 +97,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             CustomMinimumSize = new Vector2(200, 0),
         };
-        drawRow.AddChild(drawSlider);
+        drawRow.AddChild(_drawSlider);
 
         _drawDistanceValue = new Label
         {
@@ -91,9 +107,10 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         _drawDistanceValue.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
         drawRow.AddChild(_drawDistanceValue);
 
-        drawSlider.ValueChanged += value =>
+        _drawSlider.ValueChanged += value =>
         {
             _drawDistanceValue.Text = $"{value:0} m";
+            if (_refreshing) return;
             _settings.SetDrawDistance((float)value);
             _apply();
         };
@@ -110,15 +127,48 @@ public partial class GraphicsPreferencesPage : VBoxContainer
                 "2x", "4x", "8x",
             },
             _settings.Msaa,
-            index => { _settings.SetMsaa(index); _apply(); }));
+            index => { if (!_refreshing) { _settings.SetMsaa(index); _apply(); } },
+            out _msaaOption));
 
-        AddCheck(L10n.Tr("ui.preferences.shadows"), _settings.Shadows,
-                 on => { _settings.SetShadows(on); _apply(); });
+        _shadowsCheck = AddCheck(L10n.Tr("ui.preferences.shadows"), _settings.Shadows,
+                                 on => { if (!_refreshing) { _settings.SetShadows(on); _apply(); } });
 
-        AddCheck(L10n.Tr("ui.preferences.post_fx"), _settings.PostFx,
-                 on => { _settings.SetPostFx(on); _apply(); });
+        _postFxCheck = AddCheck(L10n.Tr("ui.preferences.post_fx"), _settings.PostFx,
+                                on => { if (!_refreshing) { _settings.SetPostFx(on); _apply(); } });
 
         AddHint(L10n.Tr("ui.preferences.post_fx_hint"));
+    }
+
+    /// <summary>
+    /// Re-reads every value from the settings object into the controls.
+    ///
+    /// Needed because the settings are not only changed from this page: F2 toggles post-processing
+    /// and F3/F4 nudge the draw distance. Built once at startup and never refreshed, the controls
+    /// would drift out of step with the state they claim to show -- the same class of fault as the
+    /// page being built before the saved values were loaded, which had shadows genuinely off after
+    /// login while the checkbox stayed ticked.
+    /// </summary>
+    public void Refresh()
+    {
+        _refreshing = true;
+        try
+        {
+            _vsyncOption.Select(Mathf.Clamp(_settings.VSyncMode, 0, _vsyncOption.ItemCount - 1));
+
+            int fpsIndex = Array.IndexOf(FpsChoices, _settings.MaxFps);
+            _fpsOption.Select(fpsIndex < 0 ? 0 : fpsIndex);
+
+            _drawSlider.Value = _settings.DrawDistance;
+            _drawDistanceValue.Text = $"{_settings.DrawDistance:0} m";
+
+            _msaaOption.Select(Mathf.Clamp(_settings.Msaa, 0, _msaaOption.ItemCount - 1));
+            _shadowsCheck.ButtonPressed = _settings.Shadows;
+            _postFxCheck.ButtonPressed = _settings.PostFx;
+        }
+        finally
+        {
+            _refreshing = false;
+        }
     }
 
     private void AddHeading(string text)
@@ -167,7 +217,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         AddChild(row);
     }
 
-    private void AddCheck(string label, bool value, Action<bool> onToggled)
+    private CheckBox AddCheck(string label, bool value, Action<bool> onToggled)
     {
         // A CheckBox does not wrap or clip its text, so its label is a hard floor on the page's
         // width. Long explanations belong in a hint underneath, not in the caption.
@@ -175,11 +225,14 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         check.SizeFlagsHorizontal = SizeFlags.Fill;
         check.Toggled += pressed => onToggled(pressed);
         AddChild(check);
+        return check;
     }
 
-    private static OptionButton BuildOption(string[] labels, int selected, Action<int> onSelected)
+    private static OptionButton BuildOption(string[] labels, int selected, Action<int> onSelected,
+                                            out OptionButton created)
     {
         var option = new OptionButton();
+        created = option;
         foreach (string label in labels) option.AddItem(label);
         option.Select(Mathf.Clamp(selected, 0, labels.Length - 1));
         option.ItemSelected += index => onSelected((int)index);
