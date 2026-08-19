@@ -289,7 +289,11 @@ public partial class AvatarController : Camera3D
             var rayOrigin = ProjectRayOrigin(_altZoomAnchorPos);
             var rayEnd = rayOrigin + ProjectRayNormal(_altZoomAnchorPos) * 1000f;
             var query = PhysicsRayQueryParameters3D.Create(rayOrigin, rayEnd);
-            query.CollisionMask = 3; // Hit Layer 1 (objects/terrain) and Layer 2 (avatars)
+            // Terrain moved to its own layer (PhysicsLayers.Terrain) so CursorManager's
+            // hover raycast could stop paying its console-warning cost on unstreamed
+            // patches; this orbit-target raycast still needs terrain, so it's listed
+            // explicitly alongside objects and avatars rather than relying on a shared bit.
+            query.CollisionMask = PhysicsLayers.Objects | PhysicsLayers.Terrain | PhysicsLayers.Avatars;
             var result = spaceState.IntersectRay(query);
             if (result.Count > 0)
             {
@@ -441,7 +445,11 @@ public partial class AvatarController : Camera3D
                 var rayTo = godotPos - new Godot.Vector3(0, 100.0f, 0);
                 
                 var query = PhysicsRayQueryParameters3D.Create(rayFrom, rayTo);
-                query.CollisionMask = 1; // Only hit Layer 1 (terrain/objects), ignore Layer 2 (avatar)
+                // Ground detection genuinely needs terrain (PhysicsLayers.Terrain), which now
+                // lives on its own bit rather than sharing Objects -- see that constant's doc
+                // comment. Layer 2 (avatars) stays excluded so standing on someone doesn't read
+                // as ground.
+                query.CollisionMask = PhysicsLayers.Objects | PhysicsLayers.Terrain;
                 
                 var result = spaceState.IntersectRay(query);
 

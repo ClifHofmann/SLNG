@@ -18,4 +18,11 @@
     <ProjectReference Include="..\..\src\SLNG.Net\SLNG.Net.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Real environment LLSD captured from a live region (FEAT-ENV-01 Phase A). Committed on
+         purpose: it is the only sample of what a grid actually sends, and re-capturing it costs a
+         login. -->
+    <None Include="TestData\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

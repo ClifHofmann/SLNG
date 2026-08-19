@@ -100,7 +100,14 @@ public partial class CursorManager : Node
         var rayEnd = rayOrigin + _camera.ProjectRayNormal(mousePos) * 1000f;
 
         var query = PhysicsRayQueryParameters3D.Create(rayOrigin, rayEnd);
-        query.CollisionMask = 1u; // Layer 1 (Terrain/Objects)
+        // Objects only -- deliberately NOT PhysicsLayers.Terrain. A terrain hit is inert here
+        // (terrain's StaticBody carries no PrimitiveComponent, so it can never change the cursor
+        // shape below), but every frame the mouse crossed an unstreamed patch while terrain
+        // shared this layer, Godot's height-field raycast still ran a normalize() over that
+        // patch's NaN cells before reporting the miss and printed "Vector3 cannot be normalized"
+        // to the console -- measured at 45,862 of 45,872 such warnings in one session's log, all
+        // from this call site. See PhysicsLayers.Terrain's doc comment for the full story.
+        query.CollisionMask = PhysicsLayers.Objects;
 
         var result = spaceState.IntersectRay(query);
 

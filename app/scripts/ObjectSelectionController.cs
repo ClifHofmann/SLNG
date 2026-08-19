@@ -198,7 +198,10 @@ namespace SLNG.App
             var to = from + _camera.ProjectRayNormal(mousePos) * 1000f;
 
             var query = PhysicsRayQueryParameters3D.Create(from, to);
-            // Optional: Set collision mask here if needed
+            // No mask set -- deliberately hits every layer, INCLUDING PhysicsLayers.Terrain: the
+            // right-click "ground menu" (ShowGroundMenu above) depends on hitting terrain to get
+            // a world position. Don't narrow this to PhysicsLayers.Objects the way CursorManager
+            // does -- that would silently break right-click-to-create-on-ground.
 
             return spaceState.IntersectRay(query);
         }

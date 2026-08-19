@@ -263,6 +263,16 @@ back-face culling were lost, smeared sculpt-pole grain if anisotropic filtering 
 
 ### Phase 5 — Fill the atmospherics seam (Windlight / EEP)
 
+**The data half of this phase is specified separately as
+[FEAT-ENV-01](file:///E:/Git/SLNG/docs/specs/FEAT-ENV-01-windlight-eep.md)** — fetching the
+region environment, modelling it engine-neutrally, evaluating the day cycle and publishing
+the global shader uniforms. That work has no dependency on this migration and can run in
+parallel; Phase 5 here is only the *consumption* side, filling
+`slng_apply_atmospherics` with a port of `calcAtmosphericVars`
+(`class1/windlight/atmosphericsFuncs.glsl`). It stays blocked on Phases 3–4 above: prims
+with atmospherics next to avatars, terrain and water without is precisely the seam ADR
+0002 exists to avoid.
+
 - [ ] Windlight parameters are published once per frame as global shader uniforms; no
       per-material updates for them.
 - [ ] All four renderers receive the same atmospherics — no visible seam between a prim,

@@ -54,6 +54,11 @@ public partial class Boot : Control
     
     private WorldEnvironment? _worldEnvironment;
     private DirectionalLight3D? _sun;
+    // FEAT-ENV-01 Phase D: drives sun/ambient/sky/fog/water from the region's actual environment.
+    // Always constructed (not nullable) -- with no region connected yet it just evaluates
+    // DayCycle.Default every frame, which is the same hardcoded-looking scene as before this
+    // feature, not a special case to guard against.
+    private readonly EnvironmentDriver _environmentDriver = new();
     private SLNG.App.UI.InventoryPanel? _inventoryPanel;
     private Node3D? _sunGizmo;
 
@@ -97,7 +102,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.6.0-alpha";
+    public const string AppVersion = "v0.7.0-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -643,9 +648,98 @@ public partial class Boot : Control
         _sun.LookAt(_sun.GlobalPosition - toSun, Godot.Vector3.Up);
     }
 
+    /// <summary>Writes the region's raw Windlight/EEP environment to <c>user://logs/</c> and
+    /// summarises it in the chat log (FEAT-ENV-01 Phase A).
+    ///
+    /// This changes nothing on screen. It exists because the fallback chain
+    /// (EEP -> legacy Windlight -> viewer default) cannot be designed against a guess: OpenSim's
+    /// EEP support varies by version and need not match SL's. One login with this in place
+    /// produces the fixture the parser is written and tested against, which is a great deal
+    /// cheaper than discovering the shape of the data from a rendering bug later.</summary>
+    private void DumpRegionEnvironment(SLNG.Core.RegionEnvironmentCapture capture)
+    {
+        string caps = capture switch
+        {
+            { HasExtEnvironmentCap: true, HasEnvironmentSettingsCap: true } => "ExtEnvironment + EnvironmentSettings",
+            { HasExtEnvironmentCap: true } => "ExtEnvironment (EEP only)",
+            { HasEnvironmentSettingsCap: true } => "EnvironmentSettings (legacy Windlight only)",
+            _ => "NONE",
+        };
+
+        LogEnvironment($"[ENV] '{capture.RegionName}' caps: {caps}"
+            + $", dayLength={capture.DayLength}s, dayOffset={capture.DayOffset}s, isDefault={capture.IsDefault}"
+            + (capture.Error != null ? $", ERROR: {capture.Error}" : string.Empty));
+
+        if (capture.ExtEnvironmentLlsd == null && capture.LegacyEnvironmentLlsd == null)
+        {
+            // Not necessarily a fault: a region with no custom environment inherits the grid
+            // default and legitimately returns nothing. The cap flags above say which case it is.
+            LogEnvironment("[ENV] no environment settings returned — region inherits the grid default");
+            return;
+        }
+
+        DirAccess.MakeDirRecursiveAbsolute("user://logs");
+
+        // Region names carry spaces and punctuation that are fine in a name and not in a filename.
+        var safeName = new string(capture.RegionName.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
+        if (safeName.Length == 0) safeName = capture.RegionHandle.ToString();
+
+        WriteEnvironmentDump($"user://logs/environment-{safeName}-eep.llsd", capture.ExtEnvironmentLlsd);
+        WriteEnvironmentDump($"user://logs/environment-{safeName}-legacy.llsd", capture.LegacyEnvironmentLlsd);
+    }
+
+    /// <summary>Logs an environment diagnostic to BOTH the on-screen panel and stdout.
+    ///
+    /// <see cref="LogMessage"/> alone is the wrong sink for this: the panel is capped at 200 lines
+    /// and cleared when it overflows, so on a busy region the environment readout is gone long
+    /// before anyone looks for it, and it never reaches <c>godot.log</c> where a post-hoc analysis
+    /// would find it. That is exactly what happened on the first live capture — the LLSD dump
+    /// survived, the summary saying which capabilities answered did not.</summary>
+    private void LogEnvironment(string message)
+    {
+        LogMessage(message);
+        GD.Print(message);
+    }
+
+    private void WriteEnvironmentDump(string path, string? llsd)
+    {
+        if (llsd == null) return;
+
+        using var file = FileAccess.Open(path, FileAccess.ModeFlags.Write);
+        if (file == null)
+        {
+            LogEnvironment($"[color=orange][ENV] could not write {path}: {FileAccess.GetOpenError()}[/color]");
+            return;
+        }
+        file.StoreString(llsd);
+        LogEnvironment($"[ENV] wrote {ProjectSettings.GlobalizePath(path)} ({llsd.Length} chars)");
+    }
+
+    /// <summary>Reports the parsed environment (FEAT-ENV-01 Phase B). Still nothing on screen —
+    /// this is the readout that says whether the parse produced a real sky or quietly fell back to
+    /// the viewer default, which is the one failure mode a screenshot could never distinguish.</summary>
+    private void LogRegionEnvironment(SLNG.Core.RegionEnvironmentEvent env)
+    {
+        var cycle = env.Cycle;
+        var sky = cycle.EvaluateSky(System.DateTimeOffset.UtcNow);
+
+        LogEnvironment($"[ENV] source={env.Source}, skyFrames={cycle.SkyFrames.Count}"
+            + $", waterFrames={cycle.WaterFrames.Count}, dayLength={cycle.DayLengthSeconds}s"
+            + $", position={cycle.PositionAt(System.DateTimeOffset.UtcNow):F3}");
+        LogEnvironment($"[ENV] sky now: blueHorizon={sky.BlueHorizon}, hazeDensity={sky.HazeDensity:F3}"
+            + $", cloudShadow={sky.CloudShadow:F3}");
+    }
+
     public override void _Process(double delta)
     {
         UpdateSunFromRegion();
+        // FEAT-ENV-01 Phase D. Reads the SAME SunDirection UpdateSunFromRegion just aimed the
+        // light with, so the sky dome/fog and the actual lit scene never disagree about which way
+        // is day even though the sky-dome mapping is otherwise a flat approximation (see
+        // EnvironmentDriver's own doc comment for why that's Phase E's job, not this one's).
+        _environmentDriver.Update(
+            _worldEnvironment, _sun, _terrainRenderer?.WaterMaterial,
+            _session?.SunDirection ?? default, System.DateTimeOffset.UtcNow);
 
         // TEMPORARY diagnostic (2026-07-23, OSGrid movement-judder live-test round): delta is
         // Godot's own measured wall-clock time since the last _Process call -- a large value here
@@ -1183,6 +1277,20 @@ public partial class Boot : Control
         // login's own connection is also caught by this, not just later teleports.
         _session.RegionConnected += (s, regionHandle) =>
             Godot.Callable.From(() => RenderConfig.SetRegionOrigin(regionHandle)).CallDeferred();
+        // FEAT-ENV-01 Phase A: capture the region's Windlight/EEP environment so the parser can be
+        // written against what the grid actually sends. Fires on a network thread, so the write is
+        // deferred like everything else that leaves that thread.
+        _session.RegionEnvironmentCaptured += (s, capture) =>
+            Godot.Callable.From(() => DumpRegionEnvironment(capture)).CallDeferred();
+        _session.RegionEnvironmentReceived += (s, env) =>
+            Godot.Callable.From(() =>
+            {
+                LogRegionEnvironment(env);
+                // FEAT-ENV-01 Phase D: hand the parsed cycle to the driver that actually paints
+                // it. Region-scoped rather than avatar-scoped: crossing into a neighbor region
+                // with its own environment replaces the cycle wholesale, same as a fresh login.
+                _environmentDriver.SetCycle(env.Cycle, env.Source);
+            }).CallDeferred();
 
         var creds = new LoginCredentials
         {

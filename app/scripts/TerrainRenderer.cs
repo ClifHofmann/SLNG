@@ -23,7 +23,10 @@ public partial class TerrainRenderer : Node3D
         {
             Root = new Node3D();
             MeshInstance = new MeshInstance3D();
-            StaticBody = new StaticBody3D { Name = "TerrainPhysics" };
+            // On its own layer (PhysicsLayers.Terrain), not the shared Objects layer -- see that
+            // constant's doc comment for why: a hover raycast that includes terrain pays a console
+            // warning on every unstreamed patch it crosses for a hit it can't do anything with.
+            StaticBody = new StaticBody3D { Name = "TerrainPhysics", CollisionLayer = PhysicsLayers.Terrain };
             StaticBody.SetMeta("EntityId", "TERRAIN");
             StaticBody.SetMeta("LocalId", "TERRAIN");
             CollisionShape = new CollisionShape3D { Name = "TerrainCollision" };
@@ -43,6 +46,12 @@ public partial class TerrainRenderer : Node3D
     private readonly HashSet<ulong> _dirtyRegions = new();
     private ShaderMaterial _terrainMaterial = new();
     private ShaderMaterial _waterMaterial = new();
+
+    /// <summary>The shared water material every region's water plane uses as its
+    /// <c>MaterialOverride</c>. Exposed for <c>EnvironmentDriver</c> (FEAT-ENV-01 Phase D) to
+    /// drive the water's colour from the region's actual EEP/Windlight settings instead of the
+    /// shader's hardcoded default.</summary>
+    public ShaderMaterial WaterMaterial => _waterMaterial;
 
     private World? _world;
     private SLNG.Assets.AssetService? _assetService;

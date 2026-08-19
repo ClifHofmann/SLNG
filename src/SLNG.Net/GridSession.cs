@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net.Http;
 using LibreMetaverse;
 using LibreMetaverse.Packets;
+using LibreMetaverse.StructuredData;
 using SLNG.Core;
 
 namespace SLNG.Net;
@@ -83,6 +84,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// Payload is the new region's handle. Consumers: RenderConfig.SetRegionOrigin (the floating-
     /// origin recenter) is the reason this exists -- see Boot.cs's subscription.</summary>
     public event EventHandler<ulong>? RegionConnected;
+
+    /// <summary>Fired once per region, after its capabilities are up, with a raw snapshot of the
+    /// region's Windlight / EEP environment (FEAT-ENV-01 Phase A). Diagnostic for now: the payload
+    /// carries the settings LLSD as text, because nothing parses it yet.
+    ///
+    /// Raised from a background thread (the capability fetch is async HTTP), like every other
+    /// event on this class -- consumers must marshal before touching world state or a scene node.</summary>
+    public event EventHandler<RegionEnvironmentCapture>? RegionEnvironmentCaptured;
+
+    /// <summary>Fired once per region with its environment parsed into the engine-neutral model
+    /// (FEAT-ENV-01 Phase B). This is what the renderer consumes; <see cref="RegionEnvironmentCaptured"/>
+    /// is the raw evidence behind it, and both are raised for the same region.
+    ///
+    /// Raised from a background thread -- marshal before touching a scene node.</summary>
+    public event EventHandler<RegionEnvironmentEvent>? RegionEnvironmentReceived;
 
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
@@ -197,6 +213,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Terrain.LandPatchReceived += OnLandPatchReceived;
         _client.Network.SimConnected += OnSimConnected;
         _client.Network.SimDisconnected += OnSimDisconnected;
+        // Environment (FEAT-ENV-01) hangs off EventQueueRunning, not SimConnected: both the
+        // ExtEnvironment and EnvironmentSettings capabilities are HTTP CAPS, and at SimConnected
+        // the cap seed has not necessarily been fetched yet, so CapabilityURI would report them
+        // absent on a sim that has them.
+        _client.Network.EventQueueRunning += OnEventQueueRunning;
         _client.Avatars.AvatarAppearance += OnAvatarAppearance;
         _client.Avatars.AvatarAnimation += OnAvatarAnimation;
         _client.Appearance.AppearanceSet += OnAppearanceSet;
@@ -265,6 +286,136 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             RegionConnected?.Invoke(this, sim.Handle);
         }
+    }
+
+    /// <summary>Captures the region's environment once its capabilities are live (FEAT-ENV-01
+    /// Phase A). Fire-and-forget on purpose: nothing in the login path waits on the environment,
+    /// and a sim that never answers must not stall the connection.</summary>
+    private void OnEventQueueRunning(object? sender, LibreMetaverse.EventQueueRunningEventArgs e)
+    {
+        if (e.Simulator != _client.Network.CurrentSim) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var (capture, environment) = await FetchRegionEnvironmentAsync().ConfigureAwait(false);
+                if (capture != null) RegionEnvironmentCaptured?.Invoke(this, capture);
+                if (environment != null) RegionEnvironmentReceived?.Invoke(this, environment);
+            }
+            catch (Exception ex)
+            {
+                // A diagnostic capture must never take the session down with it.
+                Console.WriteLine($"[ENV] capture failed: {ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>Fetches the current region's environment through both environment capabilities and
+    /// returns it verbatim, alongside which capabilities the simulator actually advertised.
+    ///
+    /// Both are asked for, not just the first that answers. The point of Phase A is to learn what
+    /// this grid does -- knowing that a sim offers EEP *and* what its legacy Windlight fallback
+    /// looks like is the whole reason to run it, and asking twice costs two HTTP GETs once per
+    /// region.
+    ///
+    /// Note that LibreMetaverse's <c>RegionEnvironmentUpdated</c> event fires only as a result of
+    /// these calls -- <c>EnvironmentManager</c> registers no EventQueue callback (verified in its
+    /// source: the event is raised at exactly one place, inside the GET). So there is no push
+    /// notification to subscribe to, and an environment changed server-side after login will not
+    /// reach us until something re-polls. Anything that needs live updates has to poll or add the
+    /// EventQueue handler upstream.</summary>
+    public async Task<RegionEnvironmentCapture?> CaptureRegionEnvironmentAsync(CancellationToken cancellationToken = default)
+        => (await FetchRegionEnvironmentAsync(cancellationToken).ConfigureAwait(false)).Capture;
+
+    /// <summary>Does the actual fetching, and produces BOTH results from the one pair of requests:
+    /// the raw capture and the parsed model. Kept as one call because they come from the same two
+    /// HTTP GETs -- fetching twice to serve two consumers would double the cost for nothing, and
+    /// re-parsing the capture's notation text would be a lossy way to reach the same place.</summary>
+    private async Task<(RegionEnvironmentCapture? Capture, RegionEnvironmentEvent? Environment)>
+        FetchRegionEnvironmentAsync(CancellationToken cancellationToken = default)
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null) return (null, null);
+
+        bool hasExt = sim.Caps?.CapabilityURI("ExtEnvironment") != null;
+        bool hasLegacy = sim.Caps?.CapabilityURI("EnvironmentSettings") != null;
+
+        string? extLlsd = null;
+        string? legacyLlsd = null;
+        int dayLength = 0, dayOffset = 0;
+        bool isDefault = false;
+        string? error = null;
+
+        OSD? extSettings = null;
+        OSD? legacySettings = null;
+
+        try
+        {
+            if (hasExt)
+            {
+                var ext = await _client.Environment.GetRegionEnvironmentAsync(cancellationToken).ConfigureAwait(false);
+                if (ext?.Environment is { } data)
+                {
+                    dayLength = data.DayLength;
+                    dayOffset = data.DayOffset;
+                    isDefault = data.IsDefault;
+                    // Null DayCycle is not a failure: it means this scope inherits its parent's
+                    // environment. The cap flags above are what tell the two apart downstream.
+                    if (data.DayCycle != null)
+                    {
+                        extSettings = data.DayCycle;
+                        extLlsd = OSDParser.SerializeLLSDNotationFormatted(data.DayCycle);
+                    }
+                }
+            }
+
+            if (hasLegacy)
+            {
+                var legacy = await _client.Environment.GetLegacyEnvironmentAsync(cancellationToken).ConfigureAwait(false);
+                if (legacy?.Settings != null)
+                {
+                    legacySettings = legacy.Settings;
+                    legacyLlsd = OSDParser.SerializeLLSDNotationFormatted(legacy.Settings);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Recorded rather than thrown: "the sim has no environment" and "we failed to ask"
+            // look identical in the output otherwise, and telling them apart is the point.
+            error = ex.Message;
+        }
+
+        var capture = new RegionEnvironmentCapture(
+            sim.Handle,
+            sim.Name ?? string.Empty,
+            hasExt,
+            hasLegacy,
+            extLlsd,
+            legacyLlsd,
+            dayLength,
+            dayOffset,
+            isDefault,
+            error);
+
+        // EEP wins when both answered: it is the newer protocol and carries a full day cycle,
+        // while the legacy capability can only describe one fixed sky. Falling back rather than
+        // preferring one exclusively is what lets the same code path serve an OpenSim region that
+        // offers only the old capability.
+        var (settings, source) =
+            extSettings != null ? (extSettings, EnvironmentSource.ExtendedEnvironment) :
+            legacySettings != null ? (legacySettings, EnvironmentSource.LegacyWindlight) :
+            (null, EnvironmentSource.Default);
+
+        var cycle = settings != null
+            ? EnvironmentLlsdParser.ParseDayCycle(
+                settings,
+                dayLength > 0 ? dayLength : DayCycle.Default.DayLengthSeconds,
+                dayOffset)
+            : DayCycle.Default;
+
+        return (capture, new RegionEnvironmentEvent(sim.Handle, cycle, source));
     }
 
     private void OnChatFromSimulator(object? sender, ChatEventArgs e)
