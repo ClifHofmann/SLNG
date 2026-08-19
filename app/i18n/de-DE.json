@@ -15,6 +15,7 @@
       "exit": "Beenden",
       "view": "Ansicht",
       "toggle_hud": "HUD umschalten",
+      "performance_stats": "Leistungsanzeige (Strg+Umschalt+1)",
       "camera_controls": "Kamerasteuerung",
       "first_person": "Ego-Perspektive",
       "third_person": "Verfolgerkamera",
@@ -44,7 +45,24 @@
       "toolbar_heading": "Schaltflächen in der unteren Leiste:",
       "language_heading": "Sprache (Fenster müssen neu geöffnet werden):",
       "ui_scale_heading": "UI-Skalierung (Fenster & HUD):",
-      "ui_scale_hint": "Skaliert freischwebende Fenster und das HUD live. Gilt auch für neu geöffnete Fenster."
+      "ui_scale_hint": "Skaliert freischwebende Fenster und das HUD live. Gilt auch für neu geöffnete Fenster.",
+      "tab_graphics": "Grafik",
+      "graphics_heading": "Bildausgabe:",
+      "vsync": "V-Sync",
+      "vsync_off": "Aus",
+      "vsync_on": "An",
+      "vsync_adaptive": "Adaptiv",
+      "vsync_mailbox": "Mailbox",
+      "vsync_hint": "Mit V-Sync wartet ein Frame, der die Frist knapp verpasst, auf die nächste Bildwiederholung — ein Client knapp unter 60 FPS zeigt dann konstant 30. Zum Messen der echten Bildrate ausschalten.",
+      "fps_limit": "FPS-Grenze",
+      "fps_unlimited": "Unbegrenzt",
+      "draw_distance_heading": "Sichtweite:",
+      "quality_heading": "Qualität:",
+      "msaa": "Kantenglättung",
+      "off": "Aus",
+      "shadows": "Schatten",
+      "post_fx": "Nachbearbeitung",
+      "post_fx_hint": "SSAO, SSIL, Glühen und Volumennebel — dieselbe Gruppe wie die F2-Taste."
     }
   }
 }

@@ -18,6 +18,8 @@ public partial class PreferencesWindow : SLNGWindow
 {
     private VBoxContainer _tabList = null!;
     private Control _pageHost = null!;
+    /// <summary>Holds the ScrollContainer wrapping each page, not the page itself -- the wrapper is
+    /// what gets shown and hidden.</summary>
     private readonly List<(Button TabButton, Control Page)> _tabs = new();
 
     public override void _Ready()
@@ -26,8 +28,8 @@ public partial class PreferencesWindow : SLNGWindow
 
         Title = L10n.Tr("ui.preferences.title");
         Visible = false;
-        CustomMinimumSize = new Vector2(520, 360);
-        Size = new Vector2(520, 360);
+        CustomMinimumSize = new Vector2(560, 440);
+        Size = new Vector2(560, 440);
         Position = new Vector2(260, 160);
 
         OnCloseRequested = Hide;
@@ -84,9 +86,29 @@ public partial class PreferencesWindow : SLNGWindow
     {
         bool isFirst = _tabs.Count == 0;
 
-        page.Visible = isFirst;
-        page.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-        _pageHost.AddChild(page);
+        // Each page lives in its own ScrollContainer. Without one a page taller than the dialog
+        // does not clip -- it draws straight over the 3D world outside the window frame, which is
+        // what the Graphics tab did as soon as it grew past four controls. Scrolling also means a
+        // page can be extended later without anyone having to remember to resize this window.
+        var scroll = new ScrollContainer
+        {
+            Visible = isFirst,
+            // ShowNever, not Disabled. Disabled makes the ScrollContainer adopt its content's
+            // minimum WIDTH -- it cannot scroll horizontally, so the content has to fit -- and that
+            // minimum then propagates up through the margin, the row and the window's own box until
+            // the dialog's contents are wider than the dialog. A single long label was enough to do
+            // it. ShowNever keeps the horizontal bar hidden without making that demand.
+            HorizontalScrollMode = ScrollContainer.ScrollMode.ShowNever,
+            ClipContents = true,
+        };
+        scroll.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        _pageHost.AddChild(scroll);
+
+        // Inside a container, layout is the container's job -- an anchor preset on the child is
+        // ignored at best and fights it at worst. Width comes from the fill flag; height is left to
+        // the content, which is what gives the scroll bar something to scroll.
+        page.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        scroll.AddChild(page);
 
         var tabButton = new Button
         {
@@ -99,10 +121,10 @@ public partial class PreferencesWindow : SLNGWindow
             CustomMinimumSize = new Vector2(0, 32),
         };
         StyleTabButton(tabButton);
-        tabButton.Pressed += () => SelectTab(page);
+        tabButton.Pressed += () => SelectTab(scroll);
         _tabList.AddChild(tabButton);
 
-        _tabs.Add((tabButton, page));
+        _tabs.Add((tabButton, scroll));
     }
 
     private static void StyleTabButton(Button btn)

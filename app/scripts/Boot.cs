@@ -53,7 +53,6 @@ public partial class Boot : Control
     private VBoxContainer _vboxContainer = null!;
     
     private WorldEnvironment? _worldEnvironment;
-    private bool _postFxEnabled = true;
     private DirectionalLight3D? _sun;
     private SLNG.App.UI.InventoryPanel? _inventoryPanel;
     private Node3D? _sunGizmo;
@@ -65,6 +64,21 @@ public partial class Boot : Control
     // Created lazily on first use -- see the Developer menu wiring below. Dev tooling only,
     // costs nothing until someone actually takes a measurement.
     private RenderBaselineSampler? _renderBaselineSampler;
+    private SLNG.App.UI.StatsOverlay? _statsOverlay;
+    private SLNG.App.UI.GraphicsSettings _graphicsSettings = new();
+    private SLNG.App.UI.GraphicsPreferencesPage? _graphicsPage;
+
+    /// <summary>Threshold for the [AgentGap] log. Below the 0.8 s extrapolation cutoff, so a gap
+    /// shows up in the log slightly before it becomes visible as a stalled avatar.</summary>
+    private const float AgentGapWarnSeconds = 0.5f;
+    private bool _agentGapReported;
+
+    /// <summary>Peak of the current gap, so the log can report how long it ACTUALLY lasted rather
+    /// than the 0.5 s at which it was first noticed -- the first version reported the crossing value
+    /// and made every gap look like exactly 0.5 s.</summary>
+    private float _agentGapPeak;
+
+    private readonly MainThreadWatchdog _watchdog = new();
     private SLNG.App.UI.ButtonBar _buttonBar = null!;
     private SLNG.App.UI.PreferencesWindow _preferencesWindow = null!;
     private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
@@ -83,7 +97,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.3.116-alpha";
+    public const string AppVersion = "v0.6.0-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -134,6 +148,9 @@ public partial class Boot : Control
         // — a known engine behavior (godotengine/godot#104321), not an SLNG bug. Re-asserting
         // the title once more after the next frame renders lands after that internal logic and
         // sticks; the immediate call below just avoids a flash of the wrong title before then.
+        // Before anything that logs, so the level is already right for the first line.
+        Diagnostics.Initialize();
+
         DisplayServer.WindowSetTitle($"Puris Viewer {AppVersion}");
         RenderingServer.FramePostDraw += ReassertWindowTitleOnce;
 
@@ -253,6 +270,8 @@ public partial class Boot : Control
             LogMessage($"Camera mode changed to {mode}");
         };
 
+        _topMenu.OnToggleStats = () => _statsOverlay?.Toggle();
+
         _topMenu.OnToggleWireframe = () => {
             var vp = GetViewport();
             vp.DebugDraw = vp.DebugDraw == Viewport.DebugDrawEnum.Wireframe
@@ -280,6 +299,9 @@ public partial class Boot : Control
         };
 
         _topMenu.OnOpenPreferences = () => {
+            // Re-read on open: F2 and F3/F4 change these settings from outside the dialog, so
+            // controls built once at startup would otherwise show stale values.
+            _graphicsPage?.Refresh();
             _preferencesWindow.Visible = true;
         };
 
@@ -296,6 +318,12 @@ public partial class Boot : Control
         // flashing at 1.0x first (FEAT-UI-07).
         _uiSettings = new SLNG.App.UI.UiSettings();
         _uiSettings.Load();
+
+        // Same reason, one bug later: the Graphics tab builds its checkboxes and dropdowns from
+        // whatever the settings object holds AT CONSTRUCTION. Loading afterwards left the world
+        // correctly following the saved value while the controls still showed the defaults --
+        // shadows genuinely off after login, with the checkbox ticked.
+        _graphicsSettings.Load();
         
         // Apply saved language setting
         _localizationManager.CurrentLocale = _uiSettings.Language;
@@ -303,6 +331,15 @@ public partial class Boot : Control
         // Position/altitude readout in the top-right corner, overlaying the 3D view.
         // On its own CanvasLayer so it always draws on top of the world and the login/chat
         // Controls, regardless of scene-tree order.
+        // Drains the budgeted main-thread work queue every frame (FEAT-PERF-01). Added before the
+        // renderer and HUD exist so any work enqueued during startup is already being drained.
+        AddChild(new MainThreadWorkPump());
+
+        // Off-thread stall detector (FEAT-PERF-01). Started here rather than in _Ready so it covers
+        // the world-loading phase, which is when the client is reported to freeze. A release does not
+        // carry the extra thread.
+        if (Diagnostics.Enabled) _watchdog.Start();
+
         var hudLayer = new CanvasLayer { Name = "HudLayer", Layer = 10, Visible = false };
         AddChild(hudLayer);
 
@@ -331,6 +368,11 @@ public partial class Boot : Control
         cameraHud.Name = "CameraHUD";
         hudLayer.AddChild(cameraHud);
 
+        // Performance readout (FEAT-PERF-01). Lives on HudLayer so "Toggle HUD" hides it along
+        // with the rest of the overlay, but it starts hidden and is opened on demand.
+        _statsOverlay = new SLNG.App.UI.StatsOverlay();
+        hudLayer.AddChild(_statsOverlay);
+
         _inventoryPanel = new SLNG.App.UI.InventoryPanel { Name = "InventoryPanel" };
         hudLayer.AddChild(_inventoryPanel);
 
@@ -358,6 +400,11 @@ public partial class Boot : Control
         _chatWindow.OnSendLocalChat = (text) => _session?.SendChat(text);
 
         SetupButtonBarAndPreferences(hudLayer, cameraHud);
+
+        // Applied here rather than at Load time above, because SetupEnvironment has run by now and
+        // the sun and environment exist to receive it. The window-level settings (V-Sync, frame cap)
+        // are applied by the same call and must hold even if Preferences is never opened.
+        ApplyGraphicsSettings();
     }
 
     /// <summary>
@@ -448,6 +495,10 @@ public partial class Boot : Control
         var displayPage = new SLNG.App.UI.DisplayPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_display"), displayPage);
         displayPage.Initialize(_uiSettings, _localizationManager);
+
+        _graphicsPage = new SLNG.App.UI.GraphicsPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_graphics"), _graphicsPage);
+        _graphicsPage.Initialize(_graphicsSettings, ApplyGraphicsSettings);
 
         var networkPage = new SLNG.App.UI.NetworkPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);
@@ -606,13 +657,14 @@ public partial class Boot : Control
         // log alone. User reports Firestorm looks smooth on the same OSGrid region, which points at
         // a client-side stall rather than a real network/server characteristic. Remove once the
         // cause is confirmed.
-        if (delta > 0.2)
+        if (Diagnostics.Enabled)
         {
-            GD.Print($"[FrameHitch] {delta:0.###}s since last _Process frame");
+            _watchdog.Beat();
+            if (delta > 0.2) GD.Print($"[FrameHitch] {delta:0.###}s since last _Process frame");
         }
 
         // Drain queued world events on the main thread — the only place the world mutates.
-        _worldSimulation?.Pump();
+        using (MainThreadPhase.Enter("world-drain")) _worldSimulation?.Pump();
 
         // Drain queued llDialog popups (M5-4) on the main thread, same reasoning as
         // WorldSimulation.Pump above — ScriptDialogReceived fires on a LibreMetaverse network thread.
@@ -621,7 +673,8 @@ public partial class Boot : Control
         // Dead-reckon avatar positions from their last known velocity between network updates
         // (mirrors the real viewer's interpolateLinearMotion) — must run after Pump() so this
         // frame's fresh Position/Velocity/TimeSinceUpdate are already applied before extrapolating.
-        _worldSimulation?.ExtrapolateMovement((float)delta);
+        using (MainThreadPhase.Enter("extrapolate")) _worldSimulation?.ExtrapolateMovement((float)delta);
+        if (Diagnostics.Enabled) ReportAgentPacketGaps();
 
         // Refresh the position HUD a few times a second (the agent lookup scans entities).
         _hudAccum += delta;
@@ -632,15 +685,86 @@ public partial class Boot : Control
         }
     }
 
+    /// <summary>
+    /// Logs how long the sim has left the local agent without a position packet.
+    ///
+    /// Walking is server-authoritative -- AvatarController only sends SetMovement at 10 Hz and the
+    /// position comes back from the sim -- so "the avatar stops for about a second while the client
+    /// keeps rendering at 60 fps" cannot be a frame-rate problem, and the numbers agree: zero
+    /// [FrameHitch] lines (nothing over 0.2 s) with hitches=0 in the same session. What it looks
+    /// like instead is WorldSimulation's deliberate extrapolation cutoff: dead reckoning stops at
+    /// ExtrapolationMaxSeconds (0.8 s) and the avatar freezes in place rather than being flung along
+    /// a stale heading, which is the better failure mode but is exactly what a stalled walk feels
+    /// like. A ~1.4 s gap was already recorded by the 2026-07-23 [AvatarMove] investigation.
+    ///
+    /// Reports the work-queue depth alongside it, because the obvious suspect for a starved agent
+    /// packet is the client's own asset traffic while walking into new territory -- and if the gap
+    /// turns out to be independent of local load, that points at the sim or the link instead.
+    /// </summary>
+    private void ReportAgentPacketGaps()
+    {
+        if (_world == null) return;
+
+        var t = GetLocalAgentTransform();
+        if (t == null) { _agentGapReported = false; return; }
+
+        // Edge-triggered: one line per gap, not one per frame for as long as it lasts.
+        if (t.TimeSinceUpdate >= AgentGapWarnSeconds)
+        {
+            _agentGapReported = true;
+            if (t.TimeSinceUpdate > _agentGapPeak) _agentGapPeak = t.TimeSinceUpdate;
+        }
+        else if (_agentGapReported)
+        {
+            // Reported when the gap ENDS, so the figure is the gap's real length. Reporting at the
+            // moment it crossed the threshold made every gap read as 0.50-0.54 s regardless of how
+            // long it went on -- which mattered, because whether it exceeded the 0.80 s
+            // extrapolation cutoff is the difference between a smooth walk and a visible stall.
+            GD.Print($"[AgentGap] no position packet for {_agentGapPeak:0.00}s " +
+                      $"({(_agentGapPeak > 0.8f ? "OVER" : "within")} the 0.80s extrapolation cutoff) " +
+                      $"queue={MainThreadWorkQueue.Depth}");
+            _agentGapReported = false;
+            _agentGapPeak = 0;
+        }
+    }
+
+    /// <summary>Pushes the saved graphics options into the live scene. Passed to
+    /// GraphicsPreferencesPage as a callback so the page never has to reach for the viewport, the
+    /// environment or the sun itself -- it only knows the settings object.</summary>
+    private void ApplyGraphicsSettings()
+        => _graphicsSettings.Apply(GetViewport(), _worldEnvironment, _sun);
+
+    /// <summary>
+    /// The local agent's transform, with the entity cached.
+    ///
+    /// Finding it means scanning every entity for the one whose AvatarComponent is the local agent,
+    /// and this runs once per frame -- on a 24,000-entity region that is the same class of cost that
+    /// [PhaseCost] caught in ExtrapolateMovement. The agent entity is stable for the whole session,
+    /// so it is looked up once and re-resolved only if it ever goes away (a disconnect replaces the
+    /// world).
+    /// </summary>
+    private TransformComponent? GetLocalAgentTransform()
+    {
+        if (_world == null) return null;
+
+        if (_localAgent == null || _world.GetEntity(_localAgent.Id) == null)
+        {
+            _localAgent = _world.GetAllEntities()
+                .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+        }
+
+        return _localAgent?.GetComponent<TransformComponent>();
+    }
+
+    private SLNG.Core.ECS.Entity? _localAgent;
+
     private void UpdateHud()
     {
         if (_world == null || _session == null) { return; }
 
         string region = string.IsNullOrEmpty(_session.CurrentRegionName) ? "(connecting)" : _session.CurrentRegionName;
 
-        var agent = _world.GetAllEntities()
-            .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
-        var t = agent?.GetComponent<TransformComponent>();
+        var t = GetLocalAgentTransform();
         if (t == null)
         {
             _hudLabel.Text = $"{region}\nawaiting position…   ·   Draw {RenderConfig.DrawDistance:0} m";
@@ -752,29 +876,38 @@ public partial class Boot : Control
         {
             if (keyEvent.Keycode == Key.F2)
             {
-                _postFxEnabled = !_postFxEnabled;
-                if (_worldEnvironment?.Environment != null)
-                {
-                    _worldEnvironment.Environment.SsaoEnabled = _postFxEnabled;
-                    _worldEnvironment.Environment.SsilEnabled = _postFxEnabled;
-                    _worldEnvironment.Environment.GlowEnabled = _postFxEnabled;
-                    _worldEnvironment.Environment.VolumetricFogEnabled = _postFxEnabled;
-                    LogMessage($"Post-FX {(_postFxEnabled ? "enabled" : "disabled")}");
-                }
+                // Routed through GraphicsSettings rather than toggling the environment directly, so
+                // the shortcut and the Graphics tab's checkbox can never end up disagreeing about
+                // the same four flags -- and so the state survives a restart like every other
+                // graphics option does.
+                _graphicsSettings.SetPostFx(!_graphicsSettings.PostFx);
+                ApplyGraphicsSettings();
+                LogMessage($"Post-FX {(_graphicsSettings.PostFx ? "enabled" : "disabled")}");
             }
             else if (keyEvent.Keycode == Key.F3)
             {
-                RenderConfig.DrawDistance = Mathf.Max(16f, RenderConfig.DrawDistance - 16f);
+                // Through GraphicsSettings for the same reason as F2 above: the Graphics tab's
+                // slider reads from it, and a key that wrote RenderConfig directly would leave the
+                // slider showing a stale number and overwrite the change on the next apply.
+                _graphicsSettings.SetDrawDistance(Mathf.Max(32f, _graphicsSettings.DrawDistance - 16f));
+                ApplyGraphicsSettings();
                 LogMessage($"Draw distance: {RenderConfig.DrawDistance:0} m");
             }
             else if (keyEvent.Keycode == Key.F4)
             {
-                RenderConfig.DrawDistance = Mathf.Min(512f, RenderConfig.DrawDistance + 16f);
+                _graphicsSettings.SetDrawDistance(Mathf.Min(512f, _graphicsSettings.DrawDistance + 16f));
+                ApplyGraphicsSettings();
                 LogMessage($"Draw distance: {RenderConfig.DrawDistance:0} m");
             }
             else if (keyEvent.Keycode == Key.F5)
             {
                 ToggleSunGizmo();
+            }
+            else if (keyEvent.Keycode == Key.Key1 && keyEvent.CtrlPressed && keyEvent.ShiftPressed)
+            {
+                // Ctrl+Shift+1 is the statistics shortcut in SL/Firestorm, so muscle memory carries
+                // over. F-keys are already taken here by post-FX and the draw-distance nudges.
+                _statsOverlay?.Toggle();
             }
             else if (keyEvent.Keycode == Key.I && keyEvent.CtrlPressed)
             {

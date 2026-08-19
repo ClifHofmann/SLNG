@@ -77,6 +77,23 @@ public partial class ObjectRenderer : Node3D
     // face's texture via SetSurfaceOverrideMaterial.
     private readonly Dictionary<Guid, int[]> _meshFaceIndices = new();
 
+    /// <summary>Trimesh collision shapes, cached against the SAME key as the shared mesh they were
+    /// derived from. Measured: CreateTrimeshShape ran 1830 times for only 701 mesh builds, i.e. two
+    /// thirds of the calls rebuilt a shape that was byte-for-byte identical to one already made --
+    /// the mesh itself was correctly served from the shared cache, but the shape hanging off it was
+    /// thrown away and recomputed anyway. It was also 15x more expensive than building the mesh:
+    /// 11.21 s against 0.74 s, 6.12 ms per call against 1.06 ms.
+    ///
+    /// Sharing one Shape3D across many bodies is normal in Godot -- a shape is immutable geometry and
+    /// the owning CollisionShape3D supplies its own transform and scale, exactly as the shared
+    /// ArrayMesh above already does.
+    ///
+    /// Same lifetime caveat as _meshFaceIndices, which this deliberately mirrors: entries outlive
+    /// GpuCache eviction of the mesh. Bounded by the number of DISTINCT shapes seen, not by object
+    /// count, so it is a slow leak rather than an unbounded one -- worth fixing with the same sweep
+    /// that fixes _meshFaceIndices, not before.</summary>
+    private readonly Dictionary<Guid, ConcavePolygonShape3D> _meshCollisionShapes = new();
+
     // glTF metallicRoughness maps that have been reported as "now actually sampled" (see the
     // ORM branch in BuildFaceMaterialAsync). Main-thread only.
     private readonly HashSet<Guid> _ormMapsSeen = new();
@@ -105,7 +122,9 @@ public partial class ObjectRenderer : Node3D
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
-        GD.Print($"[ObjectRenderer] BUILD MARKER: {BuildMarker}");
+        // Build marker only under --diag: it exists to prove which assembly is actually loaded
+        // when a fix appears not to have taken (see the stale-assembly note in the repo docs).
+        if (Diagnostics.Enabled) GD.Print($"[ObjectRenderer] BUILD MARKER: {BuildMarker}");
         // Pull the shader family in (and trigger its compile) here on the main thread, rather
         // than letting the first worker-thread material build do it mid-frame.
         PrimShaderFamily.Preload();
@@ -130,9 +149,20 @@ public partial class ObjectRenderer : Node3D
         CallDeferred(nameof(HighlightVisual), e.Entity.Id.ToString(), false);
     }
 
+    // These fire on LibreMetaverse's network threads. They used to marshal straight to the main
+    // thread with CallDeferred, which Godot flushes in full within the same frame -- so a burst of
+    // ObjectUpdates from walking into a dense parcel built every visual in one frame. See
+    // MainThreadWorkQueue for the measurements, including why budgeting alone was not enough.
+    //
+    // Removal is NOT queued: it stays on CallDeferred so an object that leaves the world disappears
+    // at once. Deleting a node is cheap, and letting a removal sit behind a backlog of creations
+    // would leave deleted objects standing in the scene.
+
     private void OnEntityAdded(object? sender, EntityEventArgs e)
     {
-        CallDeferred(nameof(CreateVisual), e.Entity.Id.ToString());
+        string id = e.Entity.Id.ToString();
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
+                                    () => CreateVisual(id), $"create:{id}", "visual.create");
     }
 
     private void OnEntityRemoved(object? sender, EntityEventArgs e)
@@ -144,7 +174,14 @@ public partial class ObjectRenderer : Node3D
     {
         if (e.Component is PrimitiveComponent || e.Component is TransformComponent)
         {
-            CallDeferred(nameof(UpdateVisual), e.Entity.Id.ToString());
+            // Coalesced per entity: UpdateVisual re-reads the entity's CURRENT state when it runs,
+            // so collapsing a burst of updates into one loses nothing. This matters most for
+            // physically moving objects, which emit a TerseObjectUpdate several times a second --
+            // without coalescing their updates would outpace any budget and the visuals would drift
+            // ever further behind the world.
+            string id = e.Entity.Id.ToString();
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
+                                        () => UpdateVisual(id), $"update:{id}", "visual.update");
         }
         else if (e.Component is AttachmentComponent)
         {
@@ -153,29 +190,70 @@ public partial class ObjectRenderer : Node3D
         }
     }
 
-    private double _cullAccum = 0;
+    /// <summary>How long one complete pass over every visual may take. Unchanged from the 4 Hz tick
+    /// this replaced -- an object still reacts to the draw distance within a quarter second.</summary>
+    private const double CullSweepSeconds = 0.25;
+
+    // The sweep walks a SNAPSHOT of the keys rather than the live dictionary, because it now spans
+    // many frames and objects are created and destroyed throughout. Ids that vanish mid-sweep are
+    // skipped by the TryGetValue below; ids that appear are picked up by the next snapshot.
+    private readonly List<Guid> _cullOrder = new();
+    private int _cullCursor;
+    private double _cullCarry;
 
     public override void _Process(double delta)
     {
-        // Draw-distance management, throttled to ~4 Hz. Beyond the radius an object is hidden;
-        // beyond the radius + hysteresis its GPU resources (mesh + texture refs) are released
-        // so VRAM stays bounded to the nearby working set — without this, every object ever
-        // seen keeps its texture pinned and memory grows without bound. Re-enters reload when
-        // it comes back into range.
-        _cullAccum += delta;
-        if (_cullAccum < 0.25) return;
-        _cullAccum = 0;
-
+        // Draw-distance management: beyond the radius an object is hidden; beyond the radius +
+        // hysteresis its GPU resources (mesh + texture refs) are released so VRAM stays bounded to
+        // the nearby working set — without this, every object ever seen keeps its texture pinned and
+        // memory grows without bound. Re-enters reload when it comes back into range.
+        //
+        // Spread across frames rather than done in one 4 Hz burst. Measured as a single burst it cost
+        // 14.24 ms on average and peaked at 350.6 ms -- on its own more than a whole 60 FPS frame,
+        // four times a second, which matched the ~3.4 hitches/s that survived every earlier fix while
+        // the work queue sat empty. The total (~57 ms per second) is affordable; it was purely the
+        // burstiness that broke the frame, and unlike the object queue this really is a distribution
+        // problem, so spreading it is the whole fix rather than half of one.
+        //
+        // The cost is inherent to the walk being O(every visual the client has ever created) -- 24k
+        // on a busy region against the few thousand on screen -- and every entry touches Godot node
+        // properties, which are interop calls, not field reads. A spatial index would attack the
+        // count itself; this attacks the spike, which is what is actually hurting.
         if (_world == null) return;
         if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
+        _agentPos = agentPos;
+        _agentPosKnown = true;
+
+        if (_cullCursor >= _cullOrder.Count)
+        {
+            _cullOrder.Clear();
+            _cullOrder.AddRange(_visuals.Keys);
+            _cullCursor = 0;
+            _cullCarry = 0;
+        }
+        if (_cullOrder.Count == 0) return;
+
+        // Entries to visit this frame so one full pass still completes in CullSweepSeconds. The carry
+        // keeps the fractional remainder, so a small set does not stall on truncation to zero.
+        _cullCarry += _cullOrder.Count * delta / CullSweepSeconds;
+        int budget = (int)_cullCarry;
+        _cullCarry -= budget;
+        if (budget <= 0) return;
 
         float draw = RenderConfig.DrawDistance;
         float showSq = draw * draw;
         float hideSq = (draw * 1.15f) * (draw * 1.15f);  // hide a bit past the edge (visibility hysteresis)
         float releaseSq = (draw * 1.25f) * (draw * 1.25f); // only free GPU memory well beyond the edge
 
-        foreach (var (id, state) in _visuals)
+        using var _phase = MainThreadPhase.Enter("cull");
+        double texLodMs = 0;
+        MainThreadWorkQueue.Measure("cull.scan", () =>
         {
+        int end = Math.Min(_cullCursor + budget, _cullOrder.Count);
+        for (int ci = _cullCursor; ci < end; ci++)
+        {
+            var id = _cullOrder[ci];
+            if (!_visuals.TryGetValue(id, out var state)) continue; // removed since the snapshot
             if (!IsInstanceValid(state.MeshInstance)) continue;
 
             float dSq = state.MeshInstance.Position.DistanceSquaredTo(agentPos);
@@ -185,10 +263,32 @@ public partial class ObjectRenderer : Node3D
             if (dSq <= showSq && !state.MeshInstance.Visible) state.MeshInstance.Visible = true;
             else if (dSq > hideSq && state.MeshInstance.Visible) state.MeshInstance.Visible = false;
 
+            // Repair pass for the deferral above: an object that was far away when its mesh landed got
+            // its shape queued in the background, and by the time the avatar walks over to it the
+            // shape may well be built (another object shares the mesh, or the queue simply caught
+            // up). Claiming it here costs a dictionary lookup and closes the window in which you can
+            // walk onto something that is drawn but not yet solid.
+            // Same extent-aware reasoning as the urgent path: compare against the object's bounds,
+            // not its origin, or a large object is never repaired until its centre comes into range.
+            float collisionReach = RenderConfig.CollisionUrgentDistance + BoundingRadius(state.MeshInstance);
+            if (dSq <= collisionReach * collisionReach && state.CollisionShape.Shape == null
+                && state.LoadedMeshKey != Guid.Empty
+                && _meshCollisionShapes.TryGetValue(state.LoadedMeshKey, out var readyShape))
+            {
+                state.CollisionShape.Shape = readyShape;
+            }
+
             if (dSq <= showSq && state.ResourcesReleased)
             {
                 state.ResourcesReleased = false;
-                UpdateVisual(id.ToString()); // reload mesh + material now that it's near again
+                // Queued, not called inline. Running it here put a full mesh+material reload inside
+                // the sweep, and the sweep is walked in slices sized for cheap distance maths -- one
+                // slice that happened to contain several returning objects took 346.9 ms, which is
+                // what pushed cull.scan's average from 0.78 ms back up to 3.22 ms. Coalesced on the
+                // same key as the ordinary update path, so a re-entering object cannot queue twice.
+                string reloadId = id.ToString();
+                MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
+                                            () => UpdateVisual(reloadId), $"update:{reloadId}", "visual.update");
             }
             else if (dSq > releaseSq && !state.ResourcesReleased)
             {
@@ -203,8 +303,10 @@ public partial class ObjectRenderer : Node3D
                 // walking up to something left it permanently soft. GpuCache decides whether that
                 // actually warrants a sharper re-upload (it ignores anything already at full
                 // resolution, and requires a full discard level of headroom), so this is a cheap
-                // no-op for the overwhelming majority of objects. Runs on the existing 4 Hz cull
-                // tick rather than per frame, which is ample for approach speed.
+                // no-op for the overwhelming majority of objects. Rides the same spread sweep as
+                // the rest of this loop, so each object is re-offered about four times a second --
+                // ample for approach speed, and no longer all in the same frame.
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 var (screenPixelArea, priority) = ComputeTextureLod(state.MeshInstance);
                 if (screenPixelArea > 0f)
                 {
@@ -215,8 +317,16 @@ public partial class ObjectRenderer : Node3D
                             screenPixelArea: screenPixelArea, priority: priority);
                     }
                 }
+                texLodMs += (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0
+                            / System.Diagnostics.Stopwatch.Frequency;
             }
         }
+        _cullCursor = end;
+        });
+
+        // Reported apart from the scan so the two possible culprits are separable: walking the
+        // dictionary and doing distance maths, versus the texture re-offer inside it.
+        MainThreadWorkQueue.RecordExternal("cull.texlod", texLodMs);
     }
 
     /// <summary>Drops an out-of-range object's GPU resources so VRAM can be reclaimed. The
@@ -538,13 +648,13 @@ public partial class ObjectRenderer : Node3D
         var mesh = await _assetService.GetMeshAsync(meshId);
         if (mesh == null || mesh.Submeshes.Count == 0) return;
 
-        Godot.Callable.From(() =>
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (!IsInstanceValid(state.MeshInstance)) return;
             if (state.LoadedMeshId != meshId) return; // shape/asset changed while loading
 
             AssignSharedMesh(state, meshId, mesh, flipV: true);
-        }).CallDeferred();
+        }, label: "mesh.apply");
     }
 
     private async System.Threading.Tasks.Task LoadAndApplySculptMeshAsync(VisualState state, Guid sculptId, byte sculptType, byte profileCurve)
@@ -553,7 +663,7 @@ public partial class ObjectRenderer : Node3D
 
         var mesh = await _assetService.GetSculptMeshAsync(sculptId, sculptType);
 
-        Godot.Callable.From(() =>
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (!IsInstanceValid(state.MeshInstance)) return;
             if (state.LoadedMeshId != sculptId) return; // changed while meshing
@@ -609,7 +719,7 @@ public partial class ObjectRenderer : Node3D
                     state.CollisionShape.Shape = new Godot.BoxShape3D { Size = new Godot.Vector3(1, 1, 1) };
                 }
             }
-        }).CallDeferred();
+        }, label: "sculpt.apply");
     }
 
     /// <summary>
@@ -649,7 +759,7 @@ public partial class ObjectRenderer : Node3D
 
         var mesh = await _assetService.GetPrimMeshAsync(shape, lod);
 
-        Godot.Callable.From(() =>
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (!IsInstanceValid(state.MeshInstance)) return;
             // Drop stale results: the shape may have changed again while we were meshing.
@@ -686,7 +796,7 @@ public partial class ObjectRenderer : Node3D
                     state.CollisionShape.Shape = new Godot.BoxShape3D { Size = new Godot.Vector3(1, 1, 1) };
                 }
             }
-        }).CallDeferred();
+        }, label: "primmesh.apply");
     }
 
     /// <summary>Builds and applies a material per mesh surface from the prim's per-face textures
@@ -777,23 +887,26 @@ public partial class ObjectRenderer : Node3D
             int surf = result.Surface;
             var material = result.Material;
 
-            Godot.Callable.From(() =>
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
                 if (!IsInstanceValid(state.MeshInstance) || state.MeshInstance.Mesh == null) return;
                 if (surf >= state.MeshInstance.Mesh.GetSurfaceCount()) return;
                 state.MeshInstance.MaterialOverride = null; // per-surface overrides take effect
                 state.MeshInstance.SetSurfaceOverrideMaterial(surf, material);
-            }).CallDeferred();
+            }, label: "material.surface");
         }
 
         ApplyOnMainThread(state, null, allUsed.Distinct().ToList());
     }
 
     /// <summary>Marshals texture ref-count bookkeeping (and an optional action) to the main thread,
-    /// releasing refs if the node was freed mid-load.</summary>
+    /// releasing refs if the node was freed mid-load. Budgeted through the same lane as the surface
+    /// applies above rather than left on CallDeferred, so the two keep their relative order -- a
+    /// single queue is FIFO, whereas a mix of queued and deferred work would let the bookkeeping
+    /// overtake the apply it belongs to.</summary>
     private void ApplyOnMainThread(VisualState state, Action? action, List<Guid> usedTextures)
     {
-        Godot.Callable.From(() =>
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (IsInstanceValid(state.MeshInstance))
             {
@@ -804,7 +917,7 @@ public partial class ObjectRenderer : Node3D
             {
                 foreach (var id in usedTextures) _gpuCache.ReleaseRef(id);
             }
-        }).CallDeferred();
+        }, label: "material.refcount");
     }
 
     /// <summary>Builds one face's material (classic texture or PBR) and returns the texture ids
@@ -1352,9 +1465,20 @@ public partial class ObjectRenderer : Node3D
         }
         else
         {
-            mesh = BuildArrayMesh(data, flipV, out var faceIndices);
-            _meshFaceIndices[key] = faceIndices;
-            _gpuCache?.Put(key, mesh, EstimateMeshSize(data), initialRefCount: 1);
+            // Measured separately from the collision shape below: together they are "mesh.apply",
+            // which the cost table showed averaging 10.8 ms and peaking at 188 ms -- bigger than a
+            // whole 60 FPS frame, so no per-frame budget can hide it. Which of the two halves is
+            // responsible decides the fix, and they need very different ones.
+            ArrayMesh? built = null;
+            int[]? faceIndices = null;
+            MainThreadWorkQueue.Measure("mesh.build", () =>
+            {
+                built = BuildArrayMesh(data, flipV, out var fi);
+                faceIndices = fi;
+            });
+            mesh = built;
+            _meshFaceIndices[key] = faceIndices!;
+            if (mesh != null) _gpuCache?.Put(key, mesh, EstimateMeshSize(data), initialRefCount: 1);
         }
 
         state.MeshInstance.Mesh = mesh;
@@ -1362,7 +1486,18 @@ public partial class ObjectRenderer : Node3D
 
         if (mesh != null)
         {
-            state.CollisionShape.Shape = mesh.CreateTrimeshShape();
+            // CreateTrimeshShape copies every face into the physics server and builds a BVH over
+            // them. At 6.12 ms per call it was 94% of all mesh work and the single reason the frame
+            // budget could not help: the pump has to run at least one item per frame, so a 6 ms floor
+            // is a 6 ms floor. Two changes, in order of effect:
+            //
+            // 1. Serve it from the cache when this shape has been built before. That alone removes
+            //    two thirds of the calls, and a cache hit is free rather than merely cheaper.
+            // 2. Build a genuinely new one in the Refine lane instead of here. Collision is not
+            //    needed for the object to be VISIBLE -- only to walk into it or click it -- so making
+            //    the user wait for it before the object appears gets the priority backwards. The
+            //    object shows up now and becomes solid a few frames later.
+            EnsureCollisionShape(state, key, data);
         }
         else
         {
@@ -1492,6 +1627,193 @@ public partial class ObjectRenderer : Node3D
             if (state.MeshInstance.GetSurfaceOverrideMaterial(i) is ShaderMaterial sm)
                 sm.SetShaderParameter(PrimShaderFamily.PrimScale, v);
         }
+    }
+
+    /// <summary>
+    /// Builds the collision triangle soup from the SAME decoded CPU data the visual mesh was built
+    /// from, instead of calling <c>ArrayMesh.CreateTrimeshShape()</c>.
+    ///
+    /// Touches no engine object, so it is safe to call from a worker thread -- which is the point:
+    /// this half of the old mesh.collision cost can leave the main thread entirely.
+    ///
+    /// That method looks free but is not: it calls the mesh's get_faces(), which pulls every vertex
+    /// array back OUT of the rendering server before it can build anything. Measured at 7.86 ms per
+    /// call and 9.87 s per session it was, by a wide margin, the most expensive thing the main thread
+    /// did -- to reconstruct data we already had sitting in MeshData the whole time.
+    ///
+    /// Winding MUST match BuildArrayMesh, and an earlier version of this got that wrong. The comment
+    /// then claimed a concave shape is "an unordered triangle soup with no front or back", so the
+    /// swap could be skipped. That is false: ConcavePolygonShape3D has BackfaceCollision, it defaults
+    /// to false, and with it off a ray only registers a hit on a triangle's FRONT face. Leaving SL's
+    /// CCW winding in place therefore built a shape whose surfaces all faced away from the world --
+    /// physically present, correctly positioned, and invisible to the avatar's downward ground ray,
+    /// which is exactly "the collision shapes exist but collision does not work".
+    ///
+    /// The old CreateTrimeshShape() never hit this because it read its faces back out of the
+    /// ArrayMesh, which had already been built with the swap applied. Reading the same source data
+    /// directly means applying it here instead.
+    ///
+    /// The SL-to-Godot axis change (Z-up to Y-up) applies as well -- that one is the coordinate
+    /// system rather than a rendering convention.
+    /// </summary>
+    private static Godot.Vector3[] BuildTrimeshFaces(MeshData mesh)
+    {
+        int triangles = 0;
+        foreach (var sub in mesh.Submeshes) triangles += sub.Indices.Length / 3;
+
+        var faces = new Godot.Vector3[triangles * 3];
+        int w = 0;
+
+        foreach (var sub in mesh.Submeshes)
+        {
+            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
+            {
+                int i0 = sub.Indices[t], i1 = sub.Indices[t + 1], i2 = sub.Indices[t + 2];
+                // A malformed asset can index past its own vertex array; drop that triangle rather
+                // than throwing, which would abort the whole shape and leave the object non-solid.
+                if (i0 >= sub.Positions.Length || i1 >= sub.Positions.Length || i2 >= sub.Positions.Length)
+                    continue;
+
+                // Same last-two swap as BuildArrayMesh: i0, i2, i1.
+                var a = sub.Positions[i0];
+                var b = sub.Positions[i2];
+                var c = sub.Positions[i1];
+                faces[w++] = new Godot.Vector3(a.X, a.Z, -a.Y);
+                faces[w++] = new Godot.Vector3(b.X, b.Z, -b.Y);
+                faces[w++] = new Godot.Vector3(c.X, c.Z, -c.Y);
+            }
+        }
+
+        // Dropped triangles leave a tail of zeroed entries, which would collide as degenerate
+        // triangles at the origin. Trim to what was actually written.
+        if (w != faces.Length) System.Array.Resize(ref faces, w);
+
+        return faces;
+    }
+
+    // Agent position as of the last frame, cached because TryGetLocalAgentGodotPos scans every
+    // entity in the world to find the local agent. Calling it per mesh assign would be an O(objects
+    // x entities) sweep -- roughly 1,700 x 24,000 on the region this was measured on -- to answer a
+    // question a single distance test settles. One frame of staleness is nothing against a 24 m
+    // radius; the avatar cannot cross it in 16 ms.
+    private Godot.Vector3 _agentPos;
+    private bool _agentPosKnown;
+
+    /// <summary>Half the diagonal of the object's world-space bounds, i.e. the radius of a sphere that
+    /// certainly contains it. Cheap and deliberately generous -- overestimating only means a shape is
+    /// built a little earlier than strictly necessary.</summary>
+    private static float BoundingRadius(MeshInstance3D instance)
+    {
+        if (instance.Mesh == null) return 0f;
+        var size = instance.GetAabb().Size * instance.Scale;
+        return size.Length() * 0.5f;
+    }
+
+    /// <summary>Distance test against the local agent, false until the agent is in the world -- which
+    /// correctly makes nothing urgent during login, since there is nobody yet to fall.</summary>
+    private bool IsNearLocalAgent(Godot.Vector3 godotPos, float radius)
+        => _agentPosKnown && godotPos.DistanceSquaredTo(_agentPos) <= radius * radius;
+
+    /// <summary>Objects waiting for a collision shape that is currently being built on a worker.
+    /// Keyed by mesh key, so the many objects that share one mesh cause exactly one build and all of
+    /// them get the result. Main-thread only.</summary>
+    private readonly Dictionary<Guid, List<VisualState>> _collisionWaiters = new();
+
+    /// <summary>
+    /// Gives <paramref name="state"/> its trimesh collision shape, building one only if this mesh has
+    /// never produced one.
+    ///
+    /// The build is split across threads by cost. Turning MeshData into the triangle-soup array is
+    /// plain arithmetic over plain arrays that never touches an engine object, so it runs on a worker.
+    /// Handing that array to ConcavePolygonShape3D goes into the physics server, which builds its
+    /// acceleration structure, and that has to stay on the main thread.
+    ///
+    /// Collision is deliberately absent until the build lands. It is not needed for the object to be
+    /// VISIBLE -- only to walk into it or click it -- so blocking its appearance on it would get the
+    /// priority backwards.
+    /// </summary>
+    private void EnsureCollisionShape(VisualState state, Guid key, MeshData data)
+    {
+        if (_meshCollisionShapes.TryGetValue(key, out var cached))
+        {
+            state.CollisionShape.Shape = cached;
+            return;
+        }
+
+        state.CollisionShape.Shape = null;
+
+        // Close enough to stand on: build it here and now. Waiting even a few frames for this one is
+        // what makes the avatar fall through a prim it just walked onto.
+        //
+        // Measured against the object's EXTENT, not its origin. Testing the origin alone is why
+        // large objects kept falling through after this path was added: a platform, a bridge or a
+        // big linkset can have its origin tens of metres from where you are standing on its surface,
+        // so the object read as "far away", took the background path, and was not solid yet when you
+        // walked onto it. Adding the bounding radius makes the test conservative -- it can only ever
+        // decide to build a shape sooner, never later.
+        if (IsNearLocalAgent(state.MeshInstance.Position,
+                             RenderConfig.CollisionUrgentDistance + BoundingRadius(state.MeshInstance)))
+        {
+            MainThreadWorkQueue.Measure("collision.urgent", () =>
+            {
+                var urgent = new ConcavePolygonShape3D { Data = BuildTrimeshFaces(data) };
+                _meshCollisionShapes[key] = urgent;
+                state.CollisionShape.Shape = urgent;
+            });
+            return;
+        }
+
+        // A build for this mesh is already running: join it rather than starting a second one.
+        if (_collisionWaiters.TryGetValue(key, out var waiters))
+        {
+            waiters.Add(state);
+            return;
+        }
+        _collisionWaiters[key] = new List<VisualState> { state };
+
+        _ = System.Threading.Tasks.Task.Run(() =>
+        {
+            Godot.Vector3[] faces;
+            try
+            {
+                faces = BuildTrimeshFaces(data);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[ObjectRenderer] collision faces for {key} failed: {ex.Message}");
+                // Still has to come back to the main thread, or every object waiting on this mesh
+                // would sit in _collisionWaiters forever and never become solid.
+                faces = Array.Empty<Godot.Vector3>();
+            }
+
+            // Visual lane, not Refine. Refine is drained only after Visual is exhausted or the budget
+            // is spent, so under a backlog it receives exactly the one item per frame the pump
+            // guarantees against starvation -- with thousands of items queued that is minutes of
+            // delay, and the user experiences it as collision simply not working. Now that the GPU
+            // readback is gone the shape costs ~2.6 ms, which the Visual lane can carry; being late
+            // is worse than being slightly expensive when the consequence is falling through the
+            // world.
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+            {
+                if (!_meshCollisionShapes.TryGetValue(key, out var shape))
+                {
+                    shape = new ConcavePolygonShape3D { Data = faces };
+                    _meshCollisionShapes[key] = shape;
+                }
+
+                if (_collisionWaiters.Remove(key, out var pending))
+                {
+                    foreach (var w in pending)
+                    {
+                        // Skip anything that was freed, re-shaped, or released out of range while the
+                        // build was in flight.
+                        if (!IsInstanceValid(w.CollisionShape)) continue;
+                        if (w.LoadedMeshKey != key) continue;
+                        w.CollisionShape.Shape = shape;
+                    }
+                }
+            }, label: "collision.shape");
+        });
     }
 
     private static ArrayMesh BuildArrayMesh(MeshData mesh, bool flipV, out int[] faceIndices)

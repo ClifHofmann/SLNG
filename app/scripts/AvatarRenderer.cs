@@ -1933,7 +1933,7 @@ public partial class AvatarRenderer : Node3D
             // pelvisScaleZ). It is a real, separate hazard worth guarding regardless.
             if (boneDef != null && boneDef.ParentName == null)
             {
-                GD.Print($"[JointOverride] mesh {meshId}: SKIPPED root-joint \"{boneName}\" override " +
+                if (Diagnostics.Enabled) GD.Print($"[JointOverride] mesh {meshId}: SKIPPED root-joint \"{boneName}\" override " +
                          $"(would-be shift {delta:0.###} m, raw pos {slPos.X:0.###},{slPos.Y:0.###},{slPos.Z:0.###}) " +
                          "— root/pelvis position overrides are not applied, see ApplyJointPositionOverrides doc comment");
                 continue;
@@ -1985,7 +1985,7 @@ public partial class AvatarRenderer : Node3D
                 ApplyShape(visual, skeleton, _avatarSkeleton, visual.LastDistortions, visual.JointPosOverrides);
             }
             skeleton.ResetBonePoses();
-            GD.Print($"[JointOverride] mesh {meshId}: {applied}/{jointCount} joint positions overridden (max shift {maxDelta:0.###} m)");
+            if (Diagnostics.Enabled) GD.Print($"[JointOverride] mesh {meshId}: {applied}/{jointCount} joint positions overridden (max shift {maxDelta:0.###} m)");
 
             // A fitted mesh can override leg/spine joints (e.g. an alternate-bind mesh body/legs)
             // that move mFootLeft — refresh the measured foot offset now rather than waiting for
@@ -2003,7 +2003,7 @@ public partial class AvatarRenderer : Node3D
         if (System.Math.Abs(skinData.PelvisOffset) > 0.0001f)
         {
             visual.PelvisFixups[meshId] = skinData.PelvisOffset;
-            GD.Print($"[JointOverride] mesh {meshId}: pelvis offset {skinData.PelvisOffset:0.###} m applied to avatar root");
+            if (Diagnostics.Enabled) GD.Print($"[JointOverride] mesh {meshId}: pelvis offset {skinData.PelvisOffset:0.###} m applied to avatar root");
         }
         else
         {
@@ -2874,6 +2874,8 @@ void fragment() {
 
     public override void _Process(double delta)
     {
+        using var _phase = MainThreadPhase.Enter("avatar-render");
+
         float dt = (float)delta;
 
         // Recompute draw-distance visibility a few times a second (not every frame — the

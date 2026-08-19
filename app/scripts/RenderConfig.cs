@@ -17,6 +17,30 @@ public static class RenderConfig
     /// </summary>
     public static float DrawDistance = 96f;
 
+    /// <summary>
+    /// How many milliseconds per frame the main thread may spend on deferred scene work (building
+    /// object visuals, pushing sharpened textures to the GPU). Everything over budget waits for
+    /// the next frame -- see <see cref="MainThreadWorkQueue"/> for why an unbounded flush is what
+    /// caused the stutter this exists to fix.
+    ///
+    /// 3 ms is deliberately well under a 16.7 ms frame: the queue can only measure a unit of work
+    /// AFTER running it, so the budget has to leave room for one over-long item to land on top of
+    /// it without blowing the frame. Raising it makes objects appear sooner and stutter more.
+    /// </summary>
+    public static double MainThreadWorkBudgetMs = 3.0;
+
+    /// <summary>
+    /// Radius within which an object's collision shape must exist IMMEDIATELY rather than being
+    /// built in the background.
+    ///
+    /// Deferring the shape is what makes a busy region load without stuttering, but it has one
+    /// unacceptable consequence: the avatar's ground check is a downward raycast, so an object whose
+    /// shape has not landed yet is not merely unclickable, it is not there to stand on -- you walk
+    /// onto a prim and drop through it. Anything you could be standing on is by definition close, so
+    /// a small radius buys back correctness for a tiny fraction of the objects.
+    /// </summary>
+    public static float CollisionUrgentDistance = 24f;
+
     // Floating origin: the global metre coordinates of the region we render relative to.
     // OSGrid regions sit at global coordinates in the millions; rendering at those raw
     // coordinates blows float32 precision (objects jitter / Z-fight / look shattered). We

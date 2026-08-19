@@ -145,13 +145,25 @@ public partial class AvatarController : Camera3D
     // Throttles the ground-clamp diagnostic print below to ~1/sec instead of every frame.
     private double _timeSinceGroundLog = 0;
 
+    /// <summary>Last ground source seen, so the diagnostic above fires on transitions instead of
+    /// every frame. "collider" collapses the per-object detail -- which object it is matters far
+    /// less than whether an object was hit at all.</summary>
+    private string _lastGroundKind = "";
+
+    /// <summary>Ground height at the previous sample, so a transition can report the DROP rather
+    /// than just the new value -- stepping between two surfaces at the same height is normal, and
+    /// only a transition that loses height is a fall.</summary>
+    private float _lastGroundZ;
+
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
     private const string BuildMarker = "2026-07-22-groundclamp-reverted-to-simple-clamp";
 
     public void Initialize(World world, GridSession session, AvatarRenderer? avatarRenderer = null)
     {
-        GD.Print($"[AvatarController] BUILD MARKER: {BuildMarker}");
+        // Build marker only under --diag: it exists to prove which assembly is actually loaded
+        // when a fix appears not to have taken (see the stale-assembly note in the repo docs).
+        if (Diagnostics.Enabled) GD.Print($"[AvatarController] BUILD MARKER: {BuildMarker}");
         _world = world;
         _session = session;
         _avatarRenderer = avatarRenderer;
@@ -199,7 +211,7 @@ public partial class AvatarController : Camera3D
             // gates WASD/orbit in _Process below; hover is checked here in addition, specifically
             // for wheel-zoom, since a scroll is defined by where the cursor sits, not by focus.
             var focusOwner = GetViewport().GuiGetFocusOwner();
-            bool hasUiFocus = focusOwner is LineEdit || focusOwner is TextEdit
+            bool hasUiFocus = BlocksMovement(focusOwner)
                 || GetViewport().GuiGetHoveredControl() != null;
 
             // A click that reaches _UnhandledInput at all landed in the 3D viewport, not on any
@@ -211,7 +223,7 @@ public partial class AvatarController : Camera3D
             // it on any click that actually reaches here so movement resumes immediately, same as
             // clicking into the 3D view in every other viewer. ChatWindow.OnSendPressed already
             // releases focus on submit; this covers every other way it can be left behind.
-            if (mouseBtn.Pressed && (focusOwner is LineEdit || focusOwner is TextEdit))
+            if (mouseBtn.Pressed && BlocksMovement(focusOwner))
             {
                 GetViewport().GuiReleaseFocus();
                 hasUiFocus = GetViewport().GuiGetHoveredControl() != null;
@@ -237,10 +249,12 @@ public partial class AvatarController : Camera3D
 
     public override void _Process(double delta)
     {
+        using var _phase = MainThreadPhase.Enter("avatar-control");
+
         if (_world == null || _session == null) return;
 
         var focusOwner = GetViewport().GuiGetFocusOwner();
-        bool hasUiFocus = focusOwner is LineEdit || focusOwner is TextEdit;
+        bool hasUiFocus = BlocksMovement(focusOwner);
 
         // Alt+LMB orbit engagement, polled every frame instead of driven by the button's own
         // discrete press/release events. Live-tested proof this was needed: holding Alt+LMB
@@ -474,6 +488,43 @@ public partial class AvatarController : Camera3D
                     }
                 }
 
+                // Ground-source diagnostic, re-armed for FEAT-PERF-01. groundSource was already being
+                // computed here but never printed, so "collision doesn't work" had no evidence
+                // behind it either way -- and the cost tables prove the shapes ARE being built
+                // (collision.shape n=810, collision.urgent n=62, no exceptions), which means the
+                // question is not whether they exist but whether this ray finds them.
+                //
+                // Logged on CHANGE rather than periodically: the interesting event is the moment the
+                // ray stops hitting an object collider and falls through to the terrain heightmap
+                // (or nothing at all), and a periodic line would either miss it or bury it.
+                if (Diagnostics.Enabled)
+                {
+                _timeSinceGroundLog += delta;
+
+                // Compared on the FULL source, not a collapsed "collider" kind. The first version
+                // collapsed every object collider to one word, which hid the transition that matters:
+                // the ray moving from a specific prim to the terrain underneath it. That transition
+                // IS the report -- "I fall through prims" is the ground under your feet swapping from
+                // Obj_<id> to TerrainPhysics with the height dropping at the same moment.
+                if (groundSource != _lastGroundKind || _timeSinceGroundLog >= 10.0)
+                {
+                    // A drop while stepping off an object collider is the fall itself, so it is called
+                    // out separately rather than left to be spotted by comparing two log lines.
+                    bool fellOffObject = _lastGroundKind.StartsWith("collider:Obj")
+                                         && !groundSource.StartsWith("collider:Obj")
+                                         && groundHeight < _lastGroundZ - 0.15f;
+
+                    GD.Print($"[GroundClamp] {(fellOffObject ? "FELL THROUGH " : "")}" +
+                              $"source={groundSource} hasGround={hasGround} " +
+                              $"groundZ={groundHeight:0.00} (was {_lastGroundZ:0.00} on {_lastGroundKind}) " +
+                              $"agentZ={transform.Position.Z:0.00}");
+
+                    _lastGroundKind = groundSource;
+                    _timeSinceGroundLog = 0;
+                }
+                if (hasGround) _lastGroundZ = groundHeight;
+                }
+
                 if (hasGround)
                 {
                     // Reverted to a plain "network Z == feet at ground" clamp (2026-07-22, round 5
@@ -604,6 +655,31 @@ public partial class AvatarController : Camera3D
                 !isSitting && up, !isSitting && down,
                 ComputeBodyRotation(), !isSitting && _flying);
         }
+    }
+
+    /// <summary>
+    /// Whether the focused Control should swallow the movement keys.
+    ///
+    /// Text fields have always qualified -- typing "was" in chat must not walk the avatar. What was
+    /// missing is everything else that reads the arrow keys: an OptionButton, HSlider or CheckBox
+    /// inside an open settings window changes value on Left/Right/Up/Down, so with a dropdown
+    /// focused the same key press both altered the setting AND moved the avatar.
+    ///
+    /// Scoped to Controls inside an <see cref="SLNGWindow"/> rather than "any focused Control at
+    /// all". Widgets that live directly on the HUD -- the button bar, the camera controls -- are
+    /// part of the world view and must not lock movement out just because one was clicked once.
+    /// A window is the thing that is supposed to take over the keyboard while it is open.
+    /// </summary>
+    private static bool BlocksMovement(Control? focusOwner)
+    {
+        if (focusOwner is LineEdit || focusOwner is TextEdit) return true;
+        if (focusOwner == null) return false;
+
+        for (Node? n = focusOwner; n != null; n = n.GetParent())
+        {
+            if (n is SLNG.App.UI.SLNGWindow) return true;
+        }
+        return false;
     }
 
     /// <summary>The avatar's body-facing orientation from <see cref="_yaw"/> ONLY -- never the
