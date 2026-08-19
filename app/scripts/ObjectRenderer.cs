@@ -242,7 +242,6 @@ public partial class ObjectRenderer : Node3D
         float showSq = draw * draw;
         float hideSq = (draw * 1.15f) * (draw * 1.15f);  // hide a bit past the edge (visibility hysteresis)
         float releaseSq = (draw * 1.25f) * (draw * 1.25f); // only free GPU memory well beyond the edge
-        float collisionSq = RenderConfig.CollisionUrgentDistance * RenderConfig.CollisionUrgentDistance;
 
         using var _phase = MainThreadPhase.Enter("cull");
         double texLodMs = 0;
@@ -267,7 +266,10 @@ public partial class ObjectRenderer : Node3D
             // shape may well be built (another object shares the mesh, or the queue simply caught
             // up). Claiming it here costs a dictionary lookup and closes the window in which you can
             // walk onto something that is drawn but not yet solid.
-            if (dSq <= collisionSq && state.CollisionShape.Shape == null
+            // Same extent-aware reasoning as the urgent path: compare against the object's bounds,
+            // not its origin, or a large object is never repaired until its centre comes into range.
+            float collisionReach = RenderConfig.CollisionUrgentDistance + BoundingRadius(state.MeshInstance);
+            if (dSq <= collisionReach * collisionReach && state.CollisionShape.Shape == null
                 && state.LoadedMeshKey != Guid.Empty
                 && _meshCollisionShapes.TryGetValue(state.LoadedMeshKey, out var readyShape))
             {
@@ -1695,6 +1697,16 @@ public partial class ObjectRenderer : Node3D
     private Godot.Vector3 _agentPos;
     private bool _agentPosKnown;
 
+    /// <summary>Half the diagonal of the object's world-space bounds, i.e. the radius of a sphere that
+    /// certainly contains it. Cheap and deliberately generous -- overestimating only means a shape is
+    /// built a little earlier than strictly necessary.</summary>
+    private static float BoundingRadius(MeshInstance3D instance)
+    {
+        if (instance.Mesh == null) return 0f;
+        var size = instance.GetAabb().Size * instance.Scale;
+        return size.Length() * 0.5f;
+    }
+
     /// <summary>Distance test against the local agent, false until the agent is in the world -- which
     /// correctly makes nothing urgent during login, since there is nobody yet to fall.</summary>
     private bool IsNearLocalAgent(Godot.Vector3 godotPos, float radius)
@@ -1730,7 +1742,15 @@ public partial class ObjectRenderer : Node3D
 
         // Close enough to stand on: build it here and now. Waiting even a few frames for this one is
         // what makes the avatar fall through a prim it just walked onto.
-        if (IsNearLocalAgent(state.MeshInstance.Position, RenderConfig.CollisionUrgentDistance))
+        //
+        // Measured against the object's EXTENT, not its origin. Testing the origin alone is why
+        // large objects kept falling through after this path was added: a platform, a bridge or a
+        // big linkset can have its origin tens of metres from where you are standing on its surface,
+        // so the object read as "far away", took the background path, and was not solid yet when you
+        // walked onto it. Adding the bounding radius makes the test conservative -- it can only ever
+        // decide to build a shape sooner, never later.
+        if (IsNearLocalAgent(state.MeshInstance.Position,
+                             RenderConfig.CollisionUrgentDistance + BoundingRadius(state.MeshInstance)))
         {
             MainThreadWorkQueue.Measure("collision.urgent", () =>
             {

@@ -150,6 +150,11 @@ public partial class AvatarController : Camera3D
     /// less than whether an object was hit at all.</summary>
     private string _lastGroundKind = "";
 
+    /// <summary>Ground height at the previous sample, so a transition can report the DROP rather
+    /// than just the new value -- stepping between two surfaces at the same height is normal, and
+    /// only a transition that loses height is a fall.</summary>
+    private float _lastGroundZ;
+
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
     private const string BuildMarker = "2026-07-22-groundclamp-reverted-to-simple-clamp";
@@ -491,14 +496,29 @@ public partial class AvatarController : Camera3D
                 // ray stops hitting an object collider and falls through to the terrain heightmap
                 // (or nothing at all), and a periodic line would either miss it or bury it.
                 _timeSinceGroundLog += delta;
-                string groundKind = groundSource.StartsWith("collider:") ? "collider" : groundSource;
-                if (groundKind != _lastGroundKind || _timeSinceGroundLog >= 10.0)
+
+                // Compared on the FULL source, not a collapsed "collider" kind. The first version
+                // collapsed every object collider to one word, which hid the transition that matters:
+                // the ray moving from a specific prim to the terrain underneath it. That transition
+                // IS the report -- "I fall through prims" is the ground under your feet swapping from
+                // Obj_<id> to TerrainPhysics with the height dropping at the same moment.
+                if (groundSource != _lastGroundKind || _timeSinceGroundLog >= 10.0)
                 {
-                    _lastGroundKind = groundKind;
+                    // A drop while stepping off an object collider is the fall itself, so it is called
+                    // out separately rather than left to be spotted by comparing two log lines.
+                    bool fellOffObject = _lastGroundKind.StartsWith("collider:Obj")
+                                         && !groundSource.StartsWith("collider:Obj")
+                                         && groundHeight < _lastGroundZ - 0.15f;
+
+                    GD.Print($"[GroundClamp] {(fellOffObject ? "FELL THROUGH " : "")}" +
+                              $"source={groundSource} hasGround={hasGround} " +
+                              $"groundZ={groundHeight:0.00} (was {_lastGroundZ:0.00} on {_lastGroundKind}) " +
+                              $"agentZ={transform.Position.Z:0.00}");
+
+                    _lastGroundKind = groundSource;
                     _timeSinceGroundLog = 0;
-                    GD.Print($"[GroundClamp] source={groundSource} hasGround={hasGround} " +
-                              $"groundZ={groundHeight:0.00} agentZ={transform.Position.Z:0.00}");
                 }
+                if (hasGround) _lastGroundZ = groundHeight;
 
                 if (hasGround)
                 {
