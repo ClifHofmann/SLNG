@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 
 namespace SLNG.App.UI;
@@ -246,6 +247,17 @@ public partial class StatsOverlay : PanelContainer
         // Immediately after the [Perf] line, so a session log reads as: what the frame looked like,
         // then what the main thread actually spent that frame's time on.
         MainThreadWorkQueue.ReportCosts();
+
+        // Per-phase frame cost. [WorkCost] covers queued work only; this covers the frame itself,
+        // which is where the remaining steady cost has to be -- the queue totals no longer come
+        // close to explaining a 31 ms median.
+        var phases = MainThreadPhase.TakeCosts();
+        if (phases.Count > 0 && _secondsSinceLog > 0)
+        {
+            var parts = phases.OrderByDescending(kv => kv.Value)
+                              .Select(kv => $"{kv.Key}={kv.Value / _secondsSinceLog:F1}");
+            Logger.Info($"[PhaseCost] ms per second of wall clock: {string.Join(" ", parts)}");
+        }
 
         _worstSinceLog = 0;
         _hitchesSinceLog = 0;
