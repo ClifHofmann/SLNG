@@ -204,7 +204,7 @@ public partial class AvatarController : Camera3D
             // gates WASD/orbit in _Process below; hover is checked here in addition, specifically
             // for wheel-zoom, since a scroll is defined by where the cursor sits, not by focus.
             var focusOwner = GetViewport().GuiGetFocusOwner();
-            bool hasUiFocus = focusOwner is LineEdit || focusOwner is TextEdit
+            bool hasUiFocus = BlocksMovement(focusOwner)
                 || GetViewport().GuiGetHoveredControl() != null;
 
             // A click that reaches _UnhandledInput at all landed in the 3D viewport, not on any
@@ -216,7 +216,7 @@ public partial class AvatarController : Camera3D
             // it on any click that actually reaches here so movement resumes immediately, same as
             // clicking into the 3D view in every other viewer. ChatWindow.OnSendPressed already
             // releases focus on submit; this covers every other way it can be left behind.
-            if (mouseBtn.Pressed && (focusOwner is LineEdit || focusOwner is TextEdit))
+            if (mouseBtn.Pressed && BlocksMovement(focusOwner))
             {
                 GetViewport().GuiReleaseFocus();
                 hasUiFocus = GetViewport().GuiGetHoveredControl() != null;
@@ -247,7 +247,7 @@ public partial class AvatarController : Camera3D
         if (_world == null || _session == null) return;
 
         var focusOwner = GetViewport().GuiGetFocusOwner();
-        bool hasUiFocus = focusOwner is LineEdit || focusOwner is TextEdit;
+        bool hasUiFocus = BlocksMovement(focusOwner);
 
         // Alt+LMB orbit engagement, polled every frame instead of driven by the button's own
         // discrete press/release events. Live-tested proof this was needed: holding Alt+LMB
@@ -630,6 +630,31 @@ public partial class AvatarController : Camera3D
                 !isSitting && up, !isSitting && down,
                 ComputeBodyRotation(), !isSitting && _flying);
         }
+    }
+
+    /// <summary>
+    /// Whether the focused Control should swallow the movement keys.
+    ///
+    /// Text fields have always qualified -- typing "was" in chat must not walk the avatar. What was
+    /// missing is everything else that reads the arrow keys: an OptionButton, HSlider or CheckBox
+    /// inside an open settings window changes value on Left/Right/Up/Down, so with a dropdown
+    /// focused the same key press both altered the setting AND moved the avatar.
+    ///
+    /// Scoped to Controls inside an <see cref="SLNGWindow"/> rather than "any focused Control at
+    /// all". Widgets that live directly on the HUD -- the button bar, the camera controls -- are
+    /// part of the world view and must not lock movement out just because one was clicked once.
+    /// A window is the thing that is supposed to take over the keyboard while it is open.
+    /// </summary>
+    private static bool BlocksMovement(Control? focusOwner)
+    {
+        if (focusOwner is LineEdit || focusOwner is TextEdit) return true;
+        if (focusOwner == null) return false;
+
+        for (Node? n = focusOwner; n != null; n = n.GetParent())
+        {
+            if (n is SLNG.App.UI.SLNGWindow) return true;
+        }
+        return false;
     }
 
     /// <summary>The avatar's body-facing orientation from <see cref="_yaw"/> ONLY -- never the
