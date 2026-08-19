@@ -161,7 +161,9 @@ public partial class AvatarController : Camera3D
 
     public void Initialize(World world, GridSession session, AvatarRenderer? avatarRenderer = null)
     {
-        GD.Print($"[AvatarController] BUILD MARKER: {BuildMarker}");
+        // Build marker only under --diag: it exists to prove which assembly is actually loaded
+        // when a fix appears not to have taken (see the stale-assembly note in the repo docs).
+        if (Diagnostics.Enabled) GD.Print($"[AvatarController] BUILD MARKER: {BuildMarker}");
         _world = world;
         _session = session;
         _avatarRenderer = avatarRenderer;
@@ -495,6 +497,8 @@ public partial class AvatarController : Camera3D
                 // Logged on CHANGE rather than periodically: the interesting event is the moment the
                 // ray stops hitting an object collider and falls through to the terrain heightmap
                 // (or nothing at all), and a periodic line would either miss it or bury it.
+                if (Diagnostics.Enabled)
+                {
                 _timeSinceGroundLog += delta;
 
                 // Compared on the FULL source, not a collapsed "collider" kind. The first version
@@ -519,6 +523,7 @@ public partial class AvatarController : Camera3D
                     _timeSinceGroundLog = 0;
                 }
                 if (hasGround) _lastGroundZ = groundHeight;
+                }
 
                 if (hasGround)
                 {

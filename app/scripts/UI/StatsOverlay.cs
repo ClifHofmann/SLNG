@@ -87,11 +87,10 @@ public partial class StatsOverlay : PanelContainer
     public override void _Ready()
     {
         Name = "StatsOverlay";
-        // On by default while FEAT-PERF-01 is open. The stutter investigation kept losing rounds of
-        // data because the panel was closed, and a closed panel used to mean no [Perf]/[WorkCost]
-        // lines either -- a whole session with a 12 s freeze in it produced no cost table at all.
-        // Ctrl+Shift+1 still hides it.
-        Visible = true;
+        // Shown automatically only under --diag. In a release it stays off screen until the user asks
+        // for it with Ctrl+Shift+1 -- which still works, so "does it stutter for you" can be answered
+        // without relaunching from a terminal.
+        Visible = Diagnostics.Enabled;
         MouseFilter = MouseFilterEnum.Ignore;
 
         // Top-left, tucked under the TopMenu bar so it never covers the menus.
@@ -232,6 +231,10 @@ public partial class StatsOverlay : PanelContainer
     private void EmitLogLine()
     {
         if (_frameCount == 0) return;
+
+        // Sampling continues regardless -- the panel is accurate the moment it is opened -- but a
+        // release writes none of it to the log.
+        if (!Diagnostics.Enabled) return;
 
         double hitchesPerSec = _secondsSinceLog > 0 ? _hitchesSinceLog / _secondsSinceLog : 0;
 

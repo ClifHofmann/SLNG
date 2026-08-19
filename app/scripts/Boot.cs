@@ -97,7 +97,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.5.6-alpha";
+    public const string AppVersion = "v0.6.0-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -148,6 +148,9 @@ public partial class Boot : Control
         // — a known engine behavior (godotengine/godot#104321), not an SLNG bug. Re-asserting
         // the title once more after the next frame renders lands after that internal logic and
         // sticks; the immediate call below just avoids a flash of the wrong title before then.
+        // Before anything that logs, so the level is already right for the first line.
+        Diagnostics.Initialize();
+
         DisplayServer.WindowSetTitle($"Puris Viewer {AppVersion}");
         RenderingServer.FramePostDraw += ReassertWindowTitleOnce;
 
@@ -333,8 +336,9 @@ public partial class Boot : Control
         AddChild(new MainThreadWorkPump());
 
         // Off-thread stall detector (FEAT-PERF-01). Started here rather than in _Ready so it covers
-        // the world-loading phase, which is when the client is reported to freeze.
-        _watchdog.Start();
+        // the world-loading phase, which is when the client is reported to freeze. A release does not
+        // carry the extra thread.
+        if (Diagnostics.Enabled) _watchdog.Start();
 
         var hudLayer = new CanvasLayer { Name = "HudLayer", Layer = 10, Visible = false };
         AddChild(hudLayer);
@@ -653,11 +657,10 @@ public partial class Boot : Control
         // log alone. User reports Firestorm looks smooth on the same OSGrid region, which points at
         // a client-side stall rather than a real network/server characteristic. Remove once the
         // cause is confirmed.
-        _watchdog.Beat();
-
-        if (delta > 0.2)
+        if (Diagnostics.Enabled)
         {
-            GD.Print($"[FrameHitch] {delta:0.###}s since last _Process frame");
+            _watchdog.Beat();
+            if (delta > 0.2) GD.Print($"[FrameHitch] {delta:0.###}s since last _Process frame");
         }
 
         // Drain queued world events on the main thread — the only place the world mutates.
@@ -671,7 +674,7 @@ public partial class Boot : Control
         // (mirrors the real viewer's interpolateLinearMotion) — must run after Pump() so this
         // frame's fresh Position/Velocity/TimeSinceUpdate are already applied before extrapolating.
         using (MainThreadPhase.Enter("extrapolate")) _worldSimulation?.ExtrapolateMovement((float)delta);
-        ReportAgentPacketGaps();
+        if (Diagnostics.Enabled) ReportAgentPacketGaps();
 
         // Refresh the position HUD a few times a second (the agent lookup scans entities).
         _hudAccum += delta;

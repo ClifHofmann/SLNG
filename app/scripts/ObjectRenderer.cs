@@ -122,7 +122,9 @@ public partial class ObjectRenderer : Node3D
 
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
-        GD.Print($"[ObjectRenderer] BUILD MARKER: {BuildMarker}");
+        // Build marker only under --diag: it exists to prove which assembly is actually loaded
+        // when a fix appears not to have taken (see the stale-assembly note in the repo docs).
+        if (Diagnostics.Enabled) GD.Print($"[ObjectRenderer] BUILD MARKER: {BuildMarker}");
         // Pull the shader family in (and trigger its compile) here on the main thread, rather
         // than letting the first worker-thread material build do it mid-frame.
         PrimShaderFamily.Preload();
