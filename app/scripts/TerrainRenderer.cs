@@ -360,16 +360,56 @@ public partial class TerrainRenderer : Node3D
         // Collision from the same CPU triangles rather than CreateTrimeshShape(), which reads every
         // face back out of the rendering server first -- the identical GPU-readback cost already
         // removed from the object path, and far worse here because it is one enormous mesh.
-        // Measured separately from the mesh because they are very different operations on the same
-        // data: the mesh is a buffer upload, the shape is a BVH built over every triangle inside the
-        // physics server. With ~130,000 triangles for a 256x256 region that is the obvious suspect
-        // for what is left of the terrain stall, and guessing which half it is has gone wrong
-        // before in this investigation.
+        // The measurement settled it: as a ConcavePolygonShape3D this was 18.50 s across four
+        // rebuilds -- 4,626 ms each, worst case 8,037 ms -- against 219 ms for building the geometry
+        // and 80 ms for uploading the mesh. Building a BVH over ~130,000 triangles inside the
+        // physics server was, on its own, the entire terrain freeze.
+        //
+        // A triangle soup is simply the wrong structure for terrain. Terrain IS a height field, and
+        // HeightMapShape3D is the shape built for one: the physics server indexes it arithmetically
+        // from a grid position, so there is no acceleration structure to build at all and the cost
+        // collapses to copying floats.
+        //
+        // Index mapping: HeightMapShape3D centres its grid on the shape's own origin, so cell (i, j)
+        // sits at shape-local (i - (W-1)/2, h, j - (D-1)/2). The visual mesh puts grid cell (x, z) at
+        // (x, h, -z). Offsetting the CollisionShape3D by ((W-1)/2, 0, -(D-1)/2) makes i = x, and the
+        // negated Z axis makes the rows run backwards: j = (D-1) - z.
         MainThreadWorkQueue.Measure("terrain.collision", () =>
         {
-            var faces = new Vector3[indices.Count];
-            for (int i = 0; i < indices.Count; i++) faces[i] = vertArray[indices[i]];
-            regionNode.CollisionShape.Shape = new ConcavePolygonShape3D { Data = faces };
+            var map = new float[width * height];
+            int holes = 0;
+
+            for (int z = 0; z < height; z++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    int dst = (height - 1 - z) * width + x;
+                    if (regionTerrain.TryGetKnownHeight(x, z, out float h))
+                    {
+                        map[dst] = h;
+                    }
+                    else
+                    {
+                        // NaN marks a hole, matching what the mesh does by omitting the quad. Both
+                        // exist for the same reason: a cell whose patch has not arrived must make the
+                        // ground ray MISS, so AvatarController holds position, rather than reporting
+                        // a walkable floor at the array's 0.0f default well below the real terrain.
+                        map[dst] = float.NaN;
+                        holes++;
+                    }
+                }
+            }
+
+            var shape = new HeightMapShape3D { MapWidth = width, MapDepth = height };
+            shape.MapData = map; // after the dimensions -- setting those resizes the data array
+            regionNode.CollisionShape.Shape = shape;
+            regionNode.CollisionShape.Position = new Vector3((width - 1) / 2f, 0f, -(height - 1) / 2f);
+
+            if (holes > 0)
+            {
+                Logger.Info($"[TerrainCollision] {width}x{height} height field, {holes} cell(s) still " +
+                            $"unloaded and left as holes");
+            }
         });
 
         // Use a per-region material instance
