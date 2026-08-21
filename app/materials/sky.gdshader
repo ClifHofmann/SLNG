@@ -37,6 +37,10 @@ uniform sampler2D slng_moon_texture : hint_default_transparent;
 global uniform vec4 slng_moonlight_color;
 global uniform vec4 slng_haze_color;
 
+// Colour of the sun BILLBOARD, which is getSunDiffuse() and not the raw sunlight_color --
+// llvosky.cpp:527. See the sun-disc block in sky() for why the two must not be swapped.
+global uniform vec4 slng_sun_disc_color;
+
 // Celestial
 global uniform float slng_star_brightness;
 global uniform vec3 slng_sun_direction;
