@@ -43,7 +43,10 @@ internal static class EnvironmentLlsdParser
     /// A region may legitimately send any of the three: the LLSD's <c>type</c> key discriminates.
     /// A single sky or water document becomes a one-keyframe cycle, which evaluates to a fixed
     /// sky — the same result the viewer gets, without a special case downstream.</summary>
-    public static DayCycle ParseDayCycle(OSD? llsd, int dayLengthSeconds, int dayOffsetSeconds)
+    /// <param name="legacyWindlight">True when this document came from the legacy
+    /// <c>EnvironmentSettings</c> capability. Only the caller knows which capability answered, and
+    /// a couple of fields are encoded differently — see <see cref="ParseSky"/>.</param>
+    public static DayCycle ParseDayCycle(OSD? llsd, int dayLengthSeconds, int dayOffsetSeconds, bool legacyWindlight = false)
     {
         if (llsd is not OSDMap map) return DayCycle.Default;
 
@@ -52,7 +55,7 @@ internal static class EnvironmentLlsdParser
         if (type == "sky")
         {
             return new DayCycle(
-                new[] { new DayCycleFrame<SkySettings>(0f, ParseSky(map)) },
+                new[] { new DayCycleFrame<SkySettings>(0f, ParseSky(map, legacyWindlight)) },
                 new[] { new DayCycleFrame<WaterSettings>(0f, WaterSettings.Default) },
                 dayLengthSeconds, dayOffsetSeconds);
         }
@@ -70,7 +73,7 @@ internal static class EnvironmentLlsdParser
         if (frames == null || tracks == null) return DayCycle.Default;
 
         var waterFrames = ParseTrack(tracks, 0, frames, ParseWater, WaterSettings.Default);
-        var skyFrames = ParseTrack(tracks, 1, frames, ParseSky, SkySettings.Default);
+        var skyFrames = ParseTrack(tracks, 1, frames, m => ParseSky(m, legacyWindlight), SkySettings.Default);
 
         return new DayCycle(skyFrames, waterFrames, dayLengthSeconds, dayOffsetSeconds);
     }
@@ -116,7 +119,13 @@ internal static class EnvironmentLlsdParser
 
     /// <summary>Parses one sky settings document. Starts from the viewer's defaults and overrides
     /// only what is present, so a sparse document renders like the viewer's rather than black.</summary>
-    public static SkySettings ParseSky(OSDMap map)
+    /// <param name="legacyWindlight">True when the document came from the old
+    /// <c>EnvironmentSettings</c> capability rather than <c>ExtEnvironment</c>. A few fields are
+    /// encoded differently there and the viewer converts them on load
+    /// (<c>translateLegacySettings</c>) rather than at the point of use, so the flag has to reach
+    /// the parser. Note this is NOT the same question as whether the haze block is nested — real
+    /// EEP documents nest their haze under <c>legacy_haze</c> too, so that is no discriminator.</param>
+    public static SkySettings ParseSky(OSDMap map, bool legacyWindlight = false)
     {
         var d = SkySettings.Default;
         var haze = map.ContainsKey(KeyLegacyHaze) ? map[KeyLegacyHaze] as OSDMap : null;
@@ -149,7 +158,7 @@ internal static class EnvironmentLlsdParser
             CloudPosDensity1 = Color(map, null, "cloud_pos_density1", d.CloudPosDensity1),
             CloudPosDensity2 = Color(map, null, "cloud_pos_density2", d.CloudPosDensity2),
             CloudScale = Real(map, null, "cloud_scale", d.CloudScale),
-            CloudScrollRate = Vec2(map, "cloud_scroll_rate", d.CloudScrollRate),
+            CloudScrollRate = CloudScroll(map, legacyWindlight, d.CloudScrollRate),
             CloudVariance = Real(map, null, "cloud_variance", d.CloudVariance),
             CloudTextureId = Id(map, "cloud_id"),
             SunTextureId = Id(map, "sun_id"),
@@ -214,6 +223,38 @@ internal static class EnvironmentLlsdParser
 
     private static Vector2 Vec2(OSDMap map, string key, Vector2 fallback)
         => map.ContainsKey(key) ? ToVector2(map[key], fallback) : fallback;
+
+    /// <summary>Cloud drift rate, with the legacy Windlight conversion applied when the document
+    /// came from the old capability.
+    ///
+    /// Legacy Windlight stores this OFFSET BY +10 — a 0..20 encoding of a −10..+10 range — and
+    /// pairs it with <c>enable_cloud_scroll</c>, a two-boolean array that zeroes each axis
+    /// independently. The viewer applies both in <c>translateLegacySettings</c>
+    /// (llsettingssky.cpp:1024-1036). An EEP document instead carries an already-signed value in
+    /// −50..50 (validator, llsettingssky.cpp:750-753) and must NOT be shifted.
+    ///
+    /// Reading a legacy value raw leaves the rate near +10 on both axes instead of near zero,
+    /// i.e. clouds racing across the sky at roughly twenty times the intended speed — and
+    /// silently ignores a region that deliberately switched drift off.</summary>
+    private static Vector2 CloudScroll(OSDMap map, bool legacyWindlight, Vector2 fallback)
+    {
+        const string key = "cloud_scroll_rate";
+        if (!map.ContainsKey(key)) return fallback;
+
+        var rate = ToVector2(map[key], fallback);
+        if (!legacyWindlight) return rate;
+
+        rate -= new Vector2(10f, 10f);
+
+        if (map.ContainsKey("enable_cloud_scroll") &&
+            map["enable_cloud_scroll"] is OSDArray enabled && enabled.Count >= 2)
+        {
+            if (!enabled[0].AsBoolean()) rate.X = 0f;
+            if (!enabled[1].AsBoolean()) rate.Y = 0f;
+        }
+
+        return rate;
+    }
 
     private static Vector2 Vec2Alias(OSDMap map, string key, string legacyKey, Vector2 fallback)
     {

@@ -1,3 +1,4 @@
+using System;
 using System.Numerics;
 using LibreMetaverse.StructuredData;
 using SLNG.Core;
@@ -234,4 +235,86 @@ public class EnvironmentLlsdParserTests
             },
         },
     };
+
+    // --- Legacy Windlight cloud scroll -------------------------------------------------------
+    // Legacy stores cloud_scroll_rate offset by +10 (a 0..20 encoding of -10..+10) and pairs it
+    // with enable_cloud_scroll; the viewer converts both in translateLegacySettings
+    // (llsettingssky.cpp:1024-1036). EEP carries an already-signed value and must not be shifted.
+    // This path cannot be exercised against our test grid -- the one region available offers EEP
+    // -- so the LLSD shapes here come from the viewer source and are the only coverage it has.
+
+    [Fact]
+    public void ParseSky_EepCloudScroll_IsNotShifted()
+    {
+        var map = new OSDMap
+        {
+            ["cloud_scroll_rate"] = new OSDArray { OSD.FromReal(0.2), OSD.FromReal(0.01) },
+        };
+
+        var sky = EnvironmentLlsdParser.ParseSky(map, legacyWindlight: false);
+
+        Assert.Equal(0.2f, sky.CloudScrollRate.X, 4);
+        Assert.Equal(0.01f, sky.CloudScrollRate.Y, 4);
+    }
+
+    [Fact]
+    public void ParseSky_LegacyCloudScroll_IsShiftedDownByTen()
+    {
+        var map = new OSDMap
+        {
+            ["cloud_scroll_rate"] = new OSDArray { OSD.FromReal(10.2), OSD.FromReal(10.01) },
+        };
+
+        var sky = EnvironmentLlsdParser.ParseSky(map, legacyWindlight: true);
+
+        Assert.Equal(0.2f, sky.CloudScrollRate.X, 4);
+        Assert.Equal(0.01f, sky.CloudScrollRate.Y, 4);
+    }
+
+    [Fact]
+    public void ParseSky_LegacyCloudScroll_ReadRawWouldRaceTheClouds()
+    {
+        // The regression this guards: the same document parsed WITHOUT the legacy flag leaves the
+        // rate near +10 instead of near zero, which is ~50x the intended drift on X.
+        var map = new OSDMap
+        {
+            ["cloud_scroll_rate"] = new OSDArray { OSD.FromReal(10.2), OSD.FromReal(10.01) },
+        };
+
+        var legacy = EnvironmentLlsdParser.ParseSky(map, legacyWindlight: true);
+        var raw = EnvironmentLlsdParser.ParseSky(map, legacyWindlight: false);
+
+        Assert.True(MathF.Abs(raw.CloudScrollRate.X) > MathF.Abs(legacy.CloudScrollRate.X) * 10f);
+    }
+
+    [Fact]
+    public void ParseSky_LegacyEnableCloudScroll_ZeroesEachAxisIndependently()
+    {
+        var map = new OSDMap
+        {
+            ["cloud_scroll_rate"] = new OSDArray { OSD.FromReal(10.2), OSD.FromReal(10.01) },
+            ["enable_cloud_scroll"] = new OSDArray { OSD.FromBoolean(false), OSD.FromBoolean(true) },
+        };
+
+        var sky = EnvironmentLlsdParser.ParseSky(map, legacyWindlight: true);
+
+        Assert.Equal(0f, sky.CloudScrollRate.X);
+        Assert.Equal(0.01f, sky.CloudScrollRate.Y, 4);
+    }
+
+    [Fact]
+    public void ParseSky_EepIgnoresEnableCloudScroll()
+    {
+        // The flag pair is a legacy-only concept. An EEP document that happens to carry it must
+        // not have its drift switched off by it.
+        var map = new OSDMap
+        {
+            ["cloud_scroll_rate"] = new OSDArray { OSD.FromReal(0.2), OSD.FromReal(0.01) },
+            ["enable_cloud_scroll"] = new OSDArray { OSD.FromBoolean(false), OSD.FromBoolean(false) },
+        };
+
+        var sky = EnvironmentLlsdParser.ParseSky(map, legacyWindlight: false);
+
+        Assert.Equal(0.2f, sky.CloudScrollRate.X, 4);
+    }
 }

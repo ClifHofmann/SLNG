@@ -458,7 +458,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             ? EnvironmentLlsdParser.ParseDayCycle(
                 settings,
                 dayLength > 0 ? dayLength : DayCycle.Default.DayLengthSeconds,
-                dayOffset)
+                dayOffset,
+                legacyWindlight: source == EnvironmentSource.LegacyWindlight)
             : DayCycle.Default;
 
         return (capture, new RegionEnvironmentEvent(sim.Handle, cycle, source));

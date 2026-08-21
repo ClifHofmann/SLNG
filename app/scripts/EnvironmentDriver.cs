@@ -382,6 +382,15 @@ public sealed class EnvironmentDriver
         RenderingServer.GlobalShaderParameterSet("slng_glow", ToColorFast(sky.Glow));
         RenderingServer.GlobalShaderParameterSet("slng_cloud_shadow", SafeFloat(sky.CloudShadow));
 
+        // getSunMoonGlowFactor, llsettingssky.cpp:1317-1321. The sky and cloud shaders each gate
+        // their halo with this; see sky.gdshader for why the two do it differently.
+        bool sunIsUp = sunDirectionSl.Z >= 0f;
+        bool moonIsUp = CalculatedLightDirection.Z >= 0f;
+        float glowFactor = sunIsUp ? 1.0f
+            : moonIsUp ? SafeFloat(sky.MoonBrightness) * 0.25f
+            : 0.0f;
+        RenderingServer.GlobalShaderParameterSet("slng_sun_moon_glow_factor", glowFactor);
+
         RenderingServer.GlobalShaderParameterSet("slng_sunlight_color", ToColorFast(lighting.SunDiffuse));
         RenderingServer.GlobalShaderParameterSet("slng_ambient_color", ToColorFast(lighting.SunAmbient));
         RenderingServer.GlobalShaderParameterSet("slng_moonlight_color", ToColorFast(lighting.MoonDiffuse));

@@ -13,6 +13,10 @@ global uniform float slng_max_y;
 global uniform vec4 slng_glow;
 global uniform float slng_cloud_shadow;
 
+// 1.0 under the sun, moon_brightness * 0.25 under the moon, 0 when neither is up.
+// llsettingssky.cpp:1317-1321 (getSunMoonGlowFactor).
+global uniform float slng_sun_moon_glow_factor;
+
 // Computed Lighting global uniforms
 global uniform vec4 slng_sunlight_color;
 
@@ -133,8 +137,23 @@ void sky() {
         haze_glow = pow(haze_glow, glow_exp);
     }
     haze_glow = clamp(haze_glow, 0.0, 1000.0);
-    // add "minimum anti-solar illumination"
-    haze_glow += 0.25;
+
+    // sun_moon_glow_factor gates the halo by which body is up: 1.0 under the sun,
+    // moon_brightness * 0.25 under the moon, 0 when neither is up
+    // (llsettingssky.cpp:1317-1321). Adding the 0.25 "minimum anti-solar illumination"
+    // unconditionally, as this did, gave the NIGHT sky a solar halo the real viewer never draws.
+    //
+    // The sky and cloud paths genuinely differ and both are ported here rather than sharing one
+    // value:
+    //   sky    (atmosphericsFuncs.glsl:105-108) adds the minimum first, THEN scales -- so a dim
+    //          moon still leaves a faint anti-solar term.
+    //   clouds (cloudsF.glsl:146-150) scales first and then ZEROES outright whenever the factor
+    //          is below 1. This is SL-13768: "For sun, add to glow. For moon, remove glow
+    //          entirely."
+    float haze_glow_sky = (haze_glow + 0.25) * slng_sun_moon_glow_factor;
+    float haze_glow_cloud = (slng_sun_moon_glow_factor < 1.0)
+        ? 0.0
+        : (haze_glow * slng_sun_moon_glow_factor + 0.25);
     
     vec3 amb_color = slng_ambient_color.rgb;
     vec3 diff_color = slng_sunlight_color.rgb;
@@ -151,7 +170,7 @@ void sky() {
     
     // calculate additive sky color
     vec3 additive = (slng_blue_horizon.rgb * blue_weight) * (cs + tmpAmbient) + 
-                    (vec3(slng_haze_horizon) * haze_weight) * (cs * haze_glow + tmpAmbient);
+                    (vec3(slng_haze_horizon) * haze_weight) * (cs * haze_glow_sky + tmpAmbient);
                     
     // Kept before the sky path attenuates `additive` below: SL feeds this same pre-attenuation
     // term up into the cloud layer as `additiveColorBelowCloud` (cloudsF.glsl:158-160), which is
@@ -328,7 +347,7 @@ void sky() {
     // atmospherically attenuated value (SkyLighting.Calculate's output), so no further attenuation.
     // sqrt on the transmittance is SL's own: less atmospheric opacity below the cloud layer.
     vec3 cloud_atten = sqrt(clamp(transmittance, vec3(0.0), vec3(1.0)));
-    vec3 cloudColorSun = (diff_color * haze_glow) * slng_cloud_color.rgb * cloud_atten;
+    vec3 cloudColorSun = (diff_color * haze_glow_cloud) * slng_cloud_color.rgb * cloud_atten;
     vec3 cloudColorAmbient = tmpAmbient * slng_cloud_color.rgb * cloud_atten
                            + additive_below_cloud * (vec3(1.0) - cloud_atten);
     // SL's own clamp (cloudsF.glsl:222), kept literally. Raising this ceiling to match the sky's

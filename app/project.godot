@@ -77,6 +77,10 @@ slng_cloud_shadow={
 "type": "float",
 "value": 0.2699
 }
+slng_sun_moon_glow_factor={
+"type": "float",
+"value": 1.0
+}
 slng_sunlight_color={
 "type": "color",
 "value": Color(0.7342, 0.7815, 0.8999, 1)

@@ -58,7 +58,16 @@ public record SkySettings
     /// glow angle to this power, so it acts as a reciprocal.</summary>
     public Vector3 Glow { get; init; } = new(5.0f, 0.001f, -0.4799f);
 
-    /// <summary>Scene gamma. Viewer default 1.0.</summary>
+    /// <summary>Scene gamma, range 0…20. Viewer default 1.0.
+    ///
+    /// Parsed and deliberately NOT applied. In the modern viewer this only reaches
+    /// <c>legacyGamma</c> in <c>postDeferredGammaCorrect.glsl</c>, which sits behind an
+    /// <c>#ifdef LEGACY_GAMMA</c> — i.e. the pre-SL-7.0 "classic" path. The dedicated
+    /// <c>gammaF.glsl</c> that used to own the soft-clip is marked "DEPRECATED … this file is
+    /// effectively dead" and every one of its functions now returns its input unchanged.
+    /// Applying gamma would therefore be a DIVERGENCE from modern rendering, not parity with it.
+    /// Kept in the model because it round-trips the region's document faithfully and because
+    /// <c>classic_mode</c> remains an open question for Phase E (see ADR 0003).</summary>
     public float Gamma { get; init; } = 1.0f;
 
     /// <summary>How much cloud cover dims the sun and lifts the ambient. Viewer default
