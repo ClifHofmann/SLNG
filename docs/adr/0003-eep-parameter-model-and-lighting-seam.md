@@ -104,11 +104,44 @@ real OSGrid capture nest them, so this is load-bearing, not defensive.
 
 `rayleigh_config`, `mie_config`, `absorption_config` (arrays of density-profile
 layers), `planet_radius` / `sky_bottom_radius` / `sky_top_radius` (1000…32768),
-`dome_offset` (0…1), `dome_radius` (1000…2000), `moisture_level` (0…1),
-`droplet_radius` (5…1000), `ice_level` (0…1), `reflection_probe_ambiance` (0…10).
+`moisture_level` (0…1), `droplet_radius` (5…1000), `ice_level` (0…1),
+`reflection_probe_ambiance` (0…10).
 
 These feed the modern per-fragment atmospheric integration and the probe system.
 `moisture_level`/`droplet_radius`/`ice_level` drive rainbow and halo rendering.
+
+### `dome_offset` and `dome_radius` are NOT cosmetic
+
+Grouped here originally, and that was wrong. They set the sky dome's geometry, and
+the cloud UV is a function of it — so getting them wrong misplaces every cloud.
+
+`LLEnvironment::getCamHeight()` (llenvironment.cpp:1045-1048) returns
+`dome_offset * dome_radius`, and `renderDome` translates the dome down by exactly
+that before drawing (lldrawpoolwlsky.cpp:119). At the defaults that is **14400 of a
+15000 radius**: the camera sits 96% of the way up the *inside* of the sphere. It is
+emphatically not the avatar's altitude, which is what it reads like.
+
+That single fact is what makes the dome usable at all. `calcPhi`
+(llvowlsky.cpp:100-118) caps the dome at **22.5° from its apex** — a narrow polar
+cap. Seen from 96% of the way up the inside, that cap's rim lands at about **−5.4°
+apparent elevation**, just below the horizon, so the cap covers the entire visible
+sky.
+
+The cloud UV follows from the ray/dome intersection, not from view direction. The
+radius cancels, so only `dome_offset` is needed on the renderer side:
+
+    t = -k·sin(e) + √(1 − k²·cos²(e))        k = dome_offset
+    sin(φ) = t·cos(e)                        ← what llvowlsky.cpp:430's texCoord uses
+
+The resulting UV radius runs **0.14 at the horizon down to 0 at the zenith**,
+concentrated near the horizon. No constant multiplier on a direction-only
+projection reproduces that distribution — four attempts to fit one produced clouds
+alternately too coarse, too dense, stretched into vertical columns, or absent
+entirely.
+
+`SkySettings.DomeOffset` is therefore modelled and published as
+`slng_dome_offset`. `dome_radius` still is not, because it cancels out of the UV —
+but it would be needed for anything that works in dome-space distances.
 
 ## The water parameters
 
@@ -209,7 +242,7 @@ Parsed but unused: `gamma` (no tonemapping hook yet), `moon_brightness` (only fe
 the dead `MoonDiffuse` path).
 
 Not modelled at all: `rayleigh_config`, `mie_config`, `absorption_config`,
-`planet_radius`, `sky_bottom_radius`, `sky_top_radius`, `dome_offset`,
+`planet_radius`, `sky_bottom_radius`, `sky_top_radius`,
 `dome_radius`, `moisture_level`, `droplet_radius`, `ice_level`,
 `reflection_probe_ambiance`, `sun_arc_radians`, `bloom_id`, `rainbow_id`,
 `halo_id`, `enable_cloud_scroll`, water's `transparent_texture`.
