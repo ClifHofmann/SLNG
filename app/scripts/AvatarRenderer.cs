@@ -901,8 +901,8 @@ public partial class AvatarRenderer : Node3D
                 // ENTIRE job is to disappear; a dithered discard pattern on something that's
                 // ~90%+ alpha=0 anyway costs nothing visually, so there's no tradeoff here worth
                 // risking reliability for — unlike hair, which is actually meant to be seen.
-                mat.Transparency = BaseMaterial3D.TransparencyEnum.AlphaHash;
-                mat.AlphaHashScale = 1.0f;
+                mat.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
+                mat.AlphaScissorThreshold = 0.5f;
                 // MSAA 4x is on project-wide (app/project.godot) specifically so this reads as
                 // smooth dithering instead of static.
                 mat.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
@@ -2931,6 +2931,18 @@ void fragment() {
                         if (!visual.NameTag.Visible) visual.NameTag.Visible = true;
                         
                         var pos2D = camera.UnprojectPosition(headPos3D);
+                        
+                        // Godot 4 Vulkan bug: if UnprojectPosition yields NaN, Infinity, or massively huge coordinates
+                        // (e.g. when the point is extremely close to the camera plane), assigning it to a Control's 
+                        // Position will crash the UI_PASS in nvoglv64.dll due to vertex bounds overflow.
+                        if (float.IsNaN(pos2D.X) || float.IsNaN(pos2D.Y) || 
+                            float.IsInfinity(pos2D.X) || float.IsInfinity(pos2D.Y) ||
+                            Mathf.Abs(pos2D.X) > 100000f || Mathf.Abs(pos2D.Y) > 100000f)
+                        {
+                            visual.NameTag.Visible = false;
+                            continue;
+                        }
+
                         var size = visual.NameTag.GetMinimumSize();
                         visual.NameTag.Position = pos2D - (size / 2);
 

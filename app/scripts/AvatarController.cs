@@ -439,10 +439,13 @@ public partial class AvatarController : Camera3D
                 // to find the highest floor point (terrain or object) on Layer 1.
                 var spaceState = GetWorld3D().DirectSpaceState;
                 var godotPos = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
+                if (!godotPos.IsFinite()) return;
+
                 
                 // Cast from 2 meters above the avatar's feet, down to 100 meters below
                 var rayFrom = godotPos + new Godot.Vector3(0, 2.0f, 0);
                 var rayTo = godotPos - new Godot.Vector3(0, 100.0f, 0);
+                if (rayFrom == rayTo || !rayFrom.IsFinite() || !rayTo.IsFinite()) return;
                 
                 var query = PhysicsRayQueryParameters3D.Create(rayFrom, rayTo);
                 // Ground detection genuinely needs terrain (PhysicsLayers.Terrain), which now
