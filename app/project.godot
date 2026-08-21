@@ -34,3 +34,106 @@ project/assembly_name="SLNG.App"
 
 anti_aliasing/quality/msaa_3d=2
 textures/default_filters/anisotropic_filtering_level=4
+
+[shader_globals]
+
+slng_ambient={
+"type": "color",
+"value": Color(0.25, 0.25, 0.25, 1)
+}
+slng_blue_density={
+"type": "color",
+"value": Color(0.2447, 0.4487, 0.7599, 1)
+}
+slng_blue_horizon={
+"type": "color",
+"value": Color(0.4954, 0.4954, 0.6399, 1)
+}
+slng_haze_density={
+"type": "float",
+"value": 0.7
+}
+slng_haze_horizon={
+"type": "float",
+"value": 0.19
+}
+slng_density_multiplier={
+"type": "float",
+"value": 0.0001
+}
+slng_distance_multiplier={
+"type": "float",
+"value": 0.8
+}
+slng_max_y={
+"type": "float",
+"value": 1605.0
+}
+slng_glow={
+"type": "color",
+"value": Color(5, 0.001, -0.4799, 1)
+}
+slng_cloud_shadow={
+"type": "float",
+"value": 0.2699
+}
+slng_sunlight_color={
+"type": "color",
+"value": Color(0.7342, 0.7815, 0.8999, 1)
+}
+slng_ambient_color={
+"type": "color",
+"value": Color(0.25, 0.25, 0.25, 1)
+}
+slng_moonlight_color={
+"type": "color",
+"value": Color(0.5, 0.5, 0.5, 1)
+}
+slng_moon_ambient={
+"type": "color",
+"value": Color(0.1, 0.1, 0.1, 1)
+}
+slng_haze_color={
+"type": "color",
+"value": Color(0.5, 0.5, 0.5, 1)
+}
+slng_star_brightness={
+"type": "float",
+"value": 250.0
+}
+slng_sun_direction={
+"type": "vec3",
+"value": Vector3(0, 1, 0)
+}
+slng_moon_direction={
+"type": "vec3",
+"value": Vector3(0, -1, 0)
+}
+slng_sun_scale={
+"type": "float",
+"value": 1.0
+}
+slng_moon_scale={
+"type": "float",
+"value": 1.0
+}
+slng_cloud_color={
+"type": "color",
+"value": Color(0.4099, 0.4099, 0.4099, 1)
+}
+slng_cloud_pos_density1={
+"type": "color",
+"value": Color(1, 0.526, 1, 1)
+}
+slng_cloud_pos_density2={
+"type": "color",
+"value": Color(1, 0.526, 1, 1)
+}
+slng_cloud_scale={
+"type": "float",
+"value": 0.4199
+}
+slng_cloud_variance={
+"type": "float",
+"value": 1.0
+}
