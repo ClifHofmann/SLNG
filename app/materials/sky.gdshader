@@ -276,15 +276,18 @@ void sky() {
     // 3. SL world -> Godot is our own (x, z, -y) convention, so world_x = EYEDIR.x and
     //    world_y = -EYEDIR.z.
     //
-    // Two earlier attempts got this wrong in opposite directions and are worth naming, because
-    // both looked plausible:
-    //   * Reading the formula straight off EYEDIR without step 2 SWAPS THE TWO UV AXES, which
-    //     rotates the foreshortening by 90 degrees -- clouds stretch into vertical columns.
-    //   * "Fixing" that by dividing by EYEDIR.y and fitting a scale in front of it replaces the
-    //     projection with a different one entirely, and then the scale has to absorb the error.
+    // Reading the formula straight off EYEDIR without step 2 SWAPS THE TWO UV AXES and rotates
+    // the foreshortening by 90 degrees. Watch for that if this is ever touched again.
+    //
     // The camera-height offset renderDome applies (`translatef(0, -camHeightLocal, 0)` before a
-    // 0.333 scale) is genuinely negligible here: dome_radius defaults to 15000, so at an avatar
-    // altitude of 22-100 m the ratio is 0.0015-0.0067 of the dome radius.
+    // 0.333 scale) is genuinely negligible: dome_radius is 15000 in both regions we test against,
+    // so an avatar at 22-100 m sits 0.0015-0.0067 of a dome radius off centre. That is what makes
+    // substituting EYEDIR for the vertex direction legitimate here.
+    //
+    // Note the UV radius only ever reaches sin(22.5 deg) / 2 = 0.191 across the dome's real
+    // extent, i.e. the middle ~38% of the texture. An earlier comment here said exactly that and
+    // a previous commit of mine wrongly called it invented -- it is correct, and it follows
+    // directly from calcPhi's PI/8 cap. See the extent gate further down.
     float world_x = EYEDIR.x;    // SL +x, east
     float world_y = -EYEDIR.z;   // SL +y, north
     vec2 dome_uv = vec2((-world_x + 1.0) * 0.5, (-world_y + 1.0) * 0.5);
@@ -376,10 +379,26 @@ void sky() {
     alpha1 = 1.0 - alpha1 * alpha1;
     alpha1 = 1.0 - alpha1 * alpha1;
     
-    // Apply altitude blend
-    // We aggressively fade out clouds before the horizon to completely hide the geometrical 
-    // equator distortion of the dome projection.
-    float altitude_blend_factor = smoothstep(0.05, 0.2, EYEDIR.y);
+    // Cloud dome EXTENT. This is the piece that was missing, and it is not a fade-for-looks: SL's
+    // cloud dome is a small CAP around the zenith, not a hemisphere, so beyond its rim there are
+    // simply no clouds to draw.
+    //
+    // calcPhi (llvowlsky.cpp:100-118) returns (PI/8) * f(t) with f in 0..1, so the dome spans at
+    // most 22.5 degrees from the apex. `NEW_TESS` is never defined, so the #else branch is live
+    // and drops the outermost two rings by 2048 -- but against the dome_radius both our test
+    // regions actually send (15000) that barely tilts them: the outer ring lands at
+    // (0.331*15000, 0.944*15000 - 2048) = (4961, 12108), a direction of (0.379, 0.925), i.e. an
+    // apparent elevation of 67.7 degrees. Clouds therefore live only in the top ~22 degrees of
+    // sky. It also means the visible extent depends on dome_radius: at radius 1000 that same ring
+    // would fall BELOW the horizon, which is presumably what the 2048 skirt was for.
+    //
+    // Fading from 0.2 instead, as this did, paints clouds down to ~11 degrees elevation. That is
+    // where the dome UV's own compression is worst (its radius is cos(elevation)/2, so it barely
+    // moves near the horizon), which is exactly the vertical smearing reported twice here. The
+    // cure was never a different projection -- it was not drawing that region at all.
+    //
+    // The smoothstep is only edge anti-aliasing; SL's dome rim is hard geometry.
+    float altitude_blend_factor = smoothstep(0.90, 0.94, EYEDIR.y);
     
     alpha1 *= altitude_blend_factor;
     alpha1 = clamp(alpha1, 0.0, 1.0);
