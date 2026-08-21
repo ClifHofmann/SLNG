@@ -2,9 +2,17 @@
 
 - **Feature ID:** `FEAT-ENV-01`
 - **Track:** `net` / `core` / `render`
-- **Status:** `🚧 In Progress` (Phases A–C confirmed against a live capture; D implemented, awaiting a live look; E open)
-- **Owner:** *(unclaimed)*
-- **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md) · [ADR 0002](file:///E:/Git/SLNG/docs/adr/0002-custom-spatial-shader-family.md) · [FEAT-RENDER-01](file:///E:/Git/SLNG/docs/specs/FEAT-RENDER-01-custom-spatial-shader-family.md)
+- **Status:** `🚧 In Progress` (Phases A–D confirmed live against Firestorm on two OSGrid regions, 2026-08-21; E open and now precisely scoped — see ADR 0003)
+- **Owner:** `claude`
+- **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md) · [ADR 0002](file:///E:/Git/SLNG/docs/adr/0002-custom-spatial-shader-family.md) · [ADR 0003](file:///E:/Git/SLNG/docs/adr/0003-eep-parameter-model-and-lighting-seam.md) · [FEAT-RENDER-01](file:///E:/Git/SLNG/docs/specs/FEAT-RENDER-01-custom-spatial-shader-family.md)
+
+> **Read [ADR 0003](file:///E:/Git/SLNG/docs/adr/0003-eep-parameter-model-and-lighting-seam.md) before touching Phase E.** It inventories the full
+> 54-key sky / 12-setting water parameter set with real ranges and real consumers,
+> and records the load-bearing finding that the viewer's own
+> `calculateLightSettings` is **dead code** — `getSunDiffuse`, `getMoonDiffuse`,
+> `getLightDiffuse` and `getMoonAmbient` have no caller in `indra/newview`. Our
+> `DirectionalLight3D` + global-ambient mapping is built on it, which is why the
+> day/night lighting cannot be brought to parity by tuning constants.
 
 ## Overview & Goal
 

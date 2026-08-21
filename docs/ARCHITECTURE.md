@@ -75,6 +75,10 @@ Inworld HUD, inventory, chat, world map, settings. Decoupled from the render loo
 - All world surfaces (prims, avatars, terrain, water) share one custom Godot spatial
   shader family rather than `StandardMaterial3D` — see
   [adr/0002-custom-spatial-shader-family.md](adr/0002-custom-spatial-shader-family.md).
+- EEP's parameter set is inventoried, and the viewer's CPU-side
+  `calculateLightSettings` is NOT our lighting model — scene lighting parity needs
+  the per-fragment shader seam — see
+  [adr/0003-eep-parameter-model-and-lighting-seam.md](adr/0003-eep-parameter-model-and-lighting-seam.md).
 - Engine-agnostic `src/`; only `app/` references Godot. Enforced in review.
 - OpenSim is the primary early test target; SL grid is added once TPV-sensitive
   paths are reviewed.
