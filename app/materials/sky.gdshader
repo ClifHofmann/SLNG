@@ -34,9 +34,7 @@ global uniform vec4 slng_sunlight_color;
 uniform sampler2D slng_sun_texture : hint_default_transparent;
 uniform sampler2D slng_moon_texture : hint_default_transparent;
 
-global uniform vec4 slng_ambient_color;
 global uniform vec4 slng_moonlight_color;
-global uniform vec4 slng_moon_ambient;
 global uniform vec4 slng_haze_color;
 
 // Celestial
@@ -52,6 +50,14 @@ global uniform vec4 slng_cloud_pos_density2;
 global uniform float slng_cloud_scale;
 global uniform float slng_cloud_variance;
 uniform sampler2D slng_cloud_texture : hint_default_black, filter_linear_mipmap, repeat_enable;
+
+// srgbF.glsl's srgb_to_linear, component-wise. Godot has no built-in for it in a sky shader, and
+// the sky needs it because the value SL's atmospherics produce is display-referred -- see the
+// COLOR assignment at the end of sky().
+vec3 srgb_to_linear(vec3 c) {
+    bvec3 low = lessThanEqual(c, vec3(0.04045));
+    return mix(pow((c + vec3(0.055)) / vec3(1.055), vec3(2.4)), c / vec3(12.92), vec3(low));
+}
 
 // Port of LLSettingsSky::calcAtmosphericVars and atmosphericsFuncs.glsl
 // A simple 2D value noise for clouds
@@ -117,116 +123,121 @@ void sky() {
     vec3 light_dir = sun_dir_godot;
     if (sun_dir_godot.y < 0.0) light_dir = moon_dir_godot;
     
-    // --- SL Atmospherics Math ---
+    // --- SL Atmospherics Math -------------------------------------------------------------------
+    // Ported from skyV.glsl and cloudsV.glsl. Those are BOTH different functions from the surface
+    // atmospherics in atmosphericsFuncs.glsl, and where they disagree the sky dome follows the sky
+    // shaders. Each disagreement below is called out, because several of them were previously
+    // "fixed" the wrong way round.
+    //
+    // The inputs are the RAW sky settings. llsettingsvo.cpp:782-785 binds SG_SKY's sunlight_color
+    // to psky->getSunlightColor(), and AMBIENT to getTotalAmbient() -- which just returns the
+    // unmodified `ambient` (llsettingssky.cpp:1756). Each shader then applies its own
+    // exp(-light_atten * off_axis). We were feeding slng_sunlight_color = SkyLighting.SunDiffuse,
+    // which ALREADY carries exp(-light_atten * lighty) AND lightTransmittance, so the dome
+    // attenuated it a second time. On PARITY-00 that is raw (0.734, 0.782, 0.900) against
+    // SunDiffuse (0.489, 0.460, 0.439): blue-dominant turned red-dominant before the sky colour
+    // was even built. Third time calculateLightSettings' output has been used where the viewer
+    // uses a raw setting -- per ADR 0003 its results feed the DirectionalLight and nothing else.
     vec3 combined_haze = max(slng_blue_density.rgb + vec3(slng_haze_density), vec3(1e-6));
     vec3 blue_weight = slng_blue_density.rgb / combined_haze;
     vec3 haze_weight = vec3(slng_haze_density) / combined_haze;
-    
+
     float density_dist = rel_pos_len * slng_density_multiplier;
-    vec3 transmittance = exp(-combined_haze * density_dist * slng_distance_multiplier);
-    
-    // compute haze glow
-    float haze_glow = dot(EYEDIR, light_dir);
-    // restrict glow to the sky
-    haze_glow *= max(0.0, dot(light_dir, EYEDIR));
-    haze_glow = 1.0 - haze_glow;
+
+    // NO distance_multiplier. skyV.glsl:58 declares the uniform and never reads it; cloudsV.glsl
+    // does not even declare it. Only atmosphericsFuncs.glsl:84 -- the SURFACE path -- multiplies
+    // by it. Ours did, making the dome and the clouds too transparent by exp(density_dist * 0.2).
+    vec3 transmittance = exp(-combined_haze * density_dist);
+
+    // Haze glow, skyV.glsl:141-155 and cloudsV.glsl:142-155: a plain `1 - dot`. The extra
+    // `*= max(0, dot(light_dir, view))` we had belongs to atmosphericsFuncs.glsl:95 alone, and it
+    // flattens the gradient -- squaring the dot dims the glow near the light and pins it to a
+    // constant 1.0 across the entire anti-solar hemisphere.
+    float haze_glow = 1.0 - dot(EYEDIR, light_dir);
     haze_glow = max(haze_glow, 0.001);
     haze_glow *= slng_glow.x;
-    
-    // glow.z in SL is often negative (e.g. -0.5) to invert the falloff.
-    // We use abs(slng_glow.z) to avoid NaN on negative base, and invert if slng_glow.z < 0.
-    float glow_exp = slng_glow.z;
-    if (glow_exp < 0.0) {
-        haze_glow = pow(haze_glow, glow_exp);
-    } else {
-        haze_glow = pow(haze_glow, glow_exp);
-    }
-    haze_glow = clamp(haze_glow, 0.0, 1000.0);
+    // glow.z is expected to be negative, making this a 1/angle falloff. The clamp is ours, not
+    // the viewer's: pow() with a negative exponent on a near-zero base is unbounded.
+    haze_glow = clamp(pow(haze_glow, slng_glow.z), 0.0, 1000.0);
 
     // sun_moon_glow_factor gates the halo by which body is up: 1.0 under the sun,
-    // moon_brightness * 0.25 under the moon, 0 when neither is up
-    // (llsettingssky.cpp:1317-1321). Adding the 0.25 "minimum anti-solar illumination"
-    // unconditionally, as this did, gave the NIGHT sky a solar halo the real viewer never draws.
+    // moon_brightness * 0.25 under the moon, 0 when neither is up (llsettingssky.cpp:1317-1321).
     //
-    // The sky and cloud paths genuinely differ and both are ported here rather than sharing one
-    // value:
-    //   sky    (atmosphericsFuncs.glsl:105-108) adds the minimum first, THEN scales -- so a dim
-    //          moon still leaves a faint anti-solar term.
-    //   clouds (cloudsF.glsl:146-150) scales first and then ZEROES outright whenever the factor
-    //          is below 1. This is SL-13768: "For sun, add to glow. For moon, remove glow
-    //          entirely."
-    // skyF.glsl:110 -- `(factor < 1) ? 0 : factor * (haze_glow + 0.25)`. Note the sky dome
-    // ZEROES the glow at night as well; only atmosphericsFuncs' SURFACE path keeps a scaled
-    // remnant. Ours kept one here, which put a solar halo in the night sky.
+    // The sky and cloud paths genuinely differ by one parenthesis, so both are ported rather than
+    // sharing a value:
+    //   sky    (skyV.glsl:155)    factor * (glow + 0.25)
+    //   clouds (cloudsV.glsl:155) factor *  glow + 0.25
+    // Both ZERO the glow outright at night -- SL-13768, "For sun, add to glow. For moon, remove
+    // glow entirely." Only atmosphericsFuncs' SURFACE path keeps a scaled remnant; ours kept one
+    // here too, which put a solar halo in the night sky.
     float haze_glow_sky = (slng_sun_moon_glow_factor < 1.0)
         ? 0.0
         : slng_sun_moon_glow_factor * (haze_glow + 0.25);
     float haze_glow_cloud = (slng_sun_moon_glow_factor < 1.0)
         ? 0.0
         : (haze_glow * slng_sun_moon_glow_factor + 0.25);
-    
-    vec3 amb_color = slng_ambient_color.rgb;
-    vec3 diff_color = slng_sunlight_color.rgb;
-    if (sun_dir_godot.y < 0.0) {
-        amb_color = slng_moon_ambient.rgb;
-        diff_color = slng_moonlight_color.rgb;
-    }
-    
-    // increase ambient when there are more clouds
-    vec3 tmpAmbient = amb_color + (vec3(1.0) - amb_color) * slng_cloud_shadow * 0.5;
-    
-    // Original sunlight/moonlight (no artificial boost)
-    vec3 cs = diff_color * (1.0 - slng_cloud_shadow);
-    
-    // What the cloud layer needs: the haze term BEFORE attenuation, which cloudsF.glsl:158-160
-    // calls additiveColorBelowCloud and bleeds up into the underside of a cloud. Left on the
-    // atmosphericsFuncs form (with distance_multiplier) because that is the function the cloud
-    // path actually consumes.
-    vec3 additive_below_cloud = (slng_blue_horizon.rgb * blue_weight) * (cs + tmpAmbient) +
-                                (vec3(slng_haze_horizon) * haze_weight) * (cs * haze_glow_sky + tmpAmbient);
 
-    // --- Sky dome colour: a port of skyF.glsl's main(), which is a DIFFERENT function from the
-    // surface atmospherics in atmosphericsFuncs.glsl. Ours used one haze term for both; SL builds
-    // the sky from TWO and blends them, and that blend IS the horizon gradient. Without it the sky
-    // is a flat wash -- isolated by the PARITY-12/20 probes, where removing the clouds left the
-    // bare sky visible and it read pale grey against Firestorm's blue.
-    //
-    // Three things here differ from the surface path and are deliberate:
-    //   * sunlight is attenuated PER VIEW DIRECTION: off_axis mixes the view elevation with the
-    //     light's, so the sky reddens toward the horizon on its own.
-    //   * the transmittance carries NO distance_multiplier (skyF.glsl uses
-    //     exp(-combined_haze * density_dist); atmosphericsFuncs adds the multiplier).
-    //   * the "above cloud" term uses the RAW ambient setting, not the cloud-lifted one.
-    vec3 sky_sunlight = (sun_dir_godot.y >= 0.0)
+    // skyV.glsl:82 -- the moon reuses the sun's colour (getMoonlightColor returns
+    // getSunlightColor, llsettingssky.cpp:1681-1684) with a "magic 0.7 to match legacy color".
+    vec3 light_color = (sun_dir_godot.y >= 0.0)
         ? slng_sunlight_color.rgb
-        : slng_moonlight_color.rgb * 0.7;   // magic 0.7 "to match legacy color", skyF.glsl
+        : slng_moonlight_color.rgb * 0.7;
+
+    // The raw `ambient` setting, used by all three atmospherics paths. There is NO night ambient
+    // here: skyV uses the same value whichever body is up. Our scotopic slng_moon_ambient branch
+    // was an invention, and MoonAmbient is one of calculateLightSettings' dead outputs (ADR 0003).
+    vec3 raw_ambient = slng_ambient.rgb;
 
     vec3 light_atten = (slng_blue_density.rgb + vec3(slng_haze_density * 0.25))
                      * (slng_density_multiplier * slng_max_y);
-    float off_axis = 1.0 / max(1e-6, max(0.0, EYEDIR.y) + light_dir.y);
-    sky_sunlight *= exp(-light_atten * off_axis);
 
-    vec3 sky_haze = exp(-combined_haze * density_dist);
-    vec3 raw_ambient = slng_ambient.rgb;
+    // skyV.glsl:112-113 and cloudsV.glsl:130-131 are identical: the sunlight is attenuated PER
+    // VIEW DIRECTION, mixing the view elevation with the light's. That is what reddens the sky
+    // toward the horizon on its own, and it is why the dome needs the unattenuated colour above.
+    float off_axis_view = 1.0 / max(1e-6, max(0.0, EYEDIR.y) + light_dir.y);
+    vec3 sunlight = light_color * exp(-light_atten * off_axis_view);
 
-    // Haze colour ABOVE the cloud layer.
-    vec3 sky_col = (slng_blue_horizon.rgb * blue_weight) * (sky_sunlight + raw_ambient)
-                 + (vec3(slng_haze_horizon) * haze_weight) * (sky_sunlight * haze_glow_sky + raw_ambient);
+    // Sunlight dimmed by cloud cover, shared by skyV.glsl:147 and cloudsV.glsl:162.
+    vec3 cs = sunlight * max(0.0, 1.0 - slng_cloud_shadow);
+
+    // More cloud cover means more of the sky diffuses light, so ambient goes UP. cloudsV.glsl:158
+    // does NOT clamp (1 - ambient) at zero where skyV.glsl:144 does; kept asymmetric on purpose,
+    // so an ambient above 1.0 dims the cloud path very slightly and leaves the sky path alone.
+    vec3 tmpAmbient = raw_ambient + (vec3(1.0) - raw_ambient) * slng_cloud_shadow * 0.5;
+
+    // additiveColorBelowCloud (cloudsV.glsl:165-166): the haze that bleeds up into the underside
+    // of a cloud. NOT multiplied by (1 - transmittance) here -- cloudsF applies that itself.
+    vec3 additive_below_cloud = (slng_blue_horizon.rgb * blue_weight) * (cs + tmpAmbient)
+                              + (vec3(slng_haze_horizon) * haze_weight) * (cs * haze_glow_cloud + tmpAmbient);
+
+    // The cloud body's own sunlight, cloudsV.glsl:169-171: the raw colour again, attenuated with a
+    // SECOND off_axis that ignores the view direction entirely. Not a typo in the viewer -- the
+    // clouds are a flat layer, so their lighting does not vary with where you look.
+    vec3 cloud_body_sunlight = light_color * exp(-light_atten / max(1e-6, light_dir.y * 2.0));
+
+    // --- Sky dome colour, skyV.glsl:126-152 ----------------------------------------------------
+    // Two haze terms blended by distance, and that blend IS the horizon gradient. Ours built one
+    // term, which is why the sky read as a flat wash -- isolated by the PARITY-12/20 probes, where
+    // removing the clouds left the bare sky visible against Firestorm's blue.
+    vec3 sky_haze = transmittance;
+
+    // Haze colour ABOVE the cloud layer: raw ambient, undimmed sunlight.
+    vec3 sky_col = (slng_blue_horizon.rgb * blue_weight) * (sunlight + raw_ambient)
+                 + (vec3(slng_haze_horizon) * haze_weight) * (sunlight * haze_glow_sky + raw_ambient);
     sky_col *= vec3(1.0) - sky_haze;
 
     // Haze colour BELOW it: ambient lifted by cloud cover, sunlight dimmed by it.
     vec3 sky_amb_below = raw_ambient + max(vec3(0.0), vec3(1.0) - raw_ambient) * slng_cloud_shadow * 0.5;
-    vec3 sky_sun_below = sky_sunlight * max(0.0, 1.0 - slng_cloud_shadow);
-    vec3 sky_below = (slng_blue_horizon.rgb * blue_weight) * (sky_sun_below + sky_amb_below)
-                   + (vec3(slng_haze_horizon) * haze_weight) * (sky_sun_below * haze_glow_sky + sky_amb_below);
+    vec3 sky_below = (slng_blue_horizon.rgb * blue_weight) * (cs + sky_amb_below)
+                   + (vec3(slng_haze_horizon) * haze_weight) * (cs * haze_glow_sky + sky_amb_below);
 
-    // Blend toward the below-cloud colour with distance. Note the sqrt is applied TWICE in the
-    // viewer -- once to combined_haze, then again inside the blend weight -- so the effective
-    // weight is 1 - t^0.25. That steepness near the horizon is the gradient.
+    // The sqrt lands TWICE in the viewer -- once on combined_haze, then again inside the blend
+    // weight -- so the effective weight is 1 - t^0.25. That steepness near the horizon is the
+    // gradient.
     sky_haze = sqrt(sky_haze);
     sky_col += (sky_below - sky_col) * (vec3(1.0) - sqrt(sky_haze));
 
-    // skyF.glsl ends with `color.rgb *= 2.` and a clamp to 5, not our min-to-10.
+    // skyF.glsl:108-109 ends with `color.rgb *= 2.` and a clamp to 5.
     vec3 additive = clamp(sky_col * 2.0, vec3(0.0), vec3(5.0));
     // -----------------------------
 
@@ -488,13 +499,12 @@ void sky() {
     //                        stayed neutral white through a sunset that the sky behind them was
     //                        already rendering warm.
     //   cloudColorAmbient -- the shadow side, plus haze bleeding up from below the layer.
-    // Deliberately fed from diff_color rather than `cs`: SL dims sunlight by cloud_shadow for the
-    // SKY, then resets it to the undimmed sunlight_color for the cloud term (cloudsF.glsl:163-166)
-    // -- cloud cover must not shade the clouds casting it. slng_sunlight_color is already the
-    // atmospherically attenuated value (SkyLighting.Calculate's output), so no further attenuation.
+    // Deliberately fed from cloud_body_sunlight rather than `cs`: SL dims sunlight by cloud_shadow
+    // for the SKY, then re-reads the undimmed sunlight_color for the cloud term
+    // (cloudsV.glsl:169-171) -- cloud cover must not shade the clouds casting it.
     // sqrt on the transmittance is SL's own: less atmospheric opacity below the cloud layer.
     vec3 cloud_atten = sqrt(clamp(transmittance, vec3(0.0), vec3(1.0)));
-    vec3 cloudColorSun = (diff_color * haze_glow_cloud) * slng_cloud_color.rgb * cloud_atten;
+    vec3 cloudColorSun = (cloud_body_sunlight * haze_glow_cloud) * slng_cloud_color.rgb * cloud_atten;
     vec3 cloudColorAmbient = tmpAmbient * slng_cloud_color.rgb * cloud_atten
                            + additive_below_cloud * (vec3(1.0) - cloud_atten);
     // SL's own clamp (cloudsF.glsl:222), kept literally. Raising this ceiling to match the sky's
@@ -522,5 +532,22 @@ void sky() {
     vec3 ground_color = slng_haze_color.rgb * 0.85;
     sky_color = mix(sky_color, ground_color, ground_blend * 0.5); // Only dim it slightly for natural reflections
     
-    COLOR = sky_color;
+    // The viewer's sky is DISPLAY-REFERRED, not scene-linear, and that mismatch -- not the haze
+    // maths -- is what made our sky a pale wash.
+    //
+    // Follow one sky pixel through Firestorm. skyF.glsl:108-109 writes clamp(hazeColor * 2, 0, 5).
+    // softenLightF.glsl:195-204 picks it up under GBUFFER_FLAG_SKIP_ATMOS, calls srgb_to_linear on
+    // it and multiplies by sky_hdr_scale -- which is 1.0 for a legacy sky (llsettingsvo.cpp:855).
+    // postDeferredGammaCorrect.glsl then does linear_to_srgb and clamps to [0,1]. The two
+    // conversions cancel, so the pixel Firestorm actually shows IS clamp(hazeColor * 2, 0, 1),
+    // read straight as sRGB. No tonemap touches it (see Boot.cs for why).
+    //
+    // Godot treats a sky shader's COLOR as linear radiance, so handing it the viewer's value
+    // unconverted overstated every channel and then let ACES flatten what was left. Measured at
+    // 25 degrees elevation on PARITY-00: Firestorm (0.48, 0.63, 1.00), ours (0.85, 0.90, 0.97) --
+    // the washed-out grey-blue with no horizon gradient, reproduced numerically.
+    //
+    // Clamping before the conversion is the viewer's own final clamp. It also stops the sky from
+    // tripping GlowHdrThreshold by itself, which srgb_to_linear(5.0) = 43.0 certainly would.
+    COLOR = srgb_to_linear(clamp(sky_color, vec3(0.0), vec3(1.0)));
 }

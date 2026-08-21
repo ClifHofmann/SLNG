@@ -162,10 +162,31 @@ cloud colour picking up the haze colour, and a six-parameter version that destro
 the isolation. None of those were shader bugs. Worth remembering before concluding
 a divergence from a probe that has not been sanity-checked as readable.
 
-**Still open:** sky colour. With the clouds accounted for, the bare sky reads paler
-than Firestorm's and lacks its horizon gradient. That is a separate function —
-`skyF.glsl` builds the sky from TWO haze terms and blends them, where the surface
-atmospherics in `atmosphericsFuncs.glsl` uses one.
+### What the coverage probes exposed instead: the sky itself
+
+With the clouds retired from suspicion, the bare sky was visible — and it read pale
+grey where Firestorm's is blue with a horizon gradient. Chasing that found four
+divergences, three small and one that dominated:
+
+| # | Divergence | Source | Weight |
+|---|---|---|---|
+| 1 | Sky value treated as linear radiance and then ACES-tonemapped | it is display-referred, and legacy skies are never tonemapped | **almost all of it** |
+| 2 | Sky dome fed `SkyLighting.SunDiffuse`, then attenuated again | `llsettingsvo.cpp:782-785` binds the RAW `sunlight_color` | moderate |
+| 3 | `haze_glow` used the surface path's squared form | `skyV.glsl:142` / `cloudsV.glsl:142` are plain `1 - dot` | flattened the azimuth gradient |
+| 4 | `distance_multiplier` applied to the dome and clouds | neither sky shader reads it | mild over-transparency |
+
+Modelled against the captured `PARITY-00` frame at 25° elevation: Firestorm
+`(0.48, 0.63, 1.00)`, ours `(0.85, 0.90, 0.97)`. Fixing 2–4 alone moved it to
+`(0.89, 0.93, 1.00)` — i.e. nowhere. Only #1 closed it. **Worth generalising: a
+parameter probe cannot detect a wrong transfer function, because it scales every
+probe equally.** All twenty-two sky probes would have read "matches in direction,
+too pale in magnitude", which is indistinguishable from twenty-two separate
+calibration errors.
+
+The full derivation is in [ADR 0003](adr/0003-eep-parameter-model-and-lighting-seam.md)
+under *"The sky is display-referred"*. With all four corrected the model reproduces
+the whole dome to within 0.0000 per channel, so the remaining sky work is
+verification rather than search.
 
 ## Water probes
 

@@ -102,7 +102,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.7.32-alpha";
+    public const string AppVersion = "v0.7.33-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -521,7 +521,30 @@ public partial class Boot : Control
             AmbientLightSource = Godot.Environment.AmbientSource.Sky,
             AmbientLightEnergy = 1.0f,
             VolumetricFogEnabled = false,
-            TonemapMode = Godot.Environment.ToneMapper.Aces,
+
+            // NO tonemapping, because the viewer does none for the skies OpenSim actually sends.
+            //
+            // Firestorm decides this per sky. `classic_mode = psky->canAutoAdjust() &&
+            // !RenderSkyAutoAdjustLegacy` (llsettingsvo.cpp:813), where
+            // `mCanAutoAdjust = !settings.has("reflection_probe_ambiance")`
+            // (llsettingssky.cpp:1171) and RenderSkyAutoAdjustLegacy ships as 0 — its own settings
+            // comment calls it "the opt-out button for HDR and tonemapping when coupled with a sky
+            // setting that predates PBR". For such a sky getTonemapMix() returns 0.0 with the
+            // comment "legacy settings do not support tonemaping" (llsettingssky.cpp:2062), and the
+            // final pass is nothing but linear_to_srgb plus a clamp
+            // (postDeferredGammaCorrect.glsl:47-56).
+            //
+            // Every legacy Windlight sky, and every EEP sky converted from one, lacks
+            // reflection_probe_ambiance — the PARITY-00 capture from Howletts has no such key — so
+            // classic mode is what we are actually being compared against. Running ACES on top of
+            // the ported atmospherics desaturated and lifted the sky into a near-white wash: at 25
+            // degrees elevation, Firestorm (0.48, 0.63, 1.00) against our (0.85, 0.90, 0.97).
+            //
+            // Godot's Linear mapper is `color / white` with white at 1.0, i.e. the identity, so the
+            // frame reaches the screen through linear_to_srgb and a clamp exactly as the viewer's
+            // does. TODO: once EnvironmentLlsdParser reads reflection_probe_ambiance, switch back
+            // to Aces for skies that carry it, which is the branch this mirrors.
+            TonemapMode = Godot.Environment.ToneMapper.Linear,
             
             // Post-FX (M2-5)
             SsaoEnabled = true,

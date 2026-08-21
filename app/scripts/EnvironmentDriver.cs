@@ -392,10 +392,18 @@ public sealed class EnvironmentDriver
             : 0.0f;
         RenderingServer.GlobalShaderParameterSet("slng_sun_moon_glow_factor", glowFactor);
 
-        RenderingServer.GlobalShaderParameterSet("slng_sunlight_color", ToColorFast(lighting.SunDiffuse));
-        RenderingServer.GlobalShaderParameterSet("slng_ambient_color", ToColorFast(lighting.SunAmbient));
-        RenderingServer.GlobalShaderParameterSet("slng_moonlight_color", ToColorFast(lighting.MoonDiffuse));
-        RenderingServer.GlobalShaderParameterSet("slng_moon_ambient", ToColorFast(lighting.MoonAmbient));
+        // The sky/cloud shaders take the RAW settings, not SkyLighting's output. The viewer binds
+        // SG_SKY's sunlight_color to psky->getSunlightColor() and moonlight_color to
+        // getMoonlightColor() — which is getSunlightColor() again, since the moon and sun share a
+        // colour in SL (llsettingsvo.cpp:782-785, llsettingssky.cpp:1681-1684). skyV.glsl and
+        // cloudsV.glsl then each apply their own exp(-light_atten * off_axis).
+        //
+        // Publishing SunDiffuse here meant the dome attenuated an already-attenuated colour, and
+        // that is the third time calculateLightSettings' output has been fed somewhere the viewer
+        // feeds a raw setting. Its outputs drive the Godot DirectionalLight and the ambient energy
+        // (ApplyLighting below) and nothing else — see ADR 0003.
+        RenderingServer.GlobalShaderParameterSet("slng_sunlight_color", ToColorFast(sky.SunlightColor));
+        RenderingServer.GlobalShaderParameterSet("slng_moonlight_color", ToColorFast(sky.SunlightColor));
         RenderingServer.GlobalShaderParameterSet("slng_haze_color", ToColorFast(lighting.HazeColor));
 
         // star_brightness is an EEP setting on a 0..500 scale (validator range, llsettingssky.cpp:781),

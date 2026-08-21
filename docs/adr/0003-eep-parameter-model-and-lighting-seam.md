@@ -188,6 +188,72 @@ Everything downstream happens **per fragment**, in
 `calcAtmosphericVars` / `calcAtmosphericVarsLinear`
 (`atmosphericsFuncs.glsl:52` and `:147`).
 
+## The sky is display-referred, and legacy skies are never tonemapped
+
+This is the second seam, and it turned out to matter more than any single parameter.
+
+Follow one sky pixel through the viewer:
+
+| Step | Source | Effect |
+|---|---|---|
+| 1 | `skyV.glsl:152` | `vary_HazeColor` — the two-term haze colour |
+| 2 | `skyF.glsl:108-109` | `color *= 2.` then `clamp(color, 0, 5)` |
+| 3 | `softenLightF.glsl:195-204` | `GBUFFER_FLAG_SKIP_ATMOS` → `srgb_to_linear(color) * sky_hdr_scale` |
+| 4 | `llsettingsvo.cpp:855-856` | `sky_hdr_scale = 1.0` for a legacy sky |
+| 5 | `postDeferredGammaCorrect.glsl:47-56` | `linear_to_srgb(color)`, then `clamp(color, 0, 1)` |
+
+Steps 3 and 5 are inverses and step 4 is the identity, so **the pixel Firestorm
+displays is `clamp(hazeColor * 2, 0, 1)`, read directly as sRGB**. The
+atmospherics produce a display-referred value, not scene radiance. Nothing
+tonemaps it.
+
+That last part is a deliberate branch, not an omission:
+
+```
+classic_mode = psky->canAutoAdjust() && !RenderSkyAutoAdjustLegacy   (llsettingsvo.cpp:813)
+mCanAutoAdjust = !settings.has("reflection_probe_ambiance")           (llsettingssky.cpp:1171)
+RenderSkyAutoAdjustLegacy defaults to 0                               (Firestorm settings.xml)
+getTonemapMix(false) = 0.0f  // "legacy settings do not support tonemaping"  (:2062)
+```
+
+Firestorm's own comment on that setting calls it *"the opt-out button for HDR and
+tonemapping when coupled with a sky setting that predates PBR"*. Every legacy
+Windlight sky, and every EEP sky converted from one, lacks
+`reflection_probe_ambiance` — including the `PARITY-00` capture from Howletts — so
+classic mode is what our screenshots are actually being compared against.
+
+We were doing the opposite twice over: handing Godot the viewer's value as if it
+were linear radiance, then running ACES on it. Modelled against the captured
+`PARITY-00` frame, at 25° elevation Firestorm renders `(0.48, 0.63, 1.00)` and we
+rendered `(0.85, 0.90, 0.97)` — the pale grey-blue with no horizon gradient that
+the probes exposed. Correcting only the haze inputs moved it to
+`(0.89, 0.93, 1.00)`, i.e. nowhere; the transfer function was carrying almost all
+of the error.
+
+**Decision.** The sky shader converts its result with `srgb_to_linear` before
+handing it to Godot, and the `WorldEnvironment` uses `ToneMapper.Linear` — whose
+`color / white` at `white = 1.0` is the identity, so the frame reaches the screen
+through `linear_to_srgb` and a clamp exactly as the viewer's does. That reproduces
+the whole dome to within 0.0000 per channel.
+
+The tonemapper is a frame-wide setting, so this also stops ACES desaturating
+geometry — which is likewise correct, since `postDeferredGammaCorrect` does not
+tonemap geometry either in classic mode.
+
+**Consequence.** When `EnvironmentLlsdParser` learns to read
+`reflection_probe_ambiance`, the tonemapper must become a function of the sky:
+`Aces` for skies that carry it, `Linear` for those that do not. That is the same
+branch the viewer takes, and until the parser gains the key every sky we receive
+takes the `Linear` side.
+
+### `distance_multiplier` never reaches the sky
+
+Related, and worth recording because it looks like an oversight: `skyV.glsl:58`
+declares `uniform float distance_multiplier` and **never reads it**, and
+`cloudsV.glsl` does not declare it at all. Only `atmosphericsFuncs.glsl:84` — the
+surface path — multiplies by it. A probe that changes `distance_multiplier` will
+therefore move fog on geometry and leave the sky dome and clouds untouched.
+
 ## The lighting seam — the finding that motivates this ADR
 
 `LLSettingsSky::calculateLightSettings` (`llsettingssky.cpp:1706`) computes

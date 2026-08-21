@@ -89,17 +89,9 @@ slng_sunlight_color={
 "type": "color",
 "value": Color(0.7342, 0.7815, 0.8999, 1)
 }
-slng_ambient_color={
-"type": "color",
-"value": Color(0.25, 0.25, 0.25, 1)
-}
 slng_moonlight_color={
 "type": "color",
 "value": Color(0.5, 0.5, 0.5, 1)
-}
-slng_moon_ambient={
-"type": "color",
-"value": Color(0.1, 0.1, 0.1, 1)
 }
 slng_haze_color={
 "type": "color",
