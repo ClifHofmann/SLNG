@@ -18,7 +18,7 @@ place.
 
 ## The presets are pre-built — import, don't hand-edit
 
-They live in [`tools/testassets/eep-parity/`](../tools/testassets/eep-parity/): 18
+They live in [`tools/testassets/eep-parity/`](../tools/testassets/eep-parity/): 21
 sky files and 7 water files.
 
 They are **legacy Windlight XML**, because that is what the environment editor's
@@ -106,6 +106,27 @@ argument. Ranges are the viewer's own (`llsettingssky.cpp:726-818`).
 | `PARITY-17-night-moondark` *(no file — set in editor)* | `PARITY-16` + moon brightness 0.0 | | Should be darker than 16 and carry no solar halo at all |
 | `PARITY-18-scroll-fast` | Cloud scroll rate X | 30 legacy → 20 real | Fast drift. Confirms drift reaches the shader at the right rate |
 | `PARITY-19-scroll-off` | `enable_cloud_scroll` | both false | Clouds must be completely still |
+| `PARITY-20-cover-black-000` | Cloud colour BLACK + cover 0.25 | | **Read coverage, not colour.** Density is exactly 0 here, so any cloud at all is a coverage bug |
+| `PARITY-21-cover-black-050` | Cloud colour BLACK + cover 0.50 | | Density 0.5 — expect heavy but not total |
+| `PARITY-22-cover-black-100` | Cloud colour BLACK + cover 1.00 | | Density 1.5 — `max(noise + 1.5, 0)` forces alpha to 1, so BOTH viewers must be totally black overhead |
+
+### Why the black-cloud probes exist
+
+Probes 11 and 12 were run and could not be read. At the default `cloud_color` of
+0.41 grey, a 40% soft cloud layer over a pale sky is visually indistinguishable
+from no cloud at all — two verdicts were called wrong from screenshots before that
+became clear. The default cloud colour is simply too close to the sky's.
+
+Setting `cloud_color` to pure black makes coverage directly countable: black
+against blue cannot be mistaken for absence. That turns "does it look cloudy" into
+"what fraction of the sky is dark", which is the quantity the formula actually
+predicts.
+
+Measured reference for comparison: the default cloud noise texture
+(`1dc1368f-…`, 512×512 greyscale) has a mean of 0.453 with **36.6% of texels above
+0.5**, and the disc our UV samples yields **39.7%**. So at density 0 the formula
+predicts roughly 40% coverage — if Firestorm shows near-zero there under a black
+cloud colour, the divergence is real and measurable rather than a reading error.
 
 ## Water probes
 
