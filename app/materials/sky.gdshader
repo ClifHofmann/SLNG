@@ -507,14 +507,25 @@ void sky() {
     vec3 cloudColorSun = (cloud_body_sunlight * haze_glow_cloud) * slng_cloud_color.rgb * cloud_atten;
     vec3 cloudColorAmbient = tmpAmbient * slng_cloud_color.rgb * cloud_atten
                            + additive_below_cloud * (vec3(1.0) - cloud_atten);
-    // SL's own clamp (cloudsF.glsl:222), kept literally. Raising this ceiling to match the sky's
-    // 10.0 was tried and was WRONG: cloudColorSun carries haze_glow, which line 135 permits up to
-    // 1000, so without the LDR clamp the sunlit term overshoots massively and the whole upper sky
-    // blows out to flat white -- clouds included. The clamp is not an artefact of SL compositing
-    // clouds in a separate pass, it is part of the algorithm: it is what bounds cloud brightness
-    // so the noise still reads as shape. If clouds look too weak against our sky, the fault is
-    // the SKY term being too bright, not this bound.
+    // cloudsF.glsl:150-152, all three lines and in this order:
+    //
+    //     color = (cloudColorSun*(1.-alpha2) + cloudColorAmbient);
+    //     color.rgb = clamp(color.rgb, vec3(0), vec3(1));
+    //     color.rgb *= 2.0;
+    //
+    // The clamp is genuinely at 1.0 and is part of the algorithm -- cloudColorSun carries
+    // haze_glow, which is permitted up to 1000 above, so without it the sunlit term overshoots and
+    // the noise stops reading as shape. Raising the ceiling was tried and blew the upper sky to
+    // flat white.
+    //
+    // But the DOUBLING comes after it, exactly as skyF.glsl:108 doubles the sky. Having ported the
+    // sky's factor and not this one left the clouds at half brightness: modelled at the current sun
+    // a mid cloud is (0.54, 0.55, 0.59) here and (1.00, 1.00, 1.00) in Firestorm -- storm grey
+    // against white, which is what "die Wolken sind falsch beleuchtet" was. Both values are
+    // display-referred sRGB, so the final clamp in the COLOR assignment absorbs the overshoot the
+    // same way the viewer's own postDeferredGammaCorrect does.
     vec3 cloud_col = clamp(cloudColorSun * (1.0 - alpha2) + cloudColorAmbient, vec3(0.0), vec3(1.0));
+    cloud_col *= 2.0;
     
     // Start with the base sky background
     vec3 sky_color = additive + stars;
