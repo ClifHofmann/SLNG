@@ -404,6 +404,21 @@ public sealed class EnvironmentDriver
         // (ApplyLighting below) and nothing else — see ADR 0003.
         RenderingServer.GlobalShaderParameterSet("slng_sunlight_color", ToColorFast(sky.SunlightColor));
         RenderingServer.GlobalShaderParameterSet("slng_moonlight_color", ToColorFast(sky.SunlightColor));
+
+        // The sun DISC is the one thing the viewer still colours with calculateLightSettings'
+        // output: `mSun.setColor(psky->getSunDiffuse())` (llvosky.cpp:527), consumed by
+        // LLDrawPoolWLSky::renderHeavenlyBodies through getInterpColor(). ADR 0003 dismissed
+        // llvosky as "the pre-EEP sky object" and that is wrong — the deferred renderer still
+        // draws its sun and moon billboards.
+        //
+        // It matters because SunDiffuse is atmospherically attenuated and the raw setting is not.
+        // On The Dangazi Forest's parcel-6 sunset the raw sunlight_color is (2.43, 2.44, 2.46)
+        // while SunDiffuse is (0.48, 0.16, 0.03) — the difference between a neutral white blob
+        // and an orange-red setting sun.
+        //
+        // The moon disc is NOT tinted: llvosky.cpp:528 sets pure white, so the shader uses a
+        // constant and needs nothing from here.
+        RenderingServer.GlobalShaderParameterSet("slng_sun_disc_color", ToColorFast(lighting.SunDiffuse));
         RenderingServer.GlobalShaderParameterSet("slng_haze_color", ToColorFast(lighting.HazeColor));
 
         // star_brightness is an EEP setting on a 0..500 scale (validator range, llsettingssky.cpp:781),

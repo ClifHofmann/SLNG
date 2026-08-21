@@ -261,11 +261,31 @@ therefore move fog on geometry and leave the sky dome and clouds untouched.
 the obvious thing to port: it is CPU-side, it is self-contained, and it produces
 exactly the four values a conventional engine wants.
 
-**It is dead code.** Searched across the viewer: `getSunDiffuse()`,
-`getMoonDiffuse()`, `getLightDiffuse()` and `getMoonAmbient()` have **no caller
-anywhere in `indra/newview`**. (`getSunDiffuse` appears once in `llvosky.cpp`, the
-pre-EEP sky object.) The modern renderer lights scenes exclusively through the
-shader path above.
+**It is dead code for lighting.** Searched across the viewer: `getMoonDiffuse()`,
+`getLightDiffuse()` and `getMoonAmbient()` have **no caller anywhere in
+`indra/newview`**. The modern renderer lights scenes exclusively through the shader
+path above.
+
+> **Correction (2026-08-21).** An earlier revision of this section wrote off
+> `getSunDiffuse()` too, dismissing its one call site as "`llvosky.cpp`, the pre-EEP
+> sky object". That was wrong, and it cost a round. `llvosky.cpp:527` is
+> `mSun.setColor(psky->getSunDiffuse())`, and `LLVOSky` is very much live: the
+> deferred renderer draws its sun and moon billboards through
+> `LLDrawPoolWLSky::renderHeavenlyBodies`, which reads that colour back via
+> `getInterpColor()` (lldrawpoolwlsky.cpp:371-406).
+>
+> So `getSunDiffuse` has exactly one live consumer — **the colour of the sun disc** —
+> and it is not interchangeable with the raw setting. On The Dangazi Forest's parcel-6
+> sunset the raw `sunlight_color` is `(2.43, 2.44, 2.46)` while `SunDiffuse` is
+> `(0.48, 0.16, 0.03)`: a neutral white disc five times too bright, against an
+> orange-red setting sun. Publishing the raw value to the sun billboard (correct for
+> the sky dome, wrong for the disc) is what produced it.
+>
+> The lesson is narrower than "check for consumers" and worth stating plainly:
+> "no callers" for a *group* of functions must be established per function, not for
+> the group. The moon's disc is the counter-example that proves the rule is not
+> symmetric — `llvosky.cpp:528` sets it to plain white and never consults
+> `getMoonDiffuse()` at all.
 
 We ported `calculateLightSettings` faithfully — verified by hand-recomputing two
 live samples to three decimals — and then built `EnvironmentDriver`'s
