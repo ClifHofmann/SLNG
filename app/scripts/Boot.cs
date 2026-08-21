@@ -102,7 +102,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.7.0-alpha";
+    public const string AppVersion = "v0.7.23-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -517,9 +517,10 @@ public partial class Boot : Control
         var environment = new Godot.Environment
         {
             BackgroundMode = Godot.Environment.BGMode.Sky,
-            Sky = new Sky { SkyMaterial = new ProceduralSkyMaterial() },
+            Sky = new Sky { SkyMaterial = new ShaderMaterial { Shader = GD.Load<Shader>("res://materials/sky.gdshader") } },
             AmbientLightSource = Godot.Environment.AmbientSource.Sky,
             AmbientLightEnergy = 1.0f,
+            VolumetricFogEnabled = false,
             TonemapMode = Godot.Environment.ToneMapper.Aces,
             
             // Post-FX (M2-5)
@@ -529,14 +530,22 @@ public partial class Boot : Control
             
             SsilEnabled = true,
             
+            // Glow is deliberately restrained, because the sun's atmospheric halo is ALREADY
+            // rendered in sky.gdshader -- that is what the haze_glow term is, ported from SL's own
+            // atmospherics. Post-process bloom on top of it double-counts the same effect, and
+            // GlowBloom in particular was the expensive half: any value above 0 makes glow apply
+            // BELOW the HDR threshold, i.e. across the entire bright sky rather than just the sun
+            // disc. Additive at full intensity then pushed that into a white blob wide enough to
+            // swallow the clouds next to the sun (reported against Firestorm, whose haze stays
+            // tight because it is shader-side only). HdrThreshold set explicitly rather than left
+            // at Godot's default so only genuinely bright highlights bloom, not the merely bright
+            // sky behind them. All four are calibration knobs, not ported values.
             GlowEnabled = true,
             GlowNormalized = true,
-            GlowIntensity = 1.0f,
-            GlowBloom = 0.1f,
-            GlowBlendMode = Godot.Environment.GlowBlendModeEnum.Additive,
-            
-            VolumetricFogEnabled = true,
-            VolumetricFogDensity = 0.005f,
+            GlowIntensity = 0.4f,
+            GlowBloom = 0.0f,
+            GlowHdrThreshold = 1.2f,
+            GlowBlendMode = Godot.Environment.GlowBlendModeEnum.Additive
         };
         _worldEnvironment = new WorldEnvironment { Name = "WorldEnvironment", Environment = environment };
         AddChild(_worldEnvironment);
@@ -629,17 +638,33 @@ public partial class Boot : Control
     ///
     /// This is not Windlight — sky colour, atmospherics and EEP are still Phase 5. It only fixes
     /// WHERE the light comes from, which is the part that changes what you see on a surface.</summary>
-    private void UpdateSunFromRegion()
+    private System.Numerics.Vector3 GetSunDirection()
     {
-        if (_sun == null || _session == null) return;
-
+        if (_session == null) return default;
         var d = _session.SunDirection;
-        if (d.LengthSquared() < 0.0001f) return; // no SimulatorViewerTimeMessage yet
+        if (d != System.Numerics.Vector3.Zero) return d;
+        return new System.Numerics.Vector3(
+            (float)System.Math.Cos(_session.SunPhase),
+            0f,
+            (float)System.Math.Sin(_session.SunPhase)
+        );
+    }
+
+    private void UpdateSunFromRegion(System.Numerics.Vector3 d)
+    {
+        if (_sun == null) return;
+
+        if (float.IsNaN(d.X) || float.IsNaN(d.Y) || float.IsNaN(d.Z) || d.LengthSquared() < 0.0001f) return;
 
         // SL is Z-up, Godot is Y-up: the same (x, z, -y) mapping the mesh path uses. SunDirection
         // points toward the sun, so the light travels the other way and the light node's forward
         // (-Z, which is what LookAt aims) is the negated vector.
-        var toSun = new Godot.Vector3(d.X, d.Z, -d.Y).Normalized();
+        var toSun = new Godot.Vector3(d.X, d.Z, -d.Y);
+        
+        if (toSun.LengthSquared() < 0.0001f)
+            return;
+            
+        toSun = toSun.Normalized();
 
         // Straight down would make LookAt's up-vector degenerate; skip that one frame rather than
         // emit a NaN basis.
@@ -732,14 +757,27 @@ public partial class Boot : Control
 
     public override void _Process(double delta)
     {
-        UpdateSunFromRegion();
-        // FEAT-ENV-01 Phase D. Reads the SAME SunDirection UpdateSunFromRegion just aimed the
-        // light with, so the sky dome/fog and the actual lit scene never disagree about which way
-        // is day even though the sky-dome mapping is otherwise a flat approximation (see
-        // EnvironmentDriver's own doc comment for why that's Phase E's job, not this one's).
+        // FEAT-ENV-02: Use the server's synced time if we have received a SimulatorViewerTimeMessage, 
+        // otherwise fall back to local UtcNow.
+        var simTime = _session?.SimUnixTime > 0 
+            ? System.DateTimeOffset.FromUnixTimeSeconds((long)(_session.SimUnixTime / 1000000UL))
+            : System.DateTimeOffset.UtcNow;
+            
+        var sunDir = GetSunDirection();
         _environmentDriver.Update(
             _worldEnvironment, _sun, _terrainRenderer?.WaterMaterial,
-            _session?.SunDirection ?? default, System.DateTimeOffset.UtcNow);
+            sunDir, simTime, _assetService, _gpuCache,
+            // Asset fetches abandon immediately while the session is down (AssetService checks
+            // IsConnected before every attempt) and the failure is then cached for 45s, so the
+            // driver must not even try before this is true -- see FetchTextureOnce.
+            assetsReady: _session?.IsConnected == true);
+
+        // FEAT-ENV-01 Phase D. Reads the SAME SunDirection EnvironmentDriver just aimed the
+        // light with, so the sky dome/fog and the actual lit scene never disagree about which way
+        // is day.
+        // CalculatedLightDirection, not CalculatedSunDirection: after sunset the scene is lit by
+        // the moon, and aiming this at the sun sent the light up through the ground.
+        UpdateSunFromRegion(_environmentDriver.CalculatedLightDirection);
 
         // TEMPORARY diagnostic (2026-07-23, OSGrid movement-judder live-test round): delta is
         // Godot's own measured wall-clock time since the last _Process call -- a large value here
