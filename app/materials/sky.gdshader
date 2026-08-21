@@ -257,15 +257,28 @@ void sky() {
     //
     // The old comment claimed SL's dome "only covers the middle 38% of the texture". That is not
     // what the source does: (-z + 1) / 2 maps the full direction range onto the full 0..1 UV.
-    vec2 dome_uv = vec2((-EYEDIR.z + 1.0) * 0.5, (-EYEDIR.x + 1.0) * 0.5);
+    // Perspective (ray-into-the-cloud-layer) projection. Dividing by the vertical component is
+    // what gives clouds their horizontal foreshortening toward the horizon; without it they
+    // stretch VERTICALLY into columns, which is wrong and was reported twice.
+    //
+    // Substituting EYEDIR straight into that formula, as a previous attempt here did, is only
+    // valid with the camera exactly at the dome's centre, and renderDome explicitly puts it
+    // elsewhere: `scalef(0.333)` then `translatef(0, -camHeightLocal, 0)` (lldrawpoolwlsky.cpp:95-120).
+    // So the honest description is: this approximates the ray/dome intersection that SL gets for
+    // free from its geometry, and it is an APPROXIMATION, not a port.
+    vec2 cube_uv = vec2(EYEDIR.z, -EYEDIR.x) / max(EYEDIR.y, 0.02);
 
-    // SL-13084: cloud textures are flipped horizontally so they match the Clouds > Cloud Scroll
-    // preview. Applied to texcoord0 in cloudsV.glsl, and kept in sync with the X negation on the
-    // scroll delta in EnvironmentDriver.
-    vec2 vary_texcoord0 = vec2(-dome_uv.x, dome_uv.y);
+    // The scale is ours, but it is no longer a free-floating guess. SL's dome UV
+    // (llvowlsky.cpp:430) is `(-z0 + 1)/2, (-x0 + 1)/2` on the unit vertex direction, so its UV
+    // radius from centre is cos(elevation) / 2 -- about 0.354 at 45 degrees. The projection above
+    // has magnitude 1.0 at that same elevation, so 0.35 reproduces SL's UV span there, i.e. the
+    // same number of texture repeats across the sky and therefore the same cloud size.
+    //
+    // The previous 0.05 came with a claim that SL's dome "only covers the middle 38% of the
+    // texture". The source does not do that, and 0.05 left the span ~7x too small: clouds far
+    // coarser than Firestorm's at the same cloud_scale (measured on Howletts 2026-08-21).
+    vec2 vary_texcoord0 = cube_uv * 0.35;
 
-    // Centred divide, exactly as cloudsV.glsl: -= 0.5, /= cloud_scale, += 0.5.
-    vary_texcoord0 -= 0.5;
     vary_texcoord0 /= max(slng_cloud_scale, 0.001);
     vary_texcoord0 += 0.5;
 
