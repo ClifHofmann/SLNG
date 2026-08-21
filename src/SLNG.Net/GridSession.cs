@@ -58,6 +58,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<ObjectUpdateEvent>? ObjectUpdateReceived;
     public event EventHandler<AvatarUpdateEvent>? AvatarUpdateReceived;
     public event EventHandler<ObjectRemovedEvent>? ObjectRemovedReceived;
+
+    /// <summary>The region's current simulated UNIX time (server time), extracted from SimulatorViewerTimeMessage.
+    /// Used to synchronize the EEP day cycle perfectly with the region.</summary>
+    public ulong SimUnixTime { get; private set; }
+
+    /// <summary>The region's current sun phase [0.0 - 2.0 * PI], extracted from SimulatorViewerTimeMessage.</summary>
+    public float SunPhase { get; private set; }
     public event EventHandler<ObjectPropertiesEvent>? ObjectPropertiesReceived;
     public event EventHandler<PhysicsPropertiesEvent>? PhysicsPropertiesReceived;
     public event EventHandler<NameResolvedEvent>? NameResolved;
@@ -229,6 +236,31 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // Coexists with ObjectManager's own internal ObjectUpdate handler (packet callbacks are
         // multicast) -- see _lightPresentByLocalId for why this is needed.
         _client.Network.RegisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
+        
+        // FEAT-ENV-02: Intercept raw SimulatorViewerTimeMessage to sync the server's time
+        _client.Network.RegisterCallback(PacketType.SimulatorViewerTimeMessage, OnSimulatorViewerTimePacket);
+
+        // FEAT-ENV-01: Subscribe to dynamic region environment updates via EventQueue
+        _client.Network.RegisterEventCallback("ExtEnvironment", delegate { OnEnvironmentEvent(); });
+        _client.Network.RegisterEventCallback("EnvironmentSettings", delegate { OnEnvironmentEvent(); });
+    }
+
+    private void OnEnvironmentEvent()
+    {
+        // An environment setting changed (or the day cycle advanced). Just re-poll.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var (capture, environment) = await FetchRegionEnvironmentAsync().ConfigureAwait(false);
+                if (capture != null) RegionEnvironmentCaptured?.Invoke(this, capture);
+                if (environment != null) RegionEnvironmentReceived?.Invoke(this, environment);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ENV] live update capture failed: {ex.Message}");
+            }
+        });
     }
 
     /// <summary>Scans each object's raw ExtraParams bytes for a Light (0x20) block, independent
@@ -243,6 +275,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         foreach (var block in update.ObjectData)
         {
             _lightPresentByLocalId[block.ID] = ExtraParamsContainsLight(block.ExtraParams);
+        }
+    }
+
+    private void OnSimulatorViewerTimePacket(object? sender, PacketReceivedEventArgs e)
+    {
+        if (e.Packet is SimulatorViewerTimeMessagePacket timePacket)
+        {
+            // Update thread-safe properties from the packet payload
+            SimUnixTime = timePacket.TimeInfo.UsecSinceStart;
+            SunPhase = timePacket.TimeInfo.SunPhase;
         }
     }
 
@@ -355,6 +397,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (hasExt)
             {
                 var ext = await _client.Environment.GetRegionEnvironmentAsync(cancellationToken).ConfigureAwait(false);
+                if (ext != null && !ext.Success)
+                {
+                    error += $"[ExtEnv Failed: {ext.Message}] ";
+                }
                 if (ext?.Environment is { } data)
                 {
                     dayLength = data.DayLength;
@@ -384,7 +430,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             // Recorded rather than thrown: "the sim has no environment" and "we failed to ask"
             // look identical in the output otherwise, and telling them apart is the point.
-            error = ex.Message;
+            error += $"[Exception: {ex.Message}]";
         }
 
         var capture = new RegionEnvironmentCapture(
@@ -2194,7 +2240,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
                     var udpBytes = await tcs.Task.ConfigureAwait(false);
                     if (udpBytes is { Length: > 0 })
-                        Console.Error.WriteLine($"[TextureFetch] {textureId}: UDP delivered {udpBytes.Length} bytes");
+                        // Console.Error.WriteLine($"[TextureFetch] {textureId}: UDP delivered {udpBytes.Length} bytes");
                     return udpBytes;
                 }
             }
@@ -2323,9 +2369,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 // instead; AssetService already detects a degraded decode and retries, which
                 // distinguishes "genuinely truncated" from "simply not EOC-terminated" by the one
                 // thing that actually settles it -- whether it decodes.
-                if (_fetchFailureLogged.TryAdd(textureId, 0))
-                    Console.Error.WriteLine($"[TextureFetch] {textureId}: no EOC marker " +
-                        $"({bytes.Length} bytes, tail {bytes[^2]:X2}{bytes[^1]:X2}) — decoding anyway");
+                // if (_fetchFailureLogged.TryAdd(textureId, 0))
+                //     Console.Error.WriteLine($"[TextureFetch] {textureId}: no EOC marker " +
+                //         $"({bytes.Length} bytes, tail {bytes[^2]:X2}{bytes[^1]:X2}) — decoding anyway");
             }
 
             return bytes;

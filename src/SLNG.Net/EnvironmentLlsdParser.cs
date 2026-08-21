@@ -152,6 +152,8 @@ internal static class EnvironmentLlsdParser
             CloudScrollRate = Vec2(map, "cloud_scroll_rate", d.CloudScrollRate),
             CloudVariance = Real(map, null, "cloud_variance", d.CloudVariance),
             CloudTextureId = Id(map, "cloud_id"),
+            SunTextureId = Id(map, "sun_id"),
+            MoonTextureId = Id(map, "moon_id"),
         };
     }
 

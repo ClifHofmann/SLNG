@@ -117,6 +117,12 @@ public record SkySettings
     /// <summary>Cloud noise texture asset, or <see cref="Guid.Empty"/> for the viewer default.</summary>
     public Guid CloudTextureId { get; init; }
 
+    /// <summary>Sun texture asset, or <see cref="Guid.Empty"/> for the viewer default.</summary>
+    public Guid SunTextureId { get; init; }
+
+    /// <summary>Moon texture asset, or <see cref="Guid.Empty"/> for the viewer default.</summary>
+    public Guid MoonTextureId { get; init; }
+
     /// <summary>The viewer's own default sky, used when a region advertises no environment at all
     /// and as the base every parsed sky starts from.</summary>
     public static SkySettings Default { get; } = new();
@@ -125,9 +131,8 @@ public record SkySettings
     /// orientations SLERP, because a component-wise lerp of two quaternions would drag the sun
     /// through the inside of its arc and change its speed across the sky.
     ///
-    /// <see cref="CloudTextureId"/> does not interpolate — an asset id has no midpoint. The
-    /// nearer keyframe's texture wins, which is what the viewer does with its own cloud texture
-    /// across a blend.</summary>
+    /// <see cref="CloudTextureId"/>, <see cref="SunTextureId"/>, and <see cref="MoonTextureId"/>
+    /// do not interpolate — an asset id has no midpoint. The nearer keyframe's texture wins.</summary>
     public static SkySettings Lerp(SkySettings a, SkySettings b, float t) => new()
     {
         AmbientColor = Vector3.Lerp(a.AmbientColor, b.AmbientColor, t),
@@ -149,6 +154,8 @@ public record SkySettings
         StarBrightness = float.Lerp(a.StarBrightness, b.StarBrightness, t),
         SunScale = float.Lerp(a.SunScale, b.SunScale, t),
         MoonScale = float.Lerp(a.MoonScale, b.MoonScale, t),
+        SunTextureId = t < 0.5f ? a.SunTextureId : b.SunTextureId,
+        MoonTextureId = t < 0.5f ? a.MoonTextureId : b.MoonTextureId,
 
         CloudColor = Vector3.Lerp(a.CloudColor, b.CloudColor, t),
         CloudPosDensity1 = Vector3.Lerp(a.CloudPosDensity1, b.CloudPosDensity1, t),
