@@ -147,9 +147,29 @@ def main():
         variant(SKY, "PARITY-16-night", sun_angle=R(3.4)),
         variant(SKY, "PARITY-18-scroll-fast", cloud_scroll_rate=A(30.0, 10.01099967956543)),
         variant(SKY, "PARITY-19-scroll-off", enable_cloud_scroll=AB(False, False)),
-        variant(SKY, "PARITY-20-cover-black-000", cloud_color=A(0, 0, 0, 0), cloud_shadow=A(0.25, 0, 0, 1)),
-        variant(SKY, "PARITY-21-cover-black-050", cloud_color=A(0, 0, 0, 0), cloud_shadow=A(0.50, 0, 0, 1)),
-        variant(SKY, "PARITY-22-cover-black-100", cloud_color=A(0, 0, 0, 0), cloud_shadow=A(1.00, 0, 0, 1)),
+        # Coverage probes. A BLACK cloud_color does not work -- oHazeColorBelowCloud
+        # (cloudsF.glsl:182) is added AFTER the cloud_color multiply, so a zeroed cloud
+        # colour leaves the cloud showing the haze colour, i.e. the sky's own colour.
+        # Tried as PARITY-20-cover-black-* and both viewers went blank. Contrast has to
+        # come from the other side instead: kill the sky, keep the cloud white.
+        #
+        # Zeroing blue_density and haze_density drives combined_haze to its 1e-6 floor,
+        # so transmittance -> 1 and `additive *= (1 - transmittance)` -> 0: a black sky.
+        # The same transmittance makes cloud_atten -> 1, which collapses the haze-bleed
+        # term to zero as well, so the cloud really is its own colour. White on black
+        # makes coverage countable.
+        variant(SKY, "PARITY-20-cover-000", cloud_shadow=A(0.25, 0, 0, 1),
+                cloud_color=A(1, 1, 1, 1), ambient=A(0, 0, 0, 0),
+                blue_horizon=A(0, 0, 0, 0), blue_density=A(0, 0, 0, 0),
+                haze_horizon=A(0, 0, 0, 1), haze_density=A(0, 0, 0, 1)),
+        variant(SKY, "PARITY-21-cover-050", cloud_shadow=A(0.50, 0, 0, 1),
+                cloud_color=A(1, 1, 1, 1), ambient=A(0, 0, 0, 0),
+                blue_horizon=A(0, 0, 0, 0), blue_density=A(0, 0, 0, 0),
+                haze_horizon=A(0, 0, 0, 1), haze_density=A(0, 0, 0, 1)),
+        variant(SKY, "PARITY-22-cover-100", cloud_shadow=A(1.00, 0, 0, 1),
+                cloud_color=A(1, 1, 1, 1), ambient=A(0, 0, 0, 0),
+                blue_horizon=A(0, 0, 0, 0), blue_density=A(0, 0, 0, 0),
+                haze_horizon=A(0, 0, 0, 1), haze_density=A(0, 0, 0, 1)),
         variant(WATER, "PARITY-W0-neutral"),
         variant(WATER, "PARITY-W1-fogdens-max", waterFogDensity=R(100)),
         variant(WATER, "PARITY-W2-fogdens-min", waterFogDensity=R(0.001)),

@@ -106,27 +106,37 @@ argument. Ranges are the viewer's own (`llsettingssky.cpp:726-818`).
 | `PARITY-17-night-moondark` *(no file — set in editor)* | `PARITY-16` + moon brightness 0.0 | | Should be darker than 16 and carry no solar halo at all |
 | `PARITY-18-scroll-fast` | Cloud scroll rate X | 30 legacy → 20 real | Fast drift. Confirms drift reaches the shader at the right rate |
 | `PARITY-19-scroll-off` | `enable_cloud_scroll` | both false | Clouds must be completely still |
-| `PARITY-20-cover-black-000` | Cloud colour BLACK + cover 0.25 | | **Read coverage, not colour.** Density is exactly 0 here, so any cloud at all is a coverage bug |
-| `PARITY-21-cover-black-050` | Cloud colour BLACK + cover 0.50 | | Density 0.5 — expect heavy but not total |
-| `PARITY-22-cover-black-100` | Cloud colour BLACK + cover 1.00 | | Density 1.5 — `max(noise + 1.5, 0)` forces alpha to 1, so BOTH viewers must be totally black overhead |
+| `PARITY-20-cover-000` | Cover 0.25 on a BLACK sky with WHITE clouds | | **Read coverage, not colour.** Density is exactly 0, so any cloud at all is a coverage bug |
+| `PARITY-21-cover-050` | Same, cover 0.50 | | Density 0.5 — expect heavy but not total |
+| `PARITY-22-cover-100` | Same, cover 1.00 | | Density 1.5 forces alpha to 1, so BOTH viewers must be solid white overhead |
 
-### Why the black-cloud probes exist
+### Why the coverage probes look like that
 
 Probes 11 and 12 were run and could not be read. At the default `cloud_color` of
-0.41 grey, a 40% soft cloud layer over a pale sky is visually indistinguishable
-from no cloud at all — two verdicts were called wrong from screenshots before that
-became clear. The default cloud colour is simply too close to the sky's.
+0.41 grey, a soft cloud layer over a pale sky is indistinguishable from no cloud at
+screenshot resolution — two verdicts were called wrong from screenshots before that
+became clear.
 
-Setting `cloud_color` to pure black makes coverage directly countable: black
-against blue cannot be mistaken for absence. That turns "does it look cloudy" into
-"what fraction of the sky is dark", which is the quantity the formula actually
-predicts.
+The obvious fix, a **black** `cloud_color`, was tried and does not work.
+`oHazeColorBelowCloud` (cloudsF.glsl:182) is added AFTER the cloud-colour multiply,
+so zeroing the colour leaves the cloud showing the haze colour — which is the sky's
+own colour. Both viewers went blank. That term is a correct part of the port, so the
+probe was at fault, not the shader.
 
-Measured reference for comparison: the default cloud noise texture
-(`1dc1368f-…`, 512×512 greyscale) has a mean of 0.453 with **36.6% of texels above
-0.5**, and the disc our UV samples yields **39.7%**. So at density 0 the formula
-predicts roughly 40% coverage — if Firestorm shows near-zero there under a black
-cloud colour, the divergence is real and measurable rather than a reading error.
+Contrast therefore has to come from the other side: kill the sky, keep the cloud
+white. Zeroing `blue_density` and `haze_density` drives `combined_haze` to its 1e-6
+floor, so transmittance goes to 1 and `additive *= (1 - transmittance)` goes to 0 —
+a black sky. The same transmittance sends `cloud_atten` to 1, which collapses the
+haze-bleed term as well, so the cloud really is its own colour. White on black makes
+coverage countable.
+
+Measured reference: the default cloud noise texture (`1dc1368f-…`, 512×512
+greyscale) has mean 0.453 with **36.6% of texels above 0.5**, and the disc our UV
+samples yields **39.7%**. At density 0 the formula reduces to
+`min(max(noise - 0.5, 0) * 10 * density1.z, 1)`, which predicts roughly that
+fraction of the sky at full opacity. If both viewers come out clean at probe 20,
+that prediction is wrong and `cloud_shadow` is not the cover parameter the source
+comment claims.
 
 ## Water probes
 
