@@ -240,14 +240,30 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // FEAT-ENV-02: Intercept raw SimulatorViewerTimeMessage to sync the server's time
         _client.Network.RegisterCallback(PacketType.SimulatorViewerTimeMessage, OnSimulatorViewerTimePacket);
 
-        // FEAT-ENV-01: Subscribe to dynamic region environment updates via EventQueue
-        _client.Network.RegisterEventCallback("ExtEnvironment", delegate { OnEnvironmentEvent(); });
-        _client.Network.RegisterEventCallback("EnvironmentSettings", delegate { OnEnvironmentEvent(); });
+        // FEAT-ENV-01: a live environment change announces itself as a RegionInfo message, NOT as
+        // an EventQueue event. This listened on RegisterEventCallback("ExtEnvironment") first,
+        // which can never fire -- no EventQueue message of that name exists; it is a capability
+        // name.
+        //
+        // What actually happens (OpenSim EnvironmentModule.WindlightRefresh, and the same shape on
+        // SL): the server branches on what the viewer announced it can do. Requesting the
+        // ExtEnvironment capability sets CapsFlags.AdvEnv (0x8000) for us, and that branch calls
+        // HandleRegionInfoRequest -- a RegionInfo packet. Only a viewer WITHOUT that flag gets the
+        // EventQueue "WindlightRefresh" event instead; being EEP-capable takes us off that path.
+        //
+        // The real viewer wires it exactly here too: llenvironment.cpp:886 subscribes to
+        // LLRegionInfoModel's update callback and calls requestRegion() from it.
+        _client.Network.RegisterCallback(PacketType.RegionInfo, OnRegionInfoPacket);
     }
 
-    private void OnEnvironmentEvent()
+    private void OnRegionInfoPacket(object? sender, PacketReceivedEventArgs e) => RepollEnvironment();
+
+    private void RepollEnvironment()
     {
-        // An environment setting changed (or the day cycle advanced). Just re-poll.
+        // RegionInfo carries no environment payload -- it is only the "something about this region
+        // changed" signal -- so the answer is another capability fetch, same as at login.
+        // Deliberately unfiltered: RegionInfo also arrives for estate and terrain edits, and the
+        // viewer re-polls on all of them rather than trying to tell them apart.
         _ = Task.Run(async () =>
         {
             try
