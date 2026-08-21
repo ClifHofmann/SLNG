@@ -2,24 +2,24 @@
     <map>
     <key>ambient</key>
         <array>
-            <real>0</real>
-            <real>0</real>
-            <real>0</real>
-            <real>0</real>
+            <real>1.0499999523162842</real>
+            <real>1.0499999523162842</real>
+            <real>1.0499999523162842</real>
+            <real>0.3499999940395355</real>
         </array>
     <key>blue_density</key>
         <array>
-            <real>0</real>
-            <real>0</real>
-            <real>0</real>
-            <real>0</real>
+            <real>0.24475815892219543</real>
+            <real>0.44872328639030457</real>
+            <real>0.7599999904632568</real>
+            <real>0.3799999952316284</real>
         </array>
     <key>blue_horizon</key>
         <array>
-            <real>0</real>
-            <real>0</real>
-            <real>0</real>
-            <real>0</real>
+            <real>0.4954838156700134</real>
+            <real>0.4954838156700134</real>
+            <real>0.6399999856948853</real>
+            <real>0.3199999928474426</real>
         </array>
     <key>cloud_color</key>
         <array>
@@ -98,16 +98,16 @@
         </array>
     <key>haze_density</key>
         <array>
-            <real>0</real>
+            <real>0.699999988079071</real>
             <real>0</real>
             <real>0</real>
             <real>1</real>
         </array>
     <key>haze_horizon</key>
         <array>
-            <real>0</real>
-            <real>0</real>
-            <real>0</real>
+            <real>0.1899999976158142</real>
+            <real>0.1991560012102127</real>
+            <real>0.1991560012102127</real>
             <real>1</real>
         </array>
     <key>max_y</key>

@@ -147,29 +147,23 @@ def main():
         variant(SKY, "PARITY-16-night", sun_angle=R(3.4)),
         variant(SKY, "PARITY-18-scroll-fast", cloud_scroll_rate=A(30.0, 10.01099967956543)),
         variant(SKY, "PARITY-19-scroll-off", enable_cloud_scroll=AB(False, False)),
-        # Coverage probes. A BLACK cloud_color does not work -- oHazeColorBelowCloud
-        # (cloudsF.glsl:182) is added AFTER the cloud_color multiply, so a zeroed cloud
-        # colour leaves the cloud showing the haze colour, i.e. the sky's own colour.
-        # Tried as PARITY-20-cover-black-* and both viewers went blank. Contrast has to
-        # come from the other side instead: kill the sky, keep the cloud white.
+        # Coverage probes. Two changed keys ONLY -- cloud_color and cloud_shadow -- because
+        # the sky must keep rendering exactly as in PARITY-00-neutral. An earlier attempt
+        # zeroed ambient/blue_horizon/blue_density/haze_horizon/haze_density as well to get
+        # a black backdrop, and Firestorm then drew no clouds at all under any cover value.
+        # Six changed parameters make that uninterpretable: it could be a real divergence or
+        # a side effect of flattening its sky. Single-parameter isolation is the whole point
+        # of this protocol and that probe broke it.
         #
-        # Zeroing blue_density and haze_density drives combined_haze to its 1e-6 floor,
-        # so transmittance -> 1 and `additive *= (1 - transmittance)` -> 0: a black sky.
-        # The same transmittance makes cloud_atten -> 1, which collapses the haze-bleed
-        # term to zero as well, so the cloud really is its own colour. White on black
-        # makes coverage countable.
-        variant(SKY, "PARITY-20-cover-000", cloud_shadow=A(0.25, 0, 0, 1),
-                cloud_color=A(1, 1, 1, 1), ambient=A(0, 0, 0, 0),
-                blue_horizon=A(0, 0, 0, 0), blue_density=A(0, 0, 0, 0),
-                haze_horizon=A(0, 0, 0, 1), haze_density=A(0, 0, 0, 1)),
-        variant(SKY, "PARITY-21-cover-050", cloud_shadow=A(0.50, 0, 0, 1),
-                cloud_color=A(1, 1, 1, 1), ambient=A(0, 0, 0, 0),
-                blue_horizon=A(0, 0, 0, 0), blue_density=A(0, 0, 0, 0),
-                haze_horizon=A(0, 0, 0, 1), haze_density=A(0, 0, 0, 1)),
-        variant(SKY, "PARITY-22-cover-100", cloud_shadow=A(1.00, 0, 0, 1),
-                cloud_color=A(1, 1, 1, 1), ambient=A(0, 0, 0, 0),
-                blue_horizon=A(0, 0, 0, 0), blue_density=A(0, 0, 0, 0),
-                haze_horizon=A(0, 0, 0, 1), haze_density=A(0, 0, 0, 1)),
+        # A BLACK cloud_color does not work either: oHazeColorBelowCloud (cloudsF.glsl:182)
+        # is added AFTER the cloud_color multiply, so a zeroed colour leaves the cloud
+        # showing the haze colour -- i.e. the sky's own colour. Both viewers went blank.
+        #
+        # WHITE is the one that survives both traps: it is unaffected by the haze-bleed term
+        # and it reads clearly against the Default sky's pale blue.
+        variant(SKY, "PARITY-20-cover-000", cloud_color=A(1, 1, 1, 1), cloud_shadow=A(0.25, 0, 0, 1)),
+        variant(SKY, "PARITY-21-cover-050", cloud_color=A(1, 1, 1, 1), cloud_shadow=A(0.50, 0, 0, 1)),
+        variant(SKY, "PARITY-22-cover-100", cloud_color=A(1, 1, 1, 1), cloud_shadow=A(1.00, 0, 0, 1)),
         variant(WATER, "PARITY-W0-neutral"),
         variant(WATER, "PARITY-W1-fogdens-max", waterFogDensity=R(100)),
         variant(WATER, "PARITY-W2-fogdens-min", waterFogDensity=R(0.001)),
