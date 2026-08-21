@@ -34,6 +34,12 @@ That splits the search space in one click:
 - `uv_probe.lsl` — the in-world driver for texture placement on a box.
 - `gen_sculpt_probe.py` → `out/sculptprobe_16x256.png`, plus `sculpt_probe.lsl` — the same
   known-answer idea for SCULPT geometry. See "Sculpt probe" below.
+- `compass_probe.lsl` — a red prism with floating text reading `--> NORDEN (+Y) -->`. No
+  texture, no generator: rez it, drop the script in, and the prim becomes an arrow that
+  says which way it points. Settles "is our +Y the grid's +Y" and any other axis or
+  handedness question in one screenshot instead of by reasoning about coordinate frames.
+  It earned its keep on the sun-azimuth work, where the alternative was inferring the
+  camera heading from terrain.
 
 The texture is built so a screenshot alone identifies the transform:
 
