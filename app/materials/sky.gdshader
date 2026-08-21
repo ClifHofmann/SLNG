@@ -257,28 +257,45 @@ void sky() {
     //
     // The old comment claimed SL's dome "only covers the middle 38% of the texture". That is not
     // what the source does: (-z + 1) / 2 maps the full direction range onto the full 0..1 UV.
-    // Perspective (ray-into-the-cloud-layer) projection. Dividing by the vertical component is
-    // what gives clouds their horizontal foreshortening toward the horizon; without it they
-    // stretch VERTICALLY into columns, which is wrong and was reported twice.
+    // Cloud dome UV, derived rather than fitted. Three steps, all from source:
     //
-    // Substituting EYEDIR straight into that formula, as a previous attempt here did, is only
-    // valid with the camera exactly at the dome's centre, and renderDome explicitly puts it
-    // elsewhere: `scalef(0.333)` then `translatef(0, -camHeightLocal, 0)` (lldrawpoolwlsky.cpp:95-120).
-    // So the honest description is: this approximates the ray/dome intersection that SL gets for
-    // free from its geometry, and it is an APPROXIMATION, not a port.
-    vec2 cube_uv = vec2(EYEDIR.z, -EYEDIR.x) / max(EYEDIR.y, 0.02);
-
-    // The scale is ours, but it is no longer a free-floating guess. SL's dome UV
-    // (llvowlsky.cpp:430) is `(-z0 + 1)/2, (-x0 + 1)/2` on the unit vertex direction, so its UV
-    // radius from centre is cos(elevation) / 2 -- about 0.354 at 45 degrees. The projection above
-    // has magnitude 1.0 at that same elevation, so 0.35 reproduces SL's UV span there, i.e. the
-    // same number of texture repeats across the sky and therefore the same cloud size.
+    // 1. LLVOWLSky::buildStripsBuffer (llvowlsky.cpp:430) gives each dome vertex
+    //        texCoord = ((-z0 + 1) / 2, (-x0 + 1) / 2)
+    //    from its UNIT direction (x0, y0, z0), in the dome's own Y-UP local frame.
     //
-    // The previous 0.05 came with a claim that SL's dome "only covers the middle 38% of the
-    // texture". The source does not do that, and 0.05 left the span ~7x too small: clouds far
-    // coarser than Firestorm's at the same cloud_scale (measured on Howletts 2026-08-21).
-    vec2 vary_texcoord0 = cube_uv * 0.35;
+    // 2. renderDome (lldrawpoolwlsky.cpp:115) then rotates the dome by 120 degrees about
+    //    (1,1,1)/sqrt(3). That is a cyclic axis permutation -- checked with Rodrigues:
+    //        R*(1,0,0) = (-0.5,0,0) + (0,0.5,-0.5) + (0.5,0.5,0.5) = (0,1,0)
+    //    so dome x -> world y, dome y -> world z, dome z -> world x. The dome's local up (y)
+    //    becoming SL's up (z) confirms the direction of the cycle.
+    //    Therefore, in SL WORLD terms:  u = (-world_x + 1)/2,  v = (-world_y + 1)/2.
+    //    The viewer says as much in that same function: "x and z are transposed in order for
+    //    things to animate correctly in the global coordinate system where +x is east and +y is
+    //    north."
+    //
+    // 3. SL world -> Godot is our own (x, z, -y) convention, so world_x = EYEDIR.x and
+    //    world_y = -EYEDIR.z.
+    //
+    // Two earlier attempts got this wrong in opposite directions and are worth naming, because
+    // both looked plausible:
+    //   * Reading the formula straight off EYEDIR without step 2 SWAPS THE TWO UV AXES, which
+    //     rotates the foreshortening by 90 degrees -- clouds stretch into vertical columns.
+    //   * "Fixing" that by dividing by EYEDIR.y and fitting a scale in front of it replaces the
+    //     projection with a different one entirely, and then the scale has to absorb the error.
+    // The camera-height offset renderDome applies (`translatef(0, -camHeightLocal, 0)` before a
+    // 0.333 scale) is genuinely negligible here: dome_radius defaults to 15000, so at an avatar
+    // altitude of 22-100 m the ratio is 0.0015-0.0067 of the dome radius.
+    float world_x = EYEDIR.x;    // SL +x, east
+    float world_y = -EYEDIR.z;   // SL +y, north
+    vec2 dome_uv = vec2((-world_x + 1.0) * 0.5, (-world_y + 1.0) * 0.5);
 
+    // SL-13084: cloud textures are flipped horizontally to match the Clouds > Cloud Scroll
+    // preview (cloudsV.glsl). Kept in sync with the X negation on the scroll delta in
+    // EnvironmentDriver.
+    vec2 vary_texcoord0 = vec2(-dome_uv.x, dome_uv.y);
+
+    // Centred divide, in cloudsV.glsl's order.
+    vary_texcoord0 -= 0.5;
     vary_texcoord0 /= max(slng_cloud_scale, 0.001);
     vary_texcoord0 += 0.5;
 
