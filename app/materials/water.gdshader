@@ -23,7 +23,21 @@ void fragment() {
     
     // In SL, reflection blur is defined by BlurMultiplier
     ROUGHNESS = clamp(slng_water_blur_multiplier * 2.0, 0.0, 1.0);
-    METALLIC = 0.95; // Keep highly reflective to mimic SL's sky reflection
+    // Water is a DIELECTRIC. SL composites it as a fresnel-weighted mix between the refracted,
+    // fog-coloured view through the water and the reflection (waterF.glsl:327):
+    //     color = mix(fb.rgb, radiance, min(1, df2.x)) + punctual.rgb;
+    // -- `fb` carries water_fog_color, `radiance` is the reflection, `df2.x` the fresnel term.
+    //
+    // This was 0.95 "to mimic SL's sky reflection". In a PBR renderer that makes ALBEDO the
+    // SPECULAR TINT and removes the diffuse term almost entirely, so the region's own water colour
+    // stops being visible and the surface just shows the sky back. Measured against Firestorm on
+    // Howletts 2026-08-21: FS rendered deep blue water, ours near-white grey, with an identical
+    // water_fog_color of (0.0157, 0.149, 0.251).
+    //
+    // At 0 the fog colour reads again and Godot's own Schlick term still gives a grazing-angle
+    // reflection. Shaping that with the region's fresnel_scale / fresnel_offset is the next step
+    // and deliberately not bundled here -- one variable at a time.
+    METALLIC = 0.0;
     
     // Animate UVs based on SL's two wave directions
     // SL wave directions are typically scaled down for time
