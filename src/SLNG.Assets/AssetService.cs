@@ -512,9 +512,6 @@ public class AssetService
     {
         if (_memCache.TryGetValue(textureId, out TextureData? cached))
         {
-            if (rejectDegraded && cached != null)
-                Console.Error.WriteLine($"[TextureSource] {textureId}: served from MEMORY CACHE " +
-                    $"({cached.Width}x{cached.Height} degraded={cached.IsDegraded})");
             return Task.FromResult(cached);
         }
 
@@ -530,8 +527,6 @@ public class AssetService
         // retried), it only stops hammering a known-hopeless id in the meantime.
         if (_recentTextureFailures.TryGetValue(textureId, out _))
         {
-            if (_giveUpLogged.TryAdd(textureId, 0))
-                Console.Error.WriteLine($"[TextureGiveUp] {textureId}: short-circuited by the negative-failure cache");
             return Task.FromResult<TextureData?>(null);
         }
 
@@ -632,21 +627,23 @@ public class AssetService
                 // noise with no [TextureAttempt] and no [TextureGiveUp] entry to show for it,
                 // which is precisely how this hid. Drop the stale entry and fall through to a
                 // real fetch instead.
-                if (decodedFromCache != null && decodedFromCache.IsDegraded && (isSculpt || rejectDegraded))
+                // The `(isSculpt || rejectDegraded)` narrowing this condition used to carry was
+                // only ever safe by accident. A dangling `if` below (its body commented out, so
+                // the `return` became the body) meant a NORMAL texture never returned from this
+                // block at all -- it always fell through to a real re-fetch, which is what
+                // repaired a bad cache entry for everything except sculpts and bakes. Fixing that
+                // `if` made this branch reachable for normal textures too, and with the narrowing
+                // still in place a degraded entry was handed straight to the renderer instead:
+                // gap-filled speckle on avatar attachment and clothing textures. Since the cache
+                // is only ever WRITTEN on a clean decode, a degraded read PROVES the entry is bad
+                // no matter who is asking -- so drop it for every caller.
+                if (decodedFromCache != null && decodedFromCache.IsDegraded)
                 {
                     Console.Error.WriteLine($"[TextureCache] {textureId}: cached bytes now decode DEGRADED — discarding the cache entry and refetching");
                     try { File.Delete(cacheFile); } catch { }
                 }
                 else if (decodedFromCache != null)
                 {
-                    // Which SOURCE served a texture matters as much as whether it decoded: the
-                    // avatar's textures never appeared in the per-attempt trace at all, because
-                    // this early return happens before it. Without this line "the avatar looks
-                    // wrong" cannot be tied to any particular bytes.
-                    if (rejectDegraded)
-                        Console.Error.WriteLine($"[TextureSource] {textureId}: served from DISK CACHE " +
-                            $"({cached.Length} bytes -> {decodedFromCache.Width}x{decodedFromCache.Height} " +
-                            $"degraded={decodedFromCache.IsDegraded})");
                     return decodedFromCache;
                 }
                 else
@@ -693,14 +690,6 @@ public class AssetService
             if (bytes is { Length: > 0 })
             {
                 var result = await Task.Run(() => DecodeTexture(bytes, isSculpt)).ConfigureAwait(false);
-
-                // Per-attempt trace. The aggregate "no usable bytes" message could not
-                // distinguish "nothing arrived" from "bytes arrived and the decoder rejected
-                // them", and offline the very same saved bytes decode correctly -- so the exact
-                // inputs of each attempt are the thing to see.
-                Console.Error.WriteLine($"[TextureAttempt] {textureId} #{attempt} " +
-                    $"bytes={bytes.Length} isSculpt={isSculpt} discard={desiredDiscard} -> " +
-                    (result == null ? "DECODE NULL" : $"{result.Width}x{result.Height} degraded={result.IsDegraded}"));
 
                 // Both decoders (Magick.NET and the CoreJ2K fallback) refused these bytes, yet the
                 // real viewer draws the same assets, so the bytes themselves are the evidence and
