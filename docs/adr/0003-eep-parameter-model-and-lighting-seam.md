@@ -188,6 +188,18 @@ Everything downstream happens **per fragment**, in
 `calcAtmosphericVars` / `calcAtmosphericVarsLinear`
 (`atmosphericsFuncs.glsl:52` and `:147`).
 
+## Firestorm's sky shaders are byte-identical to Linden's
+
+Checked 2026-08-21, because comparing against Firestorm rather than the Linden viewer
+is the standing rule here: `FirestormViewer/phoenix-firestorm@master`'s
+`class1/deferred/skyV.glsl` diffs clean against `secondlife/viewer@main`. Firestorm
+adds nothing to the sky dome, exactly as it adds nothing to the parameter set above.
+
+That is worth recording rather than re-checking: it means a divergence in the sky can
+be settled against Linden source alone. It does **not** extend to the settings
+defaults — `RenderSkyAutoAdjustLegacy` and friends are Firestorm-side `settings.xml`
+entries and must still be read there.
+
 ## The sky is display-referred, and legacy skies are never tonemapped
 
 This is the second seam, and it turned out to matter more than any single parameter.
