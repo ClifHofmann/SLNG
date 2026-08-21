@@ -58,6 +58,18 @@ public record SkySettings
     /// glow angle to this power, so it acts as a reciprocal.</summary>
     public Vector3 Glow { get; init; } = new(5.0f, 0.001f, -0.4799f);
 
+    /// <summary>Where the camera sits inside the sky dome, as a fraction of its radius. Viewer
+    /// default 0.96.
+    ///
+    /// Load-bearing for cloud placement, and easy to mistake for a cosmetic tweak.
+    /// <c>LLEnvironment::getCamHeight</c> (llenvironment.cpp:1045-1048) returns
+    /// <c>dome_offset * dome_radius</c>, and <c>renderDome</c> translates the dome down by exactly
+    /// that before drawing. So the camera sits 96% of the way up the inside of the sphere, which
+    /// is what makes the dome's 22.5-degree polar cap subtend the WHOLE sky rather than a patch
+    /// overhead. The dome radius itself cancels out of the resulting UV, so only this ratio is
+    /// needed on the renderer side.</summary>
+    public float DomeOffset { get; init; } = 0.96f;
+
     /// <summary>Scene gamma, range 0…20. Viewer default 1.0.
     ///
     /// Parsed and deliberately NOT applied. In the modern viewer this only reaches
@@ -153,6 +165,7 @@ public record SkySettings
         DistanceMultiplier = float.Lerp(a.DistanceMultiplier, b.DistanceMultiplier, t),
         MaxY = float.Lerp(a.MaxY, b.MaxY, t),
         Glow = Vector3.Lerp(a.Glow, b.Glow, t),
+        DomeOffset = float.Lerp(a.DomeOffset, b.DomeOffset, t),
         Gamma = float.Lerp(a.Gamma, b.Gamma, t),
         CloudShadow = float.Lerp(a.CloudShadow, b.CloudShadow, t),
         SunlightColor = Vector3.Lerp(a.SunlightColor, b.SunlightColor, t),

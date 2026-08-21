@@ -381,6 +381,7 @@ public sealed class EnvironmentDriver
         RenderingServer.GlobalShaderParameterSet("slng_max_y", SafeFloat(sky.MaxY));
         RenderingServer.GlobalShaderParameterSet("slng_glow", ToColorFast(sky.Glow));
         RenderingServer.GlobalShaderParameterSet("slng_cloud_shadow", SafeFloat(sky.CloudShadow));
+        RenderingServer.GlobalShaderParameterSet("slng_dome_offset", SafeFloat(sky.DomeOffset, 0.96f));
 
         // getSunMoonGlowFactor, llsettingssky.cpp:1317-1321. The sky and cloud shaders each gate
         // their halo with this; see sky.gdshader for why the two do it differently.

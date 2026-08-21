@@ -17,6 +17,11 @@ global uniform float slng_cloud_shadow;
 // llsettingssky.cpp:1317-1321 (getSunMoonGlowFactor).
 global uniform float slng_sun_moon_glow_factor;
 
+// Where the camera sits inside the sky dome, as a fraction of its radius. Viewer default 0.96.
+// getCamHeight = dome_offset * dome_radius (llenvironment.cpp:1045-1048); the radius cancels out
+// of the cloud UV, so only this ratio is needed here.
+global uniform float slng_dome_offset;
+
 // Computed Lighting global uniforms
 global uniform vec4 slng_sunlight_color;
 
@@ -288,9 +293,31 @@ void sky() {
     // extent, i.e. the middle ~38% of the texture. An earlier comment here said exactly that and
     // a previous commit of mine wrongly called it invented -- it is correct, and it follows
     // directly from calcPhi's PI/8 cap. See the extent gate further down.
-    float world_x = EYEDIR.x;    // SL +x, east
-    float world_y = -EYEDIR.z;   // SL +y, north
-    vec2 dome_uv = vec2((-world_x + 1.0) * 0.5, (-world_y + 1.0) * 0.5);
+    // 4. The camera sits INSIDE the dome, near its top. getCamHeight returns
+    //    dome_offset * dome_radius and renderDome translates the dome down by exactly that
+    //    (llenvironment.cpp:1045-1048, lldrawpoolwlsky.cpp:119) -- at the default 0.96 that is
+    //    14400 of a 15000 radius, NOT the avatar's altitude. So a pixel's ray meets the dome far
+    //    from where a naive "UV = f(view direction)" read would put it, and it is that mistake,
+    //    not the axis order alone, that smeared clouds vertically in two earlier versions here.
+    //
+    //    Solve the intersection. The radius cancels, so only k = dome_offset matters: a ray
+    //    leaving (0, k) at elevation e meets the unit sphere at
+    //        t = -k*sin(e) + sqrt(1 - k^2 * cos^2(e))
+    //    and the hit point's horizontal offset from the dome axis is t*cos(e). That offset IS
+    //    sin(phi) of the dome vertex there, which is exactly what the UV is built from.
+    float k = clamp(slng_dome_offset, 0.0, 0.999);
+    float sin_e = clamp(EYEDIR.y, -1.0, 1.0);
+    float cos_e = sqrt(max(0.0, 1.0 - sin_e * sin_e));
+    float t_hit = -k * sin_e + sqrt(max(0.0, 1.0 - k * k * cos_e * cos_e));
+    float sin_phi = t_hit * cos_e;
+
+    // Horizontal bearing in SL world terms (+x east, +y north) through our (x, z, -y) convention.
+    vec2 hdir = vec2(EYEDIR.x, -EYEDIR.z);
+    float hlen = length(hdir);
+    vec2 hunit = hlen > 1e-5 ? hdir / hlen : vec2(0.0, 0.0);
+
+    vec2 dome_horiz = hunit * sin_phi;
+    vec2 dome_uv = vec2((-dome_horiz.x + 1.0) * 0.5, (-dome_horiz.y + 1.0) * 0.5);
 
     // SL-13084: cloud textures are flipped horizontally to match the Clouds > Cloud Scroll
     // preview (cloudsV.glsl). Kept in sync with the X negation on the scroll delta in
@@ -398,7 +425,14 @@ void sky() {
     // cure was never a different projection -- it was not drawing that region at all.
     //
     // The smoothstep is only edge anti-aliasing; SL's dome rim is hard geometry.
-    float altitude_blend_factor = smoothstep(0.90, 0.94, EYEDIR.y);
+    //
+    // Gated on sin(phi) of the dome hit, not on view elevation: beyond sin(22.5 deg) = 0.3827 the
+    // ray leaves the cap and there is nothing to draw. Viewed from 96% of the way up the inside,
+    // that rim lands at roughly -5.4 degrees elevation -- just BELOW the horizon, which is how a
+    // narrow cap ends up covering the whole visible sky. An earlier version of this gate tested
+    // EYEDIR.y > 0.90 instead, which is only correct for a camera at the dome's centre and hid
+    // the clouds entirely.
+    float altitude_blend_factor = 1.0 - smoothstep(0.3600, 0.3827, sin_phi);
     
     alpha1 *= altitude_blend_factor;
     alpha1 = clamp(alpha1, 0.0, 1.0);

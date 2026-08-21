@@ -143,6 +143,7 @@ internal static class EnvironmentLlsdParser
 
             MaxY = Real(map, null, "max_y", d.MaxY),
             Glow = Color(map, null, "glow", d.Glow),
+            DomeOffset = Real(map, null, "dome_offset", d.DomeOffset),
             Gamma = Real(map, null, "gamma", d.Gamma),
             CloudShadow = Real(map, null, "cloud_shadow", d.CloudShadow),
             SunlightColor = Color(map, null, "sunlight_color", d.SunlightColor),
