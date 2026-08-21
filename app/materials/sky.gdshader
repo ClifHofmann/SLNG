@@ -235,20 +235,40 @@ void sky() {
     float star_val = smoothstep(0.995, 1.0, star_noise) * slng_star_brightness * max(0.0, -sun_dir_godot.y);
     vec3 stars = vec3(star_val);
     
-    // Planar Projection (Simulating the top face of the Legacy Windlight Sky Cube)
-    // The user explicitly noted that the dome projection creates vertical stretching ("falsch rum"),
-    // and that the correct SL look has horizontal stretching (perspective foreshortening).
-    // This is achieved by dividing by EYEDIR.y.
-    vec2 cube_uv = vec2(EYEDIR.z, -EYEDIR.x) / max(EYEDIR.y, 0.02);
-    
-    // Scale by 0.05 (instead of 0.5) to match the visual size of SL clouds!
-    // SL's geometric dome only covers the middle 38% of the texture, so mapping a full
-    // 0-to-1 UV space across the whole sky makes the clouds 10x too small (looking like noise).
-    vec2 vary_texcoord0 = cube_uv * 0.05;
-    
+    // Cloud dome UV. SL does not compute this in a shader at all -- cloudsV.glsl consumes the
+    // cloud dome MESH's own texcoord0, generated once in LLVOWLSky::buildStripsBuffer
+    // (llvowlsky.cpp:430) as
+    //
+    //     texCoord = vec2((-z0 + 1) / 2, (-x0 + 1) / 2)
+    //
+    // where (x0, y0, z0) is the UNIT direction to that dome vertex. x and z are transposed on
+    // purpose, so cloud drift animates correctly in the global frame where +x is east and +y is
+    // north (the viewer says so in that comment). We have no dome mesh, so this reproduces the
+    // same function of view direction directly.
+    //
+    // What this replaces: a `/ max(EYEDIR.y, 0.02)` cube-face projection with a hand-fitted
+    // `* 0.05` in front of it. Dividing by the vertical component is the part SL does NOT do --
+    // its UV is a plain planar read of the normalised direction. The division made the UV span
+    // collapse toward the zenith and blow up at the horizon, so the scale had to be fudged, and
+    // the fudge left the UV range roughly 10x too small: few texture repeats across the sky,
+    // i.e. clouds far coarser than Firestorm's at the same cloud_scale. Measured against FS on
+    // Howletts 2026-08-21 with the neutral parity preset -- ours rendered heavy blobs where FS
+    // showed fine wisps.
+    //
+    // The old comment claimed SL's dome "only covers the middle 38% of the texture". That is not
+    // what the source does: (-z + 1) / 2 maps the full direction range onto the full 0..1 UV.
+    vec2 dome_uv = vec2((-EYEDIR.z + 1.0) * 0.5, (-EYEDIR.x + 1.0) * 0.5);
+
+    // SL-13084: cloud textures are flipped horizontally so they match the Clouds > Cloud Scroll
+    // preview. Applied to texcoord0 in cloudsV.glsl, and kept in sync with the X negation on the
+    // scroll delta in EnvironmentDriver.
+    vec2 vary_texcoord0 = vec2(-dome_uv.x, dome_uv.y);
+
+    // Centred divide, exactly as cloudsV.glsl: -= 0.5, /= cloud_scale, += 0.5.
+    vary_texcoord0 -= 0.5;
     vary_texcoord0 /= max(slng_cloud_scale, 0.001);
     vary_texcoord0 += 0.5;
-    
+
     vec2 base_uv = vary_texcoord0;
     
     vec2 uv1 = base_uv;
