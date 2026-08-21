@@ -16,20 +16,57 @@ derived hypotheses had failed: **a probe with a known answer**. One parameter at
 its extreme, everything else neutral, so a difference can only come from one
 place.
 
-## Setup, once
+## The presets are pre-built — import, don't hand-edit
 
-You need a region you can set the environment on. Howletts qualifies.
+They live in [`tools/testassets/eep-parity/`](../tools/testassets/eep-parity/): 18
+sky files and 7 water files.
 
-1. In Firestorm: **World → Environment → My Environments → New Sky**.
-2. Start from **Default** (not from the region's current sky) so every value is
-   the viewer's own baseline. This is the "neutral" reference.
-3. Save it as `PARITY-00-neutral`.
-4. For each row of the table below, duplicate the neutral sky, change **only** the
-   named parameter to the given value, and save it under the given name.
+They are **legacy Windlight XML**, because that is what the environment editor's
+`Import…` button actually accepts — `LLFloaterFixedEnvironment::doImportFromDisk`
+is commented "Load a legacy Windlight XML from disk" and routes through
+`createSkyFromLegacyPreset`. Each one is the viewer's own
+`app_settings/windlight/skies/Default.xml` (respectively `water/Default.xml`) with
+**exactly one value changed**, so the neutral baseline is Linden's own default
+rather than anything we chose.
 
-Then per probe: apply it to the region, and capture both viewers with the camera
-in the **same place** and the day cycle **not moving** (a single-frame sky has no
-cycle, which is why the neutral base is a fixed sky rather than a day cycle).
+Per probe:
+
+1. Firestorm → **World → Environment → My Environments → New Sky** (or Water).
+2. **Import…**, pick the file, then **Save** under the file's own name.
+3. Apply it to the region.
+4. Capture both viewers with the camera in the **same place**.
+
+`PARITY-00-neutral.xml` and `PARITY-W0-neutral.xml` are the unmodified defaults —
+import them first and confirm the two viewers agree on the baseline. If they do
+not, no other probe means anything yet.
+
+A fixed sky has no day cycle, so nothing moves between the two screenshots. That
+is deliberate.
+
+### Three notes on the legacy format
+
+- **Sun position** comes from `sun_angle` (altitude in radians) and `east_angle`
+  (azimuth, negated on import — `llsettingssky.cpp:1099-1111`). The moon is placed
+  diametrically opposite the sun automatically, so the night probes get a moon
+  without asking for one.
+- **`cloud_scroll_rate` is stored offset by +10** in this format — the Default
+  carries `10.2 / 10.011` for a real rate of `0.2 / 0.011`. That is the encoding
+  our parser now converts; the files keep it, so importing them also exercises the
+  viewer's own conversion.
+- Water keys are **camelCase** here (`waterFogDensity`, `normScale`, `blurMultiplier`).
+  Both spellings are the same setting; our parser accepts either.
+
+### What the legacy format cannot express
+
+These have no legacy key at all and must be set **in the editor after import**, on
+the *Clouds* and *Sun and Moon* tabs:
+
+`cloud_variance`, `moon_brightness`, `sun_scale` / `moon_scale`,
+`reflection_probe_ambiance`, `moisture_level` / `droplet_radius` / `ice_level`,
+and water's `transparent_texture`.
+
+That is why probes 13 and 17 have no file: probe 13 needs `cloud_variance` at 1.0,
+probe 17 needs `moon_brightness` at 0.0 on top of `PARITY-16-night`.
 
 ## Camera discipline
 
@@ -62,11 +99,13 @@ argument. Ranges are the viewer's own (`llsettingssky.cpp:726-818`).
 | `PARITY-10-sun-high` | Sun position | elevation ≈ +85° | Minimum attenuation — near-white sun |
 | `PARITY-11-cloudcover-max` | Cloud coverage | 1.0 | Full overcast. **Tests `cloud_shadow` as cover** |
 | `PARITY-12-cloudcover-min` | Cloud coverage | 0.25 | `2 * (0.25 - 0.25) = 0` — should be cloudless |
-| `PARITY-13-cloudvar-max` | Cloud variance | 1.0 | Strong domain warp; ragged cloud edges |
+| `PARITY-13-cloudvar-max` *(no file — set in editor)* | Cloud variance | 1.0 | Strong domain warp; ragged cloud edges |
 | `PARITY-14-cloudscale-small` | Cloud scale | 0.1 | Small tight cloud cells |
-| `PARITY-15-stars-max` | Star brightness | 500 (max) | Only visible at night — set the sun below the horizon too |
-| `PARITY-16-night-moonbright` | Sun below horizon, moon up, moon brightness 1.0 | | **The lighting probe.** Ground brightness is the measurement, not the sky |
-| `PARITY-17-night-moondark` | Same, moon brightness 0.0 | | Should be darker than 16 and carry no solar halo |
+| `PARITY-15-stars-max` | Star brightness + sun below horizon | 500 (max), `sun_angle` 3.4 | Star density and brightness. Tests the /500 conversion |
+| `PARITY-16-night` | `sun_angle` 3.4 (≈15° below horizon) | | **The lighting probe.** Ground brightness is the measurement, not the sky |
+| `PARITY-17-night-moondark` *(no file — set in editor)* | `PARITY-16` + moon brightness 0.0 | | Should be darker than 16 and carry no solar halo at all |
+| `PARITY-18-scroll-fast` | Cloud scroll rate X | 30 legacy → 20 real | Fast drift. Confirms drift reaches the shader at the right rate |
+| `PARITY-19-scroll-off` | `enable_cloud_scroll` | both false | Clouds must be completely still |
 
 ## Water probes
 
@@ -81,7 +120,7 @@ enough to give a specular track.
 | `PARITY-W4-blur-neg` | Reflection blur | −0.5 (min) | **`blur_multiplier` is SIGNED** — this is where treating it as roughness breaks |
 | `PARITY-W5-normscale-max` | Normal scale | 10 on all axes | Very fine wave tiling |
 | `PARITY-W6-wave-fast` | Wave directions | (20, 20) and (−20, 20) | Fast, sharply crossed wave motion |
-| `PARITY-W7-underwater` | Camera below the surface | any | Underwater fog — **known unimplemented in SLNG today** |
+| `PARITY-W7-underwater` *(no file — reuse `W0` and swim under)* | Camera below the surface | — | Underwater fog. **Known unimplemented in SLNG today**: `water_fog_density` and `underwater_fog_mod` are parsed and never applied, so expect no fog at all rather than the wrong amount |
 
 ## Reading a result
 
