@@ -152,9 +152,17 @@ isolation problem was noticed, matched it: about 40% at density 0 rising to abou
 | `PARITY-22-cover-100` (1.00, white) | **Match.** Both solid overhead. |
 | `PARITY-21-cover-050` (0.50, white) | **Match.** Both heavily covered. |
 | `PARITY-20-cover-000` (0.25, white) | **Match.** Both show cloud. |
+| `PARITY-00-neutral` (baseline) | **Match**, as of v0.7.34-alpha. Sky colour, the zenith-to-horizon gradient and white cloud lighting all agree. Failed at v0.7.31 and is the probe the four fixes below were found from. |
 
 So cloud coverage, the `2 * (cloud_shadow - 0.25)` density mapping, the noise texture
-and the UV are all confirmed against Firestorm.
+and the UV are all confirmed against Firestorm — and so is the baseline the other
+twenty-one probes are read against, which had been failing silently the whole time.
+
+Confirming the neutral baseline **first** is a step this protocol already prescribed and
+that we skipped. Every "matches" above was recorded against a sky that did not itself
+match, which is why five probes could all read plausible while the sky was 40% too
+pale. Re-run the baseline whenever the renderer changes, before reading any parameter
+probe.
 
 Everything earlier that looked like a coverage divergence was an artefact of three
 broken probe designs in a row — grey cloud on a pale sky being unreadable, a black
