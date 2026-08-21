@@ -143,6 +143,30 @@ at full opacity — and our own render, measured against a black backdrop before
 isolation problem was noticed, matched it: about 40% at density 0 rising to about
 95% at density 0.5.
 
+## Results so far (2026-08-21)
+
+| Probe | Verdict |
+|---|---|
+| `PARITY-14-cloudscale-small` | **Match.** Cloud cell size agrees. |
+| `PARITY-11-cloudcover-max` (1.00) | **Match.** Both viewers saturate to full cover. |
+| `PARITY-22-cover-100` (1.00, white) | **Match.** Both solid overhead. |
+| `PARITY-21-cover-050` (0.50, white) | **Match.** Both heavily covered. |
+| `PARITY-20-cover-000` (0.25, white) | **Match.** Both show cloud. |
+
+So cloud coverage, the `2 * (cloud_shadow - 0.25)` density mapping, the noise texture
+and the UV are all confirmed against Firestorm.
+
+Everything earlier that looked like a coverage divergence was an artefact of three
+broken probe designs in a row — grey cloud on a pale sky being unreadable, a black
+cloud colour picking up the haze colour, and a six-parameter version that destroyed
+the isolation. None of those were shader bugs. Worth remembering before concluding
+a divergence from a probe that has not been sanity-checked as readable.
+
+**Still open:** sky colour. With the clouds accounted for, the bare sky reads paler
+than Firestorm's and lacks its horizon gradient. That is a separate function —
+`skyF.glsl` builds the sky from TWO haze terms and blends them, where the surface
+atmospherics in `atmosphericsFuncs.glsl` uses one.
+
 ## Water probes
 
 Ranges from `llsettingswater.cpp:316-356`. Point at open water with the sun low

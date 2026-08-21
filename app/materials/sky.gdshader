@@ -155,7 +155,12 @@ void sky() {
     //   clouds (cloudsF.glsl:146-150) scales first and then ZEROES outright whenever the factor
     //          is below 1. This is SL-13768: "For sun, add to glow. For moon, remove glow
     //          entirely."
-    float haze_glow_sky = (haze_glow + 0.25) * slng_sun_moon_glow_factor;
+    // skyF.glsl:110 -- `(factor < 1) ? 0 : factor * (haze_glow + 0.25)`. Note the sky dome
+    // ZEROES the glow at night as well; only atmosphericsFuncs' SURFACE path keeps a scaled
+    // remnant. Ours kept one here, which put a solar halo in the night sky.
+    float haze_glow_sky = (slng_sun_moon_glow_factor < 1.0)
+        ? 0.0
+        : slng_sun_moon_glow_factor * (haze_glow + 0.25);
     float haze_glow_cloud = (slng_sun_moon_glow_factor < 1.0)
         ? 0.0
         : (haze_glow * slng_sun_moon_glow_factor + 0.25);
@@ -173,17 +178,56 @@ void sky() {
     // Original sunlight/moonlight (no artificial boost)
     vec3 cs = diff_color * (1.0 - slng_cloud_shadow);
     
-    // calculate additive sky color
-    vec3 additive = (slng_blue_horizon.rgb * blue_weight) * (cs + tmpAmbient) + 
-                    (vec3(slng_haze_horizon) * haze_weight) * (cs * haze_glow_sky + tmpAmbient);
-                    
-    // Kept before the sky path attenuates `additive` below: SL feeds this same pre-attenuation
-    // term up into the cloud layer as `additiveColorBelowCloud` (cloudsF.glsl:158-160), which is
-    // how haze from beneath tints the underside of a cloud.
-    vec3 additive_below_cloud = additive;
+    // What the cloud layer needs: the haze term BEFORE attenuation, which cloudsF.glsl:158-160
+    // calls additiveColorBelowCloud and bleeds up into the underside of a cloud. Left on the
+    // atmosphericsFuncs form (with distance_multiplier) because that is the function the cloud
+    // path actually consumes.
+    vec3 additive_below_cloud = (slng_blue_horizon.rgb * blue_weight) * (cs + tmpAmbient) +
+                                (vec3(slng_haze_horizon) * haze_weight) * (cs * haze_glow_sky + tmpAmbient);
 
-    additive *= vec3(1.0) - transmittance;
-    additive = min(additive, vec3(10.0));
+    // --- Sky dome colour: a port of skyF.glsl's main(), which is a DIFFERENT function from the
+    // surface atmospherics in atmosphericsFuncs.glsl. Ours used one haze term for both; SL builds
+    // the sky from TWO and blends them, and that blend IS the horizon gradient. Without it the sky
+    // is a flat wash -- isolated by the PARITY-12/20 probes, where removing the clouds left the
+    // bare sky visible and it read pale grey against Firestorm's blue.
+    //
+    // Three things here differ from the surface path and are deliberate:
+    //   * sunlight is attenuated PER VIEW DIRECTION: off_axis mixes the view elevation with the
+    //     light's, so the sky reddens toward the horizon on its own.
+    //   * the transmittance carries NO distance_multiplier (skyF.glsl uses
+    //     exp(-combined_haze * density_dist); atmosphericsFuncs adds the multiplier).
+    //   * the "above cloud" term uses the RAW ambient setting, not the cloud-lifted one.
+    vec3 sky_sunlight = (sun_dir_godot.y >= 0.0)
+        ? slng_sunlight_color.rgb
+        : slng_moonlight_color.rgb * 0.7;   // magic 0.7 "to match legacy color", skyF.glsl
+
+    vec3 light_atten = (slng_blue_density.rgb + vec3(slng_haze_density * 0.25))
+                     * (slng_density_multiplier * slng_max_y);
+    float off_axis = 1.0 / max(1e-6, max(0.0, EYEDIR.y) + light_dir.y);
+    sky_sunlight *= exp(-light_atten * off_axis);
+
+    vec3 sky_haze = exp(-combined_haze * density_dist);
+    vec3 raw_ambient = slng_ambient.rgb;
+
+    // Haze colour ABOVE the cloud layer.
+    vec3 sky_col = (slng_blue_horizon.rgb * blue_weight) * (sky_sunlight + raw_ambient)
+                 + (vec3(slng_haze_horizon) * haze_weight) * (sky_sunlight * haze_glow_sky + raw_ambient);
+    sky_col *= vec3(1.0) - sky_haze;
+
+    // Haze colour BELOW it: ambient lifted by cloud cover, sunlight dimmed by it.
+    vec3 sky_amb_below = raw_ambient + max(vec3(0.0), vec3(1.0) - raw_ambient) * slng_cloud_shadow * 0.5;
+    vec3 sky_sun_below = sky_sunlight * max(0.0, 1.0 - slng_cloud_shadow);
+    vec3 sky_below = (slng_blue_horizon.rgb * blue_weight) * (sky_sun_below + sky_amb_below)
+                   + (vec3(slng_haze_horizon) * haze_weight) * (sky_sun_below * haze_glow_sky + sky_amb_below);
+
+    // Blend toward the below-cloud colour with distance. Note the sqrt is applied TWICE in the
+    // viewer -- once to combined_haze, then again inside the blend weight -- so the effective
+    // weight is 1 - t^0.25. That steepness near the horizon is the gradient.
+    sky_haze = sqrt(sky_haze);
+    sky_col += (sky_below - sky_col) * (vec3(1.0) - sqrt(sky_haze));
+
+    // skyF.glsl ends with `color.rgb *= 2.` and a clamp to 5, not our min-to-10.
+    vec3 additive = clamp(sky_col * 2.0, vec3(0.0), vec3(5.0));
     // -----------------------------
 
     // Sun Disk (Procedural Glow + Optional Texture)
