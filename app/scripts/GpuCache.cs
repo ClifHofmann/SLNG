@@ -278,34 +278,37 @@ public class GpuCache
                 var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority).ConfigureAwait(false);
                 if (textureData == null) return;
 
-                var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-                image?.FixAlphaEdges();
-                if (image == null) return;
-
-                int discard = ComputeDiscardLevel(image.GetWidth(), image.GetHeight(), screenPixelArea);
-                if (discard > 0)
-                {
-                    int targetW = Math.Max(8, image.GetWidth() >> discard);
-                    int targetH = Math.Max(8, image.GetHeight() >> discard);
-                    if (targetW < image.GetWidth() || targetH < image.GetHeight())
-                        image.Resize(targetW, targetH, Image.Interpolation.Lanczos);
-                }
-                if (generateMipmaps) image.GenerateMipmaps();
-
-                int finalW = image.GetWidth(), finalH = image.GetHeight();
-                // Budgeted rather than CallDeferred: SetImage is a full GPU texture upload on the
-                // main thread, and a session routinely completes hundreds of these (816 in one
-                // measured OSGrid session). Flushed unbudgeted they land in whatever frame they
-                // happen to finish in, several at a time, and spike it. Refine lane because the
-                // object is already on screen -- a slightly soft texture for another frame or two
-                // costs nothing, whereas delaying an object that has not appeared yet is visible.
                 MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine, () =>
                 {
                     if (!GodotObject.IsInstanceValid(cached)) return;
-                    cached.SetImage(image);
-                    if (discard <= 0) _uploadedForPixelArea.TryRemove(textureId, out _);
-                    Logger.Info($"[GpuSharpen] {textureId.ToString()[..8]} now discard={discard} " +
-                                $"uploaded={finalW}x{finalH}");
+                    
+                    try
+                    {
+                        var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+                        image?.FixAlphaEdges();
+                        if (image == null) return;
+        
+                        int discard = ComputeDiscardLevel(image.GetWidth(), image.GetHeight(), screenPixelArea);
+                        if (discard > 0)
+                        {
+                            int targetW = Math.Max(8, image.GetWidth() >> discard);
+                            int targetH = Math.Max(8, image.GetHeight() >> discard);
+                            if (targetW < image.GetWidth() || targetH < image.GetHeight())
+                                image.Resize(targetW, targetH, Image.Interpolation.Lanczos);
+                        }
+                        if (generateMipmaps) image.GenerateMipmaps();
+        
+                        int finalW = image.GetWidth(), finalH = image.GetHeight();
+                        cached.SetImage(image);
+                        image.Dispose();
+                        
+                        if (discard <= 0) _uploadedForPixelArea.TryRemove(textureId, out _);
+                        Logger.Info($"[GpuSharpen] {textureId.ToString()[..8]} now discard={discard} uploaded={finalW}x{finalH}");
+                    }
+                    catch (Exception ex)
+                    {
+                        GD.PrintErr($"[GpuCache] texture {textureId} sharpen failed: {ex.Message}");
+                    }
                 }, label: "texture.sharpen");
             }
             catch (Exception ex)
@@ -338,77 +341,6 @@ public class GpuCache
             var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded).ConfigureAwait(false);
             if (textureData == null) return null;
 
-            // Image/mipmap build happens on this (worker) thread, matching the threading rule in
-            // AGENTS.md -- only the final Resource creation + cache Put below touches the main
-            // thread, via CallDeferred.
-            var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-
-            // Bleed visible colour outwards into the fully-transparent texels before anything
-            // downsamples this image. A transparent texel still HAS an RGB value, and in real SL
-            // content it is routinely arbitrary garbage left over from whatever the artist painted
-            // under the alpha mask -- bright orange in the case that motivated this. Both bilinear
-            // filtering and GenerateMipmaps below average RGB and A as independent channels, so
-            // that invisible garbage gets mixed into every partially-transparent edge texel and
-            // resurfaces as coloured speckles along the silhouette. It is most obvious on alpha-
-            // heavy content viewed at a distance (more mip levels in play): black hair fringed
-            // with orange dots. FixAlphaEdges is Godot's own remedy for exactly this -- it is what
-            // the engine's texture importer applies by default as "Fix Alpha Border" -- but
-            // nothing applies it to textures we build at runtime, so it has to happen here.
-            // Deliberately unconditional rather than gated on a DetectAlpha() check: that verdict
-            // is unreliable (see the notes in AvatarRenderer.ApplyAlphaCutout) and this is a no-op
-            // on an image with no transparent texels anyway.
-            image?.FixAlphaEdges();
-
-            // FEAT-PERF-02: shrink the fully-decoded image before it ever reaches the GPU, for a
-            // distant/small object that doesn't need full resolution on screen. Each discard
-            // level halves both dimensions (SL/OpenSim discard semantics -- see
-            // J2kByteSizeEstimator's doc comment), floored at 8px so GenerateMipmaps always has
-            // a sane base level to work from.
-            //
-            // The level is derived here, not by the caller, because it depends on THIS texture's
-            // decoded resolution. Ported from the real viewer's LLViewerLODTexture::
-            // processTextureStats (llviewertexture.cpp):
-            //     discard = floor( log(mTexelsPerImage / mMaxVirtualSize) / log(4) )
-            // i.e. compare the texture's texel count against the pixel area it actually covers on
-            // screen, in log-4 space because one discard level is a 4x area reduction. Full
-            // resolution results whenever the texture has no more texels than it has screen pixels
-            // to fill -- the "roughly one texel per pixel" criterion. The previous code instead had
-            // the caller pick a level from hardcoded `radius / distance` thresholds that never saw
-            // the texture's resolution at all, so a 64x64 and a 1024x1024 texture on the same prim
-            // were shrunk identically, and even a large nearby prim was routinely halved or
-            // quartered (user-reported "mega blurry", 2026-08-01).
-            if (image != null && screenPixelArea > 0f)
-            {
-                int discard = ComputeDiscardLevel(image.GetWidth(), image.GetHeight(), screenPixelArea);
-
-                // What actually reaches the GPU, once per texture. The sculpt pipeline has been
-                // measured equal to the viewer's, so the remaining difference has to be between
-                // the decoded image and the sampled texel -- and this is the only non-trivial step
-                // in between. It also separates the two halves of the report that have been
-                // treated as one fault: "blurry" would be a large discard here, "misplaced" would
-                // not show up at all.
-                if (_uploadSizeLogged.TryAdd(textureId, 0))
-                    Console.Error.WriteLine($"[GpuUpload] {textureId} source={image.GetWidth()}x{image.GetHeight()} " +
-                        $"screenPixelArea={screenPixelArea:F0} -> discard={discard} " +
-                        $"uploaded={(discard > 0 ? $"{Math.Max(8, image.GetWidth() >> discard)}x{Math.Max(8, image.GetHeight() >> discard)}" : "full")}");
-
-                if (discard > 0)
-                {
-                    int targetW = Math.Max(8, image.GetWidth() >> discard);
-                    int targetH = Math.Max(8, image.GetHeight() >> discard);
-                    if (targetW < image.GetWidth() || targetH < image.GetHeight())
-                    {
-                        image.Resize(targetW, targetH, Image.Interpolation.Lanczos);
-                    }
-                    // Remember what this upload was sized for, so approaching the object later can
-                    // detect that a sharper level is warranted -- see TryUpgradeCachedTexture.
-                    // Only downsampled uploads are tracked; a full-res one can never improve.
-                    _uploadedForPixelArea[textureId] = screenPixelArea;
-                }
-            }
-
-            if (generateMipmaps) image?.GenerateMipmaps();
-
             var tcs = new TaskCompletionSource<ImageTexture?>();
             Godot.Callable.From(() =>
             {
@@ -418,28 +350,59 @@ public class GpuCache
                 var raced = Get(textureId) as ImageTexture;
                 if (raced != null)
                 {
-                    image?.Dispose();
                     tcs.SetResult(raced);
                     return;
                 }
 
-                if (image == null)
+                Image? image = null;
+                ImageTexture? tex = null;
+                try
                 {
-                    tcs.SetResult(null);
-                    return;
+                    image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
+                    image?.FixAlphaEdges();
+                    
+                    if (image != null && screenPixelArea > 0f)
+                    {
+                        int discard = ComputeDiscardLevel(image.GetWidth(), image.GetHeight(), screenPixelArea);
+                        if (_uploadSizeLogged.TryAdd(textureId, 0))
+                            Console.Error.WriteLine($"[GpuUpload] {textureId} source={image.GetWidth()}x{image.GetHeight()} " +
+                                $"screenPixelArea={screenPixelArea:F0} -> discard={discard} " +
+                                $"uploaded={(discard > 0 ? $"{Math.Max(8, image.GetWidth() >> discard)}x{Math.Max(8, image.GetHeight() >> discard)}" : "full")}");
+        
+                        if (discard > 0)
+                        {
+                            int targetW = Math.Max(8, image.GetWidth() >> discard);
+                            int targetH = Math.Max(8, image.GetHeight() >> discard);
+                            if (targetW < image.GetWidth() || targetH < image.GetHeight())
+                            {
+                                image.Resize(targetW, targetH, Image.Interpolation.Lanczos);
+                            }
+                            _uploadedForPixelArea[textureId] = screenPixelArea;
+                        }
+                    }
+        
+                    if (generateMipmaps && image != null) image.GenerateMipmaps();
+                    
+                    if (image != null)
+                    {
+                        tex = ImageTexture.CreateFromImage(image);
+                        if (tex != null)
+                        {
+                            long size = (long)tex.GetWidth() * tex.GetHeight() * 4;
+                            Put(textureId, tex, size, initialRefCount);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    GD.PrintErr($"[GpuUpload] Failed to process texture {textureId}: {ex.Message}");
+                }
+                finally
+                {
+                    image?.Dispose();
                 }
 
-                var tex = ImageTexture.CreateFromImage(image);
-                if (tex != null)
-                {
-                    // Actual (possibly downsampled -- see above) dimensions, not textureData's
-                    // original ones, so the VRAM budget this cache enforces reflects what's
-                    // really on the GPU.
-                    long size = (long)tex.GetWidth() * tex.GetHeight() * 4;
-                    Put(textureId, tex, size, initialRefCount);
-                }
                 tcs.SetResult(tex);
-                image.Dispose();
             }).CallDeferred();
 
             return await tcs.Task.ConfigureAwait(false);
@@ -487,13 +450,6 @@ public class GpuCache
     {
         lock (_cache)
         {
-            foreach (var entry in _cache.Values)
-            {
-                if (GodotObject.IsInstanceValid(entry.Res))
-                {
-                    entry.Res.Dispose();
-                }
-            }
             _cache.Clear();
             _lruList.Clear();
             _currentSize = 0;

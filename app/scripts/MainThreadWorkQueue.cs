@@ -168,10 +168,16 @@ public static class MainThreadWorkQueue
 
         for (int lane = 0; lane < _lanes.Length; lane++)
         {
+            // Limit texture sharpening (SetImage) to 2 per frame to prevent Godot 4 Vulkan backend
+            // from crashing (Signal 11) when freeing and recreating too many in-use ImageTextures.
+            int maxItems = (Lane)lane == Lane.Refine ? 2 : int.MaxValue;
+            int itemsProcessed = 0;
             bool ranOne = false;
+            
             while (true)
             {
                 if (ranOne && _clock.Elapsed.TotalMilliseconds >= budgetMs) break;
+                if (itemsProcessed >= maxItems) break;
                 if (!_lanes[lane].TryDequeue(out var item)) break;
 
                 Interlocked.Decrement(ref _depth);
@@ -193,6 +199,7 @@ public static class MainThreadWorkQueue
                 Record(item.Label, _clock.Elapsed.TotalMilliseconds - before);
 
                 ranOne = true;
+                itemsProcessed++;
             }
         }
     }
