@@ -102,7 +102,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.7.34-alpha";
+    public const string AppVersion = "v0.7.35-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -718,7 +718,20 @@ public partial class Boot : Control
             + $", dayLength={capture.DayLength}s, dayOffset={capture.DayOffset}s, isDefault={capture.IsDefault}"
             + (capture.Error != null ? $", ERROR: {capture.Error}" : string.Empty));
 
-        if (capture.ExtEnvironmentLlsd == null && capture.LegacyEnvironmentLlsd == null)
+        // Which SCOPE answered matters as much as the values. The environment is per-parcel, so a
+        // parcel that overrides the region produces a completely different sky at the same
+        // wall-clock time -- that is what "die Sonne ist auf der anderen Seite" turned out to be.
+        // Logging both scopes side by side is what lets one screenshot settle which one applies.
+        LogEnvironment(capture switch
+        {
+            { ParcelId: < 0 } => "[ENV] parcel: id unknown (no ParcelProperties reply) — using the region scope",
+            { ParcelEnvironmentLlsd: null } p => $"[ENV] parcel {p.ParcelId}: inherits the region environment",
+            var p => $"[ENV] parcel {p.ParcelId}: OWN environment, dayLength={p.ParcelDayLength}s, "
+                   + $"dayOffset={p.ParcelDayOffset}s — this overrides the region",
+        });
+
+        if (capture.ExtEnvironmentLlsd == null && capture.LegacyEnvironmentLlsd == null
+            && capture.ParcelEnvironmentLlsd == null)
         {
             // Not necessarily a fault: a region with no custom environment inherits the grid
             // default and legitimately returns nothing. The cap flags above say which case it is.
@@ -734,6 +747,9 @@ public partial class Boot : Control
 
         WriteEnvironmentDump($"user://logs/environment-{safeName}-eep.llsd", capture.ExtEnvironmentLlsd);
         WriteEnvironmentDump($"user://logs/environment-{safeName}-legacy.llsd", capture.LegacyEnvironmentLlsd);
+        // Kept under its own name rather than overwriting the region dump: comparing the two curves
+        // is the whole point when a parcel disagrees with its region.
+        WriteEnvironmentDump($"user://logs/environment-{safeName}-parcel{capture.ParcelId}.llsd", capture.ParcelEnvironmentLlsd);
     }
 
     /// <summary>Logs an environment diagnostic to BOTH the on-screen panel and stdout.

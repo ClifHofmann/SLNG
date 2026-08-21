@@ -29,6 +29,16 @@ namespace SLNG.Core;
 /// custom environment.</param>
 /// <param name="Error">Populated when the capture itself failed, so a missing environment can be
 /// told apart from a broken request.</param>
+/// <param name="ParcelId">Local id of the parcel the agent stands on, or -1 when it could not be
+/// determined. The environment is a PER-PARCEL setting, not a per-region one: OpenSim's cap handler
+/// reads a <c>parcelid</c> query parameter and resolves it through
+/// <c>LandChannel.GetLandObject</c> (EnvironmentModule.cs:459-495), and the viewer asks per parcel
+/// via <c>LLEnvironment::requestParcel</c>. Asking only for the region returns the region's
+/// environment even where the parcel overrides it.</param>
+/// <param name="ParcelEnvironmentLlsd">The parcel's own EEP day cycle as notation text, or null
+/// when the parcel inherits the region's. Null is the common case and is not an error.</param>
+/// <param name="ParcelDayLength">The parcel's day length in seconds, when it has its own.</param>
+/// <param name="ParcelDayOffset">The parcel's day offset in seconds, when it has its own.</param>
 public record RegionEnvironmentCapture(
     ulong RegionHandle,
     string RegionName,
@@ -39,7 +49,11 @@ public record RegionEnvironmentCapture(
     int DayLength,
     int DayOffset,
     bool IsDefault,
-    string? Error = null
+    string? Error = null,
+    int ParcelId = -1,
+    string? ParcelEnvironmentLlsd = null,
+    int ParcelDayLength = 0,
+    int ParcelDayOffset = 0
 );
 
 /// <summary>A region's parsed environment: the day cycle to evaluate, and which source it came

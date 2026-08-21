@@ -15,7 +15,17 @@ namespace SLNG.Net;
 /// </summary>
 public sealed class GridSession : IDisposable, IWorldEventSource
 {
+    /// <summary>How long to wait for a ParcelProperties reply before giving up and using the
+    /// region's environment. Short on purpose: this sits in the login path, and the region scope is
+    /// a correct fallback, so a slow sim must not hold up the sky.</summary>
+    private static readonly TimeSpan ParcelLookupTimeout = TimeSpan.FromSeconds(4);
+
     private readonly GridClient _client;
+
+    /// <summary>Correlates a ParcelProperties reply with our own request. The simulator also pushes
+    /// ParcelProperties unprompted on a parcel crossing, so matching on the sequence id is what
+    /// keeps an unrelated push from being read as our answer.</summary>
+    private int _parcelSequenceId;
 
     // Shared cache for both avatar (Creator/Owner/...) and group names -- both are keyed by
     // UUID and populated via the same resolve-and-notify flow, so one cache/event pair covers
@@ -390,6 +400,55 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// the raw capture and the parsed model. Kept as one call because they come from the same two
     /// HTTP GETs -- fetching twice to serve two consumers would double the cost for nothing, and
     /// re-parsing the capture's notation text would be a lossy way to reach the same place.</summary>
+    /// <summary>Local id of the parcel the agent is standing on, or -1 if the simulator did not
+    /// answer in time.
+    ///
+    /// Asks for the parcel under the agent rather than downloading the whole parcel map
+    /// (<c>RequestAllSimParcelsAsync</c>, which walks the region in 750 ms steps and is far more
+    /// traffic than one id is worth). The coordinate overload of
+    /// <c>RequestParcelProperties</c> takes a bounding box, and a degenerate box at the agent's
+    /// own position is exactly the "which parcel am I on" question — the same one the viewer's
+    /// <c>LLViewerParcelMgr</c> asks before requesting a parcel environment.
+    ///
+    /// The reply arrives on a LibreMetaverse network thread, so the handler only completes a
+    /// <see cref="TaskCompletionSource{TResult}"/> and touches no world state (AGENTS.md).</summary>
+    private async Task<int> ResolveAgentParcelIdAsync(
+        Simulator sim, CancellationToken cancellationToken)
+    {
+        // A sequence id of our own so a parcel-crossing push, or another consumer's request, cannot
+        // be mistaken for the answer to this one.
+        int sequenceId = Interlocked.Increment(ref _parcelSequenceId);
+        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void OnParcelProperties(object? sender, ParcelPropertiesEventArgs e)
+        {
+            if (e.SequenceID != sequenceId) return;
+            completion.TrySetResult(e.Result == ParcelResult.Single ? e.Parcel.LocalID : -1);
+        }
+
+        _client.Parcels.ParcelProperties += OnParcelProperties;
+        try
+        {
+            var pos = _client.Self.SimPosition;
+            _client.Parcels.RequestParcelProperties(sim, pos.Y, pos.X, pos.Y, pos.X, sequenceId, false);
+
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(ParcelLookupTimeout);
+            using var registration = timeout.Token.Register(() => completion.TrySetResult(-1));
+            return await completion.Task.ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // A parcel id we could not obtain is not a failure worth aborting the environment fetch
+            // over -- the region scope below is a correct, if less specific, answer.
+            return -1;
+        }
+        finally
+        {
+            _client.Parcels.ParcelProperties -= OnParcelProperties;
+        }
+    }
+
     private async Task<(RegionEnvironmentCapture? Capture, RegionEnvironmentEvent? Environment)>
         FetchRegionEnvironmentAsync(CancellationToken cancellationToken = default)
     {
@@ -405,8 +464,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         bool isDefault = false;
         string? error = null;
 
+        int parcelId = -1;
+        string? parcelLlsd = null;
+        int parcelDayLength = 0, parcelDayOffset = 0;
+
         OSD? extSettings = null;
         OSD? legacySettings = null;
+        OSD? parcelSettings = null;
 
         try
         {
@@ -428,6 +492,33 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     {
                         extSettings = data.DayCycle;
                         extLlsd = OSDParser.SerializeLLSDNotationFormatted(data.DayCycle);
+                    }
+                }
+            }
+
+            // The environment is a PER-PARCEL setting. OpenSim's cap handler reads a `parcelid`
+            // query parameter and resolves it through LandChannel.GetLandObject
+            // (EnvironmentModule.cs:459-495); the viewer asks per parcel via
+            // LLEnvironment::requestParcel and only falls back to the region. Asking for the region
+            // alone therefore shows the REGION's sky on a parcel that overrides it — which on The
+            // Dangazi Forest put our sun at +32 degrees while Firestorm, on "shared environment",
+            // showed it at the horizon.
+            //
+            // A null DayCycle here means "this parcel inherits the region's" and is the common case,
+            // so it is not treated as a failure.
+            if (hasExt)
+            {
+                parcelId = await ResolveAgentParcelIdAsync(sim, cancellationToken).ConfigureAwait(false);
+                if (parcelId >= 0)
+                {
+                    var parcelEnv = await _client.Environment
+                        .GetParcelEnvironmentAsync(parcelId, cancellationToken).ConfigureAwait(false);
+                    if (parcelEnv?.Environment is { DayCycle: not null } pdata)
+                    {
+                        parcelSettings = pdata.DayCycle;
+                        parcelLlsd = OSDParser.SerializeLLSDNotationFormatted(pdata.DayCycle);
+                        parcelDayLength = pdata.DayLength;
+                        parcelDayOffset = pdata.DayOffset;
                     }
                 }
             }
@@ -459,22 +550,32 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             dayLength,
             dayOffset,
             isDefault,
-            error);
+            error,
+            parcelId,
+            parcelLlsd,
+            parcelDayLength,
+            parcelDayOffset);
 
-        // EEP wins when both answered: it is the newer protocol and carries a full day cycle,
-        // while the legacy capability can only describe one fixed sky. Falling back rather than
-        // preferring one exclusively is what lets the same code path serve an OpenSim region that
-        // offers only the old capability.
-        var (settings, source) =
-            extSettings != null ? (extSettings, EnvironmentSource.ExtendedEnvironment) :
-            legacySettings != null ? (legacySettings, EnvironmentSource.LegacyWindlight) :
-            (null, EnvironmentSource.Default);
+        // Resolution order matches the viewer's: the PARCEL's own environment wins over the
+        // region's (LLEnvironment::requestParcel, and OpenSim resolves by position through
+        // LandChannel.GetLandObject), then EEP over legacy Windlight — the latter is the newer
+        // protocol and carries a full day cycle where the old capability can only describe one
+        // fixed sky. Falling back rather than preferring one exclusively is what lets the same code
+        // path serve an OpenSim region offering only the old capability.
+        //
+        // Each scope brings its OWN day length and offset. Reusing the region's with a parcel's day
+        // cycle would evaluate the right curve at the wrong time of day.
+        var (settings, source, length, offset) =
+            parcelSettings != null ? (parcelSettings, EnvironmentSource.ExtendedEnvironment, parcelDayLength, parcelDayOffset) :
+            extSettings != null ? (extSettings, EnvironmentSource.ExtendedEnvironment, dayLength, dayOffset) :
+            legacySettings != null ? (legacySettings, EnvironmentSource.LegacyWindlight, dayLength, dayOffset) :
+            (null, EnvironmentSource.Default, dayLength, dayOffset);
 
         var cycle = settings != null
             ? EnvironmentLlsdParser.ParseDayCycle(
                 settings,
-                dayLength > 0 ? dayLength : DayCycle.Default.DayLengthSeconds,
-                dayOffset,
+                length > 0 ? length : DayCycle.Default.DayLengthSeconds,
+                offset,
                 legacyWindlight: source == EnvironmentSource.LegacyWindlight)
             : DayCycle.Default;
 
