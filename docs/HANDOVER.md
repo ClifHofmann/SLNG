@@ -7,18 +7,22 @@
 
 # FEAT-ENV-01 water + the Lbsa Plaza bug hunt
 
-**State:** `v0.7.53-alpha`, three commits on `fix/FEAT-NET-04-viewer-version-and-anim-quaternion`,
-which chains onto two earlier branches. **Not merged, not pushed.**
+**State:** `v0.7.53-alpha`, **on `main`** as of 2026-08-23, fast-forwarded from the branch chain
+below. **Not pushed** — `main` is four commits ahead of `origin/main`.
 
 ```
+93712f2  docs:        this handover
 c20fa0b  fix(app):    [FEAT-NET-04] viewer version + rotation interpolation
 a74bc58  fix(net):    [FEAT-ENV-01] stop flooding the region environment capability
 e93005e  feat(render):[FEAT-ENV-01] port SL's water wave field from waterV/waterF
-220386e  main
+220386e  the previous main
 ```
 
-Each branch contains the ones below it, so merging the top branch brings all three. Build clean
-(solution **and** `app/`), 230 tests green, `dotnet format` adds no new violations.
+Build clean (solution **and** `app/`), 230 tests green, `dotnet format` adds no new violations.
+The three now-merged branches (`feature/FEAT-ENV-01-water-wave-parity`,
+`fix/FEAT-ENV-01-environment-repoll-flood`,
+`fix/FEAT-NET-04-viewer-version-and-anim-quaternion`) are fully contained in `main` and can be
+deleted.
 
 ## Build and verify
 
