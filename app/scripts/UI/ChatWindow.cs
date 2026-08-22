@@ -80,6 +80,21 @@ public partial class ChatWindow : SLNGWindow
     private partial class ChatLineEdit : LineEdit
     {
         public ChatWindow? OwnerWindow;
+
+        // Enter keeps focus in the chat bar (see OnSendPressed), so Escape is the explicit way back
+        // to the world -- same as every SL viewer. AcceptEvent() stops it from also reaching
+        // AvatarController._UnhandledInput, which would otherwise reset the camera in the same
+        // keypress that merely left the chat bar.
+        public override void _GuiInput(InputEvent @event)
+        {
+            if (@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.Escape })
+            {
+                ReleaseFocus();
+                AcceptEvent();
+                return;
+            }
+            base._GuiInput(@event);
+        }
         public override bool _CanDropData(Vector2 atPosition, Variant data)
         {
             if (OwnerWindow != null && OwnerWindow.IsInventoryItemData(data)) return true;
@@ -295,10 +310,27 @@ public partial class ChatWindow : SLNGWindow
     {
         bool isOwn = !string.IsNullOrEmpty(_session?.AgentName) && sender == _session!.AgentName;
         string senderColor = isOwn ? "#79B8F0" : "#E0E0E0";
+        string stamp = $"[color=#888888][lb]{timestamp:HH:mm}][/color]";
+        string name = $"[color={senderColor}][b]{BbEscape(sender)}[/b][/color]";
+
+        // Emotes were being rendered like any other line, i.e. "Clif: /me waves" -- the literal
+        // command text, with the colon still there. The sim doesn't transform "/me": it broadcasts
+        // the message verbatim and every viewer formats it locally. Matching llchathistory.cpp
+        // (appendMessage): the "/me " / "/me'" prefix marks an IRC-style message, the name/body
+        // delimiter is dropped entirely, the body is italic, and exactly 3 characters are stripped
+        // -- not 4 -- so the space in "/me waves" survives as the separator and "/me's hat"
+        // renders as "Clif's hat".
+        if (IsEmote(message))
+            return $"{stamp} {name}[i]{BbEscape(message[3..])}[/i]";
+
         // [lb] escapes the literal "[" so Godot's BBCode parser doesn't try to read "[15:28]" as
         // a tag -- matches the bracketed timestamp style of preloaded lines from the log file.
-        return $"[color=#888888][lb]{timestamp:HH:mm}][/color] [color={senderColor}][b]{BbEscape(sender)}[/b][/color]: {BbEscape(message)}";
+        return $"{stamp} {name}: {BbEscape(message)}";
     }
+
+    private static bool IsEmote(string message) =>
+        message.StartsWith("/me ", StringComparison.Ordinal) ||
+        message.StartsWith("/me'", StringComparison.Ordinal);
 
     private static string BbEscape(string s) => s.Replace("[", "[lb]");
 
@@ -377,6 +409,13 @@ public partial class ChatWindow : SLNGWindow
             BbcodeEnabled = true,
             ScrollFollowing = false, // manual pause/follow control -- see _Process
             SizeFlagsVertical = SizeFlags.ExpandFill,
+            // RichTextLabel is non-selectable by default, so the chat log was read-only in the
+            // literal sense -- you couldn't drag-select a line to copy a name/URL out of it.
+            // Ctrl+C needs the label to be focusable too (ShortcutKeysEnabled only fires on the
+            // focused control), and ContextMenuEnabled adds the right-click Copy entry.
+            SelectionEnabled = true,
+            ContextMenuEnabled = true,
+            FocusMode = FocusModeEnum.Click,
         };
         // RichTextLabel keys normal/bold/italics/bold_italics separately -- missing any of them
         // falls back to the ~16px theme default, which is exactly what happened to the preloaded
@@ -580,15 +619,16 @@ public partial class ChatWindow : SLNGWindow
 
         _inputEdit.Text = "";
 
-        // AvatarController disables ALL movement and camera rotation while a LineEdit/TextEdit
-        // holds Godot's control focus (hasUiFocus) -- deliberately, so typing "asdf" in chat
-        // doesn't also walk the avatar. But nothing ever released that focus again after a send,
-        // so once the chat input was clicked into once, movement stayed locked out permanently
-        // until the user happened to click back into the 3D viewport -- reported live as "ich
-        // kann die Kamera nicht mehr drehen bzw auch nicht laufen ... nur schreiben". Releasing
-        // focus here matches the classic SL/OS viewer convention: Enter sends chat AND returns
-        // keyboard control to the world.
-        _inputEdit.ReleaseFocus();
+        // Keep keyboard focus in the input after sending. AvatarController disables movement and
+        // camera rotation while a LineEdit/TextEdit holds Godot's control focus (hasUiFocus), so
+        // this used to ReleaseFocus() here to make sure movement came back after a send. But that
+        // drops the user out of the chat bar mid-conversation: typing the next line then walks the
+        // avatar instead of appending text -- reported live as "wenn ich schreibe und enter druecke
+        // verliert das fenster den focus, wenn ich weiter schreibe laeuft der avatar los". Firestorm
+        // behaves the same way as this does now: Enter sends and the chat bar stays focused, and you
+        // leave it explicitly with Escape (handled in ChatLineEdit) or by clicking into the world
+        // (handled in AvatarController._UnhandledInput).
+        _inputEdit.GrabFocus();
     }
 
     private void OnHistoryPressed()
