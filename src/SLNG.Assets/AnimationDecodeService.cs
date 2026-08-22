@@ -60,20 +60,34 @@ public static class AnimationDecodeService
         };
     }
 
+    /// <summary>Rebuilds a keyframe rotation from the three components SL actually stores, a
+    /// literal port of <c>LLQuaternion::unpackFromVector3</c> (llquaternion.cpp:943).
+    ///
+    /// SL saves space by keeping only x, y and z — each quantized to a U16 mapped onto [-1, 1] —
+    /// and recovering w as sqrt(1 - |xyz|²) on the strength of the quaternion being a unit one.
+    ///
+    /// <para><b>The result is therefore not always a unit quaternion.</b> Quantization can push
+    /// |xyz| just past 1, making the radicand negative; the viewer clamps that case to w = 0
+    /// rather than producing a NaN, and so does this. What comes back is then slightly longer
+    /// than 1. That is faithful, not a defect — but it means no consumer may assume normality.
+    /// <c>AvatarAnimationPlayer.ToGodotQuat</c> is where that is dealt with, because Godot both
+    /// throws on a non-unit Slerp operand and silently SCALES a bone given a non-unit
+    /// pose.</para></summary>
+    internal static Quaternion UnpackRotation(float x, float y, float z)
+    {
+        float wSq = 1.0f - (x * x + y * y + z * z);
+        return new Quaternion(x, y, z, wSq > 0f ? MathF.Sqrt(wSq) : 0f);
+    }
+
     private static AnimationJointData ConvertJoint(binBVHJoint joint)
     {
         var rotKeys = new RotationKeyframe[joint.rotationkeys.Length];
         for (int i = 0; i < joint.rotationkeys.Length; i++)
         {
             ref var key = ref joint.rotationkeys[i];
-            // SL binary BVH stores compressed quaternion: X, Y, Z
-            // Derive W = sqrt(1 - x² - y² - z²), clamped to avoid NaN.
-            float x = key.key_element.X;
-            float y = key.key_element.Y;
-            float z = key.key_element.Z;
-            float wSq = 1.0f - (x * x + y * y + z * z);
-            float w = wSq > 0f ? MathF.Sqrt(wSq) : 0f;
-            rotKeys[i] = new RotationKeyframe(key.time, new Quaternion(x, y, z, w));
+            rotKeys[i] = new RotationKeyframe(
+                key.time,
+                UnpackRotation(key.key_element.X, key.key_element.Y, key.key_element.Z));
         }
 
         var posKeys = new PositionKeyframe[joint.positionkeys.Length];

@@ -102,7 +102,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.7.52-alpha";
+    public const string AppVersion = "v0.7.53-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1380,7 +1380,14 @@ public partial class Boot : Control
             GridLoginUri = _gridInput.Text,
             FirstName = _firstInput.Text,
             LastName = _lastInput.Text,
-            Password = _passInput.Text
+            Password = _passInput.Text,
+
+            // The grid records this on every login and prints it in the region log
+            // ("viewer SLNG 0.1.0, teleportflags ..."). It was never set, so LoginCredentials'
+            // hardcoded default shipped to every sim we ever touched while the build moved on to
+            // 0.7.x -- anyone reading a sim log saw a client seven minor versions stale, which is
+            // exactly the sort of thing that gets reported as "your viewer is broken".
+            Version = AppVersion.TrimStart('v'),
         };
 
         // Step 0 ("Initializing session") is genuinely done now -- everything above this line

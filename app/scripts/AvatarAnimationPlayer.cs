@@ -192,7 +192,7 @@ public sealed class AvatarAnimationPlayer
                 float t = span > 0 ? (time - keys[i].Time) / span : 0f;
                 var a = ToGodotQuat(keys[i].Rotation);
                 var b = ToGodotQuat(keys[i + 1].Rotation);
-                return a.Slerp(b, t);
+                return NlerpSl(t, a, b);
             }
         }
 
@@ -228,8 +228,54 @@ public sealed class AvatarAnimationPlayer
     /// Convert a System.Numerics.Quaternion to a Godot.Quaternion.
     /// This is a straight copy — coordinate-system conversion happens later.
     /// </summary>
+    /// <summary>The viewer's own interpolation for keyframe rotations, ported from <c>nlerp</c>
+    /// (llquaternion.cpp:694), which is what
+    /// <c>LLKeyframeMotion::RotationCurve::interp</c> calls (llkeyframemotion.cpp:277).
+    ///
+    /// It is NOT slerp, which is what this used to do. The viewer reaches for slerp only when the
+    /// two keys point into opposite hemispheres (dot &lt; 0) and otherwise takes a normalized
+    /// componentwise lerp. Both curves agree at the endpoints and differ in between — lerp eases
+    /// toward the nearer key instead of sweeping at constant angular velocity — so the wrong one
+    /// reads as animation timing that drifts from the real viewer, worst on widely spaced
+    /// keys.</summary>
+    private static Quaternion NlerpSl(float t, Quaternion a, Quaternion b)
+    {
+        if (a.Dot(b) < 0f) return a.Slerp(b, t);
+
+        float inv = 1f - t;
+        var r = new Quaternion(
+            inv * a.X + t * b.X,
+            inv * a.Y + t * b.Y,
+            inv * a.Z + t * b.Z,
+            inv * a.W + t * b.W);
+
+        // Cannot reach zero length while dot >= 0 — two same-hemisphere unit quaternions always
+        // blend to at least cos(theta/2) — but a NaN keyframe would, and a NaN bone pose is much
+        // harder to trace back than a frozen one.
+        float len = r.Length();
+        return len > 0.0001f ? r / len : a;
+    }
+
+    /// <summary>An SL keyframe rotation as a Godot quaternion, normalized.
+    ///
+    /// The magnitude here is quantization noise, not data. SL stores a keyframe rotation as three
+    /// U16-quantized components and reconstructs w as sqrt(1 - |xyz|²)
+    /// (<c>LLQuaternion::unpackFromVector3</c>, llquaternion.cpp:943). When quantization pushes
+    /// |xyz| just past 1 the viewer clamps the negative radicand to w = 0, which leaves a
+    /// slightly over-unit quaternion — and <c>AnimationDecodeService</c> ports that clamp
+    /// faithfully, so the same values arrive here.
+    ///
+    /// LLQuaternion's math shrugs that off. Godot's does not, in two different ways:
+    /// <c>Quaternion.Slerp</c> throws <c>ArgumentException</c> on a non-unit operand (27 of them
+    /// in one session on Lbsa Plaza), and a non-unit bone pose SCALES the bone — the quieter and
+    /// more misleading half of the same bug. Normalizing at the single point where SL rotations
+    /// become Godot ones closes both.</summary>
     private static Quaternion ToGodotQuat(System.Numerics.Quaternion q)
-        => new Quaternion(q.X, q.Y, q.Z, q.W);
+    {
+        var g = new Quaternion(q.X, q.Y, q.Z, q.W);
+        float len = g.Length();
+        return len > 0.0001f ? g / len : Quaternion.Identity;
+    }
 
     private void ResetToRestPose()
     {
