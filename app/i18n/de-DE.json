@@ -62,7 +62,10 @@
       "off": "Aus",
       "shadows": "Schatten",
       "post_fx": "Nachbearbeitung",
-      "post_fx_hint": "SSAO, SSIL, Glühen und Volumennebel — dieselbe Gruppe wie die F2-Taste."
+      "post_fx_hint": "SSAO, SSIL, Glühen und Volumennebel — dieselbe Gruppe wie die F2-Taste.",
+      "tab_licenses": "Lizenzen",
+      "licenses_heading": "Hinweise und Namensnennung zu Fremdmaterial",
+      "licenses_missing": "Die Datei mit den Fremdmaterial-Hinweisen fehlt in diesem Build. Das ist ein Lizenzproblem, kein Anzeigeproblem — bitte melden."
     }
   }
 }

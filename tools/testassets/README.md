@@ -168,3 +168,78 @@ placed diametrically opposite on import.
 Probes 13, 17 and W7 have no file on purpose — `cloud_variance` and
 `moon_brightness` have no legacy key at all, and W7 is W0 with the camera under the
 surface.
+
+## Terrain band probes (FEAT-RENDER-02)
+
+`gen_terrain_probe.py` → `out/terrain_probe_{1..4}.png`
+
+Four flat-hue terrain detail textures, one per elevation band. Same reasoning as the
+rest of this directory: an A/B on a region's real grass textures mixes four things
+into one image — where the band boundaries fall, what the textures look like, how
+they are filtered, and what colour space they are blended in — and **every one of
+those has been wrong at some point in FEAT-RENDER-02**. A grass-on-grass comparison
+cannot separate them, which is why that task needed five rounds.
+
+These leave only the boundaries. Each band is one unmistakable hue, and the hues are
+chosen so a blend of two neighbours cannot be mistaken for a third band (measured:
+pure bands ≥119 apart in RGB distance, adjacent 50/50 blends ≥66 from the nearest
+pure band; blue/magenta is the weakest pair).
+
+The checkerboard and tile frame give two more readings for free:
+
+- Count the checks over a known distance → the detail UV scale. One full texture
+  repeat should span **12 m**, the viewer's `RenderTerrainScale` default.
+- Compare how crisp the checks look between viewers → texture filtering. This is the
+  reading that caught the missing anisotropic filtering, which had made our ground
+  look soft while Firestorm stayed sharp.
+
+The top-left corner triangle is an orientation marker: if the terrain UVs are flipped
+or transposed relative to the viewer, it lands somewhere else and says so.
+
+### Setup
+
+Upload all four, then Estate tools → Region/Estate → Terrain, low to high:
+
+    texture 1 (LOW)  = terrain_probe_1.png   red
+    texture 2        = terrain_probe_2.png   green
+    texture 3        = terrain_probe_3.png   blue
+    texture 4 (HIGH) = terrain_probe_4.png   magenta
+
+### What to expect on Howletts
+
+`[TerrainComposition]` reports start height 10, height range 60, terrain topping out
+at 25 m against a 20 m waterline. The composition value therefore only spans roughly
+**0.7 to 1.6**, so you will see the red/green transition and the beginning of
+green/blue. **Magenta will not appear at all — that is correct, not a bug.**
+
+To exercise all four bands, narrow the elevation range in the estate terrain tab
+(e.g. low 18 / high 28). Be aware the Perlin term swings effective height by about
+±9 m, so with a narrow range it dominates and the bands read as mottling rather than
+layers. Still a valid comparison, just a noisier-looking one.
+
+### Known-answer points (Howletts, verified against the sim's own terrain export)
+
+The region's `terrain.raw` estate export was decoded (`height = red * green / 128`, 13 bytes per
+cell, **row 0 is north**) and checked against the client's heightmap: **1024/1024 sampled cells
+identical**. An independent Python port of the viewer's algorithm run over that ground truth then
+reproduced the client's own composition map to 221/224 cells — the three differences being
+rounding at the "dominant vs mixed" threshold.
+
+So for these points the expected colour is not our opinion, it is the viewer's algorithm applied to
+the sim's own heightmap. Stand at each in both viewers and compare:
+
+| Position | Height | Perlin term | Composition | Expected |
+|---|---|---|---|---|
+| `<144, 124>` | 21.08 | −9.57 | 0.10 | **1 red** (98%) |
+| `<183, 121>` | 21.05 | −6.47 | 0.31 | **1 red** (81%) |
+| `<117, 118>` | 22.78 | +2.41 | 1.01 | **2 green** (99%) |
+| `<162, 151>` | 21.08 | +4.96 | 1.07 | **2 green** (99%) |
+| `<117, 145>` | 20.90 | +3.14 | 0.94 | **2 green** (96%) |
+
+Note how much work the Perlin term does: every one of these points sits at 20.9–22.8 m, within two
+metres of the others, and the noise alone is what separates red from green. On a region with
+`start_height` 10 and `height_range` 60 the elevation contributes almost nothing — which is why
+this region punished every approximation in FEAT-RENDER-02 so severely.
+
+If Firestorm disagrees at any of these, the divergence is real and localised. If it agrees, the
+difference is in how the screenshots were being read, and the port is done.

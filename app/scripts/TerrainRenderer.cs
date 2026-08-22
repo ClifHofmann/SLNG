@@ -57,6 +57,237 @@ public partial class TerrainRenderer : Node3D
     private SLNG.Assets.AssetService? _assetService;
     private GpuCache? _gpuCache;
 
+    /// <summary>
+    /// 256x1 RGBAF lookup feeding the terrain shader's Perlin noise: rg = normalized 2D gradient,
+    /// b = permutation entry. Built once from <see cref="SlPerlinNoise"/> so the CPU reference
+    /// implementation and the shader cannot drift apart — the tables come out of srand(42) plus
+    /// the Microsoft CRT's rand(), and a table that does not match the viewer's paints the same
+    /// region with a visibly different pattern.
+    /// </summary>
+    private static ImageTexture? _noiseLut;
+
+    private static ImageTexture GetNoiseLut()
+    {
+        if (_noiseLut != null) return _noiseLut;
+
+        var perm = SlPerlinNoise.Permutation;
+        var grad = SlPerlinNoise.Gradients2D;
+
+        var image = Image.CreateEmpty(SlPerlinNoise.B, 1, false, Image.Format.Rgbaf);
+        for (int i = 0; i < SlPerlinNoise.B; i++)
+        {
+            image.SetPixel(i, 0, new Color(grad[i * 2], grad[i * 2 + 1], perm[i], 0f));
+        }
+
+        _noiseLut = ImageTexture.CreateFromImage(image);
+        return _noiseLut;
+    }
+
+    /// <summary>
+    /// The viewer's own terrain blend ramp (IMG_ALPHA_GRAD_2D / alpha_gradient_2d.j2c), shipped
+    /// with us under CC BY-SA 3.0 — see THIRD-PARTY-NOTICES.md.
+    ///
+    /// Its second axis is the point of it: holding the ramp at a single curve gives every place at
+    /// a given composition value the same blend, where the viewer varies it with position. That
+    /// variation is what makes its texture boundaries crisp, and approximating it with a fitted
+    /// curve was tried and measurably made things worse, so we sample the real table.
+    /// </summary>
+    private static Texture2D? _alphaRamp;
+
+    private static Texture2D GetAlphaRamp() =>
+        _alphaRamp ??= ResourceLoader.Load<Texture2D>("res://textures/sl_alpha_gradient_2d.png");
+
+    /// <summary>Non-negative modulo — C#'s % keeps the sign of the dividend, which would phase
+    /// the noise and detail UVs wrongly for a region west or south of the global origin.</summary>
+    private static double Mod(double a, double b) => (a % b + b) % b;
+
+    /// <summary>Regions whose composition summary has already been logged, so a rebuild per
+    /// arriving patch does not spam it.</summary>
+    private readonly HashSet<ulong> _compositionLogged = new();
+
+    /// <summary>Regions already reported as drawing without terrain settings.</summary>
+    private readonly HashSet<ulong> _settingsMissingLogged = new();
+
+    /// <summary>
+    /// FEAT-RENDER-02 diagnostic: reports what the terrain shader is actually being asked to do.
+    ///
+    /// The shader's inputs cannot be read back from the GPU, so a mismatch against the real viewer
+    /// is otherwise impossible to attribute — a wrong `height_range` off the wire and a wrong noise
+    /// port look identical on screen. This recomputes the composition on the CPU through
+    /// <see cref="SlTerrainComposition"/> (the same maths the shader runs) and prints the
+    /// per-detail-slot area split, which IS directly comparable against a screenshot.
+    ///
+    /// Deliberately GD.Print and not Logger.Info: Logger sits at Warning unless Diagnostics is
+    /// switched on (Diagnostics.cs:39), so an Info line here is invisible in a normal run — which
+    /// is exactly the run where this measurement is wanted. Four lines once per region, matching
+    /// how [ENV] and [Boot] already report, so it does not reopen the quiet-console decision.
+    /// </summary>
+    private void LogCompositionDiagnostics(ulong regionHandle, RegionTerrain terrain)
+    {
+        // Terrain patches arrive independently of (and often before) the RegionHandshake that
+        // carries the composition settings, so the first rebuilds run with all-zero start/range.
+        // Logging those would pin a meaningless snapshot and never log the real one.
+        bool settingsArrived = false;
+        foreach (float r in terrain.TerrainHeightRanges)
+        {
+            if (r > 0f) { settingsArrived = true; break; }
+        }
+        if (!settingsArrived)
+        {
+            // Worth saying out loud rather than returning quietly. A region drawn without
+            // settings has no meaningful composition at all, and a second such region rendering
+            // beside the real one is otherwise invisible in the logs -- which is exactly how a
+            // whole neighbouring region painted in the top detail texture went unnoticed.
+            if (_settingsMissingLogged.Add(regionHandle))
+            {
+                GD.Print($"[TerrainComposition] region {regionHandle} is being drawn with NO terrain " +
+                         "settings (height_range all zero) -- falling back to the lowest detail band");
+            }
+            return;
+        }
+
+        if (!_compositionLogged.Add(regionHandle)) return;
+
+        double originX = (uint)(regionHandle >> 32);
+        double originY = (uint)(regionHandle & 0xFFFFFFFF);
+
+        var starts = terrain.TerrainStartHeights;
+        var ranges = terrain.TerrainHeightRanges;
+
+        var slotArea = new float[SlTerrainComposition.AssetCount];
+        var slotAreaDry = new float[SlTerrainComposition.AssetCount];
+        var weights = new float[SlTerrainComposition.AssetCount];
+        var dryValues = new List<float>();
+        float minH = float.MaxValue, maxH = float.MinValue, sumH = 0f;
+        int samples = 0;
+
+        // Every 4 m is plenty for an area split and keeps this off the frame budget.
+        for (int y = 0; y < terrain.Height; y += 4)
+        {
+            for (int x = 0; x < terrain.Width; x += 4)
+            {
+                if (!terrain.TryGetKnownHeight(x, y, out float h)) continue;
+
+                float east = terrain.Width > 1 ? (float)x / terrain.Width : 0f;
+                float north = terrain.Height > 1 ? (float)y / terrain.Height : 0f;
+                float start = SlTerrainComposition.BilinearCorners(starts, east, north);
+                float range = SlTerrainComposition.BilinearCorners(ranges, east, north);
+
+                float value = SlTerrainComposition.Value(
+                    (float)(originX + x), (float)(originY + y), h, start, range);
+
+                SlTerrainComposition.Weights(value, weights);
+                for (int i = 0; i < weights.Length; i++) slotArea[i] += weights[i];
+
+                // The visible part. Most of a coastal region is seabed far below the waterline,
+                // and averaging it in swamps the split for the land you can actually see: the
+                // first version of this report read "detail0 = 91%" for an island that renders
+                // almost entirely as detail1.
+                if (h >= terrain.WaterHeight)
+                {
+                    for (int i = 0; i < weights.Length; i++) slotAreaDry[i] += weights[i];
+                    dryValues.Add(value);
+                }
+
+                minH = MathF.Min(minH, h);
+                maxH = MathF.Max(maxH, h);
+                sumH += h;
+                samples++;
+            }
+        }
+
+        if (samples == 0) return;
+
+        GD.Print($"[TerrainComposition] region {regionHandle} '{terrain.Width}x{terrain.Height}' " +
+                    $"start=[{starts[0]:F1},{starts[1]:F1},{starts[2]:F1},{starts[3]:F1}] " +
+                    $"range=[{ranges[0]:F1},{ranges[1]:F1},{ranges[2]:F1},{ranges[3]:F1}] " +
+                    $"water={terrain.WaterHeight:F1}");
+        GD.Print($"[TerrainComposition] height min={minH:F1} mean={sumH / samples:F1} max={maxH:F1} " +
+                    $"over {samples} samples");
+        GD.Print($"[TerrainComposition] area split (whole region, mostly seabed)  " +
+                    $"detail0={slotArea[0] / samples:P1} detail1={slotArea[1] / samples:P1} " +
+                    $"detail2={slotArea[2] / samples:P1} detail3={slotArea[3] / samples:P1}");
+
+        if (dryValues.Count > 0)
+        {
+            int dry = dryValues.Count;
+            dryValues.Sort();
+            GD.Print($"[TerrainComposition] area split ABOVE WATER ({dry} samples)  " +
+                     $"detail0={slotAreaDry[0] / dry:P1} detail1={slotAreaDry[1] / dry:P1} " +
+                     $"detail2={slotAreaDry[2] / dry:P1} detail3={slotAreaDry[3] / dry:P1}");
+            GD.Print($"[TerrainComposition] composition value above water  " +
+                     $"min={dryValues[0]:F2} p10={dryValues[dry / 10]:F2} " +
+                     $"median={dryValues[dry / 2]:F2} p90={dryValues[dry * 9 / 10]:F2} " +
+                     $"max={dryValues[dry - 1]:F2}");
+        }
+        GD.Print($"[TerrainComposition] detail ids  0={terrain.TerrainDetail0} 1={terrain.TerrainDetail1} " +
+                    $"2={terrain.TerrainDetail2} 3={terrain.TerrainDetail3}");
+
+        LogCompositionMap(terrain, originX, originY, starts, ranges);
+    }
+
+    /// <summary>
+    /// Prints the composition as a coarse map, north at the top, so it can be laid over a
+    /// screenshot directly.
+    ///
+    /// Summary statistics have repeatedly failed to settle this task: the same mean can come from
+    /// evenly-spread mixing or from concentrated patches, and those look nothing alike. A map shows
+    /// *where* each band falls, which is the thing actually in dispute against the real viewer.
+    ///
+    /// Each cell prints the dominant band as a digit when that band clearly wins (weight >= 70%),
+    /// and as a letter a-d for the same band when the cell is a blend, so mixing zones are
+    /// distinguishable from solid ones at a glance. '~' is below the waterline, '.' has no height
+    /// data yet.
+    ///
+    /// The band comes from the CPU stand-in ramp, not the real gradient the shader samples, so
+    /// treat it as a map of the composition VALUE rather than a pixel-accurate preview. That is
+    /// the part in dispute; the ramp only shapes how sharply the bands meet.
+    /// </summary>
+    private static void LogCompositionMap(RegionTerrain terrain, double originX, double originY,
+                                          float[] starts, float[] ranges)
+    {
+        const int Cells = 32;
+        int stepX = Math.Max(1, terrain.Width / Cells);
+        int stepY = Math.Max(1, terrain.Height / Cells);
+        var weights = new float[SlTerrainComposition.AssetCount];
+
+        GD.Print($"[TerrainComposition] map, north at top, {stepX}x{stepY} m per cell " +
+                 "(digit = dominant band, lower case = mixed, ~ = under water, . = no data)");
+
+        for (int y = terrain.Height - 1; y >= 0; y -= stepY)
+        {
+            var row = new System.Text.StringBuilder(Cells);
+            for (int x = 0; x < terrain.Width; x += stepX)
+            {
+                if (!terrain.TryGetKnownHeight(x, y, out float h)) { row.Append('.'); continue; }
+                if (h < terrain.WaterHeight) { row.Append('~'); continue; }
+
+                float east = (float)x / terrain.Width;
+                float north = (float)y / terrain.Height;
+                float value = SlTerrainComposition.Value(
+                    (float)(originX + x), (float)(originY + y), h,
+                    SlTerrainComposition.BilinearCorners(starts, east, north),
+                    SlTerrainComposition.BilinearCorners(ranges, east, north));
+
+                SlTerrainComposition.Weights(value, weights);
+
+                int best = 0;
+                for (int i = 1; i < weights.Length; i++)
+                {
+                    if (weights[i] > weights[best]) best = i;
+                }
+
+                row.Append(weights[best] >= 0.7f ? (char)('0' + best) : (char)('a' + best));
+            }
+            GD.Print("[TerrainComposition] | " + row);
+        }
+    }
+
+    /// <summary>A region's global SW corner expressed in one noise octave's lattice space and
+    /// reduced modulo the 256-entry lattice, which noise2 is periodic in.</summary>
+    private static Vector2 NoiseOrigin(double originX, double originY, double scale) =>
+        new((float)Mod(originX * scale, 256.0), (float)Mod(originY * scale, 256.0));
+
     public void Initialize(World world, SLNG.Assets.AssetService? assetService, GpuCache? gpuCache)
     {
         _world = world;
@@ -133,16 +364,21 @@ public partial class TerrainRenderer : Node3D
     }
 
     // FEAT-PERF-02: thin wrapper delegating to GpuCache.GetOrUploadTextureAsync (single-flight
-    // fetch/decode/Image/upload shared across every renderer, not just terrain). generateMipmaps
-    // stays false here, matching this method's pre-existing behavior -- unlike ObjectRenderer/
-    // AvatarRenderer, terrain detail textures were never mipmapped (tiled many times across a
-    // large mesh via the terrain shader), so this preserves that rather than silently changing it.
+    // fetch/decode/Image/upload shared across every renderer, not just terrain).
+    //
+    // FEAT-RENDER-02: generateMipmaps is now true. It had been false only because that was the
+    // pre-existing behaviour, justified as "tiled many times across a large mesh" -- which is the
+    // argument FOR mipmaps, not against. The terrain shader declares filter_linear_mipmap, and
+    // Godot silently degrades that to plain linear when the texture has no mip chain. The real
+    // terrain textures are 128x128 repeating every 12 m, so looking down at a region from any
+    // height minifies them several times over; without mips that samples one arbitrary texel per
+    // pixel and the ground shimmers and reads muddier than the texture's actual average colour.
     private System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId)
     {
         if (textureId == Guid.Empty || _gpuCache == null || _assetService == null)
             return System.Threading.Tasks.Task.FromResult<ImageTexture?>(null);
 
-        return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: false);
+        return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true);
     }
 
     private void ApplyTerrainTextures(ulong regionHandle, ImageTexture? tex0, ImageTexture? tex1, ImageTexture? tex2, ImageTexture? tex3)
@@ -443,6 +679,34 @@ public partial class TerrainRenderer : Node3D
             regionTerrain.TerrainHeightRanges[2], regionTerrain.TerrainHeightRanges[3]));
 
         mat.SetShaderParameter("region_size", (float)regionTerrain.Width);
+
+        // Terrain composition parity (see sl_terrain_composition.gdshaderinc). The noise is
+        // sampled in SL GLOBAL coordinates so the pattern runs continuously across region
+        // borders; we hand the shader each octave's lattice origin rather than the raw global
+        // position, because global coordinates run to the hundreds of thousands where float32
+        // has lost the centimetres the noise needs.
+        double originX = (uint)(regionHandle >> 32);
+        double originY = (uint)(regionHandle & 0xFFFFFFFF);
+
+        const double xyScaleInv = 1.0 / 4.9215;
+        mat.SetShaderParameter("sl_noise_origin_low", NoiseOrigin(originX, originY, xyScaleInv * 0.2222222222));
+        mat.SetShaderParameter("sl_noise_origin_mid", NoiseOrigin(originX, originY, xyScaleInv));
+        mat.SetShaderParameter("sl_noise_origin_high", NoiseOrigin(originX, originY, xyScaleInv * 2.0));
+
+        // The viewer's offset_x/offset_y: the detail UV is continuous in global space, phased by
+        // the region origin reduced modulo one texture repeat (LLDrawPoolTerrain).
+        float detailScale = SlTerrainComposition.DetailScaleMetres;
+        mat.SetShaderParameter("sl_detail_scale_m", detailScale);
+        mat.SetShaderParameter("sl_detail_origin_m", new Vector2(
+            (float)Mod(originX, detailScale), (float)Mod(originY, detailScale)));
+
+        mat.SetShaderParameter("sl_noise_origin_ramp",
+            NoiseOrigin(originX, originY, SlTerrainComposition.RampNoiseScale));
+
+        mat.SetShaderParameter("sl_noise_lut", GetNoiseLut());
+        mat.SetShaderParameter("sl_alpha_ramp", GetAlphaRamp());
+
+        LogCompositionDiagnostics(regionHandle, regionTerrain);
 
         // Build water plane
         MainThreadWorkQueue.Measure("terrain.water", () => BuildWaterPlane(regionNode, regionTerrain));

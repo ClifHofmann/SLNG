@@ -62,7 +62,10 @@
       "off": "Off",
       "shadows": "Shadows",
       "post_fx": "Post-processing",
-      "post_fx_hint": "SSAO, SSIL, glow and volumetric fog — the same group as the F2 shortcut."
+      "post_fx_hint": "SSAO, SSIL, glow and volumetric fog — the same group as the F2 shortcut.",
+      "tab_licenses": "Licences",
+      "licenses_heading": "Third-party notices and attribution",
+      "licenses_missing": "The third-party notice file is missing from this build. This is a licensing problem, not a display one — please report it."
     }
   }
 }

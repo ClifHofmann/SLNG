@@ -102,7 +102,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.7.37-alpha";
+    public const string AppVersion = "v0.7.47-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -508,6 +508,12 @@ public partial class Boot : Control
         var networkPage = new SLNG.App.UI.NetworkPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);
         networkPage.Initialize(ProjectSettings.GlobalizePath("user://cache/assets"));
+
+        // Not optional: the Second Life viewer artwork we ship is CC BY-SA 3.0, which requires the
+        // attribution notice to reach the user. See app/THIRD-PARTY-NOTICES.md.
+        var licensesPage = new SLNG.App.UI.LicensesPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_licenses"), licensesPage);
+        licensesPage.Initialize();
     }
 
     private void SetupEnvironment()

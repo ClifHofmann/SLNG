@@ -62,3 +62,12 @@ godot --path app
 Any build that connects to the Second Life grid must comply with the Linden Lab
 **Third-Party Viewer (TPV) Policy**. The permission/asset-protection model is a
 hard design constraint, not an afterthought — see [AGENTS.md](AGENTS.md#non-negotiables).
+
+We ship a small amount of Second Life viewer artwork (the terrain blend ramp and the
+Windlight cloud texture) under **Creative Commons Attribution-Share Alike 3.0**. That
+licence requires the notice to travel with the program, so the canonical file lives at
+[`app/THIRD-PARTY-NOTICES.md`](app/THIRD-PARTY-NOTICES.md) — inside the Godot project, so
+an export includes it — and the client shows it under **Preferences → Licences**.
+
+**If you add a third-party asset, add it to that notice file**, including what you changed
+about it. Identifying changes is a condition of the licence, not a courtesy.
