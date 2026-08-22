@@ -102,7 +102,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.7.51-alpha";
+    public const string AppVersion = "v0.7.52-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1494,6 +1494,13 @@ public partial class Boot : Control
 
     private void LogMessage(string message)
     {
+        // The environment re-poll delivers through CallDeferred from a background task, so a
+        // capture already in flight when the user closes the client lands one frame after the UI
+        // is gone -- an ObjectDisposedException on RichTextLabel.AppendText, thrown twice on every
+        // shutdown that happened to catch one. Godot's own liveness check is the reliable test
+        // here; a null check is not, because the C# wrapper outlives the native object.
+        if (_logPanel == null || !IsInstanceValid(_logPanel)) return;
+
         // Cap the panel — an unbounded RichTextLabel re-layouts everything on every append
         // and tanks the frame rate once it holds thousands of lines.
         if (++_logLineCount > 200)

@@ -268,26 +268,116 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private void OnRegionInfoPacket(object? sender, PacketReceivedEventArgs e) => RepollEnvironment();
 
+    /// <summary>Shortest gap between two environment re-polls.
+    ///
+    /// Not a guess: OpenSim's own <c>EnvironmentModule.UpdateEnvTime</c> refuses to push a client
+    /// environment update more often than every 2.5 s ("this will be a conf option"). That is the
+    /// server's own statement of the finest granularity at which an environment change is
+    /// considered meaningful, so re-polling faster than it cannot learn anything new.</summary>
+    private static readonly TimeSpan RepollMinInterval = TimeSpan.FromSeconds(2.5);
+
+    private readonly object _repollLock = new();
+    private bool _repollRunning;
+    private bool _repollRequested;
+    private DateTime _lastRepollUtc = DateTime.MinValue;
+    private string? _lastEnvironmentFingerprint;
+
+    /// <summary>Re-polls the environment capabilities after a RegionInfo packet.
+    ///
+    /// RegionInfo carries no environment payload -- it is only the "something about this region
+    /// changed" signal -- so the answer is another capability fetch, same as at login. It stays
+    /// unfiltered by intent: RegionInfo also arrives for estate and terrain edits, and the viewer
+    /// re-polls on all of them (llenvironment.cpp:886) rather than trying to tell them apart.
+    ///
+    /// What it must NOT stay is unbounded. This was a bare <c>Task.Run</c> per packet, and on a
+    /// busy region that is a request flood aimed at someone else's server: measured on OSGrid's
+    /// Lbsa Plaza, 2649 re-polls in one hour-long session -- about 45 a minute, sustained, each
+    /// firing three HTTP capability GETs and each re-delivering a byte-identical 6060-character
+    /// payload. Roughly 8000 requests from one client. The real viewer receives the same packets
+    /// and survives them because <c>requestRegion</c> issues one coalesced request, not three
+    /// uncoordinated ones.
+    ///
+    /// Three bounds, in order of how much each removes:
+    /// 1. One re-poll at a time. Overlapping fetches collapse into a single latch, so a burst
+    ///    becomes one trailing refresh instead of a pile-up of concurrent HTTP calls.
+    /// 2. <see cref="RepollMinInterval"/> between fetches.
+    /// 3. Nothing is published unless the payload actually changed. This is what keeps the
+    ///    downstream cost at zero: no parse, no event, no on-screen log, and no rewriting the
+    ///    Phase-A LLSD dump file with bytes identical to the ones already in it.</summary>
     private void RepollEnvironment()
     {
-        // RegionInfo carries no environment payload -- it is only the "something about this region
-        // changed" signal -- so the answer is another capability fetch, same as at login.
-        // Deliberately unfiltered: RegionInfo also arrives for estate and terrain edits, and the
-        // viewer re-polls on all of them rather than trying to tell them apart.
-        _ = Task.Run(async () =>
+        lock (_repollLock)
         {
-            try
-            {
-                var (capture, environment) = await FetchRegionEnvironmentAsync().ConfigureAwait(false);
-                if (capture != null) RegionEnvironmentCaptured?.Invoke(this, capture);
-                if (environment != null) RegionEnvironmentReceived?.Invoke(this, environment);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[ENV] live update capture failed: {ex.Message}");
-            }
-        });
+            _repollRequested = true;
+            if (_repollRunning) return;
+            _repollRunning = true;
+        }
+
+        _ = Task.Run(RepollEnvironmentLoopAsync);
     }
+
+    private async Task RepollEnvironmentLoopAsync()
+    {
+        try
+        {
+            while (true)
+            {
+                lock (_repollLock)
+                {
+                    if (!_repollRequested)
+                    {
+                        _repollRunning = false;
+                        return;
+                    }
+                    _repollRequested = false;
+                }
+
+                var since = DateTime.UtcNow - _lastRepollUtc;
+                if (since < RepollMinInterval)
+                    await Task.Delay(RepollMinInterval - since).ConfigureAwait(false);
+                _lastRepollUtc = DateTime.UtcNow;
+
+                try
+                {
+                    // The legacy Windlight capability is a Phase-A diagnostic and a fallback for
+                    // regions that offer nothing newer. Once EEP has answered there is nothing for
+                    // it to add, so a live re-poll skips it -- a third of the requests, gone.
+                    var (capture, environment) = await FetchRegionEnvironmentAsync(
+                        includeLegacyAlongsideExt: false).ConfigureAwait(false);
+                    if (capture == null) continue;
+
+                    string fingerprint = EnvironmentFingerprint(capture);
+                    if (fingerprint == _lastEnvironmentFingerprint) continue;
+                    _lastEnvironmentFingerprint = fingerprint;
+
+                    RegionEnvironmentCaptured?.Invoke(this, capture);
+                    if (environment != null) RegionEnvironmentReceived?.Invoke(this, environment);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[ENV] live update capture failed: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // The loop owns the _repollRunning latch; losing it to an unexpected throw would wedge
+            // re-polling off for the rest of the session.
+            Console.WriteLine($"[ENV] repoll loop stopped: {ex.Message}");
+            lock (_repollLock) { _repollRunning = false; }
+        }
+    }
+
+    /// <summary>Everything that decides whether a fetched environment is the same one already
+    /// published. The region handle is part of it so that crossing back into a region seen earlier
+    /// still republishes -- the renderer's state moved on in between.</summary>
+    internal static string EnvironmentFingerprint(RegionEnvironmentCapture c) =>
+        string.Join('\u001f',
+            c.RegionHandle, c.ParcelId, c.DayLength, c.DayOffset,
+            c.ParcelDayLength, c.ParcelDayOffset, c.IsDefault,
+            c.ExtEnvironmentLlsd ?? string.Empty,
+            c.ParcelEnvironmentLlsd ?? string.Empty,
+            c.LegacyEnvironmentLlsd ?? string.Empty);
 
     /// <summary>Scans each object's raw ExtraParams bytes for a Light (0x20) block, independent
     /// of LibreMetaverse's own parsing -- see <see cref="_lightPresentByLocalId"/> for why this
@@ -368,7 +458,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             try
             {
                 var (capture, environment) = await FetchRegionEnvironmentAsync().ConfigureAwait(false);
-                if (capture != null) RegionEnvironmentCaptured?.Invoke(this, capture);
+                if (capture != null)
+                {
+                    // Seeds the change detector, so the first RegionInfo to arrive after login
+                    // does not republish the environment we just delivered.
+                    _lastEnvironmentFingerprint = EnvironmentFingerprint(capture);
+                    RegionEnvironmentCaptured?.Invoke(this, capture);
+                }
                 if (environment != null) RegionEnvironmentReceived?.Invoke(this, environment);
             }
             catch (Exception ex)
@@ -394,7 +490,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// reach us until something re-polls. Anything that needs live updates has to poll or add the
     /// EventQueue handler upstream.</summary>
     public async Task<RegionEnvironmentCapture?> CaptureRegionEnvironmentAsync(CancellationToken cancellationToken = default)
-        => (await FetchRegionEnvironmentAsync(cancellationToken).ConfigureAwait(false)).Capture;
+        => (await FetchRegionEnvironmentAsync(cancellationToken: cancellationToken)
+            .ConfigureAwait(false)).Capture;
 
     /// <summary>Does the actual fetching, and produces BOTH results from the one pair of requests:
     /// the raw capture and the parsed model. Kept as one call because they come from the same two
@@ -450,7 +547,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     private async Task<(RegionEnvironmentCapture? Capture, RegionEnvironmentEvent? Environment)>
-        FetchRegionEnvironmentAsync(CancellationToken cancellationToken = default)
+        FetchRegionEnvironmentAsync(
+            bool includeLegacyAlongsideExt = true, CancellationToken cancellationToken = default)
     {
         var sim = _client.Network.CurrentSim;
         if (sim == null) return (null, null);
@@ -523,7 +621,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 }
             }
 
-            if (hasLegacy)
+            // Asked for alongside EEP only when someone is going to read it: at login, where the
+            // point is to record what this grid actually offers. A region with no EEP capability
+            // still always asks, because there it is not a diagnostic but the only source there is.
+            if (hasLegacy && (includeLegacyAlongsideExt || !hasExt))
             {
                 var legacy = await _client.Environment.GetLegacyEnvironmentAsync(cancellationToken).ConfigureAwait(false);
                 if (legacy?.Settings != null)
