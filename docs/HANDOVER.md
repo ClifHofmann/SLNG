@@ -10,12 +10,8 @@ it in here when EEP is next picked up, and delete it only then.
 
 # FEAT-RENDER-02 — Terrain detail-texture blending parity
 
-**State:** `v0.7.47-alpha`, committed as `178ad20` on branch
-`feature/FEAT-RENDER-02-terrain-detail-blending-parity`.
-
-That branch was cut from `feature/FEAT-ENV-01-eep-step1`, so it **carries the in-progress EEP
-commits underneath it**. Merge FEAT-ENV-01 first, or rebase this onto `main` once EEP lands —
-do not merge this to `main` expecting it to contain only terrain work.
+**State:** `v0.7.47-alpha`, on **`main`** as of 2026-08-22 (`178ad20`, fast-forwarded together
+with the 31 FEAT-ENV-01 commits that preceded it). Not pushed. Builds and 220 tests green on main.
 **Spec:** [FEAT-RENDER-02](specs/FEAT-RENDER-02-terrain-detail-blending-parity.md) — read its
 "ruled out by measurement" sections before forming any new hypothesis.
 
