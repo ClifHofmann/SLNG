@@ -738,10 +738,15 @@ public partial class TerrainRenderer : Node3D
             };
             node.Root.AddChild(waterInstance);
 
+            // 7 subdivisions = 8 segments = one quad per 32 m on a 256 m region, which is
+            // exactly LLVOWater's own tessellation (llvowater.cpp:137-142, 8x8 quads with
+            // transparent water on). It matters because water.gdshader generates the wave UVs per
+            // vertex including a non-linear sweep term, so the mesh density is part of the wave
+            // pattern rather than a free quality knob.
             planeMesh = new PlaneMesh
             {
-                SubdivideWidth = 10,
-                SubdivideDepth = 10
+                SubdivideWidth = 7,
+                SubdivideDepth = 7
             };
             waterInstance.Mesh = planeMesh;
             waterInstance.MaterialOverride = _waterMaterial;
