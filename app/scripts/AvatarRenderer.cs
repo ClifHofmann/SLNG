@@ -640,6 +640,24 @@ public partial class AvatarRenderer : Node3D
                 // Worn rigged meshes (clothing/mesh body/head) don't re-morph, but their skin
                 // binds DO need this avatar's fresh BoneOwnScale — see RebuildRiggedAttachmentSkins.
                 RebuildRiggedAttachmentSkins(visual);
+
+                // [FEAT-RENDER-05] The two numbers that decide "head too big or hair too small".
+                // A rigged mesh follows the SKELETON only, so its fit is set by mHead/mSkull's own
+                // scale; the system head additionally follows the vertex MORPHS, which no worn
+                // mesh can track (true in the real viewer too). So a mismatch is either an mHead
+                // scale we compute differently from the viewer, or morphs that inflate the head
+                // past what the hair was fitted to -- and these two lines tell them apart. Read
+                // against [RiggedMesh]'s bind-pose size for the hair mesh.
+                if (Diagnostics.Enabled)
+                {
+                    visual.BoneOwnScale.TryGetValue("mHead", out var headScale);
+                    visual.BoneOwnScale.TryGetValue("mSkull", out var skullScale);
+                    var headSize = visual.Parts.TryGetValue("head", out var headMi) && headMi.Mesh != null
+                        ? headMi.Mesh.GetAabb().Size : Godot.Vector3.Zero;
+                    GD.Print($"[HeadSize] mHead own scale ({headScale.X:0.###}, {headScale.Y:0.###}, {headScale.Z:0.###}), " +
+                             $"mSkull ({skullScale.X:0.###}, {skullScale.Y:0.###}, {skullScale.Z:0.###}), " +
+                             $"morphed head mesh {headSize.X:0.###} x {headSize.Y:0.###} x {headSize.Z:0.###} m");
+                }
             }
         }
 
@@ -1003,7 +1021,19 @@ public partial class AvatarRenderer : Node3D
         var pointNode = new Node3D { Name = "PointOffset" };
         if (AttachmentPointMap.GetPoint(attachment.AttachmentPoint) is { } apPoint)
         {
-            pointNode.Position = new Godot.Vector3(apPoint.Position.X, apPoint.Position.Z, -apPoint.Position.Y);
+            // [FEAT-RENDER-05] The offset is a JOINT-LOCAL position, so SL's joint rule applies
+            // to it exactly as it does to every bone in ApplyShape: LLXformMatrix::update scales
+            // a local position by the PARENT's scale (mWorldPosition.scaleVec(parentScale)).
+            // ApplyShape already does this for the skeleton (`slPos *= parentScale`); the
+            // attachment point did not, so it sat at a fixed 0.15 m above mHead no matter how big
+            // the head actually is. On an avatar whose mHead own scale is 1.1 that is 1.5 cm too
+            // low -- prim hair (which cannot follow head morphs in ANY viewer) sinks into the
+            // skull by that much and the scalp comes through at the crown. The error grows with
+            // head size, which is why it reads as "the head is too big for the hair".
+            var apPos = apPoint.Position;
+            if (avatarVisual.BoneOwnScale.TryGetValue(boneName, out var jointScale))
+                apPos *= jointScale;
+            pointNode.Position = new Godot.Vector3(apPos.X, apPos.Z, -apPos.Y);
             pointNode.Basis = SkeletonBuilder.SlEulerDegToGodotBasis(apPoint.RotationDeg);
         }
         boneAttach.AddChild(pointNode);
