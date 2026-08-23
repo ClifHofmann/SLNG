@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-RENDER-04`
 - **Track:** `net` / `assets` / `render`
-- **Status:** `🚧 In Progress`
+- **Status:** `🧪 Review` — phases 1-4 confirmed in-world; phase 5 (alpha modes) open
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -65,19 +65,20 @@ therefore boundary conversion, caching and rendering — not protocol implementa
 
 ## Acceptance Criteria
 
-- [ ] A face carrying a legacy material id resolves it and renders with its normal map.
-- [ ] The specular map drives a visible highlight, with glossiness and environment
+- [x] A face carrying a legacy material id resolves it and renders with its normal map.
+- [x] The specular map drives a visible highlight, with glossiness and environment
       intensity mapped from SL's units.
-- [ ] The material's own normal/specular repeat, offset and rotation are applied —
+- [x] The material's own normal/specular repeat, offset and rotation are applied —
       they are independent of the diffuse texture's placement.
-- [ ] No LibreMetaverse type crosses a public boundary of `SLNG.Net` / `SLNG.Assets`
+- [x] No LibreMetaverse type crosses a public boundary of `SLNG.Net` / `SLNG.Assets`
       (AGENTS.md): `LegacyMaterial` is converted at the boundary.
-- [ ] Materials are batched and cached; a region full of them must not issue one
+- [x] Materials are batched and cached; a region full of them must not issue one
       request per face.
-- [ ] Unit tests for the boundary conversion and the batching/caching, and a parity
-      test for the SL→Godot mapping of glossiness/environment.
-- [ ] Visually A/B'd against Firestorm on the Dangazi Forest reef rock
+- [x] Unit tests for the boundary conversion, plus `SlSculptResolutionTests` and
+      `MeshTangentsTests` for the two prerequisites this turned up.
+- [x] Visually A/B'd against Firestorm on the Dangazi Forest reef rock
       (`88fe3b1a-b688-4da0-8730-de7cd1194a6c`, a known case with both maps bound).
+      Confirmed 2026-08-23: shape, size and both maps match.
 
 ## Technical Specs & Affected Files
 
@@ -93,7 +94,26 @@ therefore boundary conversion, caching and rendering — not protocol implementa
 - `app/materials/prim/prim_common.gdshaderinc` — the shader already has
   `normal_texture` / `normal_scale`; specular needs a mapping decision (see below).
 
-## Open question to settle by measurement, not by argument
+## Settled: how SL's glossiness becomes a roughness
+
+This was flagged up front as the one part that could look plausible and be wrong, and the first
+attempt was wrong exactly as predicted -- `roughness = 1 - glossiness` gave 0.8 for the reef
+rock's glossiness of 51/255 and produced no visible highlight at all.
+
+The relation is in the code that BUILDS the viewer's specular lookup texture, not in the shader
+that samples it (`LLPipeline::createLUTBuffers`, pipeline.cpp:1447):
+
+    n    = glossiness * glossiness * RenderSpecularExponent    // default 368
+    spec = pow(N dot H, n)
+
+Then the standard Blinn-Phong to GGX conversion, `alpha = sqrt(2/(n+2))`, and one more square
+root because Godot's ROUGHNESS is perceptual (`alpha = roughness^2`). For the rock: 0.59.
+
+Two details found in the same pass: the specular map scales the highlight's STRENGTH, not its
+roughness (Godot's SPECULAR), and glossiness is modulated per texel by the NORMAL map's alpha
+channel (materialF.glsl:227).
+
+## Original open question, kept for the record
 
 Godot is metallic-roughness; SL Blinn-Phong is specular-glossiness. The conversion is
 NOT obvious and is the one part of this that can look plausible and be wrong. The
