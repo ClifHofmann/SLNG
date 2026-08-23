@@ -15,6 +15,11 @@ namespace SLNG.Net.Tests;
 /// what makes an unchanged environment cost nothing downstream.</summary>
 public class EnvironmentRepollTests
 {
+    /// <summary>Fingerprints a capture on its own parcel scope, which is what every case here
+    /// except the unresolved-lookup ones wants.</summary>
+    private static string Fingerprint(RegionEnvironmentCapture c) =>
+        GridSession.EnvironmentFingerprint(c, c.ParcelId, c.ParcelEnvironmentLlsd);
+
     private static RegionEnvironmentCapture Capture(
         string? ext = "{'sky':1}",
         string? parcel = null,
@@ -30,8 +35,8 @@ public class EnvironmentRepollTests
     public void IdenticalCaptures_ProduceTheSameFingerprint()
     {
         Assert.Equal(
-            GridSession.EnvironmentFingerprint(Capture()),
-            GridSession.EnvironmentFingerprint(Capture()));
+            Fingerprint(Capture()),
+            Fingerprint(Capture()));
     }
 
     [Fact]
@@ -41,13 +46,13 @@ public class EnvironmentRepollTests
         // sim that renames itself must not force a republish.
         var a = Capture() with { RegionName = "Lbsa Plaza" };
         var b = Capture() with { RegionName = "Lbsa  Plaza" };
-        Assert.Equal(GridSession.EnvironmentFingerprint(a), GridSession.EnvironmentFingerprint(b));
+        Assert.Equal(Fingerprint(a), Fingerprint(b));
     }
 
     [Fact]
     public void EachMeaningfulChange_ProducesADifferentFingerprint()
     {
-        string baseline = GridSession.EnvironmentFingerprint(Capture());
+        string baseline = Fingerprint(Capture());
 
         (string What, RegionEnvironmentCapture Changed)[] cases =
         [
@@ -67,7 +72,7 @@ public class EnvironmentRepollTests
         foreach (var (what, changed) in cases)
         {
             Assert.False(
-                baseline == GridSession.EnvironmentFingerprint(changed),
+                baseline == Fingerprint(changed),
                 $"a changed {what} must republish, but the fingerprint was unchanged");
         }
     }
@@ -78,8 +83,8 @@ public class EnvironmentRepollTests
         // The failure mode this guards: a region whose EEP cycle is removed falls back to the
         // default sky, and treating "no payload" as "no change" would leave the old sky up.
         Assert.NotEqual(
-            GridSession.EnvironmentFingerprint(Capture()),
-            GridSession.EnvironmentFingerprint(Capture(ext: null)));
+            Fingerprint(Capture()),
+            Fingerprint(Capture(ext: null)));
     }
 
     [Fact]
@@ -88,7 +93,51 @@ public class EnvironmentRepollTests
         // Without a separator, ext "a" + parcel "b" and ext "ab" + parcel "" are the same string,
         // and a real environment change would be silently swallowed as "unchanged".
         Assert.NotEqual(
-            GridSession.EnvironmentFingerprint(Capture(ext: "a", parcel: "b")),
-            GridSession.EnvironmentFingerprint(Capture(ext: "ab", parcel: "")));
+            Fingerprint(Capture(ext: "a", parcel: "b")),
+            Fingerprint(Capture(ext: "ab", parcel: "")));
+    }
+
+    [Fact]
+    public void AnUnresolvedParcelLookup_CarriesTheLastKnownScope_AndDoesNotLookLikeAChange()
+    {
+        // The bug this exists for. The parcel id arrives over a UDP ParcelProperties round-trip
+        // that can time out; ResolveAgentParcelIdAsync then returns -1 and the parcel LLSD stays
+        // null because we never got to ask. Folding that straight into the comparison made the
+        // fingerprint flip on every timeout, so a busy region republished the environment on every
+        // poll despite the gate being in place -- measured on Lbsa Plaza as 217 republishes in 52
+        // minutes, one per day-cycle tick, unbroken.
+        var resolved = Capture(parcel: "{'sky':9}", parcelId: 1);
+        var timedOut = Capture(parcel: null, parcelId: -1);
+
+        string withScope = GridSession.EnvironmentFingerprint(resolved, 1, "{'sky':9}");
+
+        // Same region, lookup failed, previous scope carried forward -> not a change.
+        Assert.Equal(withScope, GridSession.EnvironmentFingerprint(timedOut, 1, "{'sky':9}"));
+
+        // ...whereas taking the failure at face value is what used to differ every time.
+        Assert.NotEqual(withScope, Fingerprint(timedOut));
+    }
+
+    [Fact]
+    public void ARegionChangeIsStillCaught_WhileTheParcelScopeIsUnknown()
+    {
+        // Carrying the parcel scope forward must not blind the region half of the comparison --
+        // otherwise a region-level environment change during a run of failed parcel lookups would
+        // never be published at all.
+        string before = GridSession.EnvironmentFingerprint(
+            Capture(ext: "{'sky':1}", parcelId: -1), 1, "{'sky':9}");
+        string after = GridSession.EnvironmentFingerprint(
+            Capture(ext: "{'sky':2}", parcelId: -1), 1, "{'sky':9}");
+
+        Assert.NotEqual(before, after);
+    }
+
+    [Fact]
+    public void MovingToAParcelWithItsOwnEnvironment_IsStillAChange()
+    {
+        // The carry-forward must not swallow a real parcel crossing.
+        Assert.NotEqual(
+            GridSession.EnvironmentFingerprint(Capture(), 1, null),
+            GridSession.EnvironmentFingerprint(Capture(), 2, "{'sky':9}"));
     }
 }

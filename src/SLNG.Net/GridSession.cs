@@ -282,6 +282,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     private DateTime _lastRepollUtc = DateTime.MinValue;
     private string? _lastEnvironmentFingerprint;
 
+    /// <summary>The last parcel scope we actually established, carried forward so a poll that
+    /// failed to establish one can still be compared on its region half. See
+    /// <see cref="EnvironmentFingerprint"/> for what goes wrong without it.</summary>
+    private int _lastParcelId = -1;
+    private string? _lastParcelEnvironmentLlsd;
+
     /// <summary>Re-polls the environment capabilities after a RegionInfo packet.
     ///
     /// RegionInfo carries no environment payload -- it is only the "something about this region
@@ -346,7 +352,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                         includeLegacyAlongsideExt: false).ConfigureAwait(false);
                     if (capture == null) continue;
 
-                    string fingerprint = EnvironmentFingerprint(capture);
+                    string fingerprint = FingerprintAndRememberParcel(capture);
                     if (fingerprint == _lastEnvironmentFingerprint) continue;
                     _lastEnvironmentFingerprint = fingerprint;
 
@@ -368,15 +374,51 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
+    /// <summary>Fingerprints a capture and updates the remembered parcel scope.
+    ///
+    /// The environment is a per-parcel setting, and the parcel id comes from a UDP
+    /// ParcelProperties round-trip that can simply not answer in time — <see
+    /// cref="ResolveAgentParcelIdAsync"/> then returns -1 and the parcel LLSD stays null because
+    /// we never got to ask for it. That is <b>"we did not find out"</b>, not "the parcel has no
+    /// environment", and the two must not look the same to the change detector.
+    ///
+    /// They did. Every timed-out lookup flipped the id between -1 and the real one and the parcel
+    /// LLSD between null and its value, so on a busy region the fingerprint differed on every
+    /// single poll and the gate published every time despite being nominally in place. Measured on
+    /// Lbsa Plaza after the gate landed: 217 republishes in 52 minutes, one per day-cycle tick,
+    /// unbroken.
+    ///
+    /// So a poll that established no parcel is compared on the region half against the last parcel
+    /// scope we did establish. The region half stays live — a genuine region-level change is still
+    /// caught while the parcel half is unknown — and an unanswered lookup contributes nothing.</summary>
+    private string FingerprintAndRememberParcel(RegionEnvironmentCapture c)
+    {
+        if (c.ParcelId >= 0)
+        {
+            _lastParcelId = c.ParcelId;
+            _lastParcelEnvironmentLlsd = c.ParcelEnvironmentLlsd;
+        }
+
+        return EnvironmentFingerprint(
+            c,
+            c.ParcelId >= 0 ? c.ParcelId : _lastParcelId,
+            c.ParcelId >= 0 ? c.ParcelEnvironmentLlsd : _lastParcelEnvironmentLlsd);
+    }
+
     /// <summary>Everything that decides whether a fetched environment is the same one already
     /// published. The region handle is part of it so that crossing back into a region seen earlier
-    /// still republishes -- the renderer's state moved on in between.</summary>
-    internal static string EnvironmentFingerprint(RegionEnvironmentCapture c) =>
+    /// still republishes -- the renderer's state moved on in between.
+    ///
+    /// The parcel scope is passed in rather than read off the capture, because an unresolved
+    /// lookup must contribute the previous scope instead of a fresh "no parcel" —
+    /// see <see cref="FingerprintAndRememberParcel"/>.</summary>
+    internal static string EnvironmentFingerprint(
+        RegionEnvironmentCapture c, int parcelId, string? parcelEnvironmentLlsd) =>
         string.Join('\u001f',
-            c.RegionHandle, c.ParcelId, c.DayLength, c.DayOffset,
+            c.RegionHandle, parcelId, c.DayLength, c.DayOffset,
             c.ParcelDayLength, c.ParcelDayOffset, c.IsDefault,
             c.ExtEnvironmentLlsd ?? string.Empty,
-            c.ParcelEnvironmentLlsd ?? string.Empty,
+            parcelEnvironmentLlsd ?? string.Empty,
             c.LegacyEnvironmentLlsd ?? string.Empty);
 
     /// <summary>Scans each object's raw ExtraParams bytes for a Light (0x20) block, independent
@@ -462,7 +504,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 {
                     // Seeds the change detector, so the first RegionInfo to arrive after login
                     // does not republish the environment we just delivered.
-                    _lastEnvironmentFingerprint = EnvironmentFingerprint(capture);
+                    _lastEnvironmentFingerprint = FingerprintAndRememberParcel(capture);
                     RegionEnvironmentCaptured?.Invoke(this, capture);
                 }
                 if (environment != null) RegionEnvironmentReceived?.Invoke(this, environment);
