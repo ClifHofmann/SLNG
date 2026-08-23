@@ -150,6 +150,16 @@ This is the part to read first next time something "looks wrong".
 
 **From this session:**
 
+- **CI is red on `main` for Linux only, and this is a deliberate deferral — do not "fix" it as a
+  drive-by.** Three tests in `SculptStitchingNoneTests` (FEAT-NET-05, the reef session) fail on
+  the ubuntu runner with `Assert.NotNull() Failure: Value is null`, while the same tests pass on
+  Windows; it looks like a native dependency in the sculpt-decode path that is absent on Ubuntu
+  rather than a logic error. It predates the FEAT-RENDER-05 commits — run 32642073878 was
+  already failing before them. The `v0.8.3-alpha` release build runs on `windows-latest` and is
+  unaffected. The user decided on 2026-08-23 to leave this for later; the cost of leaving it is
+  that AGENTS.md's "Linux/macOS kept buildable" is currently not true, and a red CI trains people
+  to stop reading it.
+
 - **Particles are not implemented at all.** No `ParticleSys` anywhere in `src/` or `app/`;
   LibreMetaverse parses the block and we never read it. The reef's spray clouds are missing
   entirely. Needs its own spec — `GPUParticles3D` driven by SL semantics (burst rate, lifetime,
