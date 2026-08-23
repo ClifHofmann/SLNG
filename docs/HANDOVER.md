@@ -148,74 +148,49 @@ This is the part to read first next time something "looks wrong".
 
 ## 5. Still open
 
-### 🔴 URGENT — the avatar falls off prims on every login and teleport
+### The avatar falling off prims on login and teleport — fixed, needs live confirmation
 
-Reported by the user as happening **every time**, and it must not. Not yet fixed; the diagnosis
-below is read off the code and one real log, not from a repro run under a debugger.
+Fixed in `v0.9.0-alpha` by taking the support surface off the wire, the way the viewer does.
+**Not yet confirmed in-world**; that is the one thing still owed.
 
-**The mechanism.** `AvatarController`'s ground probe raycasts against
-`PhysicsLayers.Objects | PhysicsLayers.Terrain`. When that misses it falls back to the terrain
-heightmap — a fallback written for the *terrain* case, where it is right. It is wrong whenever the
-avatar's real support is a **prim**: object colliders stream in far later than terrain, so for that
-window the fallback answers "the ground is the terrain" and the clamp pulls the avatar down to it.
+**What it was.** `AvatarController` decided what the avatar was standing on by raycasting our own
+colliders, and fell back to the terrain heightmap when they missed. Object colliders stream in long
+after terrain, so on login and teleport the fallback answered "the ground is the land" and the
+clamp dragged the avatar off the prim at 9.81 m/s² — against a position the simulator had already
+got right.
 
-From `godot2026-08-23T16.20.51.log`, one login, in order:
+**What the viewer does, and it is not a smaller version of the same thing.** It never probes the
+scene for this. `LLWorld::resolveStepHeightGlobal` (llworld.cpp:532) takes the *land* height and
+corrects it with the avatar's `mFootPlane`, and that plane arrives **from the simulator**, decoded
+from the avatar's own ObjectUpdate (llviewerobject.cpp:1341/1570/1685) where Havok put it. The
+agent's Z is server-authoritative; the client is told what it stands on, it does not work it out.
+`LLVOAvatar::getGround` exists but probes ±1 m for foot IK, not for position.
 
-| line | `[GroundClamp]` |
-|---|---|
-| 17 | `source=none hasGround=False … agentZ=22,24` — no collider at all yet |
-| 30 | `source=terrain-heightmap-fallback groundZ=21,04 … agentZ=22,24` — clamped to terrain |
-| 512 | `source=collider:TerrainPhysics groundZ=21,14` — terrain collider arrives |
-| 2204 | `source=collider:StaticBody(path=…/Obj_d8b9de6a…/StaticBody) groundZ=20,86` — **first object collider**, ~1700 lines later |
+**What landed.** The collision plane now rides `AvatarUpdateEvent` → `AvatarComponent.SupportPlane`
+and is the ground check's first source, ahead of the raycast. It needs none of our colliders, which
+is precisely why it fixes login and teleport. The terrain fallback survives but may now only ever
+*raise* the avatar, never lower it.
 
-The existing comment at the fallback already records that the raycast "reliably misses for up to
-~0.75 s" after a teleport and that trusting a not-yet-streamed terrain cell caused a visible
-free-fall. The same reasoning was never extended to objects, and objects are much slower to arrive
-than terrain.
+Verified against the pinned LibreMetaverse 3.1.3 by compiling a probe against the package rather
+than reading `scratch/libremetaverse_src` — which is a differently-namespaced tree and proves
+nothing about what we actually ship. All three surfaces exist: `GridClient.Self.CollisionPlane`,
+`Avatar.CollisionPlane`, and `TerseObjectUpdateEventArgs.Update.CollisionPlane`. The terse path is
+the one that matters while walking.
 
-**Why nobody saw it in the logs: the diagnostic for exactly this cannot fire.**
-`fellOffObject` tests `_lastGroundKind.StartsWith("collider:Obj")`, but `groundSource` is built as
-`$"collider:{colliderNode.Name}(…)"` and the node's *name* is `StaticBody` — the `Obj_…` id is in
-the **path**, not the name. So the string is always `collider:StaticBody(path=…/Obj_…/…)` and the
-prefix test is never true. `grep "FELL THROUGH"` returns **0 across every log**, while object
-colliders are plainly present in the same files. Fix the predicate first; it turns this from a
-report into something measurable.
+**Two things worth keeping in mind:**
 
-**Checked against the viewer — and the answer is bigger than the bug.** The real viewer has no
-equivalent of this clamp at all. Three findings, all from source:
+- `AvatarSupport.SupportHeight` uses the distance **perpendicular** to the plane, so on a slope it
+  is not the vertical drop. That is deliberate parity: `resolveStepHeightGlobal` makes the same
+  approximation. Exact on flat ground, loose in the same direction and by the same amount as SL on
+  a ramp. A test pins this so nobody "corrects" it by dividing through `n.z`.
+- An update whose ObjectData layout carried no plane leaves the previous one in place rather than
+  blanking it. Only the 140- and 76-byte layouts carry one, so absence is not information — the
+  same mistake the light-ExtraParams latch made.
 
-1. **`LLWorld::resolveStepHeightGlobal` (llworld.cpp:532) never raycasts object geometry.** It takes
-   the *land* height as the baseline and then corrects it only through the avatar's `mFootPlane`.
-2. **`mFootPlane` comes from the simulator**, not from client-side collision. It is decoded from the
-   avatar's ObjectUpdate wire data as the leading `LLVector4` of the 140- and 76-byte ObjectData
-   layouts (llviewerobject.cpp:1341/1570/1685), and llworld.cpp:575 notes it compensates "for error
-   in foot plane reported by **Havok**" — the server's physics engine. It is deliberately cleared on
-   region change (llviewermessage.cpp:3135), i.e. the viewer knows it has no valid support plane
-   after a teleport until the sim sends a new one.
-3. **What little ground probing exists is for animation, not position.** `LLVOAvatar::getGround`
-   (llvoavatar.cpp:7049) probes ±1 m for foot IK.
-
-The agent's Z is server-authoritative. The viewer does not decide what the avatar stands on; the
-simulator does, and tells it.
-
-**So our own code is the bug**, not just its timing. `AvatarController` applies client-side gravity
-to a server-supplied position:
-
-```csharp
-else if (transform.Position.Z > clampTargetZ)
-{
-    // Fall down to terrain/object
-    float fallSpeed = 9.81f * (float)delta;
-```
-
-At login `clampTargetZ` is the terrain height, because the prim under the avatar has no collider
-yet — so the fall is literally implemented, at 9.81 m/s², against data the server already got right.
-
-**Not fixed here, because removing it has real blast radius:** walking, flying and landing all run
-through the same clamp, and whether SLNG needs it for local movement prediction is a separate
-question from whether it may override the server's Z. The narrow fix is to stop the clamp from
-*lowering* a server position; the honest fix is to take the foot plane off the wire like the viewer
-does. That is a decision, not a detail.
+**How to confirm:** log in standing on a prim, and teleport onto one. Then
+`grep "GroundClamp" godot.log` — the source should read `sim-collision-plane`, not
+`terrain-heightmap-fallback`, from the first frames onward. The `FELL THROUGH` marker also works
+again now; it had been dead (see below), which is why this never showed up in a log.
 
 **From this session:**
 

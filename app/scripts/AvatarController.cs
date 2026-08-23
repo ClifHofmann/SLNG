@@ -459,6 +459,16 @@ public partial class AvatarController : Camera3D
 
                 float groundHeight = 0;
                 bool hasGround = false;
+
+                // Whether this ground reading is allowed to pull the avatar DOWN.
+                //
+                // Only a reading that actually knows what is underneath may do that. The terrain
+                // heightmap does not: it describes the land, and says nothing about the prim the
+                // avatar is standing on. Believing it while an object collider had not streamed in
+                // yet is the whole login/teleport fall -- the avatar was dragged off the prim, at
+                // 9.81 m/s^2, down to the terrain, against a position the simulator had already
+                // got right.
+                bool groundMayLower = true;
                 // What surface groundHeight actually came from — needed to tell a terrain-vs-object
                 // collision mismatch apart from an avatar-side offset bug (2026-07-22 ground-
                 // sinking investigation, round 4: the user is standing on a rezzed wooden platform
@@ -480,7 +490,30 @@ public partial class AvatarController : Camera3D
                 // than none: its silence was read as evidence.
                 bool groundIsObject = false;
 
-                if (result.Count > 0)
+                // The simulator's own answer, and the one the real viewer uses. SL ships a
+                // collision plane in the avatar's update, computed by its Havok physics, and
+                // LLWorld::resolveStepHeightGlobal (llworld.cpp:532) corrects the land height with
+                // it rather than raycasting object geometry -- the viewer never decides what an
+                // avatar stands on by probing the scene, because the server already decided.
+                //
+                // It needs none of our colliders to have streamed in, which is exactly why it fixes
+                // login and teleport: the plane arrives with the first avatar update, long before
+                // the prim underneath has a CollisionShape3D.
+                var avatarComponent = localAgent.GetComponent<SLNG.Core.Components.AvatarComponent>();
+                if (avatarComponent?.SupportPlane is { } supportPlane
+                    && SLNG.Core.AvatarSupport.SupportHeight(supportPlane, transform.Position)
+                        is { } planeSupportZ)
+                {
+                    groundHeight = planeSupportZ;
+                    hasGround = true;
+                    // Counts as an object surface: the plane is what the simulator says the avatar
+                    // rests on, which on a prim IS the prim. Leaving this false would make the
+                    // fell-through diagnostic blind again in exactly the case it was built for.
+                    groundIsObject = true;
+                    groundSource = "sim-collision-plane";
+                }
+
+                if (!hasGround && result.Count > 0)
                 {
                     groundHeight = result["position"].AsVector3().Y;
                     hasGround = true;
@@ -494,7 +527,7 @@ public partial class AvatarController : Camera3D
                             && colliderNode.GetPath().ToString().Contains("/Obj_");
                     }
                 }
-                else
+                else if (!hasGround)
                 {
                     // Fallback to terrain heightmap if raycast misses. Right after a landmark
                     // teleport, the physics raycast reliably misses for up to ~0.75s -- the new
@@ -513,6 +546,10 @@ public partial class AvatarController : Camera3D
                         groundHeight = knownHeight;
                         hasGround = true;
                         groundSource = "terrain-heightmap-fallback";
+                        // Push-up only. See groundMayLower above: this reading cannot see prims,
+                        // so it may rescue an avatar that has sunk into the land, and must never
+                        // be the reason one leaves a surface.
+                        groundMayLower = false;
                     }
                 }
 
@@ -590,7 +627,7 @@ public partial class AvatarController : Camera3D
                         // Push up out of terrain/object
                         transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, clampTargetZ);
                     }
-                    else if (transform.Position.Z > clampTargetZ)
+                    else if (transform.Position.Z > clampTargetZ && groundMayLower)
                     {
                         // Fall down to terrain/object
                         float fallSpeed = 9.81f * (float)delta;

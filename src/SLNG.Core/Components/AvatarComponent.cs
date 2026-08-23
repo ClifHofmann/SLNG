@@ -30,6 +30,20 @@ public class AvatarComponent : IComponent
     public string DisplayName { get; set; } = string.Empty;
     public bool IsLocalAgent { get; set; }
 
+    /// <summary>SL's collision plane for this avatar, as the simulator last reported it, or null
+    /// if it has not sent one. xyz is the plane normal in region space, w its constant.
+    ///
+    /// This is the server's answer to "what is this avatar standing on", computed by its own
+    /// physics engine. The real viewer keeps exactly this (<c>LLVOAvatar::mFootPlane</c>, decoded
+    /// from the avatar's ObjectUpdate in llviewerobject.cpp:1341) and never determines the support
+    /// surface by raycasting the scene — <c>LLWorld::resolveStepHeightGlobal</c> takes land height
+    /// and corrects it with this plane.
+    ///
+    /// Null is "not told yet", never "nothing underneath". The viewer clears it on region change
+    /// (llviewermessage.cpp:3135) precisely so a stale plane cannot be trusted after a
+    /// teleport.</summary>
+    public System.Numerics.Vector4? SupportPlane { get; set; }
+
     /// <summary>
     /// The latest visual parameters received from AvatarAppearance.
     /// Used to deform the skeleton and meshes.

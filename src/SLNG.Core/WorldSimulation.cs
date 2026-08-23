@@ -568,6 +568,7 @@ public sealed class WorldSimulation : IDisposable
             avatar = new AvatarComponent(e.AgentId, e.FirstName, e.LastName, e.IsLocalAgent);
             avatar.ScaleZ = e.ScaleZ;
             avatar.SittingOnLocalId = e.SittingOnLocalId;
+            avatar.SupportPlane = e.SupportPlane;
             entity.SetComponent(avatar);
         }
         else
@@ -587,6 +588,14 @@ public sealed class WorldSimulation : IDisposable
             avatar.IsLocalAgent = e.IsLocalAgent;
             if (e.ScaleZ > 0f) avatar.ScaleZ = e.ScaleZ;
             avatar.SittingOnLocalId = e.SittingOnLocalId;
+            // Kept, not overwritten with null. Only the 140- and 76-byte ObjectData layouts carry
+            // a collision plane, so an update that used a shorter layout says nothing about the
+            // support surface -- it did not report that the avatar is standing on nothing. Letting
+            // such an update blank the plane would hand the ground check a null exactly as often as
+            // the simulator happened to send a compact update, which is the same "absence read as
+            // information" mistake the light-ExtraParams latch made. A region change drops the
+            // whole entity, so a plane cannot survive a teleport this way.
+            if (e.SupportPlane.HasValue) avatar.SupportPlane = e.SupportPlane;
             entity.SetComponent(avatar);
         }
         _world.NotifyComponentUpdated(entity, avatar);

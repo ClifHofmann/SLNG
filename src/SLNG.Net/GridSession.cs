@@ -759,7 +759,25 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             e.Avatar.Scale.Z,
             new System.Numerics.Vector3(e.Avatar.Velocity.X, e.Avatar.Velocity.Y, e.Avatar.Velocity.Z),
             e.TimeDilation / 65535.0f,
-            e.Avatar.ParentID));
+            e.Avatar.ParentID,
+            ToSupportPlane(e.Avatar.CollisionPlane)));
+    }
+
+    /// <summary>SL's collision plane, converted at the boundary — no LibreMetaverse type may cross
+    /// a public boundary of SLNG.Net (AGENTS.md).
+    ///
+    /// This is the simulator's own answer to what an avatar is standing on, produced by its Havok
+    /// physics and shipped in the avatar's update. It is present only in the 140- and 76-byte
+    /// ObjectData layouts; LibreMetaverse leaves it at default otherwise, so an all-zero plane is
+    /// reported as "not sent" rather than as a degenerate plane through the origin. Both readings
+    /// are wrong to clamp against, but only one of them is honest about why.
+    ///
+    /// The viewer keeps the same value as <c>LLVOAvatar::mFootPlane</c> and tests it with
+    /// <c>isExactlyClear()</c> for exactly this reason (llworld.cpp:570).</summary>
+    private static System.Numerics.Vector4? ToSupportPlane(LibreMetaverse.Vector4 plane)
+    {
+        if (plane.X == 0f && plane.Y == 0f && plane.Z == 0f && plane.W == 0f) return null;
+        return new System.Numerics.Vector4(plane.X, plane.Y, plane.Z, plane.W);
     }
 
     /// <summary>MVP2-1: once an avatar sits, its wire Position/Rotation become relative to the
@@ -1201,6 +1219,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             ResolveSeatedTransform(e.Simulator, e.Update.Position, e.Update.Rotation, e.Prim.ParentID,
                 out var worldPos, out var worldRot);
 
+            // From e.Update, not e.Prim -- the same race the comment above describes. The terse
+            // update is where the plane actually moves: it rides every avatar movement packet,
+            // which is how the viewer keeps foot placement current while walking.
+            var supportPlane = ToSupportPlane(e.Update.CollisionPlane);
+
             AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
                 e.Simulator.Handle,
                 e.Prim.LocalID,
@@ -1213,7 +1236,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 e.Prim.Scale.Z,
                 new System.Numerics.Vector3(e.Update.Velocity.X, e.Update.Velocity.Y, e.Update.Velocity.Z),
                 e.TimeDilation / 65535.0f,
-                e.Prim.ParentID));
+                e.Prim.ParentID,
+                supportPlane));
             return;
         }
 
