@@ -148,10 +148,17 @@ This is the part to read first next time something "looks wrong".
 
 ## 5. Still open
 
-### The avatar falling off prims on login and teleport — fixed, needs live confirmation
+### The avatar falling off prims on login and teleport — fixed and confirmed in-world
 
 Fixed in `v0.9.0-alpha` by taking the support surface off the wire, the way the viewer does.
-**Not yet confirmed in-world**; that is the one thing still owed.
+**Confirmed in-world by the user: teleport no longer drops the avatar off the prim.**
+
+One caveat on the evidence, because it nearly became a wrong conclusion: the confirming session's
+`godot.log` contains no `[GroundClamp]` lines at all, and that is not a signal. The whole
+diagnostic sits behind `if (Diagnostics.Enabled)`, i.e. behind `--diag`. The earlier broken session
+had it on (118 lines), this one did not. So the fix rests on the user's observation; a log-level
+confirmation still wants one run with `--diag`, where the source should read `sim-collision-plane`
+rather than `terrain-heightmap-fallback` from the first frames onward.
 
 **What it was.** `AvatarController` decided what the avatar was standing on by raycasting our own
 colliders, and fell back to the terrain heightmap when they missed. Object colliders stream in long
@@ -187,10 +194,11 @@ the one that matters while walking.
   blanking it. Only the 140- and 76-byte layouts carry one, so absence is not information — the
   same mistake the light-ExtraParams latch made.
 
-**How to confirm:** log in standing on a prim, and teleport onto one. Then
-`grep "GroundClamp" godot.log` — the source should read `sim-collision-plane`, not
-`terrain-heightmap-fallback`, from the first frames onward. The `FELL THROUGH` marker also works
-again now; it had been dead (see below), which is why this never showed up in a log.
+**Still worth doing:** one run with `--diag` while standing on a prim, to see
+`source=sim-collision-plane` in `[GroundClamp]` rather than inferring it. The `FELL THROUGH` marker
+works again too — it had been dead, testing a prefix against the collider node's *name*
+(`StaticBody`) when the `Obj_<uuid>` it looked for is in the *path*. That is why years of logs show
+zero of them while the user was falling off prims on every login.
 
 **From this session:**
 
