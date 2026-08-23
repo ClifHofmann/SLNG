@@ -247,12 +247,46 @@ back-face culling were lost, smeared sculpt-pole grain if anisotropic filtering 
 
 ### Phase 3 — `AvatarRenderer` onto the same family
 
-- [ ] `AvatarRenderer` face materials use the family; its `AlphaHash` path is preserved
-      exactly (unconditional `AlphaHash` for the bake/attachment path — *not* the
-      `ApplyAlphaCutout` scissor choice; the two are deliberately different).
+**This criterion was written against code that no longer exists and must not be followed
+literally.** It called for preserving "unconditional `AlphaHash` for the bake/attachment path".
+The bake path has not used `AlphaHash` since `175d308` (2026-08-21), which switched it to
+`AlphaScissor(0.5)` and said so in its own commit message: that is the state the avatar was last
+visually confirmed correct in, while the comment block above the line still argues for AlphaHash
+and its objection (a hard 0.5 cutoff blotches the soft gradients SL's alpha-layer wearables paint
+into the bake) is still unanswered. Restoring AlphaHash here on the strength of this spec would
+have been a blind regression of a deliberate, documented decision.
+
+The migration therefore carries the **code** across, not the criterion. The real requirement is
+the one below it: identical output.
+
+- [x] `AvatarRenderer` face materials use the family, on its `Surface.Avatar` variants. Every
+      alpha branch, threshold and measured constant is unchanged — `ApplyAlphaCutout` became the
+      pure classifier `ClassifyAlpha`, returning the variant instead of assigning a property. The
+      bake path keeps `AlphaScissor(0.5)`.
 - [ ] Own avatar and other avatars render identically to Phase 2, including worn mesh
-      attachments and BoM-baked faces.
-- [ ] Face rotation now works on avatar attachment faces too.
+      attachments and BoM-baked faces. **Not yet live-verified — this is what closes the phase.**
+- [x] Face rotation now works on avatar attachment faces too. The ±π approximation is gone: a
+      half-turn used to be faked by negating both repeats and every other angle was logged as
+      unsupported and drawn unrotated.
+
+Two things the implementation found that the spec did not anticipate:
+
+- **Cull mode is a second compile-time axis.** Avatar faces ran on `CullMode.Disabled`; the three
+  prim variants are all `cull_back` and deliberately so. A visually-identical migration therefore
+  needs its own variants, not a uniform.
+- **HUD attachment faces need `unshaded`, a third axis.** The HUD SubViewport has its own
+  `World3D` with no lights, so a shaded material renders black — `ApplyHudFaceMaterialsAsync` used
+  to set `ShadingMode = Unshaded` after the fact.
+
+Rather than exposing two booleans and letting the variant count grow with the next render_mode,
+they are folded into `PrimShaderFamily.Surface` — `WorldPrim`, `Avatar`, `Hud` — named after the
+three real call sites, closing the set at 3 × 3 = 9. The unshaded HUD variant also settles a Phase
+5 question by construction: an unshaded shader cannot receive atmospherics, and fogging a HUD
+overlay by its distance from the camera would be meaningless.
+
+The nine files are hand-kept copies differing in one `render_mode` line, so `--selftest` compares
+each variant's uniform set against its base shader. A uniform added to one and forgotten on the
+others fails the smoke test instead of silently starving avatar or HUD faces.
 
 ### Phase 4 — Terrain and water onto the same family
 
@@ -301,8 +335,13 @@ with atmospherics next to avatars, terrain and water without is precisely the se
 - [x] Phase 1 — `ObjectRenderer` on the family, visually identical, atmospherics seam
       (`v0.3.72-alpha`, measured 2026-08-01)
       stubbed.
-- [ ] Phase 2 — arbitrary UV rotation in the vertex shader.
-- [ ] Phase 3 — `AvatarRenderer` migration.
+- [x] Phase 2 — arbitrary UV rotation in the vertex shader. Landed alongside the PLANAR texgen
+      fix; `uv_rotation` is applied in `slng_place_uv` in the viewer's CENTRE/ROTATE/SCALE/OFFSET
+      order, and the known-answer probe's full case table was stepped through against Firestorm
+      with no divergence (cases 4/11/12 cover the rotation pivot and transform order).
+- [x] Phase 3 — `AvatarRenderer` migration (`v0.9.2-alpha`). **Built and smoke-tested, NOT yet
+      seen on a live region** — a migration whose whole requirement is "identical output" is
+      closed by a visual A/B and by nothing else.
 - [ ] Phase 4 — terrain + water refactor onto the family.
 - [ ] Phase 5 — Windlight / EEP atmospherics via global shader uniforms.
 - [ ] Follow-up (not this spec): `llSetTextureAnim` and media-on-a-prim as uniform
