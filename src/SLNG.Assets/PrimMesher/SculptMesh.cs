@@ -202,101 +202,14 @@ namespace SLNG.Assets.PrimMesher
             }
         }
 
-        /// <summary>
-        ///     converts a bitmap to a list of lists of coords, while scaling the image.
-        ///     the scaling is done in floating point to allow for reduced vertex position
-        ///     quantization as the position will be averaged between pixel values. this routine will
-        ///     likely fail if the bitmap width and height are not powers of 2.
-        /// </summary>
-        /// <param name="bitmap"></param>
-        /// <param name="scale"></param>
-        /// <param name="mirror"></param>
-        /// <returns></returns>
-        private List<List<Coord>> bitmap2Coords(SKBitmap bitmap, int scale, bool mirror)
-        {
-            var numRows = bitmap.Height / scale;
-            var numCols = bitmap.Width / scale;
-            var rows = new List<List<Coord>>(numRows);
-
-            var pixScale = 1.0f / (scale * scale);
-            pixScale /= 255;
-
-            int rowNdx;
-
-            for (rowNdx = 0; rowNdx < numRows; rowNdx++)
-            {
-                var row = new List<Coord>(numCols);
-                for (int colNdx = 0; colNdx < numCols; colNdx++)
-                {
-                    var imageX = colNdx * scale;
-                    var imageYStart = rowNdx * scale;
-                    var imageYEnd = imageYStart + scale;
-                    var imageXEnd = imageX + scale;
-                    var rSum = 0.0f;
-                    var gSum = 0.0f;
-                    var bSum = 0.0f;
-                    for (; imageX < imageXEnd; imageX++)
-                    {
-                        int imageY;
-                        for (imageY = imageYStart; imageY < imageYEnd; imageY++)
-                        {
-                            var c = bitmap.GetPixel(imageX, imageY);
-                            if (c.Alpha != 255)
-                            {
-                                bitmap.SetPixel(imageX, imageY, c.WithAlpha(255));
-                                c = bitmap.GetPixel(imageX, imageY);
-                            }
-                            rSum += c.Red;
-                            gSum += c.Green;
-                            bSum += c.Blue;
-                        }
-                    }
-
-                    row.Add(mirror
-                        ? new Coord(-(rSum * pixScale - 0.5f), gSum * pixScale - 0.5f, bSum * pixScale - 0.5f)
-                        : new Coord(rSum * pixScale - 0.5f, gSum * pixScale - 0.5f, bSum * pixScale - 0.5f));
-                }
-                rows.Add(row);
-            }
-            return rows;
-        }
-
-        private List<List<Coord>> bitmap2CoordsSampled(SKBitmap bitmap, int scale, bool mirror)
-        {
-            var numRows = bitmap.Height / scale;
-            var numCols = bitmap.Width / scale;
-            var rows = new List<List<Coord>>(numRows);
-
-            const float pixScale = 1.0f / 256.0f;
-
-            int rowNdx;
-
-            for (rowNdx = 0; rowNdx <= numRows; rowNdx++)
-            {
-                var row = new List<Coord>(numCols);
-                var imageY = rowNdx * scale;
-                if (rowNdx == numRows) { imageY--; }
-                for (int colNdx = 0; colNdx <= numCols; colNdx++)
-                {
-                    var imageX = colNdx * scale;
-                    if (colNdx == numCols) imageX--;
-
-                    var c = bitmap.GetPixel(imageX, imageY);
-                    if (c.Alpha != 255)
-                    {
-                        bitmap.SetPixel(imageX, imageY, c.WithAlpha(255));
-                        c = bitmap.GetPixel(imageX, imageY);
-                    }
-
-                    row.Add(mirror
-                        ? new Coord(-(c.Red * pixScale - 0.5f), c.Green * pixScale - 0.5f, c.Blue * pixScale - 0.5f)
-                        : new Coord(c.Red * pixScale - 0.5f, c.Green * pixScale - 0.5f, c.Blue * pixScale - 0.5f));
-                }
-                rows.Add(row);
-            }
-            return rows;
-        }
-
+        // bitmap2Coords / bitmap2CoordsSampled lived here and were DEAD CODE: nothing called
+        // either of them. The live path is SculptMap(bitmap, lod).ToRows(mirror) -- see
+        // _SculptMesh below. They are deleted rather than left in place because they were
+        // actively misleading: bitmap2Coords box-FILTERED the map (averaging neighbouring texels,
+        // which flattens exactly the ridges a sculpt is made of) and bitmap2CoordsSampled divided
+        // by 256 where the viewer divides by 255 (sculpt_rgb_to_vector, llvolume.cpp:2892). Both
+        // read like the algorithm in use and neither is; one investigation has already been
+        // spent on them.
 
         private void _SculptMesh(SKBitmap sculptBitmap, SculptType sculptType, int lod, bool viewerMode, bool mirror,
             bool invert)
