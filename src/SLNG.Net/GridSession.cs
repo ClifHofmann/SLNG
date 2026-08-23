@@ -1224,9 +1224,33 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 isMesh = true;
                 meshId = prim.Sculpt.SculptTexture.Guid;
             }
-            else if (prim.Sculpt.Type != LibreMetaverse.SculptType.None)
+            else
             {
-                // Sphere/Torus/Plane/Cylinder sculpt: geometry comes from the sculpt-map texture.
+                // ANY sculpt block with a map is a sculpt, INCLUDING stitching type None (0).
+                //
+                // This used to require `Type != None`, which silently demoted such a prim to its
+                // underlying profile/path curve -- and since sculpties keep whatever base shape
+                // they were built from, that came out as a smooth torus or sphere sitting where
+                // the real object should be. Measured on OSGrid, The Dangazi Forest 2026-08-23: a
+                // reef rock at <163.76, 197.57, 18.41> rendered here as a featureless 26x7x71
+                // ellipse, while Firestorm's own build floater reported it as "Geformt"
+                // (sculpted), stitching "Plane/None", Invert set -- i.e. a type byte of 0x40,
+                // whose low three bits are zero.
+                //
+                // The viewer decides this on PRESENCE OF THE BLOCK, not on the stitching value:
+                //     bool LLVOVolume::isSculpted() const
+                //     { if (getSculptParams()) return true; return false; }   (llvovolume.cpp:3633)
+                // and that predicate is what gates the sculpt texture fetch and the sculpted
+                // rendering path. (LLVolumeParams::isSculpt(), which DOES test
+                // `(mSculptType & MASK) != NONE`, is a different predicate used elsewhere -- it
+                // was the one that made this look correct when the condition was written.)
+                //
+                // Stitching 0 then behaves exactly like PLANE when the map is wrapped:
+                // sculptGenerateMapVertices special-cases only SPHERE (pole pinch), TORUS (T wrap)
+                // and CYLINDER (S wrap), so anything else clamps to the map's edges
+                // (llvolume.cpp:3072-3113). PrimMeshService.GenerateSculpt already matches that --
+                // its `_ => plane` default covers 0 -- so passing the byte through is all that is
+                // needed here.
                 isSculpt = true;
                 sculptId = prim.Sculpt.SculptTexture.Guid;
                 // The SL sculpt-type byte packs the base type (low 3 bits) with two render flags:
