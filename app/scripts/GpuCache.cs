@@ -364,7 +364,12 @@ public class GpuCache
                     if (image != null && screenPixelArea > 0f)
                     {
                         int discard = ComputeDiscardLevel(image.GetWidth(), image.GetHeight(), screenPixelArea);
-                        if (_uploadSizeLogged.TryAdd(textureId, 0))
+                        // Behind --diag. It is one line per texture, which on a real region means
+                        // a couple of thousand -- fine when it went to a terminal nobody was
+                        // reading, but it now reaches godot.log (see ConsoleToGodotLog) and there
+                        // it buries the handful of lines that say why something is broken. This is
+                        // per-object asset logging, exactly what Diagnostics exists to gate.
+                        if (Diagnostics.Enabled && _uploadSizeLogged.TryAdd(textureId, 0))
                             Console.Error.WriteLine($"[GpuUpload] {textureId} source={image.GetWidth()}x{image.GetHeight()} " +
                                 $"screenPixelArea={screenPixelArea:F0} -> discard={discard} " +
                                 $"uploaded={(discard > 0 ? $"{Math.Max(8, image.GetWidth() >> discard)}x{Math.Max(8, image.GetHeight() >> discard)}" : "full")}");

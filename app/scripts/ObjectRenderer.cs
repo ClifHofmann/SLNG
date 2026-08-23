@@ -112,6 +112,15 @@ public partial class ObjectRenderer : Node3D
     // Objects already reported by the [RotSite] scan. Main-thread only.
     private readonly HashSet<Guid> _rotationSitesLogged = new();
 
+    // Objects already reported as rendering a placeholder solid instead of their real geometry,
+    // and mesh assets already reported as unavailable. Both are Warn-level (visible without
+    // --diag) so they must not repeat per frame. Main-thread only.
+    private readonly HashSet<Guid> _sculptFallbacksLogged = new();
+    private readonly HashSet<Guid> _meshLoadFailuresLogged = new();
+    // Keyed by SHAPE, not by object: a failing prim shape is usually a whole build's worth of
+    // copies, and one line describing the shape is what identifies the bug.
+    private readonly HashSet<PrimShape> _primMeshFallbacksLogged = new();
+
     private Mesh _boxMesh = new BoxMesh();
     private Mesh _sphereMesh = new SphereMesh();
     private Mesh _cylinderMesh = new CylinderMesh();
@@ -128,8 +137,15 @@ public partial class ObjectRenderer : Node3D
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
     private const string BuildMarker = "2026-08-02-texgen-diagnostic";
 
+    /// <summary>The live renderer, for the click-triggered diagnostics that need to ask "is this
+    /// object actually being DRAWN" -- a question only the renderer's own per-object state can
+    /// answer, and the one thing a screenshot of a missing object cannot tell you apart from an
+    /// object that was never sent. Set in <see cref="Initialize"/>; there is exactly one.</summary>
+    private static ObjectRenderer? _instance;
+
     public void Initialize(World world, SLNG.Assets.AssetService assetService, GpuCache gpuCache)
     {
+        _instance = this;
         // Build marker only under --diag: it exists to prove which assembly is actually loaded
         // when a fix appears not to have taken (see the stale-assembly note in the repo docs).
         if (Diagnostics.Enabled) GD.Print($"[ObjectRenderer] BUILD MARKER: {BuildMarker}");
@@ -228,6 +244,12 @@ public partial class ObjectRenderer : Node3D
         // properties, which are interop calls, not field reads. A spatial index would attack the
         // count itself; this attacks the spike, which is what is actually hurting.
         if (_world == null) return;
+
+        // Ahead of the cull sweep: that sweep returns early whenever the agent position is not
+        // known yet or its per-frame budget rounds to zero, and an animated texture must keep
+        // running through both.
+        TickTextureAnimations();
+
         if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
         _agentPos = agentPos;
         _agentPosKnown = true;
@@ -244,12 +266,6 @@ public partial class ObjectRenderer : Node3D
         // Entries to visit this frame so one full pass still completes in CullSweepSeconds. The carry
         // keeps the fractional remainder, so a small set does not stall on truncation to zero.
         _cullCarry += _cullOrder.Count * delta / CullSweepSeconds;
-
-        // Ahead of the cull sweep: that sweep returns early whenever the agent position is not
-        // known yet or its per-frame budget rounds to zero, and an animated texture must keep
-        // running through both.
-        TickTextureAnimations();
-
         int budget = (int)_cullCarry;
         _cullCarry -= budget;
         if (budget <= 0) return;
@@ -415,6 +431,301 @@ public partial class ObjectRenderer : Node3D
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim == null) return;
 
+        // What this object IS, before anything about how its textures are placed. "It renders as
+        // a flat disc / it is missing" cannot be diagnosed from face numbers: a mesh whose asset
+        // never arrived, a sculpt showing its placeholder solid, and a prim that really is a flat
+        // cylinder all look the same on screen and are three different bugs. Printing the source
+        // of the geometry separates them in one click.
+        string geometry = prim.IsMesh ? $"MESH asset={prim.MeshId.ToString()[..8]}"
+            : prim.IsSculpt ? $"SCULPT map={prim.SculptId.ToString()[..8]}"
+            : $"PRIM profile={prim.ProfileCurve} path={prim.Shape.PathCurve}";
+
+        // A procedural prim's FULL construction data. "profile=0 path=32" only says "torus"; it is
+        // the taper/skew/twist/revolutions/cut numbers that decide whether that torus is a donut
+        // or a lumpy boulder, and a mesher that silently ignores one of them produces a smooth
+        // shape where the sim asked for a rough one -- indistinguishable from "the texture is
+        // wrong" or "the wrong LOD loaded" in a screenshot. Printing the whole set makes the
+        // shape reproducible offline, so our mesher's output can be compared against the
+        // viewer's llvolume for the exact same input instead of a plausible-looking guess.
+        if (!prim.IsMesh && !prim.IsSculpt)
+        {
+            var sh = prim.Shape;
+            GD.Print($"[FaceParams]   shape: cut=({sh.PathBegin:0.###}..{sh.PathEnd:0.###}) " +
+                     $"profileCut=({sh.ProfileBegin:0.###}..{sh.ProfileEnd:0.###}) hollow={sh.ProfileHollow:0.###} " +
+                     $"pathScale=({sh.PathScaleX:0.###},{sh.PathScaleY:0.###}) " +
+                     $"shear=({sh.PathShearX:0.###},{sh.PathShearY:0.###}) " +
+                     $"taper=({sh.PathTaperX:0.###},{sh.PathTaperY:0.###}) " +
+                     $"twist={sh.PathTwistBegin:0.###}..{sh.PathTwist:0.###} " +
+                     $"radiusOffset={sh.PathRadiusOffset:0.###} skew={sh.PathSkew:0.###} " +
+                     $"revolutions={sh.PathRevolutions:0.###} pcode={sh.PCode}");
+        }
+        string texAnim = prim.TextureAnim is { } ta
+            ? $"mode=0x{(byte)ta.Mode:X2} face={ta.Face} grid={ta.SizeX}x{ta.SizeY} " +
+              $"start={ta.Start:0.##} length={ta.Length:0.##} rate={ta.Rate:0.##}"
+            : "none";
+        // GD.Print, NOT Logger.Info: every other line in this function is Info-level and therefore
+        // invisible unless the client was started with --diag (see Diagnostics). That is right for
+        // the per-face dump, which is long, but wrong for this one -- it answers "what IS this
+        // object" for a user who just clicked something that renders wrong, and asking them to
+        // relaunch with a flag first costs a whole round trip. It cannot spam: nothing calls this
+        // except an explicit click.
+        GD.Print($"[FaceParams] object {entity.LocalId} {geometry} " +
+                 $"scale=({prim.Scale.X:0.##},{prim.Scale.Y:0.##},{prim.Scale.Z:0.##}) texanim: {texAnim}");
+
+        // The face's texture id and ALPHA, on the same unconditional line. Both are needed to tell
+        // apart the two ways an object can end up as a featureless coloured shape: the texture
+        // never arrived (id present, see [FaceTex]/[TextureFetch] for that id), or the face is
+        // meant to be see-through and we are drawing it solid (alpha well below 1). Neither is
+        // decidable from a screenshot, and the per-face dump below that would show it is
+        // Info-level, i.e. invisible without --diag.
+        var faceSummary = new System.Text.StringBuilder();
+        if (prim.Faces is { Length: > 0 })
+        {
+            for (int i = 0; i < prim.Faces.Length; i++)
+            {
+                var f = prim.Faces[i];
+                faceSummary.Append(i == 0 ? "" : " ")
+                           .Append($"[{i}]{(f.TextureId == Guid.Empty ? "none" : f.TextureId.ToString()[..8])}");
+                if (f.Color.W < 0.995f) faceSummary.Append($" a={f.Color.W:0.##}");
+            }
+        }
+        else
+        {
+            faceSummary.Append($"all={(prim.TextureId == Guid.Empty ? "none" : prim.TextureId.ToString()[..8])}");
+            if (prim.ColorTint.W < 0.995f) faceSummary.Append($" a={prim.ColorTint.W:0.##}");
+        }
+        GD.Print($"[FaceParams]   faces: {faceSummary}");
+
+        LogLinksetParts(entity);
+        LogFacePlacementDetail(entity, prim);
+    }
+
+    /// <summary>Lists every part of the clicked object's linkset and, for each, whether the
+    /// renderer is actually drawing it.
+    ///
+    /// A single clicked prim answers "what did I hit", never "what is missing". SL scenery is
+    /// built as linksets -- the object here is named "Rocher + Vagues", i.e. rocks AND waves in
+    /// one link -- so "the rocks are gone but the waves are there" is a statement about SIBLINGS
+    /// of whatever the raycast happened to land on. Those siblings cannot be clicked (they are not
+    /// being drawn, which is the complaint) and leave no log line of their own, so without this
+    /// they are invisible to every diagnostic we have: absent from the render, absent from the
+    /// log, and unreachable by the mouse.
+    ///
+    /// The per-part state is what separates the three ways a part goes missing, which need three
+    /// different fixes: never streamed in (no visual at all), culled by draw distance
+    /// (RESOURCES-RELEASED), or streamed and meshed but drawing nothing (NO MESH -- an asset that
+    /// never arrived).</summary>
+    private static void LogLinksetParts(Entity clicked)
+    {
+        var renderer = _instance;
+        var world = renderer?._world;
+        if (renderer == null || world == null) return;
+
+        var clickedTransform = clicked.GetComponent<TransformComponent>();
+        uint rootLocalId = clickedTransform is { ParentLocalId: not 0 } t ? t.ParentLocalId : clicked.LocalId;
+
+        var parts = new List<(uint LocalId, string Line)>();
+        foreach (var e in world.GetAllEntities())
+        {
+            var tr = e.GetComponent<TransformComponent>();
+            if (tr == null) continue;
+            uint partRoot = tr.ParentLocalId != 0 ? tr.ParentLocalId : e.LocalId;
+            if (partRoot != rootLocalId) continue;
+
+            var p = e.GetComponent<PrimitiveComponent>();
+            if (p == null) continue;
+
+            string kind = p.IsMesh ? $"MESH {p.MeshId.ToString()[..8]}"
+                : p.IsSculpt ? $"SCULPT {p.SculptId.ToString()[..8]} type=0x{p.SculptType:X2}"
+                : $"PRIM {p.ProfileCurve}/{p.Shape.PathCurve}";
+
+            string drawn;
+            if (!renderer._visuals.TryGetValue(e.Id, out var vs) || !IsInstanceValid(vs.MeshInstance))
+                drawn = "NO VISUAL (never built)";
+            else if (vs.ResourcesReleased)
+                drawn = "RESOURCES-RELEASED (beyond draw distance)";
+            else if (vs.MeshInstance.Mesh == null)
+                drawn = "NO MESH (geometry never arrived)";
+            else if (!vs.MeshInstance.Visible)
+                drawn = "HIDDEN";
+            else
+                drawn = $"drawn, {vs.MeshInstance.Mesh.GetSurfaceCount()} surfaces";
+
+            // SL region-local position, and Z especially: a prim that sits BELOW the region's
+            // water height is veiled by water fog in the real viewer and, since our atmospherics
+            // hook is still a no-op, drawn at full contrast here. That reads exactly like "the
+            // object is in the wrong place" -- so print the height and let the two explanations
+            // be told apart instead of guessed between.
+            var pos = tr.Position;
+
+            // Rotation as Euler degrees, in the same terms Firestorm's build floater shows, so
+            // the two can be read side by side. A flat prim lying the wrong way round covers a
+            // completely different footprint -- which is indistinguishable from "the object is
+            // too big" or "something else is hiding behind it" once it is on screen.
+            var q = tr.Rotation;
+            var euler = System.Numerics.Vector3.Zero;
+            {
+                var m = System.Numerics.Matrix4x4.CreateFromQuaternion(q);
+                euler.Y = MathF.Asin(Math.Clamp(-m.M31, -1f, 1f));
+                euler.X = MathF.Atan2(m.M32, m.M33);
+                euler.Z = MathF.Atan2(m.M21, m.M11);
+                euler *= 180f / MathF.PI;
+            }
+
+            parts.Add((e.LocalId, $"[FaceParams]   part {e.LocalId}{(e.LocalId == rootLocalId ? " (root)" : "")}: " +
+                                  $"{kind} scale=({p.Scale.X:0.#},{p.Scale.Y:0.#},{p.Scale.Z:0.#}) " +
+                                  $"at <{pos.X:0.#}, {pos.Y:0.#}, {pos.Z:0.#}> " +
+                                  $"rot=({euler.X:0.#}°,{euler.Y:0.#}°,{euler.Z:0.#}°) -> {drawn}"));
+        }
+
+        GD.Print($"[FaceParams]   linkset root {rootLocalId}: {parts.Count} parts");
+        foreach (var part in parts.OrderBy(p => p.LocalId)) GD.Print(part.Line);
+    }
+
+    /// <summary>Lists every object the client HOLDS within <paramref name="radiusMetres"/> of the
+    /// camera, drawn or not, grouped by what kind of geometry it is.
+    ///
+    /// Bound to F6. It exists because every other diagnostic here is click-triggered, and a click
+    /// needs a rendered object with a collision shape -- so the objects most worth asking about,
+    /// the ones that are not on screen, are exactly the ones no click can reach. This reads the
+    /// world model instead of the scene, which separates the two explanations that look identical
+    /// from the outside: the object is in the world and we are failing to draw it, or the object
+    /// never arrived from the sim and there is nothing to draw.</summary>
+    public void LogNearbyObjects(float radiusMetres)
+    {
+        if (_world == null) return;
+        if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
+
+        int prims = 0, meshes = 0, sculpts = 0, drawn = 0, released = 0, noMesh = 0, noVisual = 0;
+        var lines = new List<string>();
+
+        foreach (var e in _world.GetAllEntities())
+        {
+            var p = e.GetComponent<PrimitiveComponent>();
+            var tr = e.GetComponent<TransformComponent>();
+            if (p == null || tr == null) continue;
+
+            var here = RenderConfig.ToGodot(e.RegionHandle, tr.Position);
+            float dist = here.DistanceTo(agentPos);
+            if (dist > radiusMetres) continue;
+
+            if (p.IsMesh) meshes++; else if (p.IsSculpt) sculpts++; else prims++;
+
+            string state;
+            if (!_visuals.TryGetValue(e.Id, out var vs) || !IsInstanceValid(vs.MeshInstance)) { state = "NO VISUAL"; noVisual++; }
+            else if (vs.ResourcesReleased) { state = "RELEASED"; released++; }
+            else if (vs.MeshInstance.Mesh == null) { state = "NO MESH"; noMesh++; }
+            else { state = "drawn"; drawn++; }
+
+            // Only the interesting ones get a line of their own. A busy region has hundreds of
+            // ordinary prims nearby and listing them all would bury the two that are broken.
+            if (p.IsMesh || p.IsSculpt || state != "drawn")
+            {
+                string kind = p.IsMesh ? $"MESH {p.MeshId.ToString()[..8]}"
+                    : p.IsSculpt ? $"SCULPT {p.SculptId.ToString()[..8]}"
+                    : $"PRIM {p.ProfileCurve}/{p.Shape.PathCurve}";
+
+                // The object's SL UUID and name, because that is the only handle shared with
+                // Firestorm. Our logs are keyed by LocalId, which is per-session and per-region
+                // and means nothing in the other viewer -- so "Firestorm says this thing is
+                // a3f9c8e2 named 35x10x95" could not be matched against anything we print. The
+                // UUID arrives with the ObjectUpdate; the name only after an ObjectProperties
+                // reply, so it can legitimately still be blank.
+                var meta = e.GetComponent<MetadataComponent>();
+                string identity = meta == null || meta.Id == Guid.Empty
+                    ? "uuid ?"
+                    : $"{meta.Id}{(string.IsNullOrEmpty(meta.Name) ? "" : $" \"{meta.Name}\"")}";
+
+                lines.Add($"[Nearby]   {e.LocalId} {kind} at <{tr.Position.X:0.#}, {tr.Position.Y:0.#}, {tr.Position.Z:0.#}> " +
+                          $"{dist:0.#} m -> {state}  {identity}");
+            }
+        }
+
+        GD.Print($"[Nearby] within {radiusMetres:0} m: {prims} prims, {meshes} meshes, {sculpts} sculpts " +
+                 $"| drawn {drawn}, released {released}, no-mesh {noMesh}, no-visual {noVisual} " +
+                 $"(draw distance {RenderConfig.DrawDistance:0} m)");
+        foreach (var line in lines.Take(60)) GD.Print(line);
+        if (lines.Count > 60) GD.Print($"[Nearby]   ... and {lines.Count - 60} more");
+
+        LogUndrawnObjects();
+    }
+
+    /// <summary>Reports every object in the world model that is NOT being drawn, wherever it is.
+    ///
+    /// The radius above requires standing in the right place, and the thing worth finding is by
+    /// definition not visible to aim at -- one F6 press 60 m from the target reported 46 objects,
+    /// all healthy, and said nothing about the reef. Failures are rare and worth listing in full
+    /// regardless of distance; "drawn" objects are the common case and only interesting nearby.
+    ///
+    /// RELEASED is counted but not listed: beyond the draw distance that is the correct state for
+    /// potentially thousands of objects, and printing them would drown the two that are broken.</summary>
+    private void LogUndrawnObjects()
+    {
+        if (_world == null) return;
+
+        int total = 0, released = 0, attachments = 0;
+        var broken = new List<string>();
+        var biggest = new List<(float Size, string Line)>();
+
+        foreach (var e in _world.GetAllEntities())
+        {
+            var p = e.GetComponent<PrimitiveComponent>();
+            var tr = e.GetComponent<TransformComponent>();
+            if (p == null || tr == null) continue;
+            total++;
+
+            // Attachments are NOT the ObjectRenderer's to draw -- AvatarRenderer owns them (see
+            // UpdateVisual's early return). Counting them as failures made this report useless the
+            // first time it ran: 438 of 506 objects "failing to draw", every one of them a worn
+            // item sitting at its avatar-local <0, 0, -0.3>, burying whatever real failure the
+            // report existed to find.
+            if (e.GetComponent<AttachmentComponent>() != null) { attachments++; continue; }
+
+            var meta0 = e.GetComponent<MetadataComponent>();
+            string identity0 = meta0 == null || meta0.Id == Guid.Empty
+                ? "uuid ?"
+                : $"{meta0.Id}{(string.IsNullOrEmpty(meta0.Name) ? "" : $" \"{meta0.Name}\"")}";
+            float maxDim = Math.Max(p.Scale.X, Math.Max(p.Scale.Y, p.Scale.Z));
+            biggest.Add((maxDim, $"[Biggest]   {e.LocalId} {maxDim:0.#} m " +
+                                 $"({p.Scale.X:0.#}x{p.Scale.Y:0.#}x{p.Scale.Z:0.#}) " +
+                                 $"at <{tr.Position.X:0.#}, {tr.Position.Y:0.#}, {tr.Position.Z:0.#}>  {identity0}"));
+
+            string? why = null;
+            if (!_visuals.TryGetValue(e.Id, out var vs) || !IsInstanceValid(vs.MeshInstance)) why = "NO VISUAL";
+            else if (vs.ResourcesReleased) { released++; continue; }
+            else if (vs.MeshInstance.Mesh == null) why = "NO MESH";
+            else if (!vs.MeshInstance.Visible) why = "HIDDEN";
+            if (why == null) continue;
+
+            string kind = p.IsMesh ? $"MESH {p.MeshId.ToString()[..8]}"
+                : p.IsSculpt ? $"SCULPT {p.SculptId.ToString()[..8]}"
+                : $"PRIM {p.ProfileCurve}/{p.Shape.PathCurve}";
+            var meta = e.GetComponent<MetadataComponent>();
+            broken.Add($"[Undrawn]   {e.LocalId} {kind} at <{tr.Position.X:0.#}, {tr.Position.Y:0.#}, {tr.Position.Z:0.#}> " +
+                       $"-> {why}  {(meta == null || meta.Id == Guid.Empty ? "uuid ?" : $"{meta.Id}{(string.IsNullOrEmpty(meta.Name) ? "" : $" \"{meta.Name}\"")}")}");
+        }
+
+        GD.Print($"[Undrawn] world holds {total} objects ({attachments} attachments, drawn by AvatarRenderer): " +
+                 $"{released} released beyond draw distance, {broken.Count} failing to draw");
+        foreach (var line in broken.Take(40)) GD.Print(line);
+        if (broken.Count > 40) GD.Print($"[Undrawn]   ... and {broken.Count - 40} more");
+
+        // The biggest objects in the world, by their largest scale axis. This is the one search
+        // that can be run without a UI to type a UUID into: a landmark the other viewer names by
+        // size ("35x10x95") is by definition near the top of this list, so its presence or absence
+        // here settles whether the object reached us at all -- which no amount of standing in the
+        // right place and pressing F6 can, since an object we never received cannot be near
+        // anything.
+        biggest.Sort((a, b) => b.Size.CompareTo(a.Size));
+        GD.Print("[Biggest] largest objects held (excluding attachments):");
+        foreach (var b in biggest.Take(12)) GD.Print(b.Line);
+    }
+
+    /// <summary>The verbose half of the click dump: SL build-floater texture placement, per face.
+    /// Info-level (so --diag only) because it is one line per face and the summary above already
+    /// carries what a first look needs.</summary>
+    private static void LogFacePlacementDetail(Entity entity, PrimitiveComponent prim)
+    {
         if (prim.IsSculpt)
         {
             // The sculpt type byte decides horizontal mirroring, and SLNG and the viewer disagree
@@ -508,321 +819,10 @@ public partial class ObjectRenderer : Node3D
                 }
             }
             _visuals.Remove(entityId);
-        }
-    }
-
-    private void SetTexturesForVisual(VisualState state, List<Guid> newTextureIds)
-    {
-        if (_gpuCache == null) return;
-
-        foreach (var old in state.UsedTextureIds)
-        {
-            if (!newTextureIds.Contains(old)) _gpuCache.ReleaseRef(old);
-        }
-
-        foreach (var newTex in newTextureIds)
-        {
-            if (!state.UsedTextureIds.Contains(newTex)) _gpuCache.AddRef(newTex);
-        }
-
-        state.UsedTextureIds = newTextureIds;
-    }
-
-    private void UpdateVisual(string entityIdStr)
-    {
-        if (!Guid.TryParse(entityIdStr, out var entityId)) return;
-        if (_world == null) return;
-        if (!_visuals.TryGetValue(entityId, out var state)) return;
-
-        var entity = _world.GetEntity(entityId);
-        if (entity == null) return;
-
-        var prim = entity.GetComponent<PrimitiveComponent>();
-        if (prim != null)
-        {
-            // Do not render attachments as standalone objects. They are handled by AvatarRenderer.
-            if (entity.GetComponent<AttachmentComponent>() != null) return;
-
-            // Skip all asset loading while the object is released (out of draw distance). The
-            // cull pass clears ResourcesReleased and re-calls UpdateVisual when it returns; only
-            // position/scale are kept current here so the distance check stays accurate.
-            if (!state.ResourcesReleased)
-            {
-                // Only (re)load the mesh when it actually changes — UpdateVisual fires on every
-                // ObjectUpdate (i.e. every position change), and rebuilding the mesh each time is
-                // what stalls the main thread on a busy region.
-                if (prim.IsMesh && _assetService != null && prim.MeshId != Guid.Empty)
-                {
-                    if (state.LoadedMeshId != prim.MeshId)
-                    {
-                        state.LoadedMeshId = prim.MeshId;
-                        state.LoadedPrimShape = null;
-                        _ = LoadAndApplyMeshAsync(state, prim.MeshId);
-                    }
-                }
-                else if (prim.IsSculpt && _assetService != null && prim.SculptId != Guid.Empty)
-                {
-                    // Sculpted prim: geometry comes from the sculpt-map texture, not the profile/path.
-                    if (state.LoadedMeshId != prim.SculptId || state.LoadedSculptType != prim.SculptType)
-                    {
-                        state.LoadedMeshId = prim.SculptId;
-                        state.LoadedSculptType = prim.SculptType;
-                        state.LoadedPrimShape = null;
-                        _ = LoadAndApplySculptMeshAsync(state, prim.SculptId, prim.SculptType, prim.ProfileCurve);
-                    }
-                }
-                else if (_assetService != null && !prim.IsSculpt && state.LoadedPrimShape != prim.Shape)
-                {
-                    // Procedural prim: generate its real geometry (profile/path/cut/hollow/twist)
-                    // off-thread instead of a box placeholder. Re-requested only when the shape
-                    // changes. Falls back to a primitive solid if meshing fails.
-                    state.LoadedPrimShape = prim.Shape;
-                    state.LoadedMeshId = Guid.Empty;
-                    var lod = PickPrimDetailLevel(entity, prim.Scale);
-                    _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve, lod);
-                }
-
-                // Re-apply materials when the default texture/material/color changes (a proxy for
-                // "the object's appearance changed"). The mesh-assignment callback also re-applies
-                // once surfaces exist; here covers appearance-only changes on an already-loaded
-                // mesh. Must also watch ColorTint/Faces, not just TextureId/RenderMaterialId: a
-                // face-color or per-face-alpha edit (e.g. Object > Features > Transparency in the
-                // build floater) touches neither id, so a gate that only checked ids never noticed
-                // and the object kept rendering its original (often opaque) alpha forever — see
-                // BuildFaceMaterialAsync's colorTint.A < 0.99f Transparency branch, which was
-                // structurally correct but never re-ran after the initial load.
-                if (_assetService != null
-                    && (prim.TextureId != state.LoadedTextureId
-                        || prim.RenderMaterialId != state.LoadedMaterialId
-                        || prim.ColorTint != state.LoadedColorTint
-                        || !FacesEqual(state.LoadedFaces, prim.Faces)))
-                {
-                    state.LoadedTextureId = prim.TextureId;
-                    state.LoadedMaterialId = prim.RenderMaterialId;
-                    state.LoadedColorTint = prim.ColorTint;
-                    state.LoadedFaces = prim.Faces;
-                    if (state.LoadedMeshKey != Guid.Empty)
-                        _ = ApplyFaceMaterialsAsync(state);
-                }
-            }
-
-            var sx = float.IsNaN(prim.Scale.X) ? 1f : Mathf.Clamp(prim.Scale.X, 0.001f, 1000f);
-            var sy = float.IsNaN(prim.Scale.Y) ? 1f : Mathf.Clamp(prim.Scale.Y, 0.001f, 1000f);
-            var sz = float.IsNaN(prim.Scale.Z) ? 1f : Mathf.Clamp(prim.Scale.Z, 0.001f, 1000f);
-            state.MeshInstance.Scale = new Godot.Vector3(sx, sz, sy);
-
-            // Planar UVs are derived from vertex position in metres, so a resize changes them.
-            // The mesh and the materials both survive a resize untouched (only the node scale
-            // moves), so without this a planar face keeps the tiling of its previous size.
-            UpdatePrimScaleUniform(state, prim.Scale);
-
-            // Phantom means "no collision" in SL: move off the terrain/objects layer so
-            // AvatarController's ground ray (masked to layer 1) passes through, while staying
-            // selectable/editable (the object-selection raycast queries all layers).
-            state.StaticBody.CollisionLayer = prim.IsPhantom ? PhantomLayer : 1u;
-
-            if (prim.LightEnabled)
-            {
-                if (state.LightNode == null)
-                {
-                    state.LightNode = new OmniLight3D { Name = "Light" };
-                    state.MeshInstance.AddChild(state.LightNode);
-                }
-                state.LightNode.LightColor = new Godot.Color(prim.LightColor.X, prim.LightColor.Y, prim.LightColor.Z);
-                // SL's Intensity has no direct Godot equivalent unit -- scaled up so a default
-                // (Intensity 1) reads as a visible light rather than a near-invisible dim glow.
-                state.LightNode.LightEnergy = prim.LightIntensity * 2.0f;
-                state.LightNode.OmniRange = prim.LightRadius;
-                // OmniAttenuation of 0 is a degenerate/invalid falloff in Godot; SL's own default
-                // Falloff is 1.0, well inside Godot's valid range, but a user-set 0 shouldn't zero
-                // the light out entirely.
-                state.LightNode.OmniAttenuation = Mathf.Max(0.1f, prim.LightFalloff);
-            }
-            else if (state.LightNode != null)
-            {
-                state.LightNode.QueueFree();
-                state.LightNode = null;
-            }
-        }
-
-        var transform = entity.GetComponent<TransformComponent>();
-        if (transform != null)
-        {
-            state.MeshInstance.Position = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
-
-            var slQuat = new Godot.Quaternion(transform.Rotation.X, transform.Rotation.Z, -transform.Rotation.Y, transform.Rotation.W);
-            state.MeshInstance.Quaternion = slQuat;
-        }
-    }
-
-    private async System.Threading.Tasks.Task LoadAndApplyMeshAsync(VisualState state, Guid meshId)
-    {
-        if (_assetService == null) return;
-
-        var mesh = await _assetService.GetMeshAsync(meshId);
-        if (mesh == null || mesh.Submeshes.Count == 0) return;
-
-        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
-        {
-            if (!IsInstanceValid(state.MeshInstance)) return;
-            if (state.LoadedMeshId != meshId) return; // shape/asset changed while loading
-
-            AssignSharedMesh(state, meshId, mesh, flipV: true);
-        }, label: "mesh.apply");
-    }
-
-    private async System.Threading.Tasks.Task LoadAndApplySculptMeshAsync(VisualState state, Guid sculptId, byte sculptType, byte profileCurve)
-    {
-        if (_assetService == null) return;
-
-        var mesh = await _assetService.GetSculptMeshAsync(sculptId, sculptType);
-
-        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
-        {
-            if (!IsInstanceValid(state.MeshInstance)) return;
-            if (state.LoadedMeshId != sculptId) return; // changed while meshing
-
-            if (mesh != null && mesh.Submeshes.Count > 0)
-            {
-                // LMV's SCULPT meshing path emits raw (bottom-left) UVs — unlike its prim path,
-                // which pre-flips; scenery sculpts (rocks etc.) rarely make the difference
-                // visible, so this leans on the SL-convention default rather than hard proof.
-                //
-                // EXPERIMENT 2026-08-18: flipped to false. Measured on the known-answer sculpt
-                // probe (tools/testassets/, a 16x256 cylinder map) side by side with Firestorm at
-                // repeat 1x1: Firestorm puts the probe texture's BLUE edge at the object's top,
-                // we put the RED one there, and the row labels run A4->A3 downward in Firestorm
-                // against A1->A2->A3 in ours. V runs opposite. The shape itself matched in both
-                // (same bands, same bulge, no helix), so this is the texture axis and not the
-                // sculpt grid.
-                //
-                // false, settled by A/B against Firestorm rather than by argument.
-                //   true  -> red and blue frame edges swapped, letters upside down: a full mirror.
-                //   false -> orientation correct, but the pattern sits at a small constant offset
-                //            (a physical cube parked exactly on the red/blue seam in Firestorm
-                //            sits below it here).
-                // So the remaining defect is a SHIFT, not a mirror -- a distinction that needed
-                // two asymmetric features in one view to make, which is why the earlier
-                // single-line screenshots could not settle it.
-                //
-                // Worth writing down because the arithmetic argues the other way and is wrong:
-                // ViewerSculptParityTests proves our mesh UVs equal the viewer's tt exactly
-                // (0.00000 across seven real maps), and SL is usually described as sampling
-                // bottom-origin against Godot's top-origin, which would demand 1 - tt. Measurement
-                // says otherwise, twice. Whatever reconciles the two lives elsewhere in the chain
-                // and is what the remaining offset is pointing at.
-                AssignSharedMesh(state, KeyForSculpt(sculptId, sculptType), mesh, flipV: false);
-            }
-            else
-            {
-                // Sculpt map not ready / undecodable — show a placeholder solid for now.
-                ReleaseMeshRef(state);
-                if (profileCurve == 0)
-                {
-                    state.MeshInstance.Mesh = _cylinderMesh;
-                    state.CollisionShape.Shape = new Godot.CylinderShape3D { Height = 1.0f, Radius = 0.5f };
-                }
-                else if (profileCurve == 5)
-                {
-                    state.MeshInstance.Mesh = _sphereMesh;
-                    state.CollisionShape.Shape = new Godot.SphereShape3D { Radius = 0.5f };
-                }
-                else
-                {
-                    state.MeshInstance.Mesh = _boxMesh;
-                    state.CollisionShape.Shape = new Godot.BoxShape3D { Size = new Godot.Vector3(1, 1, 1) };
-                }
-            }
-        }, label: "sculpt.apply");
-    }
-
-    /// <summary>
-    /// Picks a <see cref="MeshDetailLevel"/> from the object's apparent (on-screen) size --
-    /// scale divided by distance to the local agent, approximating a real SL viewer's own
-    /// distance/size-based LOD. Needed because <see cref="SLNG.Assets.AssetService.GetPrimMeshAsync"/>
-    /// otherwise always defaults to Medium (12 sides for a curved profile) regardless of how
-    /// large or close the object is: a heavily-scaled sphere/torus/ring cut rendered at Medium is
-    /// visibly faceted -- flat, angular, "origami" -- compared to Firestorm's much smoother
-    /// curve. Flat-profile prims (box/prism) are unaffected either way: LibreMetaverse's mesher
-    /// only varies side count for curved profiles (Circle/HalfCircle/EqualTriangle), so this is
-    /// safe to compute unconditionally.
-    /// </summary>
-    private MeshDetailLevel PickPrimDetailLevel(Entity entity, System.Numerics.Vector3 scale)
-    {
-        if (_world == null || !RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos))
-            return MeshDetailLevel.Medium;
-
-        var transform = entity.GetComponent<TransformComponent>();
-        if (transform == null) return MeshDetailLevel.Medium;
-
-        var objectPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
-        float distance = objectPos.DistanceTo(agentPos);
-
-        float maxScale = Mathf.Max(scale.X, Mathf.Max(scale.Y, scale.Z));
-        float apparentSize = maxScale / Mathf.Max(distance, 0.1f);
-
-        if (apparentSize > 0.3f) return MeshDetailLevel.Highest;
-        if (apparentSize > 0.1f) return MeshDetailLevel.High;
-        if (apparentSize > 0.03f) return MeshDetailLevel.Medium;
-        return MeshDetailLevel.Low;
-    }
-
-    private async System.Threading.Tasks.Task LoadAndApplyPrimMeshAsync(VisualState state, PrimShape shape, byte profileCurve, MeshDetailLevel lod)
-    {
-        if (_assetService == null) return;
-
-        var mesh = await _assetService.GetPrimMeshAsync(shape, lod);
-
-        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
-        {
-            if (!IsInstanceValid(state.MeshInstance)) return;
-            // Drop stale results: the shape may have changed again while we were meshing.
-            if (state.LoadedPrimShape != shape) return;
-
-            if (mesh != null && mesh.Submeshes.Count > 0)
-            {
-                // flipV:true — verified against the real viewer (llvolume.cpp
-                // LLVolumeFace::createSide): SL sets a box side face's V directly from
-                // path_data[t].mTexT with NO flip, but LibreMetaverse's MeshFoundry applies an
-                // extra 1-V (GenerateFacetedMesh) that leaves prim faces vertically inverted —
-                // invisible on tiled/symmetric textures, but upside-down on anything oriented
-                // (a HUD's logo/text). This is the SAME flip mesh assets already use; prims were
-                // wrongly exempted on the assumption MeshFoundry's internal flip cancelled out.
-                AssignSharedMesh(state, KeyForShape(shape, lod), mesh, flipV: true);
-            }
-            else
-            {
-                // Meshing failed (e.g. sculpt or odd shape) — fall back to a primitive solid.
-                ReleaseMeshRef(state);
-                if (profileCurve == 0)
-                {
-                    state.MeshInstance.Mesh = _cylinderMesh;
-                    state.CollisionShape.Shape = new Godot.CylinderShape3D { Height = 1.0f, Radius = 0.5f };
-                }
-                else if (profileCurve == 5)
-                {
-                    state.MeshInstance.Mesh = _sphereMesh;
-                    state.CollisionShape.Shape = new Godot.SphereShape3D { Radius = 0.5f };
-                }
-                else
-                {
-                    state.MeshInstance.Mesh = _boxMesh;
-                    state.CollisionShape.Shape = new Godot.BoxShape3D { Size = new Godot.Vector3(1, 1, 1) };
-                }
-            }
-        }, label: "primmesh.apply");
-    }
-
-    /// <summary>Builds and applies a material per mesh surface from the prim's per-face textures
-    /// (falling back to the object's default texture for faces without their own).</summary>
-    private async System.Threading.Tasks.Task ApplyFaceMaterialsAsync(VisualState state)
-    {
-        if (_assetService == null || _world == null) return;
-        var prim = _world.GetEntity(state.EntityId)?.GetComponent<PrimitiveComponent>();
             _texAnims.Remove(entityId);
-        if (prim == null) return;
+        }
+    }
 
-        // FEAT-PERF-02 Phase 2: one detail/priority decision per object (not per face) -- computed
     // --- llSetTextureAnim ---------------------------------------------------------------------
     //
     // SL animates a face's texture by REPLACING part of its placement every frame: the object
@@ -1004,6 +1004,354 @@ public partial class ObjectRenderer : Node3D
             0.5f - 0.5f * repeatV - offsetV));
     }
 
+    private void SetTexturesForVisual(VisualState state, List<Guid> newTextureIds)
+    {
+        if (_gpuCache == null) return;
+
+        foreach (var old in state.UsedTextureIds)
+        {
+            if (!newTextureIds.Contains(old)) _gpuCache.ReleaseRef(old);
+        }
+
+        foreach (var newTex in newTextureIds)
+        {
+            if (!state.UsedTextureIds.Contains(newTex)) _gpuCache.AddRef(newTex);
+        }
+
+        state.UsedTextureIds = newTextureIds;
+    }
+
+    private void UpdateVisual(string entityIdStr)
+    {
+        if (!Guid.TryParse(entityIdStr, out var entityId)) return;
+        if (_world == null) return;
+        if (!_visuals.TryGetValue(entityId, out var state)) return;
+
+        var entity = _world.GetEntity(entityId);
+        if (entity == null) return;
+
+        var prim = entity.GetComponent<PrimitiveComponent>();
+        if (prim != null)
+        {
+            // Do not render attachments as standalone objects. They are handled by AvatarRenderer.
+            if (entity.GetComponent<AttachmentComponent>() != null) return;
+
+            UpdateTextureAnimRegistration(state.EntityId, prim.TextureAnim);
+
+            // Skip all asset loading while the object is released (out of draw distance). The
+            // cull pass clears ResourcesReleased and re-calls UpdateVisual when it returns; only
+            // position/scale are kept current here so the distance check stays accurate.
+            if (!state.ResourcesReleased)
+            {
+                // Only (re)load the mesh when it actually changes — UpdateVisual fires on every
+                // ObjectUpdate (i.e. every position change), and rebuilding the mesh each time is
+                // what stalls the main thread on a busy region.
+                if (prim.IsMesh && _assetService != null && prim.MeshId != Guid.Empty)
+                {
+                    if (state.LoadedMeshId != prim.MeshId)
+                    {
+                        state.LoadedMeshId = prim.MeshId;
+                        state.LoadedPrimShape = null;
+                        _ = LoadAndApplyMeshAsync(state, prim.MeshId);
+                    }
+                }
+                else if (prim.IsSculpt && _assetService != null && prim.SculptId != Guid.Empty)
+                {
+                    // Sculpted prim: geometry comes from the sculpt-map texture, not the profile/path.
+                    if (state.LoadedMeshId != prim.SculptId || state.LoadedSculptType != prim.SculptType)
+                    {
+                        state.LoadedMeshId = prim.SculptId;
+                        state.LoadedSculptType = prim.SculptType;
+                        state.LoadedPrimShape = null;
+                        _ = LoadAndApplySculptMeshAsync(state, prim.SculptId, prim.SculptType, prim.ProfileCurve);
+                    }
+                }
+                else if (_assetService != null && !prim.IsSculpt && state.LoadedPrimShape != prim.Shape)
+                {
+                    // Procedural prim: generate its real geometry (profile/path/cut/hollow/twist)
+                    // off-thread instead of a box placeholder. Re-requested only when the shape
+                    // changes. Falls back to a primitive solid if meshing fails.
+                    state.LoadedPrimShape = prim.Shape;
+                    state.LoadedMeshId = Guid.Empty;
+                    var lod = PickPrimDetailLevel(entity, prim.Scale);
+                    _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve, lod);
+                }
+
+                // Re-apply materials when the default texture/material/color changes (a proxy for
+                // "the object's appearance changed"). The mesh-assignment callback also re-applies
+                // once surfaces exist; here covers appearance-only changes on an already-loaded
+                // mesh. Must also watch ColorTint/Faces, not just TextureId/RenderMaterialId: a
+                // face-color or per-face-alpha edit (e.g. Object > Features > Transparency in the
+                // build floater) touches neither id, so a gate that only checked ids never noticed
+                // and the object kept rendering its original (often opaque) alpha forever — see
+                // BuildFaceMaterialAsync's colorTint.A < 0.99f Transparency branch, which was
+                // structurally correct but never re-ran after the initial load.
+                if (_assetService != null
+                    && (prim.TextureId != state.LoadedTextureId
+                        || prim.RenderMaterialId != state.LoadedMaterialId
+                        || prim.ColorTint != state.LoadedColorTint
+                        || !FacesEqual(state.LoadedFaces, prim.Faces)))
+                {
+                    state.LoadedTextureId = prim.TextureId;
+                    state.LoadedMaterialId = prim.RenderMaterialId;
+                    state.LoadedColorTint = prim.ColorTint;
+                    state.LoadedFaces = prim.Faces;
+                    if (state.LoadedMeshKey != Guid.Empty)
+                        _ = ApplyFaceMaterialsAsync(state);
+                }
+            }
+
+            var sx = float.IsNaN(prim.Scale.X) ? 1f : Mathf.Clamp(prim.Scale.X, 0.001f, 1000f);
+            var sy = float.IsNaN(prim.Scale.Y) ? 1f : Mathf.Clamp(prim.Scale.Y, 0.001f, 1000f);
+            var sz = float.IsNaN(prim.Scale.Z) ? 1f : Mathf.Clamp(prim.Scale.Z, 0.001f, 1000f);
+            state.MeshInstance.Scale = new Godot.Vector3(sx, sz, sy);
+
+            // Planar UVs are derived from vertex position in metres, so a resize changes them.
+            // The mesh and the materials both survive a resize untouched (only the node scale
+            // moves), so without this a planar face keeps the tiling of its previous size.
+            UpdatePrimScaleUniform(state, prim.Scale);
+
+            // Phantom means "no collision" in SL: move off the terrain/objects layer so
+            // AvatarController's ground ray (masked to layer 1) passes through, while staying
+            // selectable/editable (the object-selection raycast queries all layers).
+            state.StaticBody.CollisionLayer = prim.IsPhantom ? PhantomLayer : 1u;
+
+            if (prim.LightEnabled)
+            {
+                if (state.LightNode == null)
+                {
+                    state.LightNode = new OmniLight3D { Name = "Light" };
+                    state.MeshInstance.AddChild(state.LightNode);
+                }
+                state.LightNode.LightColor = new Godot.Color(prim.LightColor.X, prim.LightColor.Y, prim.LightColor.Z);
+                // SL's Intensity has no direct Godot equivalent unit -- scaled up so a default
+                // (Intensity 1) reads as a visible light rather than a near-invisible dim glow.
+                state.LightNode.LightEnergy = prim.LightIntensity * 2.0f;
+                state.LightNode.OmniRange = prim.LightRadius;
+                // OmniAttenuation of 0 is a degenerate/invalid falloff in Godot; SL's own default
+                // Falloff is 1.0, well inside Godot's valid range, but a user-set 0 shouldn't zero
+                // the light out entirely.
+                state.LightNode.OmniAttenuation = Mathf.Max(0.1f, prim.LightFalloff);
+            }
+            else if (state.LightNode != null)
+            {
+                state.LightNode.QueueFree();
+                state.LightNode = null;
+            }
+        }
+
+        var transform = entity.GetComponent<TransformComponent>();
+        if (transform != null)
+        {
+            state.MeshInstance.Position = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
+
+            var slQuat = new Godot.Quaternion(transform.Rotation.X, transform.Rotation.Z, -transform.Rotation.Y, transform.Rotation.W);
+            state.MeshInstance.Quaternion = slQuat;
+        }
+    }
+
+    private async System.Threading.Tasks.Task LoadAndApplyMeshAsync(VisualState state, Guid meshId)
+    {
+        if (_assetService == null) return;
+
+        var mesh = await _assetService.GetMeshAsync(meshId);
+        if (mesh == null || mesh.Submeshes.Count == 0)
+        {
+            // A mesh object whose asset never arrives is drawn as NOTHING at all (the node keeps
+            // its null Mesh from CreateVisual) and says nothing anywhere -- AssetService's own
+            // retry exhaustion returns a plain null. "The rocks are missing" and "the rocks are
+            // drawn wrong" are different bugs and this is the only line that can tell them apart.
+            if (_meshLoadFailuresLogged.Add(meshId))
+                Logger.Warn($"[MeshFallback] mesh asset {meshId.ToString()[..8]} unavailable after retries " +
+                            $"— every object using it renders as nothing");
+            return;
+        }
+
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+        {
+            if (!IsInstanceValid(state.MeshInstance)) return;
+            if (state.LoadedMeshId != meshId) return; // shape/asset changed while loading
+
+            AssignSharedMesh(state, meshId, mesh, flipV: true);
+        }, label: "mesh.apply");
+    }
+
+    private async System.Threading.Tasks.Task LoadAndApplySculptMeshAsync(VisualState state, Guid sculptId, byte sculptType, byte profileCurve)
+    {
+        if (_assetService == null) return;
+
+        var mesh = await _assetService.GetSculptMeshAsync(sculptId, sculptType);
+
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+        {
+            if (!IsInstanceValid(state.MeshInstance)) return;
+            if (state.LoadedMeshId != sculptId) return; // changed while meshing
+
+            if (mesh != null && mesh.Submeshes.Count > 0)
+            {
+                // LMV's SCULPT meshing path emits raw (bottom-left) UVs — unlike its prim path,
+                // which pre-flips; scenery sculpts (rocks etc.) rarely make the difference
+                // visible, so this leans on the SL-convention default rather than hard proof.
+                //
+                // EXPERIMENT 2026-08-18: flipped to false. Measured on the known-answer sculpt
+                // probe (tools/testassets/, a 16x256 cylinder map) side by side with Firestorm at
+                // repeat 1x1: Firestorm puts the probe texture's BLUE edge at the object's top,
+                // we put the RED one there, and the row labels run A4->A3 downward in Firestorm
+                // against A1->A2->A3 in ours. V runs opposite. The shape itself matched in both
+                // (same bands, same bulge, no helix), so this is the texture axis and not the
+                // sculpt grid.
+                //
+                // false, settled by A/B against Firestorm rather than by argument.
+                //   true  -> red and blue frame edges swapped, letters upside down: a full mirror.
+                //   false -> orientation correct, but the pattern sits at a small constant offset
+                //            (a physical cube parked exactly on the red/blue seam in Firestorm
+                //            sits below it here).
+                // So the remaining defect is a SHIFT, not a mirror -- a distinction that needed
+                // two asymmetric features in one view to make, which is why the earlier
+                // single-line screenshots could not settle it.
+                //
+                // Worth writing down because the arithmetic argues the other way and is wrong:
+                // ViewerSculptParityTests proves our mesh UVs equal the viewer's tt exactly
+                // (0.00000 across seven real maps), and SL is usually described as sampling
+                // bottom-origin against Godot's top-origin, which would demand 1 - tt. Measurement
+                // says otherwise, twice. Whatever reconciles the two lives elsewhere in the chain
+                // and is what the remaining offset is pointing at.
+                AssignSharedMesh(state, KeyForSculpt(sculptId, sculptType), mesh, flipV: false);
+            }
+            else
+            {
+                // Sculpt map not ready / undecodable — show a placeholder solid for now.
+                //
+                // Warn, not Info, and therefore visible without --diag: this placeholder is a
+                // FLAT CYLINDER OR SPHERE wearing the object's real scale, which on a scenery
+                // sculpt (a rock, a reef) reads as a smooth featureless blob rather than as
+                // anything obviously broken. Silently substituting geometry that plausible is
+                // what makes it expensive to diagnose from a screenshot. Once per object.
+                if (_sculptFallbacksLogged.Add(state.EntityId))
+                {
+                    Logger.Warn($"[SculptFallback] object {_world?.GetEntity(state.EntityId)?.LocalId} " +
+                                $"map={sculptId.ToString()[..8]} type=0x{sculptType:X2} — sculpt map did not " +
+                                $"decode, rendering placeholder {(profileCurve == 0 ? "cylinder" : profileCurve == 5 ? "sphere" : "box")}");
+                }
+                ReleaseMeshRef(state);
+                if (profileCurve == 0)
+                {
+                    state.MeshInstance.Mesh = _cylinderMesh;
+                    state.CollisionShape.Shape = new Godot.CylinderShape3D { Height = 1.0f, Radius = 0.5f };
+                }
+                else if (profileCurve == 5)
+                {
+                    state.MeshInstance.Mesh = _sphereMesh;
+                    state.CollisionShape.Shape = new Godot.SphereShape3D { Radius = 0.5f };
+                }
+                else
+                {
+                    state.MeshInstance.Mesh = _boxMesh;
+                    state.CollisionShape.Shape = new Godot.BoxShape3D { Size = new Godot.Vector3(1, 1, 1) };
+                }
+            }
+        }, label: "sculpt.apply");
+    }
+
+    /// <summary>
+    /// Picks a <see cref="MeshDetailLevel"/> from the object's apparent (on-screen) size --
+    /// scale divided by distance to the local agent, approximating a real SL viewer's own
+    /// distance/size-based LOD. Needed because <see cref="SLNG.Assets.AssetService.GetPrimMeshAsync"/>
+    /// otherwise always defaults to Medium (12 sides for a curved profile) regardless of how
+    /// large or close the object is: a heavily-scaled sphere/torus/ring cut rendered at Medium is
+    /// visibly faceted -- flat, angular, "origami" -- compared to Firestorm's much smoother
+    /// curve. Flat-profile prims (box/prism) are unaffected either way: LibreMetaverse's mesher
+    /// only varies side count for curved profiles (Circle/HalfCircle/EqualTriangle), so this is
+    /// safe to compute unconditionally.
+    /// </summary>
+    private MeshDetailLevel PickPrimDetailLevel(Entity entity, System.Numerics.Vector3 scale)
+    {
+        if (_world == null || !RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos))
+            return MeshDetailLevel.Medium;
+
+        var transform = entity.GetComponent<TransformComponent>();
+        if (transform == null) return MeshDetailLevel.Medium;
+
+        var objectPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
+        float distance = objectPos.DistanceTo(agentPos);
+
+        float maxScale = Mathf.Max(scale.X, Mathf.Max(scale.Y, scale.Z));
+        float apparentSize = maxScale / Mathf.Max(distance, 0.1f);
+
+        if (apparentSize > 0.3f) return MeshDetailLevel.Highest;
+        if (apparentSize > 0.1f) return MeshDetailLevel.High;
+        if (apparentSize > 0.03f) return MeshDetailLevel.Medium;
+        return MeshDetailLevel.Low;
+    }
+
+    private async System.Threading.Tasks.Task LoadAndApplyPrimMeshAsync(VisualState state, PrimShape shape, byte profileCurve, MeshDetailLevel lod)
+    {
+        if (_assetService == null) return;
+
+        var mesh = await _assetService.GetPrimMeshAsync(shape, lod);
+
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+        {
+            if (!IsInstanceValid(state.MeshInstance)) return;
+            // Drop stale results: the shape may have changed again while we were meshing.
+            if (state.LoadedPrimShape != shape) return;
+
+            if (mesh != null && mesh.Submeshes.Count > 0)
+            {
+                // flipV:true — verified against the real viewer (llvolume.cpp
+                // LLVolumeFace::createSide): SL sets a box side face's V directly from
+                // path_data[t].mTexT with NO flip, but LibreMetaverse's MeshFoundry applies an
+                // extra 1-V (GenerateFacetedMesh) that leaves prim faces vertically inverted —
+                // invisible on tiled/symmetric textures, but upside-down on anything oriented
+                // (a HUD's logo/text). This is the SAME flip mesh assets already use; prims were
+                // wrongly exempted on the assumption MeshFoundry's internal flip cancelled out.
+                AssignSharedMesh(state, KeyForShape(shape, lod), mesh, flipV: true);
+            }
+            else
+            {
+                // Meshing failed (e.g. sculpt or odd shape) — fall back to a primitive solid.
+                // The third and last silent geometry substitution (see [SculptFallback] and
+                // [MeshFallback]): a torus/ring/tube whose parameters the mesher chokes on comes
+                // out as a plain cylinder wearing the prim's scale, which at scenery size is a
+                // large smooth blob and at a glance looks like content, not like a failure.
+                if (_primMeshFallbacksLogged.Add(shape))
+                {
+                    Logger.Warn($"[PrimMeshFallback] profile={profileCurve} path={shape.PathCurve} " +
+                                $"pathScale=({shape.PathScaleX:0.###},{shape.PathScaleY:0.###}) " +
+                                $"cut=({shape.PathBegin:0.###}..{shape.PathEnd:0.###}) " +
+                                $"hollow={shape.ProfileHollow:0.###} revs={shape.PathRevolutions:0.###} " +
+                                $"lod={lod} — prim did not mesh, rendering placeholder " +
+                                $"{(profileCurve == 0 ? "cylinder" : profileCurve == 5 ? "sphere" : "box")}");
+                }
+                ReleaseMeshRef(state);
+                if (profileCurve == 0)
+                {
+                    state.MeshInstance.Mesh = _cylinderMesh;
+                    state.CollisionShape.Shape = new Godot.CylinderShape3D { Height = 1.0f, Radius = 0.5f };
+                }
+                else if (profileCurve == 5)
+                {
+                    state.MeshInstance.Mesh = _sphereMesh;
+                    state.CollisionShape.Shape = new Godot.SphereShape3D { Radius = 0.5f };
+                }
+                else
+                {
+                    state.MeshInstance.Mesh = _boxMesh;
+                    state.CollisionShape.Shape = new Godot.BoxShape3D { Size = new Godot.Vector3(1, 1, 1) };
+                }
+            }
+        }, label: "primmesh.apply");
+    }
+
+    /// <summary>Builds and applies a material per mesh surface from the prim's per-face textures
+    /// (falling back to the object's default texture for faces without their own).</summary>
+    private async System.Threading.Tasks.Task ApplyFaceMaterialsAsync(VisualState state)
+    {
+        if (_assetService == null || _world == null) return;
+        var prim = _world.GetEntity(state.EntityId)?.GetComponent<PrimitiveComponent>();
+        if (prim == null) return;
+
+        // FEAT-PERF-02 Phase 2: one detail/priority decision per object (not per face) -- computed
         // once here from the mesh's already-applied Position/Scale (see UpdateVisual) and the
         // camera, before this object's faces potentially fan out into several concurrent texture
         // requests below. Must stay ahead of the first await -- see ComputeTextureLod's note on
@@ -1036,8 +1384,6 @@ public partial class ObjectRenderer : Node3D
         {
             float maxRot = 0f;
             foreach (var f in prim.Faces) maxRot = Mathf.Max(maxRot, Mathf.Abs(f.Rotation));
-            UpdateTextureAnimRegistration(state.EntityId, prim.TextureAnim);
-
             if (maxRot > 0.01f)
             {
                 // SL region-local position, NOT the Godot global one: the latter carries the
@@ -1095,6 +1441,9 @@ public partial class ObjectRenderer : Node3D
                 if (surf >= state.MeshInstance.Mesh.GetSurfaceCount()) return;
                 state.MeshInstance.MaterialOverride = null; // per-surface overrides take effect
                 state.MeshInstance.SetSurfaceOverrideMaterial(surf, material);
+                // This material carries the face's STATIC placement; if the object is animating,
+                // the next tick has to write its current frame back over it. See TexAnimNeedsReapply.
+                state.TexAnimNeedsReapply = true;
             }, label: "material.surface");
         }
 
@@ -1441,9 +1790,6 @@ public partial class ObjectRenderer : Node3D
         if (!tintIsTranslucent)
         {
             if (alphaMode == Image.AlphaMode.Blend)
-                // This material carries the face's STATIC placement; if the object is animating,
-                // the next tick has to write its current frame back over it. See TexAnimNeedsReapply.
-                state.TexAnimNeedsReapply = true;
             {
                 // Smooth translucent edges (hair, glass, clouds)
                 material.Shader = PrimShaderFamily.Blend;

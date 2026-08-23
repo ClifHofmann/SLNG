@@ -102,7 +102,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.7.53-alpha";
+    public const string AppVersion = "v0.7.68-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -155,6 +155,10 @@ public partial class Boot : Control
         // sticks; the immediate call below just avoids a flash of the wrong title before then.
         // Before anything that logs, so the level is already right for the first line.
         Diagnostics.Initialize();
+
+        // Before the first asset fetch: SLNG.Net/SLNG.Assets log through Console, which does not
+        // reach godot.log on its own. See ConsoleToGodotLog.
+        ConsoleToGodotLog.Install();
 
         DisplayServer.WindowSetTitle($"Puris Viewer {AppVersion}");
         RenderingServer.FramePostDraw += ReassertWindowTitleOnce;
@@ -767,9 +771,22 @@ public partial class Boot : Control
     /// survived, the summary saying which capabilities answered did not.</summary>
     private void LogEnvironment(string message)
     {
+        // Identical repeats are dropped. The environment is re-applied many times per session and
+        // logs the same six-line block every time -- measured at 13,908 of ~16,000 lines in one
+        // capture, i.e. the readout this method exists to preserve was burying everything else in
+        // godot.log, including the failure lines an investigation actually needs.
+        //
+        // Exact-match only, deliberately: a line whose numbers CHANGED (a real sky transition, a
+        // different parcel taking over, a dump of a different size) still prints, because it is no
+        // longer the same string. So this loses repetition, never information. Capped so a message
+        // that varies every time -- a timestamp, say -- cannot grow the set without bound.
+        if (_environmentLinesLogged.Count < 512 && !_environmentLinesLogged.Add(message)) return;
+
         LogMessage(message);
         GD.Print(message);
     }
+
+    private readonly HashSet<string> _environmentLinesLogged = new();
 
     private void WriteEnvironmentDump(string path, string? llsd)
     {
@@ -1079,6 +1096,15 @@ public partial class Boot : Control
             else if (keyEvent.Keycode == Key.F5)
             {
                 ToggleSunGizmo();
+            }
+            else if (keyEvent.Keycode == Key.F6)
+            {
+                // "What is around me, and is it being drawn?" -- the one question the click
+                // diagnostics cannot answer, because clicking needs the object to be rendered and
+                // the objects worth asking about are the ones that are NOT. An object missing from
+                // the render and missing from the log is indistinguishable from an object the sim
+                // never sent, and those need completely different fixes.
+                _objectRenderer?.LogNearbyObjects(32f);
             }
             else if (keyEvent.Keycode == Key.Key1 && keyEvent.CtrlPressed && keyEvent.ShiftPressed)
             {
