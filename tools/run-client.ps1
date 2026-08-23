@@ -1,3 +1,11 @@
+param(
+    # Passes --diag to the client. That switch turns on the whole diagnostic apparatus:
+    # Logger's Debug level (AvatarRenderer's per-mesh rigging lines -- [RiggedMesh],
+    # [JointOverride], [HeadSize]), the stats overlay, the main-thread watchdog and the
+    # per-object asset logging. Off by default so an ordinary session stays quiet and fast.
+    [switch]$Diag
+)
+
 $ErrorActionPreference = 'Stop'
 
 Write-Host "=== SLNG Launcher ===" -ForegroundColor Cyan
@@ -32,4 +40,13 @@ dotnet build (Join-Path $PSScriptRoot "..\app\SLNG.App.csproj")
 $transcriptPath = Join-Path $PSScriptRoot "..\client-output.log"
 Write-Host "[4/4] Starting Godot Client... (output also captured to $transcriptPath)" -ForegroundColor Green
 $ErrorActionPreference = 'Continue'
-godot --path (Join-Path $PSScriptRoot "..\app") *>&1 | Tee-Object -FilePath $transcriptPath
+
+# Godot puts everything after a bare `--` into GetCmdlineUserArgs, which is one of the two places
+# Diagnostics.Initialize looks (see Diagnostics.cs) -- so the flag has to go after the separator,
+# not next to --path.
+$clientArgs = @('--path', (Join-Path $PSScriptRoot "..\app"))
+if ($Diag) {
+    Write-Host "      diagnostics ON (--diag)" -ForegroundColor Yellow
+    $clientArgs += @('--', '--diag')
+}
+godot @clientArgs *>&1 | Tee-Object -FilePath $transcriptPath

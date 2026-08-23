@@ -36,7 +36,12 @@ public static class Diagnostics
         // Info is where the per-object asset logging lives -- texture fetches, sharpen decisions,
         // mesh sites. One session of it ran to 3.4 GB before it was throttled, and even throttled it
         // is thousands of lines nobody reads unless they are chasing something.
-        Logger.CurrentLevel = Enabled ? LogLevel.Info : LogLevel.Warning;
+        // Debug, not Info: AvatarRenderer's 11 Logger.Debug sites -- mesh fetch, joints
+        // resolved, dominant bone, bind-pose extent, orphaned verts -- were unreachable in EVERY
+        // build configuration, because nothing anywhere ever set CurrentLevel below Info. The
+        // avatar rigging diagnostics existed and could not be turned on. They are per-mesh
+        // one-shots, not per-frame, so the volume they add to --diag is bounded by worn meshes.
+        Logger.CurrentLevel = Enabled ? LogLevel.Debug : LogLevel.Warning;
 
         if (Enabled) GD.Print("[Diagnostics] enabled via --diag: perf logging, watchdog and overlay on");
     }
