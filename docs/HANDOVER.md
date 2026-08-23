@@ -148,6 +148,46 @@ This is the part to read first next time something "looks wrong".
 
 ## 5. Still open
 
+### 🔴 URGENT — the avatar falls off prims on every login and teleport
+
+Reported by the user as happening **every time**, and it must not. Not yet fixed; the diagnosis
+below is read off the code and one real log, not from a repro run under a debugger.
+
+**The mechanism.** `AvatarController`'s ground probe raycasts against
+`PhysicsLayers.Objects | PhysicsLayers.Terrain`. When that misses it falls back to the terrain
+heightmap — a fallback written for the *terrain* case, where it is right. It is wrong whenever the
+avatar's real support is a **prim**: object colliders stream in far later than terrain, so for that
+window the fallback answers "the ground is the terrain" and the clamp pulls the avatar down to it.
+
+From `godot2026-08-23T16.20.51.log`, one login, in order:
+
+| line | `[GroundClamp]` |
+|---|---|
+| 17 | `source=none hasGround=False … agentZ=22,24` — no collider at all yet |
+| 30 | `source=terrain-heightmap-fallback groundZ=21,04 … agentZ=22,24` — clamped to terrain |
+| 512 | `source=collider:TerrainPhysics groundZ=21,14` — terrain collider arrives |
+| 2204 | `source=collider:StaticBody(path=…/Obj_d8b9de6a…/StaticBody) groundZ=20,86` — **first object collider**, ~1700 lines later |
+
+The existing comment at the fallback already records that the raycast "reliably misses for up to
+~0.75 s" after a teleport and that trusting a not-yet-streamed terrain cell caused a visible
+free-fall. The same reasoning was never extended to objects, and objects are much slower to arrive
+than terrain.
+
+**Why nobody saw it in the logs: the diagnostic for exactly this cannot fire.**
+`fellOffObject` tests `_lastGroundKind.StartsWith("collider:Obj")`, but `groundSource` is built as
+`$"collider:{colliderNode.Name}(…)"` and the node's *name* is `StaticBody` — the `Obj_…` id is in
+the **path**, not the name. So the string is always `collider:StaticBody(path=…/Obj_…/…)` and the
+prefix test is never true. `grep "FELL THROUGH"` returns **0 across every log**, while object
+colliders are plainly present in the same files. Fix the predicate first; it turns this from a
+report into something measurable.
+
+**Direction, not a decision.** The server tells us where the avatar is at login and after a
+teleport. Until the physics world around that position is actually populated, that position is
+better information than any raycast, and gravity should not act on a guess. Worth checking what
+the real viewer does before choosing between "hold the server Z until a collider is found",
+"suppress the terrain fallback while the object stream is incomplete", or "wait for the objects
+near the spawn point before handing control to the controller".
+
 **From this session:**
 
 - **CI is red on `main` for Linux only, and this is a deliberate deferral — do not "fix" it as a
