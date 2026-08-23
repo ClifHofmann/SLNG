@@ -892,14 +892,17 @@ public partial class AvatarRenderer : Node3D
             foreach (var meshInstance in targets)
             {
                 if (!IsInstanceValid(meshInstance)) continue;
-                var mat = meshInstance.MaterialOverride as StandardMaterial3D;
+                // FEAT-RENDER-01 Phase 3: the system bake runs on the shader family's Avatar
+                // surface, which carries the cull_disabled this path used to set explicitly.
+                var mat = meshInstance.MaterialOverride as ShaderMaterial;
                 if (mat == null)
                 {
-                    mat = new StandardMaterial3D { CullMode = BaseMaterial3D.CullModeEnum.Disabled };
+                    mat = new ShaderMaterial();
                     meshInstance.MaterialOverride = mat;
                 }
-                mat.AlbedoTexture = godotTexture;
-                mat.AlbedoColor = Godot.Colors.White; // Reset placeholder tint!
+                mat.SetShaderParameter(PrimShaderFamily.AlbedoTexture, godotTexture);
+                mat.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
+                mat.SetShaderParameter(PrimShaderFamily.AlbedoColor, Godot.Colors.White); // Reset placeholder tint!
 
                 // SL avatars use baked alpha to hide the system body when wearing mesh bodies/
                 // clothing (alpha-layer wearables painted by the user, composited server-side
@@ -919,11 +922,19 @@ public partial class AvatarRenderer : Node3D
                 // ENTIRE job is to disappear; a dithered discard pattern on something that's
                 // ~90%+ alpha=0 anyway costs nothing visually, so there's no tradeoff here worth
                 // risking reliability for — unlike hair, which is actually meant to be seen.
-                mat.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-                mat.AlphaScissorThreshold = 0.5f;
-                // MSAA 4x is on project-wide (app/project.godot) specifically so this reads as
-                // smooth dithering instead of static.
-                mat.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
+                //
+                // MIGRATION NOTE (Phase 3): what runs here is AlphaScissor at 0.5, and the comment
+                // block above still describes AlphaHash. That disagreement is REAL and deliberately
+                // parked -- 175d308 switched the code and said so in its own message, because
+                // AlphaScissor(0.5) is the state the avatar was last visually confirmed correct in,
+                // while the documented objection (a hard 0.5 cutoff blotches the soft gradients SL's
+                // alpha-layer wearables paint into the bake) still stands unanswered. This migration
+                // carries the CODE across unchanged, not the comment. Settle it with a live A/B, not
+                // by picking whichever of the two reads more convincingly.
+                mat.Shader = PrimShaderFamily.Select(PrimShaderFamily.Kind.Scissor, PrimShaderFamily.Surface.Avatar);
+                mat.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, 0.5f);
+                // alpha_to_coverage is baked into the scissor variant's render_mode. MSAA 4x is on
+                // project-wide (app/project.godot) specifically so this edge resolves smoothly.
             }
         }).CallDeferred();
     }
@@ -1278,70 +1289,67 @@ public partial class AvatarRenderer : Node3D
     /// <summary>Builds a material for one SL face: optional albedo texture modulated by the
     /// face colour tint, with alpha-cutout when the texture has alpha. Texture decode runs off
     /// the main thread; only the GPU upload is marshalled back.</summary>
-    private async System.Threading.Tasks.Task<StandardMaterial3D> BuildFaceMaterialAsync(
-        FaceTexture ft, AvatarVisual? avatarVisual = null, Guid meshId = default, int faceIndex = -1)
+    /// <summary>
+    /// FEAT-RENDER-01 Phase 3: avatar and worn-attachment faces are built on the same shader
+    /// family as world prims, on its TWO-SIDED variants -- these faces ran on
+    /// <c>CullMode.Disabled</c> before and the migration is required to be visually identical, so
+    /// the cull mode comes across unchanged rather than being "corrected" on the way.
+    ///
+    /// Transparency is now a shader swap instead of a property, because <c>render_mode</c> is
+    /// compile-time; see <see cref="PrimShaderFamily"/>. The alpha DECISIONS below are unchanged
+    /// -- every threshold and every branch is the measured behaviour described at
+    /// <see cref="ClassifyAlpha"/>, only their expression moved.
+    /// </summary>
+    private async System.Threading.Tasks.Task<ShaderMaterial> BuildFaceMaterialAsync(
+        FaceTexture ft, AvatarVisual? avatarVisual = null, Guid meshId = default, int faceIndex = -1,
+        PrimShaderFamily.Surface surface = PrimShaderFamily.Surface.Avatar)
     {
         var tint = ft.Color == default
             ? new Color(1, 1, 1, 1)
             : new Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
 
-        // SL face-texture rotation: a StandardMaterial3D's UV transform has scale/offset but no
-        // rotation, so only 0 and ±π (a half-turn) are representable — π is a point-mirror,
-        // i.e. negating both repeats around the face center. Half-turn rotated faces are common
-        // (the POLLO HUD's background renders 180° off without this); other angles (90° etc.)
-        // would need per-face UV baking or a shader — log them so real content tells us when
-        // that investment is due.
-        float effRepeatU = ft.RepeatU, effRepeatV = ft.RepeatV;
-        float wrappedRot = Mathf.Wrap(ft.Rotation, -Mathf.Pi, Mathf.Pi);
-        if (Mathf.Abs(wrappedRot) > Mathf.Pi * 0.75f)
-        {
-            effRepeatU = -effRepeatU;
-            effRepeatV = -effRepeatV;
-        }
-        else if (Mathf.Abs(wrappedRot) > 0.05f)
-        {
-            Logger.Debug($"[FaceTex] unsupported face rotation {ft.Rotation:0.##} rad (tex {ft.TextureId.ToString()[..8]}) — rendered unrotated");
-        }
+        // PrimShaderFamily.Select is the only place that turns a (transparency, surface) pair into
+        // a shader, so the alpha decisions below stay a plain Kind and the caller's surface rides
+        // along untouched.
+        var kind = PrimShaderFamily.Kind.Opaque;
+        float scissorThreshold = 0f;
 
-        var material = new StandardMaterial3D
-        {
-            AlbedoColor = tint,
-            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-            // Anisotropic, for the same reason as ObjectRenderer's world-prim materials (see that
-            // material's TextureFilter comment): isotropic mip selection blurs any strongly
-            // stretched UV region, which worn/attached meshes hit routinely. Matches the real
-            // viewer's TFO_ANISOTROPIC path (llrender.cpp:530-540).
-            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmapsAnisotropic,
-            // Per-face UV repeats/offsets, same as ObjectRenderer's world-prim materials — HUD
-            // buttons in particular are classically ONE texture atlas with per-face repeat/offset
-            // picking out each icon; without this every face shows the whole atlas.
-            Uv1Scale = new Godot.Vector3(effRepeatU, effRepeatV, 1.0f),
-            // SL scales a face's texture around the FACE CENTER (u' = (u-0.5)*repeat + 0.5 + off);
-            // Godot's Uv1 transform scales from the corner — without the 0.5-0.5*repeat term any
-            // repeat != 1 shifts the image off-center (a "scaling issue" on tiled faces). Negative
-            // repeats (SL's mirror, and the half-turn above) also land correctly with this, via
-            // texture wrap.
-            // Minus on V, plus on U: these meshes are built flipV (v = 1-t) and the texture rows
-            // are top-origin too, so v_tex = 1 - t_tex turns the viewer's
-            // t_tex = (t-0.5)*magT + 0.5 + offT (llface.cpp:734-756) into
-            // v_tex = (v-0.5)*magT + 0.5 - offT. The flip negates the offset and leaves the scale
-            // term alone; U, being unflipped, keeps its plus. Same fix as ObjectRenderer's — see
-            // the fuller derivation there.
-            Uv1Offset = new Godot.Vector3(
-                0.5f - 0.5f * effRepeatU + ft.OffsetU,
-                0.5f - 0.5f * effRepeatV - ft.OffsetV,
-                0.0f),
-        };
+        var material = new ShaderMaterial { Shader = PrimShaderFamily.Select(kind, surface) };
+        material.SetShaderParameter(PrimShaderFamily.AlbedoColor, tint);
+
+        // Per-face UV repeats/offsets, same convention as ObjectRenderer's world-prim materials --
+        // HUD buttons in particular are classically ONE texture atlas with per-face repeat/offset
+        // picking out each icon; without this every face shows the whole atlas.
+        material.SetShaderParameter(PrimShaderFamily.UvScale, new Godot.Vector2(ft.RepeatU, ft.RepeatV));
+
+        // Phase 3 acceptance: real per-face rotation on avatar faces. This used to be a ±π
+        // approximation -- a half-turn was faked by negating both repeats (a point-mirror, which
+        // it genuinely is) and every other angle was logged as unsupported and drawn unrotated,
+        // because a StandardMaterial3D's UV transform has scale and offset but no rotation. The
+        // shader rotates in the vertex stage, so the raw angle now goes through untouched; see
+        // prim_common.gdshaderinc for why it needs no sign correction despite the flipV meshes.
+        material.SetShaderParameter(PrimShaderFamily.UvRotation, ft.Rotation);
+
+        // Centered like SL (u' = (u-0.5)*repeat + 0.5 + off), with the 0.5 term folded in so the
+        // shader stays a plain multiply-add. NOTE THE MINUS ON V: these meshes are built flipV
+        // (v = 1-t) and the texture rows are top-origin too, so v_tex = 1 - t_tex turns the
+        // viewer's t_tex = (t-0.5)*magT + 0.5 + offT (llface.cpp:734-756) into
+        // v_tex = (v-0.5)*magT + 0.5 - offT -- the flip negates the offset and leaves the scale
+        // term alone. Same asymmetry as ObjectRenderer's, see the fuller derivation there.
+        material.SetShaderParameter(PrimShaderFamily.UvOffset, new Godot.Vector2(
+            0.5f - 0.5f * ft.RepeatU + ft.OffsetU,
+            0.5f - 0.5f * ft.RepeatV - ft.OffsetV));
 
         // SL's per-face colour alpha (LLTextureEntry::getColor()) is a genuine transparency/blend
         // factor, independent of whatever alpha channel the texture image itself carries — many
         // worn items set a face's tint alpha to 0 specifically to hide it while keeping the object
-        // structurally attached/rigged. Godot ignores AlbedoColor.A entirely while Transparency
-        // stays Disabled (its default), so such a face rendered fully opaque without this — a
-        // "makeup"/decoration mesh meant to be invisible showed up as an extra visible patch.
+        // structurally attached/rigged. Under StandardMaterial3D this needed Transparency set
+        // explicitly or AlbedoColor.A was ignored outright (a "makeup"/decoration mesh meant to be
+        // invisible showed up as an extra visible patch); here it needs a variant that writes
+        // ALPHA at all, which is the same requirement wearing different clothes.
         bool tintTranslucent = tint.A < 1f;
         if (tintTranslucent)
-            material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+            kind = PrimShaderFamily.Kind.Blend;
 
         // Authoritative alpha signal: when this face carries a real glTF PBR material
         // (RenderMaterialID != null, e.g. modern PBR-authored clothing), its own declared
@@ -1362,15 +1370,17 @@ public partial class AvatarRenderer : Node3D
                 switch (pbrMat.AlphaMode)
                 {
                     case SLNG.Assets.PbrAlphaMode.Blend:
-                        material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                        kind = PrimShaderFamily.Kind.Blend;
                         break;
                     case SLNG.Assets.PbrAlphaMode.Mask:
-                        material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-                        material.AlphaScissorThreshold = pbrMat.AlphaCutoff;
-                        material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
+                        // alpha-to-coverage is baked into the scissor variant's render_mode
+                        // rather than set per material -- it was on every scissor face here and
+                        // on no other, which is exactly the condition for folding it in.
+                        kind = PrimShaderFamily.Kind.Scissor;
+                        scissorThreshold = pbrMat.AlphaCutoff;
                         break;
                     default:
-                        material.Transparency = BaseMaterial3D.TransparencyEnum.Disabled;
+                        kind = PrimShaderFamily.Kind.Opaque;
                         break;
                 }
             }
@@ -1402,7 +1412,7 @@ public partial class AvatarRenderer : Node3D
             // arrived) versus a face that genuinely carries no texture id at all.
             Logger.Debug($"[FaceTex] mesh {meshId} face {faceIndex} has no texture -> renders flat AlbedoColor" +
                 (wasBom ? $" (Bakes-on-Mesh channel {bomIndex} not resolved yet)" : " (face carries no texture id)"));
-            return material;
+            return FinishFaceMaterial(material, kind, scissorThreshold, surface);
         }
 
         // initialRefCount: 1 -- see LoadAndApplyTextureAsync's identical call for why (a
@@ -1415,13 +1425,31 @@ public partial class AvatarRenderer : Node3D
             // is visually indistinguishable from a face-index mapping bug — that ambiguity cost a
             // whole diagnostic round on the HUD-texture investigation. One line per failed id.
             GD.PrintErr($"[FaceTex] texture {texId} fetch/decode returned null — face renders untextured");
-            return material;
+            return FinishFaceMaterial(material, kind, scissorThreshold, surface);
         }
 
-        material.AlbedoTexture = built;
-        if (!hasExplicitAlpha)
-            ApplyAlphaCutout(material, built);
+        // The sampler and its flag are a PAIR. Setting albedo_texture without has_albedo_texture
+        // is not an error -- the shader keeps sampling its default white texture and the face
+        // renders as if the texture never arrived.
+        material.SetShaderParameter(PrimShaderFamily.AlbedoTexture, built);
+        material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
 
+        if (!hasExplicitAlpha)
+            (kind, scissorThreshold) = ClassifyAlpha(kind, built);
+
+        return FinishFaceMaterial(material, kind, scissorThreshold, surface);
+    }
+
+    /// <summary>Applies the variant choice. Split out because the four exit paths of
+    /// <see cref="BuildFaceMaterialAsync"/> must all go through it -- an early return that skipped
+    /// it would leave a translucent face on the opaque shader, which renders it fully solid with
+    /// no error anywhere.</summary>
+    private static ShaderMaterial FinishFaceMaterial(ShaderMaterial material, PrimShaderFamily.Kind kind,
+        float scissorThreshold, PrimShaderFamily.Surface surface)
+    {
+        material.Shader = PrimShaderFamily.Select(kind, surface);
+        if (kind == PrimShaderFamily.Kind.Scissor)
+            material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, scissorThreshold);
         return material;
     }
 
@@ -1500,18 +1528,25 @@ public partial class AvatarRenderer : Node3D
     /// ordinary opaque-bodied clothing and skin sit far below half.</summary>
     private const float MostlyClearThreshold = 0.5f;
 
-    private static void ApplyAlphaCutout(StandardMaterial3D material, ImageTexture tex)
+    /// <summary>
+    /// Returns the variant this texture needs, and the scissor threshold that goes with it.
+    ///
+    /// FEAT-RENDER-01 Phase 3 turned this from a mutator on a StandardMaterial3D into a pure
+    /// classifier, because transparency is now a shader swap. Every threshold, every branch and
+    /// every measured constant above is unchanged -- this is the same decision, returned instead
+    /// of assigned. alpha-to-coverage is no longer set here because it is baked into the scissor
+    /// variant's render_mode, which is where it always effectively lived: it was set on every
+    /// scissor face and on no other.
+    /// </summary>
+    private static (PrimShaderFamily.Kind Kind, float Threshold) ClassifyAlpha(PrimShaderFamily.Kind current, ImageTexture tex)
     {
-        if (material.Transparency == BaseMaterial3D.TransparencyEnum.Alpha) return;
+        // A face already routed to blending -- by a translucent per-face tint -- is not
+        // reconsidered from pixel content. Same guard as the old `Transparency == Alpha` return.
+        if (current == PrimShaderFamily.Kind.Blend) return (current, 0f);
 
         var img = tex.GetImage();
         if (img == null)
-        {
-            material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-            material.AlphaScissorThreshold = HardCutoutScissorThreshold;
-            material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
-            return;
-        }
+            return (PrimShaderFamily.Kind.Scissor, HardCutoutScissorThreshold);
 
         var data = img.GetData();
         int w = img.GetWidth(), h = img.GetHeight();
@@ -1530,10 +1565,7 @@ public partial class AvatarRenderer : Node3D
         float fracClear = pixelCount > 0 ? (float)clearCount / pixelCount : 0f;
 
         if (min == 255)
-        {
-            material.Transparency = BaseMaterial3D.TransparencyEnum.Disabled;
-            return;
-        }
+            return (PrimShaderFamily.Kind.Opaque, 0f);
 
         // fracMid alone is not enough to recognise content that NEEDS blending. Hair measures
         // only ~1.2% mid-alpha (97% fully clear, 2% fully opaque) and so reads as "hard cutout" —
@@ -1547,14 +1579,9 @@ public partial class AvatarRenderer : Node3D
         // latter — which is also where the historical cross-layer occlusion regression came from,
         // so the risky path stays limited to assets that visibly need it.
         if (fracMid > GradedAlphaThreshold || fracClear > MostlyClearThreshold)
-        {
-            material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-            return;
-        }
+            return (PrimShaderFamily.Kind.Blend, 0f);
 
-        material.Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor;
-        material.AlphaScissorThreshold = HardCutoutScissorThreshold;
-        material.AlphaAntialiasingMode = BaseMaterial3D.AlphaAntiAliasing.AlphaToCoverage;
+        return (PrimShaderFamily.Kind.Scissor, HardCutoutScissorThreshold);
     }
 
     /// <summary>Registers a worn mesh's Bakes-on-Mesh usage on its avatar and hides the system
@@ -1879,8 +1906,10 @@ public partial class AvatarRenderer : Node3D
             FaceTexture ft = (faces != null && faceIndex >= 0 && faceIndex < faces.Length)
                 ? faces[faceIndex] : defaultFace;
 
-            var material = await BuildFaceMaterialAsync(ft).ConfigureAwait(false);
-            material.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+            // Surface.Hud carries what `ShadingMode = Unshaded` used to say here: unshaded is a
+            // render_mode, so it is part of which variant gets compiled rather than a property.
+            var material = await BuildFaceMaterialAsync(ft, surface: PrimShaderFamily.Surface.Hud)
+                .ConfigureAwait(false);
             int s = surf;
             Godot.Callable.From(() =>
             {
@@ -2465,15 +2494,22 @@ public partial class AvatarRenderer : Node3D
             ? AvatarMorphService.Apply(part, weights)
             : (part.Positions, part.Normals);
 
+        // FEAT-RENDER-01 Phase 3: a system body part starts on the family's opaque Avatar
+        // variant, which is also what the bake path expects to find -- it casts MaterialOverride
+        // to ShaderMaterial and updates it in place, so leaving a StandardMaterial3D here would
+        // silently make every bake allocate a replacement instead. The placeholder tint stays: it
+        // is what the body shows in the window between mesh build and bake arrival.
+        var placeholder = new ShaderMaterial
+        {
+            Shader = PrimShaderFamily.Select(PrimShaderFamily.Kind.Opaque, PrimShaderFamily.Surface.Avatar)
+        };
+        placeholder.SetShaderParameter(PrimShaderFamily.AlbedoColor, baseColor);
+
         return new MeshInstance3D
         {
             Mesh             = BuildPartMesh(part, positions, normals, slots),
             Skin             = skin,
-            MaterialOverride = new StandardMaterial3D
-            {
-                AlbedoColor = baseColor,
-                CullMode    = BaseMaterial3D.CullModeEnum.Disabled
-            }
+            MaterialOverride = placeholder
         };
     }
 
