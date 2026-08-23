@@ -57,6 +57,7 @@ public static class SelfTest
         var results = new List<Check>();
         results.AddRange(CheckShaders());
         results.Add(CheckShaderIncludes());
+        results.AddRange(CheckShaderVariants());
         results.AddRange(CheckLocales());
         results.Add(CheckAvatarSkeleton());
 
@@ -129,6 +130,70 @@ public static class SelfTest
             "shader includes",
             paths.Count > 0 && empty.Count == 0,
             empty.Count == 0 ? $"{paths.Count} readable" : $"empty/unreadable: {string.Join(", ", empty)}");
+    }
+
+    /// <summary>
+    /// Every surface variant exposes exactly the uniforms its base shader does.
+    ///
+    /// The family compiles one shader per (transparency, surface) pair because Godot makes cull
+    /// mode and shading mode compile-time (FEAT-RENDER-01 Phase 3, see PrimShaderFamily.Surface).
+    /// The <c>_avatar</c> and <c>_hud</c> files are therefore hand-kept copies differing from their
+    /// base in one render_mode line, which makes them a standing drift risk: add a uniform to
+    /// <c>prim_scissor.gdshader</c>, forget its two siblings, and avatar or HUD faces silently stop
+    /// receiving whatever it carries -- the exact failure the family's own docs warn about for
+    /// texture flags, with no error anywhere.
+    ///
+    /// Comparing the uniform SETS rather than the counts, so a rename shows up as the two names
+    /// that differ instead of "6 vs 6".
+    /// </summary>
+    private static IEnumerable<Check> CheckShaderVariants()
+    {
+        string[] suffixes = { "_avatar.gdshader", "_hud.gdshader" };
+
+        foreach (string path in EnumerateResources("res://materials", ".gdshader").OrderBy(p => p))
+        {
+            string suffix = suffixes.FirstOrDefault(sfx => path.EndsWith(sfx, StringComparison.Ordinal));
+            if (suffix == null) continue;
+
+            string basePath = path.Substring(0, path.Length - suffix.Length) + ".gdshader";
+            string name = ShortName(path);
+
+            var variant = ResourceLoader.Load<Shader>(path);
+            var original = ResourceLoader.Load<Shader>(basePath);
+            if (variant == null || original == null)
+            {
+                yield return new Check($"variant {name}", false, $"missing base shader {ShortName(basePath)}");
+                continue;
+            }
+
+            var variantNames = UniformNames(variant);
+            var baseNames = UniformNames(original);
+            var onlyVariant = variantNames.Except(baseNames).OrderBy(s => s).ToList();
+            var onlyBase = baseNames.Except(variantNames).OrderBy(s => s).ToList();
+
+            if (onlyVariant.Count == 0 && onlyBase.Count == 0)
+            {
+                yield return new Check($"variant {name}", true, $"{variantNames.Count} uniforms match {ShortName(basePath)}");
+            }
+            else
+            {
+                var parts = new List<string>();
+                if (onlyBase.Count > 0) parts.Add("missing " + string.Join(", ", onlyBase));
+                if (onlyVariant.Count > 0) parts.Add("extra " + string.Join(", ", onlyVariant));
+                yield return new Check($"variant {name}", false, string.Join("; ", parts));
+            }
+        }
+    }
+
+    private static HashSet<string> UniformNames(Shader shader)
+    {
+        var names = new HashSet<string>();
+        foreach (var entry in shader.GetShaderUniformList())
+        {
+            var dict = entry.AsGodotDictionary();
+            if (dict.TryGetValue("name", out var value)) names.Add(value.AsString());
+        }
+        return names;
     }
 
     /// <summary>

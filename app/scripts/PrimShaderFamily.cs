@@ -5,16 +5,27 @@ using Godot;
 namespace SLNG.App;
 
 /// <summary>
-/// The three compiled variants of SLNG's world-surface shader (FEAT-RENDER-01, ADR 0002) plus
-/// the uniform names their callers set.
+/// The compiled variants of SLNG's world-surface shader (FEAT-RENDER-01, ADR 0002) plus the
+/// uniform names their callers set.
 ///
-/// There are three shaders rather than one with a "transparency" uniform because
-/// <c>render_mode</c> is COMPILE-TIME in Godot: whether a face writes ALPHA, and whether it
-/// alpha-scissors, decides which pass the engine puts it in and cannot be branched at runtime.
-/// StandardMaterial3D solves the same problem the same way — it silently compiles a variant per
-/// feature combination. Choosing a variant here therefore means assigning
-/// <see cref="ShaderMaterial.Shader"/>, which is exactly what the old code expressed as
-/// <c>material.Transparency = ...</c>.
+/// There are separate shaders rather than one with uniforms because <c>render_mode</c> is
+/// COMPILE-TIME in Godot. Three things this family varies are all render_modes, so all three are
+/// variant axes and none can be a parameter:
+///
+///   * whether a face writes ALPHA and whether it alpha-scissors (<see cref="Kind"/>) — it
+///     decides which pass the engine puts the face in;
+///   * whether it back-face culls;
+///   * whether it is shaded at all.
+///
+/// The last two are not exposed as booleans. They are folded into <see cref="Surface"/>, named
+/// after the three real call sites, so the variant set stays closed at 3 × 3 = 9 instead of
+/// growing with every render_mode someone needs next. StandardMaterial3D solves the same problem
+/// the same way — it silently compiles a variant per feature combination.
+///
+/// Choosing a variant therefore means assigning <see cref="ShaderMaterial.Shader"/>, which is
+/// exactly what the old code expressed as <c>material.Transparency = ...</c>. Use
+/// <see cref="Select"/>; the bare <see cref="Opaque"/>/<see cref="Scissor"/>/<see cref="Blend"/>
+/// properties are the <see cref="Surface.WorldPrim"/> shorthand and mean the same thing.
 ///
 /// The uniform names are cached as <see cref="StringName"/>s: these are set per face on
 /// potentially thousands of prims, and a raw string would allocate and re-hash a StringName on
@@ -31,6 +42,14 @@ public static class PrimShaderFamily
     private const string ScissorPath = "res://materials/prim/prim_scissor.gdshader";
     private const string BlendPath = "res://materials/prim/prim_blend.gdshader";
 
+    private const string OpaqueAvatarPath = "res://materials/prim/prim_opaque_avatar.gdshader";
+    private const string ScissorAvatarPath = "res://materials/prim/prim_scissor_avatar.gdshader";
+    private const string BlendAvatarPath = "res://materials/prim/prim_blend_avatar.gdshader";
+
+    private const string OpaqueHudPath = "res://materials/prim/prim_opaque_hud.gdshader";
+    private const string ScissorHudPath = "res://materials/prim/prim_scissor_hud.gdshader";
+    private const string BlendHudPath = "res://materials/prim/prim_blend_hud.gdshader";
+
     // Materials are built on worker threads (see ObjectRenderer.BuildFaceMaterialAsync), so the
     // first touch of any of these could race. ExecutionAndPublication guarantees exactly one
     // load. Preload() additionally pulls them in from the main thread during Initialize so the
@@ -39,6 +58,14 @@ public static class PrimShaderFamily
     private static readonly Lazy<Shader> _opaque = MakeLazy(OpaquePath);
     private static readonly Lazy<Shader> _scissor = MakeLazy(ScissorPath);
     private static readonly Lazy<Shader> _blend = MakeLazy(BlendPath);
+
+    private static readonly Lazy<Shader> _opaqueAvatar = MakeLazy(OpaqueAvatarPath);
+    private static readonly Lazy<Shader> _scissorAvatar = MakeLazy(ScissorAvatarPath);
+    private static readonly Lazy<Shader> _blendAvatar = MakeLazy(BlendAvatarPath);
+
+    private static readonly Lazy<Shader> _opaqueHud = MakeLazy(OpaqueHudPath);
+    private static readonly Lazy<Shader> _scissorHud = MakeLazy(ScissorHudPath);
+    private static readonly Lazy<Shader> _blendHud = MakeLazy(BlendHudPath);
 
     private static Lazy<Shader> MakeLazy(string path) =>
         new(() => GD.Load<Shader>(path), LazyThreadSafetyMode.ExecutionAndPublication);
@@ -56,12 +83,80 @@ public static class PrimShaderFamily
     /// <c>TransparencyEnum.Alpha</c>.</summary>
     public static Shader Blend => _blend.Value;
 
-    /// <summary>Loads all three from the main thread. Call once during renderer setup.</summary>
+    /// <summary>The transparency treatment of a face, i.e. which compile-time variant it needs.
+    /// Named after the <c>StandardMaterial3D.TransparencyEnum</c> values it replaces so the
+    /// migration reads one-to-one.</summary>
+    public enum Kind
+    {
+        /// <summary>Opaque pass, never writes ALPHA.</summary>
+        Opaque,
+        /// <summary>Binary cutout; stays in the opaque pass via ALPHA_SCISSOR_THRESHOLD.</summary>
+        Scissor,
+        /// <summary>True alpha blending.</summary>
+        Blend,
+    }
+
+    /// <summary>
+    /// Which surface a face belongs to. This is the SECOND compile-time axis, and it is deliberately
+    /// named after the three real call sites rather than exposed as raw <c>render_mode</c> flags
+    /// (cull, shading): Godot forces both to be compile-time, and enumerating the combinations that
+    /// actually exist keeps the variant set closed instead of growing a shader per boolean pair.
+    /// </summary>
+    public enum Surface
+    {
+        /// <summary>World prims. <c>cull_back</c>, shaded -- the viewer's global default
+        /// (llrender.cpp:863). Double-sided prims are what made solid objects look like glassy
+        /// shells, so nothing else may be routed here by accident.</summary>
+        WorldPrim,
+
+        /// <summary>Avatar faces and worn mesh attachments. <c>cull_disabled</c>, shaded -- these
+        /// ran on <c>CullMode.Disabled</c> under StandardMaterial3D and Phase 3 is required to be
+        /// visually identical, so the cull mode came across unchanged rather than being
+        /// "corrected" during the migration.</summary>
+        Avatar,
+
+        /// <summary>HUD attachments. <c>cull_disabled</c> AND <c>unshaded</c> -- the HUD
+        /// SubViewport has its own World3D with no lights in it, so a shaded material renders
+        /// black. Being unshaded also keeps HUDs out of the Phase 5 atmospherics seam by
+        /// construction: fogging an overlay by its distance from the camera is meaningless.</summary>
+        Hud,
+    }
+
+    /// <summary>Picks the compiled variant for a transparency treatment on a given surface.</summary>
+    public static Shader Select(Kind kind, Surface surface) => surface switch
+    {
+        Surface.Avatar => kind switch
+        {
+            Kind.Scissor => _scissorAvatar.Value,
+            Kind.Blend => _blendAvatar.Value,
+            _ => _opaqueAvatar.Value,
+        },
+        Surface.Hud => kind switch
+        {
+            Kind.Scissor => _scissorHud.Value,
+            Kind.Blend => _blendHud.Value,
+            _ => _opaqueHud.Value,
+        },
+        _ => kind switch
+        {
+            Kind.Scissor => _scissor.Value,
+            Kind.Blend => _blend.Value,
+            _ => _opaque.Value,
+        },
+    };
+
+    /// <summary>Loads every variant from the main thread. Call once during renderer setup.</summary>
     public static void Preload()
     {
         _ = Opaque;
         _ = Scissor;
         _ = Blend;
+        _ = _opaqueAvatar.Value;
+        _ = _scissorAvatar.Value;
+        _ = _blendAvatar.Value;
+        _ = _opaqueHud.Value;
+        _ = _scissorHud.Value;
+        _ = _blendHud.Value;
     }
 
     // --- Uniform names (see app/materials/prim/prim_common.gdshaderinc) ---------------------
