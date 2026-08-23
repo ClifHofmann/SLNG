@@ -1661,6 +1661,39 @@ public partial class ObjectRenderer : Node3D
                         material.SetShaderParameter(PrimShaderFamily.HasNormalUv, true);
                     }).CallDeferred();
                 }
+
+                if (lm.SpecularMap != Guid.Empty)
+                {
+                    used.Add(lm.SpecularMap);
+
+                    var sScale = new Godot.Vector2(lm.SpecularRepeat.X, lm.SpecularRepeat.Y);
+                    var sOffset = new Godot.Vector2(
+                        0.5f - 0.5f * sScale.X + lm.SpecularOffset.X,
+                        0.5f - 0.5f * sScale.Y - lm.SpecularOffset.Y);
+                    // SL transmits both as bytes; the shader wants them normalised, and the
+                    // viewer's own defaults are SpecExp 0.2*255 and EnvIntensity 0.
+                    float glossiness = lm.SpecularExponent / 255f;
+                    float environment = lm.EnvironmentIntensity / 255f;
+                    var tint = new Godot.Vector3(lm.SpecularColor.X, lm.SpecularColor.Y, lm.SpecularColor.Z);
+
+                    var specTex = await GetOrCreateGpuTextureAsync(lm.SpecularMap, screenPixelArea, priority);
+                    Godot.Callable.From(() =>
+                    {
+                        if (!IsInstanceValid(specTex))
+                        {
+                            GD.PrintErr($"[LegacyMaterial] specular map {lm.SpecularMap} fetch/decode returned null");
+                            return;
+                        }
+                        material.SetShaderParameter(PrimShaderFamily.SpecularTexture, specTex);
+                        material.SetShaderParameter(PrimShaderFamily.HasSpecularTexture, true);
+                        material.SetShaderParameter(PrimShaderFamily.SpecularTint, tint);
+                        material.SetShaderParameter(PrimShaderFamily.SpecularGlossiness, glossiness);
+                        material.SetShaderParameter(PrimShaderFamily.SpecularEnvironment, environment);
+                        material.SetShaderParameter(PrimShaderFamily.SpecularUvScale, sScale);
+                        material.SetShaderParameter(PrimShaderFamily.SpecularUvOffset, sOffset);
+                        material.SetShaderParameter(PrimShaderFamily.SpecularUvRotation, lm.SpecularRotation);
+                    }).CallDeferred();
+                }
             }
         }
 

@@ -68,6 +68,30 @@ uniform bool has_normal_uv = false;
 
 varying vec2 v_normal_uv;
 
+// A legacy material's SPECULAR map, and the two scalars that go with it. The viewer's model
+// (materialF.glsl:242-307):
+//
+//     spec       = texture(specularMap) * specular_color.rgb   // per-texel reflectivity/tint
+//     glossiness = specular_color.a                            // SpecExp, ONE scalar per material
+//     env        = env_intensity * spec.a                      // reflection strength
+//
+// Godot's metallic-roughness model has no per-texel specular COLOUR, so this is the one place in
+// FEAT-RENDER-04 that is an approximation rather than a port, and it is deliberately a
+// conservative one: the map's luminance drives how polished the surface is, and the material's
+// glossiness sets how polished "fully lit" means. A greyscale spec map -- which is what almost
+// all SL content ships -- is reproduced faithfully by that; a coloured one loses its tint.
+uniform sampler2D specular_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform bool has_specular_texture = false;
+uniform vec3 specular_tint = vec3(1.0);
+uniform float specular_glossiness = 0.2;   // SpecExp/255; the viewer's default is 0.2*255
+uniform float specular_environment = 0.0;  // EnvIntensity/255
+
+uniform vec2 specular_uv_scale = vec2(1.0);
+uniform vec2 specular_uv_offset = vec2(0.0);
+uniform float specular_uv_rotation = 0.0;
+
+varying vec2 v_specular_uv;
+
 // --- TexGen -------------------------------------------------------------------------------
 // SL's per-face texture GENERATION mode, which decides where the base UV comes from BEFORE the
 // transform above runs. 0 = TEX_GEN_DEFAULT (the mesh's own UVs), 1 = TEX_GEN_PLANAR. The wire
@@ -169,6 +193,15 @@ vec2 slng_normal_uv(vec2 uv, vec3 vertex, vec3 normal) {
     return slng_place_uv(uv, normal_uv_scale, normal_uv_offset, normal_uv_rotation);
 }
 
+// Same as slng_normal_uv, for the specular map -- SL gives it its own repeat/offset/rotation
+// too, and they are not required to match the normal map's.
+vec2 slng_specular_uv(vec2 uv, vec3 vertex, vec3 normal) {
+    if (uv_texgen == 1) {
+        uv = slng_planar_uv(vertex, normal);
+    }
+    return slng_place_uv(uv, specular_uv_scale, specular_uv_offset, specular_uv_rotation);
+}
+
 vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
     // TexGen chooses the base coordinate; the transform below is identical either way. The
     // viewer has the same shape: getGeometryVolume computes planar tc and then calls the very
@@ -203,6 +236,24 @@ float slng_shade(vec2 uv, vec3 view_position,
 
     out_metallic = metallic_factor;
     out_roughness = roughness_factor;
+
+    if (has_specular_texture) {
+        vec3 spec = texture(specular_texture, v_specular_uv).rgb * specular_tint;
+
+        // Luminance, because Godot has nowhere to put the colour. Rec. 709, the same weights the
+        // viewer's own srgb helpers use.
+        float reflectivity = dot(spec, vec3(0.2126, 0.7152, 0.0722));
+
+        // A bright spec texel is a polished spot. Roughness runs the other way from glossiness,
+        // and the material's glossiness caps how polished the brightest texel can be.
+        out_roughness = clamp(1.0 - specular_glossiness * reflectivity, 0.0, 1.0);
+
+        // EnvIntensity is SL's "how mirror-like is this" control. Godot expresses that through
+        // metalness reflecting the environment, so it is folded in here rather than dropped --
+        // scaled by the same reflectivity so it only applies where the map says the surface is
+        // actually shiny.
+        out_metallic = clamp(metallic_factor + specular_environment * reflectivity, 0.0, 1.0);
+    }
 
     // glTF ORM packing: occlusion in R, roughness in G, metallic in B.
     if (has_orm_texture) {

@@ -91,6 +91,19 @@ public static class PrimShaderFamily
     public static readonly StringName NormalUvRotation = "normal_uv_rotation";
     public static readonly StringName HasNormalUv = "has_normal_uv";
 
+    /// <summary>A legacy material's specular map and the two scalars that go with it. Godot has
+    /// no per-texel specular colour, so the map drives roughness by luminance and
+    /// <see cref="SpecularEnvironment"/> folds SL's EnvIntensity into metalness -- see the shader
+    /// for why that is an approximation and which part of it is faithful.</summary>
+    public static readonly StringName SpecularTexture = "specular_texture";
+    public static readonly StringName HasSpecularTexture = "has_specular_texture";
+    public static readonly StringName SpecularTint = "specular_tint";
+    public static readonly StringName SpecularGlossiness = "specular_glossiness";
+    public static readonly StringName SpecularEnvironment = "specular_environment";
+    public static readonly StringName SpecularUvScale = "specular_uv_scale";
+    public static readonly StringName SpecularUvOffset = "specular_uv_offset";
+    public static readonly StringName SpecularUvRotation = "specular_uv_rotation";
+
     public static readonly StringName OrmTexture = "orm_texture";
     public static readonly StringName HasOrmTexture = "has_orm_texture";
 

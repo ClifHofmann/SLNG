@@ -104,13 +104,39 @@ family), and `SpecExp`/`EnvIntensity` have defined roles there —
 
 ## Sub-tasks / Progress
 
-- [ ] **Phase 1 — wire path.** Read `MaterialID` per face, carry it through
+- [x] **Phase 1 — wire path.** Read `MaterialID` per face, carry it through
       `FaceTexture` / `PrimitiveComponent` / `ObjectUpdateEvent`. No visual change.
-- [ ] **Phase 2 — capability fetch.** Neutral `LegacyMaterialData`, boundary
+- [x] **Phase 2 — capability fetch.** Neutral `LegacyMaterialData`, boundary
       conversion in `GridSession`, batched + cached resolve in `AssetService`. No
       visual change; a log line proves materials resolve.
-- [ ] **Phase 3 — normal maps.** Bind the normal map with its own placement.
-- [ ] **Phase 4 — specular.** Map `SpecMap`/`SpecColor`/`SpecExp`/`EnvIntensity` onto
+- [x] **Phase 3 — normal maps.** Bind the normal map with its own placement.
+- [x] **Phase 4 — specular.** Map `SpecMap`/`SpecColor`/`SpecExp`/`EnvIntensity` onto
       the shader family, ported from the viewer's material shaders.
 - [ ] **Phase 5 — alpha modes.** `DiffuseAlphaMode` and `AlphaMaskCutoff`, which
       currently come from `DetectAlpha()` guesswork; the material states them outright.
+
+## Found along the way (not in the original plan)
+
+- **Mesh tangents did not exist.** `SurfaceTool.GenerateTangents()` had been disabled with a
+  comment about a Vulkan NaN crash on degenerate triangles, so Godot had no tangent basis and
+  could not apply ANY normal map -- including the ones the glTF PBR path already bound.
+  `SLNG.Assets.MeshTangents` computes them with finite output as its defining property.
+- **Sculpts were sampled on the wrong grid.** PrimMesher halves both map dimensions together;
+  the viewer spends its vertex budget in the map's actual proportion. On the reef rock's 512x16
+  map that was 645 vertices against the viewer's 1230 -- half the resolution along the axis the
+  strata run along, which is why a reference cube rested on the surface here and sank into it in
+  Firestorm. `SlSculptResolution` ports `sculpt_calc_mesh_resolution`; the extents now match the
+  viewer to the last decimal. Square maps were never affected, and the existing parity test could
+  not see it because it compares the surface with a 5% Hausdorff tolerance.
+- **Two dead, misleading sculpt samplers** in `SculptMesh` (one box-filtering the map, one
+  dividing by 256 instead of 255) were deleted; both read like the live path and neither was.
+
+## Phase 4's approximation, stated plainly
+
+Godot's metallic-roughness model has no per-texel specular COLOUR, so the viewer's
+`spec = specularMap.rgb * specular_color.rgb` cannot be ported exactly. What is implemented:
+the map's Rec. 709 luminance drives how polished the surface is, `SpecExp/255` caps how polished
+the brightest texel can be, and `EnvIntensity/255` folds into metalness scaled by the same
+luminance. A greyscale specular map -- what almost all SL content ships -- is reproduced
+faithfully; a coloured one loses its tint. This is the part of the feature most likely to need
+adjusting after an A/B, and it is deliberately conservative rather than tuned by eye.
