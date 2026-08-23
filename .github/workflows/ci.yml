@@ -57,6 +57,19 @@ jobs:
           version: 4.7.0
           use-dotnet: true
 
+      # MUST come before the C# build, and the order is not cosmetic. A fresh checkout has no
+      # app/.godot import cache, and without it Godot cannot load a single resource -- including
+      # Boot.tscn's script, which fails with "Cannot instantiate C# script". _Ready then never
+      # runs, so --selftest never runs either, and the process sits in an empty scene FOREVER
+      # rather than failing: the first CI run of this job had to be cancelled after 35 minutes
+      # (reproduced locally by moving app/.godot aside).
+      #
+      # `--import` regenerates .godot from scratch, which deletes the C# assembly Godot expects
+      # inside it. So importing after `dotnet build` would undo the build -- verified, that is
+      # exactly the state where resources load and the script still cannot be instantiated.
+      - name: Import Godot project
+        run: godot --headless --path app --import
+
       - name: Build app
         run: dotnet build app/SLNG.App.csproj -c Release
 
@@ -64,5 +77,19 @@ jobs:
       # on the first thing that does not come up. This is the check that would have caught the
       # black sky dome of v0.7.36-alpha; `godot --headless --editor --quit` does not compile
       # shaders and reports success on a shader that cannot compile.
+      #
+      # timeout-minutes AND the `timeout` command: the step cap is the backstop, the inner one
+      # gives a readable failure instead of a cancelled job. Anything that stops --selftest from
+      # reaching its own exit path hangs silently, which is precisely how this job burned half an
+      # hour the first time, so a hang must fail fast and say so.
       - name: Self-test
-        run: godot --headless --path app -- --selftest
+        timeout-minutes: 10
+        run: |
+          # `|| status=$?` rather than a bare call: GitHub runs `shell: bash` with -e, so a
+          # non-zero exit would abort the step before the message below could be printed.
+          status=0
+          timeout 300 godot --headless --path app -- --selftest || status=$?
+          if [ $status -eq 124 ]; then
+            echo "::error::--selftest did not exit within 300s. It never reached SelfTest.Run -- check for resource/script load errors above."
+          fi
+          exit $status
