@@ -181,12 +181,41 @@ prefix test is never true. `grep "FELL THROUGH"` returns **0 across every log**,
 colliders are plainly present in the same files. Fix the predicate first; it turns this from a
 report into something measurable.
 
-**Direction, not a decision.** The server tells us where the avatar is at login and after a
-teleport. Until the physics world around that position is actually populated, that position is
-better information than any raycast, and gravity should not act on a guess. Worth checking what
-the real viewer does before choosing between "hold the server Z until a collider is found",
-"suppress the terrain fallback while the object stream is incomplete", or "wait for the objects
-near the spawn point before handing control to the controller".
+**Checked against the viewer — and the answer is bigger than the bug.** The real viewer has no
+equivalent of this clamp at all. Three findings, all from source:
+
+1. **`LLWorld::resolveStepHeightGlobal` (llworld.cpp:532) never raycasts object geometry.** It takes
+   the *land* height as the baseline and then corrects it only through the avatar's `mFootPlane`.
+2. **`mFootPlane` comes from the simulator**, not from client-side collision. It is decoded from the
+   avatar's ObjectUpdate wire data as the leading `LLVector4` of the 140- and 76-byte ObjectData
+   layouts (llviewerobject.cpp:1341/1570/1685), and llworld.cpp:575 notes it compensates "for error
+   in foot plane reported by **Havok**" — the server's physics engine. It is deliberately cleared on
+   region change (llviewermessage.cpp:3135), i.e. the viewer knows it has no valid support plane
+   after a teleport until the sim sends a new one.
+3. **What little ground probing exists is for animation, not position.** `LLVOAvatar::getGround`
+   (llvoavatar.cpp:7049) probes ±1 m for foot IK.
+
+The agent's Z is server-authoritative. The viewer does not decide what the avatar stands on; the
+simulator does, and tells it.
+
+**So our own code is the bug**, not just its timing. `AvatarController` applies client-side gravity
+to a server-supplied position:
+
+```csharp
+else if (transform.Position.Z > clampTargetZ)
+{
+    // Fall down to terrain/object
+    float fallSpeed = 9.81f * (float)delta;
+```
+
+At login `clampTargetZ` is the terrain height, because the prim under the avatar has no collider
+yet — so the fall is literally implemented, at 9.81 m/s², against data the server already got right.
+
+**Not fixed here, because removing it has real blast radius:** walking, flying and landing all run
+through the same clamp, and whether SLNG needs it for local movement prediction is a separate
+question from whether it may override the server's Z. The narrow fix is to stop the clamp from
+*lowering* a server position; the honest fix is to take the foot plane off the wire like the viewer
+does. That is a decision, not a detail.
 
 **From this session:**
 

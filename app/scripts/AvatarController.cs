@@ -148,6 +148,7 @@ public partial class AvatarController : Camera3D
     /// <summary>Last ground source seen, so the diagnostic above fires on transitions instead of
     /// every frame. "collider" collapses the per-object detail -- which object it is matters far
     /// less than whether an object was hit at all.</summary>
+    private bool _lastGroundWasObject;
     private string _lastGroundKind = "";
 
     /// <summary>Ground height at the previous sample, so a transition can report the DROP rather
@@ -465,6 +466,20 @@ public partial class AvatarController : Camera3D
                 // reported Y the platform's real top surface" is now a live, separate hypothesis).
                 string groundSource = "none";
 
+                // Whether the support under the avatar is an OBJECT rather than terrain, tracked as
+                // a flag instead of being recovered from groundSource's text later.
+                //
+                // It used to be recovered from the text, and it never worked: the check was
+                // groundSource.StartsWith("collider:Obj"), but groundSource is built from the
+                // collider node's NAME, and ObjectRenderer names that node "StaticBody" -- the
+                // Obj_<uuid> id is one level up, in the PATH. So the real string is always
+                // "collider:StaticBody(path=.../Obj_<uuid>/StaticBody)" and the prefix test could
+                // never be true. `grep "FELL THROUGH"` returns zero across every log ever captured,
+                // including sessions whose logs plainly contain object colliders and in which the
+                // user was falling off prims on every login. A diagnostic that cannot fire is worse
+                // than none: its silence was read as evidence.
+                bool groundIsObject = false;
+
                 if (result.Count > 0)
                 {
                     groundHeight = result["position"].AsVector3().Y;
@@ -475,6 +490,8 @@ public partial class AvatarController : Camera3D
                         groundSource = colliderNode != null
                             ? $"collider:{colliderNode.Name}(path={colliderNode.GetPath()})"
                             : "collider:<unnamed>";
+                        groundIsObject = colliderNode != null
+                            && colliderNode.GetPath().ToString().Contains("/Obj_");
                     }
                 }
                 else
@@ -521,8 +538,8 @@ public partial class AvatarController : Camera3D
                 {
                     // A drop while stepping off an object collider is the fall itself, so it is called
                     // out separately rather than left to be spotted by comparing two log lines.
-                    bool fellOffObject = _lastGroundKind.StartsWith("collider:Obj")
-                                         && !groundSource.StartsWith("collider:Obj")
+                    bool fellOffObject = _lastGroundWasObject
+                                         && !groundIsObject
                                          && groundHeight < _lastGroundZ - 0.15f;
 
                     GD.Print($"[GroundClamp] {(fellOffObject ? "FELL THROUGH " : "")}" +
@@ -533,7 +550,11 @@ public partial class AvatarController : Camera3D
                     _lastGroundKind = groundSource;
                     _timeSinceGroundLog = 0;
                 }
-                if (hasGround) _lastGroundZ = groundHeight;
+                if (hasGround)
+                {
+                    _lastGroundZ = groundHeight;
+                    _lastGroundWasObject = groundIsObject;
+                }
                 }
 
                 if (hasGround)
