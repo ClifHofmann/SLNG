@@ -210,7 +210,9 @@ zero of them while the user was falling off prims on every login.
   already failing before them. The `v0.8.3-alpha` release build runs on `windows-latest` and is
   unaffected. The user decided on 2026-08-23 to leave this for later; the cost of leaving it is
   that AGENTS.md's "Linux/macOS kept buildable" is currently not true, and a red CI trains people
-  to stop reading it.
+  to stop reading it. **Still open.** The new `selftest` job (`v0.9.1-alpha`) was put on
+  `windows-latest` specifically so it does not inherit this — a second red X on the same workflow
+  would be indistinguishable from the first at a glance.
 
 - **Particles are not implemented at all.** No `ParticleSys` anywhere in `src/` or `app/`;
   LibreMetaverse parses the block and we never read it. The reef's spray clouds are missing
@@ -260,23 +262,30 @@ zero of them while the user was falling off prims on every login.
 - **Sculpt map `bb745170` is truncated on the sim itself**: 33,600 bytes for a tile-part declaring
   113,049, and UDP delivers the same. Not our bug, but it is why that particular pair of rocks
   needs the degraded-decode path at all.
-- **`SLNG_Test_Sky.xml`** sits untracked at the repo root — a known-answer EEP sky probe (primary
-  colours per channel) from the FEAT-ENV-01 work, not from this session. It is committed as-is
-  rather than moved; it arguably belongs in `tools/testassets/` with the other probes.
+- **`SLNG_Test_Sky.xml`** — moved to `tools/testassets/eep-parity/` with the other EEP probes
+  (`v0.9.1-alpha`), where it is next to the `PARITY-*.xml` presets it belongs with.
 
 **Carried forward, still true:**
 
-- **`--selftest` is documented in `AGENTS.md` and does not exist.** `app/` has no handler, so
-  `godot --headless --path app -- --selftest` just sits at the login screen. This bit again: the
-  shader changes in FEAT-RENDER-04 could not be smoke-tested before handing them over.
 - **FEAT-RENDER-02 has one unexplained visual impression left.** Five known-answer points in
   `tools/testassets/README.md` settle it. **Do not tune against a screenshot** — that caused the two
   worst detours in that task.
 - **A parallel, unfinished EEP implementation is parked in `stash@{0}`** (`GodotEnvironmentManager`,
-  `EnvironmentWindow`) plus a `feature/FEAT-ENV-01-windlight-eep` branch. Not ours. Two
-  implementations of one feature exist; that needs a human decision, not a blind merge.
-- **A leftover worktree sits at `.claude/worktrees/sad-yalow-b74c97`.** The user does not want
-  worktrees for this project — everything stays in `E:\Git\SLNG`. Safe to remove.
+  `EnvironmentWindow`). Not ours. Two implementations of one feature exist; that needs a human
+  decision, not a blind merge. The `feature/FEAT-ENV-01-windlight-eep` branch it was stashed on was
+  deleted in the `v0.9.1-alpha` cleanup — it was fully contained in `main`, and a stash holds its
+  own commits regardless, so nothing was lost with it. Recover with `git stash show -p stash@{0}`.
+- **`slng_moon_direction` is a global shader uniform with a producer and no consumer.**
+  `EnvironmentDriver.cs:454` sets it every frame and `project.godot` registers it, but no shader
+  declares it — `tools/check_shader_globals.py` reports it as stale. Left in place deliberately: the
+  moon is plausibly wanted by the FEAT-ENV-01 sky work, and deleting it would just mean re-deriving
+  the direction later. Decide it when the sky shader gets its moon, not as a drive-by.
+- **`linden_llvoavatar.cpp` (874 KB) is tracked at the repo root.** Not junk — four source comments
+  cite it by name (`AvatarRenderer.cs:96/522`, `GridEvents.cs:112/198`) and it differs from
+  `scratch/slviewer`'s copy, so it is a pinned reference at a specific viewer revision. But it is
+  Linden viewer source sitting at the top level with no entry in `app/THIRD-PARTY-NOTICES.md`.
+  Wants a decision: notice it and move it under a `third_party/` or `docs/reference/` path (the four
+  citations then need updating), or drop it and re-pin the citations against `scratch/slviewer`.
 - **Water:** fresnel, refraction, `blend_factor`.
 
 ---

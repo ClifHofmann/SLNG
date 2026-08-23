@@ -27,10 +27,23 @@ Read alongside this file:
 
 ```bash
 dotnet build SLNG.sln              # build engine-agnostic libraries + tests
+dotnet build app/SLNG.App.csproj   # build the Godot client -- NOT part of SLNG.sln
 dotnet test                        # run unit tests
+dotnet format SLNG.sln             # must be clean before a commit
 godot --path app                   # launch the client (or open app/ in the Godot editor)
 godot --headless --path app -- --selftest   # smoke test without a window
+python tools/check_shader_globals.py        # global uniforms declared in shader AND project.godot
 ```
+
+`app/SLNG.App.csproj` is deliberately outside `SLNG.sln` (the solution stays engine-agnostic),
+which means **`dotnet build SLNG.sln` compiles none of `app/`** — a change to a renderer or a UI
+window builds "clean" without ever being compiled. Build both, or the client will run yesterday's
+assembly.
+
+`--selftest` loads every shader, locale file and the Bento skeleton through the engine and exits
+non-zero on the first one that does not come up (see `app/scripts/SelfTest.cs`). It does not log in,
+so it needs no credentials and no reachable grid. It is the only check that compiles the shaders:
+`godot --headless --editor --quit` reports success on a shader that cannot compile.
 
 Verified toolchain: **.NET SDK 8** and **Godot 4.7-stable (.NET/mono)**.
 
