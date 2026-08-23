@@ -2403,6 +2403,40 @@ public partial class ObjectRenderer : Node3D
             var st = new SurfaceTool();
             st.Begin(Mesh.PrimitiveType.Triangles);
 
+            // Tangents, computed in GODOT space and from the FINAL UVs -- both matter. The
+            // positions below are swizzled from SL's Z-up and the V is conditionally flipped, and
+            // a tangent basis derived from the pre-swizzle values would be rotated relative to the
+            // vertices it is attached to.
+            //
+            // Godot cannot apply a normal map without these. SurfaceTool.GenerateTangents() used
+            // to do the job and had to be turned off: it produced NaNs on the degenerate triangles
+            // SL content is full of, and those reached the Vulkan driver. SLNG.Assets.MeshTangents
+            // guarantees finite output instead of dividing by a zero-area UV triangle -- see its
+            // tests for the exact family of inputs that crashed.
+            var tangentPositions = new System.Numerics.Vector3[sub.Positions.Length];
+            var tangentNormals = new System.Numerics.Vector3[sub.Positions.Length];
+            var tangentUvs = new System.Numerics.Vector2[sub.Positions.Length];
+            for (int i = 0; i < sub.Positions.Length; i++)
+            {
+                var sp = sub.Positions[i];
+                var sn = sub.Normals[i];
+                var suv = sub.UVs[i];
+                tangentPositions[i] = new System.Numerics.Vector3(sp.X, sp.Z, -sp.Y);
+                tangentNormals[i] = new System.Numerics.Vector3(sn.X, sn.Z, -sn.Y);
+                tangentUvs[i] = new System.Numerics.Vector2(suv.X, flipV ? 1.0f - suv.Y : suv.Y);
+            }
+            // The winding is reversed below, so the tangent maths gets the same order the GPU
+            // will see rather than the source order.
+            var tangentIndices = new int[sub.Indices.Length];
+            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
+            {
+                tangentIndices[t] = sub.Indices[t];
+                tangentIndices[t + 1] = sub.Indices[t + 2];
+                tangentIndices[t + 2] = sub.Indices[t + 1];
+            }
+            var tangents = SLNG.Assets.MeshTangents.Compute(
+                tangentPositions, tangentNormals, tangentUvs, tangentIndices);
+
             // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front.
             // Reverse each triangle's winding by swapping its last two indices.
             // We supply the vertices once, then supply the reversed indices.
@@ -2413,6 +2447,8 @@ public partial class ObjectRenderer : Node3D
                 var uv = sub.UVs[i];
 
                 st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+                var tg = tangents[i];
+                st.SetTangent(new Godot.Plane(tg.X, tg.Y, tg.Z, tg.W));
                 st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
                 st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
             }
@@ -2424,7 +2460,6 @@ public partial class ObjectRenderer : Node3D
                 st.AddIndex(sub.Indices[t + 1]);
             }
 
-            // st.GenerateTangents(); // Disabled to prevent Vulkan driver NaN explosion on degenerate triangles
             st.Commit(arrayMesh);
             indices.Add(sub.FaceIndex);
         }
