@@ -43,6 +43,29 @@ namespace SLNG.Assets.PrimMesher
         {
         }
 
+        /// <summary>Samples the map onto an EXPLICIT grid instead of deriving one by halving.
+        ///
+        /// <para>PrimMesher's own rule (the <c>int lod</c> constructor below) halves both
+        /// dimensions together until the pixel count fits, which only preserves the map's aspect
+        /// ratio in powers of two. The viewer spends its vertex budget in the map's actual
+        /// proportion -- see SlSculptResolution -- and for an elongated map the two differ a lot:
+        /// a 512x16 map gets 205x6 from the viewer and 129x5 from the halving, losing half the
+        /// resolution along the axis that carries the detail.</para>
+        ///
+        /// <para><paramref name="targetWidth"/> and <paramref name="targetHeight"/> are the counts
+        /// BEFORE the wrap-seam row/column; this constructor adds those, exactly as the halving
+        /// path does.</para></summary>
+        public SculptMap(SKBitmap bm, int targetWidth, int targetHeight)
+        {
+            if (bm == null) throw new ArgumentNullException(nameof(bm));
+            if (bm.Width == 0 || bm.Height == 0)
+                throw new Exception("SculptMap: bitmap has no data");
+
+            width = Math.Max(1, targetWidth);
+            height = Math.Max(1, targetHeight);
+            SamplePointwise(bm);
+        }
+
         public SculptMap(SKBitmap bm, int lod)
         {
             if (bm == null) throw new ArgumentNullException(nameof(bm));
@@ -116,33 +139,56 @@ namespace SLNG.Assets.PrimMesher
                 }
                 else
                 {
-                    // Proportional point-sample into a (width+1)x(height+1) buffer: the extra row/
-                    // column (index == width/height) duplicates the last real row/column, giving
-                    // SculptMesh's wrap-seam stitching (see its own doc comment) a clean edge to
-                    // close against instead of an out-of-range read.
-                    for (var y = 0; y <= height; y++)
-                    {
-                        var sy = Math.Min(bmH - 1, (int)((float)y / height * bmH));
-                        for (var x = 0; x <= width; x++)
-                        {
-                            var sx = Math.Min(bmW - 1, (int)((float)x / width * bmW));
-                            var c = pix.GetPixelColor(sx, sy);
-                            redBytes[byteNdx] = c.Red;
-                            greenBytes[byteNdx] = c.Green;
-                            blueBytes[byteNdx] = c.Blue;
-                            ++byteNdx;
-                        }
-                    }
-
-                    // the consumer expects width/height incremented to match the buffer above
-                    width++;
-                    height++;
+                    SamplePointwise(bm);
                 }
             }
             catch (Exception e)
             {
                 throw new Exception("Caught exception processing byte arrays in SculptMap(): e: " + e);
             }
+        }
+
+        /// <summary>Point-samples the map into a (width+1)x(height+1) buffer at the CURRENT
+        /// width/height, then advances them to match it.
+        ///
+        /// <para>The extra row/column (index == width/height) duplicates the last real one,
+        /// giving SculptMesh's wrap-seam stitching a clean edge to close against instead of an
+        /// out-of-range read.</para>
+        ///
+        /// <para>Always samples the ORIGINAL, native-resolution bitmap -- never a pre-scaled copy.
+        /// Verified against LLVolume::sculptGenerateMapVertices (llvolume.cpp:3070-3071): SL
+        /// reduces a sculpt map's LOD purely by point-sampling fewer vertices at a computed
+        /// integer stride into the native texel array; it never filters or averages RGB. Each
+        /// texel is an independent vertex XYZ, not a photographic signal, so a bilinear pre-scale
+        /// blends adjacent vertex POSITIONS -- clipping extrema and chamfering sharp profile
+        /// edges, which rendered a tall drum-shaped seat as a flattened dish.</para></summary>
+        private void SamplePointwise(SKBitmap bm)
+        {
+            int bmW = bm.Width, bmH = bm.Height;
+            var numBytes = (width + 1) * (height + 1);
+            redBytes = new byte[numBytes];
+            greenBytes = new byte[numBytes];
+            blueBytes = new byte[numBytes];
+
+            var pix = bm.PeekPixels();
+            var byteNdx = 0;
+            for (var y = 0; y <= height; y++)
+            {
+                var sy = Math.Min(bmH - 1, (int)((float)y / height * bmH));
+                for (var x = 0; x <= width; x++)
+                {
+                    var sx = Math.Min(bmW - 1, (int)((float)x / width * bmW));
+                    var c = pix.GetPixelColor(sx, sy);
+                    redBytes[byteNdx] = c.Red;
+                    greenBytes[byteNdx] = c.Green;
+                    blueBytes[byteNdx] = c.Blue;
+                    ++byteNdx;
+                }
+            }
+
+            // the consumer expects width/height incremented to match the buffer above
+            width++;
+            height++;
         }
 
         public List<List<Coord>> ToRows(bool mirror)

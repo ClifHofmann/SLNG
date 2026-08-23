@@ -178,6 +178,15 @@ namespace SLNG.Assets.PrimMesher
             _SculptMesh(sculptBitmap, sculptType, lod, viewerMode, mirror, invert);
         }
 
+        /// <summary>Builds from a map sampled at an EXPLICIT grid (the viewer's, see
+        /// SlSculptResolution) rather than at PrimMesher's halved one.</summary>
+        public SculptMesh(SKBitmap sculptBitmap, SculptType sculptType, int gridWidth, int gridHeight,
+            bool viewerMode, bool mirror, bool invert)
+        {
+            _SculptMesh(new SculptMap(sculptBitmap, gridWidth, gridHeight).ToRows(mirror),
+                sculptType, viewerMode, mirror, invert);
+        }
+
         public SculptMesh(List<List<Coord>> rows, SculptType sculptType, bool viewerMode, bool mirror, bool invert)
         {
             _SculptMesh(rows, sculptType, viewerMode, mirror, invert);

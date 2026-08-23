@@ -455,13 +455,21 @@ public static class PrimMeshService
             using var bmp = new SKBitmap(new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Unpremul));
             Marshal.Copy(rgba, 0, bmp.GetPixels(), width * height * 4);
 
-            // Same LOD->grid-resolution budget MeshFoundry used, so LOD behavior is unchanged.
-            int mesherLod = 32;
-            switch (lod)
+            // The viewer's own detail values (llvolume.cpp's sculpt_sides comment: "detail is
+            // usually one of: 1, 1.5, 2.5, 4.0").
+            float detail = lod switch
             {
-                case DetailLevel.Medium: mesherLod /= 2; break;
-                case DetailLevel.Low: mesherLod /= 4; break;
-            }
+                DetailLevel.Low => 1.5f,
+                DetailLevel.Medium => 2.5f,
+                DetailLevel.Highest => 4.0f,
+                _ => 1.0f,
+            };
+
+            // The grid comes from the viewer's rule, NOT from PrimMesher's halving. The two agree
+            // on a square map and diverge badly on an elongated one -- see SlSculptResolution for
+            // the measured case. s runs down the map's HEIGHT and t across its WIDTH, which is the
+            // opposite of what the names suggest.
+            SlSculptResolution.Calc(width, height, detail, out int gridS, out int gridT);
 
             byte baseType = (byte)(sculptType & 0x07);
             bool invert = (sculptType & 0x40) != 0;
@@ -475,7 +483,7 @@ public static class PrimMeshService
                 _ => SLNG.Assets.PrimMesher.SculptMesh.SculptType.plane,
             };
 
-            var mesh = new SLNG.Assets.PrimMesher.SculptMesh(bmp, smType, mesherLod, true, mirror, invert);
+            var mesh = new SLNG.Assets.PrimMesher.SculptMesh(bmp, smType, gridT, gridS, true, mirror, invert);
             return ConvertSculptMesh(mesh);
         }
         catch (Exception ex)
