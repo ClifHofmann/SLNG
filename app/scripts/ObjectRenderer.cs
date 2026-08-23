@@ -115,6 +115,11 @@ public partial class ObjectRenderer : Node3D
     // Objects already reported as rendering a placeholder solid instead of their real geometry,
     // and mesh assets already reported as unavailable. Both are Warn-level (visible without
     // --diag) so they must not repeat per frame. Main-thread only.
+    // Legacy Blinn-Phong materials already reported. Written from the worker threads that build
+    // face materials, so it needs its own lock rather than the main-thread-only convention the
+    // sets below follow.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _legacyMaterialsSeen = new();
+
     private readonly HashSet<Guid> _sculptFallbacksLogged = new();
     private readonly HashSet<Guid> _meshLoadFailuresLogged = new();
     // Keyed by SHAPE, not by object: a failing prim shape is usually a whole build's worth of
@@ -1592,6 +1597,24 @@ public partial class ObjectRenderer : Node3D
         if (tintIsTranslucent)
         {
             material.Shader = PrimShaderFamily.Blend;
+        }
+
+        // FEAT-RENDER-04 phase 2: resolve the face's LEGACY Blinn-Phong material and report it.
+        // Nothing is bound yet -- phases 3 and 4 do that -- but without a caller the whole wire
+        // path and capability fetch below it would sit there untested against a real region, and
+        // "it compiles" is not evidence that a capability request works. One line per distinct
+        // material, not per face: a build shares one material across dozens of faces.
+        if (ft.LegacyMaterialId != Guid.Empty && _assetService != null)
+        {
+            var legacy = await _assetService.GetLegacyMaterialAsync(ft.LegacyMaterialId);
+            if (legacy is { } lm && _legacyMaterialsSeen.TryAdd(lm.Id, 0))
+            {
+                GD.Print($"[LegacyMaterial] {lm.Id.ToString()[..8]} " +
+                         $"normal={(lm.NormalMap == Guid.Empty ? "none" : lm.NormalMap.ToString()[..8])} " +
+                         $"specular={(lm.SpecularMap == Guid.Empty ? "none" : lm.SpecularMap.ToString()[..8])} " +
+                         $"gloss={lm.SpecularExponent} env={lm.EnvironmentIntensity} " +
+                         $"alphaMode={lm.DiffuseAlphaMode} — resolved, not yet rendered");
+            }
         }
 
         if (ft.RenderMaterialId != Guid.Empty && _assetService != null)
