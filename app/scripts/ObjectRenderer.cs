@@ -58,6 +58,14 @@ public partial class ObjectRenderer : Node3D
         // refs to free GPU memory. It reloads when it comes back into range.
         public bool ResourcesReleased;
 
+        // Set whenever a face material is (re)built, because that write puts the face's STATIC
+        // TextureEntry placement back into the shader uniforms and so undoes the current
+        // animation frame. The texture-anim tick normally skips objects whose frame has not
+        // changed (a 1 fps flipbook must not cost 3 interop calls per face per frame); this flag
+        // is what makes it re-apply anyway on the one frame after a rebuild, instead of leaving
+        // the face frozen on its unanimated placement until the animation happens to step.
+        public bool TexAnimNeedsReapply;
+
         // Sentinel distinct from Guid.Empty (which is a valid "no texture" value) so the
         // first update always applies.
         public static readonly Guid NotLoaded = new("ffffffff-ffff-ffff-ffff-ffffffffffff");
@@ -236,6 +244,12 @@ public partial class ObjectRenderer : Node3D
         // Entries to visit this frame so one full pass still completes in CullSweepSeconds. The carry
         // keeps the fractional remainder, so a small set does not stall on truncation to zero.
         _cullCarry += _cullOrder.Count * delta / CullSweepSeconds;
+
+        // Ahead of the cull sweep: that sweep returns early whenever the agent position is not
+        // known yet or its per-frame budget rounds to zero, and an animated texture must keep
+        // running through both.
+        TickTextureAnimations();
+
         int budget = (int)_cullCarry;
         _cullCarry -= budget;
         if (budget <= 0) return;
@@ -805,9 +819,191 @@ public partial class ObjectRenderer : Node3D
     {
         if (_assetService == null || _world == null) return;
         var prim = _world.GetEntity(state.EntityId)?.GetComponent<PrimitiveComponent>();
+            _texAnims.Remove(entityId);
         if (prim == null) return;
 
         // FEAT-PERF-02 Phase 2: one detail/priority decision per object (not per face) -- computed
+    // --- llSetTextureAnim ---------------------------------------------------------------------
+    //
+    // SL animates a face's texture by REPLACING part of its placement every frame: the object
+    // carries one TextureAnim block, and the viewer recomputes offset/scale/rotation from a frame
+    // counter and writes them over the face's TextureEntry values (LLVOVolume::animateTextures).
+    // Only the components the mode actually drives are replaced -- a scrolling animation keeps the
+    // face's own rotation, a rotating one keeps its own offset -- which is why the apply below
+    // starts from the FaceTexture and overwrites selectively rather than writing a full placement.
+    //
+    // The frame maths itself is in SLNG.Core.TextureAnimator (engine-agnostic, unit-tested against
+    // the viewer's own arithmetic); everything here is the Godot side: when to tick, which
+    // surfaces to touch, and how the result reaches the shader uniforms.
+
+    /// <summary>Objects with a running llSetTextureAnim, and the state needed to drive it: the
+    /// animation block itself, the clock reading it started at, and the last frame applied so an
+    /// unchanged one can be skipped (the viewer's own <c>mLastFrame</c> guard,
+    /// llviewertextureanim.cpp). Entries exist only while the animation is ON, so a region with
+    /// no animated textures costs one dictionary-count check per frame. Main-thread only.</summary>
+    private readonly Dictionary<Guid, TexAnimState> _texAnims = new();
+    private readonly List<Guid> _texAnimScratch = new();
+
+    private sealed class TexAnimState
+    {
+        public SLNG.Core.TextureAnimation Anim;
+        public ulong StartMsec;
+        public SLNG.Core.TextureAnimFrame LastFrame = new(SLNG.Core.TextureAnimResult.None, float.NaN, 0f, 0f, 0f, 0f);
+    }
+
+    /// <summary>Starts, restarts or stops an object's texture animation to match its current
+    /// TextureAnim block. Restarting only on a CHANGED block matters: UpdateVisual runs on every
+    /// ObjectUpdate, and a moving animated prim sends those constantly -- resetting the clock each
+    /// time would pin the animation to frame 0 and look completely static, which is exactly the
+    /// symptom this feature exists to fix.</summary>
+    private void UpdateTextureAnimRegistration(Guid entityId, SLNG.Core.TextureAnimation? anim)
+    {
+        if (anim is not { IsOn: true } running)
+        {
+            _texAnims.Remove(entityId);
+            return;
+        }
+
+        if (_texAnims.TryGetValue(entityId, out var existing))
+        {
+            if (existing.Anim.Equals(running)) return;
+            existing.Anim = running;
+            existing.StartMsec = Godot.Time.GetTicksMsec();
+            existing.LastFrame = new SLNG.Core.TextureAnimFrame(SLNG.Core.TextureAnimResult.None, float.NaN, 0f, 0f, 0f, 0f);
+            return;
+        }
+
+        _texAnims[entityId] = new TexAnimState { Anim = running, StartMsec = Godot.Time.GetTicksMsec() };
+
+        // Report every animation the client actually starts, once per object, without --diag and
+        // without needing the object to be clicked. "The animation runs the wrong way" is not
+        // diagnosable from the symptom: SL's direction comes entirely out of the mode bits
+        // (SMOOTH slides, REVERSE flips the counter, PING_PONG turns around, a frame grid steps
+        // rows top-down) and each of those inverts differently against our flipV meshes. Naming
+        // the bits turns "looks wrong" into a case that can be checked against
+        // LLViewerTextureAnim::animateTextures line by line.
+        var m = running.Mode;
+        string bits = string.Join("|", new[]
+        {
+            (m & SLNG.Core.TextureAnimFlags.Loop) != 0 ? "LOOP" : null,
+            (m & SLNG.Core.TextureAnimFlags.Reverse) != 0 ? "REVERSE" : null,
+            (m & SLNG.Core.TextureAnimFlags.PingPong) != 0 ? "PING_PONG" : null,
+            (m & SLNG.Core.TextureAnimFlags.Smooth) != 0 ? "SMOOTH" : null,
+            (m & SLNG.Core.TextureAnimFlags.Rotate) != 0 ? "ROTATE" : null,
+            (m & SLNG.Core.TextureAnimFlags.Scale) != 0 ? "SCALE" : null,
+        }.Where(s => s != null));
+        GD.Print($"[TexAnim] object {_world?.GetEntity(entityId)?.LocalId} started: " +
+                 $"mode=0x{(byte)m:X2} ON{(bits.Length > 0 ? "|" + bits : "")} " +
+                 $"face={running.Face} grid={running.SizeX}x{running.SizeY} " +
+                 $"start={running.Start:0.###} length={running.Length:0.###} rate={running.Rate:0.###}");
+    }
+
+    /// <summary>Advances every running texture animation by one frame. Called from _Process ahead
+    /// of the draw-distance sweep, which returns early on several paths the animation must not be
+    /// starved by.</summary>
+    private void TickTextureAnimations()
+    {
+        if (_texAnims.Count == 0 || _world == null) return;
+
+        ulong nowMsec = Godot.Time.GetTicksMsec();
+
+        _texAnimScratch.Clear();
+        _texAnimScratch.AddRange(_texAnims.Keys);
+
+        foreach (var entityId in _texAnimScratch)
+        {
+            if (!_texAnims.TryGetValue(entityId, out var anim)) continue;
+
+            if (!_visuals.TryGetValue(entityId, out var state) || !IsInstanceValid(state.MeshInstance))
+            {
+                _texAnims.Remove(entityId);
+                continue;
+            }
+
+            // Out of draw distance / hidden: the object has no materials to write to (or is not
+            // being looked at). The animation is not paused -- it is a pure function of elapsed
+            // time, so it resumes at the frame it would have reached anyway.
+            if (state.ResourcesReleased || !state.MeshInstance.Visible) continue;
+
+            var prim = _world.GetEntity(entityId)?.GetComponent<PrimitiveComponent>();
+            if (prim == null) continue;
+
+            float elapsed = (nowMsec - anim.StartMsec) / 1000f;
+            var frame = SLNG.Core.TextureAnimator.Evaluate(anim.Anim, elapsed);
+            if (frame.Driven == SLNG.Core.TextureAnimResult.None) continue;
+
+            if (frame.Equals(anim.LastFrame) && !state.TexAnimNeedsReapply) continue;
+            anim.LastFrame = frame;
+            state.TexAnimNeedsReapply = false;
+
+            ApplyTextureAnimFrame(state, prim, anim.Anim.Face, frame);
+        }
+    }
+
+    /// <summary>Writes one animation frame onto the affected surfaces' materials.</summary>
+    private void ApplyTextureAnimFrame(VisualState state, PrimitiveComponent prim, sbyte animFace, in SLNG.Core.TextureAnimFrame frame)
+    {
+        var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint,
+            prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation, prim.TexGen);
+
+        // Same fallback the material build uses: a mesh without per-surface face info wears one
+        // material for the whole node, so the animation drives that one.
+        if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
+        {
+            if (state.MeshInstance.MaterialOverride is ShaderMaterial single)
+                ApplyAnimatedPlacement(single, defaultFace, frame);
+            return;
+        }
+
+        var mesh = state.MeshInstance.Mesh;
+        if (mesh == null) return;
+
+        int surfaces = Math.Min(faceIndices.Length, mesh.GetSurfaceCount());
+        for (int surf = 0; surf < surfaces; surf++)
+        {
+            int faceIdx = faceIndices[surf];
+            // Face -1 (wire 255) means every face; anything else is a single SL face number.
+            if (animFace >= 0 && faceIdx != animFace) continue;
+            if (state.MeshInstance.GetSurfaceOverrideMaterial(surf) is not ShaderMaterial mat) continue;
+
+            FaceTexture ft = (prim.Faces != null && faceIdx >= 0 && faceIdx < prim.Faces.Length)
+                ? prim.Faces[faceIdx] : defaultFace;
+            ApplyAnimatedPlacement(mat, ft, frame);
+        }
+    }
+
+    /// <summary>Sets the UV uniforms for one animated face: the face's own placement with the
+    /// animated components substituted. The uniform arithmetic (centring fold, and the MINUS on
+    /// V that the flipV meshes require) is deliberately identical to BuildFaceMaterialAsync's --
+    /// the animation changes which NUMBERS go in, never how they are packed.</summary>
+    private static void ApplyAnimatedPlacement(ShaderMaterial mat, FaceTexture ft, in SLNG.Core.TextureAnimFrame frame)
+    {
+        float repeatU = ft.RepeatU, repeatV = ft.RepeatV;
+        float offsetU = ft.OffsetU, offsetV = ft.OffsetV;
+        float rotation = ft.Rotation;
+
+        if ((frame.Driven & SLNG.Core.TextureAnimResult.Scale) != 0)
+        {
+            repeatU = frame.ScaleS;
+            repeatV = frame.ScaleT;
+        }
+        if ((frame.Driven & SLNG.Core.TextureAnimResult.Translate) != 0)
+        {
+            offsetU = frame.OffsetS;
+            offsetV = frame.OffsetT;
+        }
+        if ((frame.Driven & SLNG.Core.TextureAnimResult.Rotate) != 0)
+        {
+            rotation = frame.Rotation;
+        }
+
+        mat.SetShaderParameter(PrimShaderFamily.UvScale, new Godot.Vector2(repeatU, repeatV));
+        mat.SetShaderParameter(PrimShaderFamily.UvRotation, rotation);
+        mat.SetShaderParameter(PrimShaderFamily.UvOffset, new Godot.Vector2(
+            0.5f - 0.5f * repeatU + offsetU,
+            0.5f - 0.5f * repeatV - offsetV));
+    }
+
         // once here from the mesh's already-applied Position/Scale (see UpdateVisual) and the
         // camera, before this object's faces potentially fan out into several concurrent texture
         // requests below. Must stay ahead of the first await -- see ComputeTextureLod's note on
@@ -840,6 +1036,8 @@ public partial class ObjectRenderer : Node3D
         {
             float maxRot = 0f;
             foreach (var f in prim.Faces) maxRot = Mathf.Max(maxRot, Mathf.Abs(f.Rotation));
+            UpdateTextureAnimRegistration(state.EntityId, prim.TextureAnim);
+
             if (maxRot > 0.01f)
             {
                 // SL region-local position, NOT the Godot global one: the latter carries the
@@ -859,7 +1057,11 @@ public partial class ObjectRenderer : Node3D
         if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
         {
             var (mat, used) = await BuildFaceMaterialAsync(defaultFace, prim.Scale, screenPixelArea, priority, prim.IsSculpt);
-            ApplyOnMainThread(state, () => state.MeshInstance.MaterialOverride = mat, used);
+            ApplyOnMainThread(state, () =>
+            {
+                state.MeshInstance.MaterialOverride = mat;
+                state.TexAnimNeedsReapply = true;
+            }, used);
             return;
         }
 
@@ -1239,6 +1441,9 @@ public partial class ObjectRenderer : Node3D
         if (!tintIsTranslucent)
         {
             if (alphaMode == Image.AlphaMode.Blend)
+                // This material carries the face's STATIC placement; if the object is animating,
+                // the next tick has to write its current frame back over it. See TexAnimNeedsReapply.
+                state.TexAnimNeedsReapply = true;
             {
                 // Smooth translucent edges (hair, glass, clouds)
                 material.Shader = PrimShaderFamily.Blend;

@@ -96,7 +96,11 @@ public record ObjectUpdateEvent(
     // The DEFAULT face's texgen. The per-face array in Faces carries its own, but a prim whose
     // faces are all identical sends no per-face entries at all, and without this such a prim
     // loses its texgen completely. Raw SL value -- see FaceTexture.TexGen.
-    byte TexGen = 0
+    byte TexGen = 0,
+    // llSetTextureAnim state (the ObjectUpdate TextureAnim block), or null if the object has
+    // none. Like the flags above this only exists on a FULL update -- ImprovedTerseObjectUpdate
+    // carries no TextureAnim block at all -- so it is applied under the same IsFullUpdate guard.
+    TextureAnimation? TextureAnim = null
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY

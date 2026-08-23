@@ -310,6 +310,10 @@ public sealed class WorldSimulation : IDisposable
             prim.LightIntensity = e.LightIntensity;
             prim.LightRadius = e.LightRadius;
             prim.LightFalloff = e.LightFalloff;
+            // Same reason as the flags: a terse update carries no TextureAnim block, so applying
+            // a terse-sourced null here would stop every animated texture the moment its object
+            // starts moving.
+            prim.TextureAnim = e.TextureAnim;
         }
         _world.NotifyComponentUpdated(entity, prim);
 

@@ -1334,6 +1334,25 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // ExtraParams WITHOUT a Light block, trust that over the stale Primitive.Light, and
         // correct the shared Primitive object too so any other code reading prim.Light directly
         // (not just this event) also sees the fix from here on.
+        // llSetTextureAnim. LibreMetaverse copies the four wire bytes verbatim into
+        // Primitive.TextureAnim without the viewer's unpack rules (signed face byte, non-smooth
+        // size clamp), so the raw values go through TextureAnimation.FromWire rather than being
+        // read off the struct field by field. Unlike Primitive.Light this one does NOT latch:
+        // ObjectUpdateHandler reassigns prim.TextureAnim unconditionally on every full update, so
+        // an animation switched off really does come back as ANIM_OFF here.
+        SLNG.Core.TextureAnimation? textureAnim = null;
+        if ((prim.TextureAnim.Flags & Primitive.TextureAnimMode.ANIM_ON) != 0)
+        {
+            textureAnim = SLNG.Core.TextureAnimation.FromWire(
+                (byte)prim.TextureAnim.Flags,
+                (byte)prim.TextureAnim.Face,
+                (byte)prim.TextureAnim.SizeX,
+                (byte)prim.TextureAnim.SizeY,
+                prim.TextureAnim.Start,
+                prim.TextureAnim.Length,
+                prim.TextureAnim.Rate);
+        }
+
         bool lightEnabled = prim.Light.Intensity > 0f;
         if (_lightPresentByLocalId.TryGetValue(prim.LocalID, out bool lightBlockPresent) && !lightBlockPresent && lightEnabled)
         {
@@ -1392,7 +1411,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // The DEFAULT face's texgen. LibreMetaverse's MappingType is already the raw SL
             // value (Default=0, Planar=2, ...), and FaceTexture.TexGen stores it unconverted,
             // so this is a straight cast -- see FaceTexture.TexGen on why it is NOT 1.
-            defaultFace != null ? (byte)defaultFace.TexMapType : FaceTexture.TexGenDefault));
+            defaultFace != null ? (byte)defaultFace.TexMapType : FaceTexture.TexGenDefault,
+            textureAnim));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)

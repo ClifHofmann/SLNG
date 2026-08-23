@@ -65,6 +65,12 @@ public class PrimitiveComponent : IComponent
     /// <see cref="TextureId"/>/<see cref="ColorTint"/> for the whole object.</summary>
     public FaceTexture[]? Faces { get; set; }
 
+    /// <summary>llSetTextureAnim state from the ObjectUpdate TextureAnim block, or null when the
+    /// object has none. Drives the per-frame UV placement of the animated faces (see
+    /// <see cref="TextureAnimator"/>); the face's own repeat/offset/rotation still supplies every
+    /// component the animation does not itself drive.</summary>
+    public TextureAnimation? TextureAnim { get; set; }
+
     /// <summary>LibreMetaverse ClickAction byte (0=Touch, 1=Sit, etc).</summary>
     public byte ClickAction { get; set; }
 
