@@ -1269,6 +1269,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         Guid textureId = Guid.Empty;
         Guid renderMaterialId = Guid.Empty;
+        Guid legacyMaterialId = Guid.Empty;
         System.Numerics.Vector4 colorTint = new System.Numerics.Vector4(1, 1, 1, 1);
 
         var defaultFace = prim.Textures?.DefaultTexture;
@@ -1276,6 +1277,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             textureId = defaultFace.TextureID.Guid;
             renderMaterialId = defaultFace.RenderMaterialID.Guid;
+            legacyMaterialId = defaultFace.MaterialID.Guid;
             colorTint = new System.Numerics.Vector4(defaultFace.RGBA.R, defaultFace.RGBA.G, defaultFace.RGBA.B, defaultFace.RGBA.A);
         }
 
@@ -1285,6 +1287,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var faceArr = prim.Textures?.FaceTextures;
         if (faceArr != null && faceArr.Length > 0 && defaultFace != null)
         {
+            // Each face carries TWO material ids: RenderMaterialID (glTF PBR) and MaterialID
+            // (legacy Blinn-Phong -- normal + specular map). They are separate systems and a face
+            // can have either, both or neither. Only the glTF one was read until FEAT-RENDER-04,
+            // so a face whose detail lives in its normal/specular maps rendered as nothing but its
+            // bare diffuse texture.
             faces = new FaceTexture[faceArr.Length];
             for (int i = 0; i < faceArr.Length; i++)
             {
@@ -1292,6 +1299,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 faces[i] = new FaceTexture(
                     f.TextureID.Guid,
                     f.RenderMaterialID.Guid,
+                    f.MaterialID.Guid,
                     new System.Numerics.Vector4(f.RGBA.R, f.RGBA.G, f.RGBA.B, f.RGBA.A),
                     f.RepeatU,
                     f.RepeatV,
@@ -1412,7 +1420,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // value (Default=0, Planar=2, ...), and FaceTexture.TexGen stores it unconverted,
             // so this is a straight cast -- see FaceTexture.TexGen on why it is NOT 1.
             defaultFace != null ? (byte)defaultFace.TexMapType : FaceTexture.TexGenDefault,
-            textureAnim));
+            textureAnim,
+            legacyMaterialId));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)
@@ -2412,6 +2421,85 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// payload — no LibreMetaverse type crosses this boundary; decoding lives in
     /// <c>SLNG.Assets</c>.
     /// </summary>
+    /// <summary>Fetches legacy Blinn-Phong materials by id from the region's
+    /// <c>RenderMaterials</c> capability, as neutral <see cref="LegacyMaterialData"/>.
+    ///
+    /// <para>Materials are NOT assets: they live in a per-region capability whose request and
+    /// response bodies are zlib-compressed LLSD, and a request carries at most 50 ids
+    /// (MATERIALS_GET_MAX_ENTRIES, llmaterialmgr.cpp:58). LibreMetaverse implements all of that,
+    /// so this method's job is batching to that limit and converting at the boundary.</para>
+    ///
+    /// <para>Returns only what the sim actually returned -- an id it does not know is simply
+    /// absent from the result, never a default-valued entry, so the caller can tell "resolved to
+    /// a material with no maps" from "never resolved".</para></summary>
+    public async Task<IReadOnlyList<LegacyMaterialData>> FetchLegacyMaterialsAsync(
+        IReadOnlyCollection<Guid> materialIds, CancellationToken cancellationToken = default)
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null || materialIds.Count == 0) return Array.Empty<LegacyMaterialData>();
+
+        var result = new List<LegacyMaterialData>(materialIds.Count);
+        var batch = new List<LibreMetaverse.UUID>(MaterialsPerRequest);
+
+        foreach (var id in materialIds)
+        {
+            if (id == Guid.Empty) continue;
+            batch.Add(new LibreMetaverse.UUID(id));
+            if (batch.Count < MaterialsPerRequest) continue;
+            await FetchOneBatchAsync(sim, batch, result, cancellationToken).ConfigureAwait(false);
+            batch.Clear();
+        }
+        if (batch.Count > 0)
+            await FetchOneBatchAsync(sim, batch, result, cancellationToken).ConfigureAwait(false);
+
+        return result;
+    }
+
+    /// <summary>MATERIALS_GET_MAX_ENTRIES (llmaterialmgr.cpp:58). The sim rejects more.</summary>
+    private const int MaterialsPerRequest = 50;
+
+    private async Task FetchOneBatchAsync(
+        LibreMetaverse.Simulator sim, List<LibreMetaverse.UUID> ids,
+        List<LegacyMaterialData> into, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var materials = await _client.Objects.RequestMaterialsAsync(sim, ids, cancellationToken)
+                .ConfigureAwait(false);
+            foreach (var m in materials) into.Add(ToLegacyMaterialData(m));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Materials] request for {ids.Count} legacy materials failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>Converts LibreMetaverse's <c>LegacyMaterial</c> to the neutral value. Public and
+    /// static so the conversion is testable on its own -- it is the only place the two type
+    /// systems meet, and it is where a units mistake (the wire scales every float by 10000, and
+    /// the specular tint arrives 0-255) would otherwise be invisible until something rendered
+    /// wrong.</summary>
+    public static LegacyMaterialData ToLegacyMaterialData(LibreMetaverse.Materials.LegacyMaterial m)
+    {
+        // SpecularColor is already 0-1 on LibreMetaverse's side; the wire's 0-255 form is decoded
+        // by its OSD reader. It becomes a Vector4 here so nothing downstream needs an LMV type.
+        return new LegacyMaterialData(
+            m.ID.Guid,
+            m.NormalMap.Guid,
+            new System.Numerics.Vector2((float)m.NormalMapOffsetX, (float)m.NormalMapOffsetY),
+            new System.Numerics.Vector2((float)m.NormalMapRepeatX, (float)m.NormalMapRepeatY),
+            (float)m.NormalMapRotation,
+            m.SpecularMap.Guid,
+            new System.Numerics.Vector2((float)m.SpecularMapOffsetX, (float)m.SpecularMapOffsetY),
+            new System.Numerics.Vector2((float)m.SpecularMapRepeatX, (float)m.SpecularMapRepeatY),
+            (float)m.SpecularMapRotation,
+            new System.Numerics.Vector4(m.SpecularColor.R, m.SpecularColor.G, m.SpecularColor.B, m.SpecularColor.A),
+            m.SpecularExponent,
+            m.EnvironmentIntensity,
+            m.AlphaMaskCutoff,
+            (LegacyDiffuseAlphaMode)(byte)m.DiffuseAlphaMode);
+    }
+
     public async Task<byte[]?> FetchMeshDataAsync(Guid meshId)
     {
         var asset = await _client.Assets

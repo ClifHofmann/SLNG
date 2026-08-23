@@ -9,8 +9,19 @@ namespace SLNG.Core;
 /// per mesh surface. No LibreMetaverse types cross this boundary.
 /// </summary>
 public readonly record struct FaceTexture(
-    Guid TextureId, 
-    Guid MaterialId, 
+    Guid TextureId,
+    /// <summary>The face's glTF PBR material (LibreMetaverse's RenderMaterialID, documented
+    /// there as "PBR / GLTF render material asset UUID"). Called MaterialId until
+    /// FEAT-RENDER-04, which was actively misleading: a face carries TWO independent material
+    /// ids, and the other one -- the legacy Blinn-Phong material below -- has at least as good
+    /// a claim to the bare name.</summary>
+    Guid RenderMaterialId,
+    /// <summary>The face's LEGACY Blinn-Phong material (LibreMetaverse's MaterialID): a normal
+    /// map and a specular map layered on top of the diffuse texture, resolved through the
+    /// region's RenderMaterials capability rather than as an asset. Empty for most faces.
+    /// Independent of <see cref="RenderMaterialId"/> -- a face can carry either, both or
+    /// neither. See SLNG.Core.LegacyMaterialData.</summary>
+    Guid LegacyMaterialId,
     Vector4 Color,
     float RepeatU,
     float RepeatV,

@@ -100,7 +100,10 @@ public record ObjectUpdateEvent(
     // llSetTextureAnim state (the ObjectUpdate TextureAnim block), or null if the object has
     // none. Like the flags above this only exists on a FULL update -- ImprovedTerseObjectUpdate
     // carries no TextureAnim block at all -- so it is applied under the same IsFullUpdate guard.
-    TextureAnimation? TextureAnim = null
+    TextureAnimation? TextureAnim = null,
+    // The DEFAULT face's legacy Blinn-Phong material id (normal + specular map). Separate from
+    // RenderMaterialId, which is the glTF PBR one -- a face carries both independently.
+    Guid LegacyMaterialId = default
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY

@@ -818,6 +818,96 @@ public class AssetService
         return null;
     }
 
+    /// <summary>Resolves a face's LEGACY Blinn-Phong material (normal + specular map), or null if
+    /// the region does not know the id.
+    ///
+    /// <para>Deliberately NOT one request per call. These ids repeat heavily -- a whole build
+    /// shares one material -- and the capability takes up to 50 ids at a time, so a per-face
+    /// request would turn one round trip into hundreds. Calls made close together are collected
+    /// into a single batch, every caller awaits the same batch, and results are memoised.</para>
+    ///
+    /// <para>A negative result is cached too, briefly: an id the sim does not return would
+    /// otherwise be re-requested by every face that references it, forever.</para></summary>
+    public Task<LegacyMaterialData?> GetLegacyMaterialAsync(Guid materialId)
+    {
+        if (materialId == Guid.Empty) return Task.FromResult<LegacyMaterialData?>(null);
+
+        if (_memCache.TryGetValue(LegacyMaterialKey(materialId), out LegacyMaterialData cached))
+            return Task.FromResult<LegacyMaterialData?>(cached);
+        if (_recentMaterialMisses.TryGetValue(materialId, out _))
+            return Task.FromResult<LegacyMaterialData?>(null);
+
+        return _inflightLegacyMaterials.GetOrAdd(materialId, id => QueueLegacyMaterialAsync(id));
+    }
+
+    private static object LegacyMaterialKey(Guid id) => $"legacymaterial:{id}";
+
+    private readonly ConcurrentDictionary<Guid, Task<LegacyMaterialData?>> _inflightLegacyMaterials = new();
+    private readonly MemoryCache _recentMaterialMisses =
+        new(new MemoryCacheOptions { SizeLimit = 4096 });
+
+    // Ids waiting to go out, and the gate that lets one collector send them as a batch.
+    private readonly List<Guid> _pendingMaterialIds = new();
+    private readonly SemaphoreSlim _materialBatchGate = new(1, 1);
+
+    /// <summary>How long to let ids accumulate before sending. Long enough that a frame's worth of
+    /// faces lands in one request, short enough not to be visible -- materials arriving a tick
+    /// late costs nothing, a request per face costs a round trip per face.</summary>
+    private static readonly TimeSpan MaterialBatchWindow = TimeSpan.FromMilliseconds(100);
+
+    private async Task<LegacyMaterialData?> QueueLegacyMaterialAsync(Guid materialId)
+    {
+        try
+        {
+            lock (_pendingMaterialIds) _pendingMaterialIds.Add(materialId);
+
+            await Task.Delay(MaterialBatchWindow).ConfigureAwait(false);
+            await _materialBatchGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                // Another caller's batch may already have covered this id while we waited on the
+                // gate; nothing left to send in that case.
+                if (_memCache.TryGetValue(LegacyMaterialKey(materialId), out LegacyMaterialData done))
+                    return done;
+
+                Guid[] batch;
+                lock (_pendingMaterialIds)
+                {
+                    batch = _pendingMaterialIds.ToArray();
+                    _pendingMaterialIds.Clear();
+                }
+                if (batch.Length == 0) return null;
+
+                var materials = await _session.FetchLegacyMaterialsAsync(batch).ConfigureAwait(false);
+                foreach (var m in materials)
+                {
+                    _memCache.Set(LegacyMaterialKey(m.Id), m,
+                        new MemoryCacheEntryOptions { Size = 1, SlidingExpiration = TimeSpan.FromMinutes(30) });
+                }
+
+                // Anything asked for and not returned is a miss -- deflect it for a while rather
+                // than letting every face that references it re-request it.
+                foreach (var asked in batch)
+                {
+                    if (!_memCache.TryGetValue(LegacyMaterialKey(asked), out LegacyMaterialData _))
+                        _recentMaterialMisses.Set(asked, true,
+                            new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2) });
+                }
+            }
+            finally
+            {
+                _materialBatchGate.Release();
+            }
+
+            return _memCache.TryGetValue(LegacyMaterialKey(materialId), out LegacyMaterialData result)
+                ? result : null;
+        }
+        finally
+        {
+            _inflightLegacyMaterials.TryRemove(materialId, out _);
+        }
+    }
+
     /// <summary>
     /// Fetches a GLTF PBR material by UUID and returns its mapped parameters and texture UUIDs.
     /// </summary>

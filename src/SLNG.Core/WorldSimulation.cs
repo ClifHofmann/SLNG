@@ -274,6 +274,7 @@ public sealed class WorldSimulation : IDisposable
             prim.MeshId = e.MeshId;
             prim.TextureId = e.TextureId;
             prim.RenderMaterialId = e.RenderMaterialId;
+            prim.LegacyMaterialId = e.LegacyMaterialId;
             prim.ColorTint = e.ColorTint;
             prim.RepeatU = e.RepeatU;
             prim.RepeatV = e.RepeatV;

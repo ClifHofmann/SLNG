@@ -32,7 +32,7 @@ public class FaceTexGenTests
     [InlineData((byte)6, false)]   // cylindrical -- likewise
     public void IsPlanar_OnlyForTheWireValueTwo(byte texGen, bool expected)
     {
-        var face = new FaceTexture(default, default, Vector4.One, 1f, 1f, 0f, 0f, 0f, texGen);
+        var face = new FaceTexture(default, default, default, Vector4.One, 1f, 1f, 0f, 0f, 0f, texGen);
         Assert.Equal(expected, face.IsPlanar);
     }
 

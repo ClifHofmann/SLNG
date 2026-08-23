@@ -958,7 +958,7 @@ public partial class AvatarRenderer : Node3D
         if (avatarVisual.Skeleton == null) return;
 
         var defaultFace = isMeshAttachment
-            ? new FaceTexture(prim!.TextureId, prim.RenderMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f)
+            ? new FaceTexture(prim!.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f)
             : default;
 
         // Skip a redundant reload: LibreMetaverse's ObjectUpdate can fire several times for the
@@ -1323,9 +1323,9 @@ public partial class AvatarRenderer : Node3D
         // no-material content (this hair applier included) has no such record and falls through
         // to that heuristic unchanged.
         bool hasExplicitAlpha = false;
-        if (!tintTranslucent && ft.MaterialId != Guid.Empty && _assetService != null)
+        if (!tintTranslucent && ft.RenderMaterialId != Guid.Empty && _assetService != null)
         {
-            var pbrMat = await _assetService.GetMaterialAsync(ft.MaterialId).ConfigureAwait(false);
+            var pbrMat = await _assetService.GetMaterialAsync(ft.RenderMaterialId).ConfigureAwait(false);
             if (pbrMat != null)
             {
                 hasExplicitAlpha = true;
@@ -1719,7 +1719,7 @@ public partial class AvatarRenderer : Node3D
         // asset id for mesh HUDs, or the full PrimShape (equatable — ObjectRenderer keys a
         // dictionary with it) for classic prim HUDs.
         var defaultFace = new FaceTexture(
-            prim.TextureId, prim.RenderMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f);
+            prim.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f);
         object shapeKey = prim.IsMesh && prim.MeshId != Guid.Empty ? prim.MeshId : prim.Shape;
         if (_hudContent.TryGetValue(entityId, out var cur)
             && Equals(cur.ShapeKey, shapeKey)

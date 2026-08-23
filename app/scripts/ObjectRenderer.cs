@@ -943,7 +943,7 @@ public partial class ObjectRenderer : Node3D
     /// <summary>Writes one animation frame onto the affected surfaces' materials.</summary>
     private void ApplyTextureAnimFrame(VisualState state, PrimitiveComponent prim, sbyte animFace, in SLNG.Core.TextureAnimFrame frame)
     {
-        var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint,
+        var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint,
             prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation, prim.TexGen);
 
         // Same fallback the material build uses: a mesh without per-surface face info wears one
@@ -1397,7 +1397,8 @@ public partial class ObjectRenderer : Node3D
             }
         }
 
-        var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.ColorTint, prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation, prim.TexGen);
+        var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint,
+            prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation, prim.TexGen);
 
         // Fallback solid / mesh without per-surface face info: one material for the whole node.
         if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
@@ -1593,9 +1594,9 @@ public partial class ObjectRenderer : Node3D
             material.Shader = PrimShaderFamily.Blend;
         }
 
-        if (ft.MaterialId != Guid.Empty && _assetService != null)
+        if (ft.RenderMaterialId != Guid.Empty && _assetService != null)
         {
-            var pbr = await _assetService.GetMaterialAsync(ft.MaterialId);
+            var pbr = await _assetService.GetMaterialAsync(ft.RenderMaterialId);
             if (pbr != null)
             {
                 var baseColor = new Godot.Color(pbr.BaseColorFactor.X, pbr.BaseColorFactor.Y, pbr.BaseColorFactor.Z, pbr.BaseColorFactor.W) * colorTint;

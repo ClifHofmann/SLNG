@@ -30,6 +30,12 @@ public class PrimitiveComponent : IComponent
     /// <summary>UUID of the prim's PBR glTF material, or empty if classic material.</summary>
     public Guid RenderMaterialId { get; set; }
 
+    /// <summary>UUID of the DEFAULT face's legacy Blinn-Phong material (normal + specular map),
+    /// or empty. A face can carry this and <see cref="RenderMaterialId"/> independently -- they
+    /// are two different material systems. Per-face ids live in <see cref="Faces"/>; this covers
+    /// prims that send no per-face entries because every face is identical.</summary>
+    public Guid LegacyMaterialId { get; set; }
+
     /// <summary>Base color tint (RGBA) applied to the texture/material.</summary>
     public Vector4 ColorTint { get; set; }
 
