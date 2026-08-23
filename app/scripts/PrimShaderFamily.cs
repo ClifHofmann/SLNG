@@ -82,6 +82,15 @@ public static class PrimShaderFamily
     public static readonly StringName HasNormalTexture = "has_normal_texture";
     public static readonly StringName NormalScale = "normal_scale";
 
+    /// <summary>A LEGACY Blinn-Phong material places its normal map independently of the diffuse
+    /// texture (NormRepeat/NormOffset/NormRotation are the material's own fields), so the normal
+    /// map gets its own coordinate. Set <see cref="HasNormalUv"/> alongside them -- with it false
+    /// the normal map keeps sharing the diffuse placement, which is what the glTF path wants.</summary>
+    public static readonly StringName NormalUvScale = "normal_uv_scale";
+    public static readonly StringName NormalUvOffset = "normal_uv_offset";
+    public static readonly StringName NormalUvRotation = "normal_uv_rotation";
+    public static readonly StringName HasNormalUv = "has_normal_uv";
+
     public static readonly StringName OrmTexture = "orm_texture";
     public static readonly StringName HasOrmTexture = "has_orm_texture";
 

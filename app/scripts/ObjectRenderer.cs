@@ -554,7 +554,17 @@ public partial class ObjectRenderer : Node3D
             else if (!vs.MeshInstance.Visible)
                 drawn = "HIDDEN";
             else
-                drawn = $"drawn, {vs.MeshInstance.Mesh.GetSurfaceCount()} surfaces";
+            {
+                // The AABB the object actually occupies, in metres, so "it looks a different size
+                // than Firestorm" becomes a number instead of an impression. Two screenshots
+                // cannot settle it -- the cameras and fields of view differ -- but this can be
+                // read straight against the size the build floater reports. Godot is Y-up, so the
+                // Y and Z extents are swapped back into SL's order to be comparable.
+                var aabb = vs.MeshInstance.GetAabb();
+                var scaled = aabb.Size * vs.MeshInstance.Scale;
+                drawn = $"drawn, {vs.MeshInstance.Mesh.GetSurfaceCount()} surfaces, " +
+                        $"aabb=({scaled.X:0.##} x {scaled.Z:0.##} x {scaled.Y:0.##} m)";
+            }
 
             // SL region-local position, and Z especially: a prim that sits BELOW the region's
             // water height is veiled by water fog in the real viewer and, since our atmospherics
@@ -1607,13 +1617,50 @@ public partial class ObjectRenderer : Node3D
         if (ft.LegacyMaterialId != Guid.Empty && _assetService != null)
         {
             var legacy = await _assetService.GetLegacyMaterialAsync(ft.LegacyMaterialId);
-            if (legacy is { } lm && _legacyMaterialsSeen.TryAdd(lm.Id, 0))
+            if (legacy is { } lm)
             {
-                GD.Print($"[LegacyMaterial] {lm.Id.ToString()[..8]} " +
-                         $"normal={(lm.NormalMap == Guid.Empty ? "none" : lm.NormalMap.ToString()[..8])} " +
-                         $"specular={(lm.SpecularMap == Guid.Empty ? "none" : lm.SpecularMap.ToString()[..8])} " +
-                         $"gloss={lm.SpecularExponent} env={lm.EnvironmentIntensity} " +
-                         $"alphaMode={lm.DiffuseAlphaMode} — resolved, not yet rendered");
+                if (_legacyMaterialsSeen.TryAdd(lm.Id, 0))
+                {
+                    GD.Print($"[LegacyMaterial] {lm.Id.ToString()[..8]} " +
+                             $"normal={(lm.NormalMap == Guid.Empty ? "none" : lm.NormalMap.ToString()[..8])} " +
+                             $"specular={(lm.SpecularMap == Guid.Empty ? "none" : lm.SpecularMap.ToString()[..8])} " +
+                             $"gloss={lm.SpecularExponent} env={lm.EnvironmentIntensity} " +
+                             $"alphaMode={lm.DiffuseAlphaMode}");
+                }
+
+                if (lm.NormalMap != Guid.Empty)
+                {
+                    used.Add(lm.NormalMap);
+
+                    // The material's own placement, folded the same way BuildFaceMaterialAsync
+                    // folds the face's: centring into the offset, and the MINUS on V that the
+                    // flipV meshes require. Identical arithmetic on purpose -- the map is placed
+                    // by different NUMBERS, not by a different rule.
+                    var nScale = new Godot.Vector2(lm.NormalRepeat.X, lm.NormalRepeat.Y);
+                    var nOffset = new Godot.Vector2(
+                        0.5f - 0.5f * nScale.X + lm.NormalOffset.X,
+                        0.5f - 0.5f * nScale.Y - lm.NormalOffset.Y);
+
+                    var normalTex = await GetOrCreateGpuTextureAsync(lm.NormalMap, screenPixelArea, priority);
+                    Godot.Callable.From(() =>
+                    {
+                        // Same eviction guard as the diffuse path: the GpuCache can free this
+                        // between the fetch completing and this callback running on the main
+                        // thread, so the check belongs inside the callback, not before it.
+                        if (!IsInstanceValid(normalTex))
+                        {
+                            GD.PrintErr($"[LegacyMaterial] normal map {lm.NormalMap} fetch/decode returned null");
+                            return;
+                        }
+                        material.SetShaderParameter(PrimShaderFamily.NormalTexture, normalTex);
+                        material.SetShaderParameter(PrimShaderFamily.HasNormalTexture, true);
+                        material.SetShaderParameter(PrimShaderFamily.NormalScale, 1.0f);
+                        material.SetShaderParameter(PrimShaderFamily.NormalUvScale, nScale);
+                        material.SetShaderParameter(PrimShaderFamily.NormalUvOffset, nOffset);
+                        material.SetShaderParameter(PrimShaderFamily.NormalUvRotation, lm.NormalRotation);
+                        material.SetShaderParameter(PrimShaderFamily.HasNormalUv, true);
+                    }).CallDeferred();
+                }
             }
         }
 

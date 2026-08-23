@@ -22,6 +22,9 @@ uniform float alpha_scissor_threshold : hint_range(0.0, 1.0) = 0.5;
 varying vec3 v_view_position;
 
 void vertex() {
+    // The normal-map coordinate is derived from the SAME base UV, so it must be computed before
+    // UV is overwritten by the diffuse placement.
+    v_normal_uv = slng_normal_uv(UV, VERTEX, NORMAL);
     UV = slng_transform_uv(UV, VERTEX, NORMAL);
     v_view_position = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }

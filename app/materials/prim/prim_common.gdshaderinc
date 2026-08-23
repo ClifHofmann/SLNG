@@ -53,6 +53,21 @@ uniform vec2 uv_scale = vec2(1.0);
 uniform vec2 uv_offset = vec2(0.0);
 uniform float uv_rotation = 0.0;
 
+// A LEGACY Blinn-Phong material places its normal map INDEPENDENTLY of the diffuse texture --
+// NormRepeat/NormOffset/NormRotation are their own fields on the material, not the face's
+// (llmaterial.cpp:35-40). So the normal map needs its own transformed coordinate rather than
+// reusing UV, and it is carried as a varying because the transform belongs in the vertex stage
+// for the same reason the diffuse one does.
+//
+// Defaults are the identity AND has_normal_uv is false, so a face without a legacy material
+// behaves exactly as before: the normal map, if any, keeps sharing the diffuse placement.
+uniform vec2 normal_uv_scale = vec2(1.0);
+uniform vec2 normal_uv_offset = vec2(0.0);
+uniform float normal_uv_rotation = 0.0;
+uniform bool has_normal_uv = false;
+
+varying vec2 v_normal_uv;
+
 // --- TexGen -------------------------------------------------------------------------------
 // SL's per-face texture GENERATION mode, which decides where the base UV comes from BEFORE the
 // transform above runs. 0 = TEX_GEN_DEFAULT (the mesh's own UVs), 1 = TEX_GEN_PLANAR. The wire
@@ -131,6 +146,29 @@ vec3 slng_apply_atmospherics(vec3 color, vec3 view_position) {
 // in expression"). Whether an `inout` argument writes back INTO a built-in at the call site is
 // the same question, and it fails silently rather than erroring, which is the worst possible
 // failure mode: the transform would simply never be applied. Returning the value sidesteps it.
+
+// The placement transform, parameterised so the diffuse texture and a material's own maps can
+// share one implementation. CENTRE, ROTATE, SCALE, OFFSET -- see slng_transform_uv.
+vec2 slng_place_uv(vec2 uv, vec2 scale, vec2 offset, float rotation) {
+    if (rotation != 0.0) {
+        float s = sin(rotation);
+        float c = cos(rotation);
+        vec2 centred = uv - vec2(0.5);
+        uv = vec2(centred.x * c - centred.y * s, centred.x * s + centred.y * c) + vec2(0.5);
+    }
+    return uv * scale + offset;
+}
+
+// Computes the coordinate a legacy material's NORMAL map is sampled at. Takes the same base
+// coordinate the diffuse transform starts from (including texgen, which is a property of the
+// FACE and applies to every map on it), then applies the material's own placement.
+vec2 slng_normal_uv(vec2 uv, vec3 vertex, vec3 normal) {
+    if (uv_texgen == 1) {
+        uv = slng_planar_uv(vertex, normal);
+    }
+    return slng_place_uv(uv, normal_uv_scale, normal_uv_offset, normal_uv_rotation);
+}
+
 vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
     // TexGen chooses the base coordinate; the transform below is identical either way. The
     // viewer has the same shape: getGeometryVolume computes planar tc and then calls the very
@@ -138,13 +176,7 @@ vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
     if (uv_texgen == 1) {
         uv = slng_planar_uv(vertex, normal);
     }
-    if (uv_rotation != 0.0) {
-        float s = sin(uv_rotation);
-        float c = cos(uv_rotation);
-        vec2 centred = uv - vec2(0.5);
-        uv = vec2(centred.x * c - centred.y * s, centred.x * s + centred.y * c) + vec2(0.5);
-    }
-    uv = uv * uv_scale + uv_offset;
+    uv = slng_place_uv(uv, uv_scale, uv_offset, uv_rotation);
     uv.x += uv_extra_u;
     uv.y += uv_extra_v;
     return uv;
@@ -184,7 +216,7 @@ float slng_shade(vec2 uv, vec3 view_position,
     out_normal_map = vec3(0.5, 0.5, 1.0);
     out_normal_depth = 0.0;
     if (has_normal_texture) {
-        out_normal_map = texture(normal_texture, uv).rgb;
+        out_normal_map = texture(normal_texture, has_normal_uv ? v_normal_uv : uv).rgb;
         out_normal_depth = normal_scale;
     }
 
