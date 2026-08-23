@@ -44,7 +44,7 @@ public class World
     public event EventHandler<ComponentEventArgs>? ComponentUpdated;
     public event EventHandler<ulong>? TerrainUpdated;
     public event EventHandler<ulong>? TerrainSettingsUpdated;
-    
+
     // Selection state -- a set, not a single slot: multiple objects can be selected (and
     // edited via independent windows) at once without one selection silently evicting another.
     private readonly HashSet<Guid> _selectedIds = new();
@@ -199,7 +199,7 @@ public class World
     {
         TerrainSettingsUpdated?.Invoke(this, regionHandle);
     }
-    
+
     /// <summary>Adds entity to the selection set. Additive: selecting a new entity does NOT
     /// deselect any other -- callers that want single-select semantics (e.g. "clicking a new
     /// object replaces the highlight") must explicitly deselect the old one themselves.</summary>

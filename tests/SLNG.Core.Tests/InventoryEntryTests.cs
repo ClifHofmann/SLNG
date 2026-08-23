@@ -1,6 +1,6 @@
 using System;
-using Xunit;
 using SLNG.Core;
+using Xunit;
 
 namespace SLNG.Core.Tests;
 

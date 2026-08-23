@@ -21,7 +21,7 @@ namespace SLNG.Core.Tests.Services
                     }
                 }
                 """);
-                
+
                 File.WriteAllText(Path.Combine(testDir, "de-DE.json"), """
                 {
                     "ui": {
@@ -42,7 +42,7 @@ namespace SLNG.Core.Tests.Services
                 manager.CurrentLocale = "de-DE";
                 Assert.Equal("Speichern", manager.Translate("ui.button"));
                 Assert.Equal("Hello Bob!", manager.TranslateFormat("ui.greet", "Bob")); // Should fallback to en-US
-                
+
                 // Missing key fallback test
                 Assert.Equal("[missing.key]", manager.Translate("missing.key"));
             }

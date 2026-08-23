@@ -8,9 +8,9 @@ namespace SLNG.Core.Services
     public class LocalizationManager
     {
         private readonly Dictionary<string, Dictionary<string, string>> _locales = new();
-        
+
         public string FallbackLocale { get; set; } = "en-US";
-        
+
         private string _currentLocale = "en-US";
         public string CurrentLocale
         {
@@ -99,10 +99,10 @@ namespace SLNG.Core.Services
         {
             if (_locales.TryGetValue(CurrentLocale, out var dict) && dict.TryGetValue(key, out var val))
                 return val;
-                
+
             if (_locales.TryGetValue(FallbackLocale, out var fallbackDict) && fallbackDict.TryGetValue(key, out var fallbackVal))
                 return fallbackVal;
-                
+
             return $"[{key}]";
         }
 

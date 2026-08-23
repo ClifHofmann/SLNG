@@ -24,3 +24,10 @@ indent_size = 2
 [*.{tscn,tres,godot}]
 indent_size = 4
 trim_trailing_whitespace = false
+
+# Vendored third-party source, formatted as upstream ships it. PrimMesher comes from
+# OpenSimulator (BSD, see the per-file headers); running `dotnet format` over it rewrites ~2300
+# lines and destroys the diff against upstream, which is the only way to review a future update.
+# `generated_code = true` is the documented way to take files out of analyzer/format scope.
+[src/SLNG.Assets/PrimMesher/**.cs]
+generated_code = true

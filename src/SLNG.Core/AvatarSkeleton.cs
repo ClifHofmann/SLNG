@@ -49,7 +49,7 @@ public class AvatarSkeleton
 
     public BoneDefinition? GetBone(string name) =>
         _bonesByName.TryGetValue(name, out var b) ? b : null;
-        
+
     public string ResolveBoneName(string nameOrAlias)
     {
         if (_bonesByName.ContainsKey(nameOrAlias)) return nameOrAlias;

@@ -145,7 +145,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var asmLocation = typeof(LibreMetaverse.Settings).Assembly.Location;
         var libremetaverseDir = string.IsNullOrEmpty(asmLocation) ? AppContext.BaseDirectory : System.IO.Path.GetDirectoryName(asmLocation);
         if (string.IsNullOrEmpty(libremetaverseDir)) libremetaverseDir = AppContext.BaseDirectory;
-        
+
         if (!string.IsNullOrEmpty(libremetaverseDir))
         {
             var lindenDir = System.IO.Path.Combine(libremetaverseDir, "linden");
@@ -246,7 +246,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // Coexists with ObjectManager's own internal ObjectUpdate handler (packet callbacks are
         // multicast) -- see _lightPresentByLocalId for why this is needed.
         _client.Network.RegisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
-        
+
         // FEAT-ENV-02: Intercept raw SimulatorViewerTimeMessage to sync the server's time
         _client.Network.RegisterCallback(PacketType.SimulatorViewerTimeMessage, OnSimulatorViewerTimePacket);
 
@@ -1959,12 +1959,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public Task MoveToTrashAsync(Guid itemId, bool isFolder)
     {
         if (TrashFolderId is not { } trashId) return Task.CompletedTask;
-        
+
         if (isFolder)
             _client.Inventory.MoveFolder(new LibreMetaverse.UUID(itemId), new LibreMetaverse.UUID(trashId));
         else
             _client.Inventory.MoveItem(new LibreMetaverse.UUID(itemId), new LibreMetaverse.UUID(trashId));
-            
+
         return Task.CompletedTask;
     }
 
@@ -2003,7 +2003,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         var itemUuid = new LibreMetaverse.UUID(itemId);
         var parentUuid = new LibreMetaverse.UUID(newParentId);
-        
+
         await _client.Inventory.RequestCopyItemAsync(itemUuid, parentUuid, newName, CancellationToken.None).ConfigureAwait(false);
     }
 
@@ -2328,7 +2328,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (nextCopy) nextOwnerMask |= (uint)LibreMetaverse.PermissionMask.Copy;
             if (nextModify) nextOwnerMask |= (uint)LibreMetaverse.PermissionMask.Modify;
             if (nextTransfer) nextOwnerMask |= (uint)LibreMetaverse.PermissionMask.Transfer;
-            
+
             // Only update next-owner permissions; others shouldn't be touched by UI directly yet
             var perms = item.Permissions;
             perms.NextOwnerMask = (LibreMetaverse.PermissionMask)nextOwnerMask;
@@ -2359,11 +2359,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public void UpdateObjectTransform(uint localId, System.Numerics.Vector3 position, System.Numerics.Quaternion rotation, System.Numerics.Vector3 scale)
     {
         if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
-        
+
         var slPos = new LibreMetaverse.Vector3(position.X, position.Y, position.Z);
         var slRot = new LibreMetaverse.Quaternion(rotation.X, rotation.Y, rotation.Z, rotation.W);
         var slScale = new LibreMetaverse.Vector3(scale.X, scale.Y, scale.Z);
-        
+
         _client.Objects.SetPosition(_client.Network.CurrentSim, localId, slPos);
         _client.Objects.SetRotation(_client.Network.CurrentSim, localId, slRot);
         _client.Objects.SetScale(_client.Network.CurrentSim, localId, slScale, true, false);
@@ -2658,7 +2658,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     var udpBytes = await tcs.Task.ConfigureAwait(false);
                     if (udpBytes is { Length: > 0 })
                         // Console.Error.WriteLine($"[TextureFetch] {textureId}: UDP delivered {udpBytes.Length} bytes");
-                    return udpBytes;
+                        return udpBytes;
                 }
             }
         }

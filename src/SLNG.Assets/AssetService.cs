@@ -3,10 +3,10 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Caching.Memory;
 using LibreMetaverse;
 using LibreMetaverse.Assets;
 using LibreMetaverse.Rendering;
+using Microsoft.Extensions.Caching.Memory;
 using SLNG.Core;
 using SLNG.Net;
 
@@ -182,15 +182,20 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightPrimMeshes.GetOrAdd(key, async k => {
-            try {
+        return _inflightPrimMeshes.GetOrAdd(key, async k =>
+        {
+            try
+            {
                 var result = await Task.Run(() => PrimMeshService.Generate(k.Shape, ToLibreMetaverseDetailLevel(k.Lod))).ConfigureAwait(false);
-                if (result != null) {
+                if (result != null)
+                {
                     long size = EstimateMeshSize(result);
                     _memCache.Set(k, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
                 }
                 return result;
-            } finally {
+            }
+            finally
+            {
                 _inflightPrimMeshes.TryRemove(k, out _);
             }
         });
@@ -217,21 +222,26 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightSculptMeshes.GetOrAdd((sculptId, sculptType), async k => {
+        return _inflightSculptMeshes.GetOrAdd((sculptId, sculptType), async k =>
+        {
             var id = k.Id;
-            try {
+            try
+            {
                 var map = await GetTextureAsync(id, isSculpt: true).ConfigureAwait(false);
                 if (map == null) return null;
 
                 var result = await Task.Run(() =>
                     PrimMeshService.GenerateSculpt(map.Rgba, map.Width, map.Height, k.Type)).ConfigureAwait(false);
 
-                if (result != null) {
+                if (result != null)
+                {
                     long size = EstimateMeshSize(result);
                     _memCache.Set(cacheKey, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
                 }
                 return result;
-            } finally {
+            }
+            finally
+            {
                 _inflightSculptMeshes.TryRemove(k, out _);
             }
         });
@@ -251,15 +261,20 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightMeshes.GetOrAdd(meshId, async id => {
-            try {
+        return _inflightMeshes.GetOrAdd(meshId, async id =>
+        {
+            try
+            {
                 var result = await FetchAndDecodeMeshAsync(id).ConfigureAwait(false);
-                if (result != null) {
+                if (result != null)
+                {
                     long size = 1024 * 10; // rough 10KB estimate per mesh
                     _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
                 }
                 return result;
-            } finally {
+            }
+            finally
+            {
                 _inflightMeshes.TryRemove(id, out _);
             }
         });
@@ -456,7 +471,7 @@ public class AssetService
             inverseBinds[j] = (ibm != null && ibm.Length >= o + 16)
                 ? ToMatrix(ibm, o)
                 : System.Numerics.Matrix4x4.Identity;
-            
+
             if (altInverseBinds != null)
             {
                 altInverseBinds[j] = (altIbm != null && altIbm.Length >= o + 16)
@@ -473,9 +488,9 @@ public class AssetService
     }
 
     private static System.Numerics.Matrix4x4 ToMatrix(float[] m, int o) => new(
-        m[o + 0],  m[o + 1],  m[o + 2],  m[o + 3],
-        m[o + 4],  m[o + 5],  m[o + 6],  m[o + 7],
-        m[o + 8],  m[o + 9],  m[o + 10], m[o + 11],
+        m[o + 0], m[o + 1], m[o + 2], m[o + 3],
+        m[o + 4], m[o + 5], m[o + 6], m[o + 7],
+        m[o + 8], m[o + 9], m[o + 10], m[o + 11],
         m[o + 12], m[o + 13], m[o + 14], m[o + 15]);
 
     /// <summary>
@@ -917,14 +932,19 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightMaterials.GetOrAdd(materialId, async id => {
-            try {
+        return _inflightMaterials.GetOrAdd(materialId, async id =>
+        {
+            try
+            {
                 var result = await FetchMaterialAsync(id).ConfigureAwait(false);
-                if (result != null) {
+                if (result != null)
+                {
                     _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = 1024, SlidingExpiration = TimeSpan.FromMinutes(10) });
                 }
                 return result;
-            } finally {
+            }
+            finally
+            {
                 _inflightMaterials.TryRemove(id, out _);
             }
         });
@@ -954,21 +974,21 @@ public class AssetService
             {
                 if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_BASE_COLOR)
                     baseColorTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_BASE_COLOR].Guid;
-                
+
                 if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_NORMAL)
                     normalTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_NORMAL].Guid;
-                
+
                 if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_METALLIC_ROUGHNESS)
                     ormTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_METALLIC_ROUGHNESS].Guid;
-                
+
                 if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_EMISSIVE)
                     emissiveTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_EMISSIVE].Guid;
             }
 
             var baseColor = new System.Numerics.Vector4(
-                asset.BaseColorFactor.R, 
-                asset.BaseColorFactor.G, 
-                asset.BaseColorFactor.B, 
+                asset.BaseColorFactor.R,
+                asset.BaseColorFactor.G,
+                asset.BaseColorFactor.B,
                 asset.BaseColorFactor.A);
 
             var emissive = new System.Numerics.Vector3(
@@ -1021,14 +1041,19 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightAnimations.GetOrAdd(animId, async id => {
-            try {
+        return _inflightAnimations.GetOrAdd(animId, async id =>
+        {
+            try
+            {
                 var result = await FetchAndDecodeAnimationAsync(id).ConfigureAwait(false);
-                if (result != null) {
+                if (result != null)
+                {
                     _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = 4096, SlidingExpiration = TimeSpan.FromMinutes(15) });
                 }
                 return result;
-            } finally {
+            }
+            finally
+            {
                 _inflightAnimations.TryRemove(id, out _);
             }
         });
@@ -1243,7 +1268,7 @@ public class AssetService
                     for (int p = 0; p < width * height; p++)
                     {
                         int s = p * ch, d = p * 4;
-                        rgba[d]     = raw[s];
+                        rgba[d] = raw[s];
                         rgba[d + 1] = raw[s + 1];
                         rgba[d + 2] = raw[s + 2];
                         rgba[d + 3] = ch >= 4 ? raw[s + 3] : (byte)255;
@@ -1278,7 +1303,7 @@ public class AssetService
             // premise that these assets needed reconstruction at all was wrong.
             // Magick.NET (OpenJP2) is very strict and fails on missing EOC markers or bad header lengths
             // common in older SL/OpenSim assets. Fall back to CoreJ2K, which is much more forgiving.
-            try 
+            try
             {
                 SkiaSharp.SKBitmap? bitmap = null;
                 lock (_coreJ2kLogLock)
@@ -1309,14 +1334,14 @@ public class AssetService
                             var targetBitmap = bitmap;
 
                             // Ensure the bitmap is converted to Rgba8888 for Godot's Image.CreateFromData
-                            var rgbaBitmap = targetBitmap.ColorType == SkiaSharp.SKColorType.Rgba8888 
-                                ? targetBitmap 
+                            var rgbaBitmap = targetBitmap.ColorType == SkiaSharp.SKColorType.Rgba8888
+                                ? targetBitmap
                                 : targetBitmap.Copy(SkiaSharp.SKColorType.Rgba8888);
-                            
+
                             int width = targetBitmap.Width;
                             int height = targetBitmap.Height;
                             byte[] exactRgba = new byte[width * height * 4];
-                            
+
                             if (rgbaBitmap.RowBytes == width * 4)
                             {
                                 System.Runtime.InteropServices.Marshal.Copy(rgbaBitmap.GetPixels(), exactRgba, 0, exactRgba.Length);
