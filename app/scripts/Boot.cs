@@ -102,7 +102,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.9.0-alpha";
+    public const string AppVersion = "v0.9.1-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -225,6 +225,16 @@ public partial class Boot : Control
         SetupTopMenu();
 
         LogMessage("Ready. Enter credentials and click Login.");
+
+        // --selftest: the smoke test AGENTS.md has documented since the first commit (see
+        // SelfTest). Deferred rather than called inline so the rest of _Ready -- renderers,
+        // environment, HUD -- has finished constructing first: the point is to check the client as
+        // it stands at the login screen, not half-built. Callable.From instead of
+        // CallDeferred(nameof(...)) so it needs no method registration on this class.
+        if (SelfTest.Requested)
+        {
+            Callable.From(() => SelfTest.Run(GetTree())).CallDeferred();
+        }
     }
 
     private void ReassertWindowTitleOnce()

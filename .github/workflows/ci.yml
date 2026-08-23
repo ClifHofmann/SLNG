@@ -25,6 +25,44 @@ jobs:
       - name: Test
         run: dotnet test SLNG.sln --no-build -c Release --verbosity normal
 
-  # A Godot export/build job (godot --headless --path app -- --selftest) is added
-  # once the engine version is pinned. It needs the Godot .NET editor in CI,
-  # so it is kept separate from the always-on .NET job above.
+      # Text-level check: a `global uniform` has to be declared in BOTH the shader and
+      # project.godot, and nothing else in the pipeline looks at .gdshader files at all.
+      # Complementary to the selftest job below, which loads the shaders through the engine.
+      - name: Check shader globals
+        run: python tools/check_shader_globals.py
+
+  selftest:
+    name: smoke test (Godot --selftest)
+    # windows-latest, not ubuntu: Windows is the declared primary target, it is what the
+    # release build in build_installer.yml runs on, and the .NET job above is already red on
+    # Linux for an unrelated native-dependency reason (SculptStitchingNoneTests). Putting the
+    # smoke test on the platform we ship keeps its signal readable instead of adding a second
+    # red X nobody separates from the first.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Setup Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          # Matches AGENTS.md's verified toolchain and build_installer.yml. Export templates
+          # are not needed here -- this job runs the project, it does not export it.
+          version: 4.7.0
+          use-dotnet: true
+
+      - name: Build app
+        run: dotnet build app/SLNG.App.csproj -c Release
+
+      # Loads every shader, locale and the Bento skeleton through the engine and exits non-zero
+      # on the first thing that does not come up. This is the check that would have caught the
+      # black sky dome of v0.7.36-alpha; `godot --headless --editor --quit` does not compile
+      # shaders and reports success on a shader that cannot compile.
+      - name: Self-test
+        run: godot --headless --path app -- --selftest

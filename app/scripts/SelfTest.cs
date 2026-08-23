@@ -1,0 +1,266 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Godot;
+using SLNG.Core;
+
+namespace SLNG.App;
+
+/// <summary>
+/// The <c>--selftest</c> smoke test that <c>AGENTS.md</c> has documented since the first commit and
+/// that never existed: <c>godot --headless --path app -- --selftest</c> simply sat at the login
+/// screen forever. That gap is not cosmetic -- it is why the FEAT-RENDER-04 shader changes were
+/// handed over unverified, and why a sky shader that failed to compile (v0.7.36-alpha) shipped as a
+/// black dome with no other symptom.
+///
+/// What it deliberately does NOT do: log in. A smoke test that needs credentials and a reachable
+/// grid is a test nobody can run in CI, and every failure it finds is ambiguous between "our bug"
+/// and "the grid is down". Everything checked here is a resource the client loads before the login
+/// button is even pressed, which is exactly the class of failure that has actually bitten this
+/// project: a resource that reads fine from source and not from a .pck, a shader whose
+/// <c>#include</c> stopped resolving, a locale file that lost half its keys.
+///
+/// Exit code is 0 on pass and 1 on failure, so it can go straight into CI next to
+/// <c>tools/check_shader_globals.py</c> -- the two are complementary: the python checker reads the
+/// shader *text* and catches a global uniform missing from project.godot, this one loads the
+/// resources through the engine.
+/// </summary>
+public static class SelfTest
+{
+    private const string Flag = "--selftest";
+
+    /// <summary>True when the client was started with <c>--selftest</c>. Mirrors
+    /// <see cref="Diagnostics"/>: Godot puts arguments after a bare <c>--</c> into
+    /// GetCmdlineUserArgs and the rest into GetCmdlineArgs, and both are checked so the flag works
+    /// whether or not it is passed after the separator.</summary>
+    public static bool Requested =>
+        HasFlag(OS.GetCmdlineArgs()) || HasFlag(OS.GetCmdlineUserArgs());
+
+    private static bool HasFlag(string[] args)
+    {
+        foreach (string arg in args)
+        {
+            if (arg == Flag) return true;
+        }
+        return false;
+    }
+
+    private readonly record struct Check(string Name, bool Passed, string Detail);
+
+    /// <summary>
+    /// Runs every check, prints one line each plus a summary, and quits the tree with 0 or 1.
+    /// Call it from <c>Boot._Ready</c> deferred: the checks load resources, and doing that inside
+    /// <c>_Ready</c> would interleave with the rest of the boot sequence still setting itself up.
+    /// </summary>
+    public static void Run(SceneTree tree)
+    {
+        var results = new List<Check>();
+        results.AddRange(CheckShaders());
+        results.Add(CheckShaderIncludes());
+        results.AddRange(CheckLocales());
+        results.Add(CheckAvatarSkeleton());
+
+        foreach (var r in results)
+        {
+            GD.Print($"[SelfTest] {(r.Passed ? "ok  " : "FAIL")} {r.Name}: {r.Detail}");
+        }
+
+        int failed = results.Count(r => !r.Passed);
+        GD.Print($"[SelfTest] {results.Count - failed}/{results.Count} checks passed");
+        GD.Print(failed == 0 ? "[SelfTest] PASS" : "[SelfTest] FAIL");
+
+        tree.Quit(failed == 0 ? 0 : 1);
+    }
+
+    /// <summary>
+    /// Every <c>.gdshader</c> under <c>res://materials</c> loads and reports uniforms.
+    ///
+    /// The uniform list is the signal, not the load itself: <c>ResourceLoader.Load</c> hands back a
+    /// Shader object for a file that does not parse, but a shader the language frontend rejected
+    /// exposes no uniforms. Every shader in this project declares some, so an empty list means the
+    /// shader is broken -- including a broken <c>#include</c>, which is otherwise invisible until a
+    /// surface using it renders wrong.
+    /// </summary>
+    private static IEnumerable<Check> CheckShaders()
+    {
+        var paths = EnumerateResources("res://materials", ".gdshader").OrderBy(p => p).ToList();
+        if (paths.Count == 0)
+        {
+            yield return new Check("shaders", false, "no .gdshader files found under res://materials");
+            yield break;
+        }
+
+        foreach (string path in paths)
+        {
+            Shader? shader = ResourceLoader.Load<Shader>(path);
+            if (shader == null)
+            {
+                yield return new Check($"shader {ShortName(path)}", false, "failed to load");
+                continue;
+            }
+
+            int uniforms = shader.GetShaderUniformList().Count;
+            yield return new Check(
+                $"shader {ShortName(path)}",
+                uniforms > 0,
+                uniforms > 0 ? $"{uniforms} uniforms" : "0 uniforms -- shader did not compile");
+        }
+    }
+
+    /// <summary>
+    /// The <c>.gdshaderinc</c> files exist and are non-empty.
+    ///
+    /// They are checked by presence rather than by parsing because an include is not a standalone
+    /// translation unit -- there is nothing to load it as. Their real verification is the uniform
+    /// count of the shaders that include them, above; this check exists to turn "every shader
+    /// reports 0 uniforms" into an obvious cause instead of a mystery.
+    /// </summary>
+    private static Check CheckShaderIncludes()
+    {
+        var paths = EnumerateResources("res://materials", ".gdshaderinc").ToList();
+        var empty = new List<string>();
+        foreach (string path in paths)
+        {
+            using var file = FileAccess.Open(path, FileAccess.ModeFlags.Read);
+            if (file == null || file.GetLength() == 0) empty.Add(ShortName(path));
+        }
+
+        return new Check(
+            "shader includes",
+            paths.Count > 0 && empty.Count == 0,
+            empty.Count == 0 ? $"{paths.Count} readable" : $"empty/unreadable: {string.Join(", ", empty)}");
+    }
+
+    /// <summary>
+    /// Each <c>res://i18n/*.json</c> parses and carries keys, and every non-default locale covers
+    /// the full <c>en-US</c> key set.
+    ///
+    /// The coverage half is what makes this worth running: a missing key does not throw, it renders
+    /// as the raw <c>[key]</c> fallback in the UI, which is only ever noticed by someone running
+    /// that language. The whole i18n subsystem shipped once showing nothing but those fallbacks
+    /// (FEAT-UI-02, fixed by reading through FileAccess so the .pck works).
+    /// </summary>
+    private static IEnumerable<Check> CheckLocales()
+    {
+        var manager = new SLNG.Core.Services.LocalizationManager();
+        var loaded = new Dictionary<string, HashSet<string>>();
+
+        var paths = EnumerateResources("res://i18n", ".json").OrderBy(p => p).ToList();
+        foreach (string path in paths)
+        {
+            string locale = ShortName(path);
+            locale = locale.Substring(0, locale.Length - ".json".Length);
+
+            using var file = FileAccess.Open(path, FileAccess.ModeFlags.Read);
+            if (file == null)
+            {
+                yield return new Check($"locale {locale}", false, $"cannot open: {FileAccess.GetOpenError()}");
+                continue;
+            }
+
+            // Assigned in the try and inspected after it: C# forbids `yield return` inside a catch,
+            // so the failure has to leave the block as data.
+            HashSet<string>? keys = null;
+            string? error = null;
+            try
+            {
+                manager.LoadLocaleFromJson(locale, file.GetAsText());
+                keys = manager.GetDictionaryForLocale(locale).Keys.ToHashSet();
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+            }
+
+            if (keys == null)
+            {
+                yield return new Check($"locale {locale}", false, error ?? "failed to load");
+                continue;
+            }
+
+            loaded[locale] = keys;
+            yield return new Check($"locale {locale}", keys.Count > 0, keys.Count > 0 ? $"{keys.Count} keys" : "no keys");
+        }
+
+        // en-US is the fallback locale, so it defines the key set every other locale is measured
+        // against. Reported as a named list rather than a count: "3 missing" sends someone
+        // diffing two JSON files by hand, the names do not.
+        if (loaded.TryGetValue("en-US", out var reference) && reference.Count > 0)
+        {
+            foreach (var (locale, keys) in loaded.Where(kv => kv.Key != "en-US").OrderBy(kv => kv.Key))
+            {
+                var missing = reference.Except(keys).OrderBy(k => k).ToList();
+                yield return new Check(
+                    $"locale {locale} coverage",
+                    missing.Count == 0,
+                    missing.Count == 0
+                        ? $"{keys.Count}/{reference.Count}"
+                        : $"missing {missing.Count}: {string.Join(", ", missing.Take(8))}{(missing.Count > 8 ? ", ..." : "")}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// <c>avatar_skeleton.xml</c> loads through the real parser and yields the Bento bone set.
+    ///
+    /// This is the check with a live precedent: the loader used System.IO + GlobalizePath, which
+    /// reads nothing out of an exported .pck, and the failure path in AvatarRenderer swallows the
+    /// exception and falls back to a capsule -- so an entire broken avatar pipeline produced no log
+    /// line at all. The threshold is deliberately loose (a Bento skeleton has well over 100 joints);
+    /// the point is to separate "parsed" from "silently empty", not to pin a count that legitimately
+    /// changes.
+    /// </summary>
+    private static Check CheckAvatarSkeleton()
+    {
+        const string path = "res://assets/avatar/avatar_skeleton.xml";
+        try
+        {
+            using var file = FileAccess.Open(path, FileAccess.ModeFlags.Read);
+            if (file == null) return new Check("avatar skeleton", false, $"cannot open {path}: {FileAccess.GetOpenError()}");
+
+            var skeleton = AvatarSkeleton.LoadFromXml(file.GetAsText());
+            int bones = skeleton.Bones.Count;
+            return new Check("avatar skeleton", bones >= 100, $"{bones} bones");
+        }
+        catch (Exception ex)
+        {
+            return new Check("avatar skeleton", false, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Recursive directory walk over a res:// tree. DirAccess rather than System.IO for the same
+    /// reason the rest of the boot path uses it: it reads loose files and .pck contents alike, so
+    /// the self-test covers an exported build instead of only a run from source.
+    /// </summary>
+    private static IEnumerable<string> EnumerateResources(string dirPath, string extension)
+    {
+        var subdirs = new List<string>();
+
+        using (var dir = DirAccess.Open(dirPath))
+        {
+            if (dir == null) yield break;
+
+            dir.ListDirBegin();
+            for (string name = dir.GetNext(); name != ""; name = dir.GetNext())
+            {
+                if (dir.CurrentIsDir())
+                {
+                    if (!name.StartsWith(".")) subdirs.Add($"{dirPath}/{name}");
+                }
+                else if (name.EndsWith(extension, StringComparison.Ordinal))
+                {
+                    yield return $"{dirPath}/{name}";
+                }
+            }
+            dir.ListDirEnd();
+        }
+
+        foreach (string sub in subdirs)
+        {
+            foreach (string found in EnumerateResources(sub, extension)) yield return found;
+        }
+    }
+
+    private static string ShortName(string resPath) => resPath.Substring(resPath.LastIndexOf('/') + 1);
+}
