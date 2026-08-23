@@ -224,7 +224,7 @@ vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
 // Returns the albedo alpha, the one thing the variants genuinely disagree about.
 float slng_shade(vec2 uv, vec3 view_position,
                  out vec3 out_albedo,
-                 out float out_metallic, out float out_roughness,
+                 out float out_metallic, out float out_roughness, out float out_specular,
                  out vec3 out_normal_map, out float out_normal_depth,
                  out vec3 out_emission) {
     vec4 albedo = albedo_color;
@@ -237,22 +237,45 @@ float slng_shade(vec2 uv, vec3 view_position,
     out_metallic = metallic_factor;
     out_roughness = roughness_factor;
 
+    out_specular = 0.5;   // Godot's default: a 4% dielectric F0.
+
     if (has_specular_texture) {
         vec3 spec = texture(specular_texture, v_specular_uv).rgb * specular_tint;
 
-        // Luminance, because Godot has nowhere to put the colour. Rec. 709, the same weights the
-        // viewer's own srgb helpers use.
-        float reflectivity = dot(spec, vec3(0.2126, 0.7152, 0.0722));
+        // SL modulates glossiness PER TEXEL with the normal map's ALPHA channel
+        // (materialF.glsl:227, `glossiness *= vNt.a`). Not an optional refinement: content is
+        // authored expecting it, and without it a material that varies its polish across the
+        // surface comes out uniformly shiny or uniformly matte.
+        float glossiness = specular_glossiness;
+        if (has_normal_texture) {
+            glossiness *= texture(normal_texture, has_normal_uv ? v_normal_uv : uv).a;
+        }
 
-        // A bright spec texel is a polished spot. Roughness runs the other way from glossiness,
-        // and the material's glossiness caps how polished the brightest texel can be.
-        out_roughness = clamp(1.0 - specular_glossiness * reflectivity, 0.0, 1.0);
+        // The Blinn-Phong exponent SL actually uses, from the code that BUILDS its specular
+        // lookup texture (LLPipeline::createLUTBuffers, pipeline.cpp:1447):
+        //     n = glossiness * glossiness * RenderSpecularExponent      (default 368)
+        //     spec = pow(N dot H, n)
+        // Then the standard Blinn-Phong -> GGX conversion, alpha = sqrt(2/(n+2)), and Godot's
+        // ROUGHNESS is PERCEPTUAL, i.e. alpha = roughness^2 -- so the square root is taken twice.
+        //
+        // Getting this wrong is not subtle. A first attempt used roughness = 1 - glossiness,
+        // which for the reef rock's glossiness of 51/255 gives 0.8 and no visible highlight at
+        // all; the ported value is 0.59, and that is the difference between a matte rock and one
+        // whose ledges catch the sun.
+        float n = glossiness * glossiness * 368.0;
+        float ggx_alpha = sqrt(2.0 / (n + 2.0));
+        out_roughness = clamp(sqrt(ggx_alpha), 0.0, 1.0);
 
-        // EnvIntensity is SL's "how mirror-like is this" control. Godot expresses that through
-        // metalness reflecting the environment, so it is folded in here rather than dropped --
-        // scaled by the same reflectivity so it only applies where the map says the surface is
-        // actually shiny.
-        out_metallic = clamp(metallic_factor + specular_environment * reflectivity, 0.0, 1.0);
+        // The map's RGB scales the highlight's STRENGTH, matching the viewer's
+        // `color += lit * scol * sunlit * spec.rgb`. Godot has no per-texel specular colour, so
+        // this is the one lossy step: a greyscale map (what nearly all SL content ships) is
+        // reproduced faithfully, a coloured one loses its tint. Rec. 709 luminance.
+        out_specular = clamp(dot(spec, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+
+        // EnvIntensity is SL's "how mirror-like is this". Godot reaches the environment through
+        // metalness, so it folds in there, scaled by the same luminance so it only applies where
+        // the map says the surface is shiny at all.
+        out_metallic = clamp(metallic_factor + specular_environment * out_specular, 0.0, 1.0);
     }
 
     // glTF ORM packing: occlusion in R, roughness in G, metallic in B.
