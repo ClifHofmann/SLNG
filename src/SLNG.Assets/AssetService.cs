@@ -757,17 +757,53 @@ public class AssetService
                     if (result.IsDegraded)
                     {
                         if (attempt < 2) continue; // retry
-                        if (isSculpt || rejectDegraded)
+                        if (rejectDegraded)
                         {
                             if (_giveUpLogged.TryAdd(textureId, 0))
-                                Console.Error.WriteLine($"[TextureGiveUp] {textureId}: degraded {(isSculpt ? "SCULPT map" : "bake/avatar texture")} after 3 attempts — returning null rather than showing gap-fill noise");
+                                Console.Error.WriteLine($"[TextureGiveUp] {textureId}: degraded bake/avatar texture after 3 attempts — returning null rather than showing gap-fill noise");
                             return null;
                         }
+                        // SCULPT MAPS USED TO BE REFUSED HERE TOO. That was measured wrong, twice
+                        // over, and the visible cost was high: a refused sculpt map makes the
+                        // renderer draw a placeholder cylinder at the object's full scale, so a
+                        // reef of rocks came out as smooth flat discs while Firestorm drew rocks
+                        // (OSGrid, The Dangazi Forest, 2026-08-22 -- sculpt map bb745170, of which
+                        // the sim serves 33,600 bytes for a tile-part declaring 113,049).
+                        //
+                        // 1. THE REAL VIEWER DECODES PARTIAL STREAMS ON PURPOSE.
+                        //    llimagej2coj.cpp:420-421 calls opj_decoder_set_strict_mode(decoder,
+                        //    OPJ_FALSE) under the comment "enable decoding partially loaded
+                        //    images". A short codestream is not an error case in SL, it is how
+                        //    textures stream. Magick.NET gives no access to that flag (verified:
+                        //    reduce-factor, quality-layers and non-strict defines all still throw
+                        //    "Tile part length size inconsistent" on all 95 truncated assets in a
+                        //    real cache), which is exactly why our decode lands on the CoreJ2K
+                        //    fallback and gets marked degraded in the first place.
+                        //
+                        // 2. THE DEGRADED DATA IS NEARLY THE FULL PICTURE. Measured over 12 real
+                        //    cached assets, decoding only the first N% of each and comparing to
+                        //    its own complete decode: mean absolute error per channel was 1.4/255
+                        //    at 75% of the bytes, 1.9 at 30%, and still 4.2 at 2%. It degrades
+                        //    smoothly -- there is no fraction at which the image collapses into
+                        //    the "gap-fill noise" this refusal was named after.
+                        //
+                        // 3. FOR A SCULPT THE LOST DETAIL IS DETAIL THAT IS NEVER READ. The
+                        //    viewer point-samples a sculpt map onto a grid of at most 32x32
+                        //    (SCULPT_REZ_4, llvolume.cpp:3137) whatever the map's resolution, so
+                        //    what a truncated codestream costs -- the highest-frequency wavelet
+                        //    passes -- is thrown away before a vertex is ever placed.
+                        //
+                        // The earlier "melted ribbon" observation that motivated the refusal is
+                        // not contradicted: that was a sculpt built from gap-filled data, and it
+                        // did look wrong. It was just never weighed against what replaces it. A
+                        // slightly soft rock beats a cylinder.
                         // Byte count included because it is what distinguishes the two causes of a
                         // persistent degrade: if UDP also delivers this few bytes the asset really
                         // is truncated on the sim and no fetch path can fix it; if UDP delivers a
                         // full-size body that still degrades, the fault is in the decoder.
-                        Console.Error.WriteLine($"[TextureGiveUp] {textureId}: returning DEGRADED {result.Width}x{result.Height} after 3 attempts, last body {bytes.Length} bytes (better than blank)");
+                        Console.Error.WriteLine($"[TextureGiveUp] {textureId}: returning DEGRADED " +
+                            $"{(isSculpt ? "SCULPT map " : "")}{result.Width}x{result.Height} after 3 attempts, " +
+                            $"last body {bytes.Length} bytes (better than blank)");
                         return result;
                     }
                     return result;

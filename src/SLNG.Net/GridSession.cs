@@ -2607,6 +2607,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (declaredLength.HasValue && bytes.Length < declaredLength.Value)
                 return FetchFailed(textureId, $"short read {bytes.Length}/{declaredLength.Value}");
 
+            // The transport-level checks above can only catch a truncation the TRANSPORT knows
+            // about. A body that is short but whose Content-Length agrees with it -- the sim
+            // serving a partial asset and honestly declaring the partial size -- passes both, and
+            // then decodes "degraded": gap-filled pixels. For an ordinary texture that is a
+            // cosmetic problem; for a SCULPT MAP the pixels ARE the vertex positions, so the
+            // renderer (correctly) refuses the result and substitutes a placeholder solid, which
+            // is how a rock ends up on screen as a smooth flat disc.
+            //
+            // The codestream itself settles it: measured on OSGrid 2026-08-22, sculpt map
+            // bb745170 arrived as 33,600 bytes declaring Psot = 113,049 -- a third of the asset,
+            // reported as a success. Detecting that HERE rather than after the decode is what
+            // makes the difference, because a null return falls through to the UDP path in the
+            // SAME attempt; a degraded decode instead spends an attempt first, and only the
+            // remaining two get to try another transport.
+            if (desiredDiscard == 0 && J2cCodestream.IsTruncated(bytes))
+                return FetchFailed(textureId, $"truncated codestream ({bytes.Length} bytes, " +
+                    $"tile-part declares more)" + (declaredLength.HasValue ? $" with Content-Length {declaredLength.Value}" : ""));
+
             // Content-Length only catches truncation when the server actually sends that
             // header -- OpenSim's embedded HTTP server can respond chunked (no Content-Length)
             // for texture bodies, which would let a short chunked read straight through the
