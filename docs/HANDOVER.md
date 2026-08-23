@@ -170,8 +170,31 @@ This is the part to read first next time something "looks wrong".
 - **The reef's two flat wave sculpts report an AABB Z of exactly 0 m** (`08b4c8c9`, `b41566be`, both
   64×64). Our mesh matches the viewer-algorithm port exactly, so it is probably correct — the maps'
   blue channel really is constant. Worth one glance if the waves ever look wrong.
-- **`[ENV]` re-applies roughly 2,300 times per session.** The log spam is deduplicated now, but the
-  underlying re-poll rate was never investigated and looks high.
+- **`[ENV]` re-applies roughly 2,300 times per session — investigated, mostly fixed** (`3586a6a`,
+  `v0.8.1-alpha`). Two separate causes, and the second one hid behind the first's fix.
+
+  Cause one: a `RegionInfo` packet is how an EEP-capable viewer is told the environment changed,
+  and we answered every one of them with three uncoordinated HTTP capability GETs. On OSGrid's
+  Lbsa Plaza those packets arrive ~45/min, sustained — about 8000 requests per session aimed at
+  someone else's server. The trigger is correct and matches `llenvironment.cpp:886`; the response
+  was not. Now: one poll at a time, a 2.5 s floor (OpenSim's own `UpdateEnvTime` granularity), the
+  legacy GET dropped from live re-polls, and nothing published unless the payload changed.
+
+  Cause two: that change gate then did not hold — 217 republishes in 52 minutes on Lbsa. The
+  parcel id comes from a UDP `ParcelProperties` round-trip that sometimes times out, and both the
+  id and the parcel LLSD went into the fingerprint, so every timeout flipped two fields on timing
+  alone. An unresolved lookup now contributes the last established scope instead of a fresh
+  "no parcel".
+
+  **Still open:** the parcel lookup itself still goes out on every re-poll, so a busy region costs
+  one UDP round-trip per poll on top of the GET. The real viewer does not do this — it reads the
+  parcel from the land layer it already has.
+
+  **How to verify, and the trap:** count `[ENV]` lines after a Lbsa session. The meaningful line is
+  `source=…position=…`, **not** `caps:` — `LogEnvironment`'s dedup drops exact repeats, and the
+  `caps:` line is byte-identical every time, so it shows once no matter how often it fired. Only
+  `position=` varies, so only that line survives to be counted. Reading `caps:` as a poll count
+  produced a wrong all-clear once already.
 - **Sculpt map `bb745170` is truncated on the sim itself**: 33,600 bytes for a tile-part declaring
   113,049, and UDP delivers the same. Not our bug, but it is why that particular pair of rocks
   needs the degraded-decode path at all.
