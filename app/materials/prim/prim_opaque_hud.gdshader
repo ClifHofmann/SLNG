@@ -32,16 +32,15 @@ void fragment() {
     float metallic;
     float roughness;
     float specular;
-    vec3 normal_map;
+    vec3 normal_map;      // filled by slng_shade; unused here, see below
     float normal_depth;
     vec3 emission;
     slng_shade(UV, v_view_position, albedo, metallic, roughness, specular, normal_map, normal_depth, emission);
 
     ALBEDO = albedo;
-    METALLIC = metallic;
-    ROUGHNESS = roughness;
-    SPECULAR = specular;
-    NORMAL_MAP = normal_map;
-    NORMAL_MAP_DEPTH = normal_depth;
+    // No METALLIC/ROUGHNESS/SPECULAR/NORMAL_MAP: `unshaded` ignores every one of them, and
+    // writing NORMAL_MAP in particular is not free to leave in. Godot infers "this mesh needs
+    // tangents" from the mere presence of that write and logs a warning per mesh that has none
+    // -- which HUD attachment meshes do not (12 lines in one session, FEAT-RENDER-01 Phase 3).
     EMISSION = emission;
 }
