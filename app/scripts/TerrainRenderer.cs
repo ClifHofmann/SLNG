@@ -101,9 +101,17 @@ public partial class TerrainRenderer : Node3D
     /// the noise and detail UVs wrongly for a region west or south of the global origin.</summary>
     private static double Mod(double a, double b) => (a % b + b) % b;
 
-    /// <summary>Regions whose composition summary has already been logged, so a rebuild per
-    /// arriving patch does not spam it.</summary>
-    private readonly HashSet<ulong> _compositionLogged = new();
+    /// <summary>The composition summaries already logged, keyed by region AND by the settings
+    /// they described, so a rebuild per arriving patch does not spam while a genuine settings
+    /// CHANGE still reports.
+    ///
+    /// It used to be keyed on the region alone, and that quietly defeated the diagnostic's whole
+    /// purpose. Estate terrain settings are exactly what you change while A/B-ing against another
+    /// viewer -- swap in probe textures, narrow the elevation range -- and after the first log line
+    /// per region, none of it was ever reported again. A session's log then showed the DEFAULT
+    /// Terrain Dirt/Grass/Mountain/Rock ids and start=10/range=60 while the screen was drawing
+    /// probe checkerboards, and the stale line read exactly like a current measurement.</summary>
+    private readonly HashSet<string> _compositionLogged = new();
 
     /// <summary>Regions already reported as drawing without terrain settings.</summary>
     private readonly HashSet<ulong> _settingsMissingLogged = new();
@@ -146,7 +154,14 @@ public partial class TerrainRenderer : Node3D
             return;
         }
 
-        if (!_compositionLogged.Add(regionHandle)) return;
+        // Keyed on the settings themselves. Detail ids are part of the key because swapping the
+        // textures changes nothing numeric, yet it is the single most common thing to change
+        // mid-session and the one that makes every earlier line in the log misleading.
+        string signature = string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"{regionHandle}|{string.Join(',', terrain.TerrainStartHeights)}|" +
+            $"{string.Join(',', terrain.TerrainHeightRanges)}|{terrain.WaterHeight}|" +
+            $"{terrain.TerrainDetail0},{terrain.TerrainDetail1},{terrain.TerrainDetail2},{terrain.TerrainDetail3}");
+        if (!_compositionLogged.Add(signature)) return;
 
         double originX = (uint)(regionHandle >> 32);
         double originY = (uint)(regionHandle & 0xFFFFFFFF);
