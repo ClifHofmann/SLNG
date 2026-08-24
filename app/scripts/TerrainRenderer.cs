@@ -130,6 +130,28 @@ public partial class TerrainRenderer : Node3D
     /// is exactly the run where this measurement is wanted. Four lines once per region, matching
     /// how [ENV] and [Boot] already report, so it does not reopen the quiet-console decision.
     /// </summary>
+    /// <summary>
+    /// A cheap fingerprint of the heightmap, so a terrain import re-logs the diagnostic.
+    ///
+    /// Subsampled on a 16-cell stride rather than hashed whole: this runs on every patch rebuild,
+    /// and a full pass over a 256x256 (or 1536x1536) map per patch would be real work for a
+    /// diagnostic. A stride still moves for any change that alters the terrain visibly, which is
+    /// the only kind worth re-reporting -- and patches arrive incrementally, so a partially
+    /// streamed map produces its own intermediate fingerprints and settles once complete.
+    /// </summary>
+    private static long HeightmapFingerprint(RegionTerrain terrain)
+    {
+        var heights = terrain.GetHeights();
+        long hash = 17;
+        for (int i = 0; i < heights.Length; i += 16)
+        {
+            // Quantised to centimetres before hashing: raw float bits would make the fingerprint
+            // move on noise far below anything the composition can see.
+            hash = hash * 31 + (long)MathF.Round(heights[i] * 100f);
+        }
+        return hash;
+    }
+
     private void LogCompositionDiagnostics(ulong regionHandle, RegionTerrain terrain)
     {
         // Terrain patches arrive independently of (and often before) the RegionHandshake that
@@ -154,13 +176,18 @@ public partial class TerrainRenderer : Node3D
             return;
         }
 
-        // Keyed on the settings themselves. Detail ids are part of the key because swapping the
-        // textures changes nothing numeric, yet it is the single most common thing to change
-        // mid-session and the one that makes every earlier line in the log misleading.
+        // Keyed on everything the composition actually depends on. Detail ids are in there
+        // because swapping the textures changes nothing numeric, yet it is a common mid-session
+        // change and the one that makes every earlier line misleading. The HEIGHTMAP is in there
+        // for the same reason and was missed on the first pass: importing a terrain changes no
+        // setting at all, so a freshly uploaded known-answer map produced no new line and the
+        // block from region entry -- describing the terrain that had just been replaced -- stayed
+        // the only one in the log.
         string signature = string.Create(System.Globalization.CultureInfo.InvariantCulture,
             $"{regionHandle}|{string.Join(',', terrain.TerrainStartHeights)}|" +
             $"{string.Join(',', terrain.TerrainHeightRanges)}|{terrain.WaterHeight}|" +
-            $"{terrain.TerrainDetail0},{terrain.TerrainDetail1},{terrain.TerrainDetail2},{terrain.TerrainDetail3}");
+            $"{terrain.TerrainDetail0},{terrain.TerrainDetail1},{terrain.TerrainDetail2},{terrain.TerrainDetail3}|" +
+            $"{HeightmapFingerprint(terrain)}");
         if (!_compositionLogged.Add(signature)) return;
 
         double originX = (uint)(regionHandle >> 32);
