@@ -243,3 +243,56 @@ this region punished every approximation in FEAT-RENDER-02 so severely.
 
 If Firestorm disagrees at any of these, the divergence is real and localised. If it agrees, the
 difference is in how the screenshots were being read, and the port is done.
+
+
+---
+
+## Terrain band map — a heightmap with a known answer
+
+`gen_terrain_map.py` → `out/terrain_bands.raw`. Run `python tools/testassets/gen_terrain_map.py`.
+
+The texture probes above made the four detail SLOTS tellable apart. They could not make
+the BANDS tellable apart, and that is what every FEAT-RENDER-02 round actually got stuck
+on: Howletts' land sits in a two-metre spread, so with the default height range of 60 a
+band is 15 m wide while the Perlin term swings the effective height by roughly ±9 m. The
+noise decides every pixel, everything is mottled by construction, and comparing two
+viewers becomes an argument about mottling.
+
+This map removes the terrain from the question. Five large FLAT terraces, south to north:
+
+| height | composition | expected |
+|---|---|---|
+| 25 m | 0.08 | **solid texture 1** (red) |
+| 50 m | 0.50 | **mottled 1/2** — the noise field, exposed |
+| 80 m | 1.00 | **solid texture 2** (green) |
+| 140 m | 2.00 | **solid texture 3** (blue) |
+| 200 m | 3.00 | **solid texture 4** (magenta) |
+
+**The map alone is not the known answer — the map with these estate settings is.** Set
+all four corners to low **20**, high **240**, and keep the four `terrain_probe_N` textures
+in slots 1–4. The wide range is what buys the separation: a band is then 60 m tall and the
+±9 m noise is a thin fringe instead of the whole signal.
+
+### How to read it
+
+The **50 m terrace is the measurement.** It sits exactly on the crossfade midpoint, and
+its height is constant, so every pixel of it is decided by the Perlin term and nothing
+else. Both viewers must paint it with the *same* mottling. A phase error slides the
+pattern, a scale error changes its grain, an amplitude error changes how much of it
+saturates — each fails visibly and differently.
+
+The other four are the **control**, one per band. They are far enough from any boundary
+that the noise cannot flip them, so each must be solid in both viewers. A wrong band there
+is unmissable rather than arguable.
+
+Read the **digit**, not the colour. Each probe tile carries its texture number large and
+centred; colour has to be interpreted through shading, haze and tonemapping, and a digit
+does not.
+
+### Format
+
+Linden RAW, the format the viewer's estate tools upload: 256×256 cells, 13 bytes each,
+`height = red * green / 128`, and **file row 0 is NORTH**. Taken out of OpenSim's own
+loader (`LLRAW.cs`, `LoadStream`/`SaveStream`) rather than inferred — the remaining 11
+bytes are the constants `SaveStream` itself emits. All five heights encode exactly; the
+generator reports the error per terrace so a rounded one cannot pass as a placed one.
