@@ -296,3 +296,36 @@ Linden RAW, the format the viewer's estate tools upload: 256×256 cells, 13 byte
 loader (`LLRAW.cs`, `LoadStream`/`SaveStream`) rather than inferred — the remaining 11
 bytes are the constants `SaveStream` itself emits. All five heights encode exactly; the
 generator reports the error per terrace so a rounded one cannot pass as a placed one.
+
+
+### Known-answer points on the crossfade terrace
+
+`band_markers.lsl` plants a coloured pole at each of six coordinates on the 50 m terrace.
+
+Three rounds of side-by-side screenshots of that terrace could not settle whether the two
+viewers paint it the same way, for one dull reason: the two cameras never stand in the same
+place, so "green on the left, red on the right" is a statement about the crop and not about
+the region. A pole is at the same place in both viewers by construction.
+
+| position | composition | expected |
+|---|---|---|
+| `<184, 82>` | 0.37 | digit **1**, red |
+| `<150, 54>` | 0.38 | digit **1**, red |
+| `<100, 66>` | 0.38 | digit **1**, red |
+| `<8, 60>` | 0.62 | digit **2**, green |
+| `<48, 78>` | 0.65 | digit **2**, green |
+| `<162, 94>` | 0.66 | digit **2**, green |
+
+Each pole is coloured with its own expected answer, in the probe textures' exact colours. A
+pole that blends into the tile under it is a point where we agree with the viewer; a green
+pole standing on a red tile is a disagreement that needs no counting and no colour judgement.
+
+The terrace is flat at 50 m, so height contributes a constant and the Perlin term alone
+decides every one of these points. That is what makes them a test of the noise field and
+nothing else.
+
+**One caveat on the numbers.** The composition column comes from `SlTerrainComposition`, whose
+`Weights()` helper carries its own warning — *"Do not use it to reason about contrast: by
+construction it has none."* So these values say reliably which SIDE of the crossfade a point
+falls on, and say nothing about how hard the edge between them should look. The visible
+contrast comes from the real blend ramp, which only the shader evaluates.
