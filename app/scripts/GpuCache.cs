@@ -455,6 +455,13 @@ public class GpuCache
     {
         lock (_cache)
         {
+            foreach (var entry in _cache.Values)
+            {
+                if (GodotObject.IsInstanceValid(entry.Res))
+                {
+                    entry.Res.Dispose();
+                }
+            }
             _cache.Clear();
             _lruList.Clear();
             _currentSize = 0;
