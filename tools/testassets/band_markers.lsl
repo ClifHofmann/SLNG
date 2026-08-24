@@ -28,9 +28,16 @@
 //   5. Photograph the terrace in both viewers. Compare pole colour against the tile it stands on.
 //   6. Touch any pole to remove it, or touch the rezzer again to clear them all.
 //
-// llRezObject can only place an object within 10 m of the rezzer, which is why the poles are rezzed
-// on top of it and then move themselves with llSetRegionPos -- that one is not distance-limited
-// within the region, unlike llSetPos.
+// llRezObject refuses to place anything further than 10 m from the rezzer and returns SILENTLY
+// when you ask it to (OpenSim LSL_Api.cs, doObjectRez). So the poles are rezzed in a short fan
+// beside the rezzer and then move themselves with llSetRegionPos, which is not distance-limited
+// within the region -- unlike llSetPos, which caps at 10 m per call.
+//
+// Every step that can fail says so. llSetRegionPos returns 0 without any error when the target
+// sits on a parcel the owner may not rez on, and the first version of this script ignored that
+// return: the markers stayed at the rezzer, stacked on one spot, still labelled with coordinates
+// they had never reached. Six poles on one spot look like exactly one pole -- which is how that
+// run read as "only one cube got rezzed". Hence the fan, and hence the reporting.
 
 // <x, y> in region metres, the expected band (0 = detail 1 red, 1 = detail 2 green), and the
 // composition our port computes there. All six sit on the flat 50 m terrace, so height contributes
@@ -74,18 +81,33 @@ rezzer_place()
     integer n = llGetListLength(POINTS) / 4;
     for (i = 0; i < n; ++i)
     {
-        // Rezzed just above the rezzer because of the 10 m limit; the marker moves itself.
+        // Rezzed next to the rezzer because llRezObject refuses anything beyond 10 m (OpenSim
+        // LSL_Api.cs doObjectRez, and it returns silently); the marker moves itself from there.
         // The index rides along as the rez parameter -- the marker looks its own row up from the
         // same list, so the two roles cannot disagree about what point i is.
-        llRezObject(MARKER_NAME, llGetPos() + <0.0, 0.0, 1.5>, ZERO_VECTOR, ZERO_ROTATION, i + 1);
+        //
+        // SPREAD OUT, not stacked. Six poles all rezzed on one spot look like ONE pole if any of
+        // them then fails to move, which is exactly how the first run of this script read as
+        // "only one cube got rezzed". Fanned out, a marker that stayed behind is visible as a
+        // marker that stayed behind.
+        vector spot = llGetPos() + <(float)(i - 3) * 1.2, 0.0, 1.5>;
+        llRezObject(MARKER_NAME, spot, ZERO_VECTOR, ZERO_ROTATION, i + 1);
     }
-    llOwnerSay("placed " + (string)n + " markers -- red pole = we expect digit 1, "
+    llOwnerSay("rezzed " + (string)n + " markers; each reports whether it reached its "
+               + "coordinate. Red pole = we expect digit 1, "
                + "green pole = we expect digit 2. A pole whose colour differs from the tile "
                + "under it is a disagreement.");
 }
 
-marker_setup(integer index)
+// Both state_entry and on_rez route through here, and it is idempotent on purpose. Their firing
+// order at rez time is not something to rely on -- guarding one against the other was the first
+// attempt and it made the outcome depend on how the object had been taken and re-rezzed. Whichever
+// fires, or both, the object ends up configured the same way.
+marker_setup()
 {
+    integer index = llGetStartParameter();
+    if (index <= 0) return;
+
     integer row = (index - 1) * 4;
     integer x    = llList2Integer(POINTS, row);
     integer y    = llList2Integer(POINTS, row + 1);
@@ -108,30 +130,53 @@ marker_setup(integer index)
         PRIM_TEXTURE, ALL_SIDES, TEXTURE_BLANK, <1.0, 1.0, 0.0>, ZERO_VECTOR, 0.0
     ]);
 
-    llSetText("<" + (string)x + ", " + (string)y + ">\nexpect digit " + (string)digit
-              + "\ncomposition 0." + (string)comp, colour, 1.0);
-
-    // Base sits on the terrace, so the pole marks the tile it stands on rather than hovering
-    // over an ambiguous seam.
-    llSetRegionPos(<(float)x, (float)y, TERRACE_Z + POLE_HEIGHT * 0.5>);
-
     llListen(CLEAR_CHANNEL, "", NULL_KEY, "");
+
+    // Base sits on the terrace, so the pole marks the tile it stands on rather than hovering over
+    // an ambiguous seam.
+    vector target = <(float)x, (float)y, TERRACE_Z + POLE_HEIGHT * 0.5>;
+
+    // The return value is the whole point. llSetRegionPos answers 0 and says nothing else when the
+    // destination lies on a parcel the owner may not rez on (OpenSim LSL_Api.cs: the !sameParcel
+    // CanRezObject check), and a marker that quietly stayed behind while still LABELLED with the
+    // coordinate it never reached is worse than no marker at all -- it is a measuring instrument
+    // reporting a position it is not at.
+    integer ok = llSetRegionPos(target);
+
+    if (ok)
+    {
+        llSetText("<" + (string)x + ", " + (string)y + ">
+expect digit " + (string)digit
+                  + "
+composition 0." + (string)comp, colour, 1.0);
+        llOwnerSay("marker " + (string)index + " -> <" + (string)x + ", " + (string)y + ">  ok");
+    }
+    else
+    {
+        // Stays visible and says what it is, rather than pretending.
+        llSetText("MARKER " + (string)index + " COULD NOT MOVE
+wanted <" + (string)x + ", "
+                  + (string)y + ">", <1.0, 1.0, 0.0>, 1.0);
+        llOwnerSay("marker " + (string)index + " FAILED to reach <" + (string)x + ", " + (string)y
+                   + ">. llSetRegionPos returned 0 -- most likely that spot is on another parcel "
+                   + "you cannot rez on. It is still sitting at the rezzer.");
+    }
 }
 
 default
 {
     on_rez(integer param)
     {
-        if (param > 0) marker_setup(param);
+        marker_setup();
     }
 
     state_entry()
     {
-        // Guarded on the rez parameter, and not for tidiness. state_entry can fire AFTER on_rez
-        // when a script resets on rez, so an unguarded llSetText here would wipe the label
-        // marker_setup had just written -- intermittently, depending on how the object was taken
-        // and re-rezzed, which is the worst kind of bug to have in a measuring instrument.
-        if (llGetStartParameter() > 0) return;
+        if (llGetStartParameter() > 0)
+        {
+            marker_setup();
+            return;
+        }
 
         llSetText("", ZERO_VECTOR, 0.0);
         if (llGetInventoryType(MARKER_NAME) != INVENTORY_OBJECT)
