@@ -70,8 +70,18 @@ jobs:
       - name: Import Godot project
         run: godot --headless --path app --import
 
+      # Debug, NOT Release, and that is load-bearing. Godot puts the C# assembly under
+      # app/.godot/mono/temp/bin/<Config>/, and a non-exported `godot --path app` run loads the
+      # DEBUG one. Building Release leaves only bin/Release/ there, so Godot finds no assembly and
+      # fails with "Cannot instantiate C# script" for Boot.cs -- _Ready never runs, --selftest
+      # never runs, and the process hangs until the timeout below kills it. That is exactly what
+      # run 32712099992 did; reproduced locally by deleting bin/Debug and building Release.
+      #
+      # This job runs the project from source, so Debug is the correct configuration for it. The
+      # Release build that ships is the EXPORT in build_installer.yml, which is a different
+      # mechanism (--export-release packs its own assembly) and is unaffected by this.
       - name: Build app
-        run: dotnet build app/SLNG.App.csproj -c Release
+        run: dotnet build app/SLNG.App.csproj -c Debug
 
       # Loads every shader, locale and the Bento skeleton through the engine and exits non-zero
       # on the first thing that does not come up. This is the check that would have caught the
@@ -90,6 +100,6 @@ jobs:
           status=0
           timeout 300 godot --headless --path app -- --selftest || status=$?
           if [ $status -eq 124 ]; then
-            echo "::error::--selftest did not exit within 300s. It never reached SelfTest.Run -- check for resource/script load errors above."
+            echo "::error::--selftest did not exit within 300s, so it never reached SelfTest.Run. Look above for 'Cannot instantiate C# script' (assembly built for the wrong configuration, or app/.godot missing) rather than for a failing check."
           fi
           exit $status
