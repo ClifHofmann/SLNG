@@ -18,12 +18,16 @@
 //
 // HOW TO USE
 //   1. Import out/terrain_bands.raw and set all four corners to low 20 / high 240.
-//   2. Rez a plain box and drop this script in.
-//   3. Take a COPY of that same box into inventory, rename the copy to exactly BandMarker, and
-//      drop it back into the box's Contents. There is only ever one script and one prim to build:
-//      the object carries a copy of itself, and each instance decides which role it is in from its
-//      rez parameter -- 0 means "I was rezzed by hand, I am the rezzer", anything else means
-//      "I am marker number N".
+//   2. Rez a plain box and drop this script into it.
+//   3. Right-click the box -> Take Copy. The copy now in your inventory ALREADY CONTAINS THIS
+//      SCRIPT -- that is the whole point of copying the box rather than building a second one.
+//      Rename that inventory copy to exactly BandMarker, then drag it from inventory onto the
+//      box's Contents tab.
+//
+//      Do NOT build a fresh empty box for this. A marker without the script inside just sits
+//      where it was rezzed as a plain default cube: right size, right count, no colour, no label,
+//      no movement. That is the single most likely way to get a row of anonymous cubes, so the
+//      rezzer now waits for its markers to check in and says so when they do not.
 //   4. Touch the rezzer. Six poles fly to their coordinates and label themselves.
 //   5. Photograph the terrace in both viewers. Compare pole colour against the tile it stands on.
 //   6. Touch any pole to remove it, or touch the rezzer again to clear them all.
@@ -54,7 +58,11 @@ list POINTS = [
 
 float TERRACE_Z   = 50.0;   // the crossfade terrace's height, from gen_terrain_map.py
 float POLE_HEIGHT = 12.0;   // tall enough to find from the air, thin enough not to hide the tile
-integer CLEAR_CHANNEL = -80244;
+integer CLEAR_CHANNEL  = -80244;
+integer REPORT_CHANNEL = -80245;   // markers check in here so the rezzer can notice silence
+
+integer gExpected;                 // how many markers the last touch rezzed
+integer gReported;                 // how many of them have checked in
 
 string  MARKER_NAME = "BandMarker";
 
@@ -93,6 +101,10 @@ rezzer_place()
         vector spot = llGetPos() + <(float)(i - 3) * 1.2, 0.0, 1.5>;
         llRezObject(MARKER_NAME, spot, ZERO_VECTOR, ZERO_ROTATION, i + 1);
     }
+    gExpected = n;
+    gReported = 0;
+    llSetTimerEvent(10.0);
+
     llOwnerSay("rezzed " + (string)n + " markers; each reports whether it reached its "
                + "coordinate. Red pole = we expect digit 1, "
                + "green pole = we expect digit 2. A pole whose colour differs from the tile "
@@ -150,6 +162,7 @@ expect digit " + (string)digit
                   + "
 composition 0." + (string)comp, colour, 1.0);
         llOwnerSay("marker " + (string)index + " -> <" + (string)x + ", " + (string)y + ">  ok");
+        llRegionSay(REPORT_CHANNEL, "here");
     }
     else
     {
@@ -160,6 +173,7 @@ wanted <" + (string)x + ", "
         llOwnerSay("marker " + (string)index + " FAILED to reach <" + (string)x + ", " + (string)y
                    + ">. llSetRegionPos returned 0 -- most likely that spot is on another parcel "
                    + "you cannot rez on. It is still sitting at the rezzer.");
+        llRegionSay(REPORT_CHANNEL, "here");
     }
 }
 
@@ -179,6 +193,7 @@ default
         }
 
         llSetText("", ZERO_VECTOR, 0.0);
+        llListen(REPORT_CHANNEL, "", NULL_KEY, "");
         if (llGetInventoryType(MARKER_NAME) != INVENTORY_OBJECT)
         {
             llOwnerSay("I am the rezzer, but I have no '" + MARKER_NAME + "' in Contents yet. "
@@ -202,5 +217,26 @@ default
     listen(integer chan, string name, key id, string msg)
     {
         if (msg == "clear" && llGetStartParameter() > 0) llDie();
+        else if (msg == "here" && llGetStartParameter() == 0) ++gReported;
+    }
+
+    // The silence check. A marker whose prim carries no script cannot report anything, cannot
+    // colour itself and cannot move -- it is a plain cube sitting where it was rezzed, which
+    // looks like a successful rez and is not one. Counting check-ins is the only way the rezzer
+    // can tell those two apart, so it counts.
+    timer()
+    {
+        llSetTimerEvent(0.0);
+        if (gReported >= gExpected)
+        {
+            llOwnerSay("all " + (string)gExpected + " markers checked in.");
+            return;
+        }
+
+        llOwnerSay((string)(gExpected - gReported) + " of " + (string)gExpected
+                   + " markers never checked in. Those are the plain cubes sitting next to me: "
+                   + "the '" + MARKER_NAME + "' in my Contents has no script inside it. Take a "
+                   + "COPY of me (right-click -> Take Copy), rename the copy to " + MARKER_NAME
+                   + ", and put THAT in my Contents -- a copy of me already has the script.");
     }
 }
