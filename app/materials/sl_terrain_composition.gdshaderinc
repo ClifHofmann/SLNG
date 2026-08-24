@@ -196,7 +196,29 @@ vec3 sl_terrain_blend(vec3 c0, vec3 c1, vec3 c2, vec3 c3, float value, float ram
 
 // Detail texture UV: global-continuous, at one repeat per sl_detail_scale_m metres.
 vec2 sl_detail_uv(vec2 local_xy) {
-    return (local_xy + sl_detail_origin_m) / sl_detail_scale_m;
+    // s and t are the viewer's exactly: LLDrawPoolTerrain sets an OBJECT_LINEAR texgen plane
+    // tp0 = (sDetailScale, 0, 0, offset_x), tp1 = (0, sDetailScale, 0, offset_y), giving
+    // s = x/scale + offset_x and t = y/scale + offset_y with y running NORTH
+    // (lldrawpoolterrain.cpp:242-248; note offset_* is already multiplied by sDetailScale
+    // there, so it is in texture units, not metres, and our origin uniform matches).
+    vec2 st = (local_xy + sl_detail_origin_m) / sl_detail_scale_m;
+
+    // ...and then V is flipped, which the plane equations do NOT say and the rest of this
+    // renderer already knows. SL's texture V is bottom-origin and Godot's is top-origin, so
+    // every world mesh in ObjectRenderer is built with `v = 1 - v` (BuildArrayMesh's flipV,
+    // true for every LLMesh face). Terrain never went through that path: it has no mesh UVs at
+    // all, its coordinate is generated here from position, so it silently kept SL's convention
+    // and sampled every detail texture upside down.
+    //
+    // Invisible on ordinary terrain art -- grass and rock are near enough symmetric that a
+    // vertical mirror reads as "some other patch of grass". It took a probe texture with a
+    // deliberate corner marker to expose it: the marker sits in the TOP-LEFT of the image
+    // (tools/testassets/gen_terrain_probe.py), and it landed on the wrong side of the tile
+    // against Firestorm while the terrain SHAPE matched exactly.
+    //
+    // `1.0 - t` rather than `-t` only for legibility; the sampler repeats, so they differ by a
+    // whole tile and sample identically.
+    return vec2(st.x, 1.0 - st.y);
 }
 
 // Bilinear blend of a per-corner region parameter. Corner order is the RegionHandshake order,
