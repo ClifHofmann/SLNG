@@ -434,6 +434,11 @@ public partial class Boot : Control
         // because the user clicked a different object elsewhere -- see ObjectSelectionController
         // for why plain clicks otherwise replace the previous highlight.
         _objectSelectionController.Pin(entity.Id);
+
+        // Ensure the object is selected on the grid and visually (since right-click no longer auto-selects outside edit mode).
+        _world.SelectEntity(entity);
+        _session.SelectObject(localId);
+
         win.Closed += () =>
         {
             _objectEditWindows.Remove(entity.Id);

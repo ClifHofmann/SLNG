@@ -149,24 +149,25 @@ namespace SLNG.App
                                             return;
                                         }
 
-                                        // Replace the previous plain-click highlight -- but never
-                                        // an entity pinned by its own open Edit window; that stays
-                                        // selected independently until the window itself closes.
-                                        if (_lastClicked != null && _lastClicked.Id != entity.Id
-                                            && !_pinnedEntityIds.Contains(_lastClicked.Id))
+                                        // Only select visually if we are ALREADY in Edit Mode (i.e. at least one ObjectEditWindow is open)
+                                        if (_pinnedEntityIds.Count > 0)
                                         {
-                                            _world.DeselectEntity(_lastClicked);
+                                            // Replace the previous plain-click highlight -- but never
+                                            // an entity pinned by its own open Edit window; that stays
+                                            // selected independently until the window itself closes.
+                                            if (_lastClicked != null && _lastClicked.Id != entity.Id
+                                                && !_pinnedEntityIds.Contains(_lastClicked.Id))
+                                            {
+                                                _world.DeselectEntity(_lastClicked);
+                                            }
+
+                                            _world.SelectEntity(entity);
+                                            _session.SelectObject(localId);
+                                            _lastClicked = entity;
                                         }
 
-                                        _world.SelectEntity(entity);
-                                        _session.SelectObject(localId);
-                                        _lastClicked = entity;
-
-                                        if (mouseBtn.ButtonIndex == MouseButton.Right)
-                                        {
-                                            _contextMenu.ShowMenu(mouseBtn.Position, entity, localId);
-                                            GetViewport().SetInputAsHandled();
-                                        }
+                                        _contextMenu.ShowMenu(mouseBtn.Position, entity, localId);
+                                        GetViewport().SetInputAsHandled();
                                         
                                         return;
                                     }

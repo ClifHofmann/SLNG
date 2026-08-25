@@ -133,13 +133,38 @@ public partial class ObjectRenderer : Node3D
     private Mesh _sphereMesh = new SphereMesh();
     private Mesh _cylinderMesh = new CylinderMesh();
 
-    private StandardMaterial3D _highlightMaterial = new StandardMaterial3D
+    private Mesh? _highlightBoxMesh;
+    private StandardMaterial3D? _highlightLineMaterialCyan;
+    private StandardMaterial3D? _highlightLineMaterialYellow;
+
+    private void InitializeHighlightBox()
     {
-        AlbedoColor = new Color(1.0f, 0.8f, 0.0f, 0.3f), // Yellowish tint
-        Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-        ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-        NoDepthTest = true, // See through walls slightly
-    };
+        _highlightLineMaterialCyan = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(0.0f, 1.0f, 1.0f, 1.0f), // Cyan
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            NoDepthTest = true, // Draw over everything
+        };
+        _highlightLineMaterialYellow = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(1.0f, 1.0f, 0.0f, 1.0f), // Yellow
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            NoDepthTest = true, // Draw over everything
+        };
+
+        var st = new SurfaceTool();
+        st.Begin(Mesh.PrimitiveType.Lines);
+        
+        Vector3[] c = new Vector3[] {
+            new Vector3(-0.5f, -0.5f, -0.5f), new Vector3(0.5f, -0.5f, -0.5f),
+            new Vector3(0.5f, 0.5f, -0.5f), new Vector3(-0.5f, 0.5f, -0.5f),
+            new Vector3(-0.5f, -0.5f, 0.5f), new Vector3(0.5f, -0.5f, 0.5f),
+            new Vector3(0.5f, 0.5f, 0.5f), new Vector3(-0.5f, 0.5f, 0.5f)
+        };
+        int[] indices = new int[] { 0,1, 1,2, 2,3, 3,0, 4,5, 5,6, 6,7, 7,4, 0,4, 1,5, 2,6, 3,7 };
+        foreach (var idx in indices) st.AddVertex(c[idx]);
+        _highlightBoxMesh = st.Commit();
+    }
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
@@ -789,6 +814,11 @@ public partial class ObjectRenderer : Node3D
         var entity = _world.GetEntity(id);
         if (entity == null) return;
 
+        var transform = entity.GetComponent<TransformComponent>();
+        if (transform == null) return;
+
+        uint rootLocalId = transform.ParentLocalId != 0 ? transform.ParentLocalId : entity.LocalId;
+
         // Edit Linked Parts ON (FEAT-UI-06): highlight only the specific part that was actually
         // selected -- grouping by root here would glow the WHOLE linkset regardless of which
         // part got selected, making it look like per-part selection silently does nothing.
@@ -796,15 +826,11 @@ public partial class ObjectRenderer : Node3D
         {
             if (_visuals.TryGetValue(id, out var soloState) && soloState.MeshInstance != null)
             {
-                soloState.MeshInstance.MaterialOverlay = isSelected ? _highlightMaterial : null;
+                // If editing linked parts, the specifically selected part acts as the primary selection (yellow)
+                ApplyHighlightBox(soloState.MeshInstance, isSelected, true);
             }
             return;
         }
-
-        var transform = entity.GetComponent<TransformComponent>();
-        if (transform == null) return;
-
-        uint rootLocalId = transform.ParentLocalId != 0 ? transform.ParentLocalId : entity.LocalId;
 
         foreach (var kvp in _visuals)
         {
@@ -817,7 +843,42 @@ public partial class ObjectRenderer : Node3D
             uint visRootLocalId = visTransform.ParentLocalId != 0 ? visTransform.ParentLocalId : visEntity.LocalId;
             if (visRootLocalId == rootLocalId && kvp.Value.MeshInstance != null)
             {
-                kvp.Value.MeshInstance.MaterialOverlay = isSelected ? _highlightMaterial : null;
+                bool isRoot = visEntity.LocalId == rootLocalId;
+                ApplyHighlightBox(kvp.Value.MeshInstance, isSelected, isRoot);
+            }
+        }
+    }
+
+    private void ApplyHighlightBox(MeshInstance3D meshInstance, bool isSelected, bool isRoot)
+    {
+        var existingBox = meshInstance.GetNodeOrNull<MeshInstance3D>("HighlightBox");
+        if (isSelected)
+        {
+            if (existingBox == null)
+            {
+                if (_highlightBoxMesh == null) InitializeHighlightBox();
+                var box = new MeshInstance3D 
+                { 
+                    Name = "HighlightBox", 
+                    Mesh = _highlightBoxMesh, 
+                    MaterialOverride = isRoot ? _highlightLineMaterialYellow : _highlightLineMaterialCyan 
+                };
+                meshInstance.AddChild(box);
+                var aabb = meshInstance.GetAabb();
+                box.Position = aabb.Position + aabb.Size / 2.0f;
+                // Add a tiny bit of padding so it doesn't clip exactly into the object bounds
+                box.Scale = aabb.Size + new Vector3(0.02f, 0.02f, 0.02f);
+            }
+            else
+            {
+                existingBox.MaterialOverride = isRoot ? _highlightLineMaterialYellow : _highlightLineMaterialCyan;
+            }
+        }
+        else
+        {
+            if (existingBox != null)
+            {
+                existingBox.QueueFree();
             }
         }
     }
