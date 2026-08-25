@@ -161,7 +161,23 @@ float sl_ramp_v(vec2 local_xy) {
 // fitting each row to a smoothstep is an unstable parameterization, so interpolating between rows
 // produces ramps wider than any real row and the blend washes out further than holding the mean.
 float sl_terrain_ramp(float u, float v) {
-    return texture(sl_alpha_ramp, vec2(clamp(u, 0.0, 1.0), v)).r;
+    // V IS FLIPPED, for the same reason sl_detail_uv flips it: SL's texture V is bottom-origin
+    // and Godot's is top-origin. rand_val reaches the viewer as a plain texture coordinate
+    // (llsurfacepatch.cpp:240, tex1->mV[1] = rand_val), so it is subject to that convention like
+    // any other, and this file was sampling it in SL's.
+    //
+    // It matters here in a way it would not on a symmetric texture. The ramp's rows are NOT
+    // interchangeable -- row 128 crosses over in 62 texels and row 160 takes 137 -- so remapping
+    // v to 1-v does not change which rows get used, it changes WHERE each one is used. rand_val
+    // is a ~155 m field, so the consequence is large-scale: the terrain is crisp where the viewer
+    // is soft and soft where the viewer is crisp, at exactly the scale a Firestorm A/B of the
+    // crossfade terrace shows the two disagreeing.
+    //
+    // HYPOTHESIS UNDER TEST, not a settled fix. It is the same root cause as the detail-UV flip
+    // confirmed earlier today and it acts at the right scale, but the ramp was extracted into a
+    // greyscale PNG by hand and nobody has checked which way round those rows ended up. If the
+    // in-world A/B does not improve, revert this line rather than compensating elsewhere.
+    return texture(sl_alpha_ramp, vec2(clamp(u, 0.0, 1.0), 1.0 - v)).r;
 }
 
 // srgb_to_linear from the viewer's class1/environment/srgbF.glsl -- the standard sRGB transfer,
