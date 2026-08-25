@@ -76,8 +76,6 @@ public partial class ButtonBar : Control
         // Top
         _topPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop };
         _topPanel.SetAnchorsPreset(Control.LayoutPreset.TopWide);
-        // Margin top to avoid TopMenu overlap
-        _topPanel.Position = new Vector2(0, 24); 
         var tStyle = (StyleBoxFlat)styleBox.Duplicate();
         tStyle.BorderWidthBottom = 1;
         _topPanel.AddThemeStyleboxOverride("panel", tStyle);
@@ -89,7 +87,6 @@ public partial class ButtonBar : Control
         // Left
         _leftPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop };
         _leftPanel.SetAnchorsPreset(Control.LayoutPreset.LeftWide);
-        _leftPanel.Position = new Vector2(0, 24); // below TopMenu
         var lStyle = (StyleBoxFlat)styleBox.Duplicate();
         lStyle.BorderWidthRight = 1;
         _leftPanel.AddThemeStyleboxOverride("panel", lStyle);
@@ -101,7 +98,6 @@ public partial class ButtonBar : Control
         // Right
         _rightPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop };
         _rightPanel.SetAnchorsPreset(Control.LayoutPreset.RightWide);
-        _rightPanel.Position = new Vector2(0, 24);
         var rStyle = (StyleBoxFlat)styleBox.Duplicate();
         rStyle.BorderWidthLeft = 1;
         _rightPanel.AddThemeStyleboxOverride("panel", rStyle);

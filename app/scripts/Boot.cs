@@ -66,7 +66,6 @@ public partial class Boot : Control
     private SLNG.App.UI.InventoryPanel? _inventoryPanel;
     private Node3D? _sunGizmo;
 
-    private Label _hudLabel = null!;
     private double _hudAccum;
     
     private SLNG.App.UI.TopMenu _topMenu = null!;
@@ -374,27 +373,6 @@ public partial class Boot : Control
 
         var hudLayer = new CanvasLayer { Name = "HudLayer", Layer = 10, Visible = false };
         AddChild(hudLayer);
-
-        _hudLabel = new Label
-        {
-            Name = "PositionHud",
-            HorizontalAlignment = HorizontalAlignment.Right,
-            MouseFilter = Control.MouseFilterEnum.Ignore,
-            Text = "connecting…",
-        };
-        // Anchor to the bottom-right corner to avoid overlapping the Login UI at the top.
-        _hudLabel.SetAnchorsPreset(Control.LayoutPreset.BottomRight);
-        _hudLabel.GrowHorizontal = Control.GrowDirection.Begin;
-        _hudLabel.GrowVertical = Control.GrowDirection.Begin;
-        _hudLabel.OffsetBottom = -12;
-        _hudLabel.OffsetRight = -12;
-        // Dark outline + larger font so white text stays legible over bright sky or pale objects.
-        _hudLabel.AddThemeColorOverride("font_color", new Color(1, 1, 1));
-        _hudLabel.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 0.85f));
-        _hudLabel.AddThemeConstantOverride("outline_size", 5);
-        _hudLabel.AddThemeFontSizeOverride("font_size", 18);
-        hudLayer.AddChild(_hudLabel);
-        GD.Print("[HUD] position label created on CanvasLayer");
 
         var cameraHud = new SLNG.App.UI.CameraHUD();
         cameraHud.Name = "CameraHUD";
@@ -880,21 +858,7 @@ public partial class Boot : Control
 
     private void UpdateHud()
     {
-        if (_world == null || _session == null) { return; }
-
-        string region = string.IsNullOrEmpty(_session.CurrentRegionName) ? "(connecting)" : _session.CurrentRegionName;
-
-        var t = GetLocalAgentTransform();
-        if (t == null)
-        {
-            _hudLabel.Text = $"{region}\nawaiting position…   ·   Draw {RenderConfig.DrawDistance:0} m";
-            return;
-        }
-
-        _hudLabel.Text =
-            $"{region}\n" +
-            $"<{t.Position.X:0.0}, {t.Position.Y:0.0}, {t.Position.Z:0.0}>\n" +
-            $"Alt {t.Position.Z:0.0} m   ·   Draw {RenderConfig.DrawDistance:0} m";
+        // Removed Position HUD label
     }
 
     private void LoadWindowSettings()
