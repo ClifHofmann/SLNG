@@ -28,13 +28,7 @@ public partial class ButtonBar : Control
     private IReadOnlyList<ToolbarItemDefinition> _items = Array.Empty<ToolbarItemDefinition>();
     private ToolbarSettings _settings = null!;
     private HBoxContainer _bottomBox = null!;
-    private HBoxContainer _topBox = null!;
-    private VBoxContainer _leftBox = null!;
-    private VBoxContainer _rightBox = null!;
     private PanelContainer _bottomPanel = null!;
-    private PanelContainer _topPanel = null!;
-    private PanelContainer _leftPanel = null!;
-    private PanelContainer _rightPanel = null!;
 
     private Button? _draggingButton;
     private Vector2 _dragStartPos;
@@ -76,54 +70,6 @@ public partial class ButtonBar : Control
         _bottomBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
         _bottomBox.AddThemeConstantOverride("separation", 2);
         _bottomPanel.AddChild(_bottomBox);
-
-        // Top
-        var topMargin = new MarginContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
-        AddChild(topMargin);
-        MakeFullRect(topMargin);
-        topMargin.AddThemeConstantOverride("margin_top", 36);
-        var topVBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Begin, MouseFilter = Control.MouseFilterEnum.Ignore };
-        topMargin.AddChild(topVBox);
-        _topPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
-        var tStyle = (StyleBoxFlat)styleBox.Duplicate();
-        tStyle.BorderWidthBottom = 1;
-        _topPanel.AddThemeStyleboxOverride("panel", tStyle);
-        topVBox.AddChild(_topPanel);
-        _topBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
-        _topBox.AddThemeConstantOverride("separation", 2);
-        _topPanel.AddChild(_topBox);
-
-        // Left
-        var leftMargin = new MarginContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
-        AddChild(leftMargin);
-        MakeFullRect(leftMargin);
-        leftMargin.AddThemeConstantOverride("margin_top", 36);
-        var leftHBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Begin, MouseFilter = Control.MouseFilterEnum.Ignore };
-        leftMargin.AddChild(leftHBox);
-        _leftPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop, SizeFlagsVertical = Control.SizeFlags.ExpandFill };
-        var lStyle = (StyleBoxFlat)styleBox.Duplicate();
-        lStyle.BorderWidthRight = 1;
-        _leftPanel.AddThemeStyleboxOverride("panel", lStyle);
-        leftHBox.AddChild(_leftPanel);
-        _leftBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
-        _leftBox.AddThemeConstantOverride("separation", 2);
-        _leftPanel.AddChild(_leftBox);
-
-        // Right
-        var rightMargin = new MarginContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
-        AddChild(rightMargin);
-        MakeFullRect(rightMargin);
-        rightMargin.AddThemeConstantOverride("margin_top", 36);
-        var rightHBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End, MouseFilter = Control.MouseFilterEnum.Ignore };
-        rightMargin.AddChild(rightHBox);
-        _rightPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop, SizeFlagsVertical = Control.SizeFlags.ExpandFill };
-        var rStyle = (StyleBoxFlat)styleBox.Duplicate();
-        rStyle.BorderWidthLeft = 1;
-        _rightPanel.AddThemeStyleboxOverride("panel", rStyle);
-        rightHBox.AddChild(_rightPanel);
-        _rightBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
-        _rightBox.AddThemeConstantOverride("separation", 2);
-        _rightPanel.AddChild(_rightBox);
     }
 
     private void MakeFullRect(Control c)
@@ -150,39 +96,22 @@ public partial class ButtonBar : Control
 
     private void RebuildButtons()
     {
-        var boxes = new Container[] { _bottomBox, _topBox, _leftBox, _rightBox };
-        foreach (var box in boxes)
+        var stale = new List<Node>();
+        foreach (Node child in _bottomBox.GetChildren()) stale.Add(child);
+        foreach (var child in stale)
         {
-            var stale = new List<Node>();
-            foreach (Node child in box.GetChildren()) stale.Add(child);
-            foreach (var child in stale)
-            {
-                box.RemoveChild(child); // detach synchronously so the loop below sees a clean container
-                child.QueueFree();
-            }
+            _bottomBox.RemoveChild(child);
+            child.QueueFree();
         }
 
         foreach (var id in _settings.Order)
         {
             if (!_settings.IsEnabled(id)) continue;
             var def = _items.FirstOrDefault(i => i.Id == id);
-            if (def == null) continue; // id from a build that no longer registers it -- ignore
+            if (def == null) continue;
             
-            var pos = _settings.GetDockPosition(id);
-            Container targetBox = pos switch {
-                ToolbarDockPosition.Top => _topBox,
-                ToolbarDockPosition.Left => _leftBox,
-                ToolbarDockPosition.Right => _rightBox,
-                _ => _bottomBox
-            };
-            targetBox.AddChild(BuildButton(def));
+            _bottomBox.AddChild(BuildButton(def));
         }
-
-        // Hide empty panels
-        _bottomPanel.Visible = _bottomBox.GetChildCount() > 0;
-        _topPanel.Visible = _topBox.GetChildCount() > 0;
-        _leftPanel.Visible = _leftBox.GetChildCount() > 0;
-        _rightPanel.Visible = _rightBox.GetChildCount() > 0;
     }
 
     private Button BuildButton(ToolbarItemDefinition def)
@@ -256,17 +185,12 @@ public partial class ButtonBar : Control
         var container = dragged.GetParent() as Container;
         if (container == null) return;
 
-        bool isVertical = container is VBoxContainer;
         int idx = dragged.GetIndex();
 
         if (idx < container.GetChildCount() - 1 && container.GetChild(idx + 1) is Control next)
         {
-            float nextMid = isVertical 
-                ? next.GlobalPosition.Y + next.Size.Y / 2f
-                : next.GlobalPosition.X + next.Size.X / 2f;
-            float mousePos = isVertical ? mouseGlobalY : mouseGlobalX;
-
-            if (mousePos > nextMid)
+            float nextMid = next.GlobalPosition.X + next.Size.X / 2f;
+            if (mouseGlobalX > nextMid)
             {
                 container.MoveChild(dragged, idx + 1);
                 return;
@@ -274,12 +198,8 @@ public partial class ButtonBar : Control
         }
         if (idx > 0 && container.GetChild(idx - 1) is Control prev)
         {
-            float prevMid = isVertical
-                ? prev.GlobalPosition.Y + prev.Size.Y / 2f
-                : prev.GlobalPosition.X + prev.Size.X / 2f;
-            float mousePos = isVertical ? mouseGlobalY : mouseGlobalX;
-
-            if (mousePos < prevMid)
+            float prevMid = prev.GlobalPosition.X + prev.Size.X / 2f;
+            if (mouseGlobalX < prevMid)
             {
                 container.MoveChild(dragged, idx - 1);
             }
@@ -289,14 +209,9 @@ public partial class ButtonBar : Control
     private void EndDrag(Button btn)
     {
         var newEnabledOrder = new List<string>();
-        // Gather order from all boxes.
-        var boxes = new Container[] { _bottomBox, _rightBox, _topBox, _leftBox };
-        foreach (var box in boxes)
-        {
-            foreach (Node child in box.GetChildren())
-                if (child.HasMeta(MetaKey))
-                    newEnabledOrder.Add((string)child.GetMeta(MetaKey));
-        }
+        foreach (Node child in _bottomBox.GetChildren())
+            if (child.HasMeta(MetaKey))
+                newEnabledOrder.Add((string)child.GetMeta(MetaKey));
 
         // Persists and raises Changed -> RebuildButtons picks the (already correctly ordered)
         // buttons back up; harmless since the drag has already ended by this point.
@@ -319,16 +234,12 @@ public partial class ButtonBar : Control
         }
 
         // Sync the pressed look of every button with the target panel visibility
-        var boxes = new Container[] { _bottomBox, _topBox, _leftBox, _rightBox };
-        foreach (var box in boxes)
+        foreach (Node child in _bottomBox.GetChildren())
         {
-            foreach (Node child in box.GetChildren())
-            {
-                if (child is not Button btn || !btn.HasMeta(MetaKey)) continue;
-                var id = (string)btn.GetMeta(MetaKey);
-                var def = _items.FirstOrDefault(i => i.Id == id);
-                if (def?.IsActive != null) btn.ButtonPressed = def.IsActive();
-            }
+            if (child is not Button btn || !btn.HasMeta(MetaKey)) continue;
+            var id = (string)btn.GetMeta(MetaKey);
+            var def = _items.FirstOrDefault(i => i.Id == id);
+            if (def?.IsActive != null) btn.ButtonPressed = def.IsActive();
         }
     }
 }

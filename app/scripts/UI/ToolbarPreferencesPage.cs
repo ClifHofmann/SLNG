@@ -32,13 +32,9 @@ public partial class ToolbarPreferencesPage : VBoxContainer
         heading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
         AddChild(heading);
 
-        var grid = new GridContainer
-        {
-            Columns = 2,
-        };
-        grid.AddThemeConstantOverride("h_separation", 20);
-        grid.AddThemeConstantOverride("v_separation", 4);
-        AddChild(grid);
+        var list = new VBoxContainer();
+        list.AddThemeConstantOverride("separation", 4);
+        AddChild(list);
 
         foreach (var def in _items)
         {
@@ -49,20 +45,7 @@ public partial class ToolbarPreferencesPage : VBoxContainer
                 FocusMode = Control.FocusModeEnum.None,
             };
             check.Toggled += pressed => _settings.SetEnabled(def.Id, pressed);
-            grid.AddChild(check);
-
-            var option = new OptionButton();
-            option.FocusMode = Control.FocusModeEnum.None;
-            option.AddItem("Bottom", (int)ToolbarDockPosition.Bottom);
-            option.AddItem("Top", (int)ToolbarDockPosition.Top);
-            option.AddItem("Left", (int)ToolbarDockPosition.Left);
-            option.AddItem("Right", (int)ToolbarDockPosition.Right);
-            option.Selected = option.GetItemIndex((int)_settings.GetDockPosition(def.Id));
-            
-            option.ItemSelected += (idx) => {
-                _settings.SetDockPosition(def.Id, (ToolbarDockPosition)option.GetItemId((int)idx));
-            };
-            grid.AddChild(option);
+            list.AddChild(check);
         }
     }
 }
