@@ -24,12 +24,13 @@ public partial class PreferencesWindow : SLNGWindow
 
     public override void _Ready()
     {
+        PersistId = "preferences";
         base._Ready(); // SLNGWindow styling
 
         Title = L10n.Tr("ui.preferences.title");
         Visible = false;
-        CustomMinimumSize = new Vector2(450, 300);
-        Size = new Vector2(450, 300);
+        CustomMinimumSize = new Vector2(600, 420);
+        Size = new Vector2(600, 420);
         Position = new Vector2(260, 160);
 
         OnCloseRequested = Hide;
