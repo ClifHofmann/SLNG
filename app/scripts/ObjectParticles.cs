@@ -5,7 +5,7 @@ using SLNG.Assets;
 
 namespace SLNG.App;
 
-public partial class ObjectParticles : GpuParticles3D
+public partial class ObjectParticles : CpuParticles3D
 {
     private Guid _currentTextureId;
     private GpuCache? _gpuCache;
@@ -36,7 +36,7 @@ public partial class ObjectParticles : GpuParticles3D
         bool interpolateScale = (data.Flags & 0x002) != 0;
         bool emissive = (data.Flags & 0x100) != 0;
 
-        // Godot GPUParticles3D base settings
+        // Godot CPUParticles3D base settings
         float burstRate = S(data.BurstRate, 0.1f);
         float rate = burstRate > 0.001f ? burstRate : 0.1f;
         
@@ -48,56 +48,40 @@ public partial class ObjectParticles : GpuParticles3D
         Lifetime = maxAge > 0f ? maxAge : 1.0f;
         OneShot = false;
         Emitting = true;
-        VisibilityAabb = new Aabb(new Vector3(-100, -100, -100), new Vector3(200, 200, 200)); // Large safe AABB
         
         bool followSource = (data.Flags & 0x010) != 0;
         LocalCoords = followSource;
 
-        ParticleProcessMaterial mat = ProcessMaterial as ParticleProcessMaterial;
-        if (mat == null)
-        {
-            mat = new ParticleProcessMaterial();
-            ProcessMaterial = mat;
-        }
-
-        // SL Patterns
-        // 0x01 = Drop, 0x02 = Explode, 0x04 = Angle, 0x08 = Cone, 0x10 = AngleCone
-        
-        // SL's Z axis is UP, Godot's Y axis is UP.
-        mat.Direction = new Vector3(0, 1, 0); // Emit along local UP by default
+        // CPUParticles3D doesn't use ParticleProcessMaterial, it sets properties directly on the node
+        Direction = new Vector3(0, 1, 0); // Emit along local UP by default
         
         if ((data.Pattern & 0x02) != 0) // Explode
         {
-            mat.Spread = 180f; // Spherical
+            Spread = 180f; // Spherical
         }
         else
         {
-            mat.Spread = S(data.OuterAngle) * (180f / (float)Math.PI);
+            Spread = S(data.OuterAngle) * (180f / (float)Math.PI);
         }
 
         if ((data.Pattern & 0x01) != 0) // Drop
         {
-            mat.InitialVelocityMin = 0f;
-            mat.InitialVelocityMax = 0f;
+            InitialVelocityMin = 0f;
+            InitialVelocityMax = 0f;
         }
         else
         {
-            mat.InitialVelocityMin = S(data.BurstSpeedMin, 0f);
-            mat.InitialVelocityMax = S(data.BurstSpeedMax, 0f);
+            InitialVelocityMin = S(data.BurstSpeedMin, 0f);
+            InitialVelocityMax = S(data.BurstSpeedMax, 0f);
         }
         
-        // SL Gravity is passed as PartAcceleration. Swizzle to Godot coords: (X, Z, -Y) or just map SL Z to Godot Y.
-        // SL: X=Forward, Y=Left, Z=Up. Godot: X=Right, Y=Up, Z=Back.
-        // For basic velocity/gravity, mapping SL's (X, Y, Z) to Godot's (-Y, Z, -X) or similar is needed if we use global coords.
-        // But ParticleProcessMaterial operates in local space if LocalCoords is true.
-        // Assuming SL data is mapped: X->GodotX, Y->GodotZ, Z->GodotY
         float gx = S(data.PartAcceleration.X);
         float gz = S(data.PartAcceleration.Z);
         float gy = -S(data.PartAcceleration.Y);
         if (float.IsInfinity(gx)) gx = 0;
         if (float.IsInfinity(gy)) gy = 0;
         if (float.IsInfinity(gz)) gz = 0;
-        mat.Gravity = new Vector3(gx, gz, gy);
+        Gravity = new Vector3(gx, gz, gy);
 
         float sAlpha = S(data.StartColor.W, 1f) == 0f ? 1f : S(data.StartColor.W, 1f);
         float eAlpha = S(data.EndColor.W, 1f) == 0f ? 1f : S(data.EndColor.W, 1f);
@@ -120,19 +104,15 @@ public partial class ObjectParticles : GpuParticles3D
             };
         }
 
-        var gradTex = new GradientTexture1D();
-        gradTex.Gradient = grad;
-        mat.ColorRamp = gradTex;
-        mat.Color = new Color(1, 1, 1, 1);
+        ColorRamp = grad;
+        Color = new Color(1, 1, 1, 1);
 
-        // StandardMaterial3D (DrawPass)
-        if (DrawPass1 == null)
+        if (Mesh == null)
         {
-            DrawPass1 = new QuadMesh();
+            Mesh = new QuadMesh();
         }
-
-        var quadMesh = (QuadMesh)DrawPass1;
-        quadMesh.Size = new Vector2(1f, 1f); // Base size 1, scale controlled by process material
+        var quadMesh = (QuadMesh)Mesh;
+        quadMesh.Size = new Vector2(1f, 1f);
 
         float sScale = S(data.StartScaleX, 0.1f);
         float eScale = S(data.EndScaleX, 1.0f);
@@ -140,18 +120,20 @@ public partial class ObjectParticles : GpuParticles3D
         if (interpolateScale)
         {
             var scaleCurve = new Curve();
-            scaleCurve.AddPoint(new Vector2(0f, sScale)); // Assume uniform X/Y for simplicity in basic curve
+            scaleCurve.AddPoint(new Vector2(0f, sScale)); 
             scaleCurve.AddPoint(new Vector2(1f, eScale));
-            var scaleTex = new CurveTexture();
-            scaleTex.Curve = scaleCurve;
-            mat.ScaleCurve = scaleTex;
-            // Note: Godot GPUParticles3D scale curve is a single float multiplier.
-            // If Start/End scales differ in aspect ratio, it gets complex. We use X as an approximation.
+            ScaleCurveX = scaleCurve;
+            ScaleCurveY = scaleCurve;
+            // CPUParticles3D handles min/max scaling differently, so we reset base scales
+            ScaleAmountMin = 1.0f;
+            ScaleAmountMax = 1.0f;
         }
         else
         {
-            mat.ScaleMin = sScale;
-            mat.ScaleMax = sScale;
+            ScaleAmountMin = sScale;
+            ScaleAmountMax = sScale;
+            ScaleCurveX = null;
+            ScaleCurveY = null;
         }
 
         StandardMaterial3D drawMat = quadMesh.Material as StandardMaterial3D;
@@ -206,7 +188,7 @@ public partial class ObjectParticles : GpuParticles3D
 
     private void ApplyTextureDeferred(Texture2D tex)
     {
-        var quadMesh = (QuadMesh)DrawPass1;
+        var quadMesh = (QuadMesh)Mesh;
         if (quadMesh.Material is StandardMaterial3D drawMat)
         {
             drawMat.AlbedoTexture = tex;
