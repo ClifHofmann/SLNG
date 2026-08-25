@@ -6,7 +6,6 @@ default
         llParticleSystem([
             PSYS_PART_FLAGS, PSYS_PART_INTERP_COLOR_MASK | PSYS_PART_INTERP_SCALE_MASK | PSYS_PART_EMISSIVE_MASK,
             PSYS_SRC_PATTERN, PSYS_SRC_PATTERN_EXPLODE,
-            PSYS_PART_START_AGE, 0.0,
             PSYS_PART_MAX_AGE, 3.0,
             PSYS_PART_START_COLOR, <1.0, 0.5, 0.0>,
             PSYS_PART_END_COLOR, <1.0, 0.0, 0.0>,
