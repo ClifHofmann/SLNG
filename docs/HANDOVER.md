@@ -191,7 +191,17 @@ regression. Check what the code does before trusting what the spec says it shoul
 - **A parallel, unfinished EEP implementation in `stash@{0}`.** Not ours. Needs a human decision,
   not a blind merge. `git stash show -p stash@{0}`.
 - **`.claude/worktrees/sad-yalow-b74c97`** — empty, held by a process, deletable after a restart.
-- **Particles are not implemented at all.** Needs its own spec.
+- **Particles now work, but still have no Feature ID, no spec and no roadmap entry**, and the
+  branch they were built on is named after the long-finished FEAT-RENDER-02. Section 6 below
+  is what exists instead. Still unimplemented on purpose, and documented in
+  `SlParticleDataFlags`: Bounce, Wind, FollowVelocity, target/beam/ribbon, glow, custom blend
+  function. Worn objects cannot show particles at all -- `ObjectRenderer.UpdateVisual` returns
+  early for attachments and `AvatarRenderer` has never heard of `ObjectParticles`.
+- **Particles straddling the water surface are cut by the water's depth write.** They now draw
+  at a fixed priority above water, so the artefact no longer flips with the camera, but the
+  viewer splits its alpha pass in two around water and clips per fragment
+  (`lldrawpool.h:74-78`, `lldrawpoolalpha.cpp:149-159`). The second half of that belongs to the
+  water pass.
 - **Texture animation direction unverified.** `tools/testassets/texanim_probe.lsl` is ready.
 - **Water:** fresnel, refraction, `blend_factor`.
 
@@ -216,3 +226,64 @@ regression. Check what the code does before trusting what the spec says it shoul
 - **Check what a measurement CAN see before trusting it.** A prediction image built from
   `SlTerrainComposition.Weights()` was compared against a screenshot for a round before noticing
   that function documents itself as having no contrast and ignoring the ramp entirely.
+
+## 6. Particles, and four bugs that all looked like nothing
+
+Particles were "implemented" and had never once been seen working for longer than a single
+session. Four separate bugs, and the reason they took so long is the thing worth carrying
+forward: **not one of them failed. Every one produced a complete, plausible, wrong result.**
+
+| what was wrong | what it looked like |
+|---|---|
+| `ParticleSystem.MaxAge` (the EMITTER's lifetime) read as the particle's | a pool of exactly 1 particle |
+| `PartFlags` (2 source bits) read where `PartDataFlags` belongs | no colour interpolation, not fullbright |
+| `Guid.Empty` meaning both "no texture" and "not resolved yet" | opaque tinted squares |
+| a `CRC == 0` gate the real viewer does not have | whole systems silently discarded |
+
+The first two are LibreMetaverse name collisions: in both pairs the obvious-looking field is the
+wrong one, and they overlap numerically, so reading the wrong one is invisible. The DTO now names
+the section explicitly (`SourceMaxAge`/`PartMaxAge`, `SourceFlags`/`PartDataFlags`) and the bits
+are enums, so repeating the mistake is a compile error.
+
+### The one that mattered: LibreMetaverse loses particles on every compressed update
+
+`ObjectManager.PacketHandlers.cs:810` hands the particle-block parser the offset into the whole
+compressed object blob, and that parser takes its length from `data.Length - pos` -- i.e. "the
+block runs to the end of the object", which it never does. The length never matches the 86-byte
+block, no branch runs, every field stays at its default. The handler still advances its cursor by
+the correct 86 bytes, so nothing else decodes wrong. Completely silent.
+
+Full updates are fine, because there the block arrives in its own message field whose length is
+exactly right. That is the whole "it worked the first time and never again" shape: setting a
+particle system schedules a full update, so it works the moment the script runs, and never again
+after a relog, when the object arrives compressed.
+
+`CompressedParticleRepair` recomputes the offset and re-raises the update with the block parsed
+from exactly its own bytes. **Two warnings if you touch it:**
+
+- Between the owner id and the particle block sit FIVE optional sections -- angular velocity,
+  parent id, tree/scratch pad, floating text, media URL. The first version handled only the media
+  URL, and a child prim in a linkset (parent id, 4 bytes) then read 86 bytes four bytes early. It
+  did not fail. It produced a 3-second emitter reading as 1.15 s, a burst of 100 as 128, and a
+  texture id shifted by four bytes -- which is what finally identified it, because a UUID is the
+  one field where a shift is legible by eye. The tests now cover every section and combination.
+- `HasParticlesNew` (extended block, glow or custom blend) is worse and is NOT repaired here:
+  LibreMetaverse has no branch for it at all, so it does not skip the block either, and every
+  field it decodes after it for that object is read from the wrong offset.
+
+`CompressedParticleRepairTests` pins the upstream bug itself -- it decodes a block the way the
+library does and asserts that nothing comes out. If LibreMetaverse ever fixes this, that test says so.
+
+### Instruments
+
+`tools/testassets/particle_probe.lsl` re-sends its system every 20 s, because a particle system is
+only put on the wire when a script sets it -- a probe that sets it once in `state_entry` can only
+be observed by someone who was already standing there. Two `--diag` log lines bracket the path:
+`[ParticleWire]` (arrived at the protocol boundary) and `[Particles]` (renderer configured it).
+Between them they localise any future failure to one half in a single run; that is how all of this
+was actually found. The README documents both, and how to re-measure the default particle texture's
+falloff out of the vendored `pixiesmall.j2c`.
+
+**One trap, named because it cost a wrong conclusion here:** a viewer keeps a particle source alive
+once it has one. A Firestorm that has been open all afternoon will happily display an emitter the
+simulator stopped sending hours ago. Relog it before concluding anything from a side-by-side.

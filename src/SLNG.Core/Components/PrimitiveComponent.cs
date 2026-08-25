@@ -80,6 +80,9 @@ public class PrimitiveComponent : IComponent
     /// <summary>LibreMetaverse ClickAction byte (0=Touch, 1=Sit, etc).</summary>
     public byte ClickAction { get; set; }
 
+    /// <summary>Particle system parameters for rendering GPUParticles3D.</summary>
+    public ParticleSystemData? Particles { get; set; }
+
     /// <summary>SL attachment-point byte (0 = not worn). Stored so a worn object can be linked
     /// to its avatar even if the avatar entity streams in after this prim.</summary>
     public byte AttachmentPoint { get; set; }
@@ -120,7 +123,7 @@ public class PrimitiveComponent : IComponent
     /// updates for a confirmation that the defaults are real.</summary>
     public bool HasPhysicsProperties { get; set; }
 
-    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, float repeatU = 1.0f, float repeatV = 1.0f, float offsetU = 0.0f, float offsetV = 0.0f, float rotation = 0.0f, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0, FaceTexture[]? faces = null, byte texGen = FaceTexture.TexGenDefault)
+    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, float repeatU = 1.0f, float repeatV = 1.0f, float offsetU = 0.0f, float offsetV = 0.0f, float rotation = 0.0f, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0, FaceTexture[]? faces = null, byte texGen = FaceTexture.TexGenDefault, ParticleSystemData? particles = null)
     {
         Scale = scale;
         ProfileCurve = profileCurve;
@@ -140,5 +143,6 @@ public class PrimitiveComponent : IComponent
         SculptType = sculptType;
         Faces = faces;
         TexGen = texGen;
+        Particles = particles;
     }
 }

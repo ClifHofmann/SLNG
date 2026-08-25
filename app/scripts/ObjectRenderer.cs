@@ -18,6 +18,8 @@ public partial class ObjectRenderer : Node3D
     // object would become unclickable/un-editable, not just un-standable-on.
     private const uint PhantomLayer = 1u << 2;
 
+    private const bool DebugLegacyMaterials = false;
+
     private World? _world;
     private SLNG.Assets.AssetService? _assetService;
     private GpuCache? _gpuCache;
@@ -29,6 +31,7 @@ public partial class ObjectRenderer : Node3D
         public StaticBody3D StaticBody = null!;
         public CollisionShape3D CollisionShape = null!;
         public OmniLight3D? LightNode;
+        public ObjectParticles? ParticlesNode;
         public List<Guid> UsedTextureIds = new();
 
         // What we've already loaded, so position/scale updates don't rebuild the mesh or
@@ -1147,11 +1150,30 @@ public partial class ObjectRenderer : Node3D
                 // Falloff is 1.0, well inside Godot's valid range, but a user-set 0 shouldn't zero
                 // the light out entirely.
                 state.LightNode.OmniAttenuation = Mathf.Max(0.1f, prim.LightFalloff);
+                state.LightNode.OmniAttenuation = Mathf.Max(0.1f, prim.LightFalloff);
             }
             else if (state.LightNode != null)
             {
                 state.LightNode.QueueFree();
                 state.LightNode = null;
+            }
+
+            if (prim.Particles != null)
+            {
+                if (state.ParticlesNode == null)
+                {
+                    state.ParticlesNode = new ObjectParticles { Name = "Particles" };
+                    state.MeshInstance.AddChild(state.ParticlesNode);
+                }
+                if (_assetService != null && _gpuCache != null)
+                {
+                    state.ParticlesNode.Apply(prim.Particles, _gpuCache, _assetService);
+                }
+            }
+            else if (state.ParticlesNode != null)
+            {
+                state.ParticlesNode.QueueFree();
+                state.ParticlesNode = null;
             }
         }
 
@@ -1619,7 +1641,7 @@ public partial class ObjectRenderer : Node3D
             var legacy = await _assetService.GetLegacyMaterialAsync(ft.LegacyMaterialId);
             if (legacy is { } lm)
             {
-                if (_legacyMaterialsSeen.TryAdd(lm.Id, 0))
+                if (DebugLegacyMaterials && _legacyMaterialsSeen.TryAdd(lm.Id, 0))
                 {
                     GD.Print($"[LegacyMaterial] {lm.Id.ToString()[..8]} " +
                              $"normal={(lm.NormalMap == Guid.Empty ? "none" : lm.NormalMap.ToString()[..8])} " +
@@ -1649,7 +1671,7 @@ public partial class ObjectRenderer : Node3D
                         // thread, so the check belongs inside the callback, not before it.
                         if (!IsInstanceValid(normalTex))
                         {
-                            GD.PrintErr($"[LegacyMaterial] normal map {lm.NormalMap} fetch/decode returned null");
+                            if (DebugLegacyMaterials) GD.PrintErr($"[LegacyMaterial] normal map {lm.NormalMap} fetch/decode returned null");
                             return;
                         }
                         material.SetShaderParameter(PrimShaderFamily.NormalTexture, normalTex);
@@ -1681,7 +1703,7 @@ public partial class ObjectRenderer : Node3D
                     {
                         if (!IsInstanceValid(specTex))
                         {
-                            GD.PrintErr($"[LegacyMaterial] specular map {lm.SpecularMap} fetch/decode returned null");
+                            if (DebugLegacyMaterials) GD.PrintErr($"[LegacyMaterial] specular map {lm.SpecularMap} fetch/decode returned null");
                             return;
                         }
                         material.SetShaderParameter(PrimShaderFamily.SpecularTexture, specTex);

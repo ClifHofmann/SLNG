@@ -152,8 +152,11 @@ public partial class TerrainRenderer : Node3D
         return hash;
     }
 
+    private const bool DebugTerrainComposition = false;
+
     private void LogCompositionDiagnostics(ulong regionHandle, RegionTerrain terrain)
     {
+        if (!DebugTerrainComposition) return;
         // Terrain patches arrive independently of (and often before) the RegionHandshake that
         // carries the composition settings, so the first rebuilds run with all-zero start/range.
         // Logging those would pin a meaningless snapshot and never log the real one.
