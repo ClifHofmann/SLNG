@@ -20,10 +20,12 @@ public partial class ObjectParticles : GpuParticles3D
         bool emissive = (data.Flags & 0x100) != 0;
 
         // Godot GPUParticles3D base settings
-        Amount = data.BurstPartCount > 0 ? (int)(data.BurstRate * data.BurstPartCount * data.MaxAge) + 1 : 100;
+        float rate = data.BurstRate > 0.001f ? data.BurstRate : 0.1f;
+        Amount = data.BurstPartCount > 0 ? (int)((data.BurstPartCount / rate) * data.MaxAge) + 1 : 100;
         Amount = Math.Clamp(Amount, 1, 4096);
         Lifetime = data.MaxAge > 0f ? data.MaxAge : 1.0f;
         OneShot = false;
+        Emitting = true;
         
         bool followSource = (data.Flags & 0x010) != 0;
         LocalCoords = followSource;
@@ -126,6 +128,25 @@ public partial class ObjectParticles : GpuParticles3D
                     CallDeferred(nameof(ApplyTextureDeferred), t.Result);
                 }
             });
+        }
+        else if (data.TextureId == Guid.Empty)
+        {
+            _currentTextureId = Guid.Empty;
+            if (drawMat.AlbedoTexture == null)
+            {
+                var circleTex = new GradientTexture2D();
+                var gradCircle = new Gradient();
+                gradCircle.AddPoint(0.0f, new Color(1, 1, 1, 1));
+                gradCircle.AddPoint(0.4f, new Color(1, 1, 1, 1)); // solid core
+                gradCircle.AddPoint(1.0f, new Color(1, 1, 1, 0)); // soft edge
+                circleTex.Gradient = gradCircle;
+                circleTex.Fill = GradientTexture2D.FillEnum.Radial;
+                circleTex.FillFrom = new Vector2(0.5f, 0.5f);
+                circleTex.FillTo = new Vector2(1.0f, 0.5f);
+                circleTex.Width = 32;
+                circleTex.Height = 32;
+                drawMat.AlbedoTexture = circleTex;
+            }
         }
     }
 
