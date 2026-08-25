@@ -50,7 +50,7 @@ public partial class ScriptDialogWindow : SLNGWindow
 
         var scroll = new ScrollContainer
         {
-            CustomMinimumSize = new Vector2(0, 60),
+            CustomMinimumSize = new Vector2(0, 120), // Increased from 60 to allow more text visibility
             SizeFlagsVertical = SizeFlags.ExpandFill,
             HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled
         };
@@ -72,7 +72,7 @@ public partial class ScriptDialogWindow : SLNGWindow
     {
         base._Ready();
 
-        CustomMinimumSize = new Vector2(340, 220);
+        CustomMinimumSize = new Vector2(340, 0); // Height 0 allows it to shrink-wrap its contents without overlapping
         Size = CustomMinimumSize;
 
         OnCloseRequested = () => Close(sendReply: false, buttonIndex: -1, buttonLabel: "");
