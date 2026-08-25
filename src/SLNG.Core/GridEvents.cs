@@ -1,4 +1,5 @@
 using System.Numerics;
+using SLNG.Core.Components;
 
 namespace SLNG.Core;
 
@@ -103,7 +104,9 @@ public record ObjectUpdateEvent(
     TextureAnimation? TextureAnim = null,
     // The DEFAULT face's legacy Blinn-Phong material id (normal + specular map). Separate from
     // RenderMaterialId, which is the glTF PBR one -- a face carries both independently.
-    Guid LegacyMaterialId = default
+    Guid LegacyMaterialId = default,
+    // Particle system parameters for rendering GPUParticles3D.
+    ParticleSystemData? Particles = null
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY

@@ -263,7 +263,7 @@ public sealed class WorldSimulation : IDisposable
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim == null)
         {
-            prim = new PrimitiveComponent(e.Scale, e.ProfileCurve, e.IsMesh, e.MeshId, e.TextureId, e.RenderMaterialId, e.ColorTint, e.RepeatU, e.RepeatV, e.OffsetU, e.OffsetV, e.TextureRotation, e.Shape, e.IsSculpt, e.SculptId, e.SculptType, e.Faces, e.TexGen);
+            prim = new PrimitiveComponent(e.Scale, e.ProfileCurve, e.IsMesh, e.MeshId, e.TextureId, e.RenderMaterialId, e.ColorTint, e.RepeatU, e.RepeatV, e.OffsetU, e.OffsetV, e.TextureRotation, e.Shape, e.IsSculpt, e.SculptId, e.SculptType, e.Faces, e.TexGen, e.Particles);
             entity.SetComponent(prim);
         }
         else
@@ -315,6 +315,7 @@ public sealed class WorldSimulation : IDisposable
             // a terse-sourced null here would stop every animated texture the moment its object
             // starts moving.
             prim.TextureAnim = e.TextureAnim;
+            prim.Particles = e.Particles;
         }
         _world.NotifyComponentUpdated(entity, prim);
 
