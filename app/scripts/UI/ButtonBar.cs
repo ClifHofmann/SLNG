@@ -27,7 +27,14 @@ public partial class ButtonBar : Control
 {
     private IReadOnlyList<ToolbarItemDefinition> _items = Array.Empty<ToolbarItemDefinition>();
     private ToolbarSettings _settings = null!;
-    private HBoxContainer _hbox = null!;
+    private HBoxContainer _bottomBox = null!;
+    private HBoxContainer _topBox = null!;
+    private VBoxContainer _leftBox = null!;
+    private VBoxContainer _rightBox = null!;
+    private PanelContainer _bottomPanel = null!;
+    private PanelContainer _topPanel = null!;
+    private PanelContainer _leftPanel = null!;
+    private PanelContainer _rightPanel = null!;
 
     private Button? _draggingButton;
     private Vector2 _dragStartPos;
@@ -41,30 +48,11 @@ public partial class ButtonBar : Control
     {
         _iconFont = GD.Load<Font>("res://assets/fonts/MaterialSymbolsOutlined.ttf");
         MouseFilter = Control.MouseFilterEnum.Ignore; // avoid blocking world/camera clicks outside the pill
-
-        var margin = new MarginContainer();
-        margin.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-        margin.AddThemeConstantOverride("margin_bottom", 0);
-        margin.MouseFilter = Control.MouseFilterEnum.Ignore;
-        AddChild(margin);
-
-        var vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
-        vbox.MouseFilter = Control.MouseFilterEnum.Ignore;
-        margin.AddChild(vbox);
-
-        var barPanel = new PanelContainer();
-        barPanel.MouseFilter = Control.MouseFilterEnum.Stop;
-        barPanel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
-        vbox.AddChild(barPanel);
+        SetAnchorsPreset(Control.LayoutPreset.FullRect);
 
         var styleBox = new StyleBoxFlat
         {
             BgColor = new Color(0.12f, 0.12f, 0.12f, 0.95f),
-            CornerRadiusTopLeft = 0,
-            CornerRadiusTopRight = 0,
-            CornerRadiusBottomLeft = 0,
-            CornerRadiusBottomRight = 0,
-            BorderWidthTop = 1,
             BorderColor = new Color(0.3f, 0.3f, 0.3f, 0.5f),
             ShadowColor = new Color(0, 0, 0, 0.25f),
             ShadowSize = 4,
@@ -73,15 +61,54 @@ public partial class ButtonBar : Control
             ContentMarginTop = 2,
             ContentMarginBottom = 2,
         };
-        barPanel.AddThemeStyleboxOverride("panel", styleBox);
 
-        var rightBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
-        rightBox.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
-        barPanel.AddChild(rightBox);
+        // Bottom
+        _bottomPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop };
+        _bottomPanel.SetAnchorsPreset(Control.LayoutPreset.BottomWide);
+        var bStyle = (StyleBoxFlat)styleBox.Duplicate();
+        bStyle.BorderWidthTop = 1;
+        _bottomPanel.AddThemeStyleboxOverride("panel", bStyle);
+        AddChild(_bottomPanel);
+        _bottomBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
+        _bottomBox.AddThemeConstantOverride("separation", 2);
+        _bottomPanel.AddChild(_bottomBox);
 
-        _hbox = new HBoxContainer();
-        _hbox.AddThemeConstantOverride("separation", 2);
-        rightBox.AddChild(_hbox);
+        // Top
+        _topPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop };
+        _topPanel.SetAnchorsPreset(Control.LayoutPreset.TopWide);
+        // Margin top to avoid TopMenu overlap
+        _topPanel.Position = new Vector2(0, 24); 
+        var tStyle = (StyleBoxFlat)styleBox.Duplicate();
+        tStyle.BorderWidthBottom = 1;
+        _topPanel.AddThemeStyleboxOverride("panel", tStyle);
+        AddChild(_topPanel);
+        _topBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
+        _topBox.AddThemeConstantOverride("separation", 2);
+        _topPanel.AddChild(_topBox);
+
+        // Left
+        _leftPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop };
+        _leftPanel.SetAnchorsPreset(Control.LayoutPreset.LeftWide);
+        _leftPanel.Position = new Vector2(0, 24); // below TopMenu
+        var lStyle = (StyleBoxFlat)styleBox.Duplicate();
+        lStyle.BorderWidthRight = 1;
+        _leftPanel.AddThemeStyleboxOverride("panel", lStyle);
+        AddChild(_leftPanel);
+        _leftBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
+        _leftBox.AddThemeConstantOverride("separation", 2);
+        _leftPanel.AddChild(_leftBox);
+
+        // Right
+        _rightPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop };
+        _rightPanel.SetAnchorsPreset(Control.LayoutPreset.RightWide);
+        _rightPanel.Position = new Vector2(0, 24);
+        var rStyle = (StyleBoxFlat)styleBox.Duplicate();
+        rStyle.BorderWidthLeft = 1;
+        _rightPanel.AddThemeStyleboxOverride("panel", rStyle);
+        AddChild(_rightPanel);
+        _rightBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
+        _rightBox.AddThemeConstantOverride("separation", 2);
+        _rightPanel.AddChild(_rightBox);
     }
 
     /// <summary>Wires the bar to the full item registry and its persisted enabled/order state.
@@ -96,12 +123,16 @@ public partial class ButtonBar : Control
 
     private void RebuildButtons()
     {
-        var stale = new List<Node>();
-        foreach (Node child in _hbox.GetChildren()) stale.Add(child);
-        foreach (var child in stale)
+        var boxes = new Container[] { _bottomBox, _topBox, _leftBox, _rightBox };
+        foreach (var box in boxes)
         {
-            _hbox.RemoveChild(child); // detach synchronously so the loop below sees a clean container
-            child.QueueFree();
+            var stale = new List<Node>();
+            foreach (Node child in box.GetChildren()) stale.Add(child);
+            foreach (var child in stale)
+            {
+                box.RemoveChild(child); // detach synchronously so the loop below sees a clean container
+                child.QueueFree();
+            }
         }
 
         foreach (var id in _settings.Order)
@@ -109,8 +140,22 @@ public partial class ButtonBar : Control
             if (!_settings.IsEnabled(id)) continue;
             var def = _items.FirstOrDefault(i => i.Id == id);
             if (def == null) continue; // id from a build that no longer registers it -- ignore
-            _hbox.AddChild(BuildButton(def));
+            
+            var pos = _settings.GetDockPosition(id);
+            Container targetBox = pos switch {
+                ToolbarDockPosition.Top => _topBox,
+                ToolbarDockPosition.Left => _leftBox,
+                ToolbarDockPosition.Right => _rightBox,
+                _ => _bottomBox
+            };
+            targetBox.AddChild(BuildButton(def));
         }
+
+        // Hide empty panels
+        _bottomPanel.Visible = _bottomBox.GetChildCount() > 0;
+        _topPanel.Visible = _topBox.GetChildCount() > 0;
+        _leftPanel.Visible = _leftBox.GetChildCount() > 0;
+        _rightPanel.Visible = _rightBox.GetChildCount() > 0;
     }
 
     private Button BuildButton(ToolbarItemDefinition def)
@@ -174,29 +219,42 @@ public partial class ButtonBar : Control
 
             if (_isDragging)
             {
-                TryReorder(btn, mm.GlobalPosition.X);
+                TryReorder(btn, mm.GlobalPosition.X, mm.GlobalPosition.Y);
             }
         }
     }
 
-    private void TryReorder(Button dragged, float mouseGlobalX)
+    private void TryReorder(Button dragged, float mouseGlobalX, float mouseGlobalY)
     {
+        var container = dragged.GetParent() as Container;
+        if (container == null) return;
+
+        bool isVertical = container is VBoxContainer;
         int idx = dragged.GetIndex();
-        if (idx < _hbox.GetChildCount() - 1 && _hbox.GetChild(idx + 1) is Control right)
+
+        if (idx < container.GetChildCount() - 1 && container.GetChild(idx + 1) is Control next)
         {
-            float rightMid = right.GlobalPosition.X + right.Size.X / 2f;
-            if (mouseGlobalX > rightMid)
+            float nextMid = isVertical 
+                ? next.GlobalPosition.Y + next.Size.Y / 2f
+                : next.GlobalPosition.X + next.Size.X / 2f;
+            float mousePos = isVertical ? mouseGlobalY : mouseGlobalX;
+
+            if (mousePos > nextMid)
             {
-                _hbox.MoveChild(dragged, idx + 1);
+                container.MoveChild(dragged, idx + 1);
                 return;
             }
         }
-        if (idx > 0 && _hbox.GetChild(idx - 1) is Control left)
+        if (idx > 0 && container.GetChild(idx - 1) is Control prev)
         {
-            float leftMid = left.GlobalPosition.X + left.Size.X / 2f;
-            if (mouseGlobalX < leftMid)
+            float prevMid = isVertical
+                ? prev.GlobalPosition.Y + prev.Size.Y / 2f
+                : prev.GlobalPosition.X + prev.Size.X / 2f;
+            float mousePos = isVertical ? mouseGlobalY : mouseGlobalX;
+
+            if (mousePos < prevMid)
             {
-                _hbox.MoveChild(dragged, idx - 1);
+                container.MoveChild(dragged, idx - 1);
             }
         }
     }
@@ -204,9 +262,14 @@ public partial class ButtonBar : Control
     private void EndDrag(Button btn)
     {
         var newEnabledOrder = new List<string>();
-        foreach (Node child in _hbox.GetChildren())
-            if (child.HasMeta(MetaKey))
-                newEnabledOrder.Add((string)child.GetMeta(MetaKey));
+        // Gather order from all boxes.
+        var boxes = new Container[] { _bottomBox, _rightBox, _topBox, _leftBox };
+        foreach (var box in boxes)
+        {
+            foreach (Node child in box.GetChildren())
+                if (child.HasMeta(MetaKey))
+                    newEnabledOrder.Add((string)child.GetMeta(MetaKey));
+        }
 
         // Persists and raises Changed -> RebuildButtons picks the (already correctly ordered)
         // buttons back up; harmless since the drag has already ended by this point.
@@ -228,14 +291,17 @@ public partial class ButtonBar : Control
             _isDragging = false;
         }
 
-        // Sync the pressed look of every button with the target panel visibility -- the panel
-        // can also be closed via its own SLNGWindow close button, not only from here.
-        foreach (Node child in _hbox.GetChildren())
+        // Sync the pressed look of every button with the target panel visibility
+        var boxes = new Container[] { _bottomBox, _topBox, _leftBox, _rightBox };
+        foreach (var box in boxes)
         {
-            if (child is not Button btn || !btn.HasMeta(MetaKey)) continue;
-            var id = (string)btn.GetMeta(MetaKey);
-            var def = _items.FirstOrDefault(i => i.Id == id);
-            if (def?.IsActive != null) btn.ButtonPressed = def.IsActive();
+            foreach (Node child in box.GetChildren())
+            {
+                if (child is not Button btn || !btn.HasMeta(MetaKey)) continue;
+                var id = (string)btn.GetMeta(MetaKey);
+                var def = _items.FirstOrDefault(i => i.Id == id);
+                if (def?.IsActive != null) btn.ButtonPressed = def.IsActive();
+            }
         }
     }
 }
