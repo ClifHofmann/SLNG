@@ -737,113 +737,7 @@ public partial class Boot : Control
     /// <summary>Writes the region's raw Windlight/EEP environment to <c>user://logs/</c> and
     /// summarises it in the chat log (FEAT-ENV-01 Phase A).
     ///
-    /// This changes nothing on screen. It exists because the fallback chain
-    /// (EEP -> legacy Windlight -> viewer default) cannot be designed against a guess: OpenSim's
-    /// EEP support varies by version and need not match SL's. One login with this in place
-    /// produces the fixture the parser is written and tested against, which is a great deal
-    /// cheaper than discovering the shape of the data from a rendering bug later.</summary>
-    private void DumpRegionEnvironment(SLNG.Core.RegionEnvironmentCapture capture)
-    {
-        string caps = capture switch
-        {
-            { HasExtEnvironmentCap: true, HasEnvironmentSettingsCap: true } => "ExtEnvironment + EnvironmentSettings",
-            { HasExtEnvironmentCap: true } => "ExtEnvironment (EEP only)",
-            { HasEnvironmentSettingsCap: true } => "EnvironmentSettings (legacy Windlight only)",
-            _ => "NONE",
-        };
 
-        LogEnvironment($"[ENV] '{capture.RegionName}' caps: {caps}"
-            + $", dayLength={capture.DayLength}s, dayOffset={capture.DayOffset}s, isDefault={capture.IsDefault}"
-            + (capture.Error != null ? $", ERROR: {capture.Error}" : string.Empty));
-
-        // Which SCOPE answered matters as much as the values. The environment is per-parcel, so a
-        // parcel that overrides the region produces a completely different sky at the same
-        // wall-clock time -- that is what "die Sonne ist auf der anderen Seite" turned out to be.
-        // Logging both scopes side by side is what lets one screenshot settle which one applies.
-        LogEnvironment(capture switch
-        {
-            { ParcelId: < 0 } => "[ENV] parcel: id unknown (no ParcelProperties reply) — using the region scope",
-            { ParcelEnvironmentLlsd: null } p => $"[ENV] parcel {p.ParcelId}: inherits the region environment",
-            var p => $"[ENV] parcel {p.ParcelId}: OWN environment, dayLength={p.ParcelDayLength}s, "
-                   + $"dayOffset={p.ParcelDayOffset}s — this overrides the region",
-        });
-
-        if (capture.ExtEnvironmentLlsd == null && capture.LegacyEnvironmentLlsd == null
-            && capture.ParcelEnvironmentLlsd == null)
-        {
-            // Not necessarily a fault: a region with no custom environment inherits the grid
-            // default and legitimately returns nothing. The cap flags above say which case it is.
-            LogEnvironment("[ENV] no environment settings returned — region inherits the grid default");
-            return;
-        }
-
-        DirAccess.MakeDirRecursiveAbsolute("user://logs");
-
-        // Region names carry spaces and punctuation that are fine in a name and not in a filename.
-        var safeName = new string(capture.RegionName.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
-        if (safeName.Length == 0) safeName = capture.RegionHandle.ToString();
-
-        WriteEnvironmentDump($"user://logs/environment-{safeName}-eep.llsd", capture.ExtEnvironmentLlsd);
-        WriteEnvironmentDump($"user://logs/environment-{safeName}-legacy.llsd", capture.LegacyEnvironmentLlsd);
-        // Kept under its own name rather than overwriting the region dump: comparing the two curves
-        // is the whole point when a parcel disagrees with its region.
-        WriteEnvironmentDump($"user://logs/environment-{safeName}-parcel{capture.ParcelId}.llsd", capture.ParcelEnvironmentLlsd);
-    }
-
-    /// <summary>Logs an environment diagnostic to BOTH the on-screen panel and stdout.
-    ///
-    /// <see cref="LogMessage"/> alone is the wrong sink for this: the panel is capped at 200 lines
-    /// and cleared when it overflows, so on a busy region the environment readout is gone long
-    /// before anyone looks for it, and it never reaches <c>godot.log</c> where a post-hoc analysis
-    /// would find it. That is exactly what happened on the first live capture — the LLSD dump
-    /// survived, the summary saying which capabilities answered did not.</summary>
-    private void LogEnvironment(string message)
-    {
-        // Identical repeats are dropped. The environment is re-applied many times per session and
-        // logs the same six-line block every time -- measured at 13,908 of ~16,000 lines in one
-        // capture, i.e. the readout this method exists to preserve was burying everything else in
-        // godot.log, including the failure lines an investigation actually needs.
-        //
-        // Exact-match only, deliberately: a line whose numbers CHANGED (a real sky transition, a
-        // different parcel taking over, a dump of a different size) still prints, because it is no
-        // longer the same string. So this loses repetition, never information. Capped so a message
-        // that varies every time -- a timestamp, say -- cannot grow the set without bound.
-        if (_environmentLinesLogged.Count < 512 && !_environmentLinesLogged.Add(message)) return;
-
-        LogMessage(message);
-        GD.Print(message);
-    }
-
-    private readonly HashSet<string> _environmentLinesLogged = new();
-
-    private void WriteEnvironmentDump(string path, string? llsd)
-    {
-        if (llsd == null) return;
-
-        using var file = FileAccess.Open(path, FileAccess.ModeFlags.Write);
-        if (file == null)
-        {
-            LogEnvironment($"[color=orange][ENV] could not write {path}: {FileAccess.GetOpenError()}[/color]");
-            return;
-        }
-        file.StoreString(llsd);
-        LogEnvironment($"[ENV] wrote {ProjectSettings.GlobalizePath(path)} ({llsd.Length} chars)");
-    }
-
-    /// <summary>Reports the parsed environment (FEAT-ENV-01 Phase B). Still nothing on screen —
-    /// this is the readout that says whether the parse produced a real sky or quietly fell back to
-    /// the viewer default, which is the one failure mode a screenshot could never distinguish.</summary>
-    private void LogRegionEnvironment(SLNG.Core.RegionEnvironmentEvent env)
-    {
-        var cycle = env.Cycle;
-        var sky = cycle.EvaluateSky(System.DateTimeOffset.UtcNow);
-
-        LogEnvironment($"[ENV] source={env.Source}, skyFrames={cycle.SkyFrames.Count}"
-            + $", waterFrames={cycle.WaterFrames.Count}, dayLength={cycle.DayLengthSeconds}s"
-            + $", position={cycle.PositionAt(System.DateTimeOffset.UtcNow):F3}");
-        LogEnvironment($"[ENV] sky now: blueHorizon={sky.BlueHorizon}, hazeDensity={sky.HazeDensity:F3}"
-            + $", cloudShadow={sky.CloudShadow:F3}");
-    }
 
     public override void _Process(double delta)
     {
@@ -1419,15 +1313,10 @@ public partial class Boot : Control
         // login's own connection is also caught by this, not just later teleports.
         _session.RegionConnected += (s, regionHandle) =>
             Godot.Callable.From(() => RenderConfig.SetRegionOrigin(regionHandle)).CallDeferred();
-        // FEAT-ENV-01 Phase A: capture the region's Windlight/EEP environment so the parser can be
-        // written against what the grid actually sends. Fires on a network thread, so the write is
-        // deferred like everything else that leaves that thread.
-        _session.RegionEnvironmentCaptured += (s, capture) =>
-            Godot.Callable.From(() => DumpRegionEnvironment(capture)).CallDeferred();
+
         _session.RegionEnvironmentReceived += (s, env) =>
             Godot.Callable.From(() =>
             {
-                LogRegionEnvironment(env);
                 // FEAT-ENV-01 Phase D: hand the parsed cycle to the driver that actually paints
                 // it. Region-scoped rather than avatar-scoped: crossing into a neighbor region
                 // with its own environment replaces the cycle wholesale, same as a fresh login.
