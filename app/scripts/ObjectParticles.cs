@@ -24,6 +24,9 @@ public partial class ObjectParticles : GpuParticles3D
         Amount = Math.Clamp(Amount, 1, 4096);
         Lifetime = data.MaxAge > 0f ? data.MaxAge : 1.0f;
         OneShot = false;
+        
+        bool followSource = (data.Flags & 0x010) != 0;
+        LocalCoords = followSource;
 
         ParticleProcessMaterial mat = ProcessMaterial as ParticleProcessMaterial;
         if (mat == null)
@@ -32,11 +35,29 @@ public partial class ObjectParticles : GpuParticles3D
             ProcessMaterial = mat;
         }
 
-        // SL Particles emit along the Z axis of the prim, spreading by OuterAngle
+        // SL Patterns
+        // 0x01 = Drop, 0x02 = Explode, 0x04 = Angle, 0x08 = Cone, 0x10 = AngleCone
         mat.Direction = new Vector3(0, 0, 1);
-        mat.Spread = data.OuterAngle * (180f / (float)Math.PI);
-        mat.InitialVelocityMin = data.BurstSpeedMin;
-        mat.InitialVelocityMax = data.BurstSpeedMax;
+        
+        if ((data.Pattern & 0x02) != 0) // Explode
+        {
+            mat.Spread = 180f; // Spherical
+        }
+        else
+        {
+            mat.Spread = data.OuterAngle * (180f / (float)Math.PI);
+        }
+
+        if ((data.Pattern & 0x01) != 0) // Drop
+        {
+            mat.InitialVelocityMin = 0f;
+            mat.InitialVelocityMax = 0f;
+        }
+        else
+        {
+            mat.InitialVelocityMin = data.BurstSpeedMin;
+            mat.InitialVelocityMax = data.BurstSpeedMax;
+        }
         
         // SL Gravity is passed as PartAcceleration
         mat.Gravity = new Vector3(data.PartAcceleration.X, data.PartAcceleration.Y, data.PartAcceleration.Z);
@@ -64,7 +85,24 @@ public partial class ObjectParticles : GpuParticles3D
         }
 
         var quadMesh = (QuadMesh)DrawPass1;
-        quadMesh.Size = new Vector2(data.StartScaleX, data.StartScaleY);
+        quadMesh.Size = new Vector2(1f, 1f); // Base size 1, scale controlled by process material
+
+        if (interpolateScale)
+        {
+            var scaleCurve = new Curve();
+            scaleCurve.AddPoint(new Vector2(0f, data.StartScaleX)); // Assume uniform X/Y for simplicity in basic curve
+            scaleCurve.AddPoint(new Vector2(1f, data.EndScaleX));
+            var scaleTex = new CurveTexture();
+            scaleTex.Curve = scaleCurve;
+            mat.ScaleCurve = scaleTex;
+            // Note: Godot GPUParticles3D scale curve is a single float multiplier.
+            // If Start/End scales differ in aspect ratio, it gets complex. We use X as an approximation.
+        }
+        else
+        {
+            mat.ScaleMin = data.StartScaleX;
+            mat.ScaleMax = data.StartScaleX;
+        }
 
         StandardMaterial3D drawMat = quadMesh.Material as StandardMaterial3D;
         if (drawMat == null)
