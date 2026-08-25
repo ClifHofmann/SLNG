@@ -318,15 +318,6 @@ public partial class Boot : Control
             _renderBaselineSampler.StartSample(AppVersion);
         };
 
-        _topMenu.OnNudgeSculptV = (step) => {
-            _objectRenderer?.NudgeSculptV(step);
-            LogSculptNudge();
-        };
-
-        _topMenu.OnNudgeSculptU = (step) => {
-            _objectRenderer?.NudgeSculptU(step);
-            LogSculptNudge();
-        };
 
         _topMenu.OnOpenPreferences = () => {
             // Re-read on open: F2 and F3/F4 change these settings from outside the dialog, so
@@ -1457,9 +1448,6 @@ public partial class Boot : Control
 
     private int _logLineCount;
 
-    private void LogSculptNudge() =>
-        LogMessage($"Sculpt U {ObjectRenderer.SculptUNudge * 128f:0.##} / " +
-                   $"V {ObjectRenderer.SculptVNudge * 128f:0.##} grid steps");
 
     private void LogMessage(string message)
     {
