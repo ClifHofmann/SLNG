@@ -22,6 +22,15 @@ public partial class ObjectParticles : GpuParticles3D
         _lastData = data;
         _gpuCache = gpuCache;
 
+        // Counter-act parent scale to ensure global scale is exactly (1,1,1).
+        // GPUParticles3D in Godot 4 with LocalCoords = false throws normalization errors if global scale != 1
+        var parent = GetParent() as Node3D;
+        if (parent != null)
+        {
+            Vector3 pScale = parent.Scale;
+            Scale = new Vector3(1f / pScale.X, 1f / pScale.Y, 1f / pScale.Z);
+        }
+
         // SL's PSYS_PART_FLAGS values (simplified mapped)
         bool interpolateColor = (data.Flags & 0x001) != 0;
         bool interpolateScale = (data.Flags & 0x002) != 0;
@@ -82,7 +91,13 @@ public partial class ObjectParticles : GpuParticles3D
         // For basic velocity/gravity, mapping SL's (X, Y, Z) to Godot's (-Y, Z, -X) or similar is needed if we use global coords.
         // But ParticleProcessMaterial operates in local space if LocalCoords is true.
         // Assuming SL data is mapped: X->GodotX, Y->GodotZ, Z->GodotY
-        mat.Gravity = new Vector3(S(data.PartAcceleration.X), S(data.PartAcceleration.Z), -S(data.PartAcceleration.Y));
+        float gx = S(data.PartAcceleration.X);
+        float gz = S(data.PartAcceleration.Z);
+        float gy = -S(data.PartAcceleration.Y);
+        if (float.IsInfinity(gx)) gx = 0;
+        if (float.IsInfinity(gy)) gy = 0;
+        if (float.IsInfinity(gz)) gz = 0;
+        mat.Gravity = new Vector3(gx, gz, gy);
 
         // SL Start and End Colors mapped to Godot ColorRamp
         // If alpha is 0, it might be a missing default in the LSL script (SL defaults to 1.0)
@@ -144,14 +159,14 @@ public partial class ObjectParticles : GpuParticles3D
         if (drawMat == null)
         {
             drawMat = new StandardMaterial3D();
-            drawMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-            drawMat.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
-            drawMat.BillboardKeepScale = true;
-            drawMat.VertexColorUseAsAlbedo = true;
             quadMesh.Material = drawMat;
         }
 
         drawMat.ShadingMode = emissive ? BaseMaterial3D.ShadingModeEnum.Unshaded : BaseMaterial3D.ShadingModeEnum.PerPixel;
+        drawMat.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
+        drawMat.BillboardKeepScale = true;
+        drawMat.VertexColorUseAsAlbedo = true;
+        drawMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
 
         if (data.TextureId != Guid.Empty && _currentTextureId != data.TextureId)
         {
