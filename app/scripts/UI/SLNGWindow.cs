@@ -8,11 +8,13 @@ public partial class SLNGWindow : MarginContainer
     private Label _titleLabel = null!;
     private MarginContainer _contentContainer = null!;
     private PanelContainer _headerPanel = null!;
+    private Button _minimizeButton = null!;
     private Button _closeButton = null!;
 
     private bool _isDragging = false;
     private Vector2 _dragOffset;
     private bool _isResizing = false;
+    private Vector2 _preMinimizeSize;
     private Control _resizeHandle = null!;
 
     public const float MinUiScale = 0.8f;
@@ -146,6 +148,20 @@ public partial class SLNGWindow : MarginContainer
         _titleLabel.AddThemeColorOverride("font_color", new Color(0.88f, 0.88f, 0.88f));
         headerHBox.AddChild(_titleLabel);
 
+        _minimizeButton = new Button
+        {
+            Text = "_",
+            Flat = true,
+            CustomMinimumSize = new Vector2(16, 16),
+            SizeFlagsVertical = SizeFlags.ShrinkCenter,
+            FocusMode = FocusModeEnum.None
+        };
+        _minimizeButton.AddThemeFontSizeOverride("font_size", 12);
+        _minimizeButton.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
+        _minimizeButton.AddThemeColorOverride("font_hover_color", new Color(1f, 1f, 1f));
+        _minimizeButton.Pressed += ToggleMinimize;
+        headerHBox.AddChild(_minimizeButton);
+
         _closeButton = new Button
         {
             Text = "×",
@@ -245,6 +261,23 @@ public partial class SLNGWindow : MarginContainer
         cfg.SetValue(GeometrySection, $"{PersistId}_pos", Position);
         cfg.SetValue(GeometrySection, $"{PersistId}_size", Size);
         cfg.Save(GeometryConfigPath);
+    }
+
+    private void ToggleMinimize()
+    {
+        if (_contentContainer.Visible)
+        {
+            _preMinimizeSize = Size;
+            _contentContainer.Visible = false;
+            if (_resizeHandle != null) _resizeHandle.Visible = false;
+            Size = new Vector2(Size.X, 0); // Shrink to minimum
+        }
+        else
+        {
+            _contentContainer.Visible = true;
+            if (_resizeHandle != null) _resizeHandle.Visible = true;
+            Size = _preMinimizeSize; // Restore size
+        }
     }
 
     public override void _ExitTree()

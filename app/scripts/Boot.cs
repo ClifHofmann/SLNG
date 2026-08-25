@@ -871,27 +871,14 @@ public partial class Boot : Control
 
     private void UpdateHud()
     {
-        if (_standUpButton != null)
+        if (_standUpButton != null && _session != null)
         {
-            GetLocalAgentTransform(); // Ensure _localAgent is populated if available
-            if (_localAgent != null)
+            bool isSitting = _session.SittingOnLocalId != 0;
+            var container = _standUpButton.GetParent<Control>();
+            if (container != null && container.Visible != isSitting)
             {
-                var avatarComp = _localAgent.GetComponent<SLNG.Core.Components.AvatarComponent>();
-                if (avatarComp != null)
-                {
-                    bool isSitting = avatarComp.SittingOnLocalId != 0;
-                    var container = _standUpButton.GetParent<Control>();
-                    if (container != null && container.Visible != isSitting)
-                    {
-                        GD.Print($"[HUD] Toggling StandUp button. SittingOnLocalId={avatarComp.SittingOnLocalId}");
-                        container.Visible = isSitting;
-                    }
-                }
-            }
-            else
-            {
-                var container = _standUpButton.GetParent<Control>();
-                if (container != null) container.Visible = false;
+                GD.Print($"[HUD] Toggling StandUp button. SittingOnLocalId={_session.SittingOnLocalId}");
+                container.Visible = isSitting;
             }
         }
     }

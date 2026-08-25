@@ -1585,6 +1585,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// through ChatMessageEvent.</summary>
     public string AgentName => _client.Self.Name;
 
+    /// <summary>The local ID of the object the agent is currently sitting on, or 0 if standing.</summary>
+    public uint SittingOnLocalId => _client.Self.SittingOn;
+
     /// <summary>
     /// Attempts to log in to the grid described by <paramref name="credentials"/>.
     /// Uses LibreMetaverse's async login API; failures (including unreachable grids)

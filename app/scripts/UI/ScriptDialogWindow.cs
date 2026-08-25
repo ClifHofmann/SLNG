@@ -65,7 +65,8 @@ public partial class ScriptDialogWindow : SLNGWindow
 
         BuildButtonGrid(e.ButtonLabels);
 
-        CallDeferred(nameof(PositionWindow));
+        PersistId = $"script_dialog_{_objectId}";
+        PositionWindow();
     }
 
     public override void _Ready()
