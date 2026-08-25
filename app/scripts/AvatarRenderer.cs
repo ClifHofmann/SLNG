@@ -517,7 +517,7 @@ public partial class AvatarRenderer : Node3D
                 // We add an empirical 0.45m vertical offset to compensate for the missing BVH offset.
                 int sitPelvisBone = visual.Skeleton != null ? visual.Skeleton.FindBone("mPelvis") : -1;
                 float sitPelvisY = (sitPelvisBone >= 0 && visual.Skeleton != null) ? GetBoneRootRelativeY(visual.Skeleton, sitPelvisBone) : 1.046f;
-                float sitBottomOffset = 0.45f;
+                float sitBottomOffset = 0.15f;
                 rootPos.Y = transform.Position.Z - sitPelvisY + sitBottomOffset + avatar.HoverOffsetZ;
             }
             else if (!avatar.IsLocalAgent)
