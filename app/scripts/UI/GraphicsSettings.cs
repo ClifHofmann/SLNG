@@ -41,6 +41,10 @@ public sealed class GraphicsSettings
     public bool PostFx { get; private set; } = true;
 
     public bool Shadows { get; private set; } = true;
+    public float ShadowBlur { get; private set; } = 1.8f;
+    public int ShadowResolution { get; private set; } = 4096;
+    public float ShadowDistance { get; private set; } = 150.0f;
+    public float ShadowOpacity { get; private set; } = 0.90f;
 
     public void Load()
     {
@@ -53,6 +57,10 @@ public sealed class GraphicsSettings
         Msaa = (int)cfg.GetValue(Section, "msaa", Msaa);
         PostFx = (bool)cfg.GetValue(Section, "post_fx", PostFx);
         Shadows = (bool)cfg.GetValue(Section, "shadows", Shadows);
+        ShadowBlur = (float)cfg.GetValue(Section, "shadow_blur", ShadowBlur);
+        ShadowResolution = (int)cfg.GetValue(Section, "shadow_resolution", ShadowResolution);
+        ShadowDistance = (float)cfg.GetValue(Section, "shadow_distance", ShadowDistance);
+        ShadowOpacity = (float)cfg.GetValue(Section, "shadow_opacity", ShadowOpacity);
     }
 
     private void Save()
@@ -65,6 +73,10 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "msaa", Msaa);
         cfg.SetValue(Section, "post_fx", PostFx);
         cfg.SetValue(Section, "shadows", Shadows);
+        cfg.SetValue(Section, "shadow_blur", ShadowBlur);
+        cfg.SetValue(Section, "shadow_resolution", ShadowResolution);
+        cfg.SetValue(Section, "shadow_distance", ShadowDistance);
+        cfg.SetValue(Section, "shadow_opacity", ShadowOpacity);
         cfg.Save(ConfigPath);
     }
 
@@ -74,6 +86,10 @@ public sealed class GraphicsSettings
     public void SetMsaa(int msaa) { Msaa = msaa; Save(); }
     public void SetPostFx(bool on) { PostFx = on; Save(); }
     public void SetShadows(bool on) { Shadows = on; Save(); }
+    public void SetShadowBlur(float blur) { ShadowBlur = blur; Save(); }
+    public void SetShadowResolution(int res) { ShadowResolution = res; Save(); }
+    public void SetShadowDistance(float distance) { ShadowDistance = distance; Save(); }
+    public void SetShadowOpacity(float opacity) { ShadowOpacity = opacity; Save(); }
 
     /// <summary>
     /// Pushes the current values into the engine. Safe to call repeatedly and with nulls -- during
@@ -93,6 +109,8 @@ public sealed class GraphicsSettings
 
         if (viewport != null) viewport.Msaa3D = (Viewport.Msaa)Msaa;
 
+        RenderingServer.DirectionalShadowAtlasSetSize(ShadowResolution, true);
+
         if (worldEnvironment?.Environment is { } env)
         {
             env.SsaoEnabled = PostFx;
@@ -101,6 +119,12 @@ public sealed class GraphicsSettings
             env.VolumetricFogEnabled = PostFx;
         }
 
-        if (sun != null) sun.ShadowEnabled = Shadows;
+        if (sun != null)
+        {
+            sun.ShadowEnabled = Shadows;
+            sun.ShadowBlur = ShadowBlur;
+            sun.DirectionalShadowMaxDistance = ShadowDistance;
+            sun.ShadowOpacity = ShadowOpacity;
+        }
     }
 }

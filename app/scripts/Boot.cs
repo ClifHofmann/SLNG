@@ -102,7 +102,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.9.12-alpha";
+    public const string AppVersion = "v0.9.18-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -607,9 +607,14 @@ public partial class Boot : Control
             ShadowEnabled = true,
             DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel4Splits,
             DirectionalShadowBlendSplits = true,
-            ShadowBias = 0.02f,
+            DirectionalShadowSplit1 = 0.08f,
+            DirectionalShadowSplit2 = 0.22f,
+            DirectionalShadowSplit3 = 0.50f,
+            DirectionalShadowMaxDistance = 150.0f,
+            ShadowBias = 0.015f,
             ShadowNormalBias = 1.0f,
-            ShadowOpacity = 0.9f,
+            ShadowOpacity = 0.88f,
+            ShadowBlur = 1.8f,
         };
         AddChild(sun);
         _sun = sun;

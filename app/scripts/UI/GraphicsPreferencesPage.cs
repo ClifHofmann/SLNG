@@ -23,6 +23,14 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     private HSlider _drawSlider = null!;
     private OptionButton _msaaOption = null!;
     private CheckBox _shadowsCheck = null!;
+    private VBoxContainer _shadowControls = null!;
+    private HSlider _shadowSoftnessSlider = null!;
+    private Label _shadowSoftnessValue = null!;
+    private OptionButton _shadowResOption = null!;
+    private HSlider _shadowDistanceSlider = null!;
+    private Label _shadowDistanceValue = null!;
+    private HSlider _shadowOpacitySlider = null!;
+    private Label _shadowOpacityValue = null!;
     private CheckBox _postFxCheck = null!;
 
     /// <summary>Set while Refresh writes into the controls. HSlider.Value and CheckBox.ButtonPressed
@@ -34,6 +42,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     /// <summary>Offered frame caps. 0 is "unlimited" and comes first because it is the default and
     /// the only one that matters while V-Sync is on.</summary>
     private static readonly int[] FpsChoices = { 0, 30, 60, 90, 120, 144, 240 };
+    private static readonly int[] ShadowResChoices = { 1024, 2048, 4096 };
 
     public override void _Ready() => AddThemeConstantOverride("separation", 8);
 
@@ -131,7 +140,52 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             out _msaaOption));
 
         _shadowsCheck = AddCheck(L10n.Tr("ui.preferences.shadows"), _settings.Shadows,
-                                 on => { if (!_refreshing) { _settings.SetShadows(on); _apply(); } });
+                                 on =>
+                                 {
+                                     _shadowControls.Visible = on;
+                                     if (!_refreshing) { _settings.SetShadows(on); _apply(); }
+                                 });
+
+        _shadowControls = new VBoxContainer();
+        _shadowControls.AddThemeConstantOverride("separation", 6);
+        _shadowControls.Visible = _settings.Shadows;
+        AddChild(_shadowControls);
+
+        AddSliderRow(_shadowControls, L10n.Tr("ui.preferences.shadow_softness"), 0.1f, 3.0f, 0.1f, _settings.ShadowBlur,
+                     "{0:0.0}", val => _settings.SetShadowBlur(val), out _shadowSoftnessSlider, out _shadowSoftnessValue);
+
+        int resIndex = Array.IndexOf(ShadowResChoices, _settings.ShadowResolution);
+        var shadowResRow = new HBoxContainer();
+        shadowResRow.AddThemeConstantOverride("separation", 12);
+        var resLabel = new Label
+        {
+            Text = L10n.Tr("ui.preferences.shadow_resolution"),
+            CustomMinimumSize = new Vector2(130, 0),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            SizeFlagsHorizontal = SizeFlags.Fill,
+        };
+        resLabel.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+        shadowResRow.AddChild(resLabel);
+
+        var resOption = BuildOption(
+            new[]
+            {
+                L10n.Tr("ui.preferences.shadow_res_1024"),
+                L10n.Tr("ui.preferences.shadow_res_2048"),
+                L10n.Tr("ui.preferences.shadow_res_4096"),
+            },
+            resIndex < 0 ? 2 : resIndex,
+            index => { if (!_refreshing) { _settings.SetShadowResolution(ShadowResChoices[index]); _apply(); } },
+            out _shadowResOption);
+        resOption.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        shadowResRow.AddChild(resOption);
+        _shadowControls.AddChild(shadowResRow);
+
+        AddSliderRow(_shadowControls, L10n.Tr("ui.preferences.shadow_distance"), 32f, 300f, 16f, _settings.ShadowDistance,
+                     "{0:0} m", val => _settings.SetShadowDistance(val), out _shadowDistanceSlider, out _shadowDistanceValue);
+
+        AddSliderRow(_shadowControls, L10n.Tr("ui.preferences.shadow_opacity"), 0.1f, 1.0f, 0.05f, _settings.ShadowOpacity,
+                     "{0:P0}", val => _settings.SetShadowOpacity(val), out _shadowOpacitySlider, out _shadowOpacityValue);
 
         _postFxCheck = AddCheck(L10n.Tr("ui.preferences.post_fx"), _settings.PostFx,
                                 on => { if (!_refreshing) { _settings.SetPostFx(on); _apply(); } });
@@ -163,6 +217,20 @@ public partial class GraphicsPreferencesPage : VBoxContainer
 
             _msaaOption.Select(Mathf.Clamp(_settings.Msaa, 0, _msaaOption.ItemCount - 1));
             _shadowsCheck.ButtonPressed = _settings.Shadows;
+            _shadowControls.Visible = _settings.Shadows;
+
+            _shadowSoftnessSlider.Value = _settings.ShadowBlur;
+            _shadowSoftnessValue.Text = $"{_settings.ShadowBlur:0.0}";
+
+            int resIdx = Array.IndexOf(ShadowResChoices, _settings.ShadowResolution);
+            _shadowResOption.Select(resIdx < 0 ? 2 : resIdx);
+
+            _shadowDistanceSlider.Value = _settings.ShadowDistance;
+            _shadowDistanceValue.Text = $"{_settings.ShadowDistance:0} m";
+
+            _shadowOpacitySlider.Value = _settings.ShadowOpacity;
+            _shadowOpacityValue.Text = $"{_settings.ShadowOpacity:P0}";
+
             _postFxCheck.ButtonPressed = _settings.PostFx;
         }
         finally
@@ -237,5 +305,53 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         option.Select(Mathf.Clamp(selected, 0, labels.Length - 1));
         option.ItemSelected += index => onSelected((int)index);
         return option;
+    }
+
+    private void AddSliderRow(VBoxContainer parent, string label, float min, float max, float step, float initialValue,
+                              string format, Action<float> onValueChanged, out HSlider createdSlider, out Label createdValue)
+    {
+        var row = new HBoxContainer();
+        row.AddThemeConstantOverride("separation", 12);
+
+        var name = new Label
+        {
+            Text = label,
+            CustomMinimumSize = new Vector2(130, 0),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            SizeFlagsHorizontal = SizeFlags.Fill,
+        };
+        name.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+        row.AddChild(name);
+
+        var slider = new HSlider
+        {
+            MinValue = min,
+            MaxValue = max,
+            Step = step,
+            Value = initialValue,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(160, 0),
+        };
+        row.AddChild(slider);
+
+        var valueLabel = new Label
+        {
+            Text = string.Format(format, initialValue),
+            CustomMinimumSize = new Vector2(50, 0),
+        };
+        valueLabel.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
+        row.AddChild(valueLabel);
+
+        slider.ValueChanged += value =>
+        {
+            valueLabel.Text = string.Format(format, value);
+            if (_refreshing) return;
+            onValueChanged((float)value);
+            _apply();
+        };
+
+        createdSlider = slider;
+        createdValue = valueLabel;
+        parent.AddChild(row);
     }
 }

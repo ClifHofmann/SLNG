@@ -44,8 +44,10 @@ global uniform vec4 slng_sun_disc_color;
 // Celestial
 global uniform float slng_star_brightness;
 global uniform vec3 slng_sun_direction;
+global uniform vec3 slng_moon_direction;
 global uniform float slng_sun_scale;
 global uniform float slng_moon_scale;
+global uniform float slng_moon_brightness;
 
 // Clouds
 global uniform vec4 slng_cloud_color;
@@ -122,10 +124,12 @@ void sky() {
         sun_dir_godot = normalize(slng_sun_direction);
     }
     vec3 moon_dir_godot = -sun_dir_godot;
+    if (length(slng_moon_direction) > 0.001) {
+        moon_dir_godot = normalize(slng_moon_direction);
+    }
     
     // Light direction (using sun for day, moon for night if we had a full night cycle)
-    vec3 light_dir = sun_dir_godot;
-    if (sun_dir_godot.y < 0.0) light_dir = moon_dir_godot;
+    vec3 light_dir = (sun_dir_godot.y >= 0.0) ? sun_dir_godot : moon_dir_godot;
     
     // --- SL Atmospherics Math -------------------------------------------------------------------
     // Ported from skyV.glsl and cloudsV.glsl. Those are BOTH different functions from the surface
@@ -276,63 +280,102 @@ void sky() {
     // The horizon enlargement is SL's own (llvosky.cpp:1131-1135): (1 - dir.z) reaches 1 at the
     // horizon, widening the disc by 30% and heightening it by 20%. That is the oversized sunset
     // sun everyone recognises, and it is why the disc is elliptical rather than round.
-    float sun_dot = dot(EYEDIR, sun_dir_godot);
-    float sun_enlarge = 1.0 - sun_dir_godot.y;
-    float sun_half = 0.05 * clamp(slng_sun_scale, 0.1, 10.0);
-    float sun_rh = sun_half * (1.0 + sun_enlarge * 0.3);
-    float sun_rv = sun_half * (1.0 + sun_enlarge * 0.2);
+    // Sun disc: only drawn if sun is above the horizon (LLVOSky::updateHeavenlyBodyGeometry: draw_sun &= getIsSunUp())
+    vec3 sun_core = vec3(0.0);
+    if (sun_dir_godot.y >= -0.02) {
+        float sun_dot = dot(EYEDIR, sun_dir_godot);
+        float sun_enlarge = 1.0 - clamp(sun_dir_godot.y, 0.0, 1.0);
+        float sun_half = 0.05 * clamp(slng_sun_scale, 0.1, 10.0);
+        float sun_rh = sun_half * (1.0 + sun_enlarge * 0.3);
+        float sun_rv = sun_half * (1.0 + sun_enlarge * 0.2);
 
-    // Billboard tangent frame. At these angles the tangent dot products ARE the offsets in
-    // radians, so the ellipse below is in the same units as the radii.
-    vec3 sun_right = cross(vec3(0.0, 1.0, 0.0), sun_dir_godot);
-    float sl = length(sun_right);
-    sun_right = (sl < 0.001) ? vec3(1.0, 0.0, 0.0) : sun_right / sl;
-    vec3 sun_up = cross(sun_dir_godot, sun_right);
+        // Billboard tangent frame. At these angles the tangent dot products ARE the offsets in
+        // radians, so the ellipse below is in the same units as the radii.
+        vec3 sun_right = cross(vec3(0.0, 1.0, 0.0), sun_dir_godot);
+        float sl = length(sun_right);
+        sun_right = (sl < 0.001) ? vec3(1.0, 0.0, 0.0) : sun_right / sl;
+        vec3 sun_up = cross(sun_dir_godot, sun_right);
 
-    float sun_sx = dot(EYEDIR, sun_right);
-    float sun_sy = dot(EYEDIR, sun_up);
-    float sun_ellipse = length(vec2(sun_sx / sun_rh, sun_sy / sun_rv));
+        float sun_sx = dot(EYEDIR, sun_right);
+        float sun_sy = dot(EYEDIR, sun_up);
+        float sun_ellipse = length(vec2(sun_sx / sun_rh, sun_sy / sun_rv));
 
-    // Soft edge only for anti-aliasing; SL's billboard has a hard extent and its softness comes
-    // from the texture.
-    float sun_disk = (sun_dot > 0.0) ? 1.0 - smoothstep(0.75, 1.0, sun_ellipse) : 0.0;
+        float sun_horizon_clip = smoothstep(-0.01, 0.02, EYEDIR.y) * smoothstep(-0.01, 0.02, sun_dir_godot.y);
 
-    // The billboard spans +/- one radius, so halving maps its extent onto 0..1.
-    vec2 sun_uv = vec2(sun_sx / (2.0 * sun_rh), sun_sy / (2.0 * sun_rv)) + 0.5;
-    vec4 sun_tex = texture(slng_sun_texture, sun_uv);
-    float use_sun_tex = (sun_dot > 0.0 && sun_uv.x >= 0.0 && sun_uv.x <= 1.0
-        && sun_uv.y >= 0.0 && sun_uv.y <= 1.0 && sun_tex.a > 0.01) ? 1.0 : 0.0;
-    vec3 final_sun = mix(vec3(sun_disk), sun_tex.rgb * sun_tex.a, use_sun_tex);
-    vec3 sun_core = slng_sun_disc_color.rgb * final_sun;
+        // The billboard spans +/- one radius, so halving maps its extent onto 0..1.
+        vec2 sun_uv = vec2(sun_sx / (2.0 * sun_rh), sun_sy / (2.0 * sun_rv)) + 0.5;
+        vec4 sun_tex = texture(slng_sun_texture, sun_uv);
+        float use_sun_tex = (sun_dot > 0.0 && sun_uv.x >= 0.0 && sun_uv.x <= 1.0
+            && sun_uv.y >= 0.0 && sun_uv.y <= 1.0 && sun_tex.a > 0.01) ? 1.0 : 0.0;
+
+        if (use_sun_tex > 0.5) {
+            sun_core = slng_sun_disc_color.rgb * sun_tex.rgb * sun_tex.a * sun_horizon_clip;
+        } else if (sun_dot > 0.0 && sun_ellipse < 1.0) {
+            float sun_disk = 1.0 - smoothstep(0.75, 1.0, sun_ellipse);
+            sun_core = slng_sun_disc_color.rgb * sun_disk * sun_horizon_clip;
+        }
+    }
 
     // Moon: same geometry with MOON_DISK_RADIUS = 0.45, hence 0.045, and an untinted white disc.
-    float moon_dot = dot(EYEDIR, moon_dir_godot);
-    float moon_enlarge = 1.0 - moon_dir_godot.y;
-    float moon_half = 0.045 * clamp(slng_moon_scale, 0.1, 10.0);
-    float moon_rh = moon_half * (1.0 + moon_enlarge * 0.3);
-    float moon_rv = moon_half * (1.0 + moon_enlarge * 0.2);
+    // Only drawn if moon is above the horizon (draw_moon &= getIsMoonUp()).
+    vec3 moon_core = vec3(0.0);
+    if (moon_dir_godot.y >= -0.02) {
+        float moon_dot = dot(EYEDIR, moon_dir_godot);
+        float moon_enlarge = 1.0 - clamp(moon_dir_godot.y, 0.0, 1.0);
+        float moon_half = 0.045 * clamp(slng_moon_scale, 0.1, 10.0);
+        float moon_rh = moon_half * (1.0 + moon_enlarge * 0.3);
+        float moon_rv = moon_half * (1.0 + moon_enlarge * 0.2);
 
-    vec3 moon_right = cross(vec3(0.0, 1.0, 0.0), moon_dir_godot);
-    float ml = length(moon_right);
-    moon_right = (ml < 0.001) ? vec3(1.0, 0.0, 0.0) : moon_right / ml;
-    vec3 moon_up = cross(moon_dir_godot, moon_right);
+        vec3 moon_right = cross(vec3(0.0, 1.0, 0.0), moon_dir_godot);
+        float ml = length(moon_right);
+        moon_right = (ml < 0.001) ? vec3(1.0, 0.0, 0.0) : moon_right / ml;
+        vec3 moon_up = cross(moon_dir_godot, moon_right);
 
-    float moon_sx = dot(EYEDIR, moon_right);
-    float moon_sy = dot(EYEDIR, moon_up);
-    float moon_ellipse = length(vec2(moon_sx / moon_rh, moon_sy / moon_rv));
-    float moon_disk = (moon_dot > 0.0) ? 1.0 - smoothstep(0.75, 1.0, moon_ellipse) : 0.0;
+        float moon_sx = dot(EYEDIR, moon_right);
+        float moon_sy = dot(EYEDIR, moon_up);
+        float moon_ellipse = length(vec2(moon_sx / moon_rh, moon_sy / moon_rv));
 
-    vec2 moon_uv = vec2(moon_sx / (2.0 * moon_rh), moon_sy / (2.0 * moon_rv)) + 0.5;
-    vec4 moon_tex = texture(slng_moon_texture, moon_uv);
-    float use_moon_tex = (moon_dot > 0.0 && moon_uv.x >= 0.0 && moon_uv.x <= 1.0
-        && moon_uv.y >= 0.0 && moon_uv.y <= 1.0 && moon_tex.a > 0.01) ? 1.0 : 0.0;
-    vec3 final_moon = mix(vec3(moon_disk), moon_tex.rgb * moon_tex.a, use_moon_tex);
-    vec3 moon_core = final_moon;
+        float moon_horizon_clip = smoothstep(-0.01, 0.02, EYEDIR.y) * smoothstep(-0.01, 0.02, moon_dir_godot.y);
 
-    // Basic Stars
-    float star_noise = hash21(EYEDIR.xz * 500.0);
-    float star_val = smoothstep(0.995, 1.0, star_noise) * slng_star_brightness * max(0.0, -sun_dir_godot.y);
-    vec3 stars = vec3(star_val);
+        vec2 moon_uv = vec2(moon_sx / (2.0 * moon_rh), moon_sy / (2.0 * moon_rv)) + 0.5;
+        vec4 moon_tex = texture(slng_moon_texture, moon_uv);
+        float use_moon_tex = (moon_dot > 0.0 && moon_uv.x >= 0.0 && moon_uv.x <= 1.0
+            && moon_uv.y >= 0.0 && moon_uv.y <= 1.0 && moon_tex.a > 0.01) ? 1.0 : 0.0;
+
+        float brightness = clamp(slng_moon_brightness, 0.05, 1.0);
+        if (use_moon_tex > 0.5) {
+            // moonF.glsl:53 -- c.rgb *= moon_brightness
+            moon_core = moon_tex.rgb * moon_tex.a * brightness * moon_horizon_clip;
+        } else if (moon_dot > 0.0 && moon_ellipse < 1.0) {
+            float moon_disk = 1.0 - smoothstep(0.75, 1.0, moon_ellipse);
+            moon_core = vec3(moon_disk) * brightness * moon_horizon_clip;
+        }
+    }
+
+    // Stars: rendered as discrete point stars across the upper celestial sphere
+    vec3 stars = vec3(0.0);
+    float star_elevation_fade = smoothstep(0.01, 0.15, EYEDIR.y);
+    float star_sun_fade = clamp(-sun_dir_godot.y * 6.0 + 0.15, 0.0, 1.0);
+    float star_visibility = star_elevation_fade * star_sun_fade * slng_star_brightness;
+
+    if (star_visibility > 0.0001) {
+        vec3 sp = normalize(EYEDIR) * 160.0;
+        vec3 sid = floor(sp);
+        vec3 sf = fract(sp) - 0.5;
+        float sh = fract(sin(dot(sid, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+        if (sh > 0.965) {
+            vec3 soff = vec3(
+                fract(sin(dot(sid + vec3(1.0, 0.0, 0.0), vec3(127.1, 311.7, 74.7))) * 43758.5453),
+                fract(sin(dot(sid + vec3(0.0, 1.0, 0.0), vec3(127.1, 311.7, 74.7))) * 43758.5453),
+                fract(sin(dot(sid + vec3(0.0, 0.0, 1.0), vec3(127.1, 311.7, 74.7))) * 43758.5453)
+            ) - 0.5;
+            float sdist = length(sf - soff * 0.7);
+            float star_pt = smoothstep(0.12, 0.01, sdist);
+            float star_mag = (sh - 0.965) * 28.5; // 0..1
+            vec3 star_tint = mix(vec3(0.85, 0.92, 1.0), vec3(1.0, 0.88, 0.7), fract(sh * 13.3));
+            stars = star_tint * star_pt * (star_mag * 1.5 + 0.5) * star_visibility * 3.5;
+        }
+    }
     
     // Cloud dome UV. SL does not compute this in a shader at all -- cloudsV.glsl consumes the
     // cloud dome MESH's own texcoord0, generated once in LLVOWLSky::buildStripsBuffer

@@ -293,10 +293,10 @@ others fails the smoke test instead of silently starving avatar or HUD faces.
 
 ### Phase 4 — Terrain and water onto the same family
 
-- [ ] `terrain.gdshader` and `water.gdshader` are refactored onto the shared family's
-      structure and share the same atmospherics seam and global uniforms.
-- [ ] Terrain detail-texture blending, height ranges and the water plane render
-      identically to Phase 3.
+- [x] `terrain.gdshader` and `water.gdshader` are refactored onto the shared family's
+      structure and share the same atmospherics seam (`slng_atmospherics.gdshaderinc`) and global uniforms.
+- [x] Terrain detail-texture blending, height ranges and the water plane render
+      identically to Phase 3. (Landed in `v0.9.13-alpha`).
 
 ### Phase 5 — Fill the atmospherics seam (Windlight / EEP)
 
@@ -345,7 +345,7 @@ with atmospherics next to avatars, terrain and water without is precisely the se
 - [x] Phase 3 — `AvatarRenderer` migration. **Confirmed in-world 2026-08-25** (shipped in
       `v0.9.3-alpha`; the version was renumbered mid-flight when `v0.9.2-alpha` was taken by an
       unrelated fix landing on main).
-- [ ] Phase 4 — terrain + water refactor onto the family.
+- [x] Phase 4 — terrain + water refactor onto the family with shared `slng_atmospherics.gdshaderinc` seam (`v0.9.13-alpha`).
 - [ ] Phase 5 — Windlight / EEP atmospherics via global shader uniforms.
 - [ ] Follow-up (not this spec): `llSetTextureAnim` and media-on-a-prim as uniform
       updates instead of material rebuilds — enabled by, but not part of, this work.
