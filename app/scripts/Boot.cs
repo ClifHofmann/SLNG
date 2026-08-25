@@ -371,9 +371,24 @@ public partial class Boot : Control
         hudLayer.AddChild(cameraHud);
 
         var standUpMargin = new MarginContainer();
-        standUpMargin.SetAnchorsPreset(Control.LayoutPreset.CenterBottom);
-        standUpMargin.AddThemeConstantOverride("margin_bottom", 60);
+        standUpMargin.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        standUpMargin.MouseFilter = Control.MouseFilterEnum.Ignore;
         standUpMargin.Visible = false; // Hide the container by default
+        
+        var vBox = new VBoxContainer();
+        vBox.Alignment = BoxContainer.AlignmentMode.End;
+        vBox.MouseFilter = Control.MouseFilterEnum.Ignore;
+        
+        var hBox = new HBoxContainer();
+        hBox.Alignment = BoxContainer.AlignmentMode.Center;
+        hBox.MouseFilter = Control.MouseFilterEnum.Ignore;
+        
+        var paddingMargin = new MarginContainer();
+        paddingMargin.AddThemeConstantOverride("margin_bottom", 60);
+        paddingMargin.MouseFilter = Control.MouseFilterEnum.Ignore;
+        
+        vBox.AddChild(hBox);
+        hBox.AddChild(paddingMargin);
         
         _standUpButton = new Button 
         { 
@@ -381,7 +396,8 @@ public partial class Boot : Control
             CustomMinimumSize = new Godot.Vector2(120, 32)
         };
         _standUpButton.AddThemeFontSizeOverride("font_size", 16);
-        standUpMargin.AddChild(_standUpButton);
+        paddingMargin.AddChild(_standUpButton);
+        standUpMargin.AddChild(vBox);
         hudLayer.AddChild(standUpMargin);
 
         _standUpButton.Pressed += () => _session?.Stand();
@@ -871,14 +887,28 @@ public partial class Boot : Control
 
     private void UpdateHud()
     {
-        if (_standUpButton != null && _session != null)
+        if (_standUpButton != null)
         {
-            bool isSitting = _session.SittingOnLocalId != 0;
-            var container = _standUpButton.GetParent<Control>();
-            if (container != null && container.Visible != isSitting)
+            GetLocalAgentTransform(); // Ensure _localAgent is populated if available
+            if (_localAgent != null)
             {
-                GD.Print($"[HUD] Toggling StandUp button. SittingOnLocalId={_session.SittingOnLocalId}");
-                container.Visible = isSitting;
+                var avatarComp = _localAgent.GetComponent<SLNG.Core.Components.AvatarComponent>();
+                if (avatarComp != null)
+                {
+                    bool isSitting = avatarComp.SittingOnLocalId != 0;
+                    // The container we want to toggle is standUpMargin
+                    var container = _standUpButton.GetParent().GetParent().GetParent().GetParent<Control>();
+                    if (container != null && container.Visible != isSitting)
+                    {
+                        GD.Print($"[HUD] Toggling StandUp button. SittingOnLocalId={avatarComp.SittingOnLocalId}");
+                        container.Visible = isSitting;
+                    }
+                }
+            }
+            else
+            {
+                var container = _standUpButton.GetParent().GetParent().GetParent().GetParent<Control>();
+                if (container != null) container.Visible = false;
             }
         }
     }
