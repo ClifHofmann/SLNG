@@ -2782,14 +2782,14 @@ public partial class AvatarRenderer : Node3D
             {
                 TryClickHud(mb.Position);
             }
-            else if (Diagnostics.Enabled)
+            else
             {
                 // Named, because "which Control" is the whole question when a HUD stops
                 // responding: the SubViewportContainer itself is set to MouseFilter.Ignore
                 // precisely so it never lands here, so anything reported is something else
                 // covering the screen.
-                Logger.Debug($"[HUD] click at {mb.Position} swallowed by GUI control "
-                             + $"'{hovered.Name}' ({hovered.GetType().Name})");
+                GD.Print($"[HUD] click at {mb.Position} swallowed by GUI control "
+                         + $"'{hovered.Name}' ({hovered.GetType().Name})");
             }
         }
     }
@@ -2803,15 +2803,14 @@ public partial class AvatarRenderer : Node3D
     {
         if (_hudViewport == null || _session == null || _world == null)
         {
-            if (Diagnostics.Enabled)
-                Logger.Debug($"[HUD] click ignored: viewport={_hudViewport != null} "
-                             + $"session={_session != null} world={_world != null}");
+            GD.Print($"[HUD] click ignored: viewport={_hudViewport != null} "
+                     + $"session={_session != null} world={_world != null}");
             return;
         }
         var cam = _hudViewport.GetCamera3D();
         if (cam == null)
         {
-            if (Diagnostics.Enabled) Logger.Debug("[HUD] click ignored: viewport has no Camera3D");
+            GD.Print("[HUD] click ignored: viewport has no Camera3D");
             return;
         }
 
@@ -2837,34 +2836,35 @@ public partial class AvatarRenderer : Node3D
         var hit = spaceState.IntersectRay(query);
 
         // Every exit below used to be silent, which is why "the HUD does not react" could not be
-        // told apart from "the click never got here". Behind --diag, because a line per click is
-        // fine for diagnosis and noise in an ordinary session.
+        // told apart from "the click never got here".
+        //
+        // Unconditional GD.Print, deliberately, and not behind --diag: the SUCCESS line below
+        // already prints unconditionally, so gating only the failures made a broken click quieter
+        // than a working one -- backwards, and it cost a round trip to discover. A click is
+        // user-initiated and rare, so one line per click is not the per-asset spam the quiet-log
+        // decision was about.
         if (hit.Count == 0)
         {
-            if (Diagnostics.Enabled)
-                Logger.Debug($"[HUD] click at {screenPos}: ray missed every collider "
-                             + $"({_hudPlacements.Count} HUD attachment(s) placed)");
+            GD.Print($"[HUD] click at {screenPos}: ray missed every collider "
+                     + $"({_hudPlacements.Count} HUD attachment(s) placed)");
             return;
         }
 
         if (hit["collider"].As<Node>() is not { } collider || !collider.HasMeta("EntityId"))
         {
-            if (Diagnostics.Enabled)
-                Logger.Debug("[HUD] click hit a body with no EntityId meta -- it is not one of ours");
+            GD.Print("[HUD] click hit a body with no EntityId meta -- it is not one of ours");
             return;
         }
         if (!Guid.TryParse(collider.GetMeta("EntityId").AsString(), out var entityId))
         {
-            if (Diagnostics.Enabled)
-                Logger.Debug($"[HUD] click hit '{collider.Name}' whose EntityId meta does not parse");
+            GD.Print($"[HUD] click hit '{collider.Name}' whose EntityId meta does not parse");
             return;
         }
 
         var entity = _world.GetEntity(entityId);
         if (entity == null)
         {
-            if (Diagnostics.Enabled)
-                Logger.Debug($"[HUD] click hit entity {entityId:N}, which is no longer in the world");
+            GD.Print($"[HUD] click hit entity {entityId:N}, which is no longer in the world");
             return;
         }
 
