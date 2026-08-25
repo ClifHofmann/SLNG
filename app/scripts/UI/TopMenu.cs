@@ -23,7 +23,6 @@ namespace SLNG.App.UI
         /// <summary>Same for the horizontal axis.</summary>
         public Action<float>? OnNudgeSculptU;
         public Action? OnOpenPreferences;
-        public Action? OnOpenGraphicsSettings;
         public Action? OnCreateLandmark;
 
         public override void _Ready()
@@ -86,7 +85,6 @@ namespace SLNG.App.UI
             viewMenu.AddItem(L10n.Tr("ui.menu.toggle_hud"), 0);
             viewMenu.AddItem(L10n.Tr("ui.menu.camera_controls"), 4);
             viewMenu.AddItem(L10n.Tr("ui.menu.performance_stats"), 5);
-            viewMenu.AddItem(L10n.Tr("ui.preferences.tab_quality"), 6); // Re-using translation key for now
             viewMenu.AddSeparator();
             viewMenu.AddItem(L10n.Tr("ui.menu.first_person"), 1);
             viewMenu.AddItem(L10n.Tr("ui.menu.third_person"), 2);
@@ -95,7 +93,6 @@ namespace SLNG.App.UI
                 if (id == 0) OnToggleHud?.Invoke();
                 if (id == 4) OnToggleCameraHud?.Invoke();
                 if (id == 5) OnToggleStats?.Invoke();
-                if (id == 6) OnOpenGraphicsSettings?.Invoke();
                 if (id >= 1 && id <= 3) OnCameraMode?.Invoke((int)id - 1);
             };
             menuBar.AddChild(viewMenu);

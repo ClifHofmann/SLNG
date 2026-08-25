@@ -91,7 +91,6 @@ public partial class Boot : Control
     private readonly MainThreadWatchdog _watchdog = new();
     private SLNG.App.UI.ButtonBar _buttonBar = null!;
     private SLNG.App.UI.PreferencesWindow _preferencesWindow = null!;
-    private SLNG.App.UI.GraphicsSettingsWindow _graphicsSettingsWindow = null!;
     private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
     private SLNG.App.UI.UiSettings _uiSettings = null!;
 
@@ -338,8 +337,6 @@ public partial class Boot : Control
             _preferencesWindow.Visible = true;
         };
 
-        _topMenu.OnOpenGraphicsSettings = () => _graphicsSettingsWindow.Visible = true;
-
         _topMenu.OnCreateLandmark = () => {
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) OpenCreateLandmarkWindow(hudLayer);
@@ -531,9 +528,13 @@ public partial class Boot : Control
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_display"), displayPage);
         displayPage.Initialize(_uiSettings, _localizationManager);
 
-        _graphicsSettingsWindow = new SLNG.App.UI.GraphicsSettingsWindow { Name = "GraphicsSettingsWindow" };
-        hudLayer.AddChild(_graphicsSettingsWindow);
-        _graphicsSettingsWindow.Initialize(_graphicsSettings, ApplyGraphicsSettings);
+        _qualityPage = new SLNG.App.UI.QualityPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_quality") };
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_quality"), _qualityPage);
+        _qualityPage.Initialize(_graphicsSettings, ApplyGraphicsSettings);
+
+        _designPage = new SLNG.App.UI.DesignPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_design") };
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_design"), _designPage);
+        _designPage.Initialize(_graphicsSettings, ApplyGraphicsSettings);
 
         var networkPage = new SLNG.App.UI.NetworkPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);

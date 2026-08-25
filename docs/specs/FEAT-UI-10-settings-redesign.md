@@ -13,15 +13,13 @@ The main user interface is too space-consuming ("platzraubend") for Second Life 
 - [x] Margins in `SLNGWindow` headers are tightened.
 - [x] `TopMenu` panel margins are reduced.
 - [x] `PreferencesWindow` has a smaller default footprint.
-- [x] Graphics settings are extracted to a standalone `GraphicsSettingsWindow`.
-- [x] `GraphicsSettingsWindow` is accessible from the top menu.
+- [x] Graphics and Quality settings are reintegrated into `PreferencesWindow` tabs for a unified settings UI.
 - [x] `ToolbarSettings` supports `ToolbarDockPosition`.
 
 ## Technical Specs & Affected Files
 - `app/scripts/UI/SLNGWindow.cs`
 - `app/scripts/UI/TopMenu.cs`
 - `app/scripts/UI/PreferencesWindow.cs`
-- `app/scripts/UI/GraphicsSettingsWindow.cs`
 - `app/scripts/Boot.cs`
 - `app/scripts/UI/ToolbarSettings.cs`
 
