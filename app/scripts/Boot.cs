@@ -373,11 +373,11 @@ public partial class Boot : Control
         var standUpMargin = new MarginContainer();
         standUpMargin.SetAnchorsPreset(Control.LayoutPreset.CenterBottom);
         standUpMargin.AddThemeConstantOverride("margin_bottom", 60);
+        standUpMargin.Visible = false; // Hide the container by default
         
         _standUpButton = new Button 
         { 
             Text = SLNG.App.UI.L10n.Tr("ui.hud.stand_up"),
-            Visible = false,
             CustomMinimumSize = new Godot.Vector2(120, 32)
         };
         _standUpButton.AddThemeFontSizeOverride("font_size", 16);
@@ -879,12 +879,19 @@ public partial class Boot : Control
                 var avatarComp = _localAgent.GetComponent<SLNG.Core.Components.AvatarComponent>();
                 if (avatarComp != null)
                 {
-                    _standUpButton.Visible = avatarComp.SittingOnLocalId != 0;
+                    bool isSitting = avatarComp.SittingOnLocalId != 0;
+                    var container = _standUpButton.GetParent<Control>();
+                    if (container != null && container.Visible != isSitting)
+                    {
+                        GD.Print($"[HUD] Toggling StandUp button. SittingOnLocalId={avatarComp.SittingOnLocalId}");
+                        container.Visible = isSitting;
+                    }
                 }
             }
             else
             {
-                _standUpButton.Visible = false;
+                var container = _standUpButton.GetParent<Control>();
+                if (container != null) container.Visible = false;
             }
         }
     }
