@@ -35,6 +35,9 @@
       "sculpt_u_nudge_left_coarse": "Sculpt-U verschieben: -16 Rasterspalten",
       "sculpt_u_nudge_right_coarse": "Sculpt-U verschieben: +16 Rasterspalten"
     },
+    "hud": {
+      "stand_up": "Aufstehen"
+    },
     "preferences": {
       "title": "EINSTELLUNGEN",
       "tab_toolbar": "Werkzeugleiste",

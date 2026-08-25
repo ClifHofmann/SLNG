@@ -101,6 +101,7 @@ public partial class Boot : Control
     private ObjectSelectionController _objectSelectionController = null!;
     private SLNG.App.CursorManager _cursorManager = null!;
     private SLNG.App.UI.InWorldContextMenu _inWorldContextMenu = null!;
+    private Godot.Button _standUpButton = null!;
 
     // One independent ObjectEditWindow per edited object (keyed by its ECS Entity.Id) so
     // multiple objects can be open and edited at the same time instead of sharing one floater.
@@ -368,6 +369,22 @@ public partial class Boot : Control
         var cameraHud = new SLNG.App.UI.CameraHUD();
         cameraHud.Name = "CameraHUD";
         hudLayer.AddChild(cameraHud);
+
+        var standUpMargin = new MarginContainer();
+        standUpMargin.SetAnchorsPreset(Control.LayoutPreset.CenterBottom);
+        standUpMargin.AddThemeConstantOverride("margin_bottom", 60);
+        
+        _standUpButton = new Button 
+        { 
+            Text = SLNG.App.UI.L10n.Tr("ui.hud.stand_up"),
+            Visible = false,
+            CustomMinimumSize = new Godot.Vector2(120, 32)
+        };
+        _standUpButton.AddThemeFontSizeOverride("font_size", 16);
+        standUpMargin.AddChild(_standUpButton);
+        hudLayer.AddChild(standUpMargin);
+
+        _standUpButton.Pressed += () => _session?.Stand();
 
         // Performance readout (FEAT-PERF-01). Lives on HudLayer so "Toggle HUD" hides it along
         // with the rest of the overlay, but it starts hidden and is opened on demand.
@@ -854,7 +871,22 @@ public partial class Boot : Control
 
     private void UpdateHud()
     {
-        // Removed Position HUD label
+        if (_standUpButton != null)
+        {
+            GetLocalAgentTransform(); // Ensure _localAgent is populated if available
+            if (_localAgent != null)
+            {
+                var avatarComp = _localAgent.GetComponent<SLNG.Core.Components.AvatarComponent>();
+                if (avatarComp != null)
+                {
+                    _standUpButton.Visible = avatarComp.SittingOnLocalId != 0;
+                }
+            }
+            else
+            {
+                _standUpButton.Visible = false;
+            }
+        }
     }
 
     private void LoadWindowSettings()
