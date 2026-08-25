@@ -18,6 +18,8 @@ public partial class ObjectRenderer : Node3D
     // object would become unclickable/un-editable, not just un-standable-on.
     private const uint PhantomLayer = 1u << 2;
 
+    private const bool DebugLegacyMaterials = false;
+
     private World? _world;
     private SLNG.Assets.AssetService? _assetService;
     private GpuCache? _gpuCache;
@@ -1639,7 +1641,7 @@ public partial class ObjectRenderer : Node3D
             var legacy = await _assetService.GetLegacyMaterialAsync(ft.LegacyMaterialId);
             if (legacy is { } lm)
             {
-                if (_legacyMaterialsSeen.TryAdd(lm.Id, 0))
+                if (DebugLegacyMaterials && _legacyMaterialsSeen.TryAdd(lm.Id, 0))
                 {
                     GD.Print($"[LegacyMaterial] {lm.Id.ToString()[..8]} " +
                              $"normal={(lm.NormalMap == Guid.Empty ? "none" : lm.NormalMap.ToString()[..8])} " +
@@ -1669,7 +1671,7 @@ public partial class ObjectRenderer : Node3D
                         // thread, so the check belongs inside the callback, not before it.
                         if (!IsInstanceValid(normalTex))
                         {
-                            GD.PrintErr($"[LegacyMaterial] normal map {lm.NormalMap} fetch/decode returned null");
+                            if (DebugLegacyMaterials) GD.PrintErr($"[LegacyMaterial] normal map {lm.NormalMap} fetch/decode returned null");
                             return;
                         }
                         material.SetShaderParameter(PrimShaderFamily.NormalTexture, normalTex);
@@ -1701,7 +1703,7 @@ public partial class ObjectRenderer : Node3D
                     {
                         if (!IsInstanceValid(specTex))
                         {
-                            GD.PrintErr($"[LegacyMaterial] specular map {lm.SpecularMap} fetch/decode returned null");
+                            if (DebugLegacyMaterials) GD.PrintErr($"[LegacyMaterial] specular map {lm.SpecularMap} fetch/decode returned null");
                             return;
                         }
                         material.SetShaderParameter(PrimShaderFamily.SpecularTexture, specTex);
