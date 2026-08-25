@@ -278,7 +278,22 @@ public partial class SLNGWindow : MarginContainer
             c.MoveToFront();
     }
 
-    private void OnGlobalUiScaleChanged(float scale) => Scale = new Vector2(scale, scale);
+    private void OnGlobalUiScaleChanged(float scale)
+    {
+        var globalMouse = GetGlobalMousePosition();
+        if (GetGlobalRect().HasPoint(globalMouse))
+        {
+            var localMouse = GetLocalMousePosition();
+            var newScale = new Vector2(scale, scale);
+            GlobalPosition = globalMouse - (localMouse * newScale);
+            Scale = newScale;
+            SavePersistedGeometry();
+        }
+        else
+        {
+            Scale = new Vector2(scale, scale);
+        }
+    }
 
     private void OnHeaderGuiInput(InputEvent @event)
     {
