@@ -293,5 +293,6 @@ public sealed class AvatarAnimationPlayer
     {
         if (_skeleton == null) return;
         _skeleton.ResetBonePoses();
+        _skeleton.ForceUpdateAllBoneTransforms();
     }
 }
