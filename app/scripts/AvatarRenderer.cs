@@ -503,17 +503,13 @@ public partial class AvatarRenderer : Node3D
                 //   pos += getHoverOffset() * mDrawable->getRotation();
                 //   mRoot->setPosition(pos);
                 // None of halfBodyZ/FootOffsetY/PelvisToFootZ/AvatarHoverParamZ/pelvisFixupZ run while
-                // sitting on an object — they belong to the standing/ground-sit branch only (confirmed:
-                // AVATAR_HOVER shape slider only read at line 4635, inside `if (!isSitting...)`; pelvis
-                // fixup only applied in getRenderPosition(), gated on isRoot(), which a seated/parented
-                // avatar never is). GridSession.ResolveSeatedTransform already computes the same
-                // seat-relative-to-world position LLDrawable::updateXform does, and mRoot is coincident
-                // with the pelvis (llappearance/llavatarappearance.cpp:878, :1021) — same conversion the
-                // remote standing branch below already applies (transform.Position.Z is a pelvis value),
-                // just without any of the ground-correction terms.
-                int sitPelvisBone = visual.Skeleton != null ? visual.Skeleton.FindBone("mPelvis") : -1;
-                float sitPelvisY = (sitPelvisBone >= 0 && visual.Skeleton != null) ? GetBoneRootRelativeY(visual.Skeleton, sitPelvisBone) : 1.046f;
-                rootPos.Y = transform.Position.Z - sitPelvisY + avatar.HoverOffsetZ;
+                // sitting on an object — they belong to the standing/ground-sit branch only.
+                // GridSession.ResolveSeatedTransform already computes the same
+                // seat-relative-to-world position LLDrawable::updateXform does, which places the SL mRoot
+                // exactly at the SitTarget. Since we apply BVH position keys directly as absolute
+                // overrides (relative to Godot's Root), we must place Godot's Root exactly at the
+                // SitTarget (transform.Position.Z), just like SL does with mRoot.
+                rootPos.Y = transform.Position.Z + avatar.HoverOffsetZ;
             }
             else if (!avatar.IsLocalAgent)
             {

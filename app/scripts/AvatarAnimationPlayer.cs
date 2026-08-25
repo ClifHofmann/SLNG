@@ -49,7 +49,7 @@ public sealed class AvatarAnimationPlayer
     public void SetActiveAnimations(IReadOnlyList<(Guid id, AnimationData data)> animations)
     {
         // Remove animations no longer active.
-        _active.RemoveAll(p =>
+        int removed = _active.RemoveAll(p =>
         {
             foreach (var (id, _) in animations)
             {
@@ -57,6 +57,11 @@ public sealed class AvatarAnimationPlayer
             }
             return true;
         });
+
+        if (_active.Count == 0 && removed > 0)
+        {
+            ResetToRestPose();
+        }
 
         // Add new ones.
         foreach (var (id, data) in animations)
@@ -165,17 +170,14 @@ public sealed class AvatarAnimationPlayer
         }
 
         // Apply to skeleton. Rotation is applied as an override.
-        // Position is applied as an offset from the bone's rest position,
-        // because SL position keys are relative to the SL parent bone, and Godot's
-        // skeleton has different rest offsets (e.g. mPelvis is 1.04m above Godot's Root,
-        // while in SL mPelvis is coincident with mRoot).
+        // Position is applied directly as an absolute override (since BVH position keys
+        // are absolute relative to the root, and Godot's Root bone acts as the SL mRoot).
         foreach (var (boneIdx, pose) in bonePoses)
         {
             _skeleton.SetBonePoseRotation(boneIdx, pose.rotation);
             if (pose.hasPos)
             {
-                var restPos = _skeleton.GetBoneRest(boneIdx).Origin;
-                _skeleton.SetBonePosePosition(boneIdx, restPos + pose.position);
+                _skeleton.SetBonePosePosition(boneIdx, pose.position);
             }
         }
     }
