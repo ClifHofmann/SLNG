@@ -102,7 +102,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.9.11-alpha";
+    public const string AppVersion = "v0.9.12-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -189,6 +189,13 @@ public partial class Boot : Control
         _saveLoginCheck = GetNode<CheckBox>("%SaveLoginCheck");
         _loginButton = GetNode<Button>("%LoginButton");
         _logPanel = GetNode<RichTextLabel>("%LogPanel");
+
+        // A passive readout must never stop anyone clicking through it, not even while it is on
+        // screen during login. Ignore on the container does not affect its children, so the login
+        // form stays clickable. The boot log is also hidden outright once the world comes up --
+        // see where the loading screen is dismissed.
+        _logPanel.MouseFilter = Control.MouseFilterEnum.Ignore;
+        _vboxContainer.MouseFilter = Control.MouseFilterEnum.Ignore;
 
         _progressRing = GetNode<TextureProgressBar>("%ProgressRing");
         _progressPercentLabel = GetNode<Label>("%ProgressPercentLabel");
@@ -1494,6 +1501,18 @@ public partial class Boot : Control
             CompleteLoadingStep(4);
             GetNode<Control>("%LoadingScreen").Visible = false;
 
+            // The boot log goes with it. It is not inside %LoginScreen, so it used to survive the
+            // login and sit in-world as a bottom-anchored, full-width, 150 px strip of [ENV]
+            // spam -- over the avatar, over the world, and over any worn HUD. It also SWALLOWED
+            // every click landing in that strip, which is how an AO HUD came to work along the
+            // top of the window and not along the bottom ("[HUD] click at (1884, 1004) swallowed
+            // by GUI control 'LogPanel'"). It is a login-progress readout; in-world it is clutter
+            // that happened to also eat input.
+            //
+            // Hidden rather than freed: LogMessage still writes to it, a failed login puts the
+            // login screen back, and everything it prints also goes to godot.log.
+            _vboxContainer.Visible = false;
+
             LogMessage($"[System] Login succeeded! Agent: {result.AgentId}");
         }
         else
@@ -1501,6 +1520,7 @@ public partial class Boot : Control
             LogMessage($"[System] Login failed: {result.Message}");
             GetNode<Control>("%LoadingScreen").Visible = false;
             GetNode<Control>("%LoginScreen").Visible = true;
+            _vboxContainer.Visible = true;   // back with the login screen, where it is the point
             _loginButton.Disabled = false;
         }
     }
