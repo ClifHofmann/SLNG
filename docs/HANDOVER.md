@@ -15,6 +15,30 @@ The session ran four threads, all closed and all confirmed in-world: a repo hygi
 FEAT-RENDER-01 Phase 3, the close of FEAT-RENDER-02, and FEAT-UI-09 (worn HUDs responding to
 clicks).
 
+**26 commits**, `3ba2be0..c296337`. `git log --oneline 3ba2be0..c296337` reads them in order;
+they are grouped by feature id and each one carries its own reasoning, so the commit messages
+are the detailed record and this file is the map.
+
+---
+
+## Build and verify
+
+```bash
+. tools/dev-env.ps1                          # the .NET 8 SDK is per-user; a bare `dotnet` finds only the runtime
+dotnet build SLNG.sln                        # 0 errors
+dotnet build app/SLNG.App.csproj             # NOT part of SLNG.sln -- build both or the client runs yesterday's assembly
+dotnet test                                  # 291 green (163 Core + 67 Assets + 61 Net)
+dotnet format SLNG.sln --verify-no-changes   # clean
+godot --headless --path app -- --selftest    # 23/23 PASS
+python tools/check_shader_globals.py         # ok (one WARN, see below)
+python tools/roadmap-dashboard.py --tests 291   # regenerates docs/dashboard.html
+pwsh tools/run-client.ps1 -Diag              # in-world, with diagnostics on
+```
+
+`--selftest` and the dashboard are both new this session. The dashboard renders
+`docs/ROADMAP.md` as a visual status page -- milestone bars, commit activity per week, and
+cards for whatever is in flight -- so there is no second list to keep in sync.
+
 ---
 
 ## 1. FEAT-RENDER-02 is closed, and it was never the maths
@@ -132,8 +156,30 @@ gone, and `tools/roadmap-dashboard.py` renders `docs/ROADMAP.md` as a visual sta
 
 ## 4. Still open
 
-- **FEAT-RENDER-01 Phase 4** — terrain and water onto the shader family. This is the next step,
-  and Phase 5 (atmospherics; underwater fog; FEAT-ENV-01 Phase E) is blocked behind it.
+### Start here
+
+**FEAT-RENDER-01 Phase 4 — terrain and water onto the shader family.** Everything visible is
+dammed behind it: Phase 5 is the atmospherics seam (underwater fog, EEP on every surface) and
+FEAT-ENV-01 Phase E falls out with it, but ADR 0002 exists precisely to stop atmospherics
+landing on prims and avatars while terrain and water are still on their own shaders.
+
+Two things make it cheaper than it looks. `sl_terrain_composition.gdshaderinc` was written
+during FEAT-RENDER-02 **specifically so Phase 4 can include it** rather than rewrite it. And
+Phase 3 already built the machinery: `PrimShaderFamily.Surface` is the place a terrain/water
+surface would be added, and `--selftest` already compares each variant's uniform set against
+its base, so a uniform added to one and forgotten on the others fails the smoke test.
+
+Be warned by Phase 3's own history, though: its spec asked for behaviour that had been
+deliberately reverted months earlier, and following it literally would have shipped a
+regression. Check what the code does before trusting what the spec says it should.
+
+### The rest
+
+- **FEAT-RENDER-04 Phase 5** — `DiffuseAlphaMode` and `AlphaMaskCutoff` come from the legacy
+  material outright; the renderer still guesses them with `Image.DetectAlpha()`. Small, fully
+  specified, no research risk, and it is the last task sitting at Review.
+- **FEAT-PERF-01** (login → usable takes ~1 min) has never been profiled; the first task is a
+  baseline, not a change. **FEAT-PERF-02** Phase 1 is part-done.
 - **CI is red on Linux**, unchanged: three `SculptStitchingNoneTests` fail on ubuntu and pass on
   Windows. Deliberate deferral from 2026-08-23. The `selftest` job was put on `windows-latest`
   specifically so it does not inherit this.
