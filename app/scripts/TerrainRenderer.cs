@@ -152,7 +152,7 @@ public partial class TerrainRenderer : Node3D
         return hash;
     }
 
-    private const bool DebugTerrainComposition = false;
+    private static readonly bool DebugTerrainComposition = false;
 
     private void LogCompositionDiagnostics(ulong regionHandle, RegionTerrain terrain)
     {

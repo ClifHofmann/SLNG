@@ -18,7 +18,7 @@ public partial class ObjectRenderer : Node3D
     // object would become unclickable/un-editable, not just un-standable-on.
     private const uint PhantomLayer = 1u << 2;
 
-    private const bool DebugLegacyMaterials = false;
+    private static readonly bool DebugLegacyMaterials = false;
 
     private World? _world;
     private SLNG.Assets.AssetService? _assetService;

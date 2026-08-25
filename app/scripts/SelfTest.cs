@@ -152,7 +152,7 @@ public static class SelfTest
 
         foreach (string path in EnumerateResources("res://materials", ".gdshader").OrderBy(p => p))
         {
-            string suffix = suffixes.FirstOrDefault(sfx => path.EndsWith(sfx, StringComparison.Ordinal));
+            string? suffix = suffixes.FirstOrDefault(sfx => path.EndsWith(sfx, StringComparison.Ordinal));
             if (suffix == null) continue;
 
             string basePath = path.Substring(0, path.Length - suffix.Length) + ".gdshader";
