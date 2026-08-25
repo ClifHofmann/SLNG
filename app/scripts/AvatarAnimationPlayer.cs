@@ -119,6 +119,10 @@ public sealed class AvatarAnimationPlayer
     {
         if (_skeleton == null) return;
 
+        // Reset all bones so any bone no longer animated snaps back to its rest pose.
+        // (Avatar shape deformations are baked into the bone rests, so this only clears animations).
+        ResetToRestPose();
+
         // For each bone in the skeleton, find the highest-priority animation that
         // affects it and apply that animation's value.
         //
