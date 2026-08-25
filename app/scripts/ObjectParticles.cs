@@ -11,6 +11,8 @@ public partial class ObjectParticles : GpuParticles3D
     private GpuCache? _gpuCache;
     private ParticleSystemData? _lastData;
 
+    private float S(float v, float def = 0f) => float.IsNaN(v) ? def : v;
+
     public void Apply(ParticleSystemData data, GpuCache gpuCache, AssetService assetService)
     {
         if (_lastData != null && _lastData.Equals(data))
@@ -26,10 +28,15 @@ public partial class ObjectParticles : GpuParticles3D
         bool emissive = (data.Flags & 0x100) != 0;
 
         // Godot GPUParticles3D base settings
-        float rate = data.BurstRate > 0.001f ? data.BurstRate : 0.1f;
-        Amount = data.BurstPartCount > 0 ? (int)((data.BurstPartCount / rate) * data.MaxAge) + 1 : 100;
+        float burstRate = S(data.BurstRate, 0.1f);
+        float rate = burstRate > 0.001f ? burstRate : 0.1f;
+        
+        float maxAge = S(data.MaxAge, 1.0f);
+        int burstCount = (int)data.BurstPartCount; // byte
+        
+        Amount = burstCount > 0 ? (int)((burstCount / rate) * maxAge) + 1 : 100;
         Amount = Math.Clamp(Amount, 1, 4096);
-        Lifetime = data.MaxAge > 0f ? data.MaxAge : 1.0f;
+        Lifetime = maxAge > 0f ? maxAge : 1.0f;
         OneShot = false;
         Emitting = true;
         VisibilityAabb = new Aabb(new Vector3(-100, -100, -100), new Vector3(200, 200, 200)); // Large safe AABB
@@ -56,7 +63,7 @@ public partial class ObjectParticles : GpuParticles3D
         }
         else
         {
-            mat.Spread = data.OuterAngle * (180f / (float)Math.PI);
+            mat.Spread = S(data.OuterAngle) * (180f / (float)Math.PI);
         }
 
         if ((data.Pattern & 0x01) != 0) // Drop
@@ -66,8 +73,8 @@ public partial class ObjectParticles : GpuParticles3D
         }
         else
         {
-            mat.InitialVelocityMin = data.BurstSpeedMin;
-            mat.InitialVelocityMax = data.BurstSpeedMax;
+            mat.InitialVelocityMin = S(data.BurstSpeedMin, 0f);
+            mat.InitialVelocityMax = S(data.BurstSpeedMax, 0f);
         }
         
         // SL Gravity is passed as PartAcceleration. Swizzle to Godot coords: (X, Z, -Y) or just map SL Z to Godot Y.
@@ -75,28 +82,28 @@ public partial class ObjectParticles : GpuParticles3D
         // For basic velocity/gravity, mapping SL's (X, Y, Z) to Godot's (-Y, Z, -X) or similar is needed if we use global coords.
         // But ParticleProcessMaterial operates in local space if LocalCoords is true.
         // Assuming SL data is mapped: X->GodotX, Y->GodotZ, Z->GodotY
-        mat.Gravity = new Vector3(data.PartAcceleration.X, data.PartAcceleration.Z, -data.PartAcceleration.Y);
+        mat.Gravity = new Vector3(S(data.PartAcceleration.X), S(data.PartAcceleration.Z), -S(data.PartAcceleration.Y));
 
         // SL Start and End Colors mapped to Godot ColorRamp
         // If alpha is 0, it might be a missing default in the LSL script (SL defaults to 1.0)
-        float sAlpha = data.StartColor.W == 0f ? 1f : data.StartColor.W;
-        float eAlpha = data.EndColor.W == 0f ? 1f : data.EndColor.W;
+        float sAlpha = S(data.StartColor.W, 1f) == 0f ? 1f : S(data.StartColor.W, 1f);
+        float eAlpha = S(data.EndColor.W, 1f) == 0f ? 1f : S(data.EndColor.W, 1f);
 
         var grad = new Gradient();
         if (interpolateColor)
         {
             grad.Offsets = new float[] { 0f, 1f };
             grad.Colors = new Color[] {
-                new Color(data.StartColor.X, data.StartColor.Y, data.StartColor.Z, sAlpha),
-                new Color(data.EndColor.X, data.EndColor.Y, data.EndColor.Z, eAlpha)
+                new Color(S(data.StartColor.X, 1f), S(data.StartColor.Y, 1f), S(data.StartColor.Z, 1f), sAlpha),
+                new Color(S(data.EndColor.X, 1f), S(data.EndColor.Y, 1f), S(data.EndColor.Z, 1f), eAlpha)
             };
         }
         else
         {
             grad.Offsets = new float[] { 0f, 1f };
             grad.Colors = new Color[] {
-                new Color(data.StartColor.X, data.StartColor.Y, data.StartColor.Z, sAlpha),
-                new Color(data.StartColor.X, data.StartColor.Y, data.StartColor.Z, sAlpha)
+                new Color(S(data.StartColor.X, 1f), S(data.StartColor.Y, 1f), S(data.StartColor.Z, 1f), sAlpha),
+                new Color(S(data.StartColor.X, 1f), S(data.StartColor.Y, 1f), S(data.StartColor.Z, 1f), sAlpha)
             };
         }
 
@@ -113,11 +120,14 @@ public partial class ObjectParticles : GpuParticles3D
         var quadMesh = (QuadMesh)DrawPass1;
         quadMesh.Size = new Vector2(1f, 1f); // Base size 1, scale controlled by process material
 
+        float sScale = S(data.StartScaleX, 0.1f);
+        float eScale = S(data.EndScaleX, 1.0f);
+
         if (interpolateScale)
         {
             var scaleCurve = new Curve();
-            scaleCurve.AddPoint(new Vector2(0f, data.StartScaleX)); // Assume uniform X/Y for simplicity in basic curve
-            scaleCurve.AddPoint(new Vector2(1f, data.EndScaleX));
+            scaleCurve.AddPoint(new Vector2(0f, sScale)); // Assume uniform X/Y for simplicity in basic curve
+            scaleCurve.AddPoint(new Vector2(1f, eScale));
             var scaleTex = new CurveTexture();
             scaleTex.Curve = scaleCurve;
             mat.ScaleCurve = scaleTex;
@@ -126,8 +136,8 @@ public partial class ObjectParticles : GpuParticles3D
         }
         else
         {
-            mat.ScaleMin = data.StartScaleX;
-            mat.ScaleMax = data.StartScaleX;
+            mat.ScaleMin = sScale;
+            mat.ScaleMax = sScale;
         }
 
         StandardMaterial3D drawMat = quadMesh.Material as StandardMaterial3D;
