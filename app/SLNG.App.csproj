@@ -4,6 +4,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <Nullable>enable</Nullable>
+    <NoWarn>CS8669</NoWarn>
     <RootNamespace>SLNG.App</RootNamespace>
     <!--
       This is the ONLY project allowed to reference Godot. Engine-agnostic

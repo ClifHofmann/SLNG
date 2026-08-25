@@ -64,44 +64,47 @@ public partial class ButtonBar : Control
 
         // Bottom
         _bottomPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop };
+        AddChild(_bottomPanel);
         _bottomPanel.SetAnchorsPreset(Control.LayoutPreset.BottomWide);
         var bStyle = (StyleBoxFlat)styleBox.Duplicate();
         bStyle.BorderWidthTop = 1;
         _bottomPanel.AddThemeStyleboxOverride("panel", bStyle);
-        AddChild(_bottomPanel);
         _bottomBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
         _bottomBox.AddThemeConstantOverride("separation", 2);
         _bottomPanel.AddChild(_bottomBox);
 
         // Top
         _topPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop };
+        AddChild(_topPanel);
         _topPanel.SetAnchorsPreset(Control.LayoutPreset.TopWide);
+        _topPanel.OffsetTop = 24; // avoid TopMenu overlap safely using offsets
         var tStyle = (StyleBoxFlat)styleBox.Duplicate();
         tStyle.BorderWidthBottom = 1;
         _topPanel.AddThemeStyleboxOverride("panel", tStyle);
-        AddChild(_topPanel);
         _topBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
         _topBox.AddThemeConstantOverride("separation", 2);
         _topPanel.AddChild(_topBox);
 
         // Left
         _leftPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop };
+        AddChild(_leftPanel);
         _leftPanel.SetAnchorsPreset(Control.LayoutPreset.LeftWide);
+        _leftPanel.OffsetTop = 24;
         var lStyle = (StyleBoxFlat)styleBox.Duplicate();
         lStyle.BorderWidthRight = 1;
         _leftPanel.AddThemeStyleboxOverride("panel", lStyle);
-        AddChild(_leftPanel);
         _leftBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
         _leftBox.AddThemeConstantOverride("separation", 2);
         _leftPanel.AddChild(_leftBox);
 
         // Right
         _rightPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop };
+        AddChild(_rightPanel);
         _rightPanel.SetAnchorsPreset(Control.LayoutPreset.RightWide);
+        _rightPanel.OffsetTop = 24;
         var rStyle = (StyleBoxFlat)styleBox.Duplicate();
         rStyle.BorderWidthLeft = 1;
         _rightPanel.AddThemeStyleboxOverride("panel", rStyle);
-        AddChild(_rightPanel);
         _rightBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
         _rightBox.AddThemeConstantOverride("separation", 2);
         _rightPanel.AddChild(_rightBox);
