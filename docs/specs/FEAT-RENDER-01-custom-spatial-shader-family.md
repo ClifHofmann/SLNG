@@ -263,8 +263,11 @@ the one below it: identical output.
       alpha branch, threshold and measured constant is unchanged — `ApplyAlphaCutout` became the
       pure classifier `ClassifyAlpha`, returning the variant instead of assigning a property. The
       bake path keeps `AlphaScissor(0.5)`.
-- [ ] Own avatar and other avatars render identically to Phase 2, including worn mesh
-      attachments and BoM-baked faces. **Not yet live-verified — this is what closes the phase.**
+- [x] Own avatar and other avatars render identically to Phase 2, including worn mesh
+      attachments and BoM-baked faces. **Confirmed in-world 2026-08-25.** The load-bearing check
+      was HUD attachments: the `Surface.Hud` variant is the one this phase invented, and a
+      broken `unshaded` render_mode would have shown them black rather than subtly wrong. They
+      render, and they respond to clicks (FEAT-UI-09).
 - [x] Face rotation now works on avatar attachment faces too. The ±π approximation is gone: a
       half-turn used to be faked by negating both repeats and every other angle was logged as
       unsupported and drawn unrotated.
@@ -339,9 +342,9 @@ with atmospherics next to avatars, terrain and water without is precisely the se
       fix; `uv_rotation` is applied in `slng_place_uv` in the viewer's CENTRE/ROTATE/SCALE/OFFSET
       order, and the known-answer probe's full case table was stepped through against Firestorm
       with no divergence (cases 4/11/12 cover the rotation pivot and transform order).
-- [x] Phase 3 — `AvatarRenderer` migration (`v0.9.2-alpha`). **Built and smoke-tested, NOT yet
-      seen on a live region** — a migration whose whole requirement is "identical output" is
-      closed by a visual A/B and by nothing else.
+- [x] Phase 3 — `AvatarRenderer` migration. **Confirmed in-world 2026-08-25** (shipped in
+      `v0.9.3-alpha`; the version was renumbered mid-flight when `v0.9.2-alpha` was taken by an
+      unrelated fix landing on main).
 - [ ] Phase 4 — terrain + water refactor onto the family.
 - [ ] Phase 5 — Windlight / EEP atmospherics via global shader uniforms.
 - [ ] Follow-up (not this spec): `llSetTextureAnim` and media-on-a-prim as uniform

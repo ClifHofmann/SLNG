@@ -11,9 +11,9 @@
 **291 tests green**, `dotnet format` reports **0** violations (it was 121), `--selftest`
 passes 23/23, and CI's smoke-test job is green on `main` for the first time.
 
-The session ran three threads: a repo hygiene pass, FEAT-RENDER-01 Phase 3, and the close of
-FEAT-RENDER-02. A fourth (FEAT-UI-09, the AO HUD) came in at the end and is the only thing
-still unconfirmed.
+The session ran four threads, all closed and all confirmed in-world: a repo hygiene pass,
+FEAT-RENDER-01 Phase 3, the close of FEAT-RENDER-02, and FEAT-UI-09 (worn HUDs responding to
+clicks).
 
 ---
 
@@ -95,8 +95,10 @@ switched it to `AlphaScissor(0.5)` and said so in its own message. Following the
 would have silently reverted a deliberate decision. The spec is now corrected; the code/comment
 disagreement above that line is still parked and still wants a live A/B.
 
-**Confirmed in-world:** HUD attachments render (the riskiest item — a broken unshaded variant
-would show black).
+**Confirmed in-world 2026-08-25**, and Phase 3 is closed. HUD attachments were the load-bearing
+check: `Surface.Hud` is the variant this phase invented, and a broken `unshaded` render_mode
+would have shown them black rather than subtly wrong. They render, and after FEAT-UI-09 they
+respond to clicks too.
 
 ---
 
@@ -130,10 +132,6 @@ gone, and `tools/roadmap-dashboard.py` renders `docs/ROADMAP.md` as a visual sta
 
 ## 4. Still open
 
-- **FEAT-UI-09 is not confirmed in-world.** A worn AO HUD did not respond to clicks. The cause
-  was `LogPanel`: not inside `%LoginScreen`, so the boot log survived the login as a
-  bottom-anchored full-width 150 px band that ate every click landing in it. Fixed by hiding it
-  once the world is up. The user has not yet re-tested.
 - **FEAT-RENDER-01 Phase 4** — terrain and water onto the shader family. This is the next step,
   and Phase 5 (atmospherics; underwater fog; FEAT-ENV-01 Phase E) is blocked behind it.
 - **CI is red on Linux**, unchanged: three `SculptStitchingNoneTests` fail on ubuntu and pass on
