@@ -2775,9 +2775,23 @@ public partial class AvatarRenderer : Node3D
         // HUD) -- live-tested: clicking inside the Inventory panel also sent a touch to whatever
         // HUD prim sat behind it on screen. GuiGetHoveredControl() is the same direct check used
         // for the analogous world-click leak in ObjectSelectionController.
-        if (@event is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left && !mb.AltPressed
-            && GetViewport().GuiGetHoveredControl() == null)
-            TryClickHud(mb.Position);
+        if (@event is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left && !mb.AltPressed)
+        {
+            var hovered = GetViewport().GuiGetHoveredControl();
+            if (hovered == null)
+            {
+                TryClickHud(mb.Position);
+            }
+            else if (Diagnostics.Enabled)
+            {
+                // Named, because "which Control" is the whole question when a HUD stops
+                // responding: the SubViewportContainer itself is set to MouseFilter.Ignore
+                // precisely so it never lands here, so anything reported is something else
+                // covering the screen.
+                Logger.Debug($"[HUD] click at {mb.Position} swallowed by GUI control "
+                             + $"'{hovered.Name}' ({hovered.GetType().Name})");
+            }
+        }
     }
 
     /// <summary>Raycasts a screen click into the HUD overlay's own isolated World3D (via its own
@@ -2787,9 +2801,19 @@ public partial class AvatarRenderer : Node3D
     /// loaded) does nothing — the event is left unhandled so nothing else is blocked by it.</summary>
     private void TryClickHud(Godot.Vector2 screenPos)
     {
-        if (_hudViewport == null || _session == null || _world == null) return;
+        if (_hudViewport == null || _session == null || _world == null)
+        {
+            if (Diagnostics.Enabled)
+                Logger.Debug($"[HUD] click ignored: viewport={_hudViewport != null} "
+                             + $"session={_session != null} world={_world != null}");
+            return;
+        }
         var cam = _hudViewport.GetCamera3D();
-        if (cam == null) return;
+        if (cam == null)
+        {
+            if (Diagnostics.Enabled) Logger.Debug("[HUD] click ignored: viewport has no Camera3D");
+            return;
+        }
 
         // FindWorld3D(), NOT the World3D property: with OwnWorld3D the viewport's children live
         // in an internal COPY of the world, and only FindWorld3D returns that copy — see the
@@ -2811,13 +2835,38 @@ public partial class AvatarRenderer : Node3D
         var dir = cam.ProjectRayNormal(screenPos);
         var query = PhysicsRayQueryParameters3D.Create(from, from + dir * 20f);
         var hit = spaceState.IntersectRay(query);
-        if (hit.Count == 0) return;
 
-        if (hit["collider"].As<Node>() is not { } collider || !collider.HasMeta("EntityId")) return;
-        if (!Guid.TryParse(collider.GetMeta("EntityId").AsString(), out var entityId)) return;
+        // Every exit below used to be silent, which is why "the HUD does not react" could not be
+        // told apart from "the click never got here". Behind --diag, because a line per click is
+        // fine for diagnosis and noise in an ordinary session.
+        if (hit.Count == 0)
+        {
+            if (Diagnostics.Enabled)
+                Logger.Debug($"[HUD] click at {screenPos}: ray missed every collider "
+                             + $"({_hudPlacements.Count} HUD attachment(s) placed)");
+            return;
+        }
+
+        if (hit["collider"].As<Node>() is not { } collider || !collider.HasMeta("EntityId"))
+        {
+            if (Diagnostics.Enabled)
+                Logger.Debug("[HUD] click hit a body with no EntityId meta -- it is not one of ours");
+            return;
+        }
+        if (!Guid.TryParse(collider.GetMeta("EntityId").AsString(), out var entityId))
+        {
+            if (Diagnostics.Enabled)
+                Logger.Debug($"[HUD] click hit '{collider.Name}' whose EntityId meta does not parse");
+            return;
+        }
 
         var entity = _world.GetEntity(entityId);
-        if (entity == null) return;
+        if (entity == null)
+        {
+            if (Diagnostics.Enabled)
+                Logger.Debug($"[HUD] click hit entity {entityId:N}, which is no longer in the world");
+            return;
+        }
 
         GD.Print($"[HUD] clicked entity {entityId:N} (LocalId {entity.LocalId})");
         _ = _session.ClickObjectAsync(entity.LocalId);
