@@ -3,6 +3,7 @@ shader_type spatial;
 // Detail-texture composition matching the Second Life viewer. See the include for the sources and
 // for the two viewer-source traps this port had to avoid.
 #include "res://materials/sl_terrain_composition.gdshaderinc"
+#include "res://materials/slng_atmospherics.gdshaderinc"
 
 // Two deliberate choices here:
 //
@@ -27,6 +28,7 @@ uniform vec4 height_range = vec4(60.0, 60.0, 60.0, 60.0);
 
 // SL region-local position in metres: x = east, y = north.
 varying vec2 v_local_xy;
+varying vec3 v_view_position;
 
 // Composition value and blend-ramp coordinate are computed PER VERTEX and interpolated, not
 // evaluated per fragment. That is not an optimization, it is what the viewer does, and the
@@ -49,6 +51,7 @@ void vertex() {
     // Godot is Y-up with north along -Z; SL is Z-up with north along +Y.
     vec2 local_xy = vec2(VERTEX.x, -VERTEX.z);
     v_local_xy = local_xy;
+    v_view_position = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
 
     vec2 corner_uv = clamp(local_xy / region_size, vec2(0.0), vec2(1.0));
     float s = sl_bilinear_corners(start_height, corner_uv.x, corner_uv.y);
@@ -68,7 +71,8 @@ void fragment() {
     vec3 t2 = texture(detail2, detail_uv).rgb;
     vec3 t3 = texture(detail3, detail_uv).rgb;
 
-    ALBEDO = sl_terrain_blend(t0, t1, t2, t3, v_composition, v_ramp_v);
+    vec3 blended = sl_terrain_blend(t0, t1, t2, t3, v_composition, v_ramp_v);
+    ALBEDO = slng_apply_atmospherics(blended, v_view_position);
     ROUGHNESS = 0.9;
     METALLIC = 0.0;
 }

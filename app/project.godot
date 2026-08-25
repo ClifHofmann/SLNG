@@ -121,6 +121,10 @@ slng_moon_scale={
 "type": "float",
 "value": 1.0
 }
+slng_moon_brightness={
+"type": "float",
+"value": 0.5
+}
 slng_cloud_color={
 "type": "color",
 "value": Color(0.4099, 0.4099, 0.4099, 1)
@@ -141,3 +145,8 @@ slng_cloud_variance={
 "type": "float",
 "value": 1.0
 }
+
+[rendering]
+
+lights_and_shadows/directional_shadow/size=4096
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3

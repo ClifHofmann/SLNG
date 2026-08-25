@@ -1,6 +1,8 @@
 shader_type spatial;
 render_mode blend_mix, depth_draw_always, cull_back, specular_schlick_ggx;
 
+#include "res://materials/slng_atmospherics.gdshaderinc"
+
 // SL's water wave field, ported from the viewer (FEAT-ENV-01).
 //
 // Sources, all in scratch/slviewer:
@@ -48,11 +50,13 @@ uniform vec2 slng_water_wave2_dir = vec2(1.11, -1.16);
 // own 8 quads per 256 m to keep that sampling identical.
 varying vec2 v_big_wave;
 varying vec4 v_little_wave;
+varying vec3 v_view_position;
 
 void vertex() {
     // SL region metres: x = east, y = north. Godot world x = SL x, Godot -z = SL y.
     vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
     vec2 v = vec2(world_pos.x, -world_pos.z);
+    v_view_position = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
 
     // waterV.glsl:87 -- "create sweeping horizontal waves". Displaces the wave field, not the
     // geometry; period is 2*pi/0.08 ~= 78.5 m in x with a +-6 m amplitude.
@@ -69,7 +73,7 @@ void vertex() {
 
 void fragment() {
     // Deep water color (FogColor)
-    ALBEDO = albedo.rgb;
+    ALBEDO = slng_apply_atmospherics(albedo.rgb, v_view_position);
 
     // waterF.glsl: perceptualRoughness = blurMultiplier, and lldrawpoolwater.cpp:254 feeds that
     // uniform max(0, BlurMultiplier) * 2 -- so the doubling is the viewer's, not ours.

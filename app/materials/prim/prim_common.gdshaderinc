@@ -156,13 +156,9 @@ vec2 slng_planar_uv(vec3 vertex, vec3 normal) {
 }
 
 // --- Atmospherics seam ------------------------------------------------------------------
-// Windlight / EEP goes here (Phase 5). Deliberately a no-op today: it exists so that filling
-// it later is an edit to one function shared by prims, avatars, terrain and water, rather
-// than a migration. See ADR 0002 for why this seam is the actual reason the shader family
-// exists at all.
-vec3 slng_apply_atmospherics(vec3 color, vec3 view_position) {
-    return color;
-}
+// Windlight / EEP goes here (Phase 5). Included from the shared include so prims, avatars,
+// terrain and water all route through the same implementation.
+#include "res://materials/slng_atmospherics.gdshaderinc"
 
 // Takes and RETURNS the coordinate rather than using an `inout` parameter. The caller passes
 // the UV built-in, and Godot does not treat built-ins as ordinary variables inside user

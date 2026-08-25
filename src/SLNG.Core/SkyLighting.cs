@@ -35,7 +35,7 @@ public readonly record struct SkyLighting(
     /// coordinates where Z is up. The viewer reads <c>lightnorm[2]</c> here; note its own
     /// GLSL uses <c>lightnorm.y</c> because the shader works in eye space, which is the same
     /// quantity in a different frame.</param>
-    public static SkyLighting Calculate(SkySettings sky, float lightDirectionZ)
+    public static SkyLighting Calculate(SkySettings sky, float lightDirectionZ, float? moonDirectionZ = null)
     {
         Vector3 sunlight = sky.SunlightColor;
         Vector3 ambient = sky.AmbientColor;
@@ -54,11 +54,11 @@ public readonly record struct SkyLighting(
         // viewer guards the reciprocal with 8 * FLT_EPSILON rather than a plain zero check, and
         // that floor is what keeps a sun exactly on the horizon finite instead of black.
         const float limit = float.Epsilon * 8.0f;
-        float lighty = Math.Abs(lightDirectionZ);
-        if (lighty >= limit) lighty = 1.0f / lighty;
-        lighty = Math.Max(limit, lighty);
+        float sunElev = Math.Abs(lightDirectionZ);
+        float sunLighty = sunElev >= limit ? 1.0f / sunElev : 1.0f / limit;
+        sunLighty = Math.Max(limit, sunLighty);
 
-        sunlight *= Exp(lightAtten * -1.0f * lighty);
+        sunlight *= Exp(lightAtten * -1.0f * sunLighty);
         sunlight *= lightTransmittance;
 
         // More cloud cover means more of the sky acts as a diffuser, so ambient goes UP.
@@ -71,11 +71,18 @@ public readonly record struct SkyLighting(
         Vector3 hazeColor = sky.BlueHorizon * sky.BlueDensity * hazeInput
                             + new Vector3(sky.HazeHorizon) * sky.HazeDensity * hazeInput;
 
-        // Moon and sun share a light colour in SL (getMoonlightColor, llsettingssky.cpp:1681).
-        bool moonUp = lightDirectionZ < 0f;
+        // Moon elevation and attenuation: if moonDirectionZ is provided, use its own elevation
+        // rather than the sun's elevation. The sun can be sitting on the horizon (high attenuation)
+        // while the moon is high in the sky (low attenuation).
+        float actualMoonZ = moonDirectionZ ?? -lightDirectionZ;
+        bool moonUp = actualMoonZ > 0f;
+        float moonElev = Math.Abs(actualMoonZ);
+        float moonLighty = moonElev >= limit ? 1.0f / moonElev : 1.0f / limit;
+        moonLighty = Math.Max(limit, moonLighty);
+
         float moonBrightness = moonUp ? sky.MoonBrightness : 0.001f;
         Vector3 moonlight = sky.SunlightColor;
-        moonlight *= Exp(lightAtten * -1.0f * lighty);
+        moonlight *= Exp(lightAtten * -1.0f * moonLighty);
 
         Vector3 moonDiffuse = moonlight * lightTransmittance * moonBrightness;
         // The viewer's hardcoded scotopic ambient: (0.66, 0.66, 1.2) * 0.0125.

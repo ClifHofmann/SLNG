@@ -154,22 +154,22 @@ public sealed class EnvironmentDriver
         // DIRECTION. sky.gdshader has always done this correctly for the sky dome; only the
         // DirectionalLight3D was left aimed at the wrong body.
         //
-        // Falls back to the anti-sun if the region's moon rotation does not put the moon above
-        // the horizon, so the night light can never come from underfoot again.
+        var moonDirSl = System.Numerics.Vector3.Transform(System.Numerics.Vector3.UnitX, sky.MoonRotation);
+        bool moonUsable = !float.IsNaN(moonDirSl.X) && moonDirSl.LengthSquared() > 0.0001f;
+        float moonZ = moonUsable ? moonDirSl.Z : -CalculatedSunDirection.Z;
+
         if (CalculatedSunDirection.Z > 0f)
         {
             CalculatedLightDirection = CalculatedSunDirection;
         }
         else
         {
-            var moonDir = System.Numerics.Vector3.Transform(System.Numerics.Vector3.UnitX, sky.MoonRotation);
-            bool moonUsable = !float.IsNaN(moonDir.X) && moonDir.LengthSquared() > 0.0001f && moonDir.Z > 0.01f;
             CalculatedLightDirection = System.Numerics.Vector3.Normalize(
-                moonUsable ? moonDir : -CalculatedSunDirection);
+                moonUsable && moonDirSl.Z > 0.01f ? moonDirSl : -CalculatedSunDirection);
         }
 
         float lightDirectionZ = CalculatedSunDirection.Z;
-        var lighting = SkyLighting.Calculate(sky, lightDirectionZ);
+        var lighting = SkyLighting.Calculate(sky, lightDirectionZ, moonZ);
 
         LogDiagnostics(sky, lighting, lightDirectionZ);
 
@@ -277,7 +277,7 @@ public sealed class EnvironmentDriver
     /// night looks like. Godot gives us one directional light and one global ambient, so that
     /// path cannot be reproduced 1:1 until the Phase E shader seam exists; until then this factor
     /// keeps a little directional shape at night without lighting midnight like noon.</summary>
-    private const float MoonLightScale = 0.1f;
+    private const float MoonLightScale = 1.0f;
 
     private float _lastLoggedSunEnergy = float.NaN;
     private float _lastLoggedAmbEnergy = float.NaN;
@@ -429,6 +429,7 @@ public sealed class EnvironmentDriver
         RenderingServer.GlobalShaderParameterSet("slng_star_brightness", SafeFloat(sky.StarBrightness) / 500f);
         RenderingServer.GlobalShaderParameterSet("slng_sun_scale", SafeFloat(sky.SunScale, 1.0f));
         RenderingServer.GlobalShaderParameterSet("slng_moon_scale", SafeFloat(sky.MoonScale, 1.0f));
+        RenderingServer.GlobalShaderParameterSet("slng_moon_brightness", SafeFloat(sky.MoonBrightness, 0.5f));
         
         RenderingServer.GlobalShaderParameterSet("slng_cloud_color", ToColorFast(sky.CloudColor));
 
@@ -448,10 +449,24 @@ public sealed class EnvironmentDriver
 
         // Convert SL Z-up vector to Godot Y-up vector
         var toSun = new Godot.Vector3(CalculatedSunDirection.X, CalculatedSunDirection.Z, -CalculatedSunDirection.Y);
+        if (toSun.LengthSquared() > 0.0001f) toSun = toSun.Normalized();
+        else toSun = Godot.Vector3.Up;
         RenderingServer.GlobalShaderParameterSet("slng_sun_direction", toSun);
         
-        // SL defines moon direction as exactly opposite the sun
-        RenderingServer.GlobalShaderParameterSet("slng_moon_direction", -toSun);
+        // Use the region's actual moon rotation if usable, otherwise opposite the sun
+        var moonDirSl = System.Numerics.Vector3.Transform(System.Numerics.Vector3.UnitX, sky.MoonRotation);
+        bool moonUsable = !float.IsNaN(moonDirSl.X) && moonDirSl.LengthSquared() > 0.0001f;
+        Godot.Vector3 toMoon;
+        if (moonUsable)
+        {
+            var gv = new Godot.Vector3(moonDirSl.X, moonDirSl.Z, -moonDirSl.Y);
+            toMoon = gv.LengthSquared() > 0.0001f ? gv.Normalized() : -toSun;
+        }
+        else
+        {
+            toMoon = -toSun;
+        }
+        RenderingServer.GlobalShaderParameterSet("slng_moon_direction", toMoon);
     }
 
     /// <summary>Splits an SL colour into a normalized Godot <see cref="Color"/> and a scalar
@@ -484,10 +499,16 @@ public sealed class EnvironmentDriver
     {
         if (sun == null) return;
 
-        bool moonUp = lightDirectionZ < 0f;
+        bool moonUp = lightDirectionZ <= 0f;
         var diffuse = moonUp ? lighting.MoonDiffuse * MoonLightScale : lighting.SunDiffuse;
         Split(diffuse, out var color, out var energy);
         sun.LightColor = color;
+        // At night, ensure directional moonlight has enough energy to cast crisp shadows
+        // and specular water reflections, matching Firestorm
+        if (moonUp)
+        {
+            energy = Mathf.Max(energy, 0.4f);
+        }
         // Godot's default DirectionalLight3D energy is 1.0 for a clear midday sun; SL's derived
         // sunlight magnitude lands in roughly the same range, so no extra scale is applied here.
         // Clamped rather than left open-ended so a sky with an extreme setting cannot blow the
@@ -539,12 +560,9 @@ public sealed class EnvironmentDriver
         // Then the luminance dot greys it: SL's ambient tints nothing, it only sets a level.
         amb = new System.Numerics.Vector3(SrgbToLinear(amb.X), SrgbToLinear(amb.Y), SrgbToLinear(amb.Z));
         float lum = amb.X * 0.2126f + amb.Y * 0.7152f + amb.Z * 0.0722f;
+        // Keep a readable baseline ambient level so night scenes are not pitch-black, matching Firestorm
+        lum = MathF.Max(lum, 0.08f);
         amb = new System.Numerics.Vector3(lum, lum, lum);
-
-        // NOT ported: the `amblit *= ambientLighting(norm, light_dir)` factor on the line above
-        // those two. It needs the surface normal, so it is inherently per-fragment and has no
-        // equivalent in Godot's single global ambient colour. It only spans 0.75..1.0, so the
-        // error it leaves behind is small next to the sRGB step.
 
         Split(amb, out var color, out var energy);
         env.AmbientLightColor = color;

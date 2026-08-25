@@ -4,14 +4,9 @@ using Godot;
 namespace SLNG.App.UI;
 
 /// <summary>
-/// "Graphics" tab content for PreferencesWindow. Mirrors DisplayPreferencesPage: a plain
-/// VBoxContainer built in Initialize, so PreferencesWindow itself stays generic (see its AddTab).
-///
-/// Every control applies immediately rather than on an OK button. These are all settings whose
-/// effect you judge by looking at the world behind the dialog -- an Apply step would mean closing
-/// the window to see what you changed, then reopening it to change it again.
+/// "Quality / Hardware" tab content for PreferencesWindow.
 /// </summary>
-public partial class GraphicsPreferencesPage : VBoxContainer
+public partial class QualityPreferencesPage : VBoxContainer
 {
     private GraphicsSettings _settings = null!;
     private Action _apply = null!;
@@ -22,24 +17,15 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     private OptionButton _fpsOption = null!;
     private HSlider _drawSlider = null!;
     private OptionButton _msaaOption = null!;
-    private CheckBox _shadowsCheck = null!;
-    private CheckBox _postFxCheck = null!;
+    private OptionButton _shadowResOption = null!;
 
-    /// <summary>Set while Refresh writes into the controls. HSlider.Value and CheckBox.ButtonPressed
-    /// emit their change signals on assignment, so without this a refresh would re-enter the very
-    /// handlers it is trying to synchronise -- saving and re-applying a value that never changed.
-    /// (OptionButton.Select is exempt, but the flag covers it anyway rather than relying on that.)</summary>
     private bool _refreshing;
 
-    /// <summary>Offered frame caps. 0 is "unlimited" and comes first because it is the default and
-    /// the only one that matters while V-Sync is on.</summary>
     private static readonly int[] FpsChoices = { 0, 30, 60, 90, 120, 144, 240 };
+    private static readonly int[] ShadowResChoices = { 1024, 2048, 4096 };
 
     public override void _Ready() => AddThemeConstantOverride("separation", 8);
 
-    /// <summary>Call once, right after this page has been added via PreferencesWindow.AddTab.
-    /// <paramref name="apply"/> re-applies every setting to the live scene; the page itself has no
-    /// access to the viewport, environment or sun, and should not grow one.</summary>
     public void Initialize(GraphicsSettings settings, Action apply)
     {
         _settings = settings;
@@ -48,9 +34,6 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         AddHeading(L10n.Tr("ui.preferences.graphics_heading"));
 
         // --- V-Sync -------------------------------------------------------------------------
-        // First because it is the one that misleads: it caps the frame rate to the display's
-        // refresh, so a client that cannot hold 60 fps reads as a rock-steady 30 rather than as
-        // "just short of 60". Turning it off is how you find out what the renderer can really do.
         AddRow(L10n.Tr("ui.preferences.vsync"), BuildOption(
             new[]
             {
@@ -80,8 +63,6 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         AddChild(new HSeparator());
 
         // --- Draw distance ------------------------------------------------------------------
-        // The single most effective control here on a busy region: cost scales with the area
-        // drawn, so halving it quarters the object count rather than halving it.
         AddHeading(L10n.Tr("ui.preferences.draw_distance_heading"));
 
         var drawRow = new HBoxContainer();
@@ -130,24 +111,19 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             index => { if (!_refreshing) { _settings.SetMsaa(index); _apply(); } },
             out _msaaOption));
 
-        _shadowsCheck = AddCheck(L10n.Tr("ui.preferences.shadows"), _settings.Shadows,
-                                 on => { if (!_refreshing) { _settings.SetShadows(on); _apply(); } });
-
-        _postFxCheck = AddCheck(L10n.Tr("ui.preferences.post_fx"), _settings.PostFx,
-                                on => { if (!_refreshing) { _settings.SetPostFx(on); _apply(); } });
-
-        AddHint(L10n.Tr("ui.preferences.post_fx_hint"));
+        int resIndex = Array.IndexOf(ShadowResChoices, _settings.ShadowResolution);
+        AddRow(L10n.Tr("ui.preferences.shadow_resolution"), BuildOption(
+            new[]
+            {
+                L10n.Tr("ui.preferences.shadow_res_1024"),
+                L10n.Tr("ui.preferences.shadow_res_2048"),
+                L10n.Tr("ui.preferences.shadow_res_4096"),
+            },
+            resIndex < 0 ? 2 : resIndex,
+            index => { if (!_refreshing) { _settings.SetShadowResolution(ShadowResChoices[index]); _apply(); } },
+            out _shadowResOption));
     }
 
-    /// <summary>
-    /// Re-reads every value from the settings object into the controls.
-    ///
-    /// Needed because the settings are not only changed from this page: F2 toggles post-processing
-    /// and F3/F4 nudge the draw distance. Built once at startup and never refreshed, the controls
-    /// would drift out of step with the state they claim to show -- the same class of fault as the
-    /// page being built before the saved values were loaded, which had shadows genuinely off after
-    /// login while the checkbox stayed ticked.
-    /// </summary>
     public void Refresh()
     {
         _refreshing = true;
@@ -162,8 +138,9 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             _drawDistanceValue.Text = $"{_settings.DrawDistance:0} m";
 
             _msaaOption.Select(Mathf.Clamp(_settings.Msaa, 0, _msaaOption.ItemCount - 1));
-            _shadowsCheck.ButtonPressed = _settings.Shadows;
-            _postFxCheck.ButtonPressed = _settings.PostFx;
+
+            int resIdx = Array.IndexOf(ShadowResChoices, _settings.ShadowResolution);
+            _shadowResOption.Select(resIdx < 0 ? 2 : resIdx);
         }
         finally
         {
@@ -186,8 +163,6 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         AddChild(hint);
     }
 
-    /// <summary>Label on the left, control on the right, so the tab reads as a settings list rather
-    /// than a stack of unlabelled dropdowns.</summary>
     private void AddRow(string label, Control control)
     {
         var row = new HBoxContainer();
@@ -197,8 +172,6 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         {
             Text = label,
             CustomMinimumSize = new Vector2(120, 0),
-            // The label must be allowed to shrink below its text width, or the row's minimum width
-            // is the sum of two pieces of text that neither wrap nor clip.
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
             SizeFlagsHorizontal = SizeFlags.Fill,
         };
@@ -208,24 +181,12 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         control.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         if (control is OptionButton option)
         {
-            // Otherwise the dropdown's minimum width is its longest entry's full text.
             option.ClipText = true;
             option.CustomMinimumSize = new Vector2(120, 0);
         }
         row.AddChild(control);
 
         AddChild(row);
-    }
-
-    private CheckBox AddCheck(string label, bool value, Action<bool> onToggled)
-    {
-        // A CheckBox does not wrap or clip its text, so its label is a hard floor on the page's
-        // width. Long explanations belong in a hint underneath, not in the caption.
-        var check = new CheckBox { Text = label, ButtonPressed = value, FocusMode = FocusModeEnum.None };
-        check.SizeFlagsHorizontal = SizeFlags.Fill;
-        check.Toggled += pressed => onToggled(pressed);
-        AddChild(check);
-        return check;
     }
 
     private static OptionButton BuildOption(string[] labels, int selected, Action<int> onSelected,

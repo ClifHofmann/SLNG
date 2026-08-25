@@ -71,7 +71,8 @@ public partial class Boot : Control
     private RenderBaselineSampler? _renderBaselineSampler;
     private SLNG.App.UI.StatsOverlay? _statsOverlay;
     private SLNG.App.UI.GraphicsSettings _graphicsSettings = new();
-    private SLNG.App.UI.GraphicsPreferencesPage? _graphicsPage;
+    private SLNG.App.UI.QualityPreferencesPage? _qualityPage;
+    private SLNG.App.UI.DesignPreferencesPage? _designPage;
 
     /// <summary>Threshold for the [AgentGap] log. Below the 0.8 s extrapolation cutoff, so a gap
     /// shows up in the log slightly before it becomes visible as a stalled avatar.</summary>
@@ -102,7 +103,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.9.12-alpha";
+    public const string AppVersion = "v0.9.20-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -327,7 +328,8 @@ public partial class Boot : Control
         _topMenu.OnOpenPreferences = () => {
             // Re-read on open: F2 and F3/F4 change these settings from outside the dialog, so
             // controls built once at startup would otherwise show stale values.
-            _graphicsPage?.Refresh();
+            _qualityPage?.Refresh();
+            _designPage?.Refresh();
             _preferencesWindow.Visible = true;
         };
 
@@ -522,9 +524,13 @@ public partial class Boot : Control
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_display"), displayPage);
         displayPage.Initialize(_uiSettings, _localizationManager);
 
-        _graphicsPage = new SLNG.App.UI.GraphicsPreferencesPage();
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_graphics"), _graphicsPage);
-        _graphicsPage.Initialize(_graphicsSettings, ApplyGraphicsSettings);
+        _qualityPage = new SLNG.App.UI.QualityPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_quality"), _qualityPage);
+        _qualityPage.Initialize(_graphicsSettings, ApplyGraphicsSettings);
+
+        _designPage = new SLNG.App.UI.DesignPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_design"), _designPage);
+        _designPage.Initialize(_graphicsSettings, ApplyGraphicsSettings);
 
         var networkPage = new SLNG.App.UI.NetworkPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);
@@ -607,9 +613,14 @@ public partial class Boot : Control
             ShadowEnabled = true,
             DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel4Splits,
             DirectionalShadowBlendSplits = true,
-            ShadowBias = 0.02f,
+            DirectionalShadowSplit1 = 0.08f,
+            DirectionalShadowSplit2 = 0.22f,
+            DirectionalShadowSplit3 = 0.50f,
+            DirectionalShadowMaxDistance = 150.0f,
+            ShadowBias = 0.015f,
             ShadowNormalBias = 1.0f,
-            ShadowOpacity = 0.9f,
+            ShadowOpacity = 0.88f,
+            ShadowBlur = 1.8f,
         };
         AddChild(sun);
         _sun = sun;
@@ -1091,9 +1102,14 @@ public partial class Boot : Control
                 // the shortcut and the Graphics tab's checkbox can never end up disagreeing about
                 // the same four flags -- and so the state survives a restart like every other
                 // graphics option does.
-                _graphicsSettings.SetPostFx(!_graphicsSettings.PostFx);
+                bool anyOn = _graphicsSettings.PostFxSsao || _graphicsSettings.PostFxSsil || _graphicsSettings.PostFxGlow || _graphicsSettings.PostFxVolumetricFog;
+                bool target = !anyOn;
+                _graphicsSettings.SetPostFxSsao(target);
+                _graphicsSettings.SetPostFxSsil(target);
+                _graphicsSettings.SetPostFxGlow(target);
+                _graphicsSettings.SetPostFxVolumetricFog(target);
                 ApplyGraphicsSettings();
-                LogMessage($"Post-FX {(_graphicsSettings.PostFx ? "enabled" : "disabled")}");
+                LogMessage($"Post-FX {(target ? "enabled" : "disabled")}");
             }
             else if (keyEvent.Keycode == Key.F3)
             {
