@@ -49,7 +49,7 @@ public sealed class AvatarAnimationPlayer
     public void SetActiveAnimations(IReadOnlyList<(Guid id, AnimationData data)> animations)
     {
         // Remove animations no longer active.
-        _active.RemoveAll(p =>
+        int removed = _active.RemoveAll(p =>
         {
             foreach (var (id, _) in animations)
             {
@@ -57,6 +57,11 @@ public sealed class AvatarAnimationPlayer
             }
             return true;
         });
+
+        if (_active.Count == 0 && removed > 0)
+        {
+            ResetToRestPose();
+        }
 
         // Add new ones.
         foreach (var (id, data) in animations)

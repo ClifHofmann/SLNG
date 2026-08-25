@@ -511,9 +511,14 @@ public partial class AvatarRenderer : Node3D
                 // with the pelvis (llappearance/llavatarappearance.cpp:878, :1021) — same conversion the
                 // remote standing branch below already applies (transform.Position.Z is a pelvis value),
                 // just without any of the ground-correction terms.
+                // However, because AvatarAnimationPlayer currently ignores BVH position keys (which
+                // normally offset the pelvis UP so the avatar's bottom rests on the seat), placing
+                // the pelvis exactly at the sit target sinks the avatar into the object.
+                // We add an empirical 0.45m vertical offset to compensate for the missing BVH offset.
                 int sitPelvisBone = visual.Skeleton != null ? visual.Skeleton.FindBone("mPelvis") : -1;
                 float sitPelvisY = (sitPelvisBone >= 0 && visual.Skeleton != null) ? GetBoneRootRelativeY(visual.Skeleton, sitPelvisBone) : 1.046f;
-                rootPos.Y = transform.Position.Z - sitPelvisY + avatar.HoverOffsetZ;
+                float sitBottomOffset = 0.45f;
+                rootPos.Y = transform.Position.Z - sitPelvisY + sitBottomOffset + avatar.HoverOffsetZ;
             }
             else if (!avatar.IsLocalAgent)
             {
