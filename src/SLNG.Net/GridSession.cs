@@ -1487,29 +1487,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             defaultFace != null ? (byte)defaultFace.TexMapType : FaceTexture.TexGenDefault,
             textureAnim,
             legacyMaterialId,
-            prim.ParticleSys.CRC != 0 ? new SLNG.Core.Components.ParticleSystemData(
-                (uint)prim.ParticleSys.PartFlags,
-                (byte)prim.ParticleSys.Pattern,
-                prim.ParticleSys.MaxAge,
-                prim.ParticleSys.StartAge,
-                prim.ParticleSys.InnerAngle,
-                prim.ParticleSys.OuterAngle,
-                prim.ParticleSys.BurstRate,
-                prim.ParticleSys.BurstRadius,
-                prim.ParticleSys.BurstSpeedMin,
-                prim.ParticleSys.BurstSpeedMax,
-                prim.ParticleSys.BurstPartCount,
-                new System.Numerics.Vector3(prim.ParticleSys.AngularVelocity.X, prim.ParticleSys.AngularVelocity.Y, prim.ParticleSys.AngularVelocity.Z),
-                new System.Numerics.Vector3(prim.ParticleSys.PartAcceleration.X, prim.ParticleSys.PartAcceleration.Y, prim.ParticleSys.PartAcceleration.Z),
-                prim.ParticleSys.Texture.Guid,
-                prim.ParticleSys.Target.Guid,
-                new System.Numerics.Vector4(prim.ParticleSys.PartStartColor.R, prim.ParticleSys.PartStartColor.G, prim.ParticleSys.PartStartColor.B, prim.ParticleSys.PartStartColor.A),
-                new System.Numerics.Vector4(prim.ParticleSys.PartEndColor.R, prim.ParticleSys.PartEndColor.G, prim.ParticleSys.PartEndColor.B, prim.ParticleSys.PartEndColor.A),
-                prim.ParticleSys.PartStartScaleX,
-                prim.ParticleSys.PartStartScaleY,
-                prim.ParticleSys.PartEndScaleX,
-                prim.ParticleSys.PartEndScaleY
-            ) : null));
+            ParticleSystemConverter.FromWire(prim.ParticleSys)));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)
