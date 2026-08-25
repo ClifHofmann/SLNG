@@ -99,8 +99,6 @@ public partial class ObjectParticles : GpuParticles3D
         if (float.IsInfinity(gz)) gz = 0;
         mat.Gravity = new Vector3(gx, gz, gy);
 
-        // SL Start and End Colors mapped to Godot ColorRamp
-        // If alpha is 0, it might be a missing default in the LSL script (SL defaults to 1.0)
         float sAlpha = S(data.StartColor.W, 1f) == 0f ? 1f : S(data.StartColor.W, 1f);
         float eAlpha = S(data.EndColor.W, 1f) == 0f ? 1f : S(data.EndColor.W, 1f);
 
@@ -125,6 +123,7 @@ public partial class ObjectParticles : GpuParticles3D
         var gradTex = new GradientTexture1D();
         gradTex.Gradient = grad;
         mat.ColorRamp = gradTex;
+        mat.Color = new Color(1, 1, 1, 1);
 
         // StandardMaterial3D (DrawPass)
         if (DrawPass1 == null)
