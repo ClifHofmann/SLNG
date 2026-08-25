@@ -32,6 +32,7 @@ public partial class ObjectParticles : GpuParticles3D
         Lifetime = data.MaxAge > 0f ? data.MaxAge : 1.0f;
         OneShot = false;
         Emitting = true;
+        VisibilityAabb = new Aabb(new Vector3(-100, -100, -100), new Vector3(200, 200, 200)); // Large safe AABB
         
         bool followSource = (data.Flags & 0x010) != 0;
         LocalCoords = followSource;
@@ -82,14 +83,21 @@ public partial class ObjectParticles : GpuParticles3D
         float eAlpha = data.EndColor.W == 0f ? 1f : data.EndColor.W;
 
         var grad = new Gradient();
-        grad.AddPoint(0.0f, new Color(data.StartColor.X, data.StartColor.Y, data.StartColor.Z, sAlpha));
         if (interpolateColor)
         {
-            grad.AddPoint(1.0f, new Color(data.EndColor.X, data.EndColor.Y, data.EndColor.Z, eAlpha));
+            grad.Offsets = new float[] { 0f, 1f };
+            grad.Colors = new Color[] {
+                new Color(data.StartColor.X, data.StartColor.Y, data.StartColor.Z, sAlpha),
+                new Color(data.EndColor.X, data.EndColor.Y, data.EndColor.Z, eAlpha)
+            };
         }
         else
         {
-            grad.AddPoint(1.0f, new Color(data.StartColor.X, data.StartColor.Y, data.StartColor.Z, sAlpha));
+            grad.Offsets = new float[] { 0f, 1f };
+            grad.Colors = new Color[] {
+                new Color(data.StartColor.X, data.StartColor.Y, data.StartColor.Z, sAlpha),
+                new Color(data.StartColor.X, data.StartColor.Y, data.StartColor.Z, sAlpha)
+            };
         }
 
         var gradTex = new GradientTexture1D();
@@ -153,9 +161,12 @@ public partial class ObjectParticles : GpuParticles3D
             {
                 var circleTex = new GradientTexture2D();
                 var gradCircle = new Gradient();
-                gradCircle.AddPoint(0.0f, new Color(1, 1, 1, 1));
-                gradCircle.AddPoint(0.4f, new Color(1, 1, 1, 1)); // solid core
-                gradCircle.AddPoint(1.0f, new Color(1, 1, 1, 0)); // soft edge
+                gradCircle.Offsets = new float[] { 0f, 0.4f, 1f };
+                gradCircle.Colors = new Color[] {
+                    new Color(1, 1, 1, 1),
+                    new Color(1, 1, 1, 1),
+                    new Color(1, 1, 1, 0)
+                };
                 circleTex.Gradient = gradCircle;
                 circleTex.Fill = GradientTexture2D.FillEnum.Radial;
                 circleTex.FillFrom = new Vector2(0.5f, 0.5f);
