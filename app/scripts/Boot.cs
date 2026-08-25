@@ -107,7 +107,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.9.28-alpha";
+    public const string AppVersion = "v0.9.29-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -400,7 +400,24 @@ public partial class Boot : Control
         standUpMargin.AddChild(vBox);
         hudLayer.AddChild(standUpMargin);
 
-        _standUpButton.Pressed += () => _session?.Stand();
+        _standUpButton.Pressed += () => 
+        {
+            if (_localAgent != null)
+            {
+                var avatarComp = _localAgent.GetComponent<SLNG.Core.Components.AvatarComponent>();
+                if (avatarComp != null && avatarComp.ActiveAnimations != null)
+                {
+                    // Forcefully stop all playing animations (including custom sit animations
+                    // from chair scripts) so they don't get stuck when standing up. The server
+                    // will automatically restart the default STAND/WALK animations.
+                    foreach (var animId in avatarComp.ActiveAnimations)
+                    {
+                        _session?.StopAnimation(animId);
+                    }
+                }
+            }
+            _session?.Stand();
+        };
 
         // Performance readout (FEAT-PERF-01). Lives on HudLayer so "Toggle HUD" hides it along
         // with the rest of the overlay, but it starts hidden and is opened on demand.

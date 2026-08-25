@@ -1864,6 +1864,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// never does -- included for completeness rather than swallowed, matching LMV's own
     /// signature.</summary>
     public bool Stand() => _client.Self.Stand();
+    public void StopAnimation(Guid animId) => _client.Self.AnimationStop(new UUID(animId), true);
 
     /// <summary>Root folder id of the agent's own inventory, or null until login has completed
     /// (LibreMetaverse builds the store — folders only, no items — from the login response's

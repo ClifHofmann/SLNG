@@ -141,6 +141,10 @@ public partial class AvatarRenderer : Node3D
         // mesh's own vertices never change with shape, so nothing else would ever revisit its Skin.
         public List<(MeshInstance3D Mi, MeshData MeshData, Guid MeshId)> RiggedAttachments { get; } = new();
         public Godot.Control? NameTag { get; set; }
+        /// <summary>Tracks the previous frame's SittingOnLocalId to detect sit→stand transitions.
+        /// When transitioning from sitting to standing, the animation player must be forcefully
+        /// stopped so the sit pose doesn't persist while the server sends new standing animations.</summary>
+        public uint PreviousSittingOnLocalId { get; set; }
 
         public AvatarVisual()
         {
@@ -706,6 +710,20 @@ public partial class AvatarRenderer : Node3D
         // exactly the kind of discontinuity that reads as a pop while walking/turning (turning is
         // when a new animation, e.g. a turn blend, would first need fetching and be most likely to
         // race).
+        // Detect sit→stand transition: when SittingOnLocalId goes from non-zero to zero,
+        // the avatar just stood up. Clear LoadedAnimationIds to force the animation change
+        // detection below to fire immediately — SetActiveAnimations will cleanly swap the
+        // sit animation for the new stand/walk animation without a T-pose gap (it removes
+        // old anims and adds new ones in one atomic call). Do NOT call AnimPlayer.Stop()
+        // here: that resets all bones to rest pose, causing a visible T-pose flash while
+        // LoadAndStartAnimationsAsync fetches the new animation data.
+        if (visual.PreviousSittingOnLocalId != 0 && avatar.SittingOnLocalId == 0)
+        {
+            GD.Print("[AnimPlayer] Sit→stand transition detected, forcing animation re-evaluation");
+            visual.LoadedAnimationIds = null;
+        }
+        visual.PreviousSittingOnLocalId = avatar.SittingOnLocalId;
+
         if (avatar.ActiveAnimations != null && _assetService != null && visual.Skeleton != null)
         {
             bool animsChanged = visual.LoadedAnimationIds == null
