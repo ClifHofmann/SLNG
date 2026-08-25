@@ -28,8 +28,8 @@ public partial class PreferencesWindow : SLNGWindow
 
         Title = L10n.Tr("ui.preferences.title");
         Visible = false;
-        CustomMinimumSize = new Vector2(560, 440);
-        Size = new Vector2(560, 440);
+        CustomMinimumSize = new Vector2(450, 300);
+        Size = new Vector2(450, 300);
         Position = new Vector2(260, 160);
 
         OnCloseRequested = Hide;

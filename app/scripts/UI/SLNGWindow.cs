@@ -125,10 +125,10 @@ public partial class SLNGWindow : MarginContainer
         vbox.AddChild(_headerPanel);
 
         var headerMargin = new MarginContainer();
-        headerMargin.AddThemeConstantOverride("margin_left", 16);
-        headerMargin.AddThemeConstantOverride("margin_right", 16);
-        headerMargin.AddThemeConstantOverride("margin_top", 12);
-        headerMargin.AddThemeConstantOverride("margin_bottom", 12);
+        headerMargin.AddThemeConstantOverride("margin_left", 12);
+        headerMargin.AddThemeConstantOverride("margin_right", 12);
+        headerMargin.AddThemeConstantOverride("margin_top", 6);
+        headerMargin.AddThemeConstantOverride("margin_bottom", 6);
         headerMargin.MouseFilter = MouseFilterEnum.Pass;
         _headerPanel.AddChild(headerMargin);
 
