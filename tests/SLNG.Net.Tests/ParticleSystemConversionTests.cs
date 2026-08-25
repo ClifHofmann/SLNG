@@ -146,14 +146,32 @@ public class ParticleSystemConversionTests
     }
 
     /// <summary>
-    /// A CRC of 0 is the wire's "this object has no particle system" -- what a simulator sends
-    /// for <c>llParticleSystem([])</c>, and what LibreMetaverse leaves behind for an object that
-    /// never had one.
+    /// An absent block leaves every field at LibreMetaverse's defaults -- which is also what the
+    /// simulator sends for <c>llParticleSystem([])</c>.
     /// </summary>
     [Fact]
     public void No_particle_system_converts_to_null()
     {
         Assert.Null(ParticleSystemConverter.FromWire(new Primitive.ParticleSystem()));
+    }
+
+    /// <summary>
+    /// A zero CRC must NOT discard a system that plainly has content. The real viewer's presence
+    /// test is the size of the PSBlock (llpartdata.cpp:371-393); it reads the CRC off the wire
+    /// and never consults it again, so an object whose block arrives with a zero there still
+    /// emits in-world. Gating on it silently drops every particle such an object has.
+    /// </summary>
+    [Fact]
+    public void A_zero_crc_does_not_discard_a_system_that_has_content()
+    {
+        Primitive.ParticleSystem sys = WireFountain();
+        sys.CRC = 0;
+
+        ParticleSystemData? data = ParticleSystemConverter.FromWire(sys);
+
+        Assert.NotNull(data);
+        Assert.Equal(3f, data!.PartMaxAge, Tol);
+        Assert.Equal(SlParticlePattern.Explode, data.Pattern);
     }
 
     /// <summary>

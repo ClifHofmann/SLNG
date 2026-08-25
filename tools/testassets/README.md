@@ -329,3 +329,63 @@ nothing else.
 construction it has none."* So these values say reliably which SIDE of the crossfade a point
 falls on, and say nothing about how hard the edge between them should look. The visible
 contrast comes from the real blend ramp, which only the shader evaluates.
+
+## Particle probe
+
+`particle_probe.lsl` — a fountain that keeps re-sending itself.
+
+The problem it solves is not what the particles look like. It is that **a particle system is
+only put on the wire when a script sets it.** `scratch/TestParticles.lsl` calls
+`llParticleSystem` once, in `state_entry`. If you were not already logged in and standing
+there at that moment, nothing is ever sent while you are watching, and the object is
+indistinguishable from one that has no particles at all.
+
+That cost a full round of debugging. It looked exactly like a renderer that had stopped
+working: particles were visible on the first test and never again. What had actually happened
+is that the one event had come and gone.
+
+This probe re-applies the identical system every 20 seconds and on touch, and says so in chat
+each time. Re-applying makes the simulator schedule a full update carrying the block, so a
+fresh event arrives on demand rather than only at rez time. `llSetText` over the prim says
+whether it is on, and `on_rez` resets it.
+
+**Reading the result.** With the client on `--diag`, two log lines bracket the whole path:
+
+| line | written by | means |
+|---|---|---|
+| `[ParticleWire]` | `Boot.OnParticleWireDiagnostic` | a system arrived at the protocol boundary |
+| `[Particles]` | `ObjectParticles.Apply` | the renderer configured it |
+
+- neither, within ~20 s → nothing is reaching us; the problem is upstream of the renderer
+- `[ParticleWire]` only → lost between the world model and the renderer
+- both, nothing visible → a rendering bug, and now a narrow one
+
+**A trap worth naming.** A viewer keeps a particle source alive once it has one, so a
+long-running Firestorm can happily display an emitter the simulator stopped sending hours ago.
+Comparing a fresh SLNG session against a Firestorm that has been open all afternoon is not a
+comparison. Relog Firestorm before concluding anything about an object that "still works
+there".
+
+### The default particle texture
+
+A system with `PSYS_SRC_TEXTURE ""` draws with the viewer's built-in blob, which is
+`pixiesmall.j2c` — a file in the viewer *skin*, not a grid asset. There is no id to fetch and
+it cannot be shipped, so `ObjectParticles.DefaultTexture` rebuilds its shape from a
+measurement of the vendored copy. To repeat that measurement:
+
+```bash
+python -c "
+from PIL import Image; import math
+im = Image.open('scratch/slviewer/indra/newview/skins/default/textures/pixiesmall.j2c').convert('RGBA')
+w,h = im.size; px = im.load(); c = (w-1)/2.0
+for i in range(21):
+    vals = [px[x,y][3] for y in range(h) for x in range(w)
+            if abs(math.hypot(x-c,y-c)/(w/2.0) - i/20.0) < 0.025]
+    print('%.2f %.3f' % (i/20.0, sum(vals)/len(vals)/255.0))
+"
+```
+
+Its RGB is pure white everywhere — the texture is nothing but an alpha mask — and the shape is
+a very narrow core (flat to r=0.10) with a long faint halo. A gentler ramp of the same width
+renders as a fat mushy blob instead of a bright speck, which is what a hand-tuned gradient
+produced before this was measured.

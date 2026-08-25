@@ -44,14 +44,9 @@ internal static class ParticleSystemConverter
     /// <summary>
     /// Converts a decoded particle block, or returns null if the object has no particle system.
     /// </summary>
-    /// <remarks>
-    /// A CRC of 0 is the wire's "no particle system here" -- it is what the simulator sends when
-    /// a script calls <c>llParticleSystem([])</c>, and LibreMetaverse leaves it at 0 for an
-    /// object that never had one.
-    /// </remarks>
     internal static ParticleSystemData? FromWire(Primitive.ParticleSystem sys)
     {
-        if (sys.CRC == 0)
+        if (!CarriesSystem(sys))
         {
             return null;
         }
@@ -81,6 +76,31 @@ internal static class ParticleSystemConverter
             PartEndScaleX: Clamp(sys.PartEndScaleX, 0f, MaxPartScale),
             PartEndScaleY: Clamp(sys.PartEndScaleY, 0f, MaxPartScale));
     }
+
+    /// <summary>
+    /// Whether the ObjectUpdate carried a particle block at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>Deliberately NOT a CRC test. The real viewer's only presence check is the size of
+    /// the PSBlock (llpartdata.cpp:371-393) -- it reads <c>mCRC</c> off the wire and then never
+    /// looks at it again anywhere in the source. Gating on the CRC is therefore our invention,
+    /// and it throws away the entire system of any object whose block arrives with a zero there,
+    /// which renders as "this object has no particles" and nothing else.</para>
+    ///
+    /// <para>LibreMetaverse hands over a struct rather than the block, so the size is gone by the
+    /// time we see it; the equivalent test is whether anything survived the unpack. An absent
+    /// block leaves every field at the constructor's defaults, which is also exactly what the
+    /// simulator sends for <c>llParticleSystem([])</c>. A system that IS present but degenerate
+    /// -- all zeroes -- is indistinguishable from that, and correctly so: it emits nothing in the
+    /// viewer either (see <see cref="ParticleSystemData.IsInert"/>).</para>
+    /// </remarks>
+    private static bool CarriesSystem(Primitive.ParticleSystem sys) =>
+        sys.CRC != 0
+        || sys.Pattern != Primitive.ParticleSystem.SourcePattern.None
+        || sys.PartDataFlags != Primitive.ParticleSystem.ParticleDataFlags.None
+        || sys.BurstPartCount > 0
+        || sys.PartMaxAge > 0f
+        || sys.Texture != UUID.Zero;
 
     private static float Finite(float v, float fallback = 0f) => float.IsFinite(v) ? v : fallback;
 

@@ -217,6 +217,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
         _client.Objects.TerseObjectUpdate += OnTerseObjectUpdate;
+        // Repairs the particle system LibreMetaverse loses on every compressed update -- see
+        // CompressedParticleRepair. Registered here rather than replacing the library's handler,
+        // so it runs after it: LibreMetaverse decodes the object as usual (correctly, apart from
+        // the particles) and this puts the particles back.
+        _client.Network.RegisterCallback(PacketType.ObjectUpdateCompressed, OnObjectUpdateCompressedRaw);
         _client.Objects.AvatarUpdate += OnAvatarUpdate;
         _client.Objects.ObjectPropertiesFamily += OnObjectPropertiesFamily;
         _client.Objects.ObjectProperties += OnObjectPropertiesFull;
@@ -1175,6 +1180,48 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     private void OnObjectUpdate(object? sender, PrimEventArgs e) => RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: true);
+
+    /// <summary>
+    /// Puts back the particle system LibreMetaverse drops from every <c>ObjectUpdateCompressed</c>
+    /// object -- see <see cref="CompressedParticleRepair"/> for what it gets wrong and why the
+    /// failure is silent. Runs on a network thread, like every other LibreMetaverse handler.
+    /// </summary>
+    private void OnObjectUpdateCompressedRaw(object? sender, PacketReceivedEventArgs e)
+    {
+        if (e.Packet is not ObjectUpdateCompressedPacket packet)
+        {
+            return;
+        }
+
+        foreach (var block in packet.ObjectData)
+        {
+            byte[]? raw = CompressedParticleRepair.ExtractParticleBlock(block.Data);
+            if (raw is null || !CompressedParticleRepair.TryReadLocalId(block.Data, out uint localId))
+            {
+                continue;
+            }
+
+            // The object LibreMetaverse has just finished decoding. If it is not there, this
+            // callback beat the library's own handler and there is nothing to correct yet -- the
+            // next update carries the same block.
+            if (!e.Simulator.ObjectsPrimitives.TryGetValue(localId, out Primitive? prim) || prim is null)
+            {
+                continue;
+            }
+
+            var repaired = new Primitive.ParticleSystem(raw, 0);
+            if (prim.ParticleSys.Equals(repaired))
+            {
+                // Already correct: an object whose particles have not changed sends the same block
+                // on every compressed update, and re-raising each one would double the work of
+                // every moving emitter in the region.
+                continue;
+            }
+
+            prim.ParticleSys = repaired;
+            RaiseObjectUpdate(e.Simulator, prim, isFullUpdate: true);
+        }
+    }
 
     /// <summary>ImprovedTerseObjectUpdate -- the lightweight packet a physically-moving object
     /// (falling, rolling, pushed) streams position/rotation/velocity through while it's actually

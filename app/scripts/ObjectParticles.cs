@@ -51,6 +51,10 @@ public partial class ObjectParticles : CpuParticles3D
 
     private ParticleSystemData? _data;
     private Guid _textureId;
+
+    /// <summary>Whether <see cref="_textureId"/> holds a resolved id rather than its default.
+    /// Needed because <see cref="Guid.Empty"/> is itself a valid id here -- see ResolveTexture.</summary>
+    private bool _textureResolved;
     private QuadMesh? _quad;
     private StandardMaterial3D? _drawMaterial;
 
@@ -238,6 +242,20 @@ public partial class ObjectParticles : CpuParticles3D
             BillboardKeepScale = true,
             VertexColorUseAsAlbedo = true,
             Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            // Draw after the water. Both surfaces are transparent, and water.gdshader is
+            // blend_mix with depth_draw_always, so at equal priority Godot orders the two by
+            // camera distance -- and the region's water plane is centred on the region while an
+            // emitter is wherever it is, so the order FLIPS as the camera moves. That is why the
+            // artefact came and went with the zoom rather than sitting still.
+            //
+            // The viewer does not leave this to a sort either: it splits the alpha pass in two
+            // around water (POOL_ALPHA_PRE_WATER / POOL_WATER / POOL_ALPHA_POST_WATER,
+            // lldrawpool.h:74-78) and draws the same faces twice with a water-plane clip whose
+            // sign selects the half (lldrawpoolalpha.cpp:149-159). A fixed priority is the
+            // above-water half of that, which is where particles almost always are; a billboard
+            // straddling the surface still gets cut by the water's depth write instead of being
+            // clipped and blended per fragment. Doing that properly belongs to the water pass.
+            RenderPriority = 1,
         };
         _quad.Material = _drawMaterial;
         Mesh = _quad;
@@ -364,12 +382,25 @@ public partial class ObjectParticles : CpuParticles3D
 
     private void ConfigureColor(ParticleSystemData data, bool interpolateColor)
     {
+        // SL particle colours are display-referred sRGB, and Godot's particle colour reaches the
+        // shader as a raw vertex colour multiplied into an already-linear albedo. Handing it the
+        // sRGB triple unconverted makes every mid-tone too bright: PSYS_PART_START_COLOR
+        // <1, 0.5, 0> leaves the frame as <1, 0.71, 0>, orange rendered as gold. The endpoints 0
+        // and 1 are fixed points of the transfer, which is why a pure red end colour looked right
+        // while the orange start colour did not.
+        //
+        // This is exact rather than approximate here: Boot.SetupEnvironment sets TonemapMode to
+        // Linear (the identity), so the frame reaches the screen through nothing but
+        // linear_to_srgb and a clamp -- the same last pass as the viewer's.
+        // Alpha is carried verbatim, including 0 -- it is not a colour and gets no transfer
+        // applied. Fading in from nothing and out to nothing is what
+        // PSYS_PART_START_ALPHA / _END_ALPHA are for.
         var start = new Color(
-            data.PartStartColor.X, data.PartStartColor.Y, data.PartStartColor.Z, data.PartStartColor.W);
-        // Alpha is carried verbatim, including 0: fading in from nothing and out to nothing is
-        // what PSYS_PART_START_ALPHA / _END_ALPHA are for.
+            data.PartStartColor.X, data.PartStartColor.Y, data.PartStartColor.Z, data.PartStartColor.W)
+            .SrgbToLinear();
         Color end = interpolateColor
             ? new Color(data.PartEndColor.X, data.PartEndColor.Y, data.PartEndColor.Z, data.PartEndColor.W)
+                .SrgbToLinear()
             : start;
 
         ColorRamp = new Gradient
@@ -429,11 +460,17 @@ public partial class ObjectParticles : CpuParticles3D
 
     private void ResolveTexture(Guid textureId, GpuCache gpuCache, AssetService assetService)
     {
-        if (_drawMaterial is null || textureId == _textureId)
+        // _textureResolved, rather than comparing against a default-initialised _textureId:
+        // Guid.Empty is a real value here -- it is what PSYS_SRC_TEXTURE "" means, and it is by
+        // far the most common one. Treating "not resolved yet" as "already Guid.Empty" skips the
+        // assignment below on the first call and leaves the material with no albedo texture at
+        // all, which draws every particle as an opaque tinted SQUARE.
+        if (_drawMaterial is null || (_textureResolved && textureId == _textureId))
         {
             return;
         }
         _textureId = textureId;
+        _textureResolved = true;
 
         // Until the asset lands, the default blob stands in -- an untextured particle would draw
         // as an opaque white square, which reads as a rendering bug rather than as a pending fetch.
@@ -470,19 +507,50 @@ public partial class ObjectParticles : CpuParticles3D
             return _defaultTexture;
         }
 
+        // The viewer's own default is pixiesmall.j2c, a file in the viewer SKIN rather than a grid
+        // asset, so there is no id to fetch and it cannot be shipped either -- it is Linden art.
+        // What can be reproduced is its shape: the stops below are its measured radial alpha,
+        // averaged in 5% rings out of the decoded 128x128 image. Its RGB is pure white everywhere,
+        // so the texture is nothing but an alpha mask.
+        //
+        //   from scratch/slviewer/indra/newview/skins/default/textures/pixiesmall.j2c
+        //   r     0.00  0.10  0.15  0.20  0.25  0.30  0.40  0.50  0.65  0.80  1.00
+        //   alpha 1.00  0.99  0.85  0.71  0.56  0.47  0.38  0.27  0.19  0.09  0.02
+        //
+        // The shape matters more than it sounds: the core is only a tenth of the radius wide and
+        // the rest is a long faint halo. A gentler ramp of the same width reads as a fat mushy
+        // blob rather than a bright speck of dust, which is what a hand-tuned one produced.
+        // The last stop is taken to 0 rather than the measured 0.02, so the quad's corners cannot
+        // show up as a faint square.
         var falloff = new Gradient
         {
-            Offsets = new[] { 0f, 0.4f, 1f },
-            Colors = new[] { Colors.White, Colors.White, new Color(1f, 1f, 1f, 0f) },
+            Offsets = new[] { 0f, 0.1f, 0.15f, 0.2f, 0.25f, 0.3f, 0.4f, 0.5f, 0.65f, 0.8f, 0.9f, 1f },
+            Colors = new[]
+            {
+                new Color(1f, 1f, 1f, 1f),
+                new Color(1f, 1f, 1f, 0.99f),
+                new Color(1f, 1f, 1f, 0.85f),
+                new Color(1f, 1f, 1f, 0.71f),
+                new Color(1f, 1f, 1f, 0.56f),
+                new Color(1f, 1f, 1f, 0.47f),
+                new Color(1f, 1f, 1f, 0.38f),
+                new Color(1f, 1f, 1f, 0.27f),
+                new Color(1f, 1f, 1f, 0.19f),
+                new Color(1f, 1f, 1f, 0.09f),
+                new Color(1f, 1f, 1f, 0.03f),
+                new Color(1f, 1f, 1f, 0f),
+            },
         };
         _defaultTexture = new GradientTexture2D
         {
             Gradient = falloff,
+            // FillFrom centre to FillTo edge-midpoint means gradient offset 1.0 sits at UV radius
+            // 0.5 -- exactly the radius the measurement above calls 1.0.
             Fill = GradientTexture2D.FillEnum.Radial,
             FillFrom = new Vector2(0.5f, 0.5f),
             FillTo = new Vector2(1f, 0.5f),
-            Width = 32,
-            Height = 32,
+            Width = 64,
+            Height = 64,
         };
         return _defaultTexture;
     }

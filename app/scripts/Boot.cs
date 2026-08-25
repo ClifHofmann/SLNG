@@ -44,6 +44,10 @@ public partial class Boot : Control
     private SLNG.Core.Services.LocalizationManager _localizationManager = null!;
     private SLNG.Core.WorldSimulation _worldSimulation = null!;
     private SLNG.App.UI.DialogQueueManager? _dialogQueueManager;
+
+    /// <summary>Objects already reported by <see cref="OnParticleWireDiagnostic"/>, so a busy
+    /// region logs one line per emitter instead of one per update. Touched from network threads.</summary>
+    private readonly HashSet<uint> _particleSourcesLogged = new();
     private GpuCache? _gpuCache;
     private TerrainRenderer? _terrainRenderer;
     private ObjectRenderer? _objectRenderer;
@@ -103,7 +107,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.9.21-alpha";
+    public const string AppVersion = "v0.9.28-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1287,6 +1291,14 @@ public partial class Boot : Control
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.InstantMessageReceived += OnInstantMessageReceived;
+        // A particle system can vanish at three separate places between the wire and the screen
+        // -- no block in the ObjectUpdate, a CRC of 0, or an update that is not full -- and all
+        // three look identical in-world: no particles. This says whether one ever arrived at all,
+        // which is the half ObjectParticles' own --diag line cannot report.
+        if (Diagnostics.Enabled)
+        {
+            _session.ObjectUpdateReceived += OnParticleWireDiagnostic;
+        }
         // M5-4: llDialog popups. DialogQueueManager buffers ScriptDialogReceived (a network-
         // thread event) itself and is drained once per frame from _Process, same as
         // _worldSimulation above -- see its Pump() doc comment.
@@ -1428,6 +1440,31 @@ public partial class Boot : Control
             _vboxContainer.Visible = true;   // back with the login screen, where it is the point
             _loginButton.Disabled = false;
         }
+    }
+
+    /// <summary>
+    /// Reports, once per object, that a particle system reached the neutral event layer. Raised
+    /// on a LibreMetaverse network thread, so it touches nothing but its own set.
+    /// </summary>
+    private void OnParticleWireDiagnostic(object? sender, ObjectUpdateEvent e)
+    {
+        if (e.Particles is null)
+        {
+            return;
+        }
+
+        lock (_particleSourcesLogged)
+        {
+            if (!_particleSourcesLogged.Add(e.LocalId))
+            {
+                return;
+            }
+        }
+
+        GD.Print($"[ParticleWire] localId={e.LocalId} pattern={e.Particles.Pattern} "
+            + $"partMaxAge={e.Particles.PartMaxAge:0.###}s srcMaxAge={e.Particles.SourceMaxAge:0.###}s "
+            + $"burst={e.Particles.BurstPartCount}/{e.Particles.BurstRate:0.###}s "
+            + $"flags={e.Particles.PartDataFlags} full={e.IsFullUpdate}");
     }
 
     private void OnChatMessage(object? sender, ChatMessageEvent e)
