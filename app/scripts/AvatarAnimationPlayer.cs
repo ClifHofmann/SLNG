@@ -169,19 +169,14 @@ public sealed class AvatarAnimationPlayer
             }
         }
 
-        // Apply to skeleton. Rotation is applied as an override.
-        // Position is applied as an offset from the bone's rest position,
-        // because SL position keys are relative to the SL parent bone, and Godot's
-        // skeleton has different rest offsets (e.g. mPelvis is 1.04m above Godot's Root,
-        // while in SL mPelvis is coincident with mRoot).
+        // Apply to skeleton. Rotation only for now: SL animation position keys (almost
+        // always just on mPelvis) use a reference frame that, applied directly, drops the
+        // pelvis to the avatar root and sinks the whole body into the ground. The rest
+        // pose already places every bone correctly, so rotation-only gives a correct
+        // standing/idle pose. Root motion (jumps, real translation) is deferred.
         foreach (var (boneIdx, pose) in bonePoses)
         {
             _skeleton.SetBonePoseRotation(boneIdx, pose.rotation);
-            if (pose.hasPos)
-            {
-                var restPos = _skeleton.GetBoneRest(boneIdx).Origin;
-                _skeleton.SetBonePosePosition(boneIdx, restPos + pose.position);
-            }
         }
     }
 
