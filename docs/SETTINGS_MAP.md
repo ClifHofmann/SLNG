@@ -12,7 +12,7 @@ Dieses Dokument listet alle geplanten und bereits vorhandenen Viewer-Einstellung
 | | | Namen anzeigen (Komplexität etc.) | ⏸️ Pending | |
 | | Abwesenheit | Zeit bis Away / Auto-Logout | ⏸️ Pending | |
 | **Anzeige / UI** | Skalierung | UI-Skalierung (Slider) | ✅ Done | |
-| | Toolbars | Position der Buttons (Docking) | 🚧 In Progress | Basis-Logik `ToolbarSettings` implementiert |
+| | Toolbars | Toolbar (Fest unten) | ✅ Done | Docking-Optionen entfernt, Toolbar ist jetzt permanent am unteren Rand verankert |
 | | Fenster | Transparenz / Hintergrund-Unschärfe | ⏸️ Pending | |
 | | Info-Overlays | FPS / Netzwerk-Stats | ✅ Done | Im Top-Menü / Overlay |
 | **Grafik** | Allgemein | Sichtweite (Draw Distance) | ⏸️ Pending | |
