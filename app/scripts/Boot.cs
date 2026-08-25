@@ -492,8 +492,8 @@ public partial class Boot : Control
         _toolbarSettings.Load();
 
         _buttonBar = new SLNG.App.UI.ButtonBar { Name = "ButtonBar" };
-        _buttonBar.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         hudLayer.AddChild(_buttonBar);
+        _buttonBar.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         _buttonBar.Initialize(toolbarItems, _toolbarSettings);
 
         _preferencesWindow = new SLNG.App.UI.PreferencesWindow { Name = "PreferencesWindow" };

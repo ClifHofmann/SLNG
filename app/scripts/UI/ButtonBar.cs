@@ -48,7 +48,7 @@ public partial class ButtonBar : Control
     {
         _iconFont = GD.Load<Font>("res://assets/fonts/MaterialSymbolsOutlined.ttf");
         MouseFilter = Control.MouseFilterEnum.Ignore; // avoid blocking world/camera clicks outside the pill
-        SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        MakeFullRect(this);
 
         var styleBox = new StyleBoxFlat
         {
@@ -65,7 +65,7 @@ public partial class ButtonBar : Control
         // Bottom
         var bottomMargin = new MarginContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
         AddChild(bottomMargin);
-        bottomMargin.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        MakeFullRect(bottomMargin);
         var bottomVBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.End, MouseFilter = Control.MouseFilterEnum.Ignore };
         bottomMargin.AddChild(bottomVBox);
         _bottomPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
@@ -80,8 +80,8 @@ public partial class ButtonBar : Control
         // Top
         var topMargin = new MarginContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
         AddChild(topMargin);
-        topMargin.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-        topMargin.AddThemeConstantOverride("margin_top", 24);
+        MakeFullRect(topMargin);
+        topMargin.AddThemeConstantOverride("margin_top", 36);
         var topVBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Begin, MouseFilter = Control.MouseFilterEnum.Ignore };
         topMargin.AddChild(topVBox);
         _topPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
@@ -96,8 +96,8 @@ public partial class ButtonBar : Control
         // Left
         var leftMargin = new MarginContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
         AddChild(leftMargin);
-        leftMargin.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-        leftMargin.AddThemeConstantOverride("margin_top", 24);
+        MakeFullRect(leftMargin);
+        leftMargin.AddThemeConstantOverride("margin_top", 36);
         var leftHBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Begin, MouseFilter = Control.MouseFilterEnum.Ignore };
         leftMargin.AddChild(leftHBox);
         _leftPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop, SizeFlagsVertical = Control.SizeFlags.ExpandFill };
@@ -112,8 +112,8 @@ public partial class ButtonBar : Control
         // Right
         var rightMargin = new MarginContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
         AddChild(rightMargin);
-        rightMargin.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-        rightMargin.AddThemeConstantOverride("margin_top", 24);
+        MakeFullRect(rightMargin);
+        rightMargin.AddThemeConstantOverride("margin_top", 36);
         var rightHBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End, MouseFilter = Control.MouseFilterEnum.Ignore };
         rightMargin.AddChild(rightHBox);
         _rightPanel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop, SizeFlagsVertical = Control.SizeFlags.ExpandFill };
@@ -124,6 +124,18 @@ public partial class ButtonBar : Control
         _rightBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
         _rightBox.AddThemeConstantOverride("separation", 2);
         _rightPanel.AddChild(_rightBox);
+    }
+
+    private void MakeFullRect(Control c)
+    {
+        c.SetAnchor(Side.Left, 0);
+        c.SetAnchor(Side.Top, 0);
+        c.SetAnchor(Side.Right, 1);
+        c.SetAnchor(Side.Bottom, 1);
+        c.OffsetLeft = 0;
+        c.OffsetTop = 0;
+        c.OffsetRight = 0;
+        c.OffsetBottom = 0;
     }
 
     /// <summary>Wires the bar to the full item registry and its persisted enabled/order state.
