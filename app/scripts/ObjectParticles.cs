@@ -39,7 +39,9 @@ public partial class ObjectParticles : GpuParticles3D
 
         // SL Patterns
         // 0x01 = Drop, 0x02 = Explode, 0x04 = Angle, 0x08 = Cone, 0x10 = AngleCone
-        mat.Direction = new Vector3(0, 0, 1);
+        
+        // SL's Z axis is UP, Godot's Y axis is UP.
+        mat.Direction = new Vector3(0, 1, 0); // Emit along local UP by default
         
         if ((data.Pattern & 0x02) != 0) // Explode
         {
@@ -61,8 +63,12 @@ public partial class ObjectParticles : GpuParticles3D
             mat.InitialVelocityMax = data.BurstSpeedMax;
         }
         
-        // SL Gravity is passed as PartAcceleration
-        mat.Gravity = new Vector3(data.PartAcceleration.X, data.PartAcceleration.Y, data.PartAcceleration.Z);
+        // SL Gravity is passed as PartAcceleration. Swizzle to Godot coords: (X, Z, -Y) or just map SL Z to Godot Y.
+        // SL: X=Forward, Y=Left, Z=Up. Godot: X=Right, Y=Up, Z=Back.
+        // For basic velocity/gravity, mapping SL's (X, Y, Z) to Godot's (-Y, Z, -X) or similar is needed if we use global coords.
+        // But ParticleProcessMaterial operates in local space if LocalCoords is true.
+        // Assuming SL data is mapped: X->GodotX, Y->GodotZ, Z->GodotY
+        mat.Gravity = new Vector3(data.PartAcceleration.X, data.PartAcceleration.Z, -data.PartAcceleration.Y);
 
         // SL Start and End Colors mapped to Godot ColorRamp
         var grad = new Gradient();
@@ -112,6 +118,7 @@ public partial class ObjectParticles : GpuParticles3D
             drawMat = new StandardMaterial3D();
             drawMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
             drawMat.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
+            drawMat.BillboardKeepScale = true;
             drawMat.VertexColorUseAsAlbedo = true;
             quadMesh.Material = drawMat;
         }
@@ -148,6 +155,8 @@ public partial class ObjectParticles : GpuParticles3D
                 drawMat.AlbedoTexture = circleTex;
             }
         }
+        
+        Restart();
     }
 
     private void ApplyTextureDeferred(Texture2D tex)
