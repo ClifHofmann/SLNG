@@ -9,9 +9,15 @@ public partial class ObjectParticles : GpuParticles3D
 {
     private Guid _currentTextureId;
     private GpuCache? _gpuCache;
+    private ParticleSystemData? _lastData;
 
     public void Apply(ParticleSystemData data, GpuCache gpuCache, AssetService assetService)
     {
+        if (_lastData != null && _lastData.Equals(data))
+        {
+            return;
+        }
+        _lastData = data;
         _gpuCache = gpuCache;
 
         // SL's PSYS_PART_FLAGS values (simplified mapped)
@@ -71,15 +77,19 @@ public partial class ObjectParticles : GpuParticles3D
         mat.Gravity = new Vector3(data.PartAcceleration.X, data.PartAcceleration.Z, -data.PartAcceleration.Y);
 
         // SL Start and End Colors mapped to Godot ColorRamp
+        // If alpha is 0, it might be a missing default in the LSL script (SL defaults to 1.0)
+        float sAlpha = data.StartColor.W == 0f ? 1f : data.StartColor.W;
+        float eAlpha = data.EndColor.W == 0f ? 1f : data.EndColor.W;
+
         var grad = new Gradient();
-        grad.AddPoint(0.0f, new Color(data.StartColor.X, data.StartColor.Y, data.StartColor.Z, data.StartColor.W));
+        grad.AddPoint(0.0f, new Color(data.StartColor.X, data.StartColor.Y, data.StartColor.Z, sAlpha));
         if (interpolateColor)
         {
-            grad.AddPoint(1.0f, new Color(data.EndColor.X, data.EndColor.Y, data.EndColor.Z, data.EndColor.W));
+            grad.AddPoint(1.0f, new Color(data.EndColor.X, data.EndColor.Y, data.EndColor.Z, eAlpha));
         }
         else
         {
-            grad.AddPoint(1.0f, new Color(data.StartColor.X, data.StartColor.Y, data.StartColor.Z, data.StartColor.W));
+            grad.AddPoint(1.0f, new Color(data.StartColor.X, data.StartColor.Y, data.StartColor.Z, sAlpha));
         }
 
         var gradTex = new GradientTexture1D();
