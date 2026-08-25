@@ -173,10 +173,10 @@ float sl_terrain_ramp(float u, float v) {
     // is soft and soft where the viewer is crisp, at exactly the scale a Firestorm A/B of the
     // crossfade terrace shows the two disagreeing.
     //
-    // HYPOTHESIS UNDER TEST, not a settled fix. It is the same root cause as the detail-UV flip
-    // confirmed earlier today and it acts at the right scale, but the ramp was extracted into a
-    // greyscale PNG by hand and nobody has checked which way round those rows ended up. If the
-    // in-world A/B does not improve, revert this line rather than compensating elsewhere.
+    // CONFIRMED in-world against Firestorm on the known-answer crossfade terrace (v0.9.8-alpha).
+    // This was the last open difference in FEAT-RENDER-02, and it is the same root cause as the
+    // detail-UV flip in sl_detail_uv -- two texture coordinates, one convention, found five
+    // measurement rounds apart because neither is visible to anything computed from position.
     return texture(sl_alpha_ramp, vec2(clamp(u, 0.0, 1.0), 1.0 - v)).r;
 }
 

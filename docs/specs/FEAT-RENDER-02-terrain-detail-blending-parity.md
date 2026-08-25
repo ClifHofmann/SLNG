@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-RENDER-02`
 - **Track:** `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Handover:** [HANDOVER.md](file:///E:/Git/SLNG/docs/HANDOVER.md)
@@ -542,3 +542,58 @@ unusually harsh parity test rather than a representative one.
 - [ ] Live A/B against Firestorm on Howletts.
 - [ ] Fold into FEAT-RENDER-01 Phase 4 by including `sl_terrain_composition.gdshaderinc` from the
       shared shader family.
+
+---
+
+## How it closed (v0.9.8-alpha, confirmed in-world)
+
+Two texture-coordinate flips, found five measurement rounds apart, both the same
+convention: **SL's texture V is bottom-origin and Godot's is top-origin.**
+
+1. **`sl_detail_uv`** sampled every detail texture upside down. The s/t plane equations
+   were already the viewer's exactly (`lldrawpoolterrain.cpp:242-248`), offset included --
+   what was missing is the `v = 1 - v` that `ObjectRenderer.BuildArrayMesh` applies to
+   every world mesh. Terrain never went through that path: it carries no mesh UVs at all,
+   its coordinate is generated in the shader from position, so it silently kept SL's
+   convention.
+
+2. **`sl_terrain_ramp`** sampled the blend ramp's V the same way. `rand_val` reaches the
+   viewer as a plain texture coordinate (`llsurfacepatch.cpp:240`), so it is subject to
+   the same convention. This one bites harder than it looks: the ramp's rows are not
+   interchangeable -- row 128 crosses over in 62 texels, row 160 takes 137 -- so `v -> 1-v`
+   does not change which rows are used, it changes WHERE. `rand_val` is a ~155 m field, so
+   the terrain came out crisp where the viewer is soft and soft where it is crisp, at
+   exactly that scale.
+
+### Why five rounds of measurement could not see either
+
+Every number this task produced is computed from position: composition values,
+per-slot area splits, the heightmap comparison, the independent port that agreed to
+221/224 cells. **A texture-space flip is invisible to all of it.** The maths was right the
+whole time, which is why each round ended with "the numbers check out" and an unexplained
+visual impression left over.
+
+Both were found by deliberate asymmetry instead:
+
+- the detail flip by the probe texture's corner marker, which exists for exactly this
+  ("If the terrain UVs are flipped or transposed relative to the viewer, this lands
+  somewhere else and says so immediately", `gen_terrain_probe.py:126`);
+- the ramp flip by `terrain_bands.raw` -- a flat terrace at composition 0.50, where height
+  contributes a constant and nothing but the blend decides the pixel -- plus six
+  known-answer poles that turned "the crop looks different" into six readings.
+
+### What the poles ruled out on the way
+
+Three of the six sat on the red side of the crossfade and three on the green. All three
+green ones were right in Firestorm and all three red ones wrong, which killed the
+sign-flip hypothesis outright: a negated twiddle predicted the green three would be wrong
+too. A y-mirror and an x/y transpose were eliminated the same way, each failing at least
+one point. That left a difference in the blend rather than in the composition, and the
+only field in this shader at the observed ~150 m scale is the ramp's V.
+
+### Left open, deliberately
+
+`terrainF.glsl` samples the ramp's ALPHA channel (`texture(alpha_ramp, ...).a`); we sample
+`.r`. Our shipped PNG is greyscale with no alpha, so `.r` is the only data present and the
+result now matches in-world -- but whether the hand extraction from `alpha_gradient_2d.j2c`
+took that channel was never verified. Worth settling if the ramp is ever touched again.
