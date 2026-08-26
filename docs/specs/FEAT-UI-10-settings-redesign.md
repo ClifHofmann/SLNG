@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-10`
 - **Track:** `ui`
-- **Status:** `🚧 In Progress`
+- **Status:** `✅ Done`
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
