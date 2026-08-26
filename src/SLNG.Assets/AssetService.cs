@@ -611,8 +611,8 @@ public class AssetService
     // PriorityGate, not SemaphoreSlim: a plain semaphore admits strictly in arrival order, so
     // whatever the camera is actually pointed at waits behind an arbitrary amount of scenery that
     // merely happened to be requested first. See PriorityGate's doc comment.
-    private static readonly PriorityGate _textureFetchThrottle = new PriorityGate(4);
-    private static readonly PriorityGate _sculptFetchThrottle = new PriorityGate(1);
+    private static readonly PriorityGate _textureFetchThrottle = new PriorityGate(32);
+    private static readonly PriorityGate _sculptFetchThrottle = new PriorityGate(4);
 
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false)
     {
