@@ -105,6 +105,7 @@ public partial class Boot : Control
 
     private bool _waitingForWorldLoad = false;
     private System.Guid _myAgentId = System.Guid.Empty;
+    private double _worldLoadWaitTime = 0.0;
 
     // One independent ObjectEditWindow per edited object (keyed by its ECS Entity.Id) so
     // multiple objects can be open and edited at the same time instead of sharing one floater.
@@ -815,7 +816,13 @@ public partial class Boot : Control
 
         if (_waitingForWorldLoad && _world != null && _session != null)
         {
-            if (_world.GetEntity(_myAgentId) != null || _world.Terrains.Count > 0)
+            _worldLoadWaitTime += delta;
+            var myAgent = _world.GetEntity(_myAgentId);
+            var avatar = myAgent?.GetComponent<SLNG.Core.Components.AvatarComponent>();
+            bool agentReady = avatar?.VisualParams != null;
+            
+            // Wait for agent appearance, plus an extra 1.5s for meshes, OR timeout after 10s.
+            if ((agentReady && _worldLoadWaitTime > 1.5) || _worldLoadWaitTime > 10.0)
             {
                 _waitingForWorldLoad = false;
                 CompleteLoadingStep(4);
@@ -1463,6 +1470,7 @@ public partial class Boot : Control
             // genuinely finished -- the client is actually ready to render the world.
             _myAgentId = result.AgentId != null ? System.Guid.Parse(result.AgentId) : System.Guid.Empty;
             _waitingForWorldLoad = true;
+            _worldLoadWaitTime = 0.0;
 
             // The boot log goes with it. It is not inside %LoginScreen, so it used to survive the
             // login and sit in-world as a bottom-anchored, full-width, 150 px strip of [ENV]
