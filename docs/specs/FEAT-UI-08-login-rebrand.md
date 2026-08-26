@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-08`
 - **Track:** `ui`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -114,7 +114,7 @@ Design reference (HTML/CSS mockup provided by the user, Tailwind-based):
   under the new gradient; no need to reconsider it.
 
 ## Status
-Implementation complete on `feature/FEAT-UI-08-login-rebrand` (pushed, not merged).
+Implementation complete on `main` (merged in `bf102e2`).
 `dotnet build`/`dotnet test` clean. Visually verified live in the dev client for the
 **login screen** only (screenshot-confirmed: glass panel, gradient background, PURIS
 title, themed inputs, teal button/glow, checkbox icon). The **loading-screen**
