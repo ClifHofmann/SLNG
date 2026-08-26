@@ -173,6 +173,7 @@ public partial class AvatarController : Camera3D
     public override void _Ready()
     {
         Input.MouseMode = Input.MouseModeEnum.Visible;
+        ProcessPriority = 100; // Run after Boot.cs (0) to read freshly extrapolated positions
     }
     // _UnhandledInput, not _Input: Control nodes (the inventory Tree, LineEdits, etc.) stop
     // mouse/keyboard events from reaching this method once they've consumed them, whereas
