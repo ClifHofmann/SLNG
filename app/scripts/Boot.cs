@@ -820,12 +820,12 @@ public partial class Boot : Control
             var myAgent = _world.GetEntity(_myAgentId);
             var avatar = myAgent?.GetComponent<SLNG.Core.Components.AvatarComponent>();
             bool agentReady = avatar?.VisualParams != null;
-            
             // Wait for agent appearance, plus an extra 1.5s for meshes, OR timeout after 10s.
             if ((agentReady && _worldLoadWaitTime > 1.5) || _worldLoadWaitTime > 10.0)
             {
                 _waitingForWorldLoad = false;
                 CompleteLoadingStep(4);
+                GetNode<Control>("%LoadingScreenBlur").Visible = false;
                 GetNode<Control>("%LoadingScreen").Visible = false;
             }
         }
@@ -1297,8 +1297,9 @@ public partial class Boot : Control
         _loginButton.Disabled = true;
         LogMessage($"Connecting to {_gridInput.Text} as {_firstInput.Text} {_lastInput.Text}...");
 
-        ResetLoadingProgress();
+        // Switch UI views
         GetNode<Control>("%LoginScreen").Visible = false;
+        GetNode<Control>("%LoadingScreenBlur").Visible = true;
         GetNode<Control>("%LoadingScreen").Visible = true;
 
         if (_session != null)
@@ -1489,6 +1490,7 @@ public partial class Boot : Control
         else
         {
             LogMessage($"[System] Login failed: {result.Message}");
+            GetNode<Control>("%LoadingScreenBlur").Visible = false;
             GetNode<Control>("%LoadingScreen").Visible = false;
             GetNode<Control>("%LoginScreen").Visible = true;
             _vboxContainer.Visible = true;   // back with the login screen, where it is the point

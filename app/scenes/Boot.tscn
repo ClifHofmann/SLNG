@@ -3,6 +3,7 @@
 [ext_resource type="Script" path="res://scripts/Boot.cs" id="1_script"]
 [ext_resource type="Texture2D" uid="uid://dxwdlaxveedyo" path="res://assets/images/PurisHG.png" id="2_bg"]
 [ext_resource type="Texture2D" uid="uid://dnu2pje24pms8" path="res://icon.svg" id="3_logo"]
+[ext_resource type="Material" uid="uid://cax2e2n5qabcd" path="res://materials/ui_blur.tres" id="4_uiblur"]
 
 [sub_resource type="Gradient" id="Gradient_overlay"]
 offsets = PackedFloat32Array(0, 1)
@@ -266,6 +267,17 @@ theme_override_styles/normal = SubResource("StyleBoxFlat_button")
 theme_override_styles/hover = SubResource("StyleBoxFlat_button_hover")
 theme_override_styles/pressed = SubResource("StyleBoxFlat_button")
 text = "ui.login.button"
+
+[node name="LoadingScreenBlur" type="ColorRect" parent="."]
+unique_name_in_owner = true
+visible = false
+material = ExtResource("4_uiblur")
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
 
 [node name="LoadingScreen" type="CenterContainer" parent="."]
 unique_name_in_owner = true
