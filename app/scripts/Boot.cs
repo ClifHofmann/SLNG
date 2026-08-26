@@ -159,6 +159,11 @@ public partial class Boot : Control
         _localizationManager = LoadLocalizationManager();
         SLNG.App.UI.L10n.Initialize(_localizationManager);
 
+        // FEAT-PERF-01: J2K decoding is CPU-heavy. The default .NET ThreadPool scales up slowly 
+        // (1-2 threads/sec) causing massive queues when entering a region. We bump MinThreads 
+        // to immediately utilize all available processor cores.
+        System.Threading.ThreadPool.SetMinThreads(System.Environment.ProcessorCount, System.Environment.ProcessorCount);
+
         // Godot debug builds hard-code an "(DEBUG)" window-title suffix that gets applied
         // AFTER _Ready() runs, silently overwriting whatever title we set here a moment later
         // — a known engine behavior (godotengine/godot#104321), not an SLNG bug. Re-asserting
@@ -1413,7 +1418,10 @@ public partial class Boot : Control
         // already ran synchronously on the main thread.
         CompleteLoadingStep(0);
 
+        var profiler = System.Diagnostics.Stopwatch.StartNew();
         var result = await _session.LoginAsync(creds);
+        profiler.Stop();
+        GD.Print($"[Profiler] LoginAsync took {profiler.ElapsedMilliseconds} ms");
 
         if (result.Success)
         {

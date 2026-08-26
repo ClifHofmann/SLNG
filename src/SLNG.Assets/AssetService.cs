@@ -629,7 +629,10 @@ public class AssetService
             try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
             if (cached != null && cached.Length > 0)
             {
+                var decodeProfiler = System.Diagnostics.Stopwatch.StartNew();
                 var decodedFromCache = await Task.Run(() => DecodeTexture(cached, isSculpt)).ConfigureAwait(false);
+                decodeProfiler.Stop();
+                Console.WriteLine($"[Profiler] DecodeTexture from disk cache took {decodeProfiler.ElapsedMilliseconds} ms (isSculpt: {isSculpt})");
 
                 // The cache is only ever WRITTEN for a clean decode, so a degraded result here
                 // means the same bytes now decode worse than when they were stored -- which is
@@ -682,7 +685,13 @@ public class AssetService
         {
             if (!_session.IsConnected) return null;
 
+            var throttleProfiler = System.Diagnostics.Stopwatch.StartNew();
             await throttle.WaitAsync(priority).ConfigureAwait(false);
+            throttleProfiler.Stop();
+            if (throttleProfiler.ElapsedMilliseconds > 100)
+            {
+                Console.WriteLine($"[Profiler] Texture throttle waited {throttleProfiler.ElapsedMilliseconds} ms (attempt {attempt + 1}, isSculpt: {isSculpt})");
+            }
             byte[]? bytes;
             try
             {
@@ -704,7 +713,10 @@ public class AssetService
 
             if (bytes is { Length: > 0 })
             {
+                var decodeProfiler = System.Diagnostics.Stopwatch.StartNew();
                 var result = await Task.Run(() => DecodeTexture(bytes, isSculpt)).ConfigureAwait(false);
+                decodeProfiler.Stop();
+                Console.WriteLine($"[Profiler] DecodeTexture from network fetch took {decodeProfiler.ElapsedMilliseconds} ms (isSculpt: {isSculpt})");
 
                 // Both decoders (Magick.NET and the CoreJ2K fallback) refused these bytes, yet the
                 // real viewer draws the same assets, so the bytes themselves are the evidence and
