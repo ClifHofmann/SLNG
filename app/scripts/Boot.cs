@@ -1418,10 +1418,7 @@ public partial class Boot : Control
         // already ran synchronously on the main thread.
         CompleteLoadingStep(0);
 
-        var profiler = System.Diagnostics.Stopwatch.StartNew();
         var result = await _session.LoginAsync(creds);
-        profiler.Stop();
-        GD.Print($"[Profiler] LoginAsync took {profiler.ElapsedMilliseconds} ms");
 
         if (result.Success)
         {
