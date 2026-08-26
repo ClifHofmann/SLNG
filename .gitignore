@@ -38,6 +38,7 @@ mono_crash.*.json
 # Local caches, logs, scratch
 *.log
 /scratch/
+/scratch-viewer/
 /scratchpad/
 /captures/
 asset-cache/

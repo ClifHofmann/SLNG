@@ -15,6 +15,7 @@ app/linden/
 asset-cache/
 tools/opensim/data/
 scratch/
+scratch-viewer/
 scratchpad*
 
 # Compiled / Large binaries
