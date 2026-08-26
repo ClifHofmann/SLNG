@@ -18,6 +18,8 @@ public partial class QualityPreferencesPage : VBoxContainer
     private HSlider _drawSlider = null!;
     private OptionButton _msaaOption = null!;
     private OptionButton _shadowResOption = null!;
+    private OptionButton _shadowSplitsOption = null!;
+    private CheckButton _smallShadowsToggle = null!;
 
     private bool _refreshing;
 
@@ -122,6 +124,21 @@ public partial class QualityPreferencesPage : VBoxContainer
             resIndex < 0 ? 2 : resIndex,
             index => { if (!_refreshing) { _settings.SetShadowResolution(ShadowResChoices[index]); _apply(); } },
             out _shadowResOption));
+
+        AddRow(L10n.Tr("ui.preferences.shadow_splits"), BuildOption(
+            new[]
+            {
+                L10n.Tr("ui.preferences.shadow_splits_0"), // "Off (Orthogonal)"
+                L10n.Tr("ui.preferences.shadow_splits_2"), // "2 Cascades"
+                L10n.Tr("ui.preferences.shadow_splits_4"), // "4 Cascades"
+            },
+            _settings.ShadowSplits switch { 0 => 0, 1 => 1, _ => 2 },
+            index => { if (!_refreshing) { _settings.SetShadowSplits(index == 2 ? 4 : index); _apply(); } },
+            out _shadowSplitsOption));
+
+        _smallShadowsToggle = new CheckButton { ButtonPressed = _settings.SmallObjectShadows };
+        _smallShadowsToggle.Toggled += pressed => { if (!_refreshing) { _settings.SetSmallObjectShadows(pressed); _apply(); } };
+        AddRow(L10n.Tr("ui.preferences.small_object_shadows"), _smallShadowsToggle);
     }
 
     public void Refresh()
@@ -141,6 +158,9 @@ public partial class QualityPreferencesPage : VBoxContainer
 
             int resIdx = Array.IndexOf(ShadowResChoices, _settings.ShadowResolution);
             _shadowResOption.Select(resIdx < 0 ? 2 : resIdx);
+
+            _shadowSplitsOption.Select(_settings.ShadowSplits switch { 0 => 0, 1 => 1, _ => 2 });
+            _smallShadowsToggle.ButtonPressed = _settings.SmallObjectShadows;
         }
         finally
         {

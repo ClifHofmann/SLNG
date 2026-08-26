@@ -971,10 +971,10 @@ public partial class ObjectRenderer : Node3D
             (m & SLNG.Core.TextureAnimFlags.Rotate) != 0 ? "ROTATE" : null,
             (m & SLNG.Core.TextureAnimFlags.Scale) != 0 ? "SCALE" : null,
         }.Where(s => s != null));
-        GD.Print($"[TexAnim] object {_world?.GetEntity(entityId)?.LocalId} started: " +
-                 $"mode=0x{(byte)m:X2} ON{(bits.Length > 0 ? "|" + bits : "")} " +
-                 $"face={running.Face} grid={running.SizeX}x{running.SizeY} " +
-                 $"start={running.Start:0.###} length={running.Length:0.###} rate={running.Rate:0.###}");
+        // GD.Print($"[TexAnim] object {_world?.GetEntity(entityId)?.LocalId} started: " +
+        //          $"mode=0x{(byte)m:X2} ON{(bits.Length > 0 ? "|" + bits : "")} " +
+        //          $"face={running.Face} grid={running.SizeX}x{running.SizeY} " +
+        //          $"start={running.Start:0.###} length={running.Length:0.###} rate={running.Rate:0.###}");
     }
 
     /// <summary>Advances every running texture animation by one frame. Called from _Process ahead
@@ -2221,6 +2221,18 @@ public partial class ObjectRenderer : Node3D
 
         state.MeshInstance.Mesh = mesh;
         state.LoadedMeshKey = key;
+
+        if (mesh != null)
+        {
+            if (!RenderConfig.SmallObjectShadows && BoundingRadius(state.MeshInstance) < 0.5f)
+            {
+                state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+            }
+            else
+            {
+                state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
+            }
+        }
 
         if (mesh != null)
         {

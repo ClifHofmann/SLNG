@@ -18,6 +18,12 @@ public static class RenderConfig
     public static float DrawDistance = 96f;
 
     /// <summary>
+    /// If false, objects with a bounding radius smaller than 0.5m will not cast shadows.
+    /// This drastically reduces draw calls on dense regions with lots of small details (grass, rocks).
+    /// </summary>
+    public static bool SmallObjectShadows = false;
+
+    /// <summary>
     /// How many milliseconds per frame the main thread may spend on deferred scene work (building
     /// object visuals, pushing sharpened textures to the GPU). Everything over budget waits for
     /// the next frame -- see <see cref="MainThreadWorkQueue"/> for why an unbounded flush is what

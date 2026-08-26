@@ -45,7 +45,8 @@ public sealed class GraphicsSettings
     public int ShadowResolution { get; private set; } = 4096;
     public float ShadowDistance { get; private set; } = 150.0f;
     public float ShadowOpacity { get; private set; } = 0.90f;
-
+    public int ShadowSplits { get; private set; } = 2;
+    public bool SmallObjectShadows { get; private set; } = false;
     public void Load()
     {
         var cfg = new ConfigFile();
@@ -64,6 +65,8 @@ public sealed class GraphicsSettings
         ShadowResolution = (int)cfg.GetValue(Section, "shadow_resolution", ShadowResolution);
         ShadowDistance = (float)cfg.GetValue(Section, "shadow_distance", ShadowDistance);
         ShadowOpacity = (float)cfg.GetValue(Section, "shadow_opacity", ShadowOpacity);
+        ShadowSplits = (int)cfg.GetValue(Section, "shadow_splits", ShadowSplits);
+        SmallObjectShadows = (bool)cfg.GetValue(Section, "small_object_shadows", SmallObjectShadows);
     }
 
     private void Save()
@@ -83,6 +86,8 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "shadow_resolution", ShadowResolution);
         cfg.SetValue(Section, "shadow_distance", ShadowDistance);
         cfg.SetValue(Section, "shadow_opacity", ShadowOpacity);
+        cfg.SetValue(Section, "shadow_splits", ShadowSplits);
+        cfg.SetValue(Section, "small_object_shadows", SmallObjectShadows);
         cfg.Save(ConfigPath);
     }
 
@@ -99,6 +104,8 @@ public sealed class GraphicsSettings
     public void SetShadowResolution(int res) { ShadowResolution = res; Save(); }
     public void SetShadowDistance(float distance) { ShadowDistance = distance; Save(); }
     public void SetShadowOpacity(float opacity) { ShadowOpacity = opacity; Save(); }
+    public void SetShadowSplits(int splits) { ShadowSplits = splits; Save(); }
+    public void SetSmallObjectShadows(bool on) { SmallObjectShadows = on; Save(); }
 
     /// <summary>
     /// Pushes the current values into the engine. Safe to call repeatedly and with nulls -- during
@@ -115,6 +122,7 @@ public sealed class GraphicsSettings
         Engine.MaxFps = MaxFps;
 
         RenderConfig.DrawDistance = DrawDistance;
+        RenderConfig.SmallObjectShadows = SmallObjectShadows;
 
         if (viewport != null) viewport.Msaa3D = (Viewport.Msaa)Msaa;
 
@@ -134,6 +142,11 @@ public sealed class GraphicsSettings
             sun.ShadowBlur = ShadowBlur;
             sun.DirectionalShadowMaxDistance = ShadowDistance;
             sun.ShadowOpacity = ShadowOpacity;
+            sun.DirectionalShadowMode = ShadowSplits switch {
+                0 => DirectionalLight3D.ShadowMode.Orthogonal,
+                1 => DirectionalLight3D.ShadowMode.Parallel2Splits,
+                _ => DirectionalLight3D.ShadowMode.Parallel4Splits
+            };
         }
     }
 }

@@ -650,7 +650,7 @@ public partial class Boot : Control
             Name = "DirectionalLight3D",
             RotationDegrees = new Godot.Vector3(-50f, -130f, 0f),
             ShadowEnabled = true,
-            DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel4Splits,
+            DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel2Splits,
             DirectionalShadowBlendSplits = true,
             DirectionalShadowSplit1 = 0.08f,
             DirectionalShadowSplit2 = 0.22f,
