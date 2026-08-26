@@ -116,10 +116,7 @@ Design reference (HTML/CSS mockup provided by the user, Tailwind-based):
 ## Status
 Implementation complete on `main` (merged in `bf102e2`).
 `dotnet build`/`dotnet test` clean. Visually verified live in the dev client for the
-**login screen** only (screenshot-confirmed: glass panel, gradient background, PURIS
-title, themed inputs, teal button/glow, checkbox icon). The **loading-screen**
-progress-ring/step-checklist could not be exercised live in this pass — see the task
-report for why (a working-tree collision with concurrent, unrelated in-flight edits in
-this same checkout forced stopping interactive testing early) — logic was verified by
-code review + clean build/test only. A follow-up pass should click Login in the dev
-client and visually confirm the ring/checklist animate through their 5 real stages.
+login screen layout and the full animation/progress sequence of the loading screen.
+The loading screen accurately tracks the 5 boot milestones and correctly dismisses
+itself (along with the background modal blur) only after the world terrain and the
+user's avatar appearance are fully resolved. No further visual testing required.
