@@ -684,13 +684,16 @@ public class AssetService
 
             await throttle.WaitAsync(priority).ConfigureAwait(false);
             byte[]? bytes;
+            bool isReliable = false;
             try
             {
                 var fetchTask = _session.FetchTextureDataAsync(textureId, desiredDiscard, httpUndecodable);
                 var timeoutTask = Task.Delay(TimeSpan.FromSeconds(60));
                 if (await Task.WhenAny(fetchTask, timeoutTask).ConfigureAwait(false) == fetchTask)
                 {
-                    bytes = await fetchTask.ConfigureAwait(false);
+                    var fetchResult = await fetchTask.ConfigureAwait(false);
+                    bytes = fetchResult.Data;
+                    isReliable = fetchResult.IsReliable;
                 }
                 else
                 {
@@ -771,6 +774,17 @@ public class AssetService
                     // wrong-but-present texture still beats none at all).
                     if (result.IsDegraded)
                     {
+                        if (isReliable)
+                        {
+                            if (rejectDegraded)
+                            {
+                                if (_giveUpLogged.TryAdd(textureId, 0))
+                                    Console.Error.WriteLine($"[TextureGiveUp] {textureId}: degraded bake/avatar texture fetched reliably — returning null");
+                                return null;
+                            }
+                            return result;
+                        }
+
                         if (attempt < 2) continue; // retry
                         if (rejectDegraded)
                         {

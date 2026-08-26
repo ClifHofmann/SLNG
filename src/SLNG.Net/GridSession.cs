@@ -2640,7 +2640,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// HTTP body arrived intact-looking but would not decode: retrying HTTP just re-fetches the
     /// identical bytes, so without this the UDP fallback is unreachable for exactly the assets
     /// that need it most (see AssetService's retry loop).</param>
-    public async Task<byte[]?> FetchTextureDataAsync(Guid textureId, int desiredDiscard = 0, bool skipHttp = false)
+    public struct TextureFetchResult
+    {
+        public byte[]? Data;
+        public bool IsReliable;
+    }
+
+    public async Task<TextureFetchResult> FetchTextureDataAsync(Guid textureId, int desiredDiscard = 0, bool skipHttp = false)
     {
         // FEAT-PERF-02 Phase 2: prefer our own HTTP GetTexture Range fetch over the UDP path
         // below. Two wins over the pre-existing code: (1) HTTP is the faster transport (no UDP
@@ -2657,7 +2663,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (capUri != null)
         {
             var httpResult = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard, capUri).ConfigureAwait(false);
-            if (httpResult != null) return httpResult;
+            if (httpResult != null) return new TextureFetchResult { Data = httpResult, IsReliable = true };
             // Falls through to the UDP path below on any HTTP failure (network error,
             // non-success status) -- never a hard failure just because HTTP didn't pan out.
         }
@@ -2668,11 +2674,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             var pipeline = typeof(AssetManager).GetField("Texture", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(_client.Assets);
             if (pipeline == null)
-                return UdpFailed(textureId, "AssetManager.Texture field not found (reflection)");
+                return new TextureFetchResult { Data = UdpFailed(textureId, "AssetManager.Texture field not found (reflection)"), IsReliable = false };
             {
                 var reqMethod = pipeline.GetType().GetMethod("RequestTexture", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
                 if (reqMethod == null)
-                    return UdpFailed(textureId, "TexturePipeline.RequestTexture not found (reflection)");
+                    return new TextureFetchResult { Data = UdpFailed(textureId, "TexturePipeline.RequestTexture not found (reflection)"), IsReliable = false };
                 {
                     var callbackType = reqMethod.GetParameters()[5].ParameterType;
                     Action<TextureRequestState, LibreMetaverse.Assets.AssetTexture> action = (state, assetTexture) =>
@@ -2704,12 +2710,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     // and name it instead.
                     var udpTimeout = Task.Delay(TimeSpan.FromSeconds(20));
                     if (await Task.WhenAny(tcs.Task, udpTimeout).ConfigureAwait(false) != tcs.Task)
-                        return UdpFailed(textureId, "TexturePipeline never called back within 20s");
+                        return new TextureFetchResult { Data = UdpFailed(textureId, "TexturePipeline never called back within 20s"), IsReliable = false };
 
                     var udpBytes = await tcs.Task.ConfigureAwait(false);
                     if (udpBytes is { Length: > 0 })
                         // Console.Error.WriteLine($"[TextureFetch] {textureId}: UDP delivered {udpBytes.Length} bytes");
-                        return udpBytes;
+                        return new TextureFetchResult { Data = udpBytes, IsReliable = false };
                 }
             }
         }
@@ -2727,7 +2733,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 fallbackTcs.TrySetResult(data is { Length: > 0 } ? data : null);
             });
 
-        return await fallbackTcs.Task;
+        return new TextureFetchResult { Data = await fallbackTcs.Task, IsReliable = false };
     }
 
     /// <summary>
@@ -2820,16 +2826,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // renderer (correctly) refuses the result and substitutes a placeholder solid, which
             // is how a rock ends up on screen as a smooth flat disc.
             //
-            // The codestream itself settles it: measured on OSGrid 2026-08-22, sculpt map
-            // bb745170 arrived as 33,600 bytes declaring Psot = 113,049 -- a third of the asset,
-            // reported as a success. Detecting that HERE rather than after the decode is what
-            // makes the difference, because a null return falls through to the UDP path in the
-            // SAME attempt; a degraded decode instead spends an attempt first, and only the
-            // remaining two get to try another transport.
-            if (desiredDiscard == 0 && J2cCodestream.IsTruncated(bytes))
-                return FetchFailed(textureId, $"truncated codestream ({bytes.Length} bytes, " +
-                    $"tile-part declares more)" + (declaredLength.HasValue ? $" with Content-Length {declaredLength.Value}" : ""));
-
             // Content-Length only catches truncation when the server actually sends that
             // header -- OpenSim's embedded HTTP server can respond chunked (no Content-Length)
             // for texture bodies, which would let a short chunked read straight through the
