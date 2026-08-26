@@ -1461,7 +1461,7 @@ public partial class Boot : Control
 
             // Post-login setup above (avatar controller, selection/cursor, camera) has now
             // genuinely finished -- the client is actually ready to render the world.
-            _myAgentId = result.AgentId;
+            _myAgentId = result.AgentId != null ? System.Guid.Parse(result.AgentId) : System.Guid.Empty;
             _waitingForWorldLoad = true;
 
             // The boot log goes with it. It is not inside %LoginScreen, so it used to survive the

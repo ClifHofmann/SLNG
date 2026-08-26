@@ -1,3 +1,4 @@
+#pragma warning disable CS8669
 /*
  * Copyright (c) Contributors
  * See CONTRIBUTORS.TXT for a full list of copyright holders.

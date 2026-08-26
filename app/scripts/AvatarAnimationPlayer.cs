@@ -293,6 +293,8 @@ public sealed class AvatarAnimationPlayer
     {
         if (_skeleton == null) return;
         _skeleton.ResetBonePoses();
+#pragma warning disable CS0618
         _skeleton.ForceUpdateAllBoneTransforms();
+#pragma warning restore CS0618
     }
 }
