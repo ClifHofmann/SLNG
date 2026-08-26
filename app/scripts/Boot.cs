@@ -103,6 +103,8 @@ public partial class Boot : Control
     private SLNG.App.UI.InWorldContextMenu _inWorldContextMenu = null!;
     private Godot.Button _standUpButton = null!;
 
+    public static bool IsLoadingScreenVisible { get; private set; } = false;
+
     private bool _waitingForWorldLoad = false;
     private System.Guid _myAgentId = System.Guid.Empty;
     private double _worldLoadWaitTime = 0.0;
@@ -825,6 +827,7 @@ public partial class Boot : Control
             {
                 _waitingForWorldLoad = false;
                 CompleteLoadingStep(4);
+                IsLoadingScreenVisible = false;
                 GetNode<Control>("%LoadingScreenBlur").Visible = false;
                 GetNode<Control>("%LoadingScreen").Visible = false;
             }
@@ -1301,6 +1304,7 @@ public partial class Boot : Control
         GetNode<Control>("%LoginScreen").Visible = false;
         GetNode<Control>("%LoadingScreenBlur").Visible = true;
         GetNode<Control>("%LoadingScreen").Visible = true;
+        IsLoadingScreenVisible = true;
 
         if (_session != null)
         {

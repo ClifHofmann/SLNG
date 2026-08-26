@@ -3047,6 +3047,12 @@ void fragment() {
 
             if (camPos.HasValue && visual.NameTag != null && IsInstanceValid(visual.NameTag))
             {
+                if (global::Boot.IsLoadingScreenVisible)
+                {
+                    if (visual.NameTag.Visible) visual.NameTag.Visible = false;
+                    continue;
+                }
+
                 float dist = visual.Root.GlobalPosition.DistanceTo(camPos.Value);
                 if (dist > nameTagMaxDist)
                 {
