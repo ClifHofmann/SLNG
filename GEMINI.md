@@ -27,6 +27,13 @@ e.g.:
 
 This keeps one shared set of role definitions for both tools.
 
+## Updating the progress dashboard
+
+`docs/PROGRESS_UPDATE.md` is the procedure, written for both tools. Gemini owns steps 0-4
+in full (roadmap status flags, spec status lines, `dotnet test`, regenerate
+`docs/dashboard.html`) and stops before step 5 — publishing the Artifact is a Claude Code
+capability. Hand over after step 4; the generated HTML opens fine in a browser meanwhile.
+
 ## Coordination
 
 - Gemini and Claude pick **different workstreams** by default (e.g. Gemini on

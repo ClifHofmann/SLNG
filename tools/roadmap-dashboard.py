@@ -323,7 +323,7 @@ def render(milestones, series, kinds, version, tests, out_path):
     counts = Counter(t["status"] for t in all_tasks)
 
     p = []
-    p.append("<title>SLNG Fortschritt</title>")
+    p.append("<title>Puris Fortschritt</title>")
     p.append('<link rel="preconnect" href="https://fonts.googleapis.com">')
     p.append('<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>')
     p.append('<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
