@@ -126,7 +126,14 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.9.54-alpha";
+    // FEAT-UI-13: one UserProfileWindow per avatar, keyed by agent id -- same multi-instance
+    // pattern as _objectEditWindows. _userProfileWindows is only touched on the main thread;
+    // _openProfileWindows mirrors its count for the network-thread event handlers to gate on
+    // without racing the dictionary itself.
+    private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
+    private volatile int _openProfileWindows;
+
+    public const string AppVersion = "v0.9.55-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -460,6 +467,9 @@ public partial class Boot : Control
         _inWorldContextMenu.OnDeleteClicked = (entity, localId) => { /* Delete logic later */ };
         _inWorldContextMenu.OnSitClicked = (entity, localId) => _session?.RequestSit(localId);
         _inWorldContextMenu.OnSitOnGroundClicked = (godotPos) => _session?.SitOnGround();
+        // FEAT-UI-13: right-click an avatar -> Profile / IM.
+        _inWorldContextMenu.OnAvatarProfileClicked = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
+        _inWorldContextMenu.OnAvatarImClicked = (agentId, name) => _chatWindow.OpenOrFocusImTab(agentId, name);
         _inWorldContextMenu.OnCreatePrimClicked = (godotPos, type) =>
         {
             if (_session == null) return;
@@ -477,6 +487,8 @@ public partial class Boot : Control
         // Captures _session by reference (not by value at wiring time) so this keeps working
         // across the session getting replaced on re-login, same pattern as OnCreatePrimClicked above.
         _chatWindow.OnSendLocalChat = (text) => _session?.SendChat(text);
+        // FEAT-UI-13: clicking a resident's name in chat, or the Friends tab's "Profile" button.
+        _chatWindow.OnOpenProfileRequested = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
 
         SetupButtonBarAndPreferences(hudLayer, cameraHud);
 
@@ -525,6 +537,36 @@ public partial class Boot : Control
         _objectEditWindows[entity.Id] = win;
 
         win.EditObject(entity, localId, _world);
+    }
+
+    /// <summary>
+    /// FEAT-UI-13: opens (or refocuses) the profile window for one avatar. Keyed by agent id so a
+    /// second open of the same avatar just raises the existing window, mirroring
+    /// <see cref="OpenObjectEditWindow"/>. Boot forwards GridSession's profile-reply events to the
+    /// matching open window (see <see cref="OnAvatarProfilePropertiesReceived"/> and siblings).
+    /// </summary>
+    private void OpenUserProfileWindow(CanvasLayer hudLayer, System.Guid agentId, string name)
+    {
+        if (_session == null || agentId == System.Guid.Empty) return;
+
+        if (_userProfileWindows.TryGetValue(agentId, out var existing))
+        {
+            existing.Visible = true;
+            existing.MoveToFront();
+            return;
+        }
+
+        var win = new SLNG.App.UI.UserProfileWindow();
+        hudLayer.AddChild(win);
+        win.CascadeIndex = _userProfileWindows.Count % 8;
+        win.OnOpenImRequested = (id, n) => _chatWindow.OpenOrFocusImTab(id, n);
+        win.Closed += () =>
+        {
+            if (_userProfileWindows.Remove(agentId)) _openProfileWindows = _userProfileWindows.Count;
+        };
+        _userProfileWindows[agentId] = win;
+        _openProfileWindows = _userProfileWindows.Count;
+        win.Initialize(agentId, name, _session, _gpuCache, _assetService);
     }
 
     /// <summary>
@@ -811,6 +853,9 @@ public partial class Boot : Control
         var pendingEnv = System.Threading.Interlocked.Exchange(ref _pendingRegionEnvironment, null);
         if (pendingEnv != null)
             _environmentDriver.SetCycle(pendingEnv.Cycle, pendingEnv.Source);
+
+        // FEAT-UI-13: apply avatar-profile replies buffered off the network thread.
+        while (_profileUiWork.TryDequeue(out var profileWork)) profileWork();
 
         // FEAT-ENV-02: Use the server's synced time if we have received a SimulatorViewerTimeMessage,
         // otherwise fall back to local UtcNow.
@@ -1360,6 +1405,11 @@ public partial class Boot : Control
         foreach (var win in _objectEditWindows.Values) win.QueueFree();
         _objectEditWindows.Clear();
 
+        // Same for open profile windows -- FEAT-UI-13.
+        foreach (var win in _userProfileWindows.Values) win.QueueFree();
+        _userProfileWindows.Clear();
+        _openProfileWindows = 0;
+
         _world = new SLNG.Core.ECS.World();
         _session = new GridSession();
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
@@ -1386,6 +1436,16 @@ public partial class Boot : Control
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.InstantMessageReceived += OnInstantMessageReceived;
+        // FEAT-UI-13: profile replies + name resolution, routed to whichever profile window is open
+        // for that avatar. All fire on a network thread -- marshal before touching the Control tree.
+        _session.AvatarPropertiesReceived += OnAvatarProfilePropertiesReceived;
+        _session.AvatarInterestsReceived += OnAvatarProfileInterestsReceived;
+        _session.AvatarGroupsReceived += OnAvatarProfileGroupsReceived;
+        _session.AvatarPicksReceived += OnAvatarProfilePicksReceived;
+        _session.AvatarPickDetailReceived += OnAvatarProfilePickDetailReceived;
+        _session.AvatarClassifiedsReceived += OnAvatarProfileClassifiedsReceived;
+        _session.NameResolved += OnProfileNameResolved;
+        _session.DisplayNameResolved += OnProfileNameResolved;
         // A particle system can vanish at three separate places between the wire and the screen
         // -- no block in the ObjectUpdate, a CRC of 0, or an update that is not full -- and all
         // three look identical in-world: no particles. This says whether one ever arrived at all,
@@ -1513,6 +1573,10 @@ public partial class Boot : Control
             _waitingForWorldLoad = true;
             _worldLoadWaitTime = 0.0;
 
+            // FEAT-UI-13: pull the account mute list once so a profile window's Mute/Unmute button
+            // opens showing the right state.
+            _session.RequestMuteList();
+
             // The boot log goes with it. It is not inside %LoginScreen, so it used to survive the
             // login and sit in-world as a bottom-anchored, full-width, 150 px strip of [ENV]
             // spam -- over the avatar, over the world, and over any worn HUD. It also SWALLOWED
@@ -1566,13 +1630,17 @@ public partial class Boot : Control
     private void OnChatMessage(object? sender, ChatMessageEvent e)
     {
         // ChatMessageReceived fires on a LibreMetaverse network thread -- marshal to the main
-        // thread before touching ChatWindow's Control tree.
-        CallDeferred(nameof(AppendChatMessage), e.FromName, e.Message);
+        // thread before touching ChatWindow's Control tree. FEAT-UI-13: pass the speaker's agent
+        // id through (as a string -- Guid isn't a Variant CallDeferred arg) only when the sim
+        // tagged the source as a real avatar, so the name becomes a profile link.
+        string sourceId = e.FromAgent && e.SourceId != System.Guid.Empty ? e.SourceId.ToString() : "";
+        CallDeferred(nameof(AppendChatMessage), e.FromName, e.Message, sourceId);
     }
 
-    private void AppendChatMessage(string fromName, string message)
+    private void AppendChatMessage(string fromName, string message, string sourceAgentId)
     {
-        _chatWindow.AppendLocalChatMessage(fromName, message);
+        var id = System.Guid.TryParse(sourceAgentId, out var g) ? g : System.Guid.Empty;
+        _chatWindow.AppendLocalChatMessage(fromName, message, id);
     }
 
     private void OnInstantMessageReceived(object? sender, InstantMessageEvent e)
@@ -1585,6 +1653,62 @@ public partial class Boot : Control
     private void AppendInstantMessage(string fromAgentId, string fromAgentName, string message)
     {
         _chatWindow.AppendIncomingInstantMessage(System.Guid.Parse(fromAgentId), fromAgentName, message);
+    }
+
+    // ---- FEAT-UI-13: avatar profile events -----------------------------------------------------
+    // The reply payloads are plain C# records (not Variant-safe), so instead of CallDeferred they
+    // ride a concurrent queue drained on the main thread in _Process. Each closure targets the one
+    // open profile window for that avatar, if any.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<System.Action> _profileUiWork = new();
+
+    private void EnqueueProfileWork(System.Guid agentId, System.Action<SLNG.App.UI.UserProfileWindow> apply)
+    {
+        if (_openProfileWindows == 0) return; // network thread -- see _openProfileWindows
+        _profileUiWork.Enqueue(() =>
+        {
+            if (_userProfileWindows.TryGetValue(agentId, out var win) && Godot.GodotObject.IsInstanceValid(win))
+                apply(win);
+        });
+    }
+
+    private void OnAvatarProfilePropertiesReceived(object? sender, SLNG.Core.AvatarPropertiesEvent e)
+        => EnqueueProfileWork(e.Properties.AgentId, w => w.ApplyProperties(e.Properties));
+
+    private void OnAvatarProfileInterestsReceived(object? sender, SLNG.Core.AvatarInterestsEvent e)
+        => EnqueueProfileWork(e.Interests.AgentId, w => w.ApplyInterests(e.Interests));
+
+    private void OnAvatarProfileGroupsReceived(object? sender, SLNG.Core.AvatarGroupsEvent e)
+        => EnqueueProfileWork(e.AgentId, w => w.ApplyGroups(e.Groups));
+
+    private void OnAvatarProfilePicksReceived(object? sender, SLNG.Core.AvatarPicksEvent e)
+        => EnqueueProfileWork(e.AgentId, w => w.ApplyPicks(e.Picks));
+
+    private void OnAvatarProfilePickDetailReceived(object? sender, SLNG.Core.AvatarPickDetailEvent e)
+    {
+        // A pick detail isn't keyed by avatar id -- route it to every open profile window; each
+        // one ignores a pick id it didn't ask for.
+        if (_openProfileWindows == 0) return;
+        var pick = e.Pick;
+        _profileUiWork.Enqueue(() =>
+        {
+            foreach (var win in _userProfileWindows.Values)
+                if (Godot.GodotObject.IsInstanceValid(win)) win.ApplyPickDetail(pick);
+        });
+    }
+
+    private void OnAvatarProfileClassifiedsReceived(object? sender, SLNG.Core.AvatarClassifiedsEvent e)
+        => EnqueueProfileWork(e.AgentId, w => w.ApplyClassifieds(e.Classifieds));
+
+    private void OnProfileNameResolved(object? sender, SLNG.Core.NameResolvedEvent e)
+    {
+        if (_openProfileWindows == 0) return; // network thread -- see _openProfileWindows
+        var id = e.Id;
+        var name = e.Name;
+        _profileUiWork.Enqueue(() =>
+        {
+            foreach (var win in _userProfileWindows.Values)
+                if (Godot.GodotObject.IsInstanceValid(win)) win.OnNameResolved(id, name);
+        });
     }
 
     // Deferred target for GridSession.RegionConnected. The handle travels as a string because a

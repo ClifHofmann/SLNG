@@ -16,7 +16,13 @@ public interface IWorldEvent
 /// Represents a local chat message received from the simulator. Not a world-state
 /// mutation, so it is intentionally not an <see cref="IWorldEvent"/>.
 /// </summary>
-public record ChatMessageEvent(string FromName, string Message, byte ChatType);
+/// <param name="SourceId">UUID of the speaker — an agent or a scripted object — or
+/// <see cref="Guid.Empty"/> for system lines. Trailing/optional so existing call sites and
+/// tests are unaffected.</param>
+/// <param name="FromAgent">True when the sim tagged the source as another avatar (as opposed to
+/// an object or the system). Lets the UI turn a real resident's name into a profile link
+/// (FEAT-UI-13) without mis-linking object chat.</param>
+public record ChatMessageEvent(string FromName, string Message, byte ChatType, Guid SourceId = default, bool FromAgent = false);
 
 /// <summary>Resolves a user or group UUID (Creator, Owner, Group, ...) to a display name.
 /// Identity-cache data, not world simulation state, so intentionally not an

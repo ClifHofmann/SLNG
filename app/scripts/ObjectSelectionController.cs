@@ -60,6 +60,32 @@ namespace SLNG.App
                     if (result.Count > 0)
                     {
                         var collider = result["collider"].As<Node>();
+
+                        // FEAT-UI-13: avatars carry a "LocalId" meta of the literal string
+                        // "Avatar" (see AvatarRenderer.CreateVisual) and an "EntityId" meta.
+                        // Right-clicking one offers Profile / IM instead of the object menu; a
+                        // left-click on an avatar is left alone (no touch/sit target).
+                        if (collider is StaticBody3D avatarBody && avatarBody.HasMeta("LocalId")
+                            && avatarBody.GetMeta("LocalId").AsString() == "Avatar"
+                            && avatarBody.HasMeta("EntityId")
+                            && mouseBtn.ButtonIndex == MouseButton.Right)
+                        {
+                            if (System.Guid.TryParse(avatarBody.GetMeta("EntityId").AsString(), out var avGuid))
+                            {
+                                var avEntity = _world.GetEntity(avGuid);
+                                var avComp = avEntity?.GetComponent<AvatarComponent>();
+                                if (avComp != null)
+                                {
+                                    string name = $"{avComp.FirstName} {avComp.LastName}".Trim();
+                                    if (!string.IsNullOrEmpty(avComp.DisplayName)) name = avComp.DisplayName;
+                                    bool isSelf = avComp.IsLocalAgent;
+                                    _contextMenu.ShowAvatarMenu(mouseBtn.Position, avComp.AgentId, name, isSelf);
+                                    GetViewport().SetInputAsHandled();
+                                }
+                            }
+                            return;
+                        }
+
                         // TerrainRenderer's StaticBody also carries a "LocalId" meta (literal
                         // string "TERRAIN", not a real prim local ID) so it renders/highlights
                         // through the same object-tagging convention -- HasMeta alone can't tell

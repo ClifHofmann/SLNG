@@ -15,6 +15,11 @@ namespace SLNG.App.UI
         /// grab/de-grab pair.</summary>
         public Action<Entity, uint>? OnSitClicked;
 
+        /// <summary>FEAT-UI-13: right-click "Profile" / "IM" on an avatar. Guid is the target
+        /// agent id, string its best-known display name.</summary>
+        public Action<Guid, string>? OnAvatarProfileClicked;
+        public Action<Guid, string>? OnAvatarImClicked;
+
         /// <summary>MVP2-1: right-click "Sit Here" on bare ground (see ShowGroundMenu) -- the
         /// world position that was right-clicked, same one OnCreatePrimClicked receives.</summary>
         public Action<Vector3>? OnSitOnGroundClicked;
@@ -27,8 +32,11 @@ namespace SLNG.App.UI
         private Entity? _currentEntity;
         private uint _currentLocalId;
         private Vector3 _pendingGroundPosition;
+        private Guid _currentAvatarId;
+        private string _currentAvatarName = "";
 
         private VBoxContainer _objectButtons = null!;
+        private VBoxContainer _avatarButtons = null!;
         private VBoxContainer _createRoot = null!;
         private Button _createHeader = null!;
         private VBoxContainer _createShapes = null!;
@@ -69,6 +77,12 @@ namespace SLNG.App.UI
 
             var root = new VBoxContainer();
             margin.AddChild(root);
+
+            // FEAT-UI-13: shown by ShowAvatarMenu instead of the object/create sets.
+            _avatarButtons = new VBoxContainer { Visible = false };
+            root.AddChild(_avatarButtons);
+            AddMenuButton(_avatarButtons, "👤 Profile", () => OnAvatarProfileClicked?.Invoke(_currentAvatarId, _currentAvatarName));
+            AddMenuButton(_avatarButtons, "💬 IM", () => OnAvatarImClicked?.Invoke(_currentAvatarId, _currentAvatarName));
 
             _objectButtons = new VBoxContainer();
             root.AddChild(_objectButtons);
@@ -137,8 +151,27 @@ namespace SLNG.App.UI
             _currentEntity = entity;
             _currentLocalId = localId;
             _objectButtons.Visible = true;
+            _avatarButtons.Visible = false;
             _createRoot.Visible = false;
             _editPartsToggle.Text = SelectionSettings.EditLinkedParts ? EditPartsOnText : EditPartsOffText;
+            Position = position;
+            Visible = true;
+            MoveToFront();
+        }
+
+        /// <summary>FEAT-UI-13: right-clicked an avatar -- offers Profile / IM instead of the
+        /// object Edit/Touch/Inspect set. <paramref name="isSelf"/> hides IM (you can't IM
+        /// yourself) but keeps Profile.</summary>
+        public void ShowAvatarMenu(Vector2 position, Guid agentId, string name, bool isSelf)
+        {
+            _currentAvatarId = agentId;
+            _currentAvatarName = name ?? "";
+            _objectButtons.Visible = false;
+            _createRoot.Visible = false;
+            _avatarButtons.Visible = true;
+            // second child of _avatarButtons is the "IM" button
+            if (_avatarButtons.GetChildCount() > 1 && _avatarButtons.GetChild(1) is Button imBtn)
+                imBtn.Visible = !isSelf;
             Position = position;
             Visible = true;
             MoveToFront();
@@ -151,6 +184,7 @@ namespace SLNG.App.UI
         {
             _pendingGroundPosition = worldPosition;
             _objectButtons.Visible = false;
+            _avatarButtons.Visible = false;
             _createRoot.Visible = true;
             _createShapes.Visible = false;
             _createHeader.Text = CreateHeaderCollapsed;

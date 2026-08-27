@@ -148,6 +148,10 @@ public partial class ChatWindow : SLNGWindow
     /// their own send routing once Phase 1c's net plumbing exists.</summary>
     public Action<string>? OnSendLocalChat;
 
+    /// <summary>FEAT-UI-13: wired by Boot to its profile-window opener. Fired by clicking a
+    /// resident's (linked) name in the chat log and by the Friends tab's "Profile" button.</summary>
+    public Action<Guid, string>? OnOpenProfileRequested;
+
     public void Initialize(ChatLogger logger)
     {
         _logger = logger;
@@ -196,6 +200,7 @@ public partial class ChatWindow : SLNGWindow
         AddOuterTab("Chat", "forum", _chatPageControl);
         _friendsPanel = new FriendsPanel();
         _friendsPanel.OnOpenImRequested = OpenOrFocusImTab;
+        _friendsPanel.OnOpenProfileRequested = (id, name) => OnOpenProfileRequested?.Invoke(id, name);
         AddOuterTab("Friends", "person", _friendsPanel);
         AddOuterTab("Groups", "group", BuildPlaceholderPage(
             "You haven't joined any groups yet.", "Group support is planned for a follow-up pass."));
@@ -228,10 +233,10 @@ public partial class ChatWindow : SLNGWindow
 
     /// <summary>Appends one local-chat line (Main tab) and persists it via the logger. Called by
     /// Boot on GridSession.ChatMessageReceived, marshalled to the main thread first.</summary>
-    public void AppendLocalChatMessage(string sender, string message)
+    public void AppendLocalChatMessage(string sender, string message, Guid senderAgentId = default)
     {
         var tab = _chatTabs.Find(t => t.Id == "main");
-        if (tab != null) AppendMessageToTab(tab, sender, message);
+        if (tab != null) AppendMessageToTab(tab, sender, message, senderAgentId);
     }
 
     /// <summary>Appends an incoming 1:1 IM, opening a new closeable tab keyed by the sender's
@@ -240,7 +245,7 @@ public partial class ChatWindow : SLNGWindow
     public void AppendIncomingInstantMessage(Guid fromAgentId, string fromAgentName, string message)
     {
         var tab = GetOrCreateImTab(fromAgentId, fromAgentName);
-        AppendMessageToTab(tab, fromAgentName, message);
+        AppendMessageToTab(tab, fromAgentName, message, fromAgentId);
     }
 
     /// <summary>Switches to the Chat tab and opens (or focuses) an IM conversation with one
@@ -279,11 +284,24 @@ public partial class ChatWindow : SLNGWindow
             tab.Lines.Add($"[color=#777777][i]{BbEscape(line)}[/i][/color]");
     }
 
-    private void AppendMessageToTab(ChatTab tab, string sender, string message)
+    private void AppendMessageToTab(ChatTab tab, string sender, string message, Guid senderAgentId = default)
     {
         var now = DateTime.Now;
-        AppendLineToTab(tab, FormatChatLine(now, sender, message));
+        AppendLineToTab(tab, FormatChatLine(now, sender, message, senderAgentId));
         _ = _logger.AppendAsync(tab.LogKind, tab.DisplayName, sender, message, now);
+    }
+
+    /// <summary>FEAT-UI-13: a resident's name in the log is a [url=avatar:&lt;guid&gt;] link;
+    /// clicking it opens their profile.</summary>
+    private void OnLogMetaClicked(Variant meta)
+    {
+        var s = meta.AsString();
+        const string prefix = "avatar:";
+        if (s.StartsWith(prefix, StringComparison.Ordinal)
+            && Guid.TryParse(s.AsSpan(prefix.Length), out var id))
+        {
+            OnOpenProfileRequested?.Invoke(id, "");
+        }
     }
 
     /// <summary>Client-side "they're offline" notice, shown once per tab per session right after
@@ -308,12 +326,15 @@ public partial class ChatWindow : SLNGWindow
     // Own messages get the same blue accent used for "selected" elsewhere in this window, so a
     // glance at the sender-name color tells the two apart -- matches the reviewed mockup's own-
     // vs-others distinction, without introducing a new accent color to the rest of the UI.
-    private string FormatChatLine(DateTime timestamp, string sender, string message)
+    private string FormatChatLine(DateTime timestamp, string sender, string message, Guid senderAgentId = default)
     {
         bool isOwn = !string.IsNullOrEmpty(_session?.AgentName) && sender == _session!.AgentName;
         string senderColor = isOwn ? "#79B8F0" : "#E0E0E0";
         string stamp = $"[color=#888888][lb]{timestamp:HH:mm}][/color]";
         string name = $"[color={senderColor}][b]{BbEscape(sender)}[/b][/color]";
+        // FEAT-UI-13: make a real resident's name a click target that opens their profile.
+        if (senderAgentId != Guid.Empty)
+            name = $"[url=avatar:{senderAgentId}]{name}[/url]";
 
         // Emotes were being rendered like any other line, i.e. "Clif: /me waves" -- the literal
         // command text, with the colon still there. The sim doesn't transform "/me": it broadcasts
@@ -426,6 +447,8 @@ public partial class ChatWindow : SLNGWindow
         _logView.AddThemeFontSizeOverride("bold_font_size", BodyFontSize);
         _logView.AddThemeFontSizeOverride("italics_font_size", BodyFontSize);
         _logView.AddThemeFontSizeOverride("bold_italics_font_size", BodyFontSize);
+        // FEAT-UI-13: resident names are emitted as [url=avatar:<guid>] links -- open the profile.
+        _logView.MetaClicked += OnLogMetaClicked;
         rightVBox.AddChild(_logView);
 
         _jumpToLatestButton = new Button

@@ -30,6 +30,10 @@ public partial class FriendsPanel : Control
     /// action button and by double-clicking a friend row.</summary>
     public Action<Guid, string>? OnOpenImRequested;
 
+    /// <summary>FEAT-UI-13: wired (through ChatWindow) to Boot's profile-window opener -- fired by
+    /// the "Profile" action button.</summary>
+    public Action<Guid, string>? OnOpenProfileRequested;
+
     public override void _Ready()
     {
         SizeFlagsHorizontal = SizeFlags.ExpandFill;
@@ -218,7 +222,14 @@ public partial class FriendsPanel : Control
         };
         panel.AddChild(imButton);
 
-        panel.AddChild(BuildActionButton("Profile"));
+        var profileButton = BuildActionButton("Profile");
+        profileButton.TooltipText = "Open this avatar's profile";
+        profileButton.Pressed += () =>
+        {
+            if (_selectedFriendId is { } id) OnOpenProfileRequested?.Invoke(id, _selectedFriendName);
+        };
+        panel.AddChild(profileButton);
+
         panel.AddChild(BuildActionButton("Teleport..."));
         panel.AddChild(BuildActionButton("Pay..."));
         panel.AddChild(BuildActionButton("Remove...", warn: true));

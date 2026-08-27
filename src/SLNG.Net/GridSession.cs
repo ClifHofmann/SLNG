@@ -88,6 +88,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<FriendStatusEvent>? FriendStatusChanged;
     public event EventHandler<InstantMessageEvent>? InstantMessageReceived;
     public event EventHandler<ScriptDialogEvent>? ScriptDialogReceived;
+
+    /// <summary>Avatar-profile replies (FEAT-UI-13). All fired off a LibreMetaverse network
+    /// thread after <see cref="RequestAvatarProfile"/> — consumers must marshal before touching a
+    /// scene node. Neutral DTOs only; no LibreMetaverse type crosses this boundary.</summary>
+    public event EventHandler<AvatarPropertiesEvent>? AvatarPropertiesReceived;
+    /// <inheritdoc cref="AvatarPropertiesReceived"/>
+    public event EventHandler<AvatarInterestsEvent>? AvatarInterestsReceived;
+    /// <inheritdoc cref="AvatarPropertiesReceived"/>
+    public event EventHandler<AvatarGroupsEvent>? AvatarGroupsReceived;
+    /// <inheritdoc cref="AvatarPropertiesReceived"/>
+    public event EventHandler<AvatarPicksEvent>? AvatarPicksReceived;
+    /// <inheritdoc cref="AvatarPropertiesReceived"/>
+    public event EventHandler<AvatarPickDetailEvent>? AvatarPickDetailReceived;
+    /// <inheritdoc cref="AvatarPropertiesReceived"/>
+    public event EventHandler<AvatarClassifiedsEvent>? AvatarClassifiedsReceived;
     /// <summary>Real, server-driven login handshake progress -- relayed 1:1 from LibreMetaverse's
     /// own <c>NetworkManager.LoginProgress</c> (see <see cref="LoginAsync"/>), not simulated. UI
     /// should treat these as advisory only: on a direct (non-redirected) login some stages
@@ -247,6 +262,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Friends.FriendOffline += OnFriendOffline;
         _client.Self.IM += OnInstantMessage;
         _client.Self.ScriptDialog += OnScriptDialog;
+        // FEAT-UI-13: avatar profile replies. A single AvatarPropertiesRequest packet
+        // (RequestAvatarProperties) makes the sim send Properties + Interests + Groups; Picks and
+        // Classifieds have their own request/reply pairs (see RequestAvatarProfile).
+        _client.Avatars.AvatarPropertiesReply += OnAvatarPropertiesReply;
+        _client.Avatars.AvatarInterestsReply += OnAvatarInterestsReply;
+        _client.Avatars.AvatarGroupsReply += OnAvatarGroupsReply;
+        _client.Avatars.AvatarPicksReply += OnAvatarPicksReply;
+        _client.Avatars.PickInfoReply += OnPickInfoReply;
+        _client.Avatars.AvatarClassifiedReply += OnAvatarClassifiedReply;
 
         // Coexists with ObjectManager's own internal ObjectUpdate handler (packet callbacks are
         // multicast) -- see _lightPresentByLocalId for why this is needed.
@@ -740,10 +764,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // exactly with the sender starting/stopping typing right before/after a real message).
         if (e.Type == ChatType.StartTyping || e.Type == ChatType.StopTyping) return;
 
+        // Drop truly empty chat (an object emitting "" on channel 0 as a heartbeat/clear -- e.g. a
+        // worn radio), same as the Linden/Firestorm nearby-chat handler which skips on
+        // mText.empty(). Strictly IsNullOrEmpty, not whitespace, so a deliberate " " separator
+        // line from a script still shows.
+        if (string.IsNullOrEmpty(e.Message)) return;
+
         ChatMessageReceived?.Invoke(this, new ChatMessageEvent(
             e.FromName,
             e.Message,
-            (byte)e.Type));
+            (byte)e.Type,
+            e.SourceID.Guid,
+            e.SourceType == ChatSourceType.Agent));
     }
 
     private void OnAvatarUpdate(object? sender, AvatarUpdateEventArgs e)
@@ -1005,6 +1037,194 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         if (_client.Network.Connected)
             _client.Self.InstantMessage(new UUID(targetAgentId), message);
+    }
+
+    // ---- FEAT-UI-13: avatar profile fetch + social actions --------------------------------
+
+    /// <summary>Kicks off the full profile fetch for one avatar. A single AvatarPropertiesRequest
+    /// makes the sim send Properties + Interests + Groups; Picks and Classifieds have their own
+    /// request/reply pairs. Results arrive asynchronously on <see cref="AvatarPropertiesReceived"/>
+    /// and its siblings — a network-thread event, marshal before touching the UI.</summary>
+    public void RequestAvatarProfile(Guid agentId)
+    {
+        if (agentId == Guid.Empty || !_client.Network.Connected) return;
+        var id = new UUID(agentId);
+        _client.Avatars.RequestAvatarProperties(id);
+        _client.Avatars.RequestAvatarPicks(id);
+        _client.Avatars.RequestAvatarClassified(id);
+    }
+
+    /// <summary>Requests the full detail of one Pick (image, description, location). Result on
+    /// <see cref="AvatarPickDetailReceived"/>.</summary>
+    public void RequestAvatarPickInfo(Guid agentId, Guid pickId)
+    {
+        if (agentId == Guid.Empty || pickId == Guid.Empty || !_client.Network.Connected) return;
+        _client.Avatars.RequestPickInfo(new UUID(agentId), new UUID(pickId));
+    }
+
+    /// <summary>Teleports to a global position by resolving the containing region by name (the
+    /// form Picks / the map give us). Region-local coordinates are the global position modulo the
+    /// 256 m region grid — correct for standard regions; a varregion pick could land off-centre.</summary>
+    public void TeleportToGlobalPosition(string regionName, double globalX, double globalY, double globalZ)
+    {
+        if (string.IsNullOrEmpty(regionName) || !_client.Network.Connected) return;
+        var local = new Vector3(
+            (float)(globalX - Math.Floor(globalX / 256.0) * 256.0),
+            (float)(globalY - Math.Floor(globalY / 256.0) * 256.0),
+            (float)globalZ);
+        _ = _client.Self.TeleportAsync(regionName, local);
+    }
+
+    /// <summary>Writes the logged-in agent's own "2nd Life" / "1st Life" profile pages
+    /// (<c>AvatarPropertiesUpdate</c>, or the AgentProfile CAP where the sim has one). The whole
+    /// struct is sent every time, so the caller must pass the CURRENT image ids back unchanged or
+    /// they get cleared — picture editing is a separate (upload/pick) feature. On grids without a
+    /// profile service this is a silent no-op.</summary>
+    public void UpdateOwnProfile(string aboutText, string firstLifeText, string profileUrl,
+        Guid profileImageId, Guid firstLifeImageId, bool allowPublish, bool maturePublish)
+    {
+        if (!_client.Network.Connected) return;
+        _client.Self.UpdateProfile(new Avatar.AvatarProperties
+        {
+            AboutText = aboutText ?? string.Empty,
+            FirstLifeText = firstLifeText ?? string.Empty,
+            ProfileURL = profileUrl ?? string.Empty,
+            ProfileImage = new UUID(profileImageId),
+            FirstLifeImage = new UUID(firstLifeImageId),
+            AllowPublish = allowPublish,
+            MaturePublish = maturePublish,
+        });
+    }
+
+    /// <summary>Writes the logged-in agent's own profile "Interests" free-text fields
+    /// (<c>AvatarInterestsUpdate</c>). The skill / want-to bitmasks (the viewer's checkbox lists)
+    /// are sent as 0 — this pass edits the text only.</summary>
+    public void UpdateOwnInterests(string languages, string skills, string wantTo)
+    {
+        if (!_client.Network.Connected) return;
+        _client.Self.UpdateInterests(new Avatar.Interests
+        {
+            LanguagesText = languages ?? string.Empty,
+            SkillsText = skills ?? string.Empty,
+            WantToText = wantTo ?? string.Empty,
+            SkillsMask = 0,
+            WantToMask = 0,
+        });
+    }
+
+    /// <summary>Sends a friendship offer to another avatar.</summary>
+    public void OfferFriendship(Guid agentId)
+    {
+        if (agentId == Guid.Empty || !_client.Network.Connected) return;
+        _client.Friends.OfferFriendship(new UUID(agentId));
+    }
+
+    /// <summary>Offers the target avatar a teleport to our current location (a "lure").</summary>
+    public void OfferTeleport(Guid agentId, string message = "Join me at my location.")
+    {
+        if (agentId == Guid.Empty || !_client.Network.Connected) return;
+        _client.Self.SendTeleportLure(new UUID(agentId), message);
+    }
+
+    /// <summary>Pays L$ to another avatar. No-op for a non-positive amount.</summary>
+    public void PayAvatar(Guid agentId, int amount)
+    {
+        if (agentId == Guid.Empty || amount <= 0 || !_client.Network.Connected) return;
+        _client.Self.GiveAvatarMoney(new UUID(agentId), amount);
+    }
+
+    /// <summary>Asks the sim to (re)send the account mute list, so <see cref="IsAvatarMuted"/>
+    /// reflects reality. Cheap; safe to call once after login.</summary>
+    public void RequestMuteList()
+    {
+        if (_client.Network.Connected) _client.Self.RequestMuteList();
+    }
+
+    /// <summary>Adds or removes a local mute-list entry for an avatar (the "Block" action). The
+    /// mute list is per-account server state that LibreMetaverse round-trips.</summary>
+    public void SetAvatarMuted(Guid agentId, string avatarName, bool muted)
+    {
+        if (agentId == Guid.Empty || !_client.Network.Connected) return;
+        var id = new UUID(agentId);
+        if (muted)
+            _client.Self.UpdateMuteListEntry(MuteType.Resident, id, avatarName ?? string.Empty);
+        else
+            _client.Self.RemoveMuteListEntry(id, avatarName ?? string.Empty);
+    }
+
+    /// <summary>Whether an avatar is currently on the synced mute list. Best-effort: only as
+    /// current as the last <see cref="RequestMuteList"/> / mute edit.</summary>
+    public bool IsAvatarMuted(Guid agentId)
+    {
+        var id = new UUID(agentId);
+        foreach (var entry in _client.Self.MuteList.Values)
+            if (entry.ID == id) return true;
+        return false;
+    }
+
+    private void OnAvatarPropertiesReply(object? sender, AvatarPropertiesReplyEventArgs e)
+    {
+        var p = e.Properties;
+        AvatarPropertiesReceived?.Invoke(this, new AvatarPropertiesEvent(new AvatarProfileProperties(
+            e.AvatarID.Guid,
+            p.AboutText ?? string.Empty,
+            p.FirstLifeText ?? string.Empty,
+            p.ProfileImage.Guid,
+            p.FirstLifeImage.Guid,
+            p.Partner.Guid,
+            p.BornOn ?? string.Empty,
+            p.CharterMember ?? string.Empty,
+            p.ProfileURL ?? string.Empty,
+            p.AllowPublish,
+            p.MaturePublish)));
+    }
+
+    private void OnAvatarInterestsReply(object? sender, AvatarInterestsReplyEventArgs e)
+    {
+        var i = e.Interests;
+        AvatarInterestsReceived?.Invoke(this, new AvatarInterestsEvent(new AvatarProfileInterests(
+            e.AvatarID.Guid,
+            i.LanguagesText ?? string.Empty,
+            i.SkillsText ?? string.Empty,
+            i.WantToText ?? string.Empty)));
+    }
+
+    private void OnAvatarGroupsReply(object? sender, AvatarGroupsReplyEventArgs e)
+    {
+        var groups = new List<AvatarProfileGroup>();
+        foreach (var g in e.Groups)
+            groups.Add(new AvatarProfileGroup(g.GroupID.Guid, g.GroupName ?? string.Empty, g.GroupInsigniaID.Guid));
+        AvatarGroupsReceived?.Invoke(this, new AvatarGroupsEvent(e.AvatarID.Guid, groups));
+    }
+
+    private void OnAvatarPicksReply(object? sender, AvatarPicksReplyEventArgs e)
+    {
+        var picks = new List<AvatarPickInfo>();
+        foreach (var kvp in e.Picks)
+            picks.Add(new AvatarPickInfo(kvp.Key.Guid, kvp.Value ?? string.Empty));
+        AvatarPicksReceived?.Invoke(this, new AvatarPicksEvent(e.AvatarID.Guid, picks));
+    }
+
+    private void OnPickInfoReply(object? sender, PickInfoReplyEventArgs e)
+    {
+        var p = e.Pick;
+        AvatarPickDetailReceived?.Invoke(this, new AvatarPickDetailEvent(new AvatarPickDetail(
+            e.PickID.Guid,
+            p.Name ?? string.Empty,
+            p.Desc ?? string.Empty,
+            p.SnapshotID.Guid,
+            p.SimName ?? string.Empty,
+            p.PosGlobal.X,
+            p.PosGlobal.Y,
+            p.PosGlobal.Z)));
+    }
+
+    private void OnAvatarClassifiedReply(object? sender, AvatarClassifiedReplyEventArgs e)
+    {
+        var ads = new List<AvatarClassifiedInfo>();
+        foreach (var kvp in e.Classifieds)
+            ads.Add(new AvatarClassifiedInfo(kvp.Key.Guid, kvp.Value ?? string.Empty));
+        AvatarClassifiedsReceived?.Invoke(this, new AvatarClassifiedsEvent(e.AvatarID.Guid, ads));
     }
 
     private void OnScriptDialog(object? sender, ScriptDialogEventArgs e)
@@ -2942,6 +3162,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Friends.FriendOffline -= OnFriendOffline;
         _client.Self.IM -= OnInstantMessage;
         _client.Self.ScriptDialog -= OnScriptDialog;
+        _client.Avatars.AvatarPropertiesReply -= OnAvatarPropertiesReply;
+        _client.Avatars.AvatarInterestsReply -= OnAvatarInterestsReply;
+        _client.Avatars.AvatarGroupsReply -= OnAvatarGroupsReply;
+        _client.Avatars.AvatarPicksReply -= OnAvatarPicksReply;
+        _client.Avatars.PickInfoReply -= OnPickInfoReply;
+        _client.Avatars.AvatarClassifiedReply -= OnAvatarClassifiedReply;
         _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
         Logout();
     }
