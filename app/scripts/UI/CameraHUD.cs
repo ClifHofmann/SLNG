@@ -14,10 +14,10 @@ public partial class CameraHUD : SLNGWindow
     private const float MinContentScale = 0.5f;
     private const float MaxContentScale = 1.5f;
 
-    // Built-in per-frame pad steps at 100% (CameraSettings multiplies these live). PanStep was
-    // 1.0 (~60 m/s held at 60 fps -- the avatar shot off-screen on a tap); 0.1 tracks the orbit
-    // pad's ~0.05 rad/frame feel.
-    private const float OrbitStep = 0.05f;
+    // Built-in per-frame pad steps at 100% (CameraSettings multiplies these live). OrbitStep was
+    // 0.05 and felt fast even at the default; 0.035 is calmer and the Preferences slider still
+    // reaches 3x. PanStep was 1.0 (~60 m/s held at 60 fps -- the avatar shot off-screen on a tap).
+    private const float OrbitStep = 0.035f;
     private const float PanStep = 0.1f;
     private const float ZoomStep = 0.5f;
 

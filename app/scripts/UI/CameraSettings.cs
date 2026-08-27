@@ -15,7 +15,9 @@ public sealed class CameraSettings
     private const string ConfigPath = "user://preferences.cfg";
     private const string Section = "camera";
 
-    public const float MinMultiplier = 0.25f;
+    // 0.1 = 10% of the built-in step. The orbit pad in particular is fast at 100%, so the low
+    // end has to reach genuinely slow (orbit at 10% is ~0.004 rad/frame, ~14 deg/s at 60 fps).
+    public const float MinMultiplier = 0.1f;
     public const float MaxMultiplier = 3.0f;
 
     /// <summary>Orbit pad (rotate around the avatar / focus point).</summary>
