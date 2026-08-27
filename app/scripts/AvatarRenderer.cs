@@ -720,7 +720,7 @@ public partial class AvatarRenderer : Node3D
         // LoadAndStartAnimationsAsync fetches the new animation data.
         if (visual.PreviousSittingOnLocalId != 0 && avatar.SittingOnLocalId == 0)
         {
-            GD.Print("[AnimPlayer] Sit→stand transition detected, forcing animation re-evaluation");
+            if (Diagnostics.Enabled) GD.Print("[AnimPlayer] Sit→stand transition detected, forcing animation re-evaluation");
             visual.LoadedAnimationIds = null;
         }
         visual.PreviousSittingOnLocalId = avatar.SittingOnLocalId;

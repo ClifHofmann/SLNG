@@ -55,13 +55,13 @@ public sealed class AvatarAnimationPlayer
             {
                 if (p.AnimationId == id) return false;
             }
-            GD.Print($"[AnimPlayer] Removing animation {p.AnimationId}");
+            if (Diagnostics.Enabled) GD.Print($"[AnimPlayer] Removing animation {p.AnimationId}");
             return true;
         });
 
         if (_active.Count == 0 && removed > 0)
         {
-            GD.Print("[AnimPlayer] Active count is 0, resetting to rest pose");
+            if (Diagnostics.Enabled) GD.Print("[AnimPlayer] Active count is 0, resetting to rest pose");
             ResetToRestPose();
         }
 
@@ -75,7 +75,7 @@ public sealed class AvatarAnimationPlayer
             }
             if (!found)
             {
-                GD.Print($"[AnimPlayer] Adding animation {id}");
+                if (Diagnostics.Enabled) GD.Print($"[AnimPlayer] Adding animation {id}");
                 _active.Add(new PlayingAnimation(data, id));
             }
         }
