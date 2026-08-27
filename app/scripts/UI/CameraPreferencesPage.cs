@@ -12,12 +12,10 @@ public partial class CameraPreferencesPage : VBoxContainer
 {
     private CameraSettings _settings = null!;
 
+    // Kept only for ResetToDefaults -- each row's % label is updated by its own ValueChanged closure.
     private HSlider _orbitSlider = null!;
     private HSlider _panSlider = null!;
     private HSlider _zoomSlider = null!;
-    private Label _orbitValue = null!;
-    private Label _panValue = null!;
-    private Label _zoomValue = null!;
 
     public override void _Ready()
     {
@@ -34,13 +32,13 @@ public partial class CameraPreferencesPage : VBoxContainer
         heading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
         AddChild(heading);
 
-        (_orbitSlider, _orbitValue) = AddSpeedRow(
+        _orbitSlider = AddSpeedRow(
             L10n.Tr("ui.preferences.camera_orbit_speed"), _settings.OrbitSpeed,
             v => _settings.SetOrbitSpeed(v));
-        (_panSlider, _panValue) = AddSpeedRow(
+        _panSlider = AddSpeedRow(
             L10n.Tr("ui.preferences.camera_pan_speed"), _settings.PanSpeed,
             v => _settings.SetPanSpeed(v));
-        (_zoomSlider, _zoomValue) = AddSpeedRow(
+        _zoomSlider = AddSpeedRow(
             L10n.Tr("ui.preferences.camera_zoom_speed"), _settings.ZoomSpeed,
             v => _settings.SetZoomSpeed(v));
 
@@ -63,7 +61,7 @@ public partial class CameraPreferencesPage : VBoxContainer
         AddChild(resetButton);
     }
 
-    private (HSlider, Label) AddSpeedRow(string label, float initial, System.Action<float> onChange)
+    private HSlider AddSpeedRow(string label, float initial, System.Action<float> onChange)
     {
         var caption = new Label { Text = label };
         caption.AddThemeColorOverride("font_color", new Color(0.75f, 0.75f, 0.75f));
@@ -98,7 +96,7 @@ public partial class CameraPreferencesPage : VBoxContainer
             onChange((float)value);
         };
 
-        return (slider, valueLabel);
+        return slider;
     }
 
     private void ResetToDefaults()

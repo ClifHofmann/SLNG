@@ -130,6 +130,12 @@ public partial class AvatarController : Camera3D
     private float _orbitPitch = 0f;
     private Godot.Vector3? _orbitTarget = null;
 
+    // Set by AbortCameraDrag: blocks orbit re-engagement until the left button is physically
+    // released once. Without it, a focus-out / mouse-exit that fires mid-drag (X11, some Windows
+    // edge cases) while Alt+LMB are still held re-satisfies `wantOrbit && !_altOrbitActive` on the
+    // very next frame and re-engages from the cursor's edge position -- the BUG-UI-03 jump, moved.
+    private bool _suppressOrbitUntilRelease = false;
+
     // The cursor's viewport position at the moment Alt+LMB was pressed, captured BEFORE
     // Input.MouseMode switches to Captured. Captured mode hides and re-centres the cursor, so
     // event.Position during the drag itself no longer reflects where the user actually clicked —
@@ -189,6 +195,7 @@ public partial class AvatarController : Camera3D
     /// camera orbiting to the unfocused mouse and jumping the next time Alt is pressed.</summary>
     public override void _Notification(int what)
     {
+        base._Notification(what);
         if (what == NotificationWMWindowFocusOut
             || what == NotificationApplicationFocusOut
             || what == NotificationWMMouseExit)
@@ -201,6 +208,9 @@ public partial class AvatarController : Camera3D
     {
         if (!_altOrbitActive) return;
         _altOrbitActive = false;
+        // Hold off re-engaging until Left is physically released once -- the button may still be
+        // down (window/mouse just left the app), and _Process would otherwise re-engage next frame.
+        _suppressOrbitUntilRelease = true;
         Input.MouseMode = Input.MouseModeEnum.Visible;
         // Re-engage re-seeds this from the live cursor position; zero it so a stale value can
         // never be misread as a one-frame delta if the drag branch runs before the next engage.
@@ -295,6 +305,14 @@ public partial class AvatarController : Camera3D
         // state each frame is self-correcting regardless of how noisy the underlying event stream
         // is -- same reasoning as why WASD movement below is polled, not event-driven.
         bool wantOrbit = !hasUiFocus && Input.IsKeyPressed(Key.Alt) && Input.IsMouseButtonPressed(MouseButton.Left);
+
+        // After AbortCameraDrag the physical LMB may still be held; don't re-engage until it has
+        // been released at least once (see _suppressOrbitUntilRelease).
+        if (_suppressOrbitUntilRelease)
+        {
+            if (Input.IsMouseButtonPressed(MouseButton.Left)) wantOrbit = false;
+            else _suppressOrbitUntilRelease = false;
+        }
 
         if (wantOrbit && !_altOrbitActive)
         {
