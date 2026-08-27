@@ -287,6 +287,14 @@ public partial class ObjectRenderer : Node3D
         _agentPos = agentPos;
         _agentPosKnown = true;
 
+        // BUG-NET-01: visibility / resource decisions run against whichever of the avatar and the
+        // render camera is CLOSER, so Alt-click-zooming the camera to a distant point loads and
+        // shows the objects there instead of hiding everything > DrawDistance from the avatar.
+        // (Collision-shape repair below deliberately stays avatar-only -- you walk on things near
+        // your body, not near your camera.)
+        var camNode = GetViewport()?.GetCamera3D();
+        Vector3 viewPos = camNode != null && IsInstanceValid(camNode) ? camNode.GlobalPosition : agentPos;
+
         if (_cullCursor >= _cullOrder.Count)
         {
             _cullOrder.Clear();
@@ -320,11 +328,14 @@ public partial class ObjectRenderer : Node3D
             if (!IsInstanceValid(state.MeshInstance)) continue;
 
             float dSq = state.MeshInstance.Position.DistanceSquaredTo(agentPos);
+            // Distance to whichever viewpoint is nearer (BUG-NET-01): drives visibility and the
+            // resource reload/release below. dSq (avatar only) still gates collision repair.
+            float viewDSq = Math.Min(dSq, state.MeshInstance.Position.DistanceSquaredTo(viewPos));
 
             // Visibility with hysteresis: show within draw distance, hide only past 1.15x, so
             // objects sitting near the edge don't flicker on/off every tick while moving.
-            if (dSq <= showSq && !state.MeshInstance.Visible) state.MeshInstance.Visible = true;
-            else if (dSq > hideSq && state.MeshInstance.Visible) state.MeshInstance.Visible = false;
+            if (viewDSq <= showSq && !state.MeshInstance.Visible) state.MeshInstance.Visible = true;
+            else if (viewDSq > hideSq && state.MeshInstance.Visible) state.MeshInstance.Visible = false;
 
             // Repair pass for the deferral above: an object that was far away when its mesh landed got
             // its shape queued in the background, and by the time the avatar walks over to it the
@@ -341,7 +352,7 @@ public partial class ObjectRenderer : Node3D
                 state.CollisionShape.Shape = readyShape;
             }
 
-            if (dSq <= showSq && state.ResourcesReleased)
+            if (viewDSq <= showSq && state.ResourcesReleased)
             {
                 state.ResourcesReleased = false;
                 // Queued, not called inline. Running it here put a full mesh+material reload inside
@@ -353,9 +364,9 @@ public partial class ObjectRenderer : Node3D
                 MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
                                             () => UpdateVisual(reloadId), $"update:{reloadId}", "visual.update");
             }
-            else if (dSq > releaseSq && !state.ResourcesReleased)
+            else if (viewDSq > releaseSq && !state.ResourcesReleased)
             {
-                ReleaseResources(state); // far enough that we reclaim its VRAM
+                ReleaseResources(state); // far from BOTH avatar and camera -- reclaim its VRAM
             }
             else if (state.MeshInstance.Visible && !state.ResourcesReleased
                      && state.UsedTextureIds.Count > 0 && _gpuCache != null && _assetService != null)

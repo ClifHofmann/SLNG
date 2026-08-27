@@ -36,15 +36,20 @@ public partial class AvatarController : Camera3D
 
     // FEAT-UI-12: persisted FOV / rear distance / focus height from Preferences > Camera.
     private SLNG.App.UI.CameraSettings? _cameraSettings;
+    // Last RearDistance applied to _zoom -- so a slider move re-snaps the resting distance live
+    // (see _Process) without fighting wheel/pad zoom, which never changes this value.
+    private float _lastAppliedRearDistance = 4.0f;
 
-    /// <summary>Wire the persisted camera view settings. Applied at once (FOV and the resting
-    /// third-person distance); FOV is then kept in sync each frame in <see cref="_Process"/> so a
-    /// slider move takes effect live, and the rear distance is re-applied on every camera reset.</summary>
+    /// <summary>Wire the persisted camera view settings. FOV and the resting third-person distance
+    /// apply at once; <see cref="_Process"/> then re-applies each whenever the setting itself
+    /// changes (so the Preferences sliders are live), and <see cref="ResetCamera"/> uses the
+    /// distance on every reset.</summary>
     public void SetCameraSettings(SLNG.App.UI.CameraSettings settings)
     {
         _cameraSettings = settings;
         Fov = settings.Fov;
         _zoom = settings.RearDistance;
+        _lastAppliedRearDistance = settings.RearDistance;
     }
 
     // Public API for CameraHUD
@@ -309,6 +314,15 @@ public partial class AvatarController : Camera3D
         // FEAT-UI-12: keep FOV in sync with the persisted preference so a slider move applies live.
         if (_cameraSettings != null && !Mathf.IsEqualApprox(Fov, _cameraSettings.Fov))
             Fov = _cameraSettings.Fov;
+
+        // FEAT-UI-12: re-snap the resting distance when the "Rear view distance" slider moves.
+        // Only fires on an actual change, so wheel/pad zoom (which move _zoom, never RearDistance)
+        // are left alone.
+        if (_cameraSettings != null && !Mathf.IsEqualApprox(_cameraSettings.RearDistance, _lastAppliedRearDistance))
+        {
+            _zoom = _cameraSettings.RearDistance;
+            _lastAppliedRearDistance = _cameraSettings.RearDistance;
+        }
 
         var focusOwner = GetViewport().GuiGetFocusOwner();
         bool hasUiFocus = BlocksMovement(focusOwner);
