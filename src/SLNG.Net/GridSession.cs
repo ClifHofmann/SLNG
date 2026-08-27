@@ -2508,7 +2508,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>Sends an AgentUpdate to move the avatar.</summary>
-    public void SetMovement(bool forward, bool backward, bool left, bool right, bool up, bool down, System.Numerics.Quaternion cameraRotation, bool fly = false)
+    /// <param name="cameraPosition">The RENDER camera's region-local position (System.Numerics,
+    /// SL Z-up axes), or null to keep anchoring the interest camera on the avatar's facing. The
+    /// sim centres its interest list on <c>CameraCenter</c>, so without this it streams objects
+    /// around LibreMetaverse's default region-centre camera (128,128,20), not where the user is
+    /// looking -- BUG-NET-01.</param>
+    /// <param name="cameraForward">The render camera's forward direction (region-local, SL axes);
+    /// only used when <paramref name="cameraPosition"/> is supplied.</param>
+    /// <param name="cameraFar">Interest / draw distance in metres; ignored when &lt;= 0.</param>
+    public void SetMovement(bool forward, bool backward, bool left, bool right, bool up, bool down,
+        System.Numerics.Quaternion cameraRotation, bool fly = false,
+        System.Numerics.Vector3? cameraPosition = null,
+        System.Numerics.Vector3? cameraForward = null,
+        float cameraFar = 0f)
     {
         if (!_client.Network.Connected) return;
 
@@ -2516,8 +2528,25 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // For LibreMetaverse, we just pass the rotation directly.
         var slQuat = new LibreMetaverse.Quaternion(cameraRotation.X, cameraRotation.Y, cameraRotation.Z, cameraRotation.W);
 
-        // Update the agent's movement state
-        _client.Self.Movement.Camera.LookDirection(LibreMetaverse.Vector3.UnitX * slQuat);
+        // Interest camera. With a real render-camera pose, anchor CameraCenter there (BUG-NET-01);
+        // otherwise fall back to the pre-existing "look along body facing from wherever the camera
+        // already is" behaviour.
+        if (cameraPosition is { } camPos)
+        {
+            var slPos = new LibreMetaverse.Vector3(camPos.X, camPos.Y, camPos.Z);
+            var slFwd = cameraForward is { } f
+                ? new LibreMetaverse.Vector3(f.X, f.Y, f.Z)
+                : LibreMetaverse.Vector3.UnitX * slQuat;
+            _client.Self.Movement.Camera.LookAt(slPos, slPos + slFwd);
+        }
+        else
+        {
+            _client.Self.Movement.Camera.LookDirection(LibreMetaverse.Vector3.UnitX * slQuat);
+        }
+
+        if (cameraFar > 0f)
+            _client.Self.Movement.Camera.Far = cameraFar;
+
         _client.Self.Movement.HeadRotation = slQuat;
         _client.Self.Movement.BodyRotation = slQuat;
 
