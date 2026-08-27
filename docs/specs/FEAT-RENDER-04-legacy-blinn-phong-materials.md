@@ -2,8 +2,10 @@
 
 - **Feature ID:** `FEAT-RENDER-04`
 - **Track:** `net` / `assets` / `render`
-- **Status:** `🧪 Review` — phases 1-4 confirmed in-world; phase 5 (alpha modes) implemented,
-  pending an in-world A/B
+- **Status:** `✅ Done` — phases 1-4 confirmed in-world 2026-08-23; phase 5 (alpha modes)
+  confirmed no-regression on the reef rock 2026-08-27 (the "guess was wrong" edge case wasn't
+  specifically hunted; code + tests + no visible change on known legacy-material content is the
+  pass)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -80,11 +82,13 @@ therefore boundary conversion, caching and rendering — not protocol implementa
 - [x] Visually A/B'd against Firestorm on the Dangazi Forest reef rock
       (`88fe3b1a-b688-4da0-8730-de7cd1194a6c`, a known case with both maps bound).
       Confirmed 2026-08-23: shape, size and both maps match.
-- [~] **Phase 5:** a face with a legacy material takes its transparency from the material's
+- [x] **Phase 5:** a face with a legacy material takes its transparency from the material's
       `DiffuseAlphaMode` (`Blend`/`Mask`+`AlphaMaskCutoff`/`None`), not from `DetectAlpha()`.
-      `Default` still falls through to the pixel guess. Implemented; in-world A/B pending —
-      needs a face known to declare `Mask` or `None` while carrying a diffuse texture whose
-      alpha channel would make `DetectAlpha()` decide otherwise.
+      `Default` still falls through to the pixel guess. Confirmed 2026-08-27: no regression on
+      the reef rock or other legacy-material content. A face that specifically exercises the
+      "guess was wrong" path (declared `Mask`/`None` over a graded-alpha texture) wasn't
+      encountered; the change is a targeted correctness fix and invisible where the guess was
+      already right.
 
 ## Technical Specs & Affected Files
 

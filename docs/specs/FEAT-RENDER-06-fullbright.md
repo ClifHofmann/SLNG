@@ -2,7 +2,8 @@
 
 - **Feature ID:** `FEAT-RENDER-06`
 - **Track:** `render`
-- **Status:** `🧪 Review` — implemented, pending in-world A/B
+- **Status:** `✅ Done` — confirmed in-world 2026-08-27 (a fullbright object renders at full
+  colour regardless of time of day, non-fullbright faces unchanged)
 - **Owner:** `claude`
 - **Agent:** `graphics-engineer`
 - **Dep:** `FEAT-RENDER-01` (the custom spatial-shader family — already live)
@@ -59,7 +60,8 @@ vertex colour with no lighting term. It still receives atmospherics/fog
 - [x] Worn-mesh attachment faces honour it too (shared `BuildFaceMaterialAsync`).
 - [x] Unit tests pin the wire → `PrimitiveComponent` / `FaceTexture` plumbing
       (`FullbrightTests`, 3 cases).
-- [ ] In-world A/B against Firestorm on a known fullbright object (a lit sign or screen).
+- [x] In-world 2026-08-27: a fullbright object renders at full colour regardless of scene
+      lighting / time of day; non-fullbright faces unchanged.
 
 ## Verification
 `dotnet build SLNG.sln` + `app/` clean; `dotnet test` 325 green; `dotnet format` clean;
