@@ -54,6 +54,23 @@
       "source_legacy": "Windlight",
       "source_default": "Standard — Sim sendet nichts"
     },
+    "groups": {
+      "filter": "Gruppen filtern...",
+      "empty": "Du bist noch in keiner Gruppe.",
+      "no_match": "Keine Gruppe passt zum Filter.",
+      "count": "Gruppen: {0}",
+      "action_chat": "Gruppenchat",
+      "action_chat_tooltip": "Chat dieser Gruppe öffnen",
+      "action_mute": "Chat stumm",
+      "action_unmute": "Stumm aus",
+      "action_mute_tooltip": "Schaltet den Chat dieser Gruppe nur in diesem Client stumm — die Einstellung für Gruppenmitteilungen im Grid bleibt unverändert.",
+      "action_profile": "Profil",
+      "action_leave": "Verlassen...",
+      "not_implemented": "{0} (nicht implementiert)",
+      "joining": "Trete Gruppenchat bei…",
+      "join_failed": "Der Chat dieser Gruppe konnte nicht betreten werden.",
+      "muted_notice": "Der Chat dieser Gruppe ist stumm geschaltet. Im Gruppen-Tab wieder aktivieren, um Nachrichten zu erhalten."
+    },
     "profile": {
       "title": "PROFIL",
       "tab_2nd_life": "2. Leben",

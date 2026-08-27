@@ -135,7 +135,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.9.60-alpha";
+    public const string AppVersion = "v0.9.61-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1461,6 +1461,9 @@ public partial class Boot : Control
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.InstantMessageReceived += OnInstantMessageReceived;
+        // M5-3 Phase 2: group chat. Same network-thread marshalling reason as the IM handlers.
+        _session.GroupChatMessageReceived += OnGroupChatMessageReceived;
+        _session.GroupChatJoined += OnGroupChatJoinedResult;
         // FEAT-UI-13: profile replies + name resolution, routed to whichever profile window is open
         // for that avatar. All fire on a network thread -- marshal before touching the Control tree.
         _session.AvatarPropertiesReceived += OnAvatarProfilePropertiesReceived;
@@ -1679,6 +1682,32 @@ public partial class Boot : Control
     {
         _chatWindow.AppendIncomingInstantMessage(System.Guid.Parse(fromAgentId), fromAgentName, message);
     }
+
+    private void OnGroupChatMessageReceived(object? sender, SLNG.Core.GroupChatMessageEvent e)
+    {
+        // Same marshalling reason as OnChatMessage/OnInstantMessageReceived -- fires on a
+        // LibreMetaverse network thread. Guids travel as strings (not Variant-safe). The group
+        // NAME is resolved here rather than in ChatWindow because the shared name cache lives on
+        // GridSession; an incoming group message names only the speaker.
+        string groupName = "";
+        _session?.TryGetCachedName(e.GroupId, out groupName);
+        CallDeferred(nameof(AppendGroupChatMessage), e.GroupId.ToString(), groupName ?? "",
+            e.FromAgentId.ToString(), e.FromAgentName, e.Message);
+    }
+
+    private void AppendGroupChatMessage(string groupId, string groupName, string fromAgentId, string fromAgentName, string message)
+    {
+        _chatWindow.AppendGroupChatMessage(
+            System.Guid.Parse(groupId), groupName,
+            System.Guid.TryParse(fromAgentId, out var from) ? from : System.Guid.Empty,
+            fromAgentName, message);
+    }
+
+    private void OnGroupChatJoinedResult(object? sender, SLNG.Core.GroupChatJoinedEvent e)
+        => CallDeferred(nameof(ApplyGroupChatJoined), e.GroupId.ToString(), e.Success);
+
+    private void ApplyGroupChatJoined(string groupId, bool success)
+        => _chatWindow.OnGroupChatJoinResult(System.Guid.Parse(groupId), success);
 
     // ---- FEAT-UI-13: avatar profile events -----------------------------------------------------
     // The reply payloads are plain C# records (not Variant-safe), so instead of CallDeferred they

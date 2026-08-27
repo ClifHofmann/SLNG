@@ -54,6 +54,23 @@
       "source_legacy": "Windlight",
       "source_default": "default — sim sends none"
     },
+    "groups": {
+      "filter": "Filter groups...",
+      "empty": "You haven't joined any groups yet.",
+      "no_match": "No groups match your filter.",
+      "count": "Groups: {0}",
+      "action_chat": "Group Chat",
+      "action_chat_tooltip": "Open this group's chat",
+      "action_mute": "Mute chat",
+      "action_unmute": "Unmute chat",
+      "action_mute_tooltip": "Silences this group's chat in this client only — it does not change your group notice settings on the grid.",
+      "action_profile": "Profile",
+      "action_leave": "Leave...",
+      "not_implemented": "{0} (not implemented)",
+      "joining": "Joining group chat…",
+      "join_failed": "Could not join this group's chat session.",
+      "muted_notice": "This group's chat is muted. Unmute it in the Groups tab to receive messages."
+    },
     "profile": {
       "title": "PROFILE",
       "tab_2nd_life": "2nd Life",

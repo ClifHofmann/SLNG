@@ -2,7 +2,10 @@
 
 - **Feature ID:** `M5-3`
 - **Track:** `ui`
-- **Status:** `🚧 In Progress`
+- **Status:** `🧪 Review` — Phase 1/1b/1c (window shell, local chat, Friends, IM) merged earlier;
+  Phase 2 (Groups panel, group chat, mute toggle) implemented `v0.9.61-alpha`, builds + 359 tests
+  + `--selftest` 26/26 green, **not yet confirmed in-world**. One acceptance item stays open by
+  choice: the chat-log path setting in Preferences (see the list below).
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -304,19 +307,25 @@ icons, e.g.:
 None of this is Phase 1/1b/1c scope (voice in particular is a large, separate subsystem with no
 existing groundwork in `SLNG.Net`) — recorded here explicitly so it survives as a real backlog
 item under M5+ rather than being silently dropped because it didn't fit the current pass.
-- [ ] Window inherits from `SLNGWindow` and opens via shortcut or UI button.
-- [ ] Horizontal top tabs (`Chat`, `Friends`, `Groups`) switch active panel cleanly.
-- [ ] Vertical conversation-list entries under `Chat` show `Main` as static default, with new IM entries opening on message receipt or manual IM initiate.
-- [ ] Friends list correctly renders online vs. offline status indicators.
-- [ ] Group list displays user's joined groups.
-- [ ] Group chat mute/ignore toggle supported per group (prevents notifications/auto-tab popups).
-- [ ] Chat logging writes incoming/outgoing messages to text files in original SL viewer format (`[YYYY/MM/DD HH:MM:SS]`).
-- [ ] Custom chat log folder configurable in Preferences, defaulting to OS user space.
-- [ ] Live message log shows only the most recent lines per tab; scrolling up pauses auto-follow, with a "jump to latest" affordance to resume it.
-- [ ] "History" control opens a paginated log viewer window reading the active tab's on-disk log file, independent of the live in-memory buffer.
-- [ ] `ChatWindow` always opens fresh to the Chat/Main tab on app start — no tab selection or IM tabs persisted across restarts.
-- [ ] All network callbacks from LibreMetaverse buffer events and update UI components on the Godot main thread without UI freezes.
-- [ ] Unit / UI integration tests pass for tab management, message dispatching, and file logger output.
+- [x] Window inherits from `SLNGWindow` and opens via shortcut or UI button.
+- [x] Horizontal top tabs (`Chat`, `Friends`, `Groups`) switch active panel cleanly.
+- [x] Vertical conversation-list entries under `Chat` show `Main` as static default, with new IM entries opening on message receipt or manual IM initiate.
+- [x] Friends list correctly renders online vs. offline status indicators.
+- [x] Group list displays user's joined groups.
+- [x] Group chat mute/ignore toggle supported per group (prevents notifications/auto-tab popups).
+- [x] Chat logging writes incoming/outgoing messages to text files in original SL viewer format (`[YYYY/MM/DD HH:MM:SS]`).
+- [ ] Custom chat log folder configurable in Preferences, defaulting to OS user space. *(still
+      deferred — the default user-space path ships and works; only the settings UI is missing,
+      per §6's phasing note.)*
+- [x] Live message log shows only the most recent lines per tab; scrolling up pauses auto-follow, with a "jump to latest" affordance to resume it.
+- [x] "History" control opens a paginated log viewer window reading the active tab's on-disk log file, independent of the live in-memory buffer.
+- [x] `ChatWindow` always opens fresh to the Chat/Main tab on app start — no tab selection or IM tabs persisted across restarts.
+- [x] All network callbacks from LibreMetaverse buffer events and update UI components on the Godot main thread without UI freezes.
+- [~] Unit tests cover the net-layer dispatch (`GroupChatTests`: membership mapping, the
+      SessionSend/GroupIM routing split, empty-line drop, join result, disconnected no-ops) and
+      the logger. There are **no UI/integration tests** for tab management — this project has no
+      Godot test harness, so tab behaviour is verified in-world instead. Recorded as partial
+      rather than ticked.
 
 ## Technical Specs & Affected Files
 - `app/scripts/UI/ChatWindow.cs` — Main UI window class inheriting from `SLNGWindow`.
@@ -346,8 +355,27 @@ item under M5+ rather than being silently dropped because it didn't fit the curr
 - [x] `SLNG.Net`: IM send/receive plumbing — new net sub-task *(`GridSession.InstantMessageReceived` / `SendInstantMessage`, filtered to `InstantMessageDialog.MessageFromAgent` — friendship offers, teleport requests, group notices etc. ride the same wire event but aren't modeled yet)*
 - [x] Implement dynamic IM entries in the `Chat` conversation-list sidebar, wired to the above *(auto-opens on incoming IM; FriendsPanel's "IM / Call" button and double-clicking a friend row both open/focus a tab too — the IM half of that spec requirement, voice stays not-implemented)*
 
-**Deferred follow-up pass:**
-- [ ] `SLNG.Net`: `GroupManager` wiring
-- [ ] Implement `Groups` panel
-- [ ] Add Group Chat Mute/Ignore toggle per group (suppresses notifications & tab focus)
+**Phase 2 — Groups (net + UI):**
+- [x] `SLNG.Net`: `GroupManager` wiring — `RequestGroups()` / `GetGroups()` / `GroupsUpdated`,
+      neutral `GroupEntry` DTO (no LibreMetaverse type crosses the boundary)
+- [x] Implement `Groups` panel — filterable list, initial badge, member title, two-pane action
+      layout matching `FriendsPanel`; `Group Chat` and `Mute chat` functional, `Profile`/`Leave`
+      placeholders with a "(not implemented)" tooltip
+- [x] Group chat end-to-end — join/leave/send (`JoinGroupChat` / `LeaveGroupChat` /
+      `SendGroupMessage`), receive via `GroupChatMessageReceived`, own tab in the conversation
+      sidebar (`ChatLogKind.Group`, so it logs to `<Group>.txt` like every other conversation)
+- [x] Add Group Chat Mute/Ignore toggle per group (suppresses tab auto-open & unread badges),
+      persisted in `preferences.cfg [group_mute]`
+
+**The routing bug this uncovered.** Group chat never appeared at all, and not because it was
+unimplemented: `GridSession.OnInstantMessage` filtered with
+`Dialog != MessageFromAgent || GroupIM`, and group chat arrives as **`SessionSend`** whose
+`GroupIM` flag is only set on the *first* message of a session — so both halves of that condition
+dropped it. LibreMetaverse's own `AgentManager.IsGroupMessage` (`GroupIM ||` the session is a
+known group-chat session) is the authoritative test and is what the handler now uses, rather than
+re-deriving the rule from dialog bytes. Pinned by `GroupChatTests`.
+
+**Still deferred:** group profile window, leaving a group, and the group-insignia texture (the
+id is carried on `GroupEntry.InsigniaId`; the panel draws an initial badge until there is an
+asset path for it).
 

@@ -52,6 +52,7 @@ public partial class ChatWindow : SLNGWindow
     private Button _sendButton = null!;
     private Font _iconFont = null!;
     private FriendsPanel _friendsPanel = null!;
+    private GroupsPanel _groupsPanel = null!;
 
     private sealed class ChatTab
     {
@@ -67,6 +68,9 @@ public partial class ChatWindow : SLNGWindow
         // Set for IM tabs only -- who OnSendPressed routes to via GridSession.SendInstantMessage.
         // Null for "Main" (routes through OnSendLocalChat instead).
         public Guid? TargetAgentId;
+        // Set for GROUP tabs only -- routes through GridSession.SendGroupMessage instead. A tab
+        // has at most one of TargetAgentId / TargetGroupId; "Main" has neither.
+        public Guid? TargetGroupId;
         // Shown once per tab per session -- see WarnIfTargetOffline.
         public bool OfflineNoticeShown;
     }
@@ -173,6 +177,7 @@ public partial class ChatWindow : SLNGWindow
     {
         _session = session;
         _friendsPanel.Initialize(session);
+        _groupsPanel.Initialize(session);
     }
 
     public override void _Ready()
@@ -202,8 +207,9 @@ public partial class ChatWindow : SLNGWindow
         _friendsPanel.OnOpenImRequested = OpenOrFocusImTab;
         _friendsPanel.OnOpenProfileRequested = (id, name) => OnOpenProfileRequested?.Invoke(id, name);
         AddOuterTab("Friends", "person", _friendsPanel);
-        AddOuterTab("Groups", "group", BuildPlaceholderPage(
-            "You haven't joined any groups yet.", "Group support is planned for a follow-up pass."));
+        _groupsPanel = new GroupsPanel();
+        _groupsPanel.OnOpenGroupChatRequested = OpenOrFocusGroupTab;
+        AddOuterTab("Groups", "group", _groupsPanel);
 
         AddChatTab("main", "Main", ChatLogKind.Local, closeable: false);
         SelectChatTab(_chatTabs[0]);
@@ -268,6 +274,66 @@ public partial class ChatWindow : SLNGWindow
         var tab = AddChatTab(agentId.ToString(), displayName, ChatLogKind.Im, closeable: true, isOnline);
         tab.TargetAgentId = agentId;
         PreloadRecentHistory(tab);
+        return tab;
+    }
+
+    // ---- M5-3 Phase 2: group chat ----------------------------------------------------------
+
+    /// <summary>Switches to the Chat tab and opens (or focuses) a group's chat -- wired to
+    /// GroupsPanel's "Group Chat" button and double-clicking a group row. Joining the session is
+    /// a server round trip (see GridSession.JoinGroupChat); the tab opens immediately and the
+    /// join result arrives on GroupChatJoined.</summary>
+    public void OpenOrFocusGroupTab(Guid groupId, string groupName)
+    {
+        var tab = GetOrCreateGroupTab(groupId, groupName, joinSession: true);
+        SelectOuterTab(_chatPageControl);
+        SelectChatTab(tab);
+    }
+
+    /// <summary>Appends an incoming group-chat line, opening the group's tab if this is the first
+    /// message from it this session. Called by Boot on GridSession.GroupChatMessageReceived,
+    /// marshalled to the main thread first.</summary>
+    public void AppendGroupChatMessage(Guid groupId, string groupName, Guid fromAgentId, string fromAgentName, string message)
+    {
+        // A muted group must not open a tab, raise an unread badge, or steal focus -- that is the
+        // whole point of the mute (M5-3 §4). An ALREADY-OPEN tab still receives, because having
+        // the conversation open in front of you is a clearer statement of intent than the mute.
+        bool tabOpen = _chatTabs.Exists(t => t.TargetGroupId == groupId);
+        if (!tabOpen && GroupMuteSettings.IsMuted(groupId)) return;
+
+        var tab = GetOrCreateGroupTab(groupId, groupName, joinSession: false);
+        AppendMessageToTab(tab, fromAgentName, message, fromAgentId);
+    }
+
+    /// <summary>Reports the outcome of a group-chat join into the group's own tab, so a failure
+    /// is visible where the user is looking rather than only in the log. Called by Boot on
+    /// GridSession.GroupChatJoined, marshalled to the main thread first.</summary>
+    public void OnGroupChatJoinResult(Guid groupId, bool success)
+    {
+        var tab = _chatTabs.Find(t => t.TargetGroupId == groupId);
+        if (tab == null || success) return;
+        AppendLineToTab(tab, $"[color=#E0A030][i]{BbEscape(L10n.Tr("ui.groups.join_failed"))}[/i][/color]");
+    }
+
+    private ChatTab GetOrCreateGroupTab(Guid groupId, string groupName, bool joinSession)
+    {
+        var existing = _chatTabs.Find(t => t.Id == groupId.ToString());
+        if (existing != null) return existing;
+
+        // Fall back to the shared name cache, then the raw id: an incoming message names the
+        // speaker, not the group, so groupName can be empty when a tab is opened by a message.
+        string display = groupName;
+        if (string.IsNullOrWhiteSpace(display) && _session != null)
+            _session.TryGetCachedName(groupId, out display);
+        if (string.IsNullOrWhiteSpace(display)) display = groupId.ToString();
+
+        var tab = AddChatTab(groupId.ToString(), display, ChatLogKind.Group, closeable: true);
+        tab.TargetGroupId = groupId;
+        PreloadRecentHistory(tab);
+
+        // Sending needs a joined session; receiving does not (the sim delivers to members
+        // regardless), so only an explicitly opened tab asks to join.
+        if (joinSession) _session?.JoinGroupChat(groupId);
         return tab;
     }
 
@@ -641,6 +707,13 @@ public partial class ChatWindow : SLNGWindow
             AppendMessageToTab(_activeChatTab, _session?.AgentName ?? "You", text);
             WarnIfTargetOffline(_activeChatTab, targetId);
         }
+        else if (_activeChatTab.TargetGroupId is { } groupId)
+        {
+            _session?.SendGroupMessage(groupId, text);
+            // Group chat DOES echo back to the sender (the session broadcasts to every member,
+            // including us), so unlike the IM branch above this must not append locally -- doing
+            // so would print every outgoing line twice.
+        }
 
         _inputEdit.Text = "";
 
@@ -761,6 +834,11 @@ public partial class ChatWindow : SLNGWindow
     private void CloseChatTab(ChatTab tab)
     {
         if (!tab.Closeable) return;
+        // Closing a group tab leaves its chat session, so the sim stops delivering it -- the
+        // viewer's own behaviour, and without it a "closed" group would keep re-opening its tab
+        // on the next message.
+        if (tab.TargetGroupId is { } groupId) _session?.LeaveGroupChat(groupId);
+
         bool wasActive = tab == _activeChatTab;
         _chatTabs.Remove(tab);
         tab.RowPanel.QueueFree();

@@ -65,6 +65,25 @@ public record FriendStatusEvent(Guid FriendId, bool IsOnline);
 /// intentionally not an <see cref="IWorldEvent"/>.</summary>
 public record InstantMessageEvent(Guid FromAgentId, string FromAgentName, string Message, Guid SessionId);
 
+/// <summary>The agent's group membership list arrived (or was refreshed). Identity/social state,
+/// not world simulation state, so intentionally not an <see cref="IWorldEvent"/>.</summary>
+public record GroupsUpdatedEvent(IReadOnlyList<GroupEntry> Groups);
+
+/// <summary>One message in a group chat session.
+///
+/// Group chat does NOT arrive as <c>InstantMessageDialog.MessageFromAgent</c> — it comes in as
+/// <c>SessionSend</c>, and its <c>GroupIM</c> flag is not always set on the wire (a message from
+/// an already-open session carries only the session id). LibreMetaverse's own
+/// <c>AgentManager.IsGroupMessage</c> is the authoritative test and is what
+/// <c>GridSession.OnInstantMessage</c> uses, rather than inspecting the dialog by hand.</summary>
+/// <param name="GroupId">Group UUID — the same value as the chat session id.</param>
+/// <param name="FromAgentId">Speaker's agent id; <see cref="Guid.Empty"/> for a system line.</param>
+public record GroupChatMessageEvent(Guid GroupId, Guid FromAgentId, string FromAgentName, string Message);
+
+/// <summary>Result of joining a group's chat session. A join must succeed before
+/// <c>GridSession.SendGroupMessage</c> can deliver anything to that group.</summary>
+public record GroupChatJoinedEvent(Guid GroupId, string SessionName, bool Success);
+
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
 /// <param name="ParentLocalId">Local ID of the parent object, or 0 if unparented.</param>
 /// <param name="AttachmentPoint">SL AttachmentPoint enum byte value; non-zero when the object

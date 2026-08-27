@@ -89,6 +89,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<InstantMessageEvent>? InstantMessageReceived;
     public event EventHandler<ScriptDialogEvent>? ScriptDialogReceived;
 
+    /// <summary>M5-3 Phase 2: the agent's group memberships, after <see cref="RequestGroups"/>.
+    /// Raised on a LibreMetaverse network thread — marshal before touching a scene node.</summary>
+    public event EventHandler<GroupsUpdatedEvent>? GroupsUpdated;
+    /// <inheritdoc cref="GroupsUpdated"/>
+    public event EventHandler<GroupChatMessageEvent>? GroupChatMessageReceived;
+    /// <inheritdoc cref="GroupsUpdated"/>
+    public event EventHandler<GroupChatJoinedEvent>? GroupChatJoined;
+
     /// <summary>Avatar-profile replies (FEAT-UI-13). All fired off a LibreMetaverse network
     /// thread after <see cref="RequestAvatarProfile"/> — consumers must marshal before touching a
     /// scene node. Neutral DTOs only; no LibreMetaverse type crosses this boundary.</summary>
@@ -244,6 +252,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Avatars.UUIDNameReply += OnUUIDNameReply;
         _client.Avatars.DisplayNameUpdate += OnDisplayNameUpdate;
         _client.Groups.GroupNamesReply += OnGroupNamesReply;
+        _client.Groups.CurrentGroups += OnCurrentGroups;
+        _client.Self.GroupChatJoined += OnGroupChatJoined;
         _client.Self.AlertMessage += OnAlertMessage;
         _client.Objects.KillObject += OnKillObject;
         _client.Objects.KillObjects += OnKillObjects;
@@ -1026,7 +1036,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     // dedicated flows later rather than being half-handled here.
     private void OnInstantMessage(object? sender, InstantMessageEventArgs e)
     {
-        if (e.IM.Dialog != InstantMessageDialog.MessageFromAgent || e.IM.GroupIM) return;
+        // Group chat first, and NOT by inspecting the dialog byte: it arrives as
+        // InstantMessageDialog.SessionSend, not MessageFromAgent, and its GroupIM flag is only set
+        // on the first message of a session -- a later one carries just the session id. Both the
+        // old `Dialog != MessageFromAgent` test and the old `|| e.IM.GroupIM` bail therefore
+        // dropped group chat, twice over. LibreMetaverse's own AgentManager.IsGroupMessage is the
+        // authoritative test (GroupIM || the session is a known group chat session), so use it
+        // rather than re-deriving the rule here.
+        if (_client.Self.IsGroupMessage(e.IM))
+        {
+            if (string.IsNullOrEmpty(e.IM.Message)) return; // typing/keep-alive, same as local chat
+            // For group chat the session id IS the group id.
+            GroupChatMessageReceived?.Invoke(this, new GroupChatMessageEvent(
+                e.IM.IMSessionID.Guid, e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message));
+            return;
+        }
+
+        if (e.IM.Dialog != InstantMessageDialog.MessageFromAgent) return;
 
         InstantMessageReceived?.Invoke(this, new InstantMessageEvent(
             e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message, e.IM.IMSessionID.Guid));
@@ -1037,6 +1063,78 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         if (_client.Network.Connected)
             _client.Self.InstantMessage(new UUID(targetAgentId), message);
+    }
+
+    // ---- M5-3 Phase 2: groups + group chat -------------------------------------------------
+
+    /// <summary>Asks the sim for the agent's group memberships. The answer arrives asynchronously
+    /// on <see cref="GroupsUpdated"/> (a network-thread event — marshal before touching the UI);
+    /// <see cref="GetGroups"/> then returns it without another round trip.</summary>
+    public void RequestGroups()
+    {
+        if (_client.Network.Connected) _client.Groups.RequestCurrentGroups();
+    }
+
+    /// <summary>Snapshot of the agent's group memberships, or empty until the first
+    /// <see cref="GroupsUpdated"/> has landed. Sorted by name so the UI needs no opinion.</summary>
+    public IReadOnlyList<GroupEntry> GetGroups()
+    {
+        var snapshot = _groups;
+        return snapshot ?? (IReadOnlyList<GroupEntry>)Array.Empty<GroupEntry>();
+    }
+
+    /// <summary>Last group list received, replaced wholesale by <see cref="OnCurrentGroups"/>.
+    /// Read from the Godot main thread and written from a network thread, so it is swapped as a
+    /// single reference rather than mutated in place — the same buffer-and-publish discipline
+    /// AGENTS.md requires for world state.</summary>
+    private volatile IReadOnlyList<GroupEntry>? _groups;
+
+    private void OnCurrentGroups(object? sender, CurrentGroupsEventArgs e)
+    {
+        var list = new List<GroupEntry>(e.Groups.Count);
+        foreach (var g in e.Groups.Values)
+        {
+            // Cache the name too: group chat lines and object owners resolve through the same
+            // shared name cache, and a membership reply is a free source for it.
+            _nameCache[g.ID.Guid] = g.Name ?? string.Empty;
+            list.Add(new GroupEntry(
+                g.ID.Guid, g.Name ?? string.Empty, g.MemberTitle ?? string.Empty,
+                g.InsigniaID.Guid, g.AcceptNotices));
+        }
+        list.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+
+        _groups = list;
+        GroupsUpdated?.Invoke(this, new GroupsUpdatedEvent(list));
+    }
+
+    /// <summary>Joins a group's chat session. Required before <see cref="SendGroupMessage"/> can
+    /// deliver anything — LibreMetaverse refuses to send into a session it has not joined. Result
+    /// arrives on <see cref="GroupChatJoined"/>.</summary>
+    public void JoinGroupChat(Guid groupId)
+    {
+        if (groupId == Guid.Empty || !_client.Network.Connected) return;
+        _client.Self.RequestJoinGroupChat(new UUID(groupId));
+    }
+
+    /// <summary>Leaves a group's chat session (closing its tab), so the sim stops delivering it.</summary>
+    public void LeaveGroupChat(Guid groupId)
+    {
+        if (groupId == Guid.Empty || !_client.Network.Connected) return;
+        _client.Self.RequestLeaveGroupChat(new UUID(groupId));
+    }
+
+    /// <summary>Sends a message to a group chat session. No-op unless the session was joined
+    /// first (see <see cref="JoinGroupChat"/>) — LibreMetaverse logs an error and drops it.</summary>
+    public void SendGroupMessage(Guid groupId, string message)
+    {
+        if (groupId == Guid.Empty || string.IsNullOrEmpty(message) || !_client.Network.Connected) return;
+        _client.Self.InstantMessageGroup(new UUID(groupId), message);
+    }
+
+    private void OnGroupChatJoined(object? sender, GroupChatJoinedEventArgs e)
+    {
+        GroupChatJoined?.Invoke(this, new GroupChatJoinedEvent(
+            e.SessionID.Guid, e.SessionName ?? string.Empty, e.Success));
     }
 
     // ---- FEAT-UI-13: avatar profile fetch + social actions --------------------------------
@@ -3229,6 +3327,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Avatars.UUIDNameReply -= OnUUIDNameReply;
         _client.Avatars.DisplayNameUpdate -= OnDisplayNameUpdate;
         _client.Groups.GroupNamesReply -= OnGroupNamesReply;
+        _client.Groups.CurrentGroups -= OnCurrentGroups;
+        _client.Self.GroupChatJoined -= OnGroupChatJoined;
         _client.Self.AlertMessage -= OnAlertMessage;
         _client.Objects.KillObject -= OnKillObject;
         _client.Objects.KillObjects -= OnKillObjects;
