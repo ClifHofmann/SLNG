@@ -2,8 +2,10 @@
 
 - **Feature ID:** `FEAT-UI-13`
 - **Track:** `ui` / `net`
-- **Status:** `🧪 Review` — implemented on `feature/FEAT-UI-13-user-profile-window`, builds + 331
-  tests + `--selftest` green, **not yet confirmed in-world**.
+- **Status:** `✅ Done` — implemented on `feature/FEAT-UI-13-user-profile-window`, builds + 340
+  tests + `--selftest` green, **confirmed in-world 2026-08-27** (own profile edited and saved,
+  a Pick opened with image/text/location and teleported to, another resident's profile opened
+  from the in-world right-click menu).
 - **Owner:** `claude`
 - **Dep:** `M5-3` (ChatWindow IM tabs + FriendsPanel — the "IM" action reuses
   `ChatWindow.OpenOrFocusImTab`, and the Friends tab gets the "Profile" button wired here).
@@ -150,4 +152,4 @@ the window-map count so the network-thread handlers can early-out without racing
       free).
 - [x] No LibreMetaverse type on `GridSession`'s public API; network events marshalled before
       touching the Control tree.
-- [ ] Confirmed in-world against a real avatar (OSGrid).
+- [x] Confirmed in-world against a real avatar (OSGrid, 2026-08-27).
