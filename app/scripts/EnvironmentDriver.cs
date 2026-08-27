@@ -37,6 +37,51 @@ public sealed class EnvironmentDriver
         _source = source;
     }
 
+    // --- FEAT-ENV-02: local Windlight preset override ------------------------------------------
+    // A preset the USER picked wins over what the region sent, for as long as it is set. Sky and
+    // water are held separately on purpose: picking a sky preset must not silently throw away the
+    // region's water (and vice versa), which is exactly what overriding a whole DayCycle would do.
+    // Nothing else in the driver changes -- the override is substituted at the one point where the
+    // cycle would otherwise have been evaluated.
+
+    private SkySettings? _skyOverride;
+    private WaterSettings? _waterOverride;
+
+    /// <summary>Name of the active sky preset, or null when the region's own sky is in use.</summary>
+    public string? SkyPresetName { get; private set; }
+
+    /// <summary>Name of the active water preset, or null when the region's own water is in use.</summary>
+    public string? WaterPresetName { get; private set; }
+
+    /// <summary>True while any user preset is overriding the region.</summary>
+    public bool HasPresetOverride => _skyOverride != null || _waterOverride != null;
+
+    /// <summary>Which capability the region's own environment came from. Shown in the picker so
+    /// "back to region" says what the user is going back TO.</summary>
+    public EnvironmentSource RegionSource => _source;
+
+    public void SetSkyPreset(SkySettings sky, string name)
+    {
+        _skyOverride = sky;
+        SkyPresetName = name;
+    }
+
+    public void SetWaterPreset(WaterSettings water, string name)
+    {
+        _waterOverride = water;
+        WaterPresetName = name;
+    }
+
+    /// <summary>Drops every preset and hands the scene back to the region's own environment. The
+    /// region cycle was never discarded, so this takes effect on the next frame with no refetch.</summary>
+    public void ClearPresets()
+    {
+        _skyOverride = null;
+        _waterOverride = null;
+        SkyPresetName = null;
+        WaterPresetName = null;
+    }
+
     /// <summary>Applies the current cycle, evaluated at <paramref name="utcNow"/>, to the scene.
     /// Safe to call every frame — it is four colour/scalar writes and no allocation beyond what
     /// <see cref="DayCycle.EvaluateSky"/> already does.</summary>
@@ -88,8 +133,10 @@ public sealed class EnvironmentDriver
     {
         if (worldEnvironment?.Environment is not { } env) return;
 
-        var sky = _cycle.EvaluateSky(utcNow);
-        var water = _cycle.EvaluateWater(utcNow);
+        // A user preset (FEAT-ENV-02) replaces the evaluated frame; it is a single fixed sky, so
+        // there is nothing to evaluate against the clock.
+        var sky = _skyOverride ?? _cycle.EvaluateSky(utcNow);
+        var water = _waterOverride ?? _cycle.EvaluateWater(utcNow);
 
         UpdateCloudScroll(sky);
 
@@ -120,7 +167,10 @@ public sealed class EnvironmentDriver
                 tex => waterMaterial.SetShaderParameter("slng_water_normal_map", tex));
         }
 
-        if (_source == EnvironmentSource.ExtendedEnvironment || _source == EnvironmentSource.LegacyWindlight)
+        // A preset carries its own sun position (converted from the legacy sun_angle/east_angle),
+        // and picking "Midnight" has to move the sun, not just recolour the sky.
+        if (_skyOverride != null ||
+            _source == EnvironmentSource.ExtendedEnvironment || _source == EnvironmentSource.LegacyWindlight)
         {
             // If EEP or Legacy Windlight is active, the EEP explicitly overrides the sun position.
             // SunRotation rotates the X-axis (1, 0, 0) into the final SL sun direction.

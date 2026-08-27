@@ -60,6 +60,7 @@ public static class SelfTest
         results.AddRange(CheckShaderVariants());
         results.AddRange(CheckLocales());
         results.Add(CheckAvatarSkeleton());
+        results.AddRange(CheckWindlightPresets());
 
         foreach (var r in results)
         {
@@ -291,6 +292,33 @@ public static class SelfTest
         {
             return new Check("avatar skeleton", false, ex.Message);
         }
+    }
+
+    /// <summary>
+    /// FEAT-ENV-02: the shipped Windlight library is listed AND every preset in it parses.
+    ///
+    /// Both halves are load-bearing and neither is covered by the unit tests, which read the same
+    /// files off disk with System.IO. Here they go through DirAccess/FileAccess, which is the only
+    /// way to find out that an exported build packed them at all -- a preset picker whose list is
+    /// empty is exactly what a missing export include_filter looks like.
+    /// </summary>
+    private static IEnumerable<Check> CheckWindlightPresets()
+    {
+        var library = new WindlightPresetLibrary();
+        library.Load();
+
+        int skyFailures = library.SkyNames.Count(n => library.LoadSky(n) == null);
+        int waterFailures = library.WaterNames.Count(n => library.LoadWater(n) == null);
+
+        yield return new Check(
+            "windlight sky presets",
+            library.SkyNames.Count >= 30 && skyFailures == 0,
+            skyFailures == 0 ? $"{library.SkyNames.Count} presets parse" : $"{skyFailures} of {library.SkyNames.Count} failed to parse");
+
+        yield return new Check(
+            "windlight water presets",
+            library.WaterNames.Count >= 5 && waterFailures == 0,
+            waterFailures == 0 ? $"{library.WaterNames.Count} presets parse" : $"{waterFailures} of {library.WaterNames.Count} failed to parse");
     }
 
     /// <summary>

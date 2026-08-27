@@ -23,6 +23,12 @@
          purpose: it is the only sample of what a grid actually sends, and re-capturing it costs a
          login. -->
     <None Include="TestData\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The Windlight presets the client actually ships (FEAT-ENV-02), linked rather than copied
+         so WindlightPresetParserTests parses the real files instead of a fixture that can drift
+         away from them. -->
+    <None Include="../../app/assets/windlight/**/*.xml"
+          Link="TestData/windlight/%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

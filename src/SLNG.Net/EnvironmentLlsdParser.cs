@@ -148,10 +148,10 @@ internal static class EnvironmentLlsdParser
             CloudShadow = Real(map, null, "cloud_shadow", d.CloudShadow),
             SunlightColor = Color(map, null, "sunlight_color", d.SunlightColor),
 
-            SunRotation = Rotation(map, "sun_rotation", d.SunRotation),
-            MoonRotation = Rotation(map, "moon_rotation", d.MoonRotation),
+            SunRotation = SunRotation(map, legacyWindlight, d.SunRotation),
+            MoonRotation = MoonRotation(map, legacyWindlight, d.MoonRotation),
             MoonBrightness = Real(map, null, "moon_brightness", d.MoonBrightness),
-            StarBrightness = Real(map, null, "star_brightness", d.StarBrightness),
+            StarBrightness = StarBrightness(map, legacyWindlight, d.StarBrightness),
             SunScale = Real(map, null, "sun_scale", d.SunScale),
             MoonScale = Real(map, null, "moon_scale", d.MoonScale),
 
@@ -189,7 +189,7 @@ internal static class EnvironmentLlsdParser
             ScaleBelow = RealAlias(map, "scale_below", "scaleBelow", d.ScaleBelow),
             Wave1Direction = Vec2Alias(map, "wave1_direction", "wave1Dir", d.Wave1Direction),
             Wave2Direction = Vec2Alias(map, "wave2_direction", "wave2Dir", d.Wave2Direction),
-            NormalMapId = Id(map, "normal_map"),
+            NormalMapId = IdAlias(map, "normal_map", "normalMap"),
         };
     }
 
@@ -200,14 +200,30 @@ internal static class EnvironmentLlsdParser
 
     private static float Real(OSDMap map, OSDMap? preferred, string key, float fallback)
     {
-        if (preferred != null && preferred.ContainsKey(key)) return (float)preferred[key].AsReal();
-        return map.ContainsKey(key) ? (float)map[key].AsReal() : fallback;
+        if (preferred != null && preferred.ContainsKey(key)) return ToReal(preferred[key], fallback);
+        return map.ContainsKey(key) ? ToReal(map[key], fallback) : fallback;
     }
 
     private static float RealAlias(OSDMap map, string key, string legacyKey, float fallback)
     {
-        if (map.ContainsKey(key)) return (float)map[key].AsReal();
-        return map.ContainsKey(legacyKey) ? (float)map[legacyKey].AsReal() : fallback;
+        if (map.ContainsKey(key)) return ToReal(map[key], fallback);
+        return map.ContainsKey(legacyKey) ? ToReal(map[legacyKey], fallback) : fallback;
+    }
+
+    /// <summary>Reads a scalar, accepting the legacy Windlight encoding that wraps one in an
+    /// array.
+    ///
+    /// A legacy setting stores every scalar as <c>[value, 0, 0, 1]</c> — the LLColor4 the old
+    /// UI edited it with — while EEP stores a bare Real. The viewer's own conversion reads
+    /// element 0 of each of them by hand (<c>legacy[SETTING_CLOUD_SCALE][0].asReal()</c>,
+    /// llsettingssky.cpp:1017-1058, and the same in <c>translateLegacyHazeSettings</c>).
+    /// <c>OSD.AsReal()</c> on an array returns 0, so reading these without unwrapping does not
+    /// fail loudly — it silently renders every legacy region and every legacy preset with
+    /// cloud scale, cloud shadow, gamma, max_y and the whole haze block at zero.</summary>
+    private static float ToReal(OSD osd, float fallback)
+    {
+        if (osd is OSDArray a) return a.Count >= 1 ? (float)a[0].AsReal() : fallback;
+        return (float)osd.AsReal();
     }
 
     private static Vector3 Color(OSDMap map, OSDMap? preferred, string key, Vector3 fallback)
@@ -266,6 +282,11 @@ internal static class EnvironmentLlsdParser
     private static Guid Id(OSDMap map, string key)
         => map.ContainsKey(key) ? map[key].AsUUID().Guid : Guid.Empty;
 
+    /// <summary>An asset id under either spelling. Legacy Windlight water spells the normal map
+    /// <c>normalMap</c> (llsettingswater.cpp:SETTING_LEGACY_NORMAL_MAP), EEP <c>normal_map</c>.</summary>
+    private static Guid IdAlias(OSDMap map, string key, string legacyKey)
+        => map.ContainsKey(key) ? map[key].AsUUID().Guid : Id(map, legacyKey);
+
     /// <summary>Reads a colour or vector. SL writes these as an LLSD array; the alpha of a
     /// four-component colour is dropped because none of these quantities has one — SL stores
     /// <c>LLColor4</c> and reads back <c>LLColor3</c> throughout
@@ -295,5 +316,71 @@ internal static class EnvironmentLlsdParser
 
         return new Quaternion(
             (float)a[0].AsReal(), (float)a[1].AsReal(), (float)a[2].AsReal(), (float)a[3].AsReal());
+    }
+
+    /// <summary>Sun orientation, converting the legacy Windlight sun position when the document
+    /// carries one.
+    ///
+    /// A legacy setting has no <c>sun_rotation</c> at all: it stores <c>sun_angle</c> (altitude,
+    /// radians) and <c>east_angle</c> (azimuth, radians, CLOCKWISE — hence the negation) and the
+    /// viewer builds the quaternion from them on load (<c>translateLegacySettings</c>,
+    /// llsettingssky.cpp:1099-1112). Without this a legacy sky renders with an identity rotation,
+    /// i.e. the sun pinned on the horizon due east regardless of what the preset says.</summary>
+    private static Quaternion SunRotation(OSDMap map, bool legacyWindlight, Quaternion fallback)
+    {
+        if (map.ContainsKey("sun_rotation")) return Rotation(map, "sun_rotation", fallback);
+        if (!legacyWindlight || !HasLegacySunAngles(map)) return fallback;
+
+        return AzimuthAltitudeToQuaternion(
+            -(float)map["east_angle"].AsReal(), (float)map["sun_angle"].AsReal());
+    }
+
+    /// <summary>Moon orientation. Legacy Windlight put the moon diametrically opposite the sun
+    /// (llsettingssky.cpp:1107).</summary>
+    private static Quaternion MoonRotation(OSDMap map, bool legacyWindlight, Quaternion fallback)
+    {
+        if (map.ContainsKey("moon_rotation")) return Rotation(map, "moon_rotation", fallback);
+        if (!legacyWindlight || !HasLegacySunAngles(map)) return fallback;
+
+        return AzimuthAltitudeToQuaternion(
+            -(float)map["east_angle"].AsReal() + MathF.PI, -(float)map["sun_angle"].AsReal());
+    }
+
+    private static bool HasLegacySunAngles(OSDMap map)
+        => map.ContainsKey("east_angle") && map.ContainsKey("sun_angle");
+
+    /// <summary>Star brightness, on the EEP scale.
+    ///
+    /// Legacy Windlight stores this in 0..2; EEP in 0..500. The viewer multiplies by 250 on
+    /// conversion (llsettingssky.cpp:1063).</summary>
+    private static float StarBrightness(OSDMap map, bool legacyWindlight, float fallback)
+    {
+        if (!map.ContainsKey("star_brightness")) return fallback;
+
+        float value = ToReal(map["star_brightness"], fallback);
+        return legacyWindlight ? value * 250f : value;
+    }
+
+    /// <summary>The viewer's <c>convert_azimuth_and_altitude_to_quat</c>
+    /// (llsettingssky.cpp:48-70): the rotation that takes the +X axis onto the direction given by
+    /// azimuth/altitude. Everything downstream reads the sun direction back out as
+    /// <c>x_axis * rotation</c>, so this must stay the same convention.</summary>
+    private static Quaternion AzimuthAltitudeToQuaternion(float azimuth, float altitude)
+    {
+        var dir = new Vector3(
+            MathF.Cos(azimuth) * MathF.Cos(altitude),
+            MathF.Sin(azimuth) * MathF.Cos(altitude),
+            MathF.Sin(altitude));
+
+        var axis = Vector3.Cross(Vector3.UnitX, dir);
+        // Sun exactly on the +X axis (or exactly opposite): the cross product degenerates and
+        // normalizing it would produce NaN, which would poison the sun direction for the whole
+        // frame. Identity is the correct answer for the first case; +Z is an arbitrary but valid
+        // axis for the second.
+        if (axis.LengthSquared() < 1e-12f)
+            return dir.X >= 0f ? Quaternion.Identity : Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI);
+
+        float angle = MathF.Acos(Math.Clamp(Vector3.Dot(Vector3.UnitX, dir), -1f, 1f));
+        return Quaternion.CreateFromAxisAngle(Vector3.Normalize(axis), angle);
     }
 }

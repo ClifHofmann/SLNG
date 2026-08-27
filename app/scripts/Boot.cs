@@ -108,6 +108,8 @@ public partial class Boot : Control
     // M5-3 Tabbed Chat window
     private SLNG.App.UI.ChatWindow _chatWindow = null!;
     private SLNG.App.UI.SnapshotWindow _snapshotWindow = null!;
+    private SLNG.App.UI.EnvironmentWindow _environmentWindow = null!;
+    private readonly WindlightPresetLibrary _windlightPresets = new();
     private SLNG.Core.Services.ChatLogger _chatLogger = null!;
     
     // M5-2 Object Editing UI
@@ -133,7 +135,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.9.59-alpha";
+    public const string AppVersion = "v0.9.60-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -359,6 +361,8 @@ public partial class Boot : Control
             _preferencesWindow.Visible = true;
         };
 
+        _topMenu.OnOpenEnvironment = () => _environmentWindow?.Toggle();
+
         _topMenu.OnCreateLandmark = () => {
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) OpenCreateLandmarkWindow(hudLayer);
@@ -493,6 +497,13 @@ public partial class Boot : Control
         hudLayer.AddChild(_snapshotWindow);
         _snapshotWindow.Initialize(hudLayer);
 
+        // FEAT-ENV-02: the shipped Windlight presets. Loaded here (a directory listing, no
+        // parsing) so the picker has its index before it is ever opened.
+        _windlightPresets.Load();
+        _environmentWindow = new SLNG.App.UI.EnvironmentWindow { Name = "EnvironmentWindow" };
+        hudLayer.AddChild(_environmentWindow);
+        _environmentWindow.Initialize(_windlightPresets, _environmentDriver);
+
         _chatLogger = new SLNG.Core.Services.ChatLogger();
         _chatWindow = new SLNG.App.UI.ChatWindow { Name = "ChatWindow" };
         hudLayer.AddChild(_chatWindow);
@@ -615,6 +626,7 @@ public partial class Boot : Control
             new("camera", "Camera Controls", "photo_camera", () => cameraHud.Toggle(), () => cameraHud.Visible),
             new("inventory", "Inventory", "inventory_2", () => _inventoryPanel?.Toggle(), () => _inventoryPanel?.Visible ?? false),
             new("snapshot", "Snapshot", "add_a_photo", () => _snapshotWindow.Toggle(), () => _snapshotWindow.Visible),
+            new("environment", "Environment", "wb_sunny", () => _environmentWindow.Toggle(), () => _environmentWindow.Visible),
         };
 
         _toolbarSettings = new SLNG.App.UI.ToolbarSettings();

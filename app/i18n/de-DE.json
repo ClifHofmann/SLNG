@@ -35,10 +35,24 @@
       "sculpt_u_nudge_left": "Sculpt-U verschieben: -1 Rasterspalte",
       "sculpt_u_nudge_right": "Sculpt-U verschieben: +1 Rasterspalte",
       "sculpt_u_nudge_left_coarse": "Sculpt-U verschieben: -16 Rasterspalten",
-      "sculpt_u_nudge_right_coarse": "Sculpt-U verschieben: +16 Rasterspalten"
+      "sculpt_u_nudge_right_coarse": "Sculpt-U verschieben: +16 Rasterspalten",
+      "environment": "Umgebung (Windlight)..."
     },
     "hud": {
       "stand_up": "Aufstehen"
+    },
+    "environment": {
+      "title": "Umgebung — Windlight",
+      "sky_presets": "Himmel",
+      "water_presets": "Wasser",
+      "use_region": "↺  Region-Einstellung verwenden",
+      "use_region_tooltip": "Verwirft die gewählten Presets und übernimmt wieder die Umgebung, die der Sim sendet.",
+      "status_region": "Region-Umgebung aktiv ({0})",
+      "status_preset": "Himmel: {0}   ·   Wasser: {1}",
+      "load_failed": "Preset \"{0}\" konnte nicht gelesen werden.",
+      "source_eep": "EEP",
+      "source_legacy": "Windlight",
+      "source_default": "Standard — Sim sendet nichts"
     },
     "profile": {
       "title": "PROFIL",

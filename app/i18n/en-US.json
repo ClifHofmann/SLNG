@@ -35,10 +35,24 @@
       "sculpt_u_nudge_left": "Nudge sculpt U: -1 grid column",
       "sculpt_u_nudge_right": "Nudge sculpt U: +1 grid column",
       "sculpt_u_nudge_left_coarse": "Nudge sculpt U: -16 grid columns",
-      "sculpt_u_nudge_right_coarse": "Nudge sculpt U: +16 grid columns"
+      "sculpt_u_nudge_right_coarse": "Nudge sculpt U: +16 grid columns",
+      "environment": "Environment (Windlight)..."
     },
     "hud": {
       "stand_up": "Stand Up"
+    },
+    "environment": {
+      "title": "Environment — Windlight",
+      "sky_presets": "Sky",
+      "water_presets": "Water",
+      "use_region": "↺  Use region setting",
+      "use_region_tooltip": "Drops the selected presets and goes back to the environment the sim sends.",
+      "status_region": "Region environment active ({0})",
+      "status_preset": "Sky: {0}   ·   Water: {1}",
+      "load_failed": "Could not read preset \"{0}\".",
+      "source_eep": "EEP",
+      "source_legacy": "Windlight",
+      "source_default": "default — sim sends none"
     },
     "profile": {
       "title": "PROFILE",

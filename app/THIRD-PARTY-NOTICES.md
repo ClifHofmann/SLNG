@@ -57,6 +57,26 @@ source distribution, as that licence requires.
 
 ---
 
+## Second Life™ Viewer — Windlight preset files
+
+Licensed under the **GNU Lesser General Public License, version 2.1**, as part of the Second Life
+viewer source distribution (`indra/newview/app_settings/windlight`). Firestorm ships the same
+files, which is why the preset names in this client's environment picker match the ones its users
+already know.
+
+### Files included
+
+| Files in this repository | Source in the Second Life viewer | Changes made |
+|---|---|---|
+| `app/assets/windlight/skies/*.xml` (36 files) | `indra/newview/app_settings/windlight/skies/*.xml` | **File contents unchanged — byte-identical.** Only the file NAMES differ: the originals are URL-escaped (`Blue%20Midday.xml`), ours are decoded (`Blue Midday.xml`). |
+| `app/assets/windlight/water/*.xml` (7 files) | `indra/newview/app_settings/windlight/water/*.xml` | Same: contents byte-identical, names URL-decoded. |
+
+These are LLSD documents describing sky and water settings — the same format the legacy
+`EnvironmentSettings` capability carries. This project reads them; it does not ship a modified
+viewer.
+
+---
+
 ## LibreMetaverse
 
 The Second Life / OpenSimulator protocol implementation, used as a NuGet dependency. BSD 3-Clause.
