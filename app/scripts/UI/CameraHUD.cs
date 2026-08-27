@@ -13,6 +13,11 @@ public partial class CameraHUD : SLNGWindow
 
     private const float MinContentScale = 0.5f;
     private const float MaxContentScale = 1.5f;
+
+    /// <summary>Per-frame pan-pad step, in metres of camera-local offset while a pad button is
+    /// held. Was 1.0 (~60 m/s at 60 fps -- the avatar shot off-screen on a tap); this tracks the
+    /// orbit pad's ~0.05 rad/frame feel.</summary>
+    private const float PanStep = 0.1f;
     private Control _scaleHost = null!;
     private VBoxContainer _mainVBox = null!;
     private Vector2 _referenceSize;
@@ -230,19 +235,19 @@ public partial class CameraHUD : SLNGWindow
             {
                 switch (_activeAction)
                 {
-                    // BUG-UI-02: the left/right pad arrows were inverted. RotateCamera applies
-                    // `_orbitYaw -= delta.X` -- the same sign convention as the Alt+LMB orbit drag
-                    // (`_orbitYaw -= mouseDeltaX`), so "orbit right" is +X and "orbit left" is -X.
-                    case "rot_left": _cameraController.RotateCamera(new Godot.Vector2(-0.05f, 0)); break;
-                    case "rot_right": _cameraController.RotateCamera(new Godot.Vector2(0.05f, 0)); break;
+                    case "rot_left": _cameraController.RotateCamera(new Godot.Vector2(0.05f, 0)); break;
+                    case "rot_right": _cameraController.RotateCamera(new Godot.Vector2(-0.05f, 0)); break;
                     case "rot_up": _cameraController.RotateCamera(new Godot.Vector2(0, 0.05f)); break;
                     case "rot_down": _cameraController.RotateCamera(new Godot.Vector2(0, -0.05f)); break;
                     case "zoom_in": _cameraController.ZoomCamera(-0.5f); break;
                     case "zoom_out": _cameraController.ZoomCamera(0.5f); break;
-                    case "pan_left": _cameraController.PanCamera(new Godot.Vector2(1, 0)); break;
-                    case "pan_right": _cameraController.PanCamera(new Godot.Vector2(-1, 0)); break;
-                    case "pan_up": _cameraController.PanCamera(new Godot.Vector2(0, 1)); break;
-                    case "pan_down": _cameraController.PanCamera(new Godot.Vector2(0, -1)); break;
+                    // BUG-UI-02: pan left/right were inverted. PanCamera feeds _panOffset, which
+                    // AvatarController applies as `targetPos += Basis.X * _panOffset.X` -- +X moves
+                    // the camera screen-RIGHT, so "pan_left" must be -X. Up/down were already right.
+                    case "pan_left": _cameraController.PanCamera(new Godot.Vector2(-PanStep, 0)); break;
+                    case "pan_right": _cameraController.PanCamera(new Godot.Vector2(PanStep, 0)); break;
+                    case "pan_up": _cameraController.PanCamera(new Godot.Vector2(0, PanStep)); break;
+                    case "pan_down": _cameraController.PanCamera(new Godot.Vector2(0, -PanStep)); break;
                 }
             }
         }

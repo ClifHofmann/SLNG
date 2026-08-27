@@ -39,22 +39,13 @@ public partial class AvatarController : Camera3D
     {
         _orbitYaw -= delta.X;
         _orbitPitch -= delta.Y;
-        // Just shy of straight up/down (pi/2 ~= 1.571). Was 1.5 exactly: an Alt+LMB focus can
-        // preload _orbitPitch to nearly that value (_orbitPitch = targetPitch - _pitch at the
-        // engage site), which pinned the pad's pitch arrows at the stop -- the pitch half of
-        // BUG-UI-02's "tilt stops working after focusing on an object".
-        _orbitPitch = Mathf.Clamp(_orbitPitch, -1.55f, 1.55f);
-
-        // Wheel zoom accumulates a framing offset into _panOffset (ZoomTowardCursor) that nothing
-        // decays. The camera orbits around avatar+_panOffset, so after a few zoom-toward-cursor
-        // ticks the pivot sits metres off the avatar and the pad sweeps the view across the
-        // ground/sky instead of orbiting -- the "tilt does nothing when zoomed in" half of
-        // BUG-UI-02. Bleed the offset off while the pad drives the orbit: converges within a
-        // fraction of a second when a button is held, negligible for a single tap, and a no-op
-        // when _panOffset is already ~zero.
-        _panOffset = _panOffset.Lerp(Godot.Vector3.Zero, 0.2f);
+        _orbitPitch = Mathf.Clamp(_orbitPitch, -1.5f, 1.5f);
     }
 
+    /// <summary>Camera-Controls pan pad. <paramref name="delta"/> is a camera-local screen offset:
+    /// +X moves the camera screen-right, +Y screen-up (see the consumer in <see cref="_Process"/>,
+    /// which does <c>targetPos += Basis.X * _panOffset.X + Basis.Y * _panOffset.Y</c>). Accumulates
+    /// -- it is a persistent framing offset, cleared by <see cref="ResetCamera"/> (Escape).</summary>
     public void PanCamera(Vector2 delta)
     {
         _panOffset += new Vector3(delta.X, delta.Y, 0);
@@ -716,11 +707,15 @@ public partial class AvatarController : Camera3D
                     // Floating-origin-relative world position (see RenderConfig), plus eye height.
                     targetPos = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
                     targetPos.Y += 1.8f;
-
-                    // Apply pan offset relative to camera's orientation
-                    targetPos += Transform.Basis.X * _panOffset.X;
-                    targetPos += Transform.Basis.Y * _panOffset.Y;
                 }
+
+                // BUG-UI-02: apply the Camera-Controls pan-pad offset for BOTH the avatar-follow
+                // and the Alt-click focus target. It used to live inside the else above, so the
+                // moment a focus target was set the pan pad did nothing at all -- the "stops
+                // working when zoomed in / after focusing on an object" half of the bug. Camera-
+                // local axes, so "pan left" stays screen-left regardless of where the camera looks.
+                targetPos += Transform.Basis.X * _panOffset.X;
+                targetPos += Transform.Basis.Y * _panOffset.Y;
 
                 // Third-person camera: pull back along the camera's Z axis
                 Position = targetPos + Transform.Basis.Z * _zoom;
