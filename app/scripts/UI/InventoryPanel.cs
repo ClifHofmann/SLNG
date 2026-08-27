@@ -34,6 +34,8 @@ public partial class InventoryPanel : SLNGWindow
     {
         base._Ready(); // Setup SLNGWindow styling
 
+        PersistId = "inventory"; // FEAT-UI-11: remember position/size across sessions
+
         Title = "INVENTORY";
         Visible = false;
         

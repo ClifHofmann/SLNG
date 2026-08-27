@@ -175,6 +175,8 @@ public partial class ChatWindow : SLNGWindow
     {
         base._Ready(); // SLNGWindow styling
 
+        PersistId = "chat"; // FEAT-UI-11: remember position/size across sessions
+
         _iconFont = GD.Load<Font>("res://assets/fonts/MaterialSymbolsOutlined.ttf");
 
         Title = "COMMUNICATION";

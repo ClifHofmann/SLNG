@@ -53,6 +53,8 @@ public partial class CreateLandmarkWindow : SLNGWindow
     {
         base._Ready();
 
+        PersistId = "create_landmark"; // FEAT-UI-11: one-shot dialog, but reopen where it was left
+
         Title = "Create Landmark";
         CustomMinimumSize = new Vector2(360, 420);
         Size = new Vector2(360, 420);
