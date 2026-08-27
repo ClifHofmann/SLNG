@@ -174,6 +174,7 @@ public partial class AvatarController : Camera3D
     {
         Input.MouseMode = Input.MouseModeEnum.Visible;
         ProcessPriority = 100; // Run after Boot.cs (0) to read freshly extrapolated positions
+        PhysicsInterpolationMode = Node.PhysicsInterpolationModeEnum.Off; // Prevent stutter from _Process updates
     }
     // _UnhandledInput, not _Input: Control nodes (the inventory Tree, LineEdits, etc.) stop
     // mouse/keyboard events from reaching this method once they've consumed them, whereas
@@ -650,6 +651,11 @@ public partial class AvatarController : Camera3D
                 } // !isSitting
 
                 _world.NotifyComponentUpdated(localAgent, transform);
+                
+                // Execute UpdateVisual synchronously on the main thread so the avatar mesh
+                // position matches the camera position exactly this frame, eliminating jitter.
+                // AvatarRenderer's CallDeferred will also run later, but it will be a no-op.
+                _avatarRenderer?.UpdateVisual(localAgent.Id.ToString());
 
                 // Keyboard zoom polling (+ and - keys)
                 if (Input.IsKeyPressed(Key.Equal) || Input.IsKeyPressed(Key.KpAdd))

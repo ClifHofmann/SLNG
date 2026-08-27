@@ -99,6 +99,9 @@ public sealed class WorldSimulation : IDisposable
     private const float ExtrapolationPhaseOutStartSeconds = 0.4f;
     private const float ExtrapolationMaxSeconds = 0.8f;
 
+    private const float LocalExtrapolationMaxSeconds = 5.0f;
+    private const float LocalExtrapolationPhaseOutStartSeconds = 4.5f;
+
     // Rotation has no reliable AngularVelocity to dead-reckon from for a turning avatar (see
     // TransformComponent.TargetRotation's doc comment), so instead of phase-out/cutoff timing it's
     // a simple framerate-independent exponential approach toward TargetRotation: reaches ~95% of
@@ -190,11 +193,14 @@ public sealed class WorldSimulation : IDisposable
             // "local agent owns this" guards below.
             bool isSeatedLocalAgent = isLocalAgent && avatarComponent!.SittingOnLocalId != 0;
 
-            if (transform.Velocity != Vector3.Zero && transform.TimeSinceUpdate < ExtrapolationMaxSeconds)
+            float maxSecs = isLocalAgent ? LocalExtrapolationMaxSeconds : ExtrapolationMaxSeconds;
+            float phaseOutStartSecs = isLocalAgent ? LocalExtrapolationPhaseOutStartSeconds : ExtrapolationPhaseOutStartSeconds;
+
+            if (transform.Velocity != Vector3.Zero && transform.TimeSinceUpdate < maxSecs)
             {
                 float phaseOutT = System.Math.Clamp(
-                    (transform.TimeSinceUpdate - ExtrapolationPhaseOutStartSeconds)
-                        / (ExtrapolationMaxSeconds - ExtrapolationPhaseOutStartSeconds),
+                    (transform.TimeSinceUpdate - phaseOutStartSecs)
+                        / (maxSecs - phaseOutStartSecs),
                     0f, 1f);
                 float weight = 1f - phaseOutT;
 

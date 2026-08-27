@@ -149,6 +149,7 @@ public partial class AvatarRenderer : Node3D
         public AvatarVisual()
         {
             Root = new Node3D();
+            Root.PhysicsInterpolationMode = Node.PhysicsInterpolationModeEnum.Off;
         }
 
         public void QueueFree()
@@ -457,7 +458,7 @@ public partial class AvatarRenderer : Node3D
         _hudContent.Remove(entityId);
     }
 
-    private void UpdateVisual(string entityIdStr)
+    public void UpdateVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
         if (_world == null) return;
