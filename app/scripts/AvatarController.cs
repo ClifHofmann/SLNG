@@ -34,6 +34,19 @@ public partial class AvatarController : Camera3D
     private float _zoom = 4.0f;
     private Vector3 _panOffset = Vector3.Zero;
 
+    // FEAT-UI-12: persisted FOV / rear distance / focus height from Preferences > Camera.
+    private SLNG.App.UI.CameraSettings? _cameraSettings;
+
+    /// <summary>Wire the persisted camera view settings. Applied at once (FOV and the resting
+    /// third-person distance); FOV is then kept in sync each frame in <see cref="_Process"/> so a
+    /// slider move takes effect live, and the rear distance is re-applied on every camera reset.</summary>
+    public void SetCameraSettings(SLNG.App.UI.CameraSettings settings)
+    {
+        _cameraSettings = settings;
+        Fov = settings.Fov;
+        _zoom = settings.RearDistance;
+    }
+
     // Public API for CameraHUD
     public void RotateCamera(Vector2 delta)
     {
@@ -98,7 +111,7 @@ public partial class AvatarController : Camera3D
         _orbitYaw = 0f;
         _orbitPitch = 0f;
         _panOffset = Vector3.Zero;
-        _zoom = 4.0f;
+        _zoom = _cameraSettings?.RearDistance ?? 4.0f;
         _orbitTarget = null;
     }
 
@@ -292,6 +305,10 @@ public partial class AvatarController : Camera3D
         using var _phase = MainThreadPhase.Enter("avatar-control");
 
         if (_world == null || _session == null) return;
+
+        // FEAT-UI-12: keep FOV in sync with the persisted preference so a slider move applies live.
+        if (_cameraSettings != null && !Mathf.IsEqualApprox(Fov, _cameraSettings.Fov))
+            Fov = _cameraSettings.Fov;
 
         var focusOwner = GetViewport().GuiGetFocusOwner();
         bool hasUiFocus = BlocksMovement(focusOwner);
@@ -719,9 +736,10 @@ public partial class AvatarController : Camera3D
                 }
                 else
                 {
-                    // Floating-origin-relative world position (see RenderConfig), plus eye height.
+                    // Floating-origin-relative world position (see RenderConfig), plus the focus
+                    // height (FEAT-UI-12: was a hardcoded 1.8, now the persisted preference).
                     targetPos = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
-                    targetPos.Y += 1.8f;
+                    targetPos.Y += _cameraSettings?.FocusHeight ?? 1.8f;
                 }
 
                 // BUG-UI-02: apply the Camera-Controls pan-pad offset for BOTH the avatar-follow

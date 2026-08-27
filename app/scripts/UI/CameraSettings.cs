@@ -4,11 +4,17 @@ using Godot;
 namespace SLNG.App.UI;
 
 /// <summary>
-/// Camera-Controls pad speeds (BUG-UI-02 follow-up), persisted to user://preferences.cfg under a
-/// "camera" section -- same ConfigFile pattern and file as <see cref="UiSettings"/> /
-/// ToolbarSettings. Each value is a multiplier over <see cref="CameraHUD"/>'s built-in per-frame
-/// step, so 1.0 == the shipped default. <see cref="CameraHUD"/> reads these live each frame, so a
-/// slider change takes effect immediately with no rebroadcast needed.
+/// Camera preferences, persisted to user://preferences.cfg under a "camera" section -- same
+/// ConfigFile pattern and file as <see cref="UiSettings"/> / ToolbarSettings.
+///
+/// Two groups:
+/// <list type="bullet">
+///   <item>Pad speeds (BUG-UI-02) -- multipliers over <see cref="CameraHUD"/>'s built-in per-frame
+///     step, 1.0 == shipped default. <see cref="CameraHUD"/> reads these live each frame.</item>
+///   <item>View settings (FEAT-UI-12) -- FOV, rear-view distance and focus height.
+///     <see cref="AvatarController"/> reads FOV / focus height live and the rear distance on the
+///     next camera reset.</item>
+/// </list>
 /// </summary>
 public sealed class CameraSettings
 {
@@ -20,6 +26,18 @@ public sealed class CameraSettings
     public const float MinMultiplier = 0.1f;
     public const float MaxMultiplier = 3.0f;
 
+    public const float MinFov = 50f;
+    public const float MaxFov = 100f;
+    public const float DefaultFov = 75f;
+
+    public const float MinDistance = 1.0f;
+    public const float MaxDistance = 20.0f;
+    public const float DefaultDistance = 4.0f;
+
+    public const float MinFocusHeight = 0.5f;
+    public const float MaxFocusHeight = 3.0f;
+    public const float DefaultFocusHeight = 1.8f;
+
     /// <summary>Orbit pad (rotate around the avatar / focus point).</summary>
     public float OrbitSpeed { get; private set; } = 1.0f;
 
@@ -29,22 +47,36 @@ public sealed class CameraSettings
     /// <summary>Zoom in / out buttons.</summary>
     public float ZoomSpeed { get; private set; } = 1.0f;
 
+    /// <summary>Vertical field of view in degrees (Godot Camera3D default is 75).</summary>
+    public float Fov { get; private set; } = DefaultFov;
+
+    /// <summary>Resting third-person camera distance behind the avatar, applied on camera reset.</summary>
+    public float RearDistance { get; private set; } = DefaultDistance;
+
+    /// <summary>Height above the avatar origin the camera looks at / orbits around (was a hardcoded 1.8).</summary>
+    public float FocusHeight { get; private set; } = DefaultFocusHeight;
+
     public void Load()
     {
         var cfg = new ConfigFile();
         if (cfg.Load(ConfigPath) != Error.Ok) return;
-        OrbitSpeed = Clamp((float)cfg.GetValue(Section, "orbit_speed", 1.0));
-        PanSpeed = Clamp((float)cfg.GetValue(Section, "pan_speed", 1.0));
-        ZoomSpeed = Clamp((float)cfg.GetValue(Section, "zoom_speed", 1.0));
+        OrbitSpeed = ClampMul((float)cfg.GetValue(Section, "orbit_speed", 1.0));
+        PanSpeed = ClampMul((float)cfg.GetValue(Section, "pan_speed", 1.0));
+        ZoomSpeed = ClampMul((float)cfg.GetValue(Section, "zoom_speed", 1.0));
+        Fov = Mathf.Clamp((float)cfg.GetValue(Section, "fov", DefaultFov), MinFov, MaxFov);
+        RearDistance = Mathf.Clamp((float)cfg.GetValue(Section, "rear_distance", DefaultDistance), MinDistance, MaxDistance);
+        FocusHeight = Mathf.Clamp((float)cfg.GetValue(Section, "focus_height", DefaultFocusHeight), MinFocusHeight, MaxFocusHeight);
     }
 
-    public void SetOrbitSpeed(float value) => Persist("orbit_speed", value, v => OrbitSpeed = v);
-    public void SetPanSpeed(float value) => Persist("pan_speed", value, v => PanSpeed = v);
-    public void SetZoomSpeed(float value) => Persist("zoom_speed", value, v => ZoomSpeed = v);
+    public void SetOrbitSpeed(float value) => Persist("orbit_speed", ClampMul(value), v => OrbitSpeed = v);
+    public void SetPanSpeed(float value) => Persist("pan_speed", ClampMul(value), v => PanSpeed = v);
+    public void SetZoomSpeed(float value) => Persist("zoom_speed", ClampMul(value), v => ZoomSpeed = v);
+    public void SetFov(float value) => Persist("fov", Mathf.Clamp(value, MinFov, MaxFov), v => Fov = v);
+    public void SetRearDistance(float value) => Persist("rear_distance", Mathf.Clamp(value, MinDistance, MaxDistance), v => RearDistance = v);
+    public void SetFocusHeight(float value) => Persist("focus_height", Mathf.Clamp(value, MinFocusHeight, MaxFocusHeight), v => FocusHeight = v);
 
-    private static void Persist(string key, float value, Action<float> assign)
+    private static void Persist(string key, float clamped, Action<float> assign)
     {
-        float clamped = Clamp(value);
         assign(clamped);
 
         var cfg = new ConfigFile();
@@ -53,5 +85,5 @@ public sealed class CameraSettings
         cfg.Save(ConfigPath);
     }
 
-    private static float Clamp(float value) => Mathf.Clamp(value, MinMultiplier, MaxMultiplier);
+    private static float ClampMul(float value) => Mathf.Clamp(value, MinMultiplier, MaxMultiplier);
 }
