@@ -159,7 +159,7 @@ Each task follows a **spec → test → implement → review** loop:
 |---|---|---|---|---|---|---|---|
 | FEAT-UI-02 | Client Localization & Multi-Language (i18n) ✅ | ui | gemini | ux-designer | gemini | M0-4 | Full UI text translation pipeline & multi-language support. [Spec](file:///E:/Git/SLNG/docs/specs/FEAT-UI-02-localization-i18n.md) |
 | MVP6-1 | Performance Hardening & Occlusion Culling | render/assets | | performance-engineer | gemini | M2-4 | Impostors, aggressive culling, draw-call reduction on busy sims |
-| FEAT-PERF-03 | General Rendering Performance (Framerate) ✅ | render | gemini | performance-engineer | | FEAT-PERF-01 | Address low FPS (e.g. 30fps) on busy sims. Investigate shadow (CSM) cost, draw-call batching/instancing, and lack of LODs. |
+| FEAT-PERF-03 | General Rendering Performance (Framerate) ✅ | render | gemini | performance-engineer | | FEAT-PERF-01 | Address low FPS (e.g. 30fps) on busy sims. Investigate shadow (CSM) cost, draw-call batching/instancing, and lack of LODs. 2434f0d: Fixed rotation stutter (disabled physics interpolation for AvatarController/Root) and local avatar network freezes (increased extrapolation limit to 5s). |
 | MVP6-2 | TPV Policy Compliance Pass & Registration | infra/net | | architect | claude | M0-2 | Full Linden Lab Third-Party Viewer Policy audit & official registration |
 | MVP6-3 | Cross-Platform Build Pipeline (Linux & macOS) | infra | | DevOps | claude | M1.5-3 | Native Linux & macOS releases packaged in CI/CD pipeline |
 | MVP6-4 | Mobile Target Optimization (Android / iOS) | render/ui | | graphics-engineer | gemini | MVP6-3 | Touch controls UI, mobile shading profile & lower memory footprint |
