@@ -16,6 +16,7 @@ public partial class SLNGWindow : MarginContainer
     private bool _isResizing = false;
     private Vector2 _preMinimizeSize;
     private Control _resizeHandle = null!;
+    private Viewport? _viewport;
 
     public const float MinUiScale = 0.8f;
     public const float MaxUiScale = 1.6f;
@@ -79,6 +80,13 @@ public partial class SLNGWindow : MarginContainer
         // keeps meaning "where the window's corner sits" regardless of scale.
         Scale = new Vector2(_globalUiScale, _globalUiScale);
         GlobalUiScaleChanged += OnGlobalUiScaleChanged;
+
+        // FEAT-UI-11: pull this window back into view whenever the main viewport shrinks, so a
+        // resize can't strand a floating window off-screen. Cached because GetViewport() is not
+        // reliable from _ExitTree, and the subscription must be removed there (the root Viewport
+        // outlives every window, so a leaked delegate would fire on a freed object).
+        _viewport = GetViewport();
+        if (_viewport != null) _viewport.SizeChanged += OnViewportSizeChanged;
 
         // Add a drop shadow or outline margin around the actual panel
         AddThemeConstantOverride("margin_left", 8);
@@ -243,10 +251,8 @@ public partial class SLNGWindow : MarginContainer
                 Mathf.Max(savedSize.Y, CustomMinimumSize.Y));
         }
 
-        var viewportSize = GetViewport()?.GetVisibleRect().Size ?? Position;
-        Position = new Vector2(
-            Mathf.Clamp(Position.X, -Size.X + 40, Mathf.Max(viewportSize.X - 40, 0)),
-            Mathf.Clamp(Position.Y, 0, Mathf.Max(viewportSize.Y - 40, 0)));
+        // Restored from a possibly larger / different-resolution session -- keep it on screen.
+        ClampToViewport();
     }
 
     /// <summary>No-op unless a subclass opted in via <see cref="PersistId"/>. Called after every
@@ -283,7 +289,34 @@ public partial class SLNGWindow : MarginContainer
     public override void _ExitTree()
     {
         GlobalUiScaleChanged -= OnGlobalUiScaleChanged;
+        if (_viewport != null) _viewport.SizeChanged -= OnViewportSizeChanged;
         base._ExitTree();
+    }
+
+    /// <summary>FEAT-UI-11: main viewport resized -- re-clamp and, if the window was actually moved
+    /// and it persists, save the corrected spot. Guarded on "actually moved" so dragging the app
+    /// window's edge doesn't hammer the config file once per resize event per open window.</summary>
+    private void OnViewportSizeChanged()
+    {
+        if (ClampToViewport()) SavePersistedGeometry();
+    }
+
+    /// <summary>Pushes the window back inside the current viewport so at least a 40 px strip of the
+    /// top-left (enough of the title bar to grab) stays on screen. Footprint is <c>Size * Scale</c>
+    /// (FEAT-UI-07). Returns true if it had to move the window.</summary>
+    private bool ClampToViewport()
+    {
+        var vp = (_viewport ?? GetViewport())?.GetVisibleRect().Size ?? Vector2.Zero;
+        if (vp.X <= 0f || vp.Y <= 0f) return false;
+
+        float w = Size.X * Scale.X;
+        var clamped = new Vector2(
+            Mathf.Clamp(Position.X, -w + 40f, Mathf.Max(vp.X - 40f, 0f)),
+            Mathf.Clamp(Position.Y, 0f, Mathf.Max(vp.Y - 40f, 0f)));
+
+        if (clamped == Position) return false;
+        Position = clamped;
+        return true;
     }
 
     /// <summary>Raises this window above every other overlapping SLNGWindow the instant it's
