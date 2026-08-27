@@ -1703,6 +1703,11 @@ public partial class ObjectRenderer : Node3D
             material.Shader = PrimShaderFamily.Blend;
         }
 
+        // FEAT-RENDER-04 phase 5: set true once a legacy material's DiffuseAlphaMode has decided
+        // this face's transparency authoritatively, so the plain-texture branch below skips
+        // ApplyAlphaCutout's DetectAlpha() pixel guess.
+        bool legacyAlphaModeResolved = false;
+
         // FEAT-RENDER-04 phase 2: resolve the face's LEGACY Blinn-Phong material and report it.
         // Nothing is bound yet -- phases 3 and 4 do that -- but without a caller the whole wire
         // path and capability fetch below it would sit there untested against a real region, and
@@ -1720,6 +1725,35 @@ public partial class ObjectRenderer : Node3D
                              $"specular={(lm.SpecularMap == Guid.Empty ? "none" : lm.SpecularMap.ToString()[..8])} " +
                              $"gloss={lm.SpecularExponent} env={lm.EnvironmentIntensity} " +
                              $"alphaMode={lm.DiffuseAlphaMode}");
+                }
+
+                // FEAT-RENDER-04 phase 5: the material declares how its diffuse alpha is treated
+                // (LLMaterial::eDiffuseAlphaMode) — authoritative, exactly like the glTF branch's
+                // pbr.AlphaMode below. DEFAULT means "pre-material behaviour", so it's the one
+                // value that leaves ApplyAlphaCutout's DetectAlpha() guess in charge.
+                switch (lm.DiffuseAlphaMode)
+                {
+                    case LegacyDiffuseAlphaMode.Blend:
+                    // EMISSIVE is drawn in the viewer's alpha pass too (fullbright is FEAT-RENDER-06,
+                    // not this); Blend is the honest transparency family for it here.
+                    case LegacyDiffuseAlphaMode.Emissive:
+                        material.Shader = PrimShaderFamily.Blend;
+                        legacyAlphaModeResolved = true;
+                        break;
+                    case LegacyDiffuseAlphaMode.Mask:
+                        material.Shader = PrimShaderFamily.Scissor;
+                        material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, lm.AlphaMaskCutoff / 255f);
+                        legacyAlphaModeResolved = true;
+                        break;
+                    case LegacyDiffuseAlphaMode.None:
+                        // Diffuse alpha explicitly ignored. Don't downgrade a translucent per-face
+                        // tint (same reasoning as the glTF branch's Opaque case), but do stop
+                        // ApplyAlphaCutout from re-reading the texture's alpha and overriding this.
+                        if (!tintIsTranslucent) material.Shader = PrimShaderFamily.Opaque;
+                        legacyAlphaModeResolved = true;
+                        break;
+                    case LegacyDiffuseAlphaMode.Default:
+                        break;
                 }
 
                 if (lm.NormalMap != Guid.Empty)
@@ -1918,7 +1952,11 @@ public partial class ObjectRenderer : Node3D
                         if (!IsInstanceValid(tex)) return;
                         material.SetShaderParameter(PrimShaderFamily.AlbedoTexture, tex);
                         material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
-                        ApplyAlphaCutout(material, tex, tintIsTranslucent);
+                        // FEAT-RENDER-04 phase 5: a legacy material's DiffuseAlphaMode (unless
+                        // DEFAULT) has already decided this face's transparency — don't let the
+                        // DetectAlpha() pixel guess second-guess it.
+                        if (!legacyAlphaModeResolved)
+                            ApplyAlphaCutout(material, tex, tintIsTranslucent);
                     }).CallDeferred();
                 }
                 else

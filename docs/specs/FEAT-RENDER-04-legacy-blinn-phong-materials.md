@@ -2,7 +2,8 @@
 
 - **Feature ID:** `FEAT-RENDER-04`
 - **Track:** `net` / `assets` / `render`
-- **Status:** `🧪 Review` — phases 1-4 confirmed in-world; phase 5 (alpha modes) open
+- **Status:** `🧪 Review` — phases 1-4 confirmed in-world; phase 5 (alpha modes) implemented,
+  pending an in-world A/B
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -79,6 +80,11 @@ therefore boundary conversion, caching and rendering — not protocol implementa
 - [x] Visually A/B'd against Firestorm on the Dangazi Forest reef rock
       (`88fe3b1a-b688-4da0-8730-de7cd1194a6c`, a known case with both maps bound).
       Confirmed 2026-08-23: shape, size and both maps match.
+- [~] **Phase 5:** a face with a legacy material takes its transparency from the material's
+      `DiffuseAlphaMode` (`Blend`/`Mask`+`AlphaMaskCutoff`/`None`), not from `DetectAlpha()`.
+      `Default` still falls through to the pixel guess. Implemented; in-world A/B pending —
+      needs a face known to declare `Mask` or `None` while carrying a diffuse texture whose
+      alpha channel would make `DetectAlpha()` decide otherwise.
 
 ## Technical Specs & Affected Files
 
@@ -132,8 +138,14 @@ family), and `SpecExp`/`EnvIntensity` have defined roles there —
 - [x] **Phase 3 — normal maps.** Bind the normal map with its own placement.
 - [x] **Phase 4 — specular.** Map `SpecMap`/`SpecColor`/`SpecExp`/`EnvIntensity` onto
       the shader family, ported from the viewer's material shaders.
-- [ ] **Phase 5 — alpha modes.** `DiffuseAlphaMode` and `AlphaMaskCutoff`, which
-      currently come from `DetectAlpha()` guesswork; the material states them outright.
+- [x] **Phase 5 — alpha modes.** `BuildFaceMaterialAsync` now reads the legacy material's
+      `DiffuseAlphaMode` and picks the shader family directly — `Blend`→Blend,
+      `Mask`→Scissor with `AlphaMaskCutoff/255` as the threshold, `None`→Opaque (without
+      downgrading a translucent per-face tint), `Emissive`→Blend (fullbright proper is
+      FEAT-RENDER-06). A `legacyAlphaModeResolved` flag then skips `ApplyAlphaCutout` for that
+      face so the `DetectAlpha()` guess can't override it. `Default` keeps the old behaviour.
+      Mirrors the glTF branch's `pbr.AlphaMode` handling. Render-only; build + 322 tests +
+      selftest green. `v0.9.52-alpha`.
 
 ## Found along the way (not in the original plan)
 
