@@ -15,6 +15,8 @@ public partial class SLNGWindow : MarginContainer
     private Vector2 _dragOffset;
     private bool _isResizing = false;
     private Vector2 _preMinimizeSize;
+    private Vector2 _preMinimizeMinSize;
+    private bool _isMinimized;
     private Control _resizeHandle = null!;
     private Viewport? _viewport;
 
@@ -265,25 +267,54 @@ public partial class SLNGWindow : MarginContainer
         var cfg = new ConfigFile();
         cfg.Load(GeometryConfigPath); // preserve sections owned by other features (UiSettings, ToolbarSettings)
         cfg.SetValue(GeometrySection, $"{PersistId}_pos", Position);
-        cfg.SetValue(GeometrySection, $"{PersistId}_size", Size);
+        // While minimized the live Size is just the collapsed header; persist the real frame size
+        // so the window reopens full-height next session rather than stranded as a tiny bar.
+        cfg.SetValue(GeometrySection, $"{PersistId}_size", _isMinimized ? _preMinimizeSize : Size);
         cfg.Save(GeometryConfigPath);
     }
 
+    /// <summary>BUG-UI-01: collapse the whole outer frame to the title bar, not just hide the
+    /// content. Setting <see cref="Control.Size"/> alone never worked -- this is a
+    /// <see cref="Container"/> (MarginContainer), so its height is floored by
+    /// <c>GetCombinedMinimumSize()</c> = max(CustomMinimumSize.Y, inner content min height), and
+    /// every subclass sets a CustomMinimumSize (e.g. CameraHUD 160x140, ChatWindow 400x340) that
+    /// clamped the "minimized" frame straight back to full height.</summary>
     private void ToggleMinimize()
     {
-        if (_contentContainer.Visible)
+        if (!_isMinimized)
         {
             _preMinimizeSize = Size;
+            _preMinimizeMinSize = CustomMinimumSize;
+            _isMinimized = true;
+
             _contentContainer.Visible = false;
             if (_resizeHandle != null) _resizeHandle.Visible = false;
-            Size = new Vector2(Size.X, 0); // Shrink to minimum
+
+            // Drop the height floor so the frame can shrink to the header. Keep the width floor --
+            // a window that also snapped narrow on minimize would truncate its own title and feel
+            // jarring. The actual resize is deferred (ApplyMinimizedSize): hiding the content
+            // invalidates the inner layout's minimum size, but that isn't recomputed until the
+            // next layout pass, so a synchronous `Size =` here still clamps against the old height.
+            CustomMinimumSize = new Vector2(CustomMinimumSize.X, 0);
+            CallDeferred(nameof(ApplyMinimizedSize));
         }
         else
         {
+            _isMinimized = false;
+            CustomMinimumSize = _preMinimizeMinSize;
             _contentContainer.Visible = true;
             if (_resizeHandle != null) _resizeHandle.Visible = true;
-            Size = _preMinimizeSize; // Restore size
+            Size = _preMinimizeSize; // Restore the pre-minimize frame size
         }
+    }
+
+    /// <summary>Second half of the minimize path, run deferred so the content container's
+    /// visibility change has propagated into the layout's minimum-size calculation. Collapses the
+    /// outer frame to the header's natural height, leaving the width untouched.</summary>
+    private void ApplyMinimizedSize()
+    {
+        if (!_isMinimized) return; // toggled back open before the deferred call landed
+        Size = new Vector2(Size.X, GetCombinedMinimumSize().Y);
     }
 
     public override void _ExitTree()
