@@ -107,6 +107,7 @@ public partial class Boot : Control
 
     // M5-3 Tabbed Chat window
     private SLNG.App.UI.ChatWindow _chatWindow = null!;
+    private SLNG.App.UI.SnapshotWindow _snapshotWindow = null!;
     private SLNG.Core.Services.ChatLogger _chatLogger = null!;
     
     // M5-2 Object Editing UI
@@ -125,7 +126,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.9.52-alpha";
+    public const string AppVersion = "v0.9.53-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -465,6 +466,10 @@ public partial class Boot : Control
             _session.CreatePrim(type, RenderConfig.FromGodot(_session.CurrentRegionHandle, godotPos));
         };
 
+        _snapshotWindow = new SLNG.App.UI.SnapshotWindow { Name = "SnapshotWindow" };
+        hudLayer.AddChild(_snapshotWindow);
+        _snapshotWindow.Initialize(hudLayer);
+
         _chatLogger = new SLNG.Core.Services.ChatLogger();
         _chatWindow = new SLNG.App.UI.ChatWindow { Name = "ChatWindow" };
         hudLayer.AddChild(_chatWindow);
@@ -554,6 +559,7 @@ public partial class Boot : Control
             new("chat", "Chat", "chat", () => _chatWindow.Visible = !_chatWindow.Visible, () => _chatWindow.Visible),
             new("camera", "Camera Controls", "photo_camera", () => cameraHud.Toggle(), () => cameraHud.Visible),
             new("inventory", "Inventory", "inventory_2", () => _inventoryPanel?.Toggle(), () => _inventoryPanel?.Visible ?? false),
+            new("snapshot", "Snapshot", "add_a_photo", () => _snapshotWindow.Toggle(), () => _snapshotWindow.Visible),
         };
 
         _toolbarSettings = new SLNG.App.UI.ToolbarSettings();
