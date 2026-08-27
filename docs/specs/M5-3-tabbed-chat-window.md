@@ -4,9 +4,10 @@
 - **Track:** `ui`
 - **Status:** `🧪 Review` — Phase 1/1b/1c (window shell, local chat, Friends, IM) merged earlier;
   Phase 2 (Groups panel, group chat, mute toggle) plus group invitations implemented
-  `v0.9.62-alpha`, builds + 363 tests + `--selftest` 26/26 green, **not yet confirmed in-world**.
-  One acceptance item stays open by choice: the chat-log path setting in Preferences (see the
-  list below).
+  `v0.9.62-alpha`, builds + 363 tests + `--selftest` 26/26 green. **Group invitations confirmed
+  in-world 2026-08-27** (invite arrives, prompt shows, answering works). The Groups list, group
+  chat and the mute toggle have **not been separately confirmed in-world yet**. One acceptance
+  item stays open by choice: the chat-log path setting in Preferences (see the list below).
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
