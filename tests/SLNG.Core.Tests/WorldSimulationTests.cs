@@ -536,7 +536,7 @@ public class WorldSimulationTests
 
         // Advance in small steps well past the 0.8s cutoff (mirrors real per-frame deltas). Checks
         // TargetPosition -- see the dilation test above for why.
-        for (int i = 0; i < 40; i++) // 40 * 0.1s = 4s
+        for (int i = 0; i < 60; i++) // 60 * 0.1s = 6.0s (local agent cutoff is now 5.0s)
         {
             simulation.ExtrapolateMovement(0.1f);
         }
