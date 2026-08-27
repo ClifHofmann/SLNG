@@ -37,10 +37,20 @@ void fragment() {
     vec3 emission;
     slng_shade(UV, v_view_position, albedo, metallic, roughness, specular, normal_map, normal_depth, emission);
 
-    ALBEDO = albedo;
+    // albedo + emission, NOT plain albedo: `unshaded` outputs ALBEDO only and drops EMISSION
+    // entirely, so anything slng_shade routed through emission has to be folded back in here or
+    // it is simply lost. That is not hypothetical -- SL's fullbright flag (FEAT-RENDER-06) does
+    // exactly that routing (out_emission += out_albedo; out_albedo = 0), and since HUD faces are
+    // almost always fullbright, plain `ALBEDO = albedo` rendered whole worn HUDs as solid black
+    // rectangles despite every face being correctly textured. For a non-fullbright face emission
+    // is zero (or a genuine glTF emissive map, which an overlay should show anyway), so the sum
+    // is correct in both cases.
+    ALBEDO = albedo + emission;
     // No METALLIC/ROUGHNESS/SPECULAR/NORMAL_MAP: `unshaded` ignores every one of them, and
     // writing NORMAL_MAP in particular is not free to leave in. Godot infers "this mesh needs
     // tangents" from the mere presence of that write and logs a warning per mesh that has none
     // -- which HUD attachment meshes do not (12 lines in one session, FEAT-RENDER-01 Phase 3).
+    // EMISSION is written anyway so the shader stays correct if `unshaded` is ever dropped;
+    // as long as it is set, Godot ignores this value.
     EMISSION = emission;
 }

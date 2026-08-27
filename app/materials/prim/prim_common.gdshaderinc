@@ -311,8 +311,14 @@ float slng_shade(vec2 uv, vec3 view_position,
     // SL fullbright: the face is lit by nothing. Route the (already atmospherics-applied) albedo
     // through EMISSION and zero ALBEDO so clustered lighting, ambient and GI add nothing on top;
     // atmospherics stays applied, matching the viewer's fullbright shaders. Added to any glTF
-    // emissive rather than replacing it, since a face can be both. A no-op for the `unshaded` HUD
-    // variants, whose output is ALBEDO + EMISSION regardless of which one carries the value.
+    // emissive rather than replacing it, since a face can be both.
+    //
+    // NOT a no-op for the `unshaded` HUD variants, which is what an earlier version of this
+    // comment claimed. Godot's `unshaded` render_mode outputs ALBEDO *only* -- EMISSION is
+    // dropped -- so zeroing albedo here rendered every fullbright HUD face pure black, and HUD
+    // faces are almost always fullbright (measured in-world: all six faces of a worn HUD, each
+    // correctly textured 512-1024px, drawn as solid black rectangles). The HUD variants therefore
+    // fold emission back into ALBEDO themselves; see prim_opaque_hud.gdshader.
     if (fullbright) {
         out_emission += out_albedo;
         out_albedo = vec3(0.0);

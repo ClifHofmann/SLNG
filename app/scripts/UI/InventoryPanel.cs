@@ -482,16 +482,28 @@ public partial class InventoryPanel : SLNGWindow
         if (_session == null) return;
         _status.Text = "Detaching…";
 
-        await _session.DetachItemAsync(itemId).ConfigureAwait(false);
+        var result = await _session.DetachItemAsync(itemId).ConfigureAwait(false);
         if (parts.Length >= 8 && Guid.TryParse(parts[7], out var linkTargetId) && linkTargetId != Guid.Empty && linkTargetId != itemId)
         {
-            await _session.DetachItemAsync(linkTargetId).ConfigureAwait(false);
+            var linkResult = await _session.DetachItemAsync(linkTargetId).ConfigureAwait(false);
+            result = new SLNG.Core.DetachResult(
+                result.WasAttached || linkResult.WasAttached,
+                result.StaleLinksRemoved + linkResult.StaleLinksRemoved);
         }
+
+        // "Detached." unconditionally was the misleading part of the original report: for an item
+        // that only had a stale Current-Outfit link the detach packet is a server-side no-op, so
+        // the row stayed exactly as it was under a success message. Say which of the two happened.
+        string status = result.WasAttached
+            ? "Detached."
+            : result.StaleLinksRemoved > 0
+                ? $"Was not attached — removed {result.StaleLinksRemoved} stale outfit link(s)."
+                : "Was not attached, and no outfit link found.";
 
         Callable.From(() =>
         {
             if (!IsInstanceValid(this)) return;
-            _status.Text = "Detached.";
+            _status.Text = status;
             if (_session.CurrentOutfitFolderId is { } cofId)
             {
                 RefreshFolder(cofId);

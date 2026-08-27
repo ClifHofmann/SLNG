@@ -144,4 +144,37 @@ public class GridSessionTests
 
         Assert.Null(exception);
     }
+
+    // Detaching something that is not attached must report that fact rather than claiming success
+    // -- DetachAttachmentIntoInv is matched server-side against live attachments, so for an item
+    // that only has a stale Current-Outfit link it is a silent no-op ("I click Detach and nothing
+    // happens"). With no connection there is no attachment and no COF, which is the same shape.
+    [Fact]
+    public async Task DetachItemAsync_reports_not_attached_when_nothing_is_worn()
+    {
+        using var session = new GridSession();
+
+        var result = await session.DetachItemAsync(Guid.NewGuid());
+
+        Assert.False(result.WasAttached);
+        Assert.Equal(0, result.StaleLinksRemoved);
+    }
+
+    // ObjectDetach-by-localId is the escape hatch for an attachment inventory cannot address.
+    // Both entry points must no-op gracefully while disconnected, same as every other send path.
+    [Fact]
+    public void DetachByLocalId_without_connection_does_not_throw()
+    {
+        using var session = new GridSession();
+        Assert.Null(Record.Exception(() => session.DetachByLocalId(12345)));
+    }
+
+    [Fact]
+    public void DetachAllAttachments_without_connection_returns_zero()
+    {
+        using var session = new GridSession();
+
+        Assert.Equal(0, session.DetachAllAttachments(hudOnly: true));
+        Assert.Equal(0, session.DetachAllAttachments(hudOnly: false));
+    }
 }

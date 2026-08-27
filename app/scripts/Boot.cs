@@ -133,7 +133,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.9.55-alpha";
+    public const string AppVersion = "v0.9.59-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -362,6 +362,19 @@ public partial class Boot : Control
         _topMenu.OnCreateLandmark = () => {
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) OpenCreateLandmarkWindow(hudLayer);
+        };
+
+        // Escape hatch for a stuck attachment/HUD that inventory "Detach"
+        // (DetachAttachmentIntoInv) can't shift -- ObjectDetach by localId instead.
+        _topMenu.OnDetachAttachments = (hudOnly) => {
+            int n = _session?.DetachAllAttachments(hudOnly) ?? 0;
+            string msg = $"Detach: sent ObjectDetach for {n} {(hudOnly ? "HUD " : "")}attachment(s).";
+            // NOT LogMessage: that writes to the boot LogPanel, which FEAT-UI-09 hides once the
+            // loading screen goes away -- so the first version of this reported into a control
+            // nobody can see, and the console had nothing either. A user-initiated, rare action
+            // needs to land somewhere both the user and a later log read can find it.
+            GD.Print($"[Detach] {msg}");
+            _chatWindow?.AppendLocalChatMessage("System", msg);
         };
     }
 

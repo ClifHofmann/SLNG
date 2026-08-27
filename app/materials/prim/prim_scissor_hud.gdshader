@@ -30,7 +30,9 @@ void fragment() {
     vec3 emission;
     float alpha = slng_shade(UV, v_view_position, albedo, metallic, roughness, specular, normal_map, normal_depth, emission);
 
-    ALBEDO = albedo;
+    // albedo + emission -- see prim_opaque_hud.gdshader for why `unshaded` makes this mandatory
+    // rather than cosmetic (it drops EMISSION, and SL fullbright routes the colour through it).
+    ALBEDO = albedo + emission;
     // No METALLIC/ROUGHNESS/SPECULAR/NORMAL_MAP: `unshaded` ignores every one of them, and
     // writing NORMAL_MAP in particular is not free to leave in. Godot infers "this mesh needs
     // tangents" from the mere presence of that write and logs a warning per mesh that has none

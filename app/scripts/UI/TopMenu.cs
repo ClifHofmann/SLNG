@@ -15,6 +15,8 @@ namespace SLNG.App.UI
         public Action? OnMeasureRenderBaseline;
         public Action? OnOpenPreferences;
         public Action? OnCreateLandmark;
+        /// <summary>true = HUD-point attachments only, false = every attachment.</summary>
+        public Action<bool>? OnDetachAttachments;
 
         public override void _Ready()
         {
@@ -92,8 +94,13 @@ namespace SLNG.App.UI
             var worldMenu = new PopupMenu();
             worldMenu.Name = L10n.Tr("ui.menu.world");
             worldMenu.AddItem(L10n.Tr("ui.menu.create_landmark"), 0);
+            worldMenu.AddSeparator();
+            worldMenu.AddItem(L10n.Tr("ui.menu.detach_all_huds"), 1);
+            worldMenu.AddItem(L10n.Tr("ui.menu.detach_all_attachments"), 2);
             worldMenu.IdPressed += (id) => {
                 if (id == 0) OnCreateLandmark?.Invoke();
+                else if (id == 1) OnDetachAttachments?.Invoke(true);
+                else if (id == 2) OnDetachAttachments?.Invoke(false);
             };
             menuBar.AddChild(worldMenu);
 

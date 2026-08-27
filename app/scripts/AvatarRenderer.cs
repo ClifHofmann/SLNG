@@ -1443,21 +1443,44 @@ public partial class AvatarRenderer : Node3D
             // arrived) versus a face that genuinely carries no texture id at all.
             Logger.Debug($"[FaceTex] mesh {meshId} face {faceIndex} has no texture -> renders flat AlbedoColor" +
                 (wasBom ? $" (Bakes-on-Mesh channel {bomIndex} not resolved yet)" : " (face carries no texture id)"));
+            LogHudFace(surface, meshId, faceIndex, ft, tint,
+                wasBom ? $"NO TEXTURE (BoM channel {bomIndex} unresolved)" : "NO TEXTURE (face carries no texture id)");
             return FinishFaceMaterial(material, kind, scissorThreshold, surface);
         }
 
         // initialRefCount: 1 -- see LoadAndApplyTextureAsync's identical call for why (a
         // per-face/attachment texture pinned here is just as capable of being live on a
         // MeshInstance3D as a bake, so it needs the same eviction-immunity).
-        var built = await _gpuCache.GetOrUploadTextureAsync(texId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true).ConfigureAwait(false);
+        //
+        // rejectDegraded is NOT unconditional, and that distinction is the whole reason worn HUDs
+        // rendered as solid black rectangles (2026-08-27). AssetService marks EVERY CoreJ2K-fallback
+        // decode degraded -- including a truncated codestream that decoded perfectly well, which is
+        // the normal state of many OpenSim texture assets: measured on this machine, five HUD
+        // textures arrived as 600 bytes (exactly the SL protocol's FIRST_PACKET_SIZE) whose first
+        // tile-part declares ~17 kB, Magick refused them, and CoreJ2K decoded all of them cleanly
+        // at their declared 256x256. Rejecting that result threw away a usable image and left the
+        // face untextured, so the prim's own dark tint was all that remained.
+        //
+        // Strictness stays where it was earned: an avatar BAKE (LoadAndApplyTextureAsync) and
+        // sculpt maps, where a gap-filled decode is speckle noise on skin / corrupted vertex
+        // positions -- both worse than nothing. A HUD is an unshaded overlay with no bake or
+        // geometry semantics, and a soft button beats an invisible one. It is also what the real
+        // viewer does: KDU decodes a truncated progressive codestream on purpose, which is exactly
+        // why Firestorm shows these same HUDs while we did not.
+        bool rejectDegraded = surface != PrimShaderFamily.Surface.Hud;
+        var built = await _gpuCache.GetOrUploadTextureAsync(texId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: rejectDegraded).ConfigureAwait(false);
         if (built == null)
         {
             // Not silent: an untextured face renders as flat AlbedoColor (usually white), which
             // is visually indistinguishable from a face-index mapping bug — that ambiguity cost a
             // whole diagnostic round on the HUD-texture investigation. One line per failed id.
-            GD.PrintErr($"[FaceTex] texture {texId} fetch/decode returned null — face renders untextured");
+            GD.PrintErr($"[FaceTex] texture {texId} fetch/decode returned null — face renders untextured" +
+                (rejectDegraded ? " (degraded decodes refused for this surface)" : ""));
+            LogHudFace(surface, meshId, faceIndex, ft, tint, $"NULL from fetch/decode (tex {texId})");
             return FinishFaceMaterial(material, kind, scissorThreshold, surface);
         }
+
+        LogHudFace(surface, meshId, faceIndex, ft, tint, $"textured {built.GetWidth()}x{built.GetHeight()}");
 
         // The sampler and its flag are a PAIR. Setting albedo_texture without has_albedo_texture
         // is not an error -- the shader keeps sampling its default white texture and the face
@@ -1469,6 +1492,34 @@ public partial class AvatarRenderer : Node3D
             (kind, scissorThreshold) = ClassifyAlpha(kind, built);
 
         return FinishFaceMaterial(material, kind, scissorThreshold, surface);
+    }
+
+    /// <summary>One line per worn-HUD face, unconditional (not behind --diag) and deduplicated.
+    ///
+    /// Every other outcome of a HUD face is either invisible or ambiguous on screen: an untextured
+    /// face renders as flat AlbedoColor, so a black-tinted HUD panel whose icon texture never
+    /// arrived is pixel-identical to a HUD panel that is simply black -- and the "face carries no
+    /// texture id" path logged only through <c>Logger.Debug</c>, which nothing below --diag can
+    /// reach. Two rounds of this investigation were spent unable to tell those apart. A worn HUD
+    /// has a handful of faces and they are rebuilt only when their content changes, so the cost of
+    /// saying it out loud is a handful of lines per session.</summary>
+    private static readonly System.Collections.Generic.HashSet<string> _hudFaceLogged = new();
+
+    private static void LogHudFace(PrimShaderFamily.Surface surface, Guid meshId, int faceIndex,
+        FaceTexture ft, Color tint, string outcome)
+    {
+        if (surface != PrimShaderFamily.Surface.Hud) return;
+
+        string key = $"{meshId:N}:{faceIndex}:{ft.TextureId:N}:{outcome}";
+        lock (_hudFaceLogged)
+        {
+            if (!_hudFaceLogged.Add(key)) return;
+        }
+
+        string tex = ft.TextureId == Guid.Empty ? "(none)" : ft.TextureId.ToString()[..8];
+        GD.Print($"[HudFace] mesh={meshId.ToString("N")[..8]} face={faceIndex} tex={tex} " +
+            $"tint=({tint.R:0.##},{tint.G:0.##},{tint.B:0.##},{tint.A:0.##}) " +
+            $"fullbright={ft.Fullbright} -> {outcome}");
     }
 
     /// <summary>Applies the variant choice. Split out because the four exit paths of
@@ -1967,7 +2018,9 @@ public partial class AvatarRenderer : Node3D
 
             // Surface.Hud carries what `ShadingMode = Unshaded` used to say here: unshaded is a
             // render_mode, so it is part of which variant gets compiled rather than a property.
-            var material = await BuildFaceMaterialAsync(ft, surface: PrimShaderFamily.Surface.Hud)
+            // faceIndex is passed purely so the [HudFace] diagnostic can name the face; the HUD
+            // path has no avatarVisual (no Bakes-on-Mesh) and no mesh id to report.
+            var material = await BuildFaceMaterialAsync(ft, faceIndex: faceIndex, surface: PrimShaderFamily.Surface.Hud)
                 .ConfigureAwait(false);
             int s = surf;
             Godot.Callable.From(() =>

@@ -2321,7 +2321,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// Detaches an inventory item / attachment from the agent.
     /// Handles both real inventory item IDs and link IDs inside Current Outfit.
     /// </summary>
-    public Task DetachItemAsync(Guid itemId)
+    public Task<DetachResult> DetachItemAsync(Guid itemId)
     {
         var itemUuid = new LibreMetaverse.UUID(itemId);
         var store = _client.Inventory.Store;
@@ -2360,7 +2360,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
         }
 
-        // Query active attachments from AppearanceManager ONLY for matching candidate UUIDs
+        // Query active attachments from AppearanceManager ONLY for matching candidate UUIDs.
+        // wasAttached is the load-bearing bit: DetachAttachmentIntoInv is matched server-side
+        // against LIVE attachments, so when nothing here is actually attached every packet below
+        // is a silent no-op -- see the stale-link cleanup at the end of this method.
+        bool wasAttached = false;
         try
         {
             var activeAtts = _client.Appearance.GetAttachmentsByItemId();
@@ -2369,6 +2373,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 if (uuidsToDetach.Contains(kvp.Key))
                 {
                     uuidsToDetach.Add(kvp.Key);
+                    wasAttached = true;
                 }
             }
         }
@@ -2384,6 +2389,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
 
         // Clean up stale link nodes from local Store under COF
+        int staleLinksRemoved = 0;
         try
         {
             if (cofUuid != LibreMetaverse.UUID.Zero)
@@ -2403,6 +2409,35 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                             }
                         }
                     }
+
+                    // Server-side half. Dropping the node from the local Store alone (below) only
+                    // hides the row until the next fetch re-reads the folder from the sim, which
+                    // is exactly the "Detach does nothing" report: the item was never attached, so
+                    // the DetachAttachmentIntoInv packets above matched nothing, and the COF link
+                    // that made it LOOK worn survived every refresh.
+                    //
+                    // Only when nothing was actually attached: for a real attachment the sim
+                    // removes the link itself as part of the detach, and racing it from here could
+                    // strip the outfit entry of an item whose detach then failed.
+                    //
+                    // Moved to Trash rather than purged. The link is not the item -- the real
+                    // object stays where it lives in inventory -- but an outfit is still user data
+                    // and Trash keeps a mistake recoverable, unlike RemoveItemsAsync.
+                    if (!wasAttached && staleKeys.Count > 0 && TrashFolderId is { } trashId)
+                    {
+                        var trashUuid = new LibreMetaverse.UUID(trashId);
+                        foreach (var k in staleKeys)
+                        {
+                            if (k == LibreMetaverse.UUID.Zero) continue;
+                            try
+                            {
+                                _client.Inventory.MoveItem(k, trashUuid);
+                                staleLinksRemoved++;
+                            }
+                            catch { }
+                        }
+                    }
+
                     foreach (var k in staleKeys)
                     {
                         cofNode.Nodes.Remove(k);
@@ -2412,7 +2447,50 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
         catch { }
 
-        return Task.CompletedTask;
+        return Task.FromResult(new DetachResult(wasAttached, staleLinksRemoved));
+    }
+
+    /// <summary>Detaches whatever attachment is the given scene-local object id, via ObjectDetach
+    /// (by localId). Unlike <see cref="DetachItemAsync"/> (DetachAttachmentIntoInv, which the sim
+    /// matches on the attachment's AttachItemID name-value) this works even when that name-value
+    /// is missing or stale — the case where an inventory "Detach" silently does nothing.</summary>
+    public void DetachByLocalId(uint localId)
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null || localId == 0) return;
+        _client.Objects.DetachObjects(sim, new List<uint> { localId });
+    }
+
+    /// <summary>Escape hatch for a stuck attachment that can't be pinned down in inventory:
+    /// ObjectDetach every worn attachment (optionally only the HUD-point ones) by localId.
+    /// Returns how many were sent.</summary>
+    public int DetachAllAttachments(bool hudOnly = false)
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null) return 0;
+
+        var ids = new List<uint>();
+        var report = new List<(uint LocalId, LibreMetaverse.AttachmentPoint Point, string Name)>();
+        foreach (var p in sim.ObjectsPrimitives.Values)
+        {
+            // Only root prims of an attachment carry ParentID == our avatar; child prims hang off
+            // the attachment root and ObjectDetach on the root takes the whole linkset.
+            if (p == null || p.ParentID != _client.Self.LocalID) continue;
+            var ap = p.PrimData.AttachmentPoint;
+            if (ap == LibreMetaverse.AttachmentPoint.Default) continue;
+            bool isHud = (int)ap >= 31 && (int)ap <= 38; // HUDCenter2 .. HUDBottomRight
+            if (hudOnly && !isHud) continue;
+            ids.Add(p.LocalID);
+            report.Add((p.LocalID, ap, p.Properties?.Name ?? ""));
+        }
+
+        // Named, not just counted: "0 detached" and "3 detached but one is still on screen" are
+        // the two outcomes this escape hatch has to be able to tell apart afterwards.
+        foreach (var (localId, point, name) in report)
+            Console.Error.WriteLine($"[Detach] localId={localId} point={point} \"{name}\"");
+
+        if (ids.Count > 0) _client.Objects.DetachObjects(sim, ids);
+        return ids.Count;
     }
 
     /// <summary>

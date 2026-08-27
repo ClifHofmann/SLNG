@@ -22,6 +22,8 @@
       "free_camera": "Freie Kamera",
       "world": "Welt",
       "create_landmark": "Landmarke erstellen...",
+      "detach_all_huds": "Alle HUDs ablegen",
+      "detach_all_attachments": "Alle Attachments ablegen",
       "developer": "Entwickler",
       "toggle_wireframe": "Drahtmodell umschalten",
       "measure_render_baseline": "Render-Baseline messen (10s)",

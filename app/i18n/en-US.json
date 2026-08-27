@@ -22,6 +22,8 @@
       "free_camera": "Free Camera",
       "world": "World",
       "create_landmark": "Create Landmark...",
+      "detach_all_huds": "Detach All HUDs",
+      "detach_all_attachments": "Detach All Attachments",
       "developer": "Developer",
       "toggle_wireframe": "Toggle Wireframe",
       "measure_render_baseline": "Measure Render Baseline (10s)",

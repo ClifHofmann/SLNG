@@ -67,6 +67,19 @@ public record AvatarPickDetail(
 /// <see cref="AvatarPickInfo"/>.</summary>
 public record AvatarClassifiedInfo(Guid ClassifiedId, string Name);
 
+/// <summary>Outcome of a "Detach" on one inventory item.
+///
+/// The two failure-looking cases are deliberately distinguishable, because they used to be
+/// indistinguishable on screen: an item can be listed as worn purely because a link to it
+/// survives in the Current Outfit Folder while nothing is actually attached (a stale COF link,
+/// e.g. after a crash or a failed attach). <c>DetachAttachmentIntoInv</c> is matched server-side
+/// against live attachments, so for such an item it is a silent no-op — the classic "I click
+/// Detach and nothing happens".</summary>
+/// <param name="WasAttached">The item really was attached; a detach packet was sent for it.</param>
+/// <param name="StaleLinksRemoved">Current-Outfit links moved to Trash because nothing was
+/// actually attached.</param>
+public record DetachResult(bool WasAttached, int StaleLinksRemoved);
+
 /// <summary>2nd Life / 1st Life profile pages arrived. Identity data, not world-simulation
 /// state, so intentionally not an <see cref="IWorldEvent"/> — UI subscribes on GridSession.</summary>
 public record AvatarPropertiesEvent(AvatarProfileProperties Properties);
