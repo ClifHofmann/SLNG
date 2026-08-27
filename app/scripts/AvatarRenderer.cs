@@ -433,8 +433,10 @@ public partial class AvatarRenderer : Node3D
             if (GodotObject.IsInstanceValid(attachNode)) attachNode.QueueFree();
             _attachmentNodes.Remove(entityId);
         }
+        MeshInstance3D? removedRigged = null;
         if (_riggedAttachments.TryGetValue(entityId, out var riggedMesh))
         {
+            removedRigged = riggedMesh;
             if (GodotObject.IsInstanceValid(riggedMesh)) riggedMesh.QueueFree();
             _riggedAttachments.Remove(entityId);
         }
@@ -447,6 +449,11 @@ public partial class AvatarRenderer : Node3D
             && _visuals.TryGetValue(removedMeshInfo.AvatarEntityId, out var ownerVisual))
         {
             ownerVisual.PelvisFixups.Remove(removedMeshInfo.MeshId);
+            // M4-7: a detached BoM mesh body/head must un-hide the system part it was covering.
+            // QueueFree above is deferred, so drop the entry by reference here — RecomputeMesh-
+            // Visibility's IsInstanceValid sweep would still see it live this frame.
+            if (removedRigged != null) ownerVisual.BomAttachments.RemoveAll(e => e.Mi == removedRigged);
+            RecomputeMeshVisibility(ownerVisual);
         }
         _attachmentMeshIds.Remove(entityId);
         if (_hudNodes.TryGetValue(entityId, out var hudNode))
@@ -1603,20 +1610,17 @@ public partial class AvatarRenderer : Node3D
         return (PrimShaderFamily.Kind.Scissor, HardCutoutScissorThreshold);
     }
 
-    /// <summary>Registers a worn mesh's Bakes-on-Mesh usage on its avatar and hides the system
-    /// body parts whose bake channel the mesh consumes — the viewer's
-    /// LLVOAvatar::updateMeshVisibility. Main thread only (mutates node visibility).</summary>
+    /// <summary>Registers a worn mesh's Bakes-on-Mesh usage on its avatar, then recomputes which
+    /// system body parts stay hidden — the viewer's LLVOAvatar::updateMeshVisibility.
+    /// Main thread only (mutates node visibility).</summary>
     private void RegisterBomAndUpdateVisibility(
         AvatarVisual avatarVisual, MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace, Guid meshId = default)
     {
         bool usesBom = false;
         void Scan(FaceTexture f)
         {
-            if (SLNG.Assets.BakedTextureIds.TryGetBakeIndex(f.TextureId, out int b))
-            {
-                avatarVisual.AttachmentBakeChannels.Add(b);
+            if (SLNG.Assets.BakedTextureIds.TryGetBakeIndex(f.TextureId, out _))
                 usesBom = true;
-            }
         }
         if (faces != null) foreach (var f in faces) Scan(f);
         Scan(defaultFace);
@@ -1624,9 +1628,35 @@ public partial class AvatarRenderer : Node3D
         if (usesBom)
             avatarVisual.BomAttachments.Add((mi, faceIndices, faces, defaultFace));
 
+        RecomputeMeshVisibility(avatarVisual);
+    }
+
+    /// <summary>M4-7: rebuilds <see cref="AvatarVisual.AttachmentBakeChannels"/> from the live
+    /// <see cref="AvatarVisual.BomAttachments"/> list and re-applies system-part visibility. This
+    /// is the viewer's LLVOAvatar::updateMeshVisibility, which runs on every attachment change —
+    /// add AND remove. The set used to be add-only, so taking off a BoM mesh body/head left the
+    /// matching system part invisible until relog. Rebuilding from survivors also handles a
+    /// body-for-body swap correctly (a channel the new body still uses stays hidden).
+    /// Main thread only (mutates node visibility).</summary>
+    private void RecomputeMeshVisibility(AvatarVisual avatarVisual)
+    {
+        avatarVisual.BomAttachments.RemoveAll(e => !IsInstanceValid(e.Mi));
+
+        var ch = avatarVisual.AttachmentBakeChannels;
+        ch.Clear();
+        foreach (var e in avatarVisual.BomAttachments)
+        {
+            void Scan(FaceTexture f)
+            {
+                if (SLNG.Assets.BakedTextureIds.TryGetBakeIndex(f.TextureId, out int b))
+                    ch.Add(b);
+            }
+            if (e.Faces != null) foreach (var f in e.Faces) Scan(f);
+            Scan(e.DefaultFace);
+        }
+
         // Hide base parts per consumed channel (head bake also covers the eyelashes part, exactly
         // like MESH_ID_EYELASH in the viewer's updateMeshVisibility).
-        var ch = avatarVisual.AttachmentBakeChannels;
         void SetPartVisible(string part, bool visible)
         {
             if (avatarVisual.Parts.TryGetValue(part, out var pmi) && IsInstanceValid(pmi))
@@ -1755,8 +1785,10 @@ public partial class AvatarRenderer : Node3D
             staleBone.QueueFree();
             _attachmentNodes.Remove(entityId);
         }
+        MeshInstance3D? hudMovedRigged = null;
         if (_riggedAttachments.TryGetValue(entityId, out var staleRigged))
         {
+            hudMovedRigged = staleRigged;
             staleRigged.QueueFree();
             _riggedAttachments.Remove(entityId);
         }
@@ -1766,6 +1798,9 @@ public partial class AvatarRenderer : Node3D
             && _visuals.TryGetValue(hudMovedMeshInfo.AvatarEntityId, out var hudOwnerVisual))
         {
             hudOwnerVisual.PelvisFixups.Remove(hudMovedMeshInfo.MeshId);
+            // M4-7: same as detach — a mesh moved onto a HUD point no longer hides the body.
+            if (hudMovedRigged != null) hudOwnerVisual.BomAttachments.RemoveAll(e => e.Mi == hudMovedRigged);
+            RecomputeMeshVisibility(hudOwnerVisual);
         }
         _attachmentMeshIds.Remove(entityId);
 
