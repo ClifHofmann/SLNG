@@ -92,6 +92,7 @@ public partial class Boot : Control
     private SLNG.App.UI.PreferencesWindow _preferencesWindow = null!;
     private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
     private SLNG.App.UI.UiSettings _uiSettings = null!;
+    private SLNG.App.UI.CameraSettings _cameraSettings = null!;
 
     // M5-3 Tabbed Chat window
     private SLNG.App.UI.ChatWindow _chatWindow = null!;
@@ -113,7 +114,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.9.36-alpha";
+    public const string AppVersion = "v0.9.37-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -562,6 +563,13 @@ public partial class Boot : Control
         var displayPage = new SLNG.App.UI.DisplayPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_display"), displayPage);
         displayPage.Initialize(_uiSettings, _localizationManager);
+
+        _cameraSettings = new SLNG.App.UI.CameraSettings();
+        _cameraSettings.Load();
+        cameraHud.SetCameraSettings(_cameraSettings);
+        var cameraPage = new SLNG.App.UI.CameraPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_camera"), cameraPage);
+        cameraPage.Initialize(_cameraSettings);
 
         _qualityPage = new SLNG.App.UI.QualityPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_quality") };
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_quality"), _qualityPage);
