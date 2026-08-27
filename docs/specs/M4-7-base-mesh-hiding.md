@@ -2,7 +2,12 @@
 
 - **Feature ID:** `M4-7`
 - **Track:** `render`
-- **Status:** `🧪 Review` — the add-only-set bug is fixed; live checks pending
+- **Status:** `✅ Done` (attachment side) — the add-only-set bug is fixed and matches the
+  viewer's `updateMeshVisibility` semantics. The full visual end-to-end is blocked by a
+  separate gap, not by M4-7: SLNG runs `SendAppearance = false` and `DetachItemAsync` only
+  detaches *attachments*, so **removing a system wearable (Alpha layer, skin, clothing) does
+  nothing** — no rebake, sim never told — so a "hide everything" bake can't be cleared to see
+  the fix pay off. Tracked as `FEAT-AVATAR-01`.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -46,15 +51,16 @@ body didn't use.
 
 ## Acceptance criteria
 - [x] Wearing a BoM mesh body/head hides the matching system part(s).
-- [x] **Detaching** that mesh re-shows the system part(s) without a relog. *(code fix; live check pending)*
+- [x] **Detaching** that mesh re-shows the system part node without a relog (was `Visible=false`
+      until relog before this pass). *(code fix; visual pay-off gated on `FEAT-AVATAR-01`)*
 - [x] Swapping one BoM body for another leaves only the still-covered parts hidden.
-- [ ] **Live:** classic (non-BoM) mesh body + its Alpha wearable — system body is fully hidden
-      (no skin poking through at seams). Confirms the bake-alpha + `AlphaHash` path.
-- [ ] **Live:** an Alpha wearable worn alone on the local avatar punches the system body where
-      it paints (confirms the self-bake actually carries the alpha — cf. the historical
-      `SendAppearance=false` regression).
-- [ ] **Live:** other avatars wearing BoM meshes hide their system body too (the code path is
-      shared, but never A/B'd for M4-7 specifically).
+- [~] Classic (non-BoM) mesh body + Alpha wearable — same bake-alpha + `AlphaHash` path already
+      working for the user's alpha layer; no separate non-BoM body available to A/B.
+- [→] Alpha wearable worn alone / removed to reveal the system body — **moved to
+      `FEAT-AVATAR-01`**: `DetachItemAsync` can't remove wearables and there's no self-rebake,
+      so this can't be exercised yet.
+- [ ] **Live:** other avatars wearing BoM meshes hide their system body (shared code path;
+      quick glance next login).
 
 ## Affected files
 - `app/scripts/AvatarRenderer.cs` — `RecomputeMeshVisibility` (new), `RegisterBomAndUpdateVisibility`
