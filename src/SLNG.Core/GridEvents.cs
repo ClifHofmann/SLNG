@@ -106,7 +106,10 @@ public record ObjectUpdateEvent(
     // RenderMaterialId, which is the glTF PBR one -- a face carries both independently.
     Guid LegacyMaterialId = default,
     // Particle system parameters for rendering GPUParticles3D.
-    ParticleSystemData? Particles = null
+    ParticleSystemData? Particles = null,
+    // The DEFAULT face's fullbright flag. Per-face entries in Faces carry their own; a prim
+    // whose faces are all identical sends none, so this covers that case. See FaceTexture.Fullbright.
+    bool Fullbright = false
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY

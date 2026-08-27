@@ -1034,7 +1034,7 @@ public partial class ObjectRenderer : Node3D
     private void ApplyTextureAnimFrame(VisualState state, PrimitiveComponent prim, sbyte animFace, in SLNG.Core.TextureAnimFrame frame)
     {
         var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint,
-            prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation, prim.TexGen);
+            prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation, prim.TexGen, prim.Fullbright);
 
         // Same fallback the material build uses: a mesh without per-surface face info wears one
         // material for the whole node, so the animation drives that one.
@@ -1507,7 +1507,7 @@ public partial class ObjectRenderer : Node3D
         }
 
         var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint,
-            prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation, prim.TexGen);
+            prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation, prim.TexGen, prim.Fullbright);
 
         // Fallback solid / mesh without per-surface face info: one material for the whole node.
         if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
@@ -1665,6 +1665,10 @@ public partial class ObjectRenderer : Node3D
         // slng_planar_uv reconstructs the SL-space position from the Godot vertex and then
         // multiplies component-wise, so it needs SL's own (X, Y, Z), not the node's (X, Z, Y).
         material.SetShaderParameter(PrimShaderFamily.UvTexGen, ft.IsPlanar ? 1 : 0);
+
+        // FEAT-RENDER-06: SL's per-face fullbright flag. The shader routes albedo through
+        // emission when set, so the face reads at full colour regardless of scene lighting.
+        material.SetShaderParameter(PrimShaderFamily.Fullbright, ft.Fullbright);
 
         // Diagnostic: sculpts only, because prims are already confirmed to match Firestorm and
         // dragging them along would destroy the reference the measurement leans on.

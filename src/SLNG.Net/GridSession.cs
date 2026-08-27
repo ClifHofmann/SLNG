@@ -1419,7 +1419,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     f.OffsetU,
                     f.OffsetV,
                     f.Rotation,
-                    (byte)f.TexMapType);
+                    (byte)f.TexMapType,
+                    f.Fullbright);
             }
         }
 
@@ -1534,7 +1535,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             defaultFace != null ? (byte)defaultFace.TexMapType : FaceTexture.TexGenDefault,
             textureAnim,
             legacyMaterialId,
-            ParticleSystemConverter.FromWire(prim.ParticleSys)));
+            ParticleSystemConverter.FromWire(prim.ParticleSys),
+            // The DEFAULT face's fullbright flag -- see FaceTexture.Fullbright. Per-face entries
+            // in `faces` carry their own; this is for prims that send no per-face entries.
+            defaultFace?.Fullbright ?? false));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)

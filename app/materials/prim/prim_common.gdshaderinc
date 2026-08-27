@@ -19,6 +19,12 @@ uniform float roughness_factor : hint_range(0.0, 1.0) = 1.0;
 uniform vec3 emission_color : source_color = vec3(0.0);
 uniform bool emission_enabled = false;
 
+// SL's per-face "fullbright" flag (LLTextureEntry::getFullbright, LLDrawPoolFullbright). The
+// face ignores scene lighting and shows its texture at full colour. Reproduced at the end of
+// slng_shade by routing the albedo into EMISSION and zeroing ALBEDO -- see there. Distinct from
+// glow and from glTF emissive.
+uniform bool fullbright = false;
+
 uniform sampler2D normal_texture : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool has_normal_texture = false;
 uniform float normal_scale : hint_range(-16.0, 16.0) = 1.0;
@@ -300,6 +306,16 @@ float slng_shade(vec2 uv, vec3 view_position,
             emission *= texture(emission_texture, uv).rgb;
         }
         out_emission = emission;
+    }
+
+    // SL fullbright: the face is lit by nothing. Route the (already atmospherics-applied) albedo
+    // through EMISSION and zero ALBEDO so clustered lighting, ambient and GI add nothing on top;
+    // atmospherics stays applied, matching the viewer's fullbright shaders. Added to any glTF
+    // emissive rather than replacing it, since a face can be both. A no-op for the `unshaded` HUD
+    // variants, whose output is ALBEDO + EMISSION regardless of which one carries the value.
+    if (fullbright) {
+        out_emission += out_albedo;
+        out_albedo = vec3(0.0);
     }
 
     return albedo.a;

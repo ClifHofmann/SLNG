@@ -41,7 +41,12 @@ public readonly record struct FaceTexture(
     /// both said planar was 1. The two never met, so the "PLANAR (not implemented!)" log line
     /// could not fire even on a face that was demonstrably planar -- which is why the missing
     /// implementation stayed invisible for as long as it did.</summary>
-    byte TexGen = 0)
+    byte TexGen = 0,
+    /// <summary>SL's per-face "fullbright" flag (LLTextureEntry::getFullbright). A fullbright
+    /// face ignores scene lighting and renders at its full unlit texture colour -- signs,
+    /// screens, neon, anything meant to look self-lit. The renderer routes it through EMISSION
+    /// with ALBEDO zeroed (FEAT-RENDER-06). Separate from glow and from glTF emissive.</summary>
+    bool Fullbright = false)
 {
     /// <summary>SL TEX_GEN_DEFAULT -- the face uses the mesh's own UVs.</summary>
     public const byte TexGenDefault = 0;

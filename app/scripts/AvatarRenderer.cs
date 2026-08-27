@@ -1013,7 +1013,7 @@ public partial class AvatarRenderer : Node3D
         if (avatarVisual.Skeleton == null) return;
 
         var defaultFace = isMeshAttachment
-            ? new FaceTexture(prim!.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f)
+            ? new FaceTexture(prim!.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, Fullbright: prim.Fullbright)
             : default;
 
         // Skip a redundant reload: LibreMetaverse's ObjectUpdate can fire several times for the
@@ -1342,6 +1342,11 @@ public partial class AvatarRenderer : Node3D
 
         var material = new ShaderMaterial { Shader = PrimShaderFamily.Select(kind, surface) };
         material.SetShaderParameter(PrimShaderFamily.AlbedoColor, tint);
+
+        // FEAT-RENDER-06: a worn-mesh face can be fullbright too (LLTextureEntry::getFullbright).
+        // The HUD surface is already `unshaded`, so this is a no-op there and meaningful only on
+        // world-space attachment faces.
+        material.SetShaderParameter(PrimShaderFamily.Fullbright, ft.Fullbright);
 
         // Per-face UV repeats/offsets, same convention as ObjectRenderer's world-prim materials --
         // HUD buttons in particular are classically ONE texture atlas with per-face repeat/offset

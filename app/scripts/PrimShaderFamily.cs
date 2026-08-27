@@ -170,6 +170,10 @@ public static class PrimShaderFamily
 
     public static readonly StringName EmissionColor = "emission_color";
     public static readonly StringName EmissionEnabled = "emission_enabled";
+
+    /// <summary>FEAT-RENDER-06: SL's per-face fullbright flag. When set, the face renders unlit
+    /// (albedo routed through emission).</summary>
+    public static readonly StringName Fullbright = "fullbright";
     public static readonly StringName EmissionTexture = "emission_texture";
     public static readonly StringName HasEmissionTexture = "has_emission_texture";
 

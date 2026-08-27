@@ -50,6 +50,11 @@ public class PrimitiveComponent : IComponent
     /// entries because every face is identical.</summary>
     public byte TexGen { get; set; } = FaceTexture.TexGenDefault;
 
+    /// <summary>The default face's fullbright flag (see <see cref="FaceTexture.Fullbright"/>).
+    /// Per-face entries in <see cref="Faces"/> carry their own; this covers prims that send no
+    /// per-face entries.</summary>
+    public bool Fullbright { get; set; }
+
     /// <summary>
     /// Procedural shape of a non-mesh prim. Used to regenerate real prim geometry
     /// (profile/path/cut/hollow/twist) instead of a box placeholder. Ignored when
@@ -123,7 +128,7 @@ public class PrimitiveComponent : IComponent
     /// updates for a confirmation that the defaults are real.</summary>
     public bool HasPhysicsProperties { get; set; }
 
-    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, float repeatU = 1.0f, float repeatV = 1.0f, float offsetU = 0.0f, float offsetV = 0.0f, float rotation = 0.0f, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0, FaceTexture[]? faces = null, byte texGen = FaceTexture.TexGenDefault, ParticleSystemData? particles = null)
+    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, float repeatU = 1.0f, float repeatV = 1.0f, float offsetU = 0.0f, float offsetV = 0.0f, float rotation = 0.0f, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0, FaceTexture[]? faces = null, byte texGen = FaceTexture.TexGenDefault, ParticleSystemData? particles = null, bool fullbright = false)
     {
         Scale = scale;
         ProfileCurve = profileCurve;
@@ -144,5 +149,6 @@ public class PrimitiveComponent : IComponent
         Faces = faces;
         TexGen = texGen;
         Particles = particles;
+        Fullbright = fullbright;
     }
 }
