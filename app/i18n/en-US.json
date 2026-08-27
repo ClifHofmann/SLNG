@@ -36,7 +36,9 @@
       "sculpt_u_nudge_right": "Nudge sculpt U: +1 grid column",
       "sculpt_u_nudge_left_coarse": "Nudge sculpt U: -16 grid columns",
       "sculpt_u_nudge_right_coarse": "Nudge sculpt U: +16 grid columns",
-      "environment": "Environment (Windlight)..."
+      "environment": "Environment (Windlight)...",
+      "world_map": "World Map...",
+      "minimap": "Minimap"
     },
     "hud": {
       "stand_up": "Stand Up"
@@ -53,6 +55,22 @@
       "source_eep": "EEP",
       "source_legacy": "Windlight",
       "source_default": "default — sim sends none"
+    },
+    "map": {
+      "arrived_in": "Arrived in {0}"
+    },
+    "worldmap": {
+      "title": "World Map",
+      "search_placeholder": "Region name, or region name x y z",
+      "go": "Go",
+      "recenter": "Recenter",
+      "teleport": "Teleport",
+      "teleporting": "Teleporting…",
+      "teleport_failed": "Teleport failed",
+      "searching": "Searching…",
+      "enter_region_name": "Enter a region name.",
+      "region_not_found": "Region \"{0}\" not found.",
+      "hint": "Click to inspect a point, double-click to teleport."
     },
     "group_invite": {
       "title": "GROUP INVITATION",

@@ -142,6 +142,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// Raised from a background thread -- marshal before touching a scene node.</summary>
     public event EventHandler<RegionEnvironmentEvent>? RegionEnvironmentReceived;
 
+    /// <summary>MVP2-3: the current region's full avatar radar snapshot (LibreMetaverse's
+    /// <c>CoarseLocationUpdate</c>), replacing whatever snapshot preceded it. Fired off a
+    /// background network thread -- consumers (the minimap) must buffer and drain on the main
+    /// thread, same as every other event here.</summary>
+    public event EventHandler<NearbyAvatarsEvent>? NearbyAvatarsUpdated;
+
+    /// <summary>MVP2-3: one grid-map region tile resolved, either from an explicit
+    /// <see cref="RequestMapBlocks"/>/<see cref="ResolveRegionByNameAsync"/> call or from
+    /// LibreMetaverse's own cache. Multiple tiles from one <see cref="RequestMapBlocks"/> call
+    /// each raise this once. Fired off a background thread -- marshal before touching a scene node.</summary>
+    public event EventHandler<MapRegionInfo>? RegionDiscovered;
+
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
     internal void RaiseAvatarUpdate(AvatarUpdateEvent e) => AvatarUpdateReceived?.Invoke(this, e);
@@ -283,6 +295,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Avatars.AvatarPicksReply += OnAvatarPicksReply;
         _client.Avatars.PickInfoReply += OnPickInfoReply;
         _client.Avatars.AvatarClassifiedReply += OnAvatarClassifiedReply;
+
+        // MVP2-3: region radar (minimap) and grid-map tile resolution.
+        _client.Grid.CoarseLocationUpdate += OnCoarseLocationUpdate;
+        _client.Grid.GridRegion += OnGridRegion;
 
         // Coexists with ObjectManager's own internal ObjectUpdate handler (packet callbacks are
         // multicast) -- see _lightPresentByLocalId for why this is needed.
@@ -1350,6 +1366,90 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         foreach (var kvp in e.Picks)
             picks.Add(new AvatarPickInfo(kvp.Key.Guid, kvp.Value ?? string.Empty));
         AvatarPicksReceived?.Invoke(this, new AvatarPicksEvent(e.AvatarID.Guid, picks));
+    }
+
+    /// <summary>MVP2-3: the region's full avatar radar snapshot. LibreMetaverse hands us the
+    /// complete current-position list every time (not new/removed-only deltas -- see
+    /// <c>CoarseLocationUpdateEventArgs</c>), so this always replaces rather than merges. Z is
+    /// pre-scaled by LibreMetaverse (packet Z is a byte, *4 to metres) -- passed through as-is.</summary>
+    private void OnCoarseLocationUpdate(object? sender, CoarseLocationUpdateEventArgs e)
+    {
+        var avatars = new List<NearbyAvatar>(e.Positions.Count);
+        foreach (var kv in e.Positions)
+            avatars.Add(new NearbyAvatar(kv.Key.Guid, new System.Numerics.Vector3(kv.Value.X, kv.Value.Y, kv.Value.Z)));
+        NearbyAvatarsUpdated?.Invoke(this, new NearbyAvatarsEvent(e.Simulator.Handle, avatars));
+    }
+
+    private static MapRegionInfo ToMapRegionInfo(GridRegion r) =>
+        new(r.Name, r.X, r.Y, r.RegionHandle, r.MapImageID.Guid);
+
+    private void OnGridRegion(object? sender, GridRegionEventArgs e) =>
+        RegionDiscovered?.Invoke(this, ToMapRegionInfo(e.Region));
+
+    /// <summary>MVP2-3: requests grid-map tiles for the region-grid rectangle
+    /// [minGridX,minGridY]..[maxGridX,maxGridY] (each unit = 256 m -- see <see cref="MapRegionInfo"/>).
+    /// Results stream back asynchronously, one <see cref="RegionDiscovered"/> per tile; there may be
+    /// many and there is no single "done" signal, matching the underlying packet protocol.</summary>
+    public void RequestMapBlocks(int minGridX, int minGridY, int maxGridX, int maxGridY)
+    {
+        if (!_client.Network.Connected) return;
+        _client.Grid.RequestMapBlocks(GridLayerType.Objects,
+            (ushort)Math.Max(0, minGridX), (ushort)Math.Max(0, minGridY),
+            (ushort)Math.Max(0, maxGridX), (ushort)Math.Max(0, maxGridY), false);
+    }
+
+    /// <summary>MVP2-3 region search: resolves a region name to its map tile info (name lookup is
+    /// case-insensitive, per <c>GridManager.GetGridRegionAsync</c>). Returns null if the region
+    /// doesn't exist or the lookup times out.</summary>
+    public async Task<MapRegionInfo?> ResolveRegionByNameAsync(string regionName, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(regionName) || !_client.Network.Connected) return null;
+        var r = await _client.Grid.GetGridRegionAsync(regionName, GridLayerType.Objects, ct).ConfigureAwait(false);
+        return r.HasValue ? ToMapRegionInfo(r.Value) : null;
+    }
+
+    /// <summary>MVP2-3: resolves the region tile containing a given region handle -- used to show
+    /// the name/coordinates of wherever the map was just clicked.</summary>
+    public async Task<MapRegionInfo?> ResolveRegionByHandleAsync(ulong regionHandle, CancellationToken ct = default)
+    {
+        if (!_client.Network.Connected) return null;
+        var r = await _client.Grid.GetGridRegionAsync(regionHandle, GridLayerType.Objects, ct).ConfigureAwait(false);
+        return r.HasValue ? ToMapRegionInfo(r.Value) : null;
+    }
+
+    /// <summary>MVP2-3: teleports to a region-local position in a specific region by handle --
+    /// the map window's double-click-to-teleport. Mirrors <see cref="TeleportToLandmarkAsync"/>'s
+    /// progress-message plumbing and post-teleport position resync.</summary>
+    public async Task<TeleportResult> TeleportToAsync(ulong regionHandle, System.Numerics.Vector3 localPosition, CancellationToken ct = default)
+    {
+        if (!_client.Network.Connected) return new TeleportResult(false, "Not connected.");
+
+        string lastMessage = string.Empty;
+        void OnProgress(object? sender, TeleportEventArgs e)
+        {
+            if (!string.IsNullOrEmpty(e.Message)) lastMessage = e.Message;
+        }
+
+        _client.Self.TeleportProgress += OnProgress;
+        try
+        {
+            bool success = await _client.Self
+                .TeleportAsync(regionHandle, new Vector3(localPosition.X, localPosition.Y, localPosition.Z), ct)
+                .ConfigureAwait(false);
+
+            if (success) SyncLocalAgentPositionAfterTeleport();
+
+            string msg = !string.IsNullOrWhiteSpace(lastMessage) ? lastMessage : _client.Self.TeleportMessage;
+            return new TeleportResult(success, success ? string.Empty : msg);
+        }
+        catch (Exception ex)
+        {
+            return new TeleportResult(false, ex.Message);
+        }
+        finally
+        {
+            _client.Self.TeleportProgress -= OnProgress;
+        }
     }
 
     private void OnPickInfoReply(object? sender, PickInfoReplyEventArgs e)
@@ -3395,6 +3495,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Avatars.AvatarPicksReply -= OnAvatarPicksReply;
         _client.Avatars.PickInfoReply -= OnPickInfoReply;
         _client.Avatars.AvatarClassifiedReply -= OnAvatarClassifiedReply;
+        _client.Grid.CoarseLocationUpdate -= OnCoarseLocationUpdate;
+        _client.Grid.GridRegion -= OnGridRegion;
         _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
         Logout();
     }

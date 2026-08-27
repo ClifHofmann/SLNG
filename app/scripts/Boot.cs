@@ -74,6 +74,11 @@ public partial class Boot : Control
     // per AGENTS.md's "buffer incoming events, drain once per frame" rule.
     private RegionEnvironmentEvent? _pendingRegionEnvironment;
 
+    // MVP2-3 Phase 4: see the _Process drain next to _pendingGroupInvites for why this waits
+    // for CurrentRegionName instead of reading it directly off RegionConnected.
+    private volatile bool _pendingArrivalToast;
+    private string _lastArrivalRegionShown = "";
+
     private SLNG.App.UI.InventoryPanel? _inventoryPanel;
     private Node3D? _sunGizmo;
 
@@ -109,6 +114,9 @@ public partial class Boot : Control
     private SLNG.App.UI.ChatWindow _chatWindow = null!;
     private SLNG.App.UI.SnapshotWindow _snapshotWindow = null!;
     private SLNG.App.UI.EnvironmentWindow _environmentWindow = null!;
+    // MVP2-3: minimap radar overlay + world map/search window.
+    private SLNG.App.UI.MinimapOverlay _minimapOverlay = null!;
+    private SLNG.App.UI.WorldMapWindow _worldMapWindow = null!;
     private readonly WindlightPresetLibrary _windlightPresets = new();
     private SLNG.Core.Services.ChatLogger _chatLogger = null!;
     
@@ -135,7 +143,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.9.62-alpha";
+    public const string AppVersion = "v0.10.0-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -362,6 +370,8 @@ public partial class Boot : Control
         };
 
         _topMenu.OnOpenEnvironment = () => _environmentWindow?.Toggle();
+        _topMenu.OnOpenWorldMap = () => _worldMapWindow?.Toggle();
+        _topMenu.OnOpenMinimap = () => _minimapOverlay?.Toggle();
 
         _topMenu.OnCreateLandmark = () => {
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
@@ -504,6 +514,14 @@ public partial class Boot : Control
         hudLayer.AddChild(_environmentWindow);
         _environmentWindow.Initialize(_windlightPresets, _environmentDriver);
 
+        // MVP2-3: constructed here like every other panel (always present, hidden until
+        // toggled); Initialize(...) happens later in OnLoginPressed once session/world/asset
+        // plumbing actually exists (see that call site's comment).
+        _minimapOverlay = new SLNG.App.UI.MinimapOverlay { Name = "MinimapOverlay" };
+        hudLayer.AddChild(_minimapOverlay);
+        _worldMapWindow = new SLNG.App.UI.WorldMapWindow { Name = "WorldMapWindow" };
+        hudLayer.AddChild(_worldMapWindow);
+
         _chatLogger = new SLNG.Core.Services.ChatLogger();
         _chatWindow = new SLNG.App.UI.ChatWindow { Name = "ChatWindow" };
         hudLayer.AddChild(_chatWindow);
@@ -627,6 +645,8 @@ public partial class Boot : Control
             new("inventory", "Inventory", "inventory_2", () => _inventoryPanel?.Toggle(), () => _inventoryPanel?.Visible ?? false),
             new("snapshot", "Snapshot", "add_a_photo", () => _snapshotWindow.Toggle(), () => _snapshotWindow.Visible),
             new("environment", "Environment", "wb_sunny", () => _environmentWindow.Toggle(), () => _environmentWindow.Visible),
+            new("minimap", "Minimap", "radar", () => _minimapOverlay.Toggle(), () => _minimapOverlay.Visible),
+            new("worldmap", "World Map", "map", () => _worldMapWindow.Toggle(), () => _worldMapWindow.Visible),
         };
 
         _toolbarSettings = new SLNG.App.UI.ToolbarSettings();
@@ -884,6 +904,22 @@ public partial class Boot : Control
 
         // M5-3: group invitations, same off-thread buffering reason.
         while (_pendingGroupInvites.TryDequeue(out var invite)) ShowGroupInvitation(invite);
+
+        // MVP2-3 Phase 4: "Arrived in <region>" toast. RegionConnected only flags that we
+        // arrived somewhere NEW -- the region's name usually isn't known yet at that exact
+        // moment (it arrives via a later RegionHandshake), so this waits here until
+        // CurrentRegionName is actually populated and different from the last one shown, rather
+        // than risking an "Arrived in ''" toast from reading it too early.
+        if (_pendingArrivalToast && _session != null)
+        {
+            var arrivedName = _session.CurrentRegionName;
+            if (!string.IsNullOrEmpty(arrivedName) && arrivedName != _lastArrivalRegionShown)
+            {
+                _lastArrivalRegionShown = arrivedName;
+                _pendingArrivalToast = false;
+                LogMessage($"[color=lightgreen]{SLNG.App.UI.L10n.TrFormat("ui.map.arrived_in", arrivedName)}[/color]");
+            }
+        }
 
         // FEAT-ENV-02: Use the server's synced time if we have received a SimulatorViewerTimeMessage,
         // otherwise fall back to local UtcNow.
@@ -1443,6 +1479,7 @@ public partial class Boot : Control
         _groupInviteWindows.Clear();
         while (_pendingGroupInvites.TryDequeue(out _)) { }
 
+        _lastArrivalRegionShown = ""; // MVP2-3: a relogin into the same region must still toast
         _world = new SLNG.Core.ECS.World();
         _session = new GridSession();
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
@@ -1466,6 +1503,12 @@ public partial class Boot : Control
         _avatarRenderer?.Initialize(_world, _assetService, _gpuCache, _session);
         _inventoryPanel?.Initialize(_session);
         _chatWindow.BindSession(_session);
+        // MVP2-3: needs the session (map/radar protocol calls), the world (own-avatar position
+        // for the marker/heading), and the asset plumbing (map tile textures) -- all three only
+        // exist from here on, so this can't happen alongside the other window construction in
+        // SetupHud().
+        _minimapOverlay.Initialize(_world, _session);
+        _worldMapWindow.Initialize(_session, _gpuCache, _assetService, _world);
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.InstantMessageReceived += OnInstantMessageReceived;
@@ -1521,6 +1564,10 @@ public partial class Boot : Control
         // route through the Node.CallDeferred(nameof(...)) path / a per-frame drain instead.
         _session.RegionConnected += (s, regionHandle) =>
             CallDeferred(nameof(ApplyRegionOrigin), regionHandle.ToString());
+        // MVP2-3 Phase 4: flip the flag the _Process drain above watches. A plain bool write is
+        // fine here -- worst case the toast is a frame late, same tolerance as every other
+        // "parked" flag in this class.
+        _session.RegionConnected += (s, regionHandle) => _pendingArrivalToast = true;
 
         _session.RegionEnvironmentReceived += (s, env) => _pendingRegionEnvironment = env;
 
