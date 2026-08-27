@@ -230,8 +230,11 @@ public partial class CameraHUD : SLNGWindow
             {
                 switch (_activeAction)
                 {
-                    case "rot_left": _cameraController.RotateCamera(new Godot.Vector2(0.05f, 0)); break;
-                    case "rot_right": _cameraController.RotateCamera(new Godot.Vector2(-0.05f, 0)); break;
+                    // BUG-UI-02: the left/right pad arrows were inverted. RotateCamera applies
+                    // `_orbitYaw -= delta.X` -- the same sign convention as the Alt+LMB orbit drag
+                    // (`_orbitYaw -= mouseDeltaX`), so "orbit right" is +X and "orbit left" is -X.
+                    case "rot_left": _cameraController.RotateCamera(new Godot.Vector2(-0.05f, 0)); break;
+                    case "rot_right": _cameraController.RotateCamera(new Godot.Vector2(0.05f, 0)); break;
                     case "rot_up": _cameraController.RotateCamera(new Godot.Vector2(0, 0.05f)); break;
                     case "rot_down": _cameraController.RotateCamera(new Godot.Vector2(0, -0.05f)); break;
                     case "zoom_in": _cameraController.ZoomCamera(-0.5f); break;

@@ -39,7 +39,20 @@ public partial class AvatarController : Camera3D
     {
         _orbitYaw -= delta.X;
         _orbitPitch -= delta.Y;
-        _orbitPitch = Mathf.Clamp(_orbitPitch, -1.5f, 1.5f);
+        // Just shy of straight up/down (pi/2 ~= 1.571). Was 1.5 exactly: an Alt+LMB focus can
+        // preload _orbitPitch to nearly that value (_orbitPitch = targetPitch - _pitch at the
+        // engage site), which pinned the pad's pitch arrows at the stop -- the pitch half of
+        // BUG-UI-02's "tilt stops working after focusing on an object".
+        _orbitPitch = Mathf.Clamp(_orbitPitch, -1.55f, 1.55f);
+
+        // Wheel zoom accumulates a framing offset into _panOffset (ZoomTowardCursor) that nothing
+        // decays. The camera orbits around avatar+_panOffset, so after a few zoom-toward-cursor
+        // ticks the pivot sits metres off the avatar and the pad sweeps the view across the
+        // ground/sky instead of orbiting -- the "tilt does nothing when zoomed in" half of
+        // BUG-UI-02. Bleed the offset off while the pad drives the orbit: converges within a
+        // fraction of a second when a button is held, negligible for a single tap, and a no-op
+        // when _panOffset is already ~zero.
+        _panOffset = _panOffset.Lerp(Godot.Vector3.Zero, 0.2f);
     }
 
     public void PanCamera(Vector2 delta)
@@ -175,6 +188,32 @@ public partial class AvatarController : Camera3D
         Input.MouseMode = Input.MouseModeEnum.Visible;
         ProcessPriority = 100; // Run after Boot.cs (0) to read freshly extrapolated positions
         PhysicsInterpolationMode = Node.PhysicsInterpolationModeEnum.Off; // Prevent stutter from _Process updates
+    }
+
+    /// <summary>BUG-UI-03: force-cancel an in-progress Alt+LMB orbit/zoom drag when the window or
+    /// the mouse leaves the app. The drag runs with <see cref="Input.MouseModeEnum.Hidden"/> (not
+    /// Captured -- see the engage site), so a button release that happens outside the window is
+    /// never delivered; the per-frame <c>Input.IsMouseButtonPressed</c> poll that drives
+    /// <see cref="_altOrbitActive"/> then stays stuck "pressed" until focus returns, leaving the
+    /// camera orbiting to the unfocused mouse and jumping the next time Alt is pressed.</summary>
+    public override void _Notification(int what)
+    {
+        if (what == NotificationWMWindowFocusOut
+            || what == NotificationApplicationFocusOut
+            || what == NotificationWMMouseExit)
+        {
+            AbortCameraDrag();
+        }
+    }
+
+    private void AbortCameraDrag()
+    {
+        if (!_altOrbitActive) return;
+        _altOrbitActive = false;
+        Input.MouseMode = Input.MouseModeEnum.Visible;
+        // Re-engage re-seeds this from the live cursor position; zero it so a stale value can
+        // never be misread as a one-frame delta if the drag branch runs before the next engage.
+        _orbitLastMousePos = Vector2.Zero;
     }
     // _UnhandledInput, not _Input: Control nodes (the inventory Tree, LineEdits, etc.) stop
     // mouse/keyboard events from reaching this method once they've consumed them, whereas
