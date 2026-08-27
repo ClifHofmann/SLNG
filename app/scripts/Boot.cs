@@ -63,6 +63,17 @@ public partial class Boot : Control
     // DayCycle.Default every frame, which is the same hardcoded-looking scene as before this
     // feature, not a special case to guard against.
     private readonly EnvironmentDriver _environmentDriver = new();
+
+    // GridSession raises RegionEnvironmentReceived from a background task -- the CAPS environment
+    // fetch resumes on a threadpool thread. Its payload (DayCycle / EnvironmentSource) isn't
+    // Variant-safe, so it can't ride Node.CallDeferred(nameof(...)); and wrapping it in
+    // Callable.From(lambda).CallDeferred() crashes the process when called off the main thread --
+    // a custom (delegate-backed) Callable's deferred dispatch is main-thread-only in Godot .NET
+    // (observed as a fatal AccessViolationException inside godotsharp_callable_call_deferred).
+    // So the handler just parks the latest event here and _Process applies it on the main thread,
+    // per AGENTS.md's "buffer incoming events, drain once per frame" rule.
+    private RegionEnvironmentEvent? _pendingRegionEnvironment;
+
     private SLNG.App.UI.InventoryPanel? _inventoryPanel;
     private Node3D? _sunGizmo;
 
@@ -114,7 +125,7 @@ public partial class Boot : Control
     // multiple objects can be open and edited at the same time instead of sharing one floater.
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
 
-    public const string AppVersion = "v0.9.48-alpha";
+    public const string AppVersion = "v0.9.50-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -788,7 +799,14 @@ public partial class Boot : Control
 
     public override void _Process(double delta)
     {
-        // FEAT-ENV-02: Use the server's synced time if we have received a SimulatorViewerTimeMessage, 
+        // Drain the region-environment event buffered off-thread (see _pendingRegionEnvironment).
+        // FEAT-ENV-01 Phase D: region-scoped -- crossing into a neighbor region with its own
+        // environment replaces the cycle wholesale, same as a fresh login.
+        var pendingEnv = System.Threading.Interlocked.Exchange(ref _pendingRegionEnvironment, null);
+        if (pendingEnv != null)
+            _environmentDriver.SetCycle(pendingEnv.Cycle, pendingEnv.Source);
+
+        // FEAT-ENV-02: Use the server's synced time if we have received a SimulatorViewerTimeMessage,
         // otherwise fall back to local UtcNow.
         var simTime = _session?.SimUnixTime > 0 
             ? System.DateTimeOffset.FromUnixTimeSeconds((long)(_session.SimUnixTime / 1000000UL))
@@ -1394,17 +1412,14 @@ public partial class Boot : Control
         // Reported symptom: judder/instability on any region other than the one first logged into,
         // clearing up again on returning to it. Subscribed BEFORE LoginAsync below so the initial
         // login's own connection is also caught by this, not just later teleports.
+        // RegionConnected fires on a LibreMetaverse network thread; RegionEnvironmentReceived on a
+        // threadpool continuation. Neither may call a Godot API directly, and Callable.From(lambda)
+        // .CallDeferred() is itself unsafe off the main thread (see _pendingRegionEnvironment) --
+        // route through the Node.CallDeferred(nameof(...)) path / a per-frame drain instead.
         _session.RegionConnected += (s, regionHandle) =>
-            Godot.Callable.From(() => RenderConfig.SetRegionOrigin(regionHandle)).CallDeferred();
+            CallDeferred(nameof(ApplyRegionOrigin), regionHandle.ToString());
 
-        _session.RegionEnvironmentReceived += (s, env) =>
-            Godot.Callable.From(() =>
-            {
-                // FEAT-ENV-01 Phase D: hand the parsed cycle to the driver that actually paints
-                // it. Region-scoped rather than avatar-scoped: crossing into a neighbor region
-                // with its own environment replaces the cycle wholesale, same as a fresh login.
-                _environmentDriver.SetCycle(env.Cycle, env.Source);
-            }).CallDeferred();
+        _session.RegionEnvironmentReceived += (s, env) => _pendingRegionEnvironment = env;
 
         var creds = new LoginCredentials
         {
@@ -1565,6 +1580,11 @@ public partial class Boot : Control
     {
         _chatWindow.AppendIncomingInstantMessage(System.Guid.Parse(fromAgentId), fromAgentName, message);
     }
+
+    // Deferred target for GridSession.RegionConnected. The handle travels as a string because a
+    // region handle can exceed long.MaxValue and ulong is not a Variant-safe CallDeferred arg.
+    private void ApplyRegionOrigin(string regionHandle)
+        => RenderConfig.SetRegionOrigin(ulong.Parse(regionHandle));
 
     private int _logLineCount;
 
