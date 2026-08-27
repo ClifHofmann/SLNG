@@ -313,6 +313,13 @@ public partial class AvatarController : Camera3D
         var focusOwner = GetViewport().GuiGetFocusOwner();
         bool hasUiFocus = BlocksMovement(focusOwner);
 
+        // BUG-NET-01: captured once the render-camera pose is finalised (inside the localAgent /
+        // transform null-checks) and fed to the 10 Hz AgentUpdate below, which is sent OUTSIDE
+        // those checks. Region-local SL coords / Z-up axes -- the boundary to LibreMetaverse.
+        System.Numerics.Vector3? camSimPos = null;
+        System.Numerics.Vector3? camSimForward = null;
+        float camFar = 0f;
+
         // Alt+LMB orbit engagement, polled every frame instead of driven by the button's own
         // discrete press/release events. Live-tested proof this was needed: holding Alt+LMB
         // produced a rapid, alternating pressed=True/False/True/False... event stream instead of
@@ -752,6 +759,20 @@ public partial class AvatarController : Camera3D
 
                 // Third-person camera: pull back along the camera's Z axis
                 Position = targetPos + Transform.Basis.Z * _zoom;
+
+                // BUG-NET-01: tell the sim where the render camera actually is. Its interest list
+                // is centred on CameraCenter; SLNG never set it, so it defaulted to region centre
+                // (LibreMetaverse's AgentCamera 128,128,20) and alt-zooming to a distant point
+                // never streamed the objects there. Godot world -> region-local SL (Z-up); for a
+                // direction the origin/region offsets cancel, only the axis swap remains.
+                camSimPos = RenderConfig.FromGodot(localAgent.RegionHandle, Position);
+                var fwdGodot = -Transform.Basis.Z;
+                camSimForward = new System.Numerics.Vector3(fwdGodot.X, -fwdGodot.Z, fwdGodot.Y);
+                // Interest radius: never below today's effective 128 m, grow to still cover the
+                // avatar's surroundings when the camera has moved away, capped at the SL max.
+                var avatarGodot = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
+                camFar = Mathf.Min(512f, Mathf.Max(128f,
+                    Position.DistanceTo(avatarGodot) + RenderConfig.DrawDistance));
             }
         }
 
@@ -796,7 +817,8 @@ public partial class AvatarController : Camera3D
             _session.SetMovement(
                 !isSitting && fwd, !isSitting && back, false, false,
                 !isSitting && up, !isSitting && down,
-                ComputeBodyRotation(), !isSitting && _flying);
+                ComputeBodyRotation(), !isSitting && _flying,
+                camSimPos, camSimForward, camFar);
         }
     }
 
