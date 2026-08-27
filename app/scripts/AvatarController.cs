@@ -217,7 +217,7 @@ public partial class AvatarController : Camera3D
             if (keyEvt.Keycode == Key.Home)
             {
                 _flying = !_flying;
-                GD.Print($"[AvatarController] Flying: {(_flying ? "ON" : "off")}");
+                if (Diagnostics.Enabled) GD.Print($"[AvatarController] Flying: {(_flying ? "ON" : "off")}");
             }
             else if (keyEvt.Keycode == Key.Escape)
             {
@@ -228,7 +228,6 @@ public partial class AvatarController : Camera3D
                 // of snapping cleanly back to directly behind the avatar -- reported as "zooming
                 // back on Esc doesn't work cleanly, should jump to rear view."
                 ResetCamera();
-                GD.Print("[AvatarController] Camera reset");
             }
         }
 
@@ -265,12 +264,10 @@ public partial class AvatarController : Camera3D
             if (!hasUiFocus && mouseBtn.ButtonIndex == MouseButton.WheelUp)
             {
                 ZoomTowardCursor(-0.5f, mouseBtn.Position);
-                GD.Print($"[AvatarController] Zoom: {_zoom:F1} (WheelUp)");
             }
             else if (!hasUiFocus && mouseBtn.ButtonIndex == MouseButton.WheelDown)
             {
                 ZoomTowardCursor(0.5f, mouseBtn.Position);
-                GD.Print($"[AvatarController] Zoom: {_zoom:F1} (WheelDown)");
             }
         }
 
