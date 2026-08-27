@@ -204,7 +204,7 @@ but nothing happened" (LibreMetaverse/protocol bug).
 - [x] Live-test rounds 1–4: asset-id lag, asset-type lag, window raise-to-front, window/world/HUD
       click-through and wheel-zoom-through-Inventory — all confirmed fixed by live test
 - [ ] **Open, handed to gemini:** actual teleport execution — see **Open Issue** above
-- [ ] Deferred to a later `MVP2-2` pass: minimap overlay, full grid map, region search,
-      teleport-by-region-name/coordinates, "arrived in new region" UI feedback (no
-      `RegionConnected`-style event exists on `GridSession` yet — today's `CurrentRegionName`
-      would need to be polled after a successful teleport if a UI wants to show it)
+- [x] Deferred to its own task — **`MVP2-3` (Minimap, World Map & Region Search)**: minimap
+      overlay, full grid map, region search, teleport-by-region-name/coordinates, "arrived in
+      new region" feedback. (The `RegionConnected` event that this note said didn't exist yet
+      now does — added with BUG-NET-01 / BUG-ENV-01.)
