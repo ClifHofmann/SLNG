@@ -34,11 +34,16 @@ public partial class AvatarController : Camera3D
     private float _zoom = 4.0f;
     private Vector3 _panOffset = Vector3.Zero;
 
+    // BUG-NET-01: bounds for the AgentUpdate interest radius (Camera.Far). Min matches
+    // LibreMetaverse's AgentCamera default so un-zoomed play is unchanged; max is the SL cap.
+    private const float SlInterestFarMin = 128f;
+    private const float SlInterestFarMax = 512f;
+
     // FEAT-UI-12: persisted FOV / rear distance / focus height from Preferences > Camera.
     private SLNG.App.UI.CameraSettings? _cameraSettings;
     // Last RearDistance applied to _zoom -- so a slider move re-snaps the resting distance live
     // (see _Process) without fighting wheel/pad zoom, which never changes this value.
-    private float _lastAppliedRearDistance = 4.0f;
+    private float _lastAppliedRearDistance = SLNG.App.UI.CameraSettings.DefaultDistance;
 
     /// <summary>Wire the persisted camera view settings. FOV and the resting third-person distance
     /// apply at once; <see cref="_Process"/> then re-applies each whenever the setting itself
@@ -779,14 +784,17 @@ public partial class AvatarController : Camera3D
                 // (LibreMetaverse's AgentCamera 128,128,20) and alt-zooming to a distant point
                 // never streamed the objects there. Godot world -> region-local SL (Z-up); for a
                 // direction the origin/region offsets cancel, only the axis swap remains.
-                camSimPos = RenderConfig.FromGodot(localAgent.RegionHandle, Position);
-                var fwdGodot = -Transform.Basis.Z;
-                camSimForward = new System.Numerics.Vector3(fwdGodot.X, -fwdGodot.Z, fwdGodot.Y);
-                // Interest radius: never below today's effective 128 m, grow to still cover the
-                // avatar's surroundings when the camera has moved away, capped at the SL max.
-                var avatarGodot = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
-                camFar = Mathf.Min(512f, Mathf.Max(128f,
-                    Position.DistanceTo(avatarGodot) + RenderConfig.DrawDistance));
+                if (Position.IsFinite())
+                {
+                    camSimPos = RenderConfig.FromGodot(localAgent.RegionHandle, Position);
+                    var fwdGodot = -Transform.Basis.Z;
+                    camSimForward = new System.Numerics.Vector3(fwdGodot.X, -fwdGodot.Z, fwdGodot.Y);
+                    // Interest radius: never below today's effective floor, grow to still cover the
+                    // avatar's surroundings when the camera has moved away, capped at the SL max.
+                    var avatarGodot = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
+                    camFar = Mathf.Min(SlInterestFarMax, Mathf.Max(SlInterestFarMin,
+                        Position.DistanceTo(avatarGodot) + RenderConfig.DrawDistance));
+                }
             }
         }
 

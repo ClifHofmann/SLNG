@@ -301,8 +301,9 @@ public partial class SLNGWindow : MarginContainer
         if (ClampToViewport()) SavePersistedGeometry();
     }
 
-    /// <summary>Pushes the window back inside the current viewport so at least a 40 px strip of the
-    /// top-left (enough of the title bar to grab) stays on screen. Footprint is <c>Size * Scale</c>
+    /// <summary>Pushes the window back inside the current viewport so a >=40 px sliver stays on
+    /// screen on each axis and the top edge never goes above the viewport -- i.e. some of the
+    /// (full-width) title bar is always visible and grab-able. Footprint is <c>Size * Scale</c>
     /// (FEAT-UI-07). Returns true if it had to move the window.</summary>
     private bool ClampToViewport()
     {

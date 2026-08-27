@@ -31,9 +31,12 @@ computed its interest list around region centre, never the avatar and never the 
   existing 10 Hz `SetMovement` send.
 
 ## Acceptance Criteria
-- [ ] Camera spatial position is correctly factored into the interest list / object fetch priority.
-- [ ] Zooming (Alt-Clicking) onto a distant, currently unloaded point reliably triggers the network fetch and rendering of objects at that location.
-- [ ] Returning the camera to the avatar restores normal avatar-centric loading behavior without breaking existing visibility.
+- [x] Camera spatial position is correctly factored into the interest list / object fetch priority.
+- [x] Zooming (Alt-Clicking) onto a distant, currently unloaded point reliably triggers the network fetch and rendering of objects at that location.
+- [x] Returning the camera to the avatar restores normal avatar-centric loading behavior without breaking existing visibility.
 
-_All three need in-world confirmation (OpenSim / SL) — no unit-testable seam (`SetMovement`
-needs a live `GridClient`; the coordinate helpers live in `app/`, outside `SLNG.sln`)._
+**Confirmed in-world 2026-08-27 (OpenSim).** The network half alone did nothing visible — the
+render half (`ObjectRenderer` cull sweep against `min(dist-to-avatar, dist-to-camera)`, commit
+`4fc727e`) is what makes distant objects appear. No unit-testable seam today (`SetMovement` needs
+a live `GridClient`; `RenderConfig` / `CameraSettings` live in `app/`, which has no test
+project — flagged as a gap by code review).
