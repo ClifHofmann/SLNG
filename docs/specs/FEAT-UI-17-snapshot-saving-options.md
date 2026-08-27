@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-17`
 - **Track:** `ui` / `net`
-- **Status:** `⏸️ Pending`
+- **Status:** `⏸️ Pending` — deferred to a later milestone (out of MVP 3, per user 2026-08-27)
 - **Owner:** —
 - **Agent:** `ux-designer` (options UI) + `protocol-re` (inventory texture upload)
 - **Dep:** `MVP3-4` (Snapshot window — Phase 1 landed)
