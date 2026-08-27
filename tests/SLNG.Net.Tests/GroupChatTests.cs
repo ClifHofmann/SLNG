@@ -23,8 +23,11 @@ public class GroupChatTests
         m.Invoke(session, new object?[] { null, args });
     }
 
+    // InstantMessageEventArgs.IM is a get-only property over a struct, so every field has to be
+    // set before the args are constructed -- including the binary bucket.
     private static InstantMessageEventArgs Im(
-        InstantMessageDialog dialog, UUID sessionId, UUID fromAgent, string fromName, string message, bool groupIM)
+        InstantMessageDialog dialog, UUID sessionId, UUID fromAgent, string fromName, string message,
+        bool groupIM, byte[]? binaryBucket = null)
     {
         var im = new InstantMessage
         {
@@ -34,6 +37,7 @@ public class GroupChatTests
             FromAgentName = fromName,
             Message = message,
             GroupIM = groupIM,
+            BinaryBucket = binaryBucket ?? Array.Empty<byte>(),
         };
         return new InstantMessageEventArgs(im, null);
     }
@@ -160,6 +164,60 @@ public class GroupChatTests
         Assert.True(received.Success);
     }
 
+    // A group invitation is dialog 3 and matches neither branch below it, so before this it fell
+    // through OnInstantMessage and vanished -- the reported "die Gruppeneinladung kam nicht an".
+    [Fact]
+    public void OnInstantMessage_routes_a_group_invitation()
+    {
+        using var session = new GridSession();
+        GroupInvitationEvent? invite = null;
+        InstantMessageEvent? im = null;
+        GroupChatMessageEvent? chat = null;
+        session.GroupInvitationReceived += (s, e) => invite = e;
+        session.InstantMessageReceived += (s, e) => im = e;
+        session.GroupChatMessageReceived += (s, e) => chat = e;
+
+        var groupId = UUID.Random();   // an invite carries the GROUP id in FromAgentID
+        var sessionId = UUID.Random(); // the viewer's transaction_id, echoed back in the reply
+        // Binary bucket: { S32 membership_fee (network order); UUID role_id } -- 20 bytes.
+        var bucket = new byte[20];
+        bucket[0] = 0; bucket[1] = 0; bucket[2] = 0x01; bucket[3] = 0x2C; // 300
+        var args = Im(InstantMessageDialog.GroupInvitation, sessionId, groupId,
+            "Alpha Explorers", "Join Alpha Explorers?", groupIM: false, binaryBucket: bucket);
+
+        Invoke(session, "OnInstantMessage", args);
+
+        Assert.Null(im);
+        Assert.Null(chat);
+        Assert.NotNull(invite);
+        Assert.Equal(groupId.Guid, invite!.GroupId);
+        Assert.Equal(sessionId.Guid, invite.SessionId);
+        Assert.Equal("Alpha Explorers", invite.FromName);
+        Assert.Equal("Join Alpha Explorers?", invite.Message);
+        Assert.Equal(300, invite.MembershipFee);
+    }
+
+    // A bucket of the wrong size means "unparseable", not "free" -- the invitation is still shown,
+    // with the fee reported as 0, rather than being dropped like the viewer does.
+    [Theory]
+    [InlineData(0)]
+    [InlineData(4)]
+    [InlineData(19)]
+    public void Group_invitation_with_a_malformed_bucket_still_arrives(int bucketSize)
+    {
+        using var session = new GridSession();
+        GroupInvitationEvent? invite = null;
+        session.GroupInvitationReceived += (s, e) => invite = e;
+
+        var args = Im(InstantMessageDialog.GroupInvitation, UUID.Random(), UUID.Random(),
+            "Some Group", "Join?", groupIM: false, binaryBucket: new byte[bucketSize]);
+
+        Invoke(session, "OnInstantMessage", args);
+
+        Assert.NotNull(invite);
+        Assert.Equal(0, invite!.MembershipFee);
+    }
+
     // Same "no-op gracefully while disconnected" contract as every other GridSession send path.
     [Fact]
     public void Group_send_paths_without_connection_do_not_throw()
@@ -173,5 +231,7 @@ public class GroupChatTests
         Assert.Null(Record.Exception(() => session.SendGroupMessage(id, "hello")));
         Assert.Null(Record.Exception(() => session.SendGroupMessage(id, "")));
         Assert.Null(Record.Exception(() => session.SendGroupMessage(Guid.Empty, "hello")));
+        Assert.Null(Record.Exception(() => session.RespondToGroupInvitation(id, Guid.NewGuid(), accept: true)));
+        Assert.Null(Record.Exception(() => session.RespondToGroupInvitation(id, Guid.NewGuid(), accept: false)));
     }
 }

@@ -54,6 +54,14 @@
       "source_legacy": "Windlight",
       "source_default": "default — sim sends none"
     },
+    "group_invite": {
+      "title": "GROUP INVITATION",
+      "from": "Invitation from {0}",
+      "fee": "Joining costs L${0}.",
+      "fee_free": "Joining is free.",
+      "join": "Join",
+      "decline": "Decline"
+    },
     "groups": {
       "filter": "Filter groups...",
       "empty": "You haven't joined any groups yet.",

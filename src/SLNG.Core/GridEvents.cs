@@ -84,6 +84,21 @@ public record GroupChatMessageEvent(Guid GroupId, Guid FromAgentId, string FromA
 /// <c>GridSession.SendGroupMessage</c> can deliver anything to that group.</summary>
 public record GroupChatJoinedEvent(Guid GroupId, string SessionName, bool Success);
 
+/// <summary>Somebody invited the agent to a group. Answer with
+/// <c>GridSession.RespondToGroupInvitation</c>; until then nothing is sent, which is what the
+/// real viewer does while its "Join group?" notification sits on screen.</summary>
+/// <param name="GroupId">The group to join — and the address the accept/decline reply is sent to.
+/// The invite carries it in the message's <c>FromAgentID</c> field, not a group field
+/// (llimprocessing.cpp:864 <c>group_id = from_group ? from_id : aux_id</c>; LibreMetaverse
+/// exposes no aux id, so an invitation not sent by the group itself is out of reach).</param>
+/// <param name="SessionId">The invite's IM session id — the viewer's <c>transaction_id</c>, which
+/// the reply must echo back or the server cannot match it to the invitation.</param>
+/// <param name="FromName">Who/what sent the invitation, for display.</param>
+/// <param name="Message">Server-composed text naming the group, its charter and the fee.</param>
+/// <param name="MembershipFee">L$ charged on joining, decoded from the invitation's binary
+/// bucket, or 0 when the bucket is absent/malformed.</param>
+public record GroupInvitationEvent(Guid GroupId, Guid SessionId, string FromName, string Message, int MembershipFee);
+
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
 /// <param name="ParentLocalId">Local ID of the parent object, or 0 if unparented.</param>
 /// <param name="AttachmentPoint">SL AttachmentPoint enum byte value; non-zero when the object

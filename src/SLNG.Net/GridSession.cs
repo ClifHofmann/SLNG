@@ -96,6 +96,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<GroupChatMessageEvent>? GroupChatMessageReceived;
     /// <inheritdoc cref="GroupsUpdated"/>
     public event EventHandler<GroupChatJoinedEvent>? GroupChatJoined;
+    /// <inheritdoc cref="GroupsUpdated"/>
+    public event EventHandler<GroupInvitationEvent>? GroupInvitationReceived;
 
     /// <summary>Avatar-profile replies (FEAT-UI-13). All fired off a LibreMetaverse network
     /// thread after <see cref="RequestAvatarProfile"/> — consumers must marshal before touching a
@@ -1036,6 +1038,29 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     // dedicated flows later rather than being half-handled here.
     private void OnInstantMessage(object? sender, InstantMessageEventArgs e)
     {
+        // A group invitation is its own dialog (3) and would otherwise fall through both branches
+        // below and vanish -- which is exactly what "die Gruppeneinladung kam nicht an" was.
+        //
+        // Deliberately NOT via LibreMetaverse's own GroupManager.GroupInvitation event: that one
+        // fires synchronously and then immediately sends accept-or-decline based on
+        // GroupInvitationEventArgs.Accept, which defaults to FALSE (GroupManager.cs:1099-1125).
+        // Subscribing to it while asking the user first would auto-DECLINE every invitation --
+        // worse than not handling it at all. Leaving it unsubscribed makes that handler a no-op
+        // (it early-returns when nothing is listening), so we answer on our own schedule instead.
+        if (e.IM.Dialog == InstantMessageDialog.GroupInvitation)
+        {
+            GroupInvitationReceived?.Invoke(this, new GroupInvitationEvent(
+                // llimprocessing.cpp:864 -- the group id travels in FromAgentID for an invite sent
+                // by the group itself, and the reply is addressed to it (send_improved_im(group_id,
+                // ..., transaction_id), llviewermessage.cpp:681). See the DTO for the aux-id gap.
+                e.IM.FromAgentID.Guid,
+                e.IM.IMSessionID.Guid,
+                e.IM.FromAgentName ?? string.Empty,
+                e.IM.Message ?? string.Empty,
+                ParseGroupInvitationFee(e.IM.BinaryBucket)));
+            return;
+        }
+
         // Group chat first, and NOT by inspecting the dialog byte: it arrives as
         // InstantMessageDialog.SessionSend, not MessageFromAgent, and its GroupIM flag is only set
         // on the first message of a session -- a later one carries just the session id. Both the
@@ -1129,6 +1154,30 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         if (groupId == Guid.Empty || string.IsNullOrEmpty(message) || !_client.Network.Connected) return;
         _client.Self.InstantMessageGroup(new UUID(groupId), message);
+    }
+
+    /// <summary>Membership fee out of a group invitation's binary bucket. The viewer reads that
+    /// bucket as <c>{ S32 membership_fee; LLUUID role_id; }</c> and rejects an invitation whose
+    /// bucket is not exactly that size (llimprocessing.cpp:846-857); the S32 is network byte
+    /// order. A wrong size here means an unparseable bucket, not a free group, but the invitation
+    /// itself is still worth showing — so this reports 0 rather than dropping it, and the fee is
+    /// only ever displayed.</summary>
+    private static int ParseGroupInvitationFee(byte[]? bucket)
+    {
+        const int ExpectedSize = 4 + 16; // S32 membership_fee + UUID role_id
+        if (bucket == null || bucket.Length != ExpectedSize) return 0;
+        return (bucket[0] << 24) | (bucket[1] << 16) | (bucket[2] << 8) | bucket[3];
+    }
+
+    /// <summary>Accepts or declines a pending group invitation. Both answers are sent — declining
+    /// silently is not the same thing to the server as never answering.</summary>
+    public void RespondToGroupInvitation(Guid groupId, Guid sessionId, bool accept)
+    {
+        if (groupId == Guid.Empty || !_client.Network.Connected) return;
+        _client.Self.GroupInviteRespond(new UUID(groupId), new UUID(sessionId), accept);
+        // Membership only changes server-side after the accept lands; re-ask so the Groups tab
+        // catches up without needing a relog.
+        if (accept) _client.Groups.RequestCurrentGroups();
     }
 
     private void OnGroupChatJoined(object? sender, GroupChatJoinedEventArgs e)

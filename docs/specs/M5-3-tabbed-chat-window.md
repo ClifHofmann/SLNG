@@ -3,9 +3,10 @@
 - **Feature ID:** `M5-3`
 - **Track:** `ui`
 - **Status:** `🧪 Review` — Phase 1/1b/1c (window shell, local chat, Friends, IM) merged earlier;
-  Phase 2 (Groups panel, group chat, mute toggle) implemented `v0.9.61-alpha`, builds + 359 tests
-  + `--selftest` 26/26 green, **not yet confirmed in-world**. One acceptance item stays open by
-  choice: the chat-log path setting in Preferences (see the list below).
+  Phase 2 (Groups panel, group chat, mute toggle) plus group invitations implemented
+  `v0.9.62-alpha`, builds + 363 tests + `--selftest` 26/26 green, **not yet confirmed in-world**.
+  One acceptance item stays open by choice: the chat-log path setting in Preferences (see the
+  list below).
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -375,7 +376,35 @@ dropped it. LibreMetaverse's own `AgentManager.IsGroupMessage` (`GroupIM ||` the
 known group-chat session) is the authoritative test and is what the handler now uses, rather than
 re-deriving the rule from dialog bytes. Pinned by `GroupChatTests`.
 
+**Group invitations** (added after Phase 2, user-reported: "die Gruppeneinladung kam nicht an").
+A group invitation is `InstantMessageDialog.GroupInvitation` (3) — it matched neither the group-
+chat branch nor `MessageFromAgent`, so it fell straight through `OnInstantMessage` and vanished.
+Now: `GroupInvitationEvent` → a `GroupInvitationWindow` prompt (server text, membership fee, Join
+/ Decline) → `RespondToGroupInvitation`.
+
+Three protocol details, each verified against source rather than guessed:
+- **LibreMetaverse's own `Groups.GroupInvitation` event is unusable here and worse than nothing.**
+  It fires synchronously and then immediately sends accept-or-decline from
+  `GroupInvitationEventArgs.Accept`, which defaults to `false` (`GroupManager.cs:1099-1125`) —
+  subscribing to it while asking the user first would **auto-decline every invitation**. Left
+  unsubscribed (its handler early-returns when nothing is listening) and handled in our own
+  `Self.IM` handler instead.
+- **The group id travels in the message's `FromAgentID`**, and the reply is addressed to it with
+  the invite's session id as the transaction id — `llimprocessing.cpp:864`
+  (`group_id = from_group ? from_id : aux_id`) and `llviewermessage.cpp:681`
+  (`send_improved_im(group_id, …, transaction_id)`). LibreMetaverse exposes no `aux_id`, so an
+  invitation *not* sent by the group itself is out of reach; documented on the DTO.
+- **The fee is an `S32` in network byte order at the head of a 20-byte binary bucket**
+  (`{ S32 membership_fee; LLUUID role_id; }`, `llimprocessing.cpp:846-857`). The viewer drops an
+  invitation whose bucket is the wrong size; we show it with the fee reported as 0 instead,
+  because an unparseable bucket is not the same thing as a free group and the invitation is still
+  actionable.
+
+Dismissing the window with the title-bar × sends nothing at all (matching the viewer leaving the
+notification unanswered); Join and Decline are both real replies.
+
 **Still deferred:** group profile window, leaving a group, and the group-insignia texture (the
 id is carried on `GroupEntry.InsigniaId`; the panel draws an initial badge until there is an
-asset path for it).
+asset path for it). Other unmodelled `Self.IM` dialogs — friendship offers (38), inventory offers
+(4), teleport requests (22), group notices (32) — are still dropped the same way this one was.
 

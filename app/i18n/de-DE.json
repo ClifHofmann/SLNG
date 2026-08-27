@@ -54,6 +54,14 @@
       "source_legacy": "Windlight",
       "source_default": "Standard — Sim sendet nichts"
     },
+    "group_invite": {
+      "title": "GRUPPENEINLADUNG",
+      "from": "Einladung von {0}",
+      "fee": "Der Beitritt kostet L${0}.",
+      "fee_free": "Der Beitritt ist kostenlos.",
+      "join": "Beitreten",
+      "decline": "Ablehnen"
+    },
     "groups": {
       "filter": "Gruppen filtern...",
       "empty": "Du bist noch in keiner Gruppe.",

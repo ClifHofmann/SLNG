@@ -135,7 +135,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.9.61-alpha";
+    public const string AppVersion = "v0.9.62-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -882,6 +882,9 @@ public partial class Boot : Control
         // FEAT-UI-13: apply avatar-profile replies buffered off the network thread.
         while (_profileUiWork.TryDequeue(out var profileWork)) profileWork();
 
+        // M5-3: group invitations, same off-thread buffering reason.
+        while (_pendingGroupInvites.TryDequeue(out var invite)) ShowGroupInvitation(invite);
+
         // FEAT-ENV-02: Use the server's synced time if we have received a SimulatorViewerTimeMessage,
         // otherwise fall back to local UtcNow.
         var simTime = _session?.SimUnixTime > 0 
@@ -1435,6 +1438,11 @@ public partial class Boot : Control
         _userProfileWindows.Clear();
         _openProfileWindows = 0;
 
+        // ...and any pending group invitation, which is bound to the session it arrived on.
+        foreach (var win in _groupInviteWindows.Values) win.QueueFree();
+        _groupInviteWindows.Clear();
+        while (_pendingGroupInvites.TryDequeue(out _)) { }
+
         _world = new SLNG.Core.ECS.World();
         _session = new GridSession();
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
@@ -1464,6 +1472,7 @@ public partial class Boot : Control
         // M5-3 Phase 2: group chat. Same network-thread marshalling reason as the IM handlers.
         _session.GroupChatMessageReceived += OnGroupChatMessageReceived;
         _session.GroupChatJoined += OnGroupChatJoinedResult;
+        _session.GroupInvitationReceived += OnGroupInvitationReceived;
         // FEAT-UI-13: profile replies + name resolution, routed to whichever profile window is open
         // for that avatar. All fire on a network thread -- marshal before touching the Control tree.
         _session.AvatarPropertiesReceived += OnAvatarProfilePropertiesReceived;
@@ -1708,6 +1717,40 @@ public partial class Boot : Control
 
     private void ApplyGroupChatJoined(string groupId, bool success)
         => _chatWindow.OnGroupChatJoinResult(System.Guid.Parse(groupId), success);
+
+    /// <summary>Open "Join group?" prompts, keyed by group id so a repeated invitation raises the
+    /// existing window instead of stacking a second one.</summary>
+    private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInvitationWindow> _groupInviteWindows = new();
+
+    /// <summary>Invitations buffered off the network thread. A GroupInvitationEvent is a plain
+    /// record and so not Variant-safe for CallDeferred — same reason the profile events ride a
+    /// queue rather than a deferred call.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentQueue<SLNG.Core.GroupInvitationEvent> _pendingGroupInvites = new();
+
+    private void OnGroupInvitationReceived(object? sender, SLNG.Core.GroupInvitationEvent e)
+        => _pendingGroupInvites.Enqueue(e);
+
+    private void ShowGroupInvitation(SLNG.Core.GroupInvitationEvent e)
+    {
+        if (_session == null) return;
+        var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+        if (hudLayer == null) return;
+
+        if (_groupInviteWindows.TryGetValue(e.GroupId, out var existing) && IsInstanceValid(existing))
+        {
+            existing.MoveToFront();
+            return;
+        }
+
+        var win = new SLNG.App.UI.GroupInvitationWindow();
+        hudLayer.AddChild(win);
+        win.CascadeIndex = _groupInviteWindows.Count % 8;
+        win.Closed += () => _groupInviteWindows.Remove(e.GroupId);
+        _groupInviteWindows[e.GroupId] = win;
+        win.Initialize(_session, e);
+
+        GD.Print($"[GroupInvite] {e.FromName} -> group {e.GroupId} fee L${e.MembershipFee}");
+    }
 
     // ---- FEAT-UI-13: avatar profile events -----------------------------------------------------
     // The reply payloads are plain C# records (not Variant-safe), so instead of CallDeferred they
