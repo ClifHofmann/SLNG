@@ -38,6 +38,12 @@ public partial class UserProfileWindow : SLNGWindow
     private AvatarProfileProperties? _lastProps;
     private bool _editFieldsSeeded;
 
+    // Which texture id is currently pinned (GpuCache.AddRef'd) in each picture slot -- see
+    // RepinTexture's doc comment for why this exists.
+    private Guid _pinnedProfilePicId = Guid.Empty;
+    private Guid _pinnedFirstLifePicId = Guid.Empty;
+    private Guid _pinnedPickSnapshotId = Guid.Empty;
+
     // Shell
     private VBoxContainer _root = null!;
     private Control _tabHost = null!;
@@ -154,6 +160,15 @@ public partial class UserProfileWindow : SLNGWindow
     public override void _ExitTree()
     {
         FlushNotes();
+        // Give back every GpuCache ref this window pinned -- see RepinTexture's doc comment.
+        // Without this, closing the window (or QueueFree on relogin) would leave these entries
+        // pinned in GpuCache forever, since nothing else would ever call ReleaseRef for them.
+        if (_gpuCache != null)
+        {
+            if (_pinnedProfilePicId != Guid.Empty) _gpuCache.ReleaseRef(_pinnedProfilePicId);
+            if (_pinnedFirstLifePicId != Guid.Empty) _gpuCache.ReleaseRef(_pinnedFirstLifePicId);
+            if (_pinnedPickSnapshotId != Guid.Empty) _gpuCache.ReleaseRef(_pinnedPickSnapshotId);
+        }
         base._ExitTree();
     }
 
@@ -200,7 +215,9 @@ public partial class UserProfileWindow : SLNGWindow
             _session?.RequestAvatarName(p.PartnerId);
         }
 
+        RepinTexture(ref _pinnedProfilePicId, p.ProfileImageId);
         LoadTextureInto(p.ProfileImageId, _profilePic);
+        RepinTexture(ref _pinnedFirstLifePicId, p.FirstLifeImageId);
         LoadTextureInto(p.FirstLifeImageId, _firstLifePic);
 
         if (_isSelf)
@@ -309,6 +326,9 @@ public partial class UserProfileWindow : SLNGWindow
 
         _pickDetail.Visible = true;
         _pickSnapshot.Texture = null;
+        // Release the previous pick's snapshot ref now that we're done showing it -- ApplyPickDetail
+        // pins the new one once its id is known.
+        RepinTexture(ref _pinnedPickSnapshotId, Guid.Empty);
         _pickTitleValue.Text = Tr("loading");
         _pickDescValue.Text = "";
         _pickLocationValue.Text = "";
@@ -324,6 +344,7 @@ public partial class UserProfileWindow : SLNGWindow
         _pickLocationValue.Text = string.IsNullOrWhiteSpace(d.SimName)
             ? ""
             : $"{d.SimName} ({d.GlobalX % 256:0}, {d.GlobalY % 256:0}, {d.GlobalZ:0})";
+        RepinTexture(ref _pinnedPickSnapshotId, d.SnapshotId);
         LoadTextureInto(d.SnapshotId, _pickSnapshot);
     }
 
@@ -844,6 +865,28 @@ public partial class UserProfileWindow : SLNGWindow
         var vp = GetViewportRect().Size;
         var start = new Vector2(Mathf.Max(0f, (vp.X - Size.X) / 2f), Mathf.Max(0f, (vp.Y - Size.Y) / 3f));
         Position = start + new Vector2(CascadeIndex * 28, CascadeIndex * 28);
+    }
+
+    /// <summary>Pins <paramref name="newId"/> in <see cref="GpuCache"/> and releases whatever this
+    /// "slot" had pinned before, so a texture <see cref="LoadTextureInto"/> is still displaying
+    /// can never be evicted (and disposed) out from under its <see cref="TextureRect"/> --
+    /// <see cref="GpuCache.GetOrUploadTextureAsync"/> itself starts an entry at RefCount 0
+    /// (nothing here passes <c>initialRefCount</c>), and this class previously called it without
+    /// ever pinning the result at all. <see cref="WorldMapWindow"/> hit the exact same bug class
+    /// live (a disposed <c>Godot.ImageTexture</c> crashing every subsequent redraw) -- this
+    /// follows its fix, matching <c>ObjectRenderer</c>'s own established convention: <see
+    /// cref="GpuCache.GetOrUploadTextureAsync"/> itself stays ref-neutral, and explicit
+    /// <see cref="GpuCache.AddRef"/>/<see cref="GpuCache.ReleaseRef"/> is the sole ref-counting
+    /// mechanism, called BEFORE the async fetch even starts (not after it completes) -- safe even
+    /// if the fetch is still in flight or ultimately fails, since <c>GpuCache</c>'s own
+    /// <c>_pendingRefDelta</c> buffers a ref for an id that hasn't been <c>Put</c> into the cache
+    /// yet.</summary>
+    private void RepinTexture(ref Guid pinnedId, Guid newId)
+    {
+        if (_gpuCache == null || pinnedId == newId) return;
+        if (pinnedId != Guid.Empty) _gpuCache.ReleaseRef(pinnedId);
+        if (newId != Guid.Empty) _gpuCache.AddRef(newId);
+        pinnedId = newId;
     }
 
     private async Task LoadTextureIntoAsync(Guid texId, TextureRect target)
