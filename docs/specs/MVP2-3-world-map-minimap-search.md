@@ -66,9 +66,43 @@ teleport). There is no map of any kind.
 - [x] Region search resolves a name to a location and can teleport there.
 - [x] "Arrived in `<region>`" feedback shows after a successful teleport / region crossing.
 - [x] No LMV type on `GridSession`'s public API; background events are marshalled.
-- [ ] **Not yet confirmed in-world** — every box above is unit-tested (`GridSessionTests`) and
-      `--selftest`-clean, but none of it has been driven against a live OpenSim session yet
-      (tile fetch, pan/zoom feel, click-to-teleport accuracy, the arrival toast's timing).
+- [ ] **Reconfirm in-world after the 2026-08-28 fixes** — the first live-test round found the
+      minimap roster click and the world map teleport both silently did nothing (see "Live-test
+      fixes" below); both are now fixed and unit-tested/`--selftest`-clean, but not yet
+      re-verified against a live OpenSim session.
+
+## Live-test fixes (2026-08-28)
+The first actual in-world test found two real bugs the unit tests couldn't catch (both are pure
+Godot-input/UX issues, invisible to a headless test):
+
+1. **Minimap roster click did nothing.** `MinimapOverlay._Process` called `RefreshList()`
+   unconditionally every frame, tearing down and rebuilding every roster row's `Button` ~60
+   times a second. Godot's `BaseButton` only raises `Pressed` if the SAME node instance is still
+   alive for both the press and the release event; a click landing between two rebuilds (which,
+   at 60 Hz, is nearly all of them) simply never registered. Fixed with `RefreshListIfChanged`:
+   compute a cheap signature of (agent id, name) pairs + the current selection, and only rebuild
+   when it actually differs from the last rebuild.
+2. **World map teleport appeared to do nothing.** Two compounding problems:
+   - The default zoom (`DefaultPixelsPerMeter = 0.4`) rendered a 256 m region as a ~100 px square
+     centred in a much larger, otherwise-EMPTY canvas -- on a typical single/few-region OpenSim
+     test grid, most of the visible map was actually non-existent neighbour grid squares, so a
+     click anywhere but dead-centre targeted nothing. Fixed: `CenterOnAvatarIfNeeded` now also
+     fits the zoom so the home region fills ~70% of the shorter canvas side by default.
+   - Nothing stopped a click (or double-click) on such empty space from firing a real
+     `TeleportToAsync` anyway. A raw handle-based `TeleportLocationRequest` to a grid square with
+     no region on it isn't rejected by the sim -- it just gets no reply -- so the call sat for the
+     full 40s `AgentManager.TeleportTimeout` before reporting "timed out", with nothing visible in
+     between; a quick test click-and-wait-a-few-seconds looks exactly like "broken". Fixed by
+     gating teleport on a CONFIRMED region: `HandlePointAction` only teleports immediately for an
+     already-resolved tile (the common case -- `RequestVisibleTilesIfNeeded` has usually already
+     streamed it in); otherwise it resolves first and teleports automatically only if that comes
+     back non-null, showing "No region here." otherwise. This mirrors the real viewer's own gate
+     (`LLAgent::doTeleportViaLocation` only takes the direct/immediate path once
+     `LLWorldMap::simInfoFromHandle` has already resolved the target -- verified against the
+     vendored `slviewer` source, not guessed).
+   - Added `GD.Print` diagnostics around the teleport call (handle/position requested, and the
+     result) so any future failure is visible in `godot.log` instead of only in UI text that
+     never reaches the console.
 
 ## Implementation notes (as shipped on `feature/MVP2-3-world-map-minimap-search`)
 - **`GridSession`** gained neutral DTOs (`NearbyAvatar`/`NearbyAvatarsEvent`, `MapRegionInfo` —

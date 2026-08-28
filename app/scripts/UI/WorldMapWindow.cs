@@ -166,6 +166,7 @@ public partial class WorldMapWindow : SLNGWindow
         _tileRequested.Clear();
         _requestedRect = null;
         _selectedRegionHandle = null;
+        _pendingClickResolve = null;
         _centered = false;
         _teleportButton.Disabled = true;
         _infoLabel.Text = L10n.Tr("ui.worldmap.hint");
@@ -265,8 +266,10 @@ public partial class WorldMapWindow : SLNGWindow
         if (_session == null || _selectedRegionHandle == null) return;
         _teleportButton.Disabled = true;
         _infoLabel.Text = L10n.Tr("ui.worldmap.teleporting");
+        GD.Print($"[WorldMap] Requesting teleport to region handle {_selectedRegionHandle.Value}, local {_selectedLocal}");
 
         var result = await _session.TeleportToAsync(_selectedRegionHandle.Value, _selectedLocal).ConfigureAwait(false);
+        GD.Print($"[WorldMap] Teleport result: success={result.Success} message=\"{result.Message}\"");
         _pendingTeleportMessage = result.Success ? "" : $"{L10n.Tr("ui.worldmap.teleport_failed")}: {result.Message}";
         CallDeferred(MethodName.ApplyTeleportResult);
     }
@@ -326,11 +329,25 @@ public partial class WorldMapWindow : SLNGWindow
         RedrawCanvas();
     }
 
+    /// <summary>Never fires a teleport at a region handle that hasn't been CONFIRMED to exist.
+    /// A raw handle-based <c>TeleportLocationRequest</c> to a grid square with no region on it
+    /// isn't rejected -- it just gets no reply at all, so <see cref="GridSession.TeleportToAsync"/>
+    /// sits until <c>AgentManager.TeleportTimeout</c> (40s) before reporting "timed out", with
+    /// nothing visible in between. That is exactly what a click landing on empty grid space (very
+    /// easy at the old fixed-zoomed-out default -- see <see cref="CenterOnAvatarIfNeeded"/>) looked
+    /// like: "teleport doesn't do anything." The real viewer has the same gate (LLAgent::
+    /// doTeleportViaLocation only takes the direct path once <c>LLWorldMap::simInfoFromHandle</c>
+    /// has resolved the target; verified against slviewer source, not guessed) -- resolve first,
+    /// teleport only once/if that confirms a region is actually there.</summary>
     private void HandlePointAction(Vector2 screenPos, bool teleport)
     {
         if (_session == null) return;
         var (gx, gy) = ScreenToGlobal(screenPos);
-        if (gx < 0 || gy < 0) return; // never a valid region
+        if (gx < 0 || gy < 0)
+        {
+            _infoLabel.Text = L10n.Tr("ui.worldmap.no_region_here");
+            return;
+        }
 
         uint originX = (uint)(Math.Floor(gx / RegionMeters) * RegionMeters);
         uint originY = (uint)(Math.Floor(gy / RegionMeters) * RegionMeters);
@@ -339,29 +356,65 @@ public partial class WorldMapWindow : SLNGWindow
 
         _selectedRegionHandle = regionHandle;
         _selectedLocal = local;
-        _teleportButton.Disabled = false;
 
         if (_regions.TryGetValue(regionHandle, out var known))
         {
+            _teleportButton.Disabled = false;
             _infoLabel.Text = $"{known.Name}  ({local.X:0}, {local.Y:0})";
+            RedrawCanvas();
+            if (teleport) OnTeleportPressed();
         }
         else
         {
-            _infoLabel.Text = $"({local.X:0}, {local.Y:0})";
-            _ = ResolveRegionInBackgroundAsync(regionHandle);
+            // Not resolved yet -- most clicks land on a tile RequestVisibleTilesIfNeeded already
+            // streamed in, so this is the uncommon case (a click just outside the loaded area, or
+            // genuinely empty grid space). ApplyResolvedRegion teleports automatically once/if the
+            // resolve confirms a region here, but only if the selection hasn't moved on meanwhile.
+            _teleportButton.Disabled = true;
+            _infoLabel.Text = L10n.Tr("ui.worldmap.resolving");
+            RedrawCanvas();
+            _ = ResolveRegionInBackgroundAsync(regionHandle, teleport);
         }
-        RedrawCanvas();
-
-        if (teleport) OnTeleportPressed();
     }
 
-    private async Task ResolveRegionInBackgroundAsync(ulong regionHandle)
+    private sealed class PendingResolve
+    {
+        public ulong RegionHandle;
+        public MapRegionInfo? Info;
+        public bool TeleportAfter;
+    }
+    private volatile PendingResolve? _pendingClickResolve;
+
+    private async Task ResolveRegionInBackgroundAsync(ulong regionHandle, bool teleportAfter)
     {
         if (_session == null) return;
         var info = await _session.ResolveRegionByHandleAsync(regionHandle).ConfigureAwait(false);
-        if (info == null) return;
-        _pendingRegions.Enqueue(info);
-        CallDeferred(MethodName.DrainPendingRegions);
+        _pendingClickResolve = new PendingResolve { RegionHandle = regionHandle, Info = info, TeleportAfter = teleportAfter };
+        CallDeferred(MethodName.ApplyResolvedRegion);
+    }
+
+    private void ApplyResolvedRegion()
+    {
+        var pending = System.Threading.Interlocked.Exchange(ref _pendingClickResolve, null);
+        // The user clicked somewhere else while this was in flight -- its answer no longer
+        // applies to the current selection.
+        if (pending == null || _selectedRegionHandle != pending.RegionHandle) return;
+
+        if (pending.Info != null)
+        {
+            _regions[pending.Info.RegionHandle] = pending.Info;
+            RequestTile(pending.Info);
+            _teleportButton.Disabled = false;
+            _infoLabel.Text = $"{pending.Info.Name}  ({_selectedLocal.X:0}, {_selectedLocal.Y:0})";
+            RedrawCanvas();
+            if (pending.TeleportAfter) OnTeleportPressed();
+        }
+        else
+        {
+            _infoLabel.Text = L10n.Tr("ui.worldmap.no_region_here");
+            _teleportButton.Disabled = true;
+            _selectedRegionHandle = null;
+        }
     }
 
     private void DrainPendingRegions()
@@ -437,6 +490,12 @@ public partial class WorldMapWindow : SLNGWindow
         _centerGlobalY = gy;
     }
 
+    /// <summary>Also RE-FITS the zoom, not just the pan position -- see the class-level "Requesting
+    /// teleport" doc comment on <see cref="HandlePointAction"/>. <see cref="DefaultPixelsPerMeter"/>
+    /// alone rendered a 256 m region as a ~100 px square lost in a mostly-EMPTY canvas on a typical
+    /// window size, so most of the visible area was actually non-existent neighbour grid squares --
+    /// exactly what made a stray click land on nothing. Fitting the home region to ~70% of the
+    /// shorter canvas side makes "click your own region" the easy, obvious target by default.</summary>
     private void CenterOnAvatarIfNeeded()
     {
         if (_centered || _session == null) return;
@@ -444,6 +503,11 @@ public partial class WorldMapWindow : SLNGWindow
         if (handle == 0) return;
         var (ox, oy) = RegionOrigin(handle);
         CenterOn(ox + RegionMeters / 2, oy + RegionMeters / 2);
+
+        var size = _canvas.Size;
+        if (size.X > 0 && size.Y > 0)
+            _pixelsPerMeter = Math.Clamp(Math.Min(size.X, size.Y) * 0.7f / RegionMeters, MinPixelsPerMeter, MaxPixelsPerMeter);
+
         _centered = true;
         RequestVisibleTilesIfNeeded();
     }

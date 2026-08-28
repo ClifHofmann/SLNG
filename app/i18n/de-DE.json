@@ -76,7 +76,9 @@
       "searching": "Suche…",
       "enter_region_name": "Regionsnamen eingeben.",
       "region_not_found": "Region \"{0}\" nicht gefunden.",
-      "hint": "Klicken zum Prüfen eines Punkts, Doppelklick zum Teleportieren."
+      "hint": "Klicken zum Prüfen eines Punkts, Doppelklick zum Teleportieren.",
+      "resolving": "Region wird geprüft…",
+      "no_region_here": "Keine Region hier."
     },
     "group_invite": {
       "title": "GRUPPENEINLADUNG",

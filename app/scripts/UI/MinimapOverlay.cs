@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 using SLNG.Core;
 using SLNG.Core.Components;
@@ -52,6 +53,10 @@ public partial class MinimapOverlay : SLNGWindow
 
     // Rebuilt every frame in _Process; feeds both the radar draw and the list.
     private readonly List<(Guid AgentId, System.Numerics.Vector3 Position, string Name)> _roster = new();
+
+    // Membership+selection signature the roster list was last actually rebuilt for -- see
+    // RefreshListIfChanged.
+    private string _lastListSignature = "";
 
     public override void _Ready()
     {
@@ -163,7 +168,7 @@ public partial class MinimapOverlay : SLNGWindow
         {
             _regionLabel.Text = "";
             _canvas.Clear();
-            if (_roster.Count > 0) { _roster.Clear(); RefreshList(); }
+            if (_roster.Count > 0) { _roster.Clear(); RefreshListIfChanged(); }
             return;
         }
 
@@ -178,6 +183,23 @@ public partial class MinimapOverlay : SLNGWindow
 
         BuildRoster(regionHandle, out var ownPos, out var heading);
         _canvas.Update(width, height, ownPos, heading, _visibleRangeMeters, _roster, _selectedAgentId);
+        RefreshListIfChanged();
+    }
+
+    /// <summary>Only tears down and rebuilds the roster's Button rows when who's-in-the-list (or
+    /// the selection) actually changed -- NOT every frame, even though <see cref="BuildRoster"/>
+    /// itself runs every frame (positions move every frame; names/membership don't). A previous
+    /// revision called <see cref="RefreshList"/> unconditionally here, which froze every row's
+    /// button under a fresh instance ~60 times a second: Godot's <c>BaseButton</c> only fires
+    /// <c>Pressed</c> if the SAME node instance is still alive for both the press and the release,
+    /// so a click landing between two rebuilds silently never registered -- the reported "left
+    /// click doesn't do anything" bug.</summary>
+    private void RefreshListIfChanged()
+    {
+        var signature = string.Join('|', _roster.Select(r => $"{r.AgentId}:{r.Name}"));
+        signature += "#" + _selectedAgentId;
+        if (signature == _lastListSignature) return;
+        _lastListSignature = signature;
         RefreshList();
     }
 

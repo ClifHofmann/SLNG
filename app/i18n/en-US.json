@@ -76,7 +76,9 @@
       "searching": "Searching…",
       "enter_region_name": "Enter a region name.",
       "region_not_found": "Region \"{0}\" not found.",
-      "hint": "Click to inspect a point, double-click to teleport."
+      "hint": "Click to inspect a point, double-click to teleport.",
+      "resolving": "Checking that region…",
+      "no_region_here": "No region here."
     },
     "group_invite": {
       "title": "GROUP INVITATION",
