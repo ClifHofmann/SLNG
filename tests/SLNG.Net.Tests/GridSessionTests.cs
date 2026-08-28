@@ -323,6 +323,30 @@ public class GridSessionTests
         Assert.Equal("Arriving...", received.Message);
     }
 
+    // BUG-NET-03: with MultipleSims connecting neighbor circuits, avatar updates arrive from
+    // neighbor sims too -- including our own child-agent copy with a foreign LocalId. Those must
+    // NOT reach WorldSimulation (they churned the local agent entity -> skeleton rebuild ->
+    // ObjectDisposedException in AvatarRenderer.UpdateAttachment). The current sim is the sole
+    // authority for avatars, so an update from any simulator that isn't CurrentSim is dropped.
+    [Fact]
+    public void OnAvatarUpdate_from_non_current_sim_is_dropped()
+    {
+        using var session = new GridSession();
+        bool raised = false;
+        session.AvatarUpdateReceived += (s, e) => raised = true;
+
+        using var client = new GridClient();
+        // A fabricated simulator that is not (and cannot be) client.Network.CurrentSim.
+        var sim = new Simulator(client, new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 9000), 1234UL);
+        var avatar = new Avatar { ID = UUID.Random(), LocalID = 42 };
+        var args = new AvatarUpdateEventArgs(sim, avatar, timeDilation: 0, isNew: false);
+
+        var method = typeof(GridSession).GetMethod("OnAvatarUpdate", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        method.Invoke(session, new object?[] { null, args });
+
+        Assert.False(raised, "avatar updates from a non-current sim must be dropped (BUG-NET-03)");
+    }
+
     // TeleportStatus.None is not a real in-flight stage and must be dropped, not surfaced --
     // mirrors the LoginStatus.None handling in the login-stage mapping.
     [Fact]
