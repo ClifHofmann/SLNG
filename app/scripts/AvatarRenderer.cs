@@ -1032,8 +1032,13 @@ public partial class AvatarRenderer : Node3D
             && (loaded.Faces == prim.Faces || (loaded.Faces != null && prim.Faces != null && loaded.Faces.SequenceEqual(prim.Faces))))
             return;
 
-        // Re-use existing node or create a new BoneAttachment3D on the avatar skeleton.
-        if (!_attachmentNodes.TryGetValue(entityId, out var boneAttach))
+        // Re-use existing node or create a new BoneAttachment3D on the avatar skeleton. The cached
+        // node can be a stale reference to one freed with a torn-down skeleton (relog, region
+        // change, or -- BUG-NET-03 -- neighbor avatar updates churning the local agent entity):
+        // _attachmentNodes is not cleared when the skeleton goes, so a later call here (a queued
+        // CallDeferred, or a fresh update) would hit GetChildren() on a disposed BoneAttachment3D
+        // (ObjectDisposedException). Validate before reuse and rebuild if it's gone.
+        if (!_attachmentNodes.TryGetValue(entityId, out var boneAttach) || !GodotObject.IsInstanceValid(boneAttach))
         {
             boneAttach = new BoneAttachment3D { Name = $"WornItem_{entityId:N}" };
             int boneIdx = avatarVisual.Skeleton.FindBone(boneName);

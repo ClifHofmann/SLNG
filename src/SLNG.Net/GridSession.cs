@@ -868,6 +868,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private void OnAvatarUpdate(object? sender, AvatarUpdateEventArgs e)
     {
+        // BUG-NET-03: since MultipleSims connects neighbor circuits, avatar updates now also arrive
+        // from neighbor sims -- including our OWN avatar as a child agent there, with a different
+        // LocalId. Feeding those to WorldSimulation flipped the local agent entity's RegionHandle/
+        // LocalId back and forth, tearing down and rebuilding the Bento skeleton on every packet
+        // and leaving stale BoneAttachment3D nodes behind (ObjectDisposedException spam from
+        // AvatarRenderer.UpdateAttachment). We don't render neighbor-region avatars yet, so the
+        // current sim stays the sole authority for avatars, exactly as before MultipleSims.
+        if (e.Simulator != _client.Network.CurrentSim) return;
+
         bool isLocalAgent = e.Avatar.ID == _client.Self.AgentID;
         ResolveSeatedTransform(e.Simulator, e.Avatar.Position, e.Avatar.Rotation, e.Avatar.ParentID,
             out var worldPos, out var worldRot);
@@ -1834,6 +1843,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         if (e.Update.Avatar || e.Prim is Avatar)
         {
+            // See OnAvatarUpdate: neighbor sims (MultipleSims, BUG-NET-03) also stream avatar
+            // terse updates, including our own child-agent copy -- the current sim is the sole
+            // authority for avatars.
+            if (e.Simulator != _client.Network.CurrentSim) return;
+
             Guid agentId = e.Prim.ID.Guid;
             string firstName = (e.Prim as Avatar)?.FirstName ?? "";
             string lastName = (e.Prim as Avatar)?.LastName ?? "";
@@ -1920,6 +1934,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         System.Numerics.Vector3? velocityOverride = null,
         float timeDilation = 1f)
     {
+        // BUG-NET-03: neighbor sims (MultipleSims) replicate worn attachments as child-agent
+        // copies with foreign LocalIds and a parent avatar we deliberately don't track (see
+        // OnAvatarUpdate). Passing the local agent's copies through churned the skeleton
+        // (ObjectDisposedException from AvatarRenderer.UpdateAttachment); other residents'
+        // neighbor attachments are just orphans. World objects from neighbors are the whole point
+        // of MultipleSims, so drop only attachment-flagged prims from a non-current sim.
+        if (simulator != _client.Network.CurrentSim
+            && prim.PrimData.AttachmentPoint != LibreMetaverse.AttachmentPoint.Default)
+            return;
+
         var resolvedPosition = positionOverride ?? new System.Numerics.Vector3(prim.Position.X, prim.Position.Y, prim.Position.Z);
         var resolvedRotation = rotationOverride ?? new System.Numerics.Quaternion(prim.Rotation.X, prim.Rotation.Y, prim.Rotation.Z, prim.Rotation.W);
         var resolvedVelocity = velocityOverride ?? new System.Numerics.Vector3(prim.Velocity.X, prim.Velocity.Y, prim.Velocity.Z);
