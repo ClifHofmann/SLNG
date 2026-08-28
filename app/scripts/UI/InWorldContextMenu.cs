@@ -19,6 +19,14 @@ namespace SLNG.App.UI
         /// agent id, string its best-known display name.</summary>
         public Action<Guid, string>? OnAvatarProfileClicked;
         public Action<Guid, string>? OnAvatarImClicked;
+        /// <inheritdoc cref="OnAvatarProfileClicked"/>
+        public Action<Guid, string>? OnAvatarOfferTeleportClicked;
+        /// <summary>Mute/Unmute is a single toggle button whose label already reflects the
+        /// CURRENT state (set by the caller via <see cref="ShowAvatarMenu"/>'s <c>isMuted</c>) --
+        /// this fires regardless of which way it's currently pointing, so the handler is
+        /// responsible for flipping the actual mute state (see <c>GridSession.IsAvatarMuted</c>/
+        /// <c>SetAvatarMuted</c>).</summary>
+        public Action<Guid, string>? OnAvatarMuteToggleClicked;
 
         /// <summary>MVP2-1: right-click "Sit Here" on bare ground (see ShowGroundMenu) -- the
         /// world position that was right-clicked, same one OnCreatePrimClicked receives.</summary>
@@ -37,6 +45,9 @@ namespace SLNG.App.UI
 
         private VBoxContainer _objectButtons = null!;
         private VBoxContainer _avatarButtons = null!;
+        private Button _avatarImButton = null!;
+        private Button _avatarTeleportButton = null!;
+        private Button _avatarMuteButton = null!;
         private VBoxContainer _createRoot = null!;
         private Button _createHeader = null!;
         private VBoxContainer _createShapes = null!;
@@ -82,7 +93,9 @@ namespace SLNG.App.UI
             _avatarButtons = new VBoxContainer { Visible = false };
             root.AddChild(_avatarButtons);
             AddMenuButton(_avatarButtons, "👤 Profile", () => OnAvatarProfileClicked?.Invoke(_currentAvatarId, _currentAvatarName));
-            AddMenuButton(_avatarButtons, "💬 IM", () => OnAvatarImClicked?.Invoke(_currentAvatarId, _currentAvatarName));
+            _avatarImButton = AddMenuButton(_avatarButtons, "💬 IM", () => OnAvatarImClicked?.Invoke(_currentAvatarId, _currentAvatarName));
+            _avatarTeleportButton = AddMenuButton(_avatarButtons, "🚀 Offer Teleport", () => OnAvatarOfferTeleportClicked?.Invoke(_currentAvatarId, _currentAvatarName));
+            _avatarMuteButton = AddMenuButton(_avatarButtons, "🔇 Mute", () => OnAvatarMuteToggleClicked?.Invoke(_currentAvatarId, _currentAvatarName));
 
             _objectButtons = new VBoxContainer();
             root.AddChild(_objectButtons);
@@ -139,11 +152,12 @@ namespace SLNG.App.UI
             AddMenuButton(_createShapes, "💍 Ring", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Ring));
         }
 
-        private void AddMenuButton(VBoxContainer container, string text, Action onClick)
+        private Button AddMenuButton(VBoxContainer container, string text, Action onClick)
         {
             var btn = new Button { Text = text, Flat = true, Alignment = HorizontalAlignment.Left };
             btn.Pressed += () => { onClick(); Hide(); };
             container.AddChild(btn);
+            return btn;
         }
 
         public void ShowMenu(Vector2 position, Entity entity, uint localId)
@@ -159,19 +173,24 @@ namespace SLNG.App.UI
             MoveToFront();
         }
 
-        /// <summary>FEAT-UI-13: right-clicked an avatar -- offers Profile / IM instead of the
-        /// object Edit/Touch/Inspect set. <paramref name="isSelf"/> hides IM (you can't IM
-        /// yourself) but keeps Profile.</summary>
-        public void ShowAvatarMenu(Vector2 position, Guid agentId, string name, bool isSelf)
+        /// <summary>FEAT-UI-13: right-clicked an avatar -- offers Profile / IM / Offer Teleport /
+        /// Mute instead of the object Edit/Touch/Inspect set. <paramref name="isSelf"/> hides
+        /// everything but Profile (you can't IM/teleport-offer/mute yourself). <paramref
+        /// name="isMuted"/> only matters when <paramref name="isSelf"/> is false -- it picks
+        /// which way the Mute/Unmute toggle currently reads; the caller (whoever tracks the mute
+        /// list, e.g. <c>GridSession.IsAvatarMuted</c>) is the source of truth for it, not this
+        /// menu.</summary>
+        public void ShowAvatarMenu(Vector2 position, Guid agentId, string name, bool isSelf, bool isMuted = false)
         {
             _currentAvatarId = agentId;
             _currentAvatarName = name ?? "";
             _objectButtons.Visible = false;
             _createRoot.Visible = false;
             _avatarButtons.Visible = true;
-            // second child of _avatarButtons is the "IM" button
-            if (_avatarButtons.GetChildCount() > 1 && _avatarButtons.GetChild(1) is Button imBtn)
-                imBtn.Visible = !isSelf;
+            _avatarImButton.Visible = !isSelf;
+            _avatarTeleportButton.Visible = !isSelf;
+            _avatarMuteButton.Visible = !isSelf;
+            _avatarMuteButton.Text = isMuted ? "🔊 Unmute" : "🔇 Mute";
             Position = position;
             Visible = true;
             MoveToFront();

@@ -79,6 +79,24 @@ teleport). There is no map of any kind.
       client-side UI operation -- the SL/OpenSim `AgentUpdate` "camera" fields exist for the real
       3D viewport camera (interest-list culling, LOD), not a flat 2D radar, so nothing is reported
       to the grid for this.
+- [x] **Double-click also turns the real 3D camera, 2026-08-28 clarification** — the previous
+      entry above was a misunderstanding: the tester meant the actual in-world camera, not the
+      radar's own zoom (both now happen on the same double-click). `AvatarController` gained
+      `FocusOnWorldPosition(Vector3)`, extracted from the existing Alt+Click-drag "look at this
+      point" gesture's math (`FocusOn`, private) so a raycast hit and a known target (the roster
+      row's avatar position, converted from SL-region-local to Godot space via
+      `RenderConfig.ToGodot`) share one implementation. `MinimapOverlay.OnFocusAvatarRequested`
+      carries the already-converted Godot position out to `Boot.cs`, which wires it to the camera
+      -- the overlay itself never needs to know an `AvatarController` exists.
+- [x] **Right-click a roster row opens the avatar context menu, 2026-08-28 addition** — the SAME
+      shared menu (`InWorldContextMenu.ShowAvatarMenu`) the in-world right-click-an-avatar gesture
+      already used, not a second one-off menu. `MinimapOverlay.OnAvatarContextMenuRequested`
+      carries the click's screen position + agent id/name out to `Boot.cs`. The shared menu itself
+      was missing two entries the request asked for even for the in-world case -- **Offer
+      Teleport** and a **Mute/Unmute** toggle -- added to `InWorldContextMenu` directly (using
+      `GridSession.OfferTeleport`/`IsAvatarMuted`/`SetAvatarMuted`, all pre-existing, just not
+      wired into this menu before), so the in-world gesture gained them too, not only the minimap.
+      The roster never lists the local avatar, so `isSelf` is always `false` from this call site.
 - [x] **World map window fits the screen, 2026-08-28** — same-day follow-up: the window opened
       640x520 at a hardcoded (200,100) regardless of actual screen size and ran off the bottom.
       First fix attempt reordered `PersistId`/`base._Ready()` (matching `EnvironmentWindow`'s
@@ -120,9 +138,12 @@ teleport). There is no map of any kind.
       `initialRefCount`'s "first caller wins" ambiguity when two callers might request the same
       id. **A second, unrelated exception of the same class** (`[MainThreadWork] item threw:
       Cannot access a disposed object`, same `ImageTexture` message, different call site) also
-      appears in the same log; not investigated or fixed here -- flagged as a separate follow-up
-      (likely `UserProfileWindow`'s own `LoadTextureIntoAsync`, which has the identical missing-
-      `AddRef` pattern, confirmed by inspection but not live-tested).
+      appears in the same log -- confirmed by inspection to be `UserProfileWindow`'s identical
+      missing-`AddRef` pattern (`LoadTextureIntoAsync`), and fixed the same way (a `RepinTexture`
+      helper tracking which id is pinned per picture slot -- profile pic, first-life pic, pick
+      snapshot -- so a slot's old id is released exactly when its new one is pinned). See FEAT-UI-13's
+      roadmap entry for that fix's own detail; not repeated here since it's a different feature's
+      code, just the same bug class caught by this investigation.
 
 ## Live-test fixes (2026-08-28)
 The first actual in-world test found two real bugs the unit tests couldn't catch (both are pure

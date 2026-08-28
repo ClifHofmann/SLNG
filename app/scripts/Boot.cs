@@ -143,7 +143,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.10.9-alpha";
+    public const string AppVersion = "v0.11.0-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -497,6 +497,9 @@ public partial class Boot : Control
         // FEAT-UI-13: right-click an avatar -> Profile / IM.
         _inWorldContextMenu.OnAvatarProfileClicked = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
         _inWorldContextMenu.OnAvatarImClicked = (agentId, name) => _chatWindow.OpenOrFocusImTab(agentId, name);
+        _inWorldContextMenu.OnAvatarOfferTeleportClicked = (agentId, name) => _session?.OfferTeleport(agentId);
+        _inWorldContextMenu.OnAvatarMuteToggleClicked = (agentId, name) =>
+            _session?.SetAvatarMuted(agentId, name, !_session.IsAvatarMuted(agentId));
         _inWorldContextMenu.OnCreatePrimClicked = (godotPos, type) =>
         {
             if (_session == null) return;
@@ -519,6 +522,13 @@ public partial class Boot : Control
         // plumbing actually exists (see that call site's comment).
         _minimapOverlay = new SLNG.App.UI.MinimapOverlay { Name = "MinimapOverlay" };
         hudLayer.AddChild(_minimapOverlay);
+        // Double-click a roster row -> turn the real 3D camera to look at them (the radar's own
+        // pan/zoom is separate, see MinimapOverlay's doc comment). Right-click -> the SAME shared
+        // avatar context menu (Profile/IM/Offer Teleport/Mute) the in-world right-click gesture
+        // shows -- never self (the roster excludes the local avatar by construction).
+        _minimapOverlay.OnFocusAvatarRequested = pos => _avatarController?.FocusOnWorldPosition(pos);
+        _minimapOverlay.OnAvatarContextMenuRequested = (screenPos, agentId, name) =>
+            _inWorldContextMenu.ShowAvatarMenu(screenPos, agentId, name, isSelf: false, _session?.IsAvatarMuted(agentId) ?? false);
         _worldMapWindow = new SLNG.App.UI.WorldMapWindow { Name = "WorldMapWindow" };
         hudLayer.AddChild(_worldMapWindow);
 

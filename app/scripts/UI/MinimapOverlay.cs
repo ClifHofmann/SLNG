@@ -61,6 +61,18 @@ public partial class MinimapOverlay : SLNGWindow
     // range (see _Process), or by double-clicking the same row again.
     private Guid? _focusAgentId;
 
+    /// <summary>Double-click on a roster row: fired with the target avatar's GODOT-space
+    /// position (already converted via <see cref="RenderConfig.ToGodot"/> -- this overlay has no
+    /// business handing out raw SL-region-local coordinates). Boot.cs wires this to
+    /// <c>AvatarController.FocusOnWorldPosition</c>.</summary>
+    public Action<Vector3>? OnFocusAvatarRequested;
+
+    /// <summary>Right-click on a roster row: fired with the click's screen position plus the
+    /// target avatar's id/name, so Boot.cs can show the SAME shared avatar context menu
+    /// (Profile/IM/Offer Teleport/Mute) the in-world right-click-an-avatar gesture uses, rather
+    /// than this window building its own.</summary>
+    public Action<Vector2, Guid, string>? OnAvatarContextMenuRequested;
+
     // Rebuilt every frame in _Process; feeds both the radar draw and the list.
     private readonly List<(Guid AgentId, System.Numerics.Vector3 Position, string Name)> _roster = new();
 
@@ -362,10 +374,15 @@ public partial class MinimapOverlay : SLNGWindow
         };
         nameBtn.AddThemeFontSizeOverride("font_size", 12);
         nameBtn.Pressed += () => { _selectedAgentId = agentId; RefreshList(); };
-        // Double-click "jumps" the radar to this avatar (pan + zoom in) -- same
-        // single-click-selects/double-click-acts split FriendsPanel uses for IM. Double-clicking
-        // the ALREADY-focused row un-focuses (back to centring on the local avatar), so there's
-        // an obvious way back without a separate button.
+        // Double-click LMB: jumps the RADAR to this avatar (pan + zoom in) AND turns the real 3D
+        // camera to look at them -- two independent "jump there" actions the tester asked for
+        // (the second one explicitly clarified as the actual in-world camera, not the radar's own
+        // zoom). Double-clicking the ALREADY-radar-focused row un-focuses the radar (back to
+        // centring on the local avatar) without re-firing the camera turn -- there's no sensible
+        // "undo" for a one-shot camera look, unlike the radar's persistent centring.
+        // Right-click: same avatar context menu (Profile/IM/Offer Teleport/Mute) the in-world
+        // right-click-an-avatar gesture shows -- Boot.cs owns that shared menu, so this just
+        // reports where and who.
         nameBtn.GuiInput += @event =>
         {
             if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, DoubleClick: true })
@@ -379,7 +396,22 @@ public partial class MinimapOverlay : SLNGWindow
                 {
                     _focusAgentId = agentId;
                     _visibleRangeMeters = FocusVisibleRangeMeters;
+
+                    if (_session != null)
+                    {
+                        ulong regionHandle = _session.CurrentRegionHandle;
+                        foreach (var entry in _roster)
+                        {
+                            if (entry.AgentId != agentId) continue;
+                            OnFocusAvatarRequested?.Invoke(RenderConfig.ToGodot(regionHandle, entry.Position));
+                            break;
+                        }
+                    }
                 }
+            }
+            else if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true } rmb)
+            {
+                OnAvatarContextMenuRequested?.Invoke(rmb.GlobalPosition, agentId, name);
             }
         };
         row.AddChild(nameBtn);

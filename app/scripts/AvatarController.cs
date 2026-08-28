@@ -125,6 +125,44 @@ public partial class AvatarController : Camera3D
         _orbitTarget = null;
     }
 
+    /// <summary>Points the orbit camera at a world position without moving the camera itself --
+    /// exactly the Alt+Click-drag "look at this point" gesture's math (see the raycast branch in
+    /// <see cref="_Process"/>), just fed a known target instead of a raycast hit. Used by the
+    /// minimap's "double-click an avatar" camera jump.</summary>
+    public void FocusOnWorldPosition(Vector3 targetGodotPosition) => FocusOn(targetGodotPosition);
+
+    private void FocusOn(Vector3 target)
+    {
+        _orbitTarget = target;
+        var currentPos = Position;
+
+        // Keep the camera in the exact same physical spot, but look at the new target
+        _zoom = currentPos.DistanceTo(target);
+        _zoom = Mathf.Clamp(_zoom, 0.5f, 200.0f);
+
+        if (currentPos.DistanceSquaredTo(target) <= 0.01f) return;
+
+        // Look at the new orbit target. Up vector must not be parallel to look direction.
+        var lookDir = (target - currentPos).Normalized();
+        var cameraUp = Godot.Vector3.Up;
+        if (Mathf.Abs(lookDir.Dot(cameraUp)) > 0.99f) cameraUp = Godot.Vector3.Forward;
+
+        var lookTransform = Transform.LookingAt(target, cameraUp);
+        var euler = lookTransform.Basis.GetEuler(Godot.EulerOrder.Yxz);
+
+        float targetPitch = euler.X;
+        float targetYaw = euler.Y;
+
+        _orbitPitch = targetPitch - _pitch;
+
+        float yawDiff = targetYaw - (_yaw + _orbitYaw);
+        while (yawDiff > Mathf.Pi) yawDiff -= Mathf.Tau;
+        while (yawDiff < -Mathf.Pi) yawDiff += Mathf.Tau;
+
+        _orbitYaw += yawDiff;
+        _panOffset = Godot.Vector3.Zero;
+    }
+
     public void SetPresetView(string preset)
     {
         ResetCamera();
@@ -388,35 +426,7 @@ public partial class AvatarController : Camera3D
             var result = spaceState.IntersectRay(query);
             if (result.Count > 0)
             {
-                _orbitTarget = result["position"].AsVector3();
-                var currentPos = Position;
-                
-                // Keep the camera in the exact same physical spot, but look at the new target
-                _zoom = currentPos.DistanceTo(_orbitTarget.Value);
-                _zoom = Mathf.Clamp(_zoom, 0.5f, 200.0f);
-                
-                if (currentPos.DistanceSquaredTo(_orbitTarget.Value) > 0.01f)
-                {
-                    // Look at the new orbit target. Up vector must not be parallel to look direction.
-                    var lookDir = (_orbitTarget.Value - currentPos).Normalized();
-                    var cameraUp = Godot.Vector3.Up;
-                    if (Mathf.Abs(lookDir.Dot(cameraUp)) > 0.99f) cameraUp = Godot.Vector3.Forward;
-
-                    var lookTransform = Transform.LookingAt(_orbitTarget.Value, cameraUp);
-                    var euler = lookTransform.Basis.GetEuler(Godot.EulerOrder.Yxz);
-                    
-                    float targetPitch = euler.X;
-                    float targetYaw = euler.Y;
-                    
-                    _orbitPitch = targetPitch - _pitch;
-                    
-                    float yawDiff = targetYaw - (_yaw + _orbitYaw);
-                    while (yawDiff > Mathf.Pi) yawDiff -= Mathf.Tau;
-                    while (yawDiff < -Mathf.Pi) yawDiff += Mathf.Tau;
-                    
-                    _orbitYaw += yawDiff;
-                    _panOffset = Godot.Vector3.Zero;
-                }
+                FocusOn(result["position"].AsVector3());
             }
         }
         else if (!wantOrbit && _altOrbitActive)

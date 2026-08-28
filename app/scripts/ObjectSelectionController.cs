@@ -79,7 +79,7 @@ namespace SLNG.App
                                     string name = $"{avComp.FirstName} {avComp.LastName}".Trim();
                                     if (!string.IsNullOrEmpty(avComp.DisplayName)) name = avComp.DisplayName;
                                     bool isSelf = avComp.IsLocalAgent;
-                                    _contextMenu.ShowAvatarMenu(mouseBtn.Position, avComp.AgentId, name, isSelf);
+                                    _contextMenu.ShowAvatarMenu(mouseBtn.Position, avComp.AgentId, name, isSelf, _session.IsAvatarMuted(avComp.AgentId));
                                     GetViewport().SetInputAsHandled();
                                 }
                             }
