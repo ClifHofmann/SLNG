@@ -125,29 +125,61 @@ public partial class AvatarController : Camera3D
         _orbitTarget = null;
     }
 
-    /// <summary>Points the orbit camera at a world position without moving the camera itself --
-    /// exactly the Alt+Click-drag "look at this point" gesture's math (see the raycast branch in
-    /// <see cref="_Process"/>), just fed a known target instead of a raycast hit. Used by the
-    /// minimap's "double-click an avatar" camera jump.</summary>
-    public void FocusOnWorldPosition(Vector3 targetGodotPosition) => FocusOn(targetGodotPosition);
+    /// <summary>Turns the orbit camera to face this avatar AND pulls in to a close, frontal
+    /// "portrait" distance -- unlike <see cref="FocusOn"/>'s "stay where I am, just re-aim"
+    /// behaviour (used for Alt+Click on whatever's already on screen), a double-click on the
+    /// minimap's roster genuinely wants to zoom IN on someone, not just point at wherever they
+    /// happen to be from however far away the camera already sits (live-tested 2026-08-28: the
+    /// first revision reused <see cref="FocusOn"/> as-is and the tester correctly called that out
+    /// as "not just swing the camera -- zoom in, frontal view"). When the avatar's facing is
+    /// known (<paramref name="avatarForwardGodot"/>, already Godot-space -- null for a
+    /// CoarseLocationUpdate-only avatar outside draw distance, which carries no orientation at
+    /// all), this approaches from the direction they're facing so the shot is actually frontal
+    /// (their face toward the camera, not their back or side); otherwise falls back to
+    /// approaching from wherever the camera already was.</summary>
+    public void FocusOnAvatarFrontal(Vector3 targetPosition, Vector3? avatarForwardGodot)
+    {
+        const float portraitDistance = 3.5f;
+
+        // Aim roughly at head height, not their feet/pelvis -- the same FocusHeight the
+        // local-avatar follow camera already uses, for the identical reason (framing a face, not
+        // the ground they're standing on).
+        var target = targetPosition + Godot.Vector3.Up * (_cameraSettings?.FocusHeight ?? 1.8f);
+
+        var approachDir = avatarForwardGodot is { } fwd && fwd.LengthSquared() > 0.0001f
+            ? fwd
+            : Position - target; // fall back to "approach from wherever the camera already was"
+        if (!approachDir.IsFinite() || approachDir.LengthSquared() < 0.0001f) approachDir = Godot.Vector3.Back;
+        approachDir = approachDir.Normalized();
+
+        AimOrbitAt(target, target + approachDir * portraitDistance, portraitDistance);
+    }
 
     private void FocusOn(Vector3 target)
     {
+        // Keep the camera in the exact same physical spot, but look at the new target.
+        AimOrbitAt(target, Position, Position.DistanceTo(target));
+    }
+
+    /// <summary>Shared by <see cref="FocusOn"/> (Alt+Click: stay put, re-aim) and
+    /// <see cref="FocusOnAvatarFrontal"/> (double-click a roster avatar: jump to a close shot) --
+    /// both boil down to "the camera ends up <paramref name="zoom"/> metres from <paramref
+    /// name="target"/>, along the direction implied by treating <paramref name="fromPos"/> as
+    /// where the camera is looking FROM." Sets <see cref="_orbitTarget"/> so <see cref="_Process"/>'s
+    /// third-person camera math orbits this point instead of the local avatar.</summary>
+    private void AimOrbitAt(Vector3 target, Vector3 fromPos, float zoom)
+    {
         _orbitTarget = target;
-        var currentPos = Position;
+        _zoom = Mathf.Clamp(zoom, 0.5f, 200.0f);
 
-        // Keep the camera in the exact same physical spot, but look at the new target
-        _zoom = currentPos.DistanceTo(target);
-        _zoom = Mathf.Clamp(_zoom, 0.5f, 200.0f);
+        if (fromPos.DistanceSquaredTo(target) <= 0.0001f) return;
 
-        if (currentPos.DistanceSquaredTo(target) <= 0.01f) return;
-
-        // Look at the new orbit target. Up vector must not be parallel to look direction.
-        var lookDir = (target - currentPos).Normalized();
+        // Up vector must not be parallel to the look direction.
+        var lookDir = (target - fromPos).Normalized();
         var cameraUp = Godot.Vector3.Up;
         if (Mathf.Abs(lookDir.Dot(cameraUp)) > 0.99f) cameraUp = Godot.Vector3.Forward;
 
-        var lookTransform = Transform.LookingAt(target, cameraUp);
+        var lookTransform = new Transform3D(Basis.Identity, fromPos).LookingAt(target, cameraUp);
         var euler = lookTransform.Basis.GetEuler(Godot.EulerOrder.Yxz);
 
         float targetPitch = euler.X;

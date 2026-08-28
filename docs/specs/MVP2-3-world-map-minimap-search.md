@@ -81,13 +81,29 @@ teleport). There is no map of any kind.
       to the grid for this.
 - [x] **Double-click also turns the real 3D camera, 2026-08-28 clarification** — the previous
       entry above was a misunderstanding: the tester meant the actual in-world camera, not the
-      radar's own zoom (both now happen on the same double-click). `AvatarController` gained
-      `FocusOnWorldPosition(Vector3)`, extracted from the existing Alt+Click-drag "look at this
-      point" gesture's math (`FocusOn`, private) so a raycast hit and a known target (the roster
-      row's avatar position, converted from SL-region-local to Godot space via
-      `RenderConfig.ToGodot`) share one implementation. `MinimapOverlay.OnFocusAvatarRequested`
-      carries the already-converted Godot position out to `Boot.cs`, which wires it to the camera
-      -- the overlay itself never needs to know an `AvatarController` exists.
+      radar's own zoom (both now happen on the same double-click). `MinimapOverlay.OnFocusAvatarRequested`
+      carries the target's already-converted Godot position (via `RenderConfig.ToGodot`) out to
+      `Boot.cs`, which wires it to the camera -- the overlay itself never needs to know an
+      `AvatarController` exists.
+- [x] **...and actually zooms in with a frontal view, 2026-08-28 second clarification** — a first
+      pass just re-aimed the existing Alt+Click "look at this point" gesture (`AvatarController.FocusOn`)
+      at the avatar's position, which keeps the camera at whatever distance it already happened to
+      be from its OLD subject -- the tester correctly called this out as "not just swing the
+      camera, zoom in, frontal view." Added `AvatarController.FocusOnAvatarFrontal(Vector3 targetPosition,
+      Vector3? avatarForwardGodot)`: aims at roughly head height (the same `FocusHeight` the
+      local-avatar follow camera already uses) from a FIXED close "portrait" distance (3.5 m), and
+      -- when the avatar's facing is known -- approaches from the direction they're FACING, so the
+      shot genuinely shows their face rather than their back or an arbitrary side. `FocusOn` and
+      `FocusOnAvatarFrontal` now share one `AimOrbitAt(target, fromPos, zoom)` helper (both boil
+      down to "orbit around `target` at distance `zoom`, oriented as if looking from `fromPos`");
+      the only difference is `FocusOn` passes the camera's OWN current position/distance (stay put,
+      re-aim) while `FocusOnAvatarFrontal` passes a computed point in front of the subject and a
+      fixed close zoom (jump in). The roster's per-avatar tuple grew an optional `Rotation` (only
+      known for `World`-tracked avatars within draw distance -- a `CoarseLocationUpdate`-only entry
+      has no orientation in the packet at all), converted to a Godot-space forward vector with the
+      same axis map `RenderConfig.ToGodot` documents for positions (a direction needs no origin
+      subtraction, just the axis permutation). Falls back to approaching from wherever the camera
+      already was when the facing isn't known.
 - [x] **Right-click a roster row opens the avatar context menu, 2026-08-28 addition** — the SAME
       shared menu (`InWorldContextMenu.ShowAvatarMenu`) the in-world right-click-an-avatar gesture
       already used, not a second one-off menu. `MinimapOverlay.OnAvatarContextMenuRequested`

@@ -63,9 +63,11 @@ public partial class MinimapOverlay : SLNGWindow
 
     /// <summary>Double-click on a roster row: fired with the target avatar's GODOT-space
     /// position (already converted via <see cref="RenderConfig.ToGodot"/> -- this overlay has no
-    /// business handing out raw SL-region-local coordinates). Boot.cs wires this to
-    /// <c>AvatarController.FocusOnWorldPosition</c>.</summary>
-    public Action<Vector3>? OnFocusAvatarRequested;
+    /// business handing out raw SL-region-local coordinates) and, when known, their facing
+    /// direction (also already converted to Godot space) -- null when the avatar is only known
+    /// via <c>CoarseLocationUpdate</c> (outside draw distance), which carries no orientation at
+    /// all. Boot.cs wires this to <c>AvatarController.FocusOnAvatarFrontal</c>.</summary>
+    public Action<Vector3, Vector3?>? OnFocusAvatarRequested;
 
     /// <summary>Right-click on a roster row: fired with the click's screen position plus the
     /// target avatar's id/name, so Boot.cs can show the SAME shared avatar context menu
@@ -73,8 +75,10 @@ public partial class MinimapOverlay : SLNGWindow
     /// than this window building its own.</summary>
     public Action<Vector2, Guid, string>? OnAvatarContextMenuRequested;
 
-    // Rebuilt every frame in _Process; feeds both the radar draw and the list.
-    private readonly List<(Guid AgentId, System.Numerics.Vector3 Position, string Name)> _roster = new();
+    // Rebuilt every frame in _Process; feeds both the radar draw and the list. Rotation is only
+    // ever known for World-tracked avatars (within draw distance) -- a CoarseLocationUpdate-only
+    // entry (outside draw distance) has no orientation in the packet at all, hence nullable.
+    private readonly List<(Guid AgentId, System.Numerics.Vector3 Position, string Name, System.Numerics.Quaternion? Rotation)> _roster = new();
 
     // Membership+selection signature the roster list was last actually rebuilt for -- see
     // RefreshListIfChanged.
@@ -271,10 +275,10 @@ public partial class MinimapOverlay : SLNGWindow
         ownPos = null;
         heading = 0f;
 
-        var byAgent = new Dictionary<Guid, System.Numerics.Vector3>();
+        var byAgent = new Dictionary<Guid, (System.Numerics.Vector3 Position, System.Numerics.Quaternion? Rotation)>();
         if (_lastNearby != null && _lastNearby.RegionHandle == regionHandle)
         {
-            foreach (var a in _lastNearby.Avatars) byAgent[a.AgentId] = a.Position;
+            foreach (var a in _lastNearby.Avatars) byAgent[a.AgentId] = (a.Position, null);
         }
 
         var names = new Dictionary<Guid, string>();
@@ -286,7 +290,7 @@ public partial class MinimapOverlay : SLNGWindow
             var t = entity.GetComponent<TransformComponent>();
             if (avatar == null || t == null) continue;
 
-            byAgent[avatar.AgentId] = t.Position; // World's live position wins over the coarse one
+            byAgent[avatar.AgentId] = (t.Position, t.Rotation); // World's live data wins over the coarse one
             names[avatar.AgentId] = AvatarDisplayName(avatar);
             if (avatar.IsLocalAgent)
             {
@@ -297,10 +301,10 @@ public partial class MinimapOverlay : SLNGWindow
         }
         if (ownAgentId != Guid.Empty) byAgent.Remove(ownAgentId);
 
-        foreach (var (agentId, pos) in byAgent)
+        foreach (var (agentId, data) in byAgent)
         {
             if (!names.TryGetValue(agentId, out var name)) name = ResolveName(agentId);
-            _roster.Add((agentId, pos, name));
+            _roster.Add((agentId, data.Position, name, data.Rotation));
         }
         _roster.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
     }
@@ -403,7 +407,18 @@ public partial class MinimapOverlay : SLNGWindow
                         foreach (var entry in _roster)
                         {
                             if (entry.AgentId != agentId) continue;
-                            OnFocusAvatarRequested?.Invoke(RenderConfig.ToGodot(regionHandle, entry.Position));
+                            var godotPos = RenderConfig.ToGodot(regionHandle, entry.Position);
+                            Vector3? godotForward = null;
+                            if (entry.Rotation is { } rot)
+                            {
+                                // SL forward is +X at zero rotation (same convention HeadingOf
+                                // uses); RenderConfig.ToGodot's documented axis map (SL(X,Y,Z) ->
+                                // Godot(X,Z,-Y)) applies to a direction exactly like a position --
+                                // no origin subtraction needed since it's a pure axis permutation.
+                                var fwdSl = System.Numerics.Vector3.Transform(System.Numerics.Vector3.UnitX, rot);
+                                godotForward = new Vector3(fwdSl.X, fwdSl.Z, -fwdSl.Y);
+                            }
+                            OnFocusAvatarRequested?.Invoke(godotPos, godotForward);
                             break;
                         }
                     }
@@ -443,13 +458,13 @@ public partial class MinimapOverlay : SLNGWindow
         private System.Numerics.Vector3? _ownPos;
         private float _heading;
         private float _visibleRangeMeters = DefaultVisibleRangeMeters;
-        private readonly List<(Guid AgentId, System.Numerics.Vector3 Position, string Name)> _roster = new();
+        private readonly List<(Guid AgentId, System.Numerics.Vector3 Position, string Name, System.Numerics.Quaternion? Rotation)> _roster = new();
         private Guid? _selectedAgentId;
         private bool _hasData;
 
         public void Update(int regionWidth, int regionHeight, System.Numerics.Vector3? center,
             System.Numerics.Vector3? ownPos, float heading,
-            float visibleRangeMeters, List<(Guid AgentId, System.Numerics.Vector3 Position, string Name)> roster,
+            float visibleRangeMeters, List<(Guid AgentId, System.Numerics.Vector3 Position, string Name, System.Numerics.Quaternion? Rotation)> roster,
             Guid? selectedAgentId)
         {
             _regionWidth = Math.Max(1, regionWidth);
@@ -507,7 +522,7 @@ public partial class MinimapOverlay : SLNGWindow
                 new Vector2(Math.Abs(c1.X - c0.X), Math.Abs(c1.Y - c0.Y))),
                 new Color(0.3f, 0.9f, 0.5f, 0.25f), false, 1f);
 
-            foreach (var (agentId, pos, _) in _roster)
+            foreach (var (agentId, pos, _, _) in _roster)
             {
                 var p = ToCanvas(pos);
                 if (_selectedAgentId.HasValue && agentId == _selectedAgentId.Value)
