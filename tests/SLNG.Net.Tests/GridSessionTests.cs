@@ -177,4 +177,96 @@ public class GridSessionTests
         Assert.Equal(0, session.DetachAllAttachments(hudOnly: true));
         Assert.Equal(0, session.DetachAllAttachments(hudOnly: false));
     }
+
+    // MVP2-3: minimap radar. OnCoarseLocationUpdate is private (same LMV-boundary reasoning as
+    // OnScriptDialog above), invoked via reflection with a hand-built CoarseLocationUpdateEventArgs
+    // -- the same shape GridManager.CoarseLocationHandler raises off the wire packet.
+    [Fact]
+    public void OnCoarseLocationUpdate_maps_wire_event_to_NearbyAvatarsEvent()
+    {
+        using var session = new GridSession();
+        NearbyAvatarsEvent? received = null;
+        session.NearbyAvatarsUpdated += (s, e) => received = e;
+
+        using var client = new GridClient();
+        var sim = new Simulator(client, new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 9000), 1234UL);
+        var agentId = UUID.Random();
+        var positions = new Dictionary<UUID, LibreMetaverse.Vector3> { [agentId] = new LibreMetaverse.Vector3(10, 20, 30) };
+        var args = new CoarseLocationUpdateEventArgs(sim, positions, new List<UUID> { agentId }, new List<UUID>());
+
+        var method = typeof(GridSession).GetMethod("OnCoarseLocationUpdate", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        method.Invoke(session, new object?[] { null, args });
+
+        Assert.NotNull(received);
+        Assert.Equal(sim.Handle, received!.RegionHandle);
+        var avatar = Assert.Single(received.Avatars);
+        Assert.Equal(agentId.Guid, avatar.AgentId);
+        Assert.Equal(10f, avatar.Position.X);
+        Assert.Equal(20f, avatar.Position.Y);
+        Assert.Equal(30f, avatar.Position.Z);
+    }
+
+    // MVP2-3: grid-map tile resolution. OnGridRegion converts LibreMetaverse's GridRegion struct
+    // to the neutral MapRegionInfo DTO -- no LMV type may cross this boundary (AGENTS.md).
+    [Fact]
+    public void OnGridRegion_maps_wire_event_to_MapRegionInfo()
+    {
+        using var session = new GridSession();
+        MapRegionInfo? received = null;
+        session.RegionDiscovered += (s, e) => received = e;
+
+        var imageId = UUID.Random();
+        var region = new GridRegion
+        {
+            X = 1000,
+            Y = 1000,
+            Name = "Test Region",
+            MapImageID = imageId,
+            RegionHandle = ((ulong)(1000u * 256) << 32) | (1000u * 256),
+        };
+
+        var method = typeof(GridSession).GetMethod("OnGridRegion", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        method.Invoke(session, new object?[] { null, new GridRegionEventArgs(region) });
+
+        Assert.NotNull(received);
+        Assert.Equal("Test Region", received!.Name);
+        Assert.Equal(1000, received.GridX);
+        Assert.Equal(1000, received.GridY);
+        Assert.Equal(256000d, received.GlobalX);
+        Assert.Equal(256000d, received.GlobalY);
+        Assert.Equal(imageId.Guid, received.MapImageId);
+        Assert.Equal(region.RegionHandle, received.RegionHandle);
+    }
+
+    [Fact]
+    public async Task ResolveRegionByNameAsync_without_connection_returns_null()
+    {
+        using var session = new GridSession();
+        Assert.Null(await session.ResolveRegionByNameAsync("Some Region"));
+    }
+
+    [Fact]
+    public async Task ResolveRegionByHandleAsync_without_connection_returns_null()
+    {
+        using var session = new GridSession();
+        Assert.Null(await session.ResolveRegionByHandleAsync(12345UL));
+    }
+
+    [Fact]
+    public async Task TeleportToAsync_without_connection_fails_gracefully()
+    {
+        using var session = new GridSession();
+
+        var result = await session.TeleportToAsync(12345UL, new System.Numerics.Vector3(1, 2, 3));
+
+        Assert.False(result.Success);
+        Assert.False(string.IsNullOrWhiteSpace(result.Message));
+    }
+
+    [Fact]
+    public void RequestMapBlocks_without_connection_does_not_throw()
+    {
+        using var session = new GridSession();
+        Assert.Null(Record.Exception(() => session.RequestMapBlocks(0, 0, 10, 10)));
+    }
 }

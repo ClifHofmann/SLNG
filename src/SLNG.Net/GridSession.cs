@@ -27,6 +27,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// keeps an unrelated push from being read as our answer.</summary>
     private int _parcelSequenceId;
 
+    /// <summary>Guards <see cref="TeleportToAsync"/>/<see cref="TeleportToLandmarkAsync"/>/
+    /// <see cref="TeleportToGlobalPosition"/> against running concurrently. LibreMetaverse's
+    /// <c>AgentManager</c> tracks "the" in-flight teleport in a SINGLE shared field
+    /// (<c>_teleportTcs</c>), used by every <c>TeleportAsync</c> overload -- and only the
+    /// landmark-UUID overload checks <c>teleportStatus == TeleportStatus.Progress</c> before
+    /// starting a new one; the region-handle overload this class's map/landmark-fallback paths
+    /// use has NO such guard. Two overlapping calls therefore silently cross-wire: a response
+    /// meant for the first attempt can complete the SECOND one's task instead (or vice versa).
+    /// Live-tested 2026-08-28 -- a user re-clicking "Teleport" before the first attempt resolved
+    /// (a natural reaction when nothing appears to happen for a few seconds) produced exactly
+    /// this: results reporting <c>success=false</c> with <c>message="Teleport finished"</c>, the
+    /// literal string LibreMetaverse writes ONLY on a genuine success. Rejecting a second attempt
+    /// outright -- rather than letting both silently corrupt each other -- is the only fix
+    /// available from this side of a vendored NuGet package. 0/1 via Interlocked, not a bool:
+    /// multiple call sites, no single lock object to pair with a plain flag.</summary>
+    private int _teleportInProgress;
+
     // Shared cache for both avatar (Creator/Owner/...) and group names -- both are keyed by
     // UUID and populated via the same resolve-and-notify flow, so one cache/event pair covers
     // both instead of duplicating the plumbing per name kind.
@@ -141,6 +158,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     ///
     /// Raised from a background thread -- marshal before touching a scene node.</summary>
     public event EventHandler<RegionEnvironmentEvent>? RegionEnvironmentReceived;
+
+    /// <summary>MVP2-3: the current region's full avatar radar snapshot (LibreMetaverse's
+    /// <c>CoarseLocationUpdate</c>), replacing whatever snapshot preceded it. Fired off a
+    /// background network thread -- consumers (the minimap) must buffer and drain on the main
+    /// thread, same as every other event here.</summary>
+    public event EventHandler<NearbyAvatarsEvent>? NearbyAvatarsUpdated;
+
+    /// <summary>MVP2-3: one grid-map region tile resolved, either from an explicit
+    /// <see cref="RequestMapBlocks"/>/<see cref="ResolveRegionByNameAsync"/> call or from
+    /// LibreMetaverse's own cache. Multiple tiles from one <see cref="RequestMapBlocks"/> call
+    /// each raise this once. Fired off a background thread -- marshal before touching a scene node.</summary>
+    public event EventHandler<MapRegionInfo>? RegionDiscovered;
 
     internal void RaiseChatMessage(ChatMessageEvent e) => ChatMessageReceived?.Invoke(this, e);
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
@@ -283,6 +312,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Avatars.AvatarPicksReply += OnAvatarPicksReply;
         _client.Avatars.PickInfoReply += OnPickInfoReply;
         _client.Avatars.AvatarClassifiedReply += OnAvatarClassifiedReply;
+
+        // MVP2-3: region radar (minimap) and grid-map tile resolution.
+        _client.Grid.CoarseLocationUpdate += OnCoarseLocationUpdate;
+        _client.Grid.GridRegion += OnGridRegion;
 
         // Coexists with ObjectManager's own internal ObjectUpdate handler (packet callbacks are
         // multicast) -- see _lightPresentByLocalId for why this is needed.
@@ -1215,11 +1248,27 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public void TeleportToGlobalPosition(string regionName, double globalX, double globalY, double globalZ)
     {
         if (string.IsNullOrEmpty(regionName) || !_client.Network.Connected) return;
+        // See _teleportInProgress's doc comment. This path is fire-and-forget by design (no
+        // caller currently awaits a result), so the guard here only prevents it from cross-wiring
+        // with a concurrent TeleportToAsync/TeleportToLandmarkAsync call, not with itself.
+        if (System.Threading.Interlocked.CompareExchange(ref _teleportInProgress, 1, 0) != 0) return;
         var local = new Vector3(
             (float)(globalX - Math.Floor(globalX / 256.0) * 256.0),
             (float)(globalY - Math.Floor(globalY / 256.0) * 256.0),
             (float)globalZ);
-        _ = _client.Self.TeleportAsync(regionName, local);
+        _ = TeleportToGlobalPositionCoreAsync(regionName, local);
+    }
+
+    private async Task TeleportToGlobalPositionCoreAsync(string regionName, Vector3 local)
+    {
+        try
+        {
+            await _client.Self.TeleportAsync(regionName, local).ConfigureAwait(false);
+        }
+        finally
+        {
+            System.Threading.Interlocked.Exchange(ref _teleportInProgress, 0);
+        }
     }
 
     /// <summary>Writes the logged-in agent's own "2nd Life" / "1st Life" profile pages
@@ -1350,6 +1399,98 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         foreach (var kvp in e.Picks)
             picks.Add(new AvatarPickInfo(kvp.Key.Guid, kvp.Value ?? string.Empty));
         AvatarPicksReceived?.Invoke(this, new AvatarPicksEvent(e.AvatarID.Guid, picks));
+    }
+
+    /// <summary>MVP2-3: the region's full avatar radar snapshot. LibreMetaverse hands us the
+    /// complete current-position list every time (not new/removed-only deltas -- see
+    /// <c>CoarseLocationUpdateEventArgs</c>), so this always replaces rather than merges. Z is
+    /// pre-scaled by LibreMetaverse (packet Z is a byte, *4 to metres) -- passed through as-is.</summary>
+    private void OnCoarseLocationUpdate(object? sender, CoarseLocationUpdateEventArgs e)
+    {
+        var avatars = new List<NearbyAvatar>(e.Positions.Count);
+        foreach (var kv in e.Positions)
+            avatars.Add(new NearbyAvatar(kv.Key.Guid, new System.Numerics.Vector3(kv.Value.X, kv.Value.Y, kv.Value.Z)));
+        NearbyAvatarsUpdated?.Invoke(this, new NearbyAvatarsEvent(e.Simulator.Handle, avatars));
+    }
+
+    private static MapRegionInfo ToMapRegionInfo(GridRegion r) =>
+        new(r.Name, r.X, r.Y, r.RegionHandle, r.MapImageID.Guid);
+
+    private void OnGridRegion(object? sender, GridRegionEventArgs e) =>
+        RegionDiscovered?.Invoke(this, ToMapRegionInfo(e.Region));
+
+    /// <summary>MVP2-3: requests grid-map tiles for the region-grid rectangle
+    /// [minGridX,minGridY]..[maxGridX,maxGridY] (each unit = 256 m -- see <see cref="MapRegionInfo"/>).
+    /// Results stream back asynchronously, one <see cref="RegionDiscovered"/> per tile; there may be
+    /// many and there is no single "done" signal, matching the underlying packet protocol.</summary>
+    public void RequestMapBlocks(int minGridX, int minGridY, int maxGridX, int maxGridY)
+    {
+        if (!_client.Network.Connected) return;
+        _client.Grid.RequestMapBlocks(GridLayerType.Objects,
+            (ushort)Math.Max(0, minGridX), (ushort)Math.Max(0, minGridY),
+            (ushort)Math.Max(0, maxGridX), (ushort)Math.Max(0, maxGridY), false);
+    }
+
+    /// <summary>MVP2-3 region search: resolves a region name to its map tile info (name lookup is
+    /// case-insensitive, per <c>GridManager.GetGridRegionAsync</c>). Returns null if the region
+    /// doesn't exist or the lookup times out.</summary>
+    public async Task<MapRegionInfo?> ResolveRegionByNameAsync(string regionName, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(regionName) || !_client.Network.Connected) return null;
+        var r = await _client.Grid.GetGridRegionAsync(regionName, GridLayerType.Objects, ct).ConfigureAwait(false);
+        return r.HasValue ? ToMapRegionInfo(r.Value) : null;
+    }
+
+    /// <summary>MVP2-3: resolves the region tile containing a given region handle -- used to show
+    /// the name/coordinates of wherever the map was just clicked.</summary>
+    public async Task<MapRegionInfo?> ResolveRegionByHandleAsync(ulong regionHandle, CancellationToken ct = default)
+    {
+        if (!_client.Network.Connected) return null;
+        var r = await _client.Grid.GetGridRegionAsync(regionHandle, GridLayerType.Objects, ct).ConfigureAwait(false);
+        return r.HasValue ? ToMapRegionInfo(r.Value) : null;
+    }
+
+    /// <summary>MVP2-3: teleports to a region-local position in a specific region by handle --
+    /// the map window's double-click-to-teleport. Mirrors <see cref="TeleportToLandmarkAsync"/>'s
+    /// progress-message plumbing and post-teleport position resync.</summary>
+    public async Task<TeleportResult> TeleportToAsync(ulong regionHandle, System.Numerics.Vector3 localPosition, CancellationToken ct = default)
+    {
+        if (!_client.Network.Connected) return new TeleportResult(false, "Not connected.");
+        // See _teleportInProgress's doc comment: LibreMetaverse's region-handle TeleportAsync
+        // overload has no re-entrancy guard of its own, and two overlapping calls cross-wire.
+        if (System.Threading.Interlocked.CompareExchange(ref _teleportInProgress, 1, 0) != 0)
+            return new TeleportResult(false, "A teleport is already in progress.");
+
+        string lastMessage = string.Empty;
+        void OnProgress(object? sender, TeleportEventArgs e)
+        {
+            if (!string.IsNullOrEmpty(e.Message)) lastMessage = e.Message;
+        }
+
+        _client.Self.TeleportProgress += OnProgress;
+        try
+        {
+            bool success = await _client.Self
+                .TeleportAsync(regionHandle, new Vector3(localPosition.X, localPosition.Y, localPosition.Z), ct)
+                .ConfigureAwait(false);
+
+            if (success) SyncLocalAgentPositionAfterTeleport();
+
+            // See TeleportToLandmarkAsync's identical comment: TeleportMessage is the authoritative
+            // final reason on failure (notably a timeout, where no TeleportProgress event ever
+            // fires to update lastMessage at all); lastMessage is only a fallback.
+            string msg = !string.IsNullOrWhiteSpace(_client.Self.TeleportMessage) ? _client.Self.TeleportMessage : lastMessage;
+            return new TeleportResult(success, success ? string.Empty : msg);
+        }
+        catch (Exception ex)
+        {
+            return new TeleportResult(false, ex.Message);
+        }
+        finally
+        {
+            _client.Self.TeleportProgress -= OnProgress;
+            System.Threading.Interlocked.Exchange(ref _teleportInProgress, 0);
+        }
     }
 
     private void OnPickInfoReply(object? sender, PickInfoReplyEventArgs e)
@@ -2054,6 +2195,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         if (!_client.Network.Connected)
             return new TeleportResult(false, "Not connected.");
+        if (System.Threading.Interlocked.CompareExchange(ref _teleportInProgress, 1, 0) != 0)
+            return new TeleportResult(false, "A teleport is already in progress.");
 
         string lastMessage = string.Empty;
         void OnProgress(object? sender, TeleportEventArgs e)
@@ -2070,7 +2213,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 .TeleportAsync(new UUID(landmarkAssetId), ct)
                 .ConfigureAwait(false);
 
-            string msg = !string.IsNullOrWhiteSpace(lastMessage) ? lastMessage : _client.Self.TeleportMessage;
+            // On failure, LibreMetaverse's own TeleportMessage is the authoritative FINAL reason
+            // (e.g. "Teleport timed out." after WaitForTeleportAsync gives up) -- lastMessage is
+            // only ever a transient progress narration and can be stale by the time we get here
+            // (no TeleportProgress event fires for a timeout at all). Preferring lastMessage first
+            // is backwards and was live-tested producing "Teleport started" as the shown failure
+            // reason for what was actually a 40s timeout.
+            string msg = !string.IsNullOrWhiteSpace(_client.Self.TeleportMessage) ? _client.Self.TeleportMessage : lastMessage;
             if (success)
             {
                 SyncLocalAgentPositionAfterTeleport();
@@ -2099,7 +2248,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                             SyncLocalAgentPositionAfterTeleport();
                         }
 
-                        string fallbackMsg = !string.IsNullOrWhiteSpace(lastMessage) ? lastMessage : _client.Self.TeleportMessage;
+                        string fallbackMsg = !string.IsNullOrWhiteSpace(_client.Self.TeleportMessage) ? _client.Self.TeleportMessage : lastMessage;
                         return new TeleportResult(fallbackSuccess, fallbackSuccess ? string.Empty : fallbackMsg);
                     }
                 }
@@ -2114,6 +2263,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         finally
         {
             _client.Self.TeleportProgress -= OnProgress;
+            System.Threading.Interlocked.Exchange(ref _teleportInProgress, 0);
         }
     }
 
@@ -3395,6 +3545,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Avatars.AvatarPicksReply -= OnAvatarPicksReply;
         _client.Avatars.PickInfoReply -= OnPickInfoReply;
         _client.Avatars.AvatarClassifiedReply -= OnAvatarClassifiedReply;
+        _client.Grid.CoarseLocationUpdate -= OnCoarseLocationUpdate;
+        _client.Grid.GridRegion -= OnGridRegion;
         _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
         Logout();
     }

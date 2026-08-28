@@ -60,6 +60,7 @@ public partial class AvatarController : Camera3D
     // Public API for CameraHUD
     public void RotateCamera(Vector2 delta)
     {
+        _transitioning = false; // manual input always wins over an in-progress camera pan
         _orbitYaw -= delta.X;
         _orbitPitch -= delta.Y;
         _orbitPitch = Mathf.Clamp(_orbitPitch, -1.5f, 1.5f);
@@ -71,11 +72,13 @@ public partial class AvatarController : Camera3D
     /// -- it is a persistent framing offset, cleared by <see cref="ResetCamera"/> (Escape).</summary>
     public void PanCamera(Vector2 delta)
     {
+        _transitioning = false;
         _panOffset += new Vector3(delta.X, delta.Y, 0);
     }
 
     public void ZoomCamera(float delta)
     {
+        _transitioning = false;
         _zoom += delta;
         _zoom = Mathf.Clamp(_zoom, 0.5f, 50.0f);
     }
@@ -90,6 +93,7 @@ public partial class AvatarController : Camera3D
     /// zoom approaches 0, same as the classic "zoom to mouse position" editor convention.</summary>
     private void ZoomTowardCursor(float zoomDelta, Vector2 mousePos)
     {
+        _transitioning = false;
         float oldZoom = _zoom;
         _zoom = Mathf.Clamp(_zoom + zoomDelta, 0.5f, 200.0f);
         if (Mathf.IsEqualApprox(_zoom, oldZoom)) return;
@@ -116,31 +120,194 @@ public partial class AvatarController : Camera3D
         _panOffset.X += cursorOffset.X * (1f - ratio);
         _panOffset.Y += cursorOffset.Y * (1f - ratio);
     }
-    public void ResetCamera()
+    /// <summary>Smoothly pans/zooms back to directly behind the avatar (Escape) -- exactly
+    /// <see cref="SetPresetView"/>'s "rear" case, so the two share one implementation.</summary>
+    public void ResetCamera() => SetPresetView("rear");
+
+    /// <summary>Turns the orbit camera to face this avatar AND pulls in to a close, frontal
+    /// "portrait" distance -- unlike <see cref="FocusOn"/>'s "stay where I am, just re-aim"
+    /// behaviour (used for Alt+Click on whatever's already on screen), a double-click on the
+    /// minimap's roster genuinely wants to zoom IN on someone, not just point at wherever they
+    /// happen to be from however far away the camera already sits (live-tested 2026-08-28: the
+    /// first revision reused <see cref="FocusOn"/> as-is and the tester correctly called that out
+    /// as "not just swing the camera -- zoom in, frontal view"). When the avatar's facing is
+    /// known (<paramref name="avatarForwardGodot"/>, already Godot-space -- null for a
+    /// CoarseLocationUpdate-only avatar outside draw distance, which carries no orientation at
+    /// all), this approaches from the direction they're facing so the shot is actually frontal
+    /// (their face toward the camera, not their back or side); otherwise falls back to
+    /// approaching from wherever the camera already was.</summary>
+    public void FocusOnAvatarFrontal(Vector3 targetPosition, Vector3? avatarForwardGodot)
     {
-        _orbitYaw = 0f;
-        _orbitPitch = 0f;
-        _panOffset = Vector3.Zero;
-        _zoom = _cameraSettings?.RearDistance ?? 4.0f;
-        _orbitTarget = null;
+        const float portraitDistance = 3.5f;
+
+        // Aim roughly at head height, not their feet/pelvis -- the same FocusHeight the
+        // local-avatar follow camera already uses, for the identical reason (framing a face, not
+        // the ground they're standing on).
+        var target = targetPosition + Godot.Vector3.Up * (_cameraSettings?.FocusHeight ?? 1.8f);
+
+        var approachDir = avatarForwardGodot is { } fwd && fwd.LengthSquared() > 0.0001f
+            ? fwd
+            : Position - target; // fall back to "approach from wherever the camera already was"
+        if (!approachDir.IsFinite() || approachDir.LengthSquared() < 0.0001f) approachDir = Godot.Vector3.Back;
+        approachDir = approachDir.Normalized();
+
+        AimOrbitAt(target, target + approachDir * portraitDistance, portraitDistance);
     }
 
+    private void FocusOn(Vector3 target)
+    {
+        // Keep the camera in the exact same physical spot, but look at the new target.
+        AimOrbitAt(target, Position, Position.DistanceTo(target));
+    }
+
+    /// <summary>Shared by <see cref="FocusOn"/> (Alt+Click: stay put, re-aim) and
+    /// <see cref="FocusOnAvatarFrontal"/> (double-click a roster avatar: jump to a close shot) --
+    /// both boil down to "the camera ends up <paramref name="zoom"/> metres from <paramref
+    /// name="target"/>, along the direction implied by treating <paramref name="fromPos"/> as
+    /// where the camera is looking FROM." Sets <see cref="_orbitTarget"/> so <see cref="_Process"/>'s
+    /// third-person camera math orbits this point instead of the local avatar.</summary>
+    private void AimOrbitAt(Vector3 target, Vector3 fromPos, float zoom)
+    {
+        zoom = Mathf.Clamp(zoom, 0.5f, 200.0f);
+
+        if (fromPos.DistanceSquaredTo(target) <= 0.0001f)
+        {
+            // No meaningful direction to derive an angle from -- move to this target/zoom without
+            // changing which way the camera is currently pointed.
+            StartTransition(target, _yaw + _orbitYaw, _pitch + _orbitPitch, zoom);
+            return;
+        }
+
+        // Up vector must not be parallel to the look direction.
+        var lookDir = (target - fromPos).Normalized();
+        var cameraUp = Godot.Vector3.Up;
+        if (Mathf.Abs(lookDir.Dot(cameraUp)) > 0.99f) cameraUp = Godot.Vector3.Forward;
+
+        var lookTransform = new Transform3D(Basis.Identity, fromPos).LookingAt(target, cameraUp);
+        var euler = lookTransform.Basis.GetEuler(Godot.EulerOrder.Yxz);
+
+        StartTransition(target, euler.Y, euler.X, zoom);
+    }
+
+    /// <summary>Captures where the camera's orbit actually is RIGHT NOW (absolute yaw/pitch, not
+    /// just the <see cref="_orbitYaw"/>/<see cref="_orbitPitch"/> offset, since <see cref="_yaw"/>/
+    /// <see cref="_pitch"/> can keep changing during the transition as the local avatar turns) and
+    /// starts a smooth interpolation toward the new framing, applied each frame in
+    /// <see cref="_Process"/>. <paramref name="endYawAbs"/>/<paramref name="endPitchAbs"/> are
+    /// ABSOLUTE angles (as <c>Transform.Basis.GetEuler</c> returns), matching what
+    /// <see cref="_transitionStartYaw"/>/<see cref="_transitionStartPitch"/> capture.</summary>
+    private void StartTransition(Godot.Vector3 endTarget, float endYawAbs, float endPitchAbs, float endZoom,
+        bool endIsAvatarFollow = false)
+    {
+        // Position = effectiveTarget + Basis.Z * zoom (see _Process) -- inverting that recovers
+        // the current effective orbit centre regardless of whether _orbitTarget was set at all,
+        // so a transition starting from "orbiting the local avatar" (_orbitTarget null) still has
+        // a real point in space to pan FROM.
+        _transitionStartTarget = Position - Transform.Basis.Z * _zoom;
+        _transitionStartYaw = _yaw + _orbitYaw;
+        _transitionStartPitch = _pitch + _orbitPitch;
+        _transitionStartZoom = _zoom;
+
+        // Shortest angular path, same wraparound AimOrbitAt used to apply this instantly before.
+        float yawDelta = endYawAbs - _transitionStartYaw;
+        while (yawDelta > Mathf.Pi) yawDelta -= Mathf.Tau;
+        while (yawDelta < -Mathf.Pi) yawDelta += Mathf.Tau;
+
+        _transitionEndTarget = endTarget;
+        _transitionEndYaw = _transitionStartYaw + yawDelta;
+        _transitionEndPitch = endPitchAbs;
+        _transitionEndZoom = endZoom;
+        _transitionEndIsAvatarFollow = endIsAvatarFollow;
+
+        _transitionElapsed = 0f;
+        _transitioning = true;
+        _panOffset = Godot.Vector3.Zero;
+    }
+
+    /// <summary>Advances an in-progress <see cref="StartTransition"/> and applies this frame's
+    /// interpolated framing to <see cref="_orbitTarget"/>/<see cref="_orbitYaw"/>/
+    /// <see cref="_orbitPitch"/>/<see cref="_zoom"/> -- called from <see cref="_Process"/>, before
+    /// those are read to compute <c>Position</c>. No-op (and leaves those fields alone) once no
+    /// transition is active, whether it finished normally or was cancelled by manual input.</summary>
+    private void UpdateTransition(double delta)
+    {
+        if (!_transitioning) return;
+
+        _transitionElapsed += (float)delta;
+        float t = Mathf.Clamp(_transitionElapsed / TransitionDuration, 0f, 1f);
+        float eased = t * t * (3f - 2f * t); // smoothstep -- eases in and out, not a linear pan
+
+        // ResetCamera's transition ends by returning to the DYNAMIC avatar-follow target, not a
+        // fixed point -- if the avatar is walking while Escape is pressed, panning toward a stale
+        // snapshot of where they were half a second ago would visibly lag behind them. Re-read it
+        // every frame of the transition instead (falls back to the fixed end target if the local
+        // avatar can't be found for some reason, e.g. mid-relog).
+        var endTarget = _transitionEndIsAvatarFollow
+            ? (GetLocalAvatarFollowTarget() ?? _transitionEndTarget)
+            : _transitionEndTarget;
+
+        _orbitTarget = _transitionStartTarget.Lerp(endTarget, eased);
+        float yaw = Mathf.Lerp(_transitionStartYaw, _transitionEndYaw, eased);
+        float pitch = Mathf.Lerp(_transitionStartPitch, _transitionEndPitch, eased);
+        _zoom = Mathf.Lerp(_transitionStartZoom, _transitionEndZoom, eased);
+        _orbitYaw = yaw - _yaw;
+        _orbitPitch = pitch - _pitch;
+
+        if (t >= 1f)
+        {
+            _transitioning = false;
+            // Hand back to _Process's own dynamic avatar-follow branch (_orbitTarget == null)
+            // instead of leaving the camera permanently pinned to wherever this snapshot ended up.
+            if (_transitionEndIsAvatarFollow) _orbitTarget = null;
+        }
+    }
+
+    /// <summary>The point the camera would be aimed at RIGHT NOW if nothing (Alt+Click, the
+    /// minimap jump, an in-progress reset) had it pinned to a fixed <see cref="_orbitTarget"/> --
+    /// i.e. the exact target <see cref="_Process"/>'s own avatar-follow branch computes. Used by
+    /// <see cref="ResetCamera"/> (as the transition's destination) and by
+    /// <see cref="UpdateTransition"/> (re-read every frame while returning to follow-mode, so a
+    /// moving avatar doesn't leave the camera panning toward a stale snapshot). Deliberately a
+    /// SEPARATE lookup from <see cref="_Process"/>'s own inline copy of this formula rather than a
+    /// shared helper called from both: that one already has <c>localAgent</c>/<c>transform</c>
+    /// resolved from its own per-frame entity scan, and this is only ever called occasionally
+    /// (once from <see cref="ResetCamera"/>) or for a transition's few hundred milliseconds, never
+    /// from the steady-state per-frame hot path -- an extra scan there would be a real, needless
+    /// per-frame cost this one isn't.</summary>
+    private Godot.Vector3? GetLocalAvatarFollowTarget()
+    {
+        if (_world == null) return null;
+        var localAgent = _world.GetAllEntities().FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+        var transform = localAgent?.GetComponent<TransformComponent>();
+        if (localAgent == null || transform == null) return null;
+
+        var pos = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
+        pos.Y += _cameraSettings?.FocusHeight ?? 1.8f;
+        return pos;
+    }
+
+    /// <summary>Smoothly pans/zooms to a named preset orbit angle directly behind/beside/in front
+    /// of the avatar, at the default rear-view zoom -- requested 2026-08-28 alongside the minimap
+    /// jump's own smooth pan, rather than the instant snap this (and <see cref="ResetCamera"/>,
+    /// which is just this with "rear") used to be. Ends by returning to the DYNAMIC avatar-follow
+    /// target (<see cref="_orbitTarget"/> back to <c>null</c>), not a fixed point frozen at
+    /// whatever the transition's destination snapshot was -- see <see cref="UpdateTransition"/>'s
+    /// doc comment.</summary>
     public void SetPresetView(string preset)
     {
-        ResetCamera();
-        switch (preset.ToLower())
+        float orbitYawPreset = preset.ToLower() switch
         {
-            case "front":
-                _orbitYaw = Mathf.Pi; // 180 degrees
-                break;
-            case "side":
-                _orbitYaw = Mathf.Pi / 2.0f; // 90 degrees
-                break;
-            case "rear":
-            default:
-                _orbitYaw = 0f;
-                break;
-        }
+            "front" => Mathf.Pi, // 180 degrees
+            "side" => Mathf.Pi / 2.0f, // 90 degrees
+            _ => 0f, // "rear" and default
+        };
+
+        float endZoom = _cameraSettings?.RearDistance ?? 4.0f;
+        var endTarget = GetLocalAvatarFollowTarget() ?? (Position - Transform.Basis.Z * _zoom);
+        // Absolute end yaw = the avatar's own current facing plus the preset's orbit offset;
+        // UpdateTransition derives _orbitYaw from this (interpolated absolute minus current _yaw)
+        // every frame, so it stays correct even if the avatar keeps turning mid-transition.
+        StartTransition(endTarget, _yaw + orbitYawPreset, _pitch, endZoom, endIsAvatarFollow: true);
     }
 
     // Alt+LMB orbit state. The orbit offsets rotate the CAMERA around the avatar
@@ -152,6 +319,22 @@ public partial class AvatarController : Camera3D
     private float _orbitYaw = 0f;
     private float _orbitPitch = 0f;
     private Godot.Vector3? _orbitTarget = null;
+
+    // Smooth camera transition (FocusOn/FocusOnAvatarFrontal) -- live-tested 2026-08-28: an
+    // instant snap to the new framing read as a jarring hard cut, not the "pan there" feel a
+    // "jump to this person" gesture should have. Interpolates orbit yaw/pitch/zoom/target from
+    // wherever the camera actually was toward the new framing over TransitionDuration seconds.
+    // Cancelled by ANY manual camera input (drag/scroll/wheel/WASD) -- see each of those methods
+    // -- so the user always regains immediate control rather than fighting an in-progress pan.
+    private const float TransitionDuration = 0.5f;
+    private bool _transitioning;
+    private float _transitionElapsed;
+    private float _transitionStartYaw, _transitionStartPitch, _transitionStartZoom;
+    private Godot.Vector3 _transitionStartTarget;
+    private float _transitionEndYaw, _transitionEndPitch, _transitionEndZoom;
+    private Godot.Vector3 _transitionEndTarget;
+    // True only for ResetCamera's transition -- see UpdateTransition's doc comment.
+    private bool _transitionEndIsAvatarFollow;
 
     // Set by AbortCameraDrag: blocks orbit re-engagement until the left button is physically
     // released once. Without it, a focus-out / mouse-exit that fires mid-drag (X11, some Windows
@@ -388,35 +571,7 @@ public partial class AvatarController : Camera3D
             var result = spaceState.IntersectRay(query);
             if (result.Count > 0)
             {
-                _orbitTarget = result["position"].AsVector3();
-                var currentPos = Position;
-                
-                // Keep the camera in the exact same physical spot, but look at the new target
-                _zoom = currentPos.DistanceTo(_orbitTarget.Value);
-                _zoom = Mathf.Clamp(_zoom, 0.5f, 200.0f);
-                
-                if (currentPos.DistanceSquaredTo(_orbitTarget.Value) > 0.01f)
-                {
-                    // Look at the new orbit target. Up vector must not be parallel to look direction.
-                    var lookDir = (_orbitTarget.Value - currentPos).Normalized();
-                    var cameraUp = Godot.Vector3.Up;
-                    if (Mathf.Abs(lookDir.Dot(cameraUp)) > 0.99f) cameraUp = Godot.Vector3.Forward;
-
-                    var lookTransform = Transform.LookingAt(_orbitTarget.Value, cameraUp);
-                    var euler = lookTransform.Basis.GetEuler(Godot.EulerOrder.Yxz);
-                    
-                    float targetPitch = euler.X;
-                    float targetYaw = euler.Y;
-                    
-                    _orbitPitch = targetPitch - _pitch;
-                    
-                    float yawDiff = targetYaw - (_yaw + _orbitYaw);
-                    while (yawDiff > Mathf.Pi) yawDiff -= Mathf.Tau;
-                    while (yawDiff < -Mathf.Pi) yawDiff += Mathf.Tau;
-                    
-                    _orbitYaw += yawDiff;
-                    _panOffset = Godot.Vector3.Zero;
-                }
+                FocusOn(result["position"].AsVector3());
             }
         }
         else if (!wantOrbit && _altOrbitActive)
@@ -487,6 +642,7 @@ public partial class AvatarController : Camera3D
                 // Any movement/turn snaps the orbit camera back behind the avatar.
                 if (!isSitting && (isFwd || isBack || isLeft || isRight))
                 {
+                    _transitioning = false;
                     _orbitYaw = 0f;
                     _orbitPitch = 0f;
                     _orbitTarget = null;
@@ -748,12 +904,16 @@ public partial class AvatarController : Camera3D
                 // Keyboard zoom polling (+ and - keys)
                 if (Input.IsKeyPressed(Key.Equal) || Input.IsKeyPressed(Key.KpAdd))
                 {
+                    _transitioning = false;
                     _zoom = Mathf.Max(0.5f, _zoom - 15.0f * (float)delta);
                 }
                 if (Input.IsKeyPressed(Key.Minus) || Input.IsKeyPressed(Key.KpSubtract))
                 {
+                    _transitioning = false;
                     _zoom = Mathf.Min(200.0f, _zoom + 15.0f * (float)delta);
                 }
+
+                UpdateTransition(delta);
 
                 Godot.Vector3 targetPos;
                 if (_orbitTarget.HasValue)

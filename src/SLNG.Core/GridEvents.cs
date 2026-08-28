@@ -257,3 +257,29 @@ public record AvatarAnimationEvent(Guid AgentId, List<Guid> AnimationIds) : IWor
 public record ScriptDialogEvent(
     Guid ObjectId, string ObjectName, Guid OwnerId, string OwnerName,
     string Message, int Channel, IReadOnlyList<string> ButtonLabels);
+
+/// <summary>MVP2-3: one avatar's compact position as reported by the region-wide radar packet
+/// (LibreMetaverse's <c>CoarseLocationUpdate</c> — every avatar the simulator knows about, not
+/// only the ones within draw distance). Position is REGION-LOCAL, not global — the same frame
+/// <see cref="TransformComponent.Position"/> uses. Identity/UI state, not world simulation state
+/// (the minimap owns its own short-lived snapshot instead of feeding this into <see cref="ECS.World"/>),
+/// so intentionally not an <see cref="IWorldEvent"/>.</summary>
+public record NearbyAvatar(Guid AgentId, Vector3 Position);
+
+/// <summary>The full radar snapshot for one region, replacing whatever snapshot preceded it
+/// (LibreMetaverse hands us the complete list each time, not a delta). Fired off a background
+/// network thread — consumers must marshal before touching a scene node.</summary>
+public record NearbyAvatarsEvent(ulong RegionHandle, IReadOnlyList<NearbyAvatar> Avatars);
+
+/// <summary>One region tile on the grid map (MVP2-3). <paramref name="GridX"/>/<paramref name="GridY"/>
+/// are region-grid units (each unit = 256 m, matching LibreMetaverse's <c>GridManager.GridRegion</c>);
+/// <see cref="GlobalX"/>/<see cref="GlobalY"/> are the corresponding metre coordinates, i.e. the
+/// region's SW corner in the same global space a landmark or teleport position uses.
+/// <paramref name="MapImageId"/> is the region's map-tile texture asset id, fetched through the
+/// normal texture path (it is an ordinary JPEG2000 asset, not a special format). Neutral DTO —
+/// no LibreMetaverse <c>GridRegion</c> crosses <see cref="ECS"/>/app boundary.</summary>
+public record MapRegionInfo(string Name, int GridX, int GridY, ulong RegionHandle, Guid MapImageId)
+{
+    public double GlobalX => GridX * 256.0;
+    public double GlobalY => GridY * 256.0;
+}

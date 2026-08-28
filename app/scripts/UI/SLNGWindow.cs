@@ -13,12 +13,22 @@ public partial class SLNGWindow : MarginContainer
 
     private bool _isDragging = false;
     private Vector2 _dragOffset;
-    private bool _isResizing = false;
     private Vector2 _preMinimizeSize;
     private Vector2 _preMinimizeMinSize;
     private bool _isMinimized;
-    private Control _resizeHandle = null!;
     private Viewport? _viewport;
+
+    [Flags]
+    private enum ResizeEdge { None = 0, Left = 1, Right = 2, Top = 4, Bottom = 8 }
+
+    // All 4 edges + 4 corners, not just a single bottom-right corner -- see AddResizeHandles'
+    // doc comment for why a coupled single handle was a real bug, not just a UX nicety.
+    private readonly System.Collections.Generic.List<Control> _resizeHandles = new();
+    private bool _isResizing;
+    private ResizeEdge _resizingEdges;
+    private Vector2 _resizeStartMouseGlobal;
+    private Vector2 _resizeStartPos;
+    private Vector2 _resizeStartSize;
 
     public const float MinUiScale = 0.8f;
     public const float MaxUiScale = 1.6f;
@@ -199,33 +209,7 @@ public partial class SLNGWindow : MarginContainer
         _contentContainer.ClipContents = true;
         vbox.AddChild(_contentContainer);
 
-        // Resize Handle
-        _resizeHandle = new Control
-        {
-            CustomMinimumSize = new Vector2(16, 16),
-            SizeFlagsHorizontal = SizeFlags.ShrinkEnd,
-            SizeFlagsVertical = SizeFlags.ShrinkEnd,
-            MouseFilter = MouseFilterEnum.Stop,
-            MouseDefaultCursorShape = CursorShape.Fdiagsize
-        };
-        _resizeHandle.GuiInput += OnResizeGuiInput;
-        _resizeHandle.Draw += () =>
-        {
-            var points = new Vector2[]
-            {
-                new Vector2(16, 10),
-                new Vector2(16, 16),
-                new Vector2(10, 16)
-            };
-            var colors = new Color[]
-            {
-                new Color(1, 1, 1, 0.1f),
-                new Color(1, 1, 1, 0.1f),
-                new Color(1, 1, 1, 0.1f)
-            };
-            _resizeHandle.DrawPolygon(points, colors);
-        };
-        AddChild(_resizeHandle);
+        AddResizeHandles();
 
         // Deferred so it runs after the calling subclass's _Ready has finished setting its own
         // default Position/CustomMinimumSize (base._Ready() always runs first in those overrides)
@@ -233,9 +217,61 @@ public partial class SLNGWindow : MarginContainer
         CallDeferred(nameof(RestorePersistedGeometry));
     }
 
+    /// <summary>All 4 edges + 4 corners get their own drag handle, not just a single bottom-right
+    /// corner. A single corner handle COUPLES width and height on every drag -- there is no way
+    /// to narrow the window without also dragging its height, or vice versa. That coupling was
+    /// live-tested to actually corrupt saved geometry: an attempt to narrow a window overshot
+    /// vertically and saved a 480x1236 window, which then reopened at that broken size on every
+    /// subsequent launch forever (nothing ever re-checked it against a sane maximum -- see
+    /// RestorePersistedGeometry's matching fix). Corners are added AFTER edges so they win the
+    /// hit-test at the exact pixel where an edge and a corner handle would otherwise overlap.</summary>
+    private void AddResizeHandles()
+    {
+        const float edgeThickness = 8f;
+        const float cornerSize = 16f;
+
+        AddResizeHandle(ResizeEdge.Top, SizeFlags.ExpandFill, SizeFlags.ShrinkBegin, new Vector2(0, edgeThickness), CursorShape.Vsize);
+        AddResizeHandle(ResizeEdge.Bottom, SizeFlags.ExpandFill, SizeFlags.ShrinkEnd, new Vector2(0, edgeThickness), CursorShape.Vsize);
+        AddResizeHandle(ResizeEdge.Left, SizeFlags.ShrinkBegin, SizeFlags.ExpandFill, new Vector2(edgeThickness, 0), CursorShape.Hsize);
+        AddResizeHandle(ResizeEdge.Right, SizeFlags.ShrinkEnd, SizeFlags.ExpandFill, new Vector2(edgeThickness, 0), CursorShape.Hsize);
+        AddResizeHandle(ResizeEdge.Top | ResizeEdge.Left, SizeFlags.ShrinkBegin, SizeFlags.ShrinkBegin, new Vector2(cornerSize, cornerSize), CursorShape.Fdiagsize);
+        AddResizeHandle(ResizeEdge.Top | ResizeEdge.Right, SizeFlags.ShrinkEnd, SizeFlags.ShrinkBegin, new Vector2(cornerSize, cornerSize), CursorShape.Bdiagsize);
+        AddResizeHandle(ResizeEdge.Bottom | ResizeEdge.Left, SizeFlags.ShrinkBegin, SizeFlags.ShrinkEnd, new Vector2(cornerSize, cornerSize), CursorShape.Bdiagsize);
+        var seCorner = AddResizeHandle(ResizeEdge.Bottom | ResizeEdge.Right, SizeFlags.ShrinkEnd, SizeFlags.ShrinkEnd, new Vector2(cornerSize, cornerSize), CursorShape.Fdiagsize);
+
+        // Keep the original visual grip on the bottom-right corner -- the one spot users actually
+        // look for a resize affordance; the other seven are invisible-but-functional, matching how
+        // most desktop apps only decorate the one conventional corner.
+        seCorner.Draw += () =>
+        {
+            var points = new[] { new Vector2(cornerSize, cornerSize - 6), new Vector2(cornerSize, cornerSize), new Vector2(cornerSize - 6, cornerSize) };
+            var colors = new[] { new Color(1, 1, 1, 0.1f), new Color(1, 1, 1, 0.1f), new Color(1, 1, 1, 0.1f) };
+            seCorner.DrawPolygon(points, colors);
+        };
+    }
+
+    private Control AddResizeHandle(ResizeEdge edges, SizeFlags h, SizeFlags v, Vector2 minSize, CursorShape cursor)
+    {
+        var handle = new Control
+        {
+            CustomMinimumSize = minSize,
+            SizeFlagsHorizontal = h,
+            SizeFlagsVertical = v,
+            MouseFilter = MouseFilterEnum.Stop,
+            MouseDefaultCursorShape = cursor,
+        };
+        handle.GuiInput += e => OnResizeGuiInput(edges, e);
+        AddChild(handle);
+        _resizeHandles.Add(handle);
+        return handle;
+    }
+
     /// <summary>No-op unless a subclass opted in via <see cref="PersistId"/>. Loads the saved
     /// Position/Size from user://preferences.cfg, clamped so a window saved on a larger/different
-    /// screen still reopens at least partially on-screen instead of stranded off-viewport.</summary>
+    /// screen still reopens at least partially on-screen instead of stranded off-viewport, AND
+    /// clamped to the current viewport's size on the tall/wide side -- a size saved before the
+    /// resize-handle fix above (or from any other future bad drag) self-heals here instead of
+    /// reopening broken forever, since this is the one place every restart actually passes through.</summary>
     private void RestorePersistedGeometry()
     {
         if (string.IsNullOrEmpty(PersistId)) return;
@@ -248,9 +284,12 @@ public partial class SLNGWindow : MarginContainer
         if (cfg.HasSectionKey(GeometrySection, $"{PersistId}_size"))
         {
             var savedSize = (Vector2)cfg.GetValue(GeometrySection, $"{PersistId}_size");
+            var vp = (_viewport ?? GetViewport())?.GetVisibleRect().Size ?? new Vector2(4096, 4096);
+            float maxW = Mathf.Max(CustomMinimumSize.X, vp.X / Mathf.Max(Scale.X, 0.01f));
+            float maxH = Mathf.Max(CustomMinimumSize.Y, vp.Y / Mathf.Max(Scale.Y, 0.01f));
             Size = new Vector2(
-                Mathf.Max(savedSize.X, CustomMinimumSize.X),
-                Mathf.Max(savedSize.Y, CustomMinimumSize.Y));
+                Mathf.Clamp(savedSize.X, CustomMinimumSize.X, maxW),
+                Mathf.Clamp(savedSize.Y, CustomMinimumSize.Y, maxH));
         }
 
         // Restored from a possibly larger / different-resolution session -- keep it on screen.
@@ -288,7 +327,7 @@ public partial class SLNGWindow : MarginContainer
             _isMinimized = true;
 
             _contentContainer.Visible = false;
-            if (_resizeHandle != null) _resizeHandle.Visible = false;
+            foreach (var h in _resizeHandles) h.Visible = false;
 
             // Drop the height floor so the frame can shrink to the header. Keep the width floor --
             // a window that also snapped narrow on minimize would truncate its own title and feel
@@ -303,7 +342,7 @@ public partial class SLNGWindow : MarginContainer
             _isMinimized = false;
             CustomMinimumSize = _preMinimizeMinSize;
             _contentContainer.Visible = true;
-            if (_resizeHandle != null) _resizeHandle.Visible = true;
+            foreach (var h in _resizeHandles) h.Visible = true;
             Size = _preMinimizeSize; // Restore the pre-minimize frame size
         }
     }
@@ -420,37 +459,73 @@ public partial class SLNGWindow : MarginContainer
         }
     }
 
-    private void OnResizeGuiInput(InputEvent @event)
+    /// <summary>Shared by all 8 resize handles, parameterised by which edges the pressed handle
+    /// moves. Godot keeps delivering GuiInput to whichever control the mouse button went down on
+    /// until it comes back up, regardless of where the cursor wanders in between (the same
+    /// property the original single-handle version already relied on), so no per-handle "am I the
+    /// active one" check is needed beyond the shared <see cref="_isResizing"/> flag.</summary>
+    private void OnResizeGuiInput(ResizeEdge edges, InputEvent @event)
     {
-        if (@event is InputEventMouseButton mouseBtn)
+        if (@event is InputEventMouseButton mouseBtn && mouseBtn.ButtonIndex == MouseButton.Left)
         {
-            if (mouseBtn.ButtonIndex == MouseButton.Left)
+            if (mouseBtn.Pressed)
             {
-                if (mouseBtn.Pressed)
-                {
-                    _isResizing = true;
-                    _resizeHandle.AcceptEvent(); // Capture mouse drag
-                }
-                else
-                {
-                    _isResizing = false;
-                    SavePersistedGeometry();
-                }
+                _isResizing = true;
+                _resizingEdges = edges;
+                _resizeStartMouseGlobal = mouseBtn.GlobalPosition;
+                _resizeStartPos = Position;
+                _resizeStartSize = Size;
+            }
+            else
+            {
+                _isResizing = false;
+                SavePersistedGeometry();
             }
         }
-        else if (@event is InputEventMouseMotion mouseMotion)
+        else if (@event is InputEventMouseMotion mouseMotion && _isResizing)
         {
-            if (_isResizing)
-            {
-                // GlobalPosition/mouseMotion.GlobalPosition are in screen space; Size is the
-                // pre-scale local rect, so the screen-space delta must be un-scaled before it's
-                // assigned back, or dragging at e.g. 1.5x UI scale would resize 1.5x faster than
-                // the cursor moves (FEAT-UI-07).
-                var newSize = (mouseMotion.GlobalPosition - GlobalPosition) / Scale;
-                newSize.X = Mathf.Max(newSize.X, CustomMinimumSize.X > 0 ? CustomMinimumSize.X : 100);
-                newSize.Y = Mathf.Max(newSize.Y, CustomMinimumSize.Y > 0 ? CustomMinimumSize.Y : 100);
-                Size = newSize;
-            }
+            ApplyResize(mouseMotion.GlobalPosition);
         }
+    }
+
+    /// <summary>Moves whichever edges/corner is being dragged, computed from the drag's START
+    /// state (not incrementally frame-to-frame) so small per-frame rounding never accumulates.
+    /// GlobalPosition/mouseGlobal are screen space; Size/Position are the pre-scale local rect, so
+    /// the screen-space delta must be un-scaled before use, or dragging at e.g. 1.5x UI scale
+    /// would resize 1.5x faster than the cursor moves (FEAT-UI-07). Both a minimum (the window's
+    /// own CustomMinimumSize) and a MAXIMUM (the current viewport) are enforced -- the missing
+    /// maximum on the single old corner handle is what let a stray drag save an unusable
+    /// 480x1236 window in the first place (RestorePersistedGeometry has the matching fix for a
+    /// value already saved before this existed).</summary>
+    private void ApplyResize(Vector2 mouseGlobal)
+    {
+        var delta = (mouseGlobal - _resizeStartMouseGlobal) / Scale;
+
+        float minW = CustomMinimumSize.X > 0 ? CustomMinimumSize.X : 100;
+        float minH = CustomMinimumSize.Y > 0 ? CustomMinimumSize.Y : 100;
+        var vp = (_viewport ?? GetViewport())?.GetVisibleRect().Size ?? new Vector2(4096, 4096);
+        float maxW = Mathf.Max(minW, vp.X / Mathf.Max(Scale.X, 0.01f));
+        float maxH = Mathf.Max(minH, vp.Y / Mathf.Max(Scale.Y, 0.01f));
+
+        float x = _resizeStartPos.X, y = _resizeStartPos.Y;
+        float w = _resizeStartSize.X, h = _resizeStartSize.Y;
+
+        if ((_resizingEdges & ResizeEdge.Right) != 0)
+            w = Mathf.Clamp(_resizeStartSize.X + delta.X, minW, maxW);
+        if ((_resizingEdges & ResizeEdge.Bottom) != 0)
+            h = Mathf.Clamp(_resizeStartSize.Y + delta.Y, minH, maxH);
+        if ((_resizingEdges & ResizeEdge.Left) != 0)
+        {
+            w = Mathf.Clamp(_resizeStartSize.X - delta.X, minW, maxW);
+            x = _resizeStartPos.X + (_resizeStartSize.X - w);
+        }
+        if ((_resizingEdges & ResizeEdge.Top) != 0)
+        {
+            h = Mathf.Clamp(_resizeStartSize.Y - delta.Y, minH, maxH);
+            y = _resizeStartPos.Y + (_resizeStartSize.Y - h);
+        }
+
+        Position = new Vector2(x, y);
+        Size = new Vector2(w, h);
     }
 }

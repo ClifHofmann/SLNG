@@ -36,7 +36,9 @@
       "sculpt_u_nudge_right": "Sculpt-U verschieben: +1 Rasterspalte",
       "sculpt_u_nudge_left_coarse": "Sculpt-U verschieben: -16 Rasterspalten",
       "sculpt_u_nudge_right_coarse": "Sculpt-U verschieben: +16 Rasterspalten",
-      "environment": "Umgebung (Windlight)..."
+      "environment": "Umgebung (Windlight)...",
+      "world_map": "Weltkarte...",
+      "minimap": "Minikarte"
     },
     "hud": {
       "stand_up": "Aufstehen"
@@ -53,6 +55,31 @@
       "source_eep": "EEP",
       "source_legacy": "Windlight",
       "source_default": "Standard — Sim sendet nichts"
+    },
+    "map": {
+      "arrived_in": "Angekommen in {0}"
+    },
+    "minimap": {
+      "title": "Minikarte",
+      "zoom_hint": "Scrollen zum Zoomen",
+      "nearby": "In der Nähe",
+      "none_nearby": "Niemand sonst in der Nähe.",
+      "jump_hint": "Doppelklick zum Hinspringen"
+    },
+    "worldmap": {
+      "title": "Weltkarte",
+      "search_placeholder": "Regionsname, oder Regionsname x y z",
+      "go": "Los",
+      "recenter": "Zentrieren",
+      "teleport": "Teleportieren",
+      "teleporting": "Teleportiere…",
+      "teleport_failed": "Teleport fehlgeschlagen",
+      "searching": "Suche…",
+      "enter_region_name": "Regionsnamen eingeben.",
+      "region_not_found": "Region \"{0}\" nicht gefunden.",
+      "hint": "Klicken zum Prüfen eines Punkts, Doppelklick zum Teleportieren.",
+      "resolving": "Region wird geprüft…",
+      "no_region_here": "Keine Region hier."
     },
     "group_invite": {
       "title": "GRUPPENEINLADUNG",
