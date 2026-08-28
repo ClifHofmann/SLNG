@@ -269,4 +269,53 @@ public class GridSessionTests
         using var session = new GridSession();
         Assert.Null(Record.Exception(() => session.RequestMapBlocks(0, 0, 10, 10)));
     }
+
+    [Fact]
+    public void TeleportToGlobalPosition_without_connection_does_not_throw()
+    {
+        using var session = new GridSession();
+        Assert.Null(Record.Exception(() =>
+            session.TeleportToGlobalPosition("Some Region", 256000.0, 256000.0, 25.0)));
+    }
+
+    // FEAT-UI-18: the loading overlay is driven off GridSession.TeleportProgress, a neutral event
+    // mapped from LibreMetaverse's TeleportEventArgs by the private OnLmvTeleportProgress handler
+    // (no LMV type crosses the boundary -- AGENTS.md). Same reflection pattern as OnScriptDialog
+    // above: hand-build the wire event args and invoke the handler directly.
+    [Theory]
+    [InlineData(TeleportStatus.Start, TeleportStage.Started)]
+    [InlineData(TeleportStatus.Progress, TeleportStage.Progress)]
+    [InlineData(TeleportStatus.Failed, TeleportStage.Failed)]
+    [InlineData(TeleportStatus.Finished, TeleportStage.Finished)]
+    [InlineData(TeleportStatus.Cancelled, TeleportStage.Cancelled)]
+    public void OnLmvTeleportProgress_maps_status_to_stage(TeleportStatus status, TeleportStage expected)
+    {
+        using var session = new GridSession();
+        TeleportProgressEvent? received = null;
+        session.TeleportProgress += (s, e) => received = e;
+
+        var args = new TeleportEventArgs("Arriving...", status, (TeleportFlags)0);
+        var method = typeof(GridSession).GetMethod("OnLmvTeleportProgress", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        method.Invoke(session, new object?[] { null, args });
+
+        Assert.NotNull(received);
+        Assert.Equal(expected, received!.Stage);
+        Assert.Equal("Arriving...", received.Message);
+    }
+
+    // TeleportStatus.None is not a real in-flight stage and must be dropped, not surfaced --
+    // mirrors the LoginStatus.None handling in the login-stage mapping.
+    [Fact]
+    public void OnLmvTeleportProgress_drops_None_status()
+    {
+        using var session = new GridSession();
+        bool raised = false;
+        session.TeleportProgress += (s, e) => raised = true;
+
+        var args = new TeleportEventArgs("", TeleportStatus.None, (TeleportFlags)0);
+        var method = typeof(GridSession).GetMethod("OnLmvTeleportProgress", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        method.Invoke(session, new object?[] { null, args });
+
+        Assert.False(raised);
+    }
 }

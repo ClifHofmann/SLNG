@@ -21,3 +21,43 @@ The user requested visual feedback during teleportation: *"Teleportieren brauch 
 - [ ] The UI provides textual or visual progress updates during the region crossing.
 - [ ] The overlay disappears automatically once the avatar has successfully arrived at the destination.
 - [ ] Teleport failures gracefully dismiss the overlay and show an error message instead.
+
+## Implementation (2026-08-28, `feature/FEAT-UI-18-teleport-loading-screen`)
+
+**Neutral progress event (`SLNG.Core` / `SLNG.Net`).** New `TeleportStage` enum + `TeleportProgressEvent`
+record in `GridEvents.cs`, mirrored by name from LibreMetaverse's `TeleportStatus`
+(`Start/Progress/Failed/Finished/Cancelled`, `None` dropped) — the same pattern `LoginStage`
+already uses so no `OpenMetaverse`/`LibreMetaverse` type crosses the `SLNG.Net` boundary
+(AGENTS.md layering). `GridSession` gained `public event EventHandler<TeleportProgressEvent>
+TeleportProgress`, raised by **all three** teleport paths (`TeleportToAsync` region-handle,
+`TeleportToLandmarkAsync`, `TeleportToGlobalPosition` fire-and-forget) via a shared private
+`OnLmvTeleportProgress` relay. Each path also raises a **synthetic `Started`** the moment the
+request is sent (LibreMetaverse does not reliably raise `Start` before `Progress`) and a
+**terminal `Finished`/`Failed`** once the awaited call returns — a teleport *timeout* raises no
+LibreMetaverse event at all, so an overlay listening only to relayed events would hang. The
+terminal is emitted by a `FinishTeleport(result)` wrapper around every `return` in the awaited
+methods. 7 new `GridSessionTests` (status→stage mapping `[Theory]`, `None` dropped,
+`TeleportToGlobalPosition` no-connection graceful).
+
+**Overlay (`app/scripts/UI/TeleportOverlay.cs`).** A `CanvasLayer` (Layer 100, above `HudLayer`'s
+10) with a full-rect blur `ColorRect` (reuses `res://materials/ui_blur.tres`, the login screen's
+own material) + centred glass `PanelContainer`, an **indeterminate** spinner ring (`_Draw` arc
+sweep — teleport reports discrete stages, not a percentage, so a fake progress bar would lie the
+same way the login checklist refuses to), and a status `Label`. Deliberately **not** an
+`SLNGWindow` (that standard is for draggable floaters; this is a modal blocking overlay in the
+same family as the login `%LoadingScreen`, a plain `CenterContainer`). The backing rect is
+`MouseFilter.Stop` so nothing behind it is clickable mid-teleport. Fades in (~0.18 s) / out
+(~0.3 s) via `Tween`; a terminal state lingers 0.4 s on success / 3 s on failure (long enough to
+read the reason) before fading. `ForceHide()` for the disconnect/relogin edge (its session's
+remaining events are gone).
+
+**Wiring (`Boot.cs`).** `_session.TeleportProgress` is buffered into a `ConcurrentQueue` off the
+network thread and drained in `_Process` (same buffer-and-drain rule as the arrival toast /
+region environment), then `ApplyTeleportProgress` maps stage → overlay call with a **localised**
+per-stage string (`ui.teleport.*`, en-US + de-DE) rather than LibreMetaverse's inconsistent
+English narration; a real failure reason (timeout, rejection) is passed through verbatim. A
+`_teleportActive` flag gates mid-flight `Progress` updates so a stray late event can't revive the
+text after the overlay has shown its terminal state.
+
+Builds (solution + `app/`), 376 tests (+7), `dotnet format` clean, `--selftest` 26/26 (locale
+parity 212/212). `v0.11.5-alpha`. **Awaiting in-world confirmation.**

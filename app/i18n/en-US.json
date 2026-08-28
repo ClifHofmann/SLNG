@@ -81,6 +81,13 @@
       "resolving": "Checking that region…",
       "no_region_here": "No region here."
     },
+    "teleport": {
+      "requesting": "Requesting teleport…",
+      "in_progress": "Teleporting…",
+      "arrived": "Arrived.",
+      "failed": "Teleport failed.",
+      "cancelled": "Teleport cancelled."
+    },
     "group_invite": {
       "title": "GROUP INVITATION",
       "from": "Invitation from {0}",

@@ -117,6 +117,10 @@ public partial class Boot : Control
     // MVP2-3: minimap radar overlay + world map/search window.
     private SLNG.App.UI.MinimapOverlay _minimapOverlay = null!;
     private SLNG.App.UI.WorldMapWindow _worldMapWindow = null!;
+    // FEAT-UI-18: teleport loading overlay. Fed by GridSession.TeleportProgress events buffered
+    // off the network thread into _pendingTeleportProgress and drained in _Process.
+    private SLNG.App.UI.TeleportOverlay _teleportOverlay = null!;
+    private readonly System.Collections.Concurrent.ConcurrentQueue<SLNG.Core.TeleportProgressEvent> _pendingTeleportProgress = new();
     private readonly WindlightPresetLibrary _windlightPresets = new();
     private SLNG.Core.Services.ChatLogger _chatLogger = null!;
     
@@ -143,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.11.4-alpha";
+    public const string AppVersion = "v0.11.5-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -316,6 +320,8 @@ public partial class Boot : Control
                 _chatWindow.Visible = false;
                 if (_inventoryPanel != null) { _inventoryPanel.QueueFree(); _inventoryPanel = null; }
                 Input.MouseMode = Input.MouseModeEnum.Visible;
+                _teleportActive = false;
+                _teleportOverlay?.ForceHide();
             }
         };
 
@@ -541,6 +547,12 @@ public partial class Boot : Control
         _chatWindow.OnSendLocalChat = (text) => _session?.SendChat(text);
         // FEAT-UI-13: clicking a resident's name in chat, or the Friends tab's "Profile" button.
         _chatWindow.OnOpenProfileRequested = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
+
+        // FEAT-UI-18: modal teleport loading overlay. Its own CanvasLayer (Layer 100), added to
+        // Boot rather than hudLayer so it covers the HUD and every window and stays up even if
+        // "Toggle HUD" hid hudLayer. No session/world dependency -- safe to build here.
+        _teleportOverlay = new SLNG.App.UI.TeleportOverlay { Name = "TeleportOverlay" };
+        AddChild(_teleportOverlay);
 
         SetupButtonBarAndPreferences(hudLayer, cameraHud);
 
@@ -930,6 +942,10 @@ public partial class Boot : Control
                 LogMessage($"[color=lightgreen]{SLNG.App.UI.L10n.TrFormat("ui.map.arrived_in", arrivedName)}[/color]");
             }
         }
+
+        // FEAT-UI-18: teleport loading overlay. Drain every buffered stage this frame -- the last
+        // one wins for what's displayed, and a terminal stage still gets to dismiss it.
+        while (_pendingTeleportProgress.TryDequeue(out var tp)) ApplyTeleportProgress(tp);
 
         // FEAT-ENV-02: Use the server's synced time if we have received a SimulatorViewerTimeMessage,
         // otherwise fall back to local UtcNow.
@@ -1451,6 +1467,44 @@ public partial class Boot : Control
         }
     }
 
+    // FEAT-UI-18: true between a teleport's Started and its terminal stage. Gates the mid-flight
+    // Progress updates so a stray late event can't revive the overlay's text after it has already
+    // shown "Arrived" / a failure and begun its fade-out.
+    private bool _teleportActive;
+
+    /// <summary>Drives the teleport loading overlay from a buffered <see cref="TeleportProgressEvent"/>
+    /// (see the drain in _Process). Text is our own localised per-stage string rather than
+    /// LibreMetaverse's inconsistent English progress narration; a real failure reason (timeout,
+    /// rejection) is passed through verbatim since it is the actionable part.</summary>
+    private void ApplyTeleportProgress(SLNG.Core.TeleportProgressEvent e)
+    {
+        switch (e.Stage)
+        {
+            case SLNG.Core.TeleportStage.Started:
+                _teleportActive = true;
+                _teleportOverlay.ShowProgress(SLNG.App.UI.L10n.Tr("ui.teleport.requesting"));
+                break;
+            case SLNG.Core.TeleportStage.Progress:
+                if (_teleportActive)
+                    _teleportOverlay.SetStatus(SLNG.App.UI.L10n.Tr("ui.teleport.in_progress"));
+                break;
+            case SLNG.Core.TeleportStage.Finished:
+                _teleportActive = false;
+                _teleportOverlay.Finish(true, SLNG.App.UI.L10n.Tr("ui.teleport.arrived"));
+                break;
+            case SLNG.Core.TeleportStage.Failed:
+                _teleportActive = false;
+                _teleportOverlay.Finish(false, string.IsNullOrWhiteSpace(e.Message)
+                    ? SLNG.App.UI.L10n.Tr("ui.teleport.failed")
+                    : e.Message);
+                break;
+            case SLNG.Core.TeleportStage.Cancelled:
+                _teleportActive = false;
+                _teleportOverlay.Finish(false, SLNG.App.UI.L10n.Tr("ui.teleport.cancelled"));
+                break;
+        }
+    }
+
     private async void OnLoginPressed()
     {
         _loginButton.Disabled = true;
@@ -1461,6 +1515,10 @@ public partial class Boot : Control
         GetNode<Control>("%LoadingScreenBlur").Visible = true;
         GetNode<Control>("%LoadingScreen").Visible = true;
         IsLoadingScreenVisible = true;
+        // FEAT-UI-18: a teleport overlay left up from the previous session has no more progress
+        // events coming -- drop it so the login loading screen isn't stacked under it.
+        _teleportActive = false;
+        _teleportOverlay?.ForceHide();
 
         if (_session != null)
         {
@@ -1580,6 +1638,11 @@ public partial class Boot : Control
         _session.RegionConnected += (s, regionHandle) => _pendingArrivalToast = true;
 
         _session.RegionEnvironmentReceived += (s, env) => _pendingRegionEnvironment = env;
+
+        // FEAT-UI-18: teleport progress -> loading overlay. Raised on a LibreMetaverse network
+        // thread, so buffer here and apply on the main thread in _Process, same pattern as the
+        // arrival toast / region environment above.
+        _session.TeleportProgress += (s, e) => _pendingTeleportProgress.Enqueue(e);
 
         var creds = new LoginCredentials
         {
