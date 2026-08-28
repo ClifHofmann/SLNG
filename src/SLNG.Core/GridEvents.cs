@@ -54,6 +54,33 @@ public enum LoginStage
 /// world-state, so intentionally not an <see cref="IWorldEvent"/>.</summary>
 public record LoginProgressEvent(LoginStage Stage, string Message);
 
+/// <summary>Stage of an in-flight teleport, mirrored (by name) from LibreMetaverse's own
+/// <c>TeleportStatus</c> enum so the real, server-driven teleport progress can be surfaced to the
+/// UI (FEAT-UI-18's loading overlay) without an <c>OpenMetaverse</c>/<c>LibreMetaverse</c> type
+/// crossing the <c>SLNG.Net</c> boundary (see AGENTS.md's layering rules). Deliberately omits
+/// <c>None</c> -- callers only observe stages once a teleport is actually in flight -- exactly
+/// like <see cref="LoginStage"/>. <see cref="Started"/> also covers a synthetic "request sent"
+/// notification the teleport methods raise themselves, because LibreMetaverse does not reliably
+/// raise <c>Start</c> before <c>Progress</c> on every path.</summary>
+public enum TeleportStage
+{
+    Started,
+    Progress,
+    Failed,
+    Finished,
+    Cancelled,
+}
+
+/// <summary>A real teleport-progress notification -- relayed from LibreMetaverse's
+/// <c>AgentManager.TeleportProgress</c> event by every teleport path in <c>GridSession</c>
+/// (region-handle, landmark, global-position), plus a synthetic <see cref="TeleportStage.Started"/>
+/// the moment the request is sent and a terminal <see cref="TeleportStage.Finished"/> /
+/// <see cref="TeleportStage.Failed"/> once the awaited call returns (a timeout raises no
+/// LibreMetaverse event at all, so a consumer that only listened to relayed events would hang its
+/// overlay). Not world-state, so intentionally not an <see cref="IWorldEvent"/> -- consumers (UI)
+/// subscribe directly on GridSession, same as <see cref="LoginProgressEvent"/>.</summary>
+public record TeleportProgressEvent(TeleportStage Stage, string Message);
+
 /// <summary>A friend's online/offline presence changed. Identity/social state, not world
 /// simulation state, so intentionally not an <see cref="IWorldEvent"/> -- consumers (UI)
 /// subscribe directly on GridSession, same as <see cref="NameResolvedEvent"/>.</summary>

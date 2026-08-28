@@ -135,6 +135,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// should treat these as advisory only: on a direct (non-redirected) login some stages
     /// (notably <see cref="LoginStage.Redirecting"/>) never fire.</summary>
     public event EventHandler<LoginProgressEvent>? LoginProgress;
+    /// <summary>FEAT-UI-18: real teleport progress, relayed from LibreMetaverse's
+    /// <c>Self.TeleportProgress</c> by every teleport path here (region-handle, landmark,
+    /// global-position). A synthetic <see cref="TeleportStage.Started"/> is raised the moment a
+    /// request is sent, and a terminal <see cref="TeleportStage.Finished"/> /
+    /// <see cref="TeleportStage.Failed"/> once the awaited call returns, so a consumer can drive a
+    /// show/hide overlay purely off this event without also polling the returned
+    /// <see cref="TeleportResult"/>. Raised on a LibreMetaverse network thread -- marshal before
+    /// touching UI, same as <see cref="LoginProgress"/>.</summary>
+    public event EventHandler<TeleportProgressEvent>? TeleportProgress;
     /// <summary>Fired when we connect to a NEW primary/current simulator -- i.e. on login and on
     /// every teleport/region-crossing that changes which region we're actually in. NOT fired for
     /// LibreMetaverse's other SimConnected occurrences, e.g. a neighbor sim connected only for
@@ -1261,12 +1270,25 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private async Task TeleportToGlobalPositionCoreAsync(string regionName, Vector3 local)
     {
+        // FEAT-UI-18: this path is fire-and-forget (no caller awaits a TeleportResult), so the
+        // overlay is driven entirely by these events -- relay LibreMetaverse's own progress plus
+        // a synthetic start/terminal, exactly as the awaited overloads do.
+        _client.Self.TeleportProgress += OnLmvTeleportProgress;
+        RaiseTeleportStage(TeleportStage.Started, string.Empty);
         try
         {
-            await _client.Self.TeleportAsync(regionName, local).ConfigureAwait(false);
+            bool ok = await _client.Self.TeleportAsync(regionName, local).ConfigureAwait(false);
+            RaiseTeleportStage(ok ? TeleportStage.Finished : TeleportStage.Failed,
+                ok ? string.Empty
+                   : (!string.IsNullOrWhiteSpace(_client.Self.TeleportMessage) ? _client.Self.TeleportMessage : "Teleport failed."));
+        }
+        catch (Exception ex)
+        {
+            RaiseTeleportStage(TeleportStage.Failed, ex.Message);
         }
         finally
         {
+            _client.Self.TeleportProgress -= OnLmvTeleportProgress;
             System.Threading.Interlocked.Exchange(ref _teleportInProgress, 0);
         }
     }
@@ -1450,6 +1472,40 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return r.HasValue ? ToMapRegionInfo(r.Value) : null;
     }
 
+    /// <summary>FEAT-UI-18: maps a LibreMetaverse <c>TeleportEventArgs</c> onto the neutral
+    /// <see cref="TeleportProgressEvent"/> and raises <see cref="TeleportProgress"/>.
+    /// <c>TeleportStatus.None</c> is dropped (not a real in-flight stage), same as the
+    /// login-stage mapping in <see cref="LoginAsync"/>. Subscribed to <c>Self.TeleportProgress</c>
+    /// by every teleport path here.</summary>
+    private void OnLmvTeleportProgress(object? sender, TeleportEventArgs e)
+    {
+        TeleportStage? stage = e.Status switch
+        {
+            TeleportStatus.Start => TeleportStage.Started,
+            TeleportStatus.Progress => TeleportStage.Progress,
+            TeleportStatus.Failed => TeleportStage.Failed,
+            TeleportStatus.Finished => TeleportStage.Finished,
+            TeleportStatus.Cancelled => TeleportStage.Cancelled,
+            _ => null,
+        };
+        if (stage.HasValue)
+            TeleportProgress?.Invoke(this, new TeleportProgressEvent(stage.Value, e.Message ?? string.Empty));
+    }
+
+    private void RaiseTeleportStage(TeleportStage stage, string message) =>
+        TeleportProgress?.Invoke(this, new TeleportProgressEvent(stage, message));
+
+    /// <summary>Raises the terminal <see cref="TeleportProgress"/> event for a completed attempt
+    /// and returns the result unchanged -- a timeout produces no LibreMetaverse event, so an
+    /// overlay listening only to relayed events would never be told to hide. Wrapped around every
+    /// <c>return</c> in the teleport methods.</summary>
+    private TeleportResult FinishTeleport(TeleportResult result)
+    {
+        RaiseTeleportStage(result.Success ? TeleportStage.Finished : TeleportStage.Failed,
+            result.Success ? string.Empty : result.Message);
+        return result;
+    }
+
     /// <summary>MVP2-3: teleports to a region-local position in a specific region by handle --
     /// the map window's double-click-to-teleport. Mirrors <see cref="TeleportToLandmarkAsync"/>'s
     /// progress-message plumbing and post-teleport position resync.</summary>
@@ -1465,9 +1521,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         void OnProgress(object? sender, TeleportEventArgs e)
         {
             if (!string.IsNullOrEmpty(e.Message)) lastMessage = e.Message;
+            OnLmvTeleportProgress(sender, e); // FEAT-UI-18: relay to the neutral TeleportProgress event
         }
 
         _client.Self.TeleportProgress += OnProgress;
+        RaiseTeleportStage(TeleportStage.Started, string.Empty);
         try
         {
             bool success = await _client.Self
@@ -1480,11 +1538,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // final reason on failure (notably a timeout, where no TeleportProgress event ever
             // fires to update lastMessage at all); lastMessage is only a fallback.
             string msg = !string.IsNullOrWhiteSpace(_client.Self.TeleportMessage) ? _client.Self.TeleportMessage : lastMessage;
-            return new TeleportResult(success, success ? string.Empty : msg);
+            return FinishTeleport(new TeleportResult(success, success ? string.Empty : msg));
         }
         catch (Exception ex)
         {
-            return new TeleportResult(false, ex.Message);
+            return FinishTeleport(new TeleportResult(false, ex.Message));
         }
         finally
         {
@@ -2203,9 +2261,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             if (!string.IsNullOrEmpty(e.Message))
                 lastMessage = e.Message;
+            OnLmvTeleportProgress(sender, e); // FEAT-UI-18: relay to the neutral TeleportProgress event
         }
 
         _client.Self.TeleportProgress += OnProgress;
+        RaiseTeleportStage(TeleportStage.Started, string.Empty);
         try
         {
             // Attempt 1: Direct landmark teleport request
@@ -2223,7 +2283,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (success)
             {
                 SyncLocalAgentPositionAfterTeleport();
-                return new TeleportResult(true, msg);
+                return FinishTeleport(new TeleportResult(true, msg));
             }
 
             // Attempt 2: Fallback — fetch landmark asset, parse region ID & position, teleport by region handle
@@ -2249,16 +2309,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                         }
 
                         string fallbackMsg = !string.IsNullOrWhiteSpace(_client.Self.TeleportMessage) ? _client.Self.TeleportMessage : lastMessage;
-                        return new TeleportResult(fallbackSuccess, fallbackSuccess ? string.Empty : fallbackMsg);
+                        return FinishTeleport(new TeleportResult(fallbackSuccess, fallbackSuccess ? string.Empty : fallbackMsg));
                     }
                 }
             }
 
-            return new TeleportResult(false, msg);
+            return FinishTeleport(new TeleportResult(false, msg));
         }
         catch (Exception ex)
         {
-            return new TeleportResult(false, ex.Message);
+            return FinishTeleport(new TeleportResult(false, ex.Message));
         }
         finally
         {
