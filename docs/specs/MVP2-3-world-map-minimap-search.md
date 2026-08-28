@@ -67,9 +67,11 @@ teleport). There is no map of any kind.
 - [x] "Arrived in `<region>`" feedback shows after a successful teleport / region crossing.
 - [x] No LMV type on `GridSession`'s public API; background events are marshalled.
 - [ ] **Reconfirm in-world after the 2026-08-28 fixes** — the first live-test round found the
-      minimap roster click and the world map teleport both silently did nothing (see "Live-test
-      fixes" below); both are now fixed and unit-tested/`--selftest`-clean, but not yet
-      re-verified against a live OpenSim session.
+      minimap roster click, the world map teleport, and (root cause, found from the added
+      diagnostics) a teleport re-entrancy race that cross-wired overlapping attempts; all three
+      are fixed and unit-tested/`--selftest`-clean, but not yet re-verified against a live
+      OpenSim session -- specifically, a single (non-overlapping) map-click teleport should now
+      actually complete.
 
 ## Live-test fixes (2026-08-28)
 The first actual in-world test found two real bugs the unit tests couldn't catch (both are pure
@@ -121,6 +123,30 @@ the remaining gap is genuinely unobservable from evidence gathered so far. Added
 handle, whether it was already a known/resolved region) and at the click-resolve outcome
 (`ApplyResolvedRegion`), so the FULL chain -- click -> resolve (if needed) -> teleport request ->
 result -- is traceable in `godot.log` on the next attempt. `v0.10.3-alpha`.
+
+**2026-08-28 root cause found, same day, from the new diagnostics:** the log showed a smoking gun --
+`[WorldMap] Teleport result: success=False message="Teleport finished"`. That combination is
+impossible if the operation genuinely finished ("Teleport finished" is the literal string
+LibreMetaverse's own packet handler writes ONLY on success, alongside `_teleportTcs?.TrySetResult(true)`).
+The live-test transcript explained why: the user, seeing no immediate feedback, clicked "Teleport"
+again for a DIFFERENT destination while the FIRST attempt was still in flight (well within the 40s
+timeout) -- confirmed by their own follow-up ("it was the sim I was aiming for -- a different one
+worked"). LibreMetaverse's `AgentManager` tracks "the" in-flight teleport in a single shared field
+(`_teleportTcs`); the landmark-UUID `TeleportAsync` overload guards against a second concurrent call
+(`teleportStatus == TeleportStatus.Progress` check), but the region-handle overload our map/landmark-
+fallback paths use has NO such guard. Two overlapping calls silently cross-wire: whichever response
+(from either destination) arrives first completes WHICHEVER task happens to be `_teleportTcs` at
+that moment -- explaining both the nonsensical result combinations and why the specific destination
+seemed to matter (it didn't; timing did). Fixed with a session-wide `_teleportInProgress` guard
+(`GridSession`, `Interlocked`-based) shared by `TeleportToAsync`/`TeleportToLandmarkAsync`/
+`TeleportToGlobalPosition`, rejecting a second attempt outright with a clear "A teleport is already
+in progress." instead of letting both corrupt each other -- the only fix available from this side of
+a vendored NuGet package. Also fixed the failure-message preference in both `TeleportToAsync` and
+`TeleportToLandmarkAsync`: they favoured a captured `TeleportProgress` message (a transient
+narration, e.g. "Teleport started") over LibreMetaverse's own final `TeleportMessage` (the
+authoritative reason, e.g. "Teleport timed out." -- notably, no `TeleportProgress` event fires for a
+timeout at all, so the captured message is guaranteed stale in exactly that case), which is why the
+very first live-test round saw the misleading "Teleport failed: Teleport started". `v0.10.4-alpha`.
 
 ## Implementation notes (as shipped on `feature/MVP2-3-world-map-minimap-search`)
 - **`GridSession`** gained neutral DTOs (`NearbyAvatar`/`NearbyAvatarsEvent`, `MapRegionInfo` —

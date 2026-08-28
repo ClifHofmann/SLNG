@@ -27,6 +27,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// keeps an unrelated push from being read as our answer.</summary>
     private int _parcelSequenceId;
 
+    /// <summary>Guards <see cref="TeleportToAsync"/>/<see cref="TeleportToLandmarkAsync"/>/
+    /// <see cref="TeleportToGlobalPosition"/> against running concurrently. LibreMetaverse's
+    /// <c>AgentManager</c> tracks "the" in-flight teleport in a SINGLE shared field
+    /// (<c>_teleportTcs</c>), used by every <c>TeleportAsync</c> overload -- and only the
+    /// landmark-UUID overload checks <c>teleportStatus == TeleportStatus.Progress</c> before
+    /// starting a new one; the region-handle overload this class's map/landmark-fallback paths
+    /// use has NO such guard. Two overlapping calls therefore silently cross-wire: a response
+    /// meant for the first attempt can complete the SECOND one's task instead (or vice versa).
+    /// Live-tested 2026-08-28 -- a user re-clicking "Teleport" before the first attempt resolved
+    /// (a natural reaction when nothing appears to happen for a few seconds) produced exactly
+    /// this: results reporting <c>success=false</c> with <c>message="Teleport finished"</c>, the
+    /// literal string LibreMetaverse writes ONLY on a genuine success. Rejecting a second attempt
+    /// outright -- rather than letting both silently corrupt each other -- is the only fix
+    /// available from this side of a vendored NuGet package. 0/1 via Interlocked, not a bool:
+    /// multiple call sites, no single lock object to pair with a plain flag.</summary>
+    private int _teleportInProgress;
+
     // Shared cache for both avatar (Creator/Owner/...) and group names -- both are keyed by
     // UUID and populated via the same resolve-and-notify flow, so one cache/event pair covers
     // both instead of duplicating the plumbing per name kind.
@@ -1231,11 +1248,27 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public void TeleportToGlobalPosition(string regionName, double globalX, double globalY, double globalZ)
     {
         if (string.IsNullOrEmpty(regionName) || !_client.Network.Connected) return;
+        // See _teleportInProgress's doc comment. This path is fire-and-forget by design (no
+        // caller currently awaits a result), so the guard here only prevents it from cross-wiring
+        // with a concurrent TeleportToAsync/TeleportToLandmarkAsync call, not with itself.
+        if (System.Threading.Interlocked.CompareExchange(ref _teleportInProgress, 1, 0) != 0) return;
         var local = new Vector3(
             (float)(globalX - Math.Floor(globalX / 256.0) * 256.0),
             (float)(globalY - Math.Floor(globalY / 256.0) * 256.0),
             (float)globalZ);
-        _ = _client.Self.TeleportAsync(regionName, local);
+        _ = TeleportToGlobalPositionCoreAsync(regionName, local);
+    }
+
+    private async Task TeleportToGlobalPositionCoreAsync(string regionName, Vector3 local)
+    {
+        try
+        {
+            await _client.Self.TeleportAsync(regionName, local).ConfigureAwait(false);
+        }
+        finally
+        {
+            System.Threading.Interlocked.Exchange(ref _teleportInProgress, 0);
+        }
     }
 
     /// <summary>Writes the logged-in agent's own "2nd Life" / "1st Life" profile pages
@@ -1423,6 +1456,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public async Task<TeleportResult> TeleportToAsync(ulong regionHandle, System.Numerics.Vector3 localPosition, CancellationToken ct = default)
     {
         if (!_client.Network.Connected) return new TeleportResult(false, "Not connected.");
+        // See _teleportInProgress's doc comment: LibreMetaverse's region-handle TeleportAsync
+        // overload has no re-entrancy guard of its own, and two overlapping calls cross-wire.
+        if (System.Threading.Interlocked.CompareExchange(ref _teleportInProgress, 1, 0) != 0)
+            return new TeleportResult(false, "A teleport is already in progress.");
 
         string lastMessage = string.Empty;
         void OnProgress(object? sender, TeleportEventArgs e)
@@ -1439,7 +1476,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
             if (success) SyncLocalAgentPositionAfterTeleport();
 
-            string msg = !string.IsNullOrWhiteSpace(lastMessage) ? lastMessage : _client.Self.TeleportMessage;
+            // See TeleportToLandmarkAsync's identical comment: TeleportMessage is the authoritative
+            // final reason on failure (notably a timeout, where no TeleportProgress event ever
+            // fires to update lastMessage at all); lastMessage is only a fallback.
+            string msg = !string.IsNullOrWhiteSpace(_client.Self.TeleportMessage) ? _client.Self.TeleportMessage : lastMessage;
             return new TeleportResult(success, success ? string.Empty : msg);
         }
         catch (Exception ex)
@@ -1449,6 +1489,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         finally
         {
             _client.Self.TeleportProgress -= OnProgress;
+            System.Threading.Interlocked.Exchange(ref _teleportInProgress, 0);
         }
     }
 
@@ -2154,6 +2195,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         if (!_client.Network.Connected)
             return new TeleportResult(false, "Not connected.");
+        if (System.Threading.Interlocked.CompareExchange(ref _teleportInProgress, 1, 0) != 0)
+            return new TeleportResult(false, "A teleport is already in progress.");
 
         string lastMessage = string.Empty;
         void OnProgress(object? sender, TeleportEventArgs e)
@@ -2170,7 +2213,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 .TeleportAsync(new UUID(landmarkAssetId), ct)
                 .ConfigureAwait(false);
 
-            string msg = !string.IsNullOrWhiteSpace(lastMessage) ? lastMessage : _client.Self.TeleportMessage;
+            // On failure, LibreMetaverse's own TeleportMessage is the authoritative FINAL reason
+            // (e.g. "Teleport timed out." after WaitForTeleportAsync gives up) -- lastMessage is
+            // only ever a transient progress narration and can be stale by the time we get here
+            // (no TeleportProgress event fires for a timeout at all). Preferring lastMessage first
+            // is backwards and was live-tested producing "Teleport started" as the shown failure
+            // reason for what was actually a 40s timeout.
+            string msg = !string.IsNullOrWhiteSpace(_client.Self.TeleportMessage) ? _client.Self.TeleportMessage : lastMessage;
             if (success)
             {
                 SyncLocalAgentPositionAfterTeleport();
@@ -2199,7 +2248,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                             SyncLocalAgentPositionAfterTeleport();
                         }
 
-                        string fallbackMsg = !string.IsNullOrWhiteSpace(lastMessage) ? lastMessage : _client.Self.TeleportMessage;
+                        string fallbackMsg = !string.IsNullOrWhiteSpace(_client.Self.TeleportMessage) ? _client.Self.TeleportMessage : lastMessage;
                         return new TeleportResult(fallbackSuccess, fallbackSuccess ? string.Empty : fallbackMsg);
                     }
                 }
@@ -2214,6 +2263,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         finally
         {
             _client.Self.TeleportProgress -= OnProgress;
+            System.Threading.Interlocked.Exchange(ref _teleportInProgress, 0);
         }
     }
 
