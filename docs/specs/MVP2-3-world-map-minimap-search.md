@@ -2,7 +2,7 @@
 
 - **Feature ID:** `MVP2-3`
 - **Track:** `ui` / `net`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done`
 - **Owner:** `claude`
 - **Agent:** `protocol-re` (grid/map protocol) + `ux-designer` (minimap + map window)
 - **Dep:** `MVP2-2` (landmark teleport — the teleport execution path this reuses), `M0-2`
@@ -71,10 +71,14 @@ teleport). There is no map of any kind.
       `godot.log`, immediately followed by new region asset activity (fresh texture fetches),
       i.e. an actual region crossing, not just a truthy return value. The re-entrancy race is
       fixed.
-- [ ] **Minimap roster click** — the `RefreshListIfChanged` fix is unit-tested/`--selftest`-clean
-      but not yet separately reconfirmed in-world (the click-tracking `[HUD] click` log line
-      doesn't distinguish which `Button` was pressed, so a roster click can't be told apart from
-      any other button click after the fact -- needs the tester to confirm directly).
+- [x] **Minimap roster click confirmed in-world, 2026-08-28** — `RefreshListIfChanged` fix works;
+      highlighting an avatar from the roster list now actually happens.
+- [x] **Double-click a roster row jumps the radar to them, 2026-08-28 addendum** — pans AND zooms
+      in (32 m visible range, vs. the 64 m default) on the double-clicked avatar; double-clicking
+      the same (already-focused) row returns to centring on the local avatar. This is a purely
+      client-side UI operation -- the SL/OpenSim `AgentUpdate` "camera" fields exist for the real
+      3D viewport camera (interest-list culling, LOD), not a flat 2D radar, so nothing is reported
+      to the grid for this.
 - [x] **World map window fits the screen, 2026-08-28** — same-day follow-up: the window opened
       640x520 at a hardcoded (200,100) regardless of actual screen size and ran off the bottom.
       Root cause was an ordering bug: `PersistId` was set AFTER `base._Ready()`, so
@@ -182,6 +186,18 @@ very first live-test round saw the misleading "Teleport failed: Teleport started
   - **Click-to-highlight**: clicking a roster row selects that agent id; the radar draws a red ring
     around their dot if they're within the current visible range. Same selected-row stylebox idiom
     as `FriendsPanel.BuildRow`.
+  - **Double-click-to-jump** (2026-08-28 addendum): double-clicking a roster row re-centres the
+    radar's PROJECTION on that avatar instead of the local one, and tightens the visible range to
+    32 m (`FocusVisibleRangeMeters`) so a far-off avatar (found only via `CoarseLocationUpdate`,
+    easily hundreds of metres away at the 64 m default) is actually visible afterward. The local
+    avatar's own dot/heading arrow is still drawn -- just no longer assumed to sit at the canvas
+    centre, since `RadarCanvas` now projects everything relative to a separate `center` parameter
+    that defaults to the local avatar's position but can be overridden. Double-clicking the
+    already-focused row toggles back to centring on the local avatar; if the focused avatar drops
+    out of range entirely (teleported away, etc.), focus clears automatically rather than freezing
+    the view on a stale point. Purely client-side -- no protocol representation of a 2D radar's
+    pan/zoom exists (SL's `AgentUpdate` "camera" fields are for the real 3D viewport camera, used
+    for interest-list culling/LOD, unrelated).
   Own position/heading still comes from `World`'s local `AvatarComponent`; nearby dots+names still
   merge `World` (exact, draw-distance-limited, has names) with `CoarseLocationUpdate` (coarse,
   region-wide, id-only) keyed by agent id, so both draw-distance-limited and off-screen avatars

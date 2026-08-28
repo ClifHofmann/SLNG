@@ -63,7 +63,8 @@
       "title": "Minikarte",
       "zoom_hint": "Scrollen zum Zoomen",
       "nearby": "In der Nähe",
-      "none_nearby": "Niemand sonst in der Nähe."
+      "none_nearby": "Niemand sonst in der Nähe.",
+      "jump_hint": "Doppelklick zum Hinspringen"
     },
     "worldmap": {
       "title": "Weltkarte",

@@ -34,6 +34,10 @@ public partial class MinimapOverlay : SLNGWindow
     private const float DefaultVisibleRangeMeters = 64f;
     private const float MinVisibleRangeMeters = 16f;
     private const float MaxVisibleRangeMeters = 512f;
+    // Double-clicking a roster row "jumps" the radar to them -- pan AND zoom, not just pan, so a
+    // far-off avatar (found only via CoarseLocationUpdate, easily hundreds of metres away at the
+    // default 64 m view) is actually visible afterward rather than still off the edge.
+    private const float FocusVisibleRangeMeters = 32f;
 
     private World? _world;
     private GridSession? _session;
@@ -50,6 +54,12 @@ public partial class MinimapOverlay : SLNGWindow
 
     private float _visibleRangeMeters = DefaultVisibleRangeMeters;
     private Guid? _selectedAgentId;
+
+    // Set by double-clicking a roster row (BuildAvatarRow) -- while non-null, the radar centres
+    // on THIS avatar instead of the local one (own position/heading are still drawn, just no
+    // longer necessarily at the canvas centre). Cleared automatically once they're no longer in
+    // range (see _Process), or by double-clicking the same row again.
+    private Guid? _focusAgentId;
 
     // Rebuilt every frame in _Process; feeds both the radar draw and the list.
     private readonly List<(Guid AgentId, System.Numerics.Vector3 Position, string Name)> _roster = new();
@@ -147,6 +157,12 @@ public partial class MinimapOverlay : SLNGWindow
     {
         _world = world;
         _session = session;
+        // A new session can mean a different grid/region entirely -- a carried-over focus lock
+        // or selection would point at an agent id that means nothing there.
+        _focusAgentId = null;
+        _selectedAgentId = null;
+        _lastNearby = null;
+        _visibleRangeMeters = DefaultVisibleRangeMeters;
         _session.NearbyAvatarsUpdated += (s, e) => _pendingNearby = e;
         // A name resolved after the roster was already built (RequestAvatarName is fire-and-
         // forget) -- refresh the list text once it lands rather than waiting for the next
@@ -177,6 +193,8 @@ public partial class MinimapOverlay : SLNGWindow
             _regionLabel.Text = "";
             _canvas.Clear();
             if (_roster.Count > 0) { _roster.Clear(); RefreshListIfChanged(); }
+            _focusAgentId = null;
+            _visibleRangeMeters = DefaultVisibleRangeMeters;
             return;
         }
 
@@ -190,7 +208,26 @@ public partial class MinimapOverlay : SLNGWindow
         }
 
         BuildRoster(regionHandle, out var ownPos, out var heading);
-        _canvas.Update(width, height, ownPos, heading, _visibleRangeMeters, _roster, _selectedAgentId);
+
+        // A focused avatar centres the radar in their place -- but if they've since left range
+        // (dropped out of the roster entirely, e.g. they teleported away or moved out of both
+        // draw distance and CoarseLocationUpdate for this region), there's no position left to
+        // centre on, so silently fall back to centring on the local avatar instead of freezing
+        // the view on a stale point.
+        System.Numerics.Vector3? focusPos = null;
+        if (_focusAgentId is { } focusId)
+        {
+            foreach (var entry in _roster)
+            {
+                if (entry.AgentId != focusId) continue;
+                focusPos = entry.Position;
+                break;
+            }
+            if (focusPos == null) _focusAgentId = null;
+        }
+        var center = focusPos ?? ownPos;
+
+        _canvas.Update(width, height, center, ownPos, heading, _visibleRangeMeters, _roster, _selectedAgentId);
         RefreshListIfChanged();
     }
 
@@ -321,9 +358,30 @@ public partial class MinimapOverlay : SLNGWindow
             FocusMode = FocusModeEnum.None,
             Alignment = HorizontalAlignment.Left,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            TooltipText = L10n.Tr("ui.minimap.jump_hint"),
         };
         nameBtn.AddThemeFontSizeOverride("font_size", 12);
         nameBtn.Pressed += () => { _selectedAgentId = agentId; RefreshList(); };
+        // Double-click "jumps" the radar to this avatar (pan + zoom in) -- same
+        // single-click-selects/double-click-acts split FriendsPanel uses for IM. Double-clicking
+        // the ALREADY-focused row un-focuses (back to centring on the local avatar), so there's
+        // an obvious way back without a separate button.
+        nameBtn.GuiInput += @event =>
+        {
+            if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, DoubleClick: true })
+            {
+                if (_focusAgentId == agentId)
+                {
+                    _focusAgentId = null;
+                    _visibleRangeMeters = DefaultVisibleRangeMeters;
+                }
+                else
+                {
+                    _focusAgentId = agentId;
+                    _visibleRangeMeters = FocusVisibleRangeMeters;
+                }
+            }
+        };
         row.AddChild(nameBtn);
         return row;
     }
@@ -349,6 +407,7 @@ public partial class MinimapOverlay : SLNGWindow
 
         private int _regionWidth = RegionTerrain.DefaultRegionSize;
         private int _regionHeight = RegionTerrain.DefaultRegionSize;
+        private System.Numerics.Vector3? _center;
         private System.Numerics.Vector3? _ownPos;
         private float _heading;
         private float _visibleRangeMeters = DefaultVisibleRangeMeters;
@@ -356,12 +415,14 @@ public partial class MinimapOverlay : SLNGWindow
         private Guid? _selectedAgentId;
         private bool _hasData;
 
-        public void Update(int regionWidth, int regionHeight, System.Numerics.Vector3? ownPos, float heading,
+        public void Update(int regionWidth, int regionHeight, System.Numerics.Vector3? center,
+            System.Numerics.Vector3? ownPos, float heading,
             float visibleRangeMeters, List<(Guid AgentId, System.Numerics.Vector3 Position, string Name)> roster,
             Guid? selectedAgentId)
         {
             _regionWidth = Math.Max(1, regionWidth);
             _regionHeight = Math.Max(1, regionHeight);
+            _center = center;
             _ownPos = ownPos;
             _heading = heading;
             _visibleRangeMeters = Math.Max(1f, visibleRangeMeters);
@@ -392,16 +453,20 @@ public partial class MinimapOverlay : SLNGWindow
             var size = Size;
             DrawRect(new Rect2(Vector2.Zero, size), new Color(0.02f, 0.05f, 0.03f, 0.9f));
             DrawRect(new Rect2(Vector2.Zero, size), new Color(0.3f, 0.9f, 0.5f, 0.4f), false, 1.5f);
-            if (!_hasData || _ownPos is not { } own) return;
+            if (!_hasData || _center is not { } focus) return;
 
             float scale = Math.Min(size.X, size.Y) / _visibleRangeMeters;
-            var center = size / 2f;
+            var canvasCenter = size / 2f;
 
-            Vector2 ToCanvas(System.Numerics.Vector3 p) => center + new Vector2(
-                (p.X - own.X) * scale,
-                -(p.Y - own.Y) * scale); // region Y is north; canvas Y grows downward
+            // Projected relative to the FOCUS point, which is the local avatar by default but can
+            // be a double-clicked roster entry instead (MinimapOverlay._Process) -- so the local
+            // avatar's own dot is no longer assumed to sit at the canvas centre; it's drawn at
+            // wherever it actually is relative to whatever the radar is currently centred on.
+            Vector2 ToCanvas(System.Numerics.Vector3 p) => canvasCenter + new Vector2(
+                (p.X - focus.X) * scale,
+                -(p.Y - focus.Y) * scale); // region Y is north; canvas Y grows downward
 
-            // Region boundary, relative to own position -- only ever partly visible unless
+            // Region boundary, relative to the focus point -- only ever partly visible unless
             // zoomed out past the region size, same as a real minimap's edge-of-region behaviour.
             var c0 = ToCanvas(new System.Numerics.Vector3(0, 0, 0));
             var c1 = ToCanvas(new System.Numerics.Vector3(_regionWidth, _regionHeight, 0));
@@ -421,11 +486,13 @@ public partial class MinimapOverlay : SLNGWindow
                 DrawCircle(p, 3f, new Color(1f, 0.85f, 0.3f, 0.9f));
             }
 
-            DrawCircle(center, 4f, new Color(0.3f, 0.75f, 1f, 1f));
+            if (_ownPos is not { } own) return;
+            var ownScreen = ToCanvas(own);
+            DrawCircle(ownScreen, 4f, new Color(0.3f, 0.75f, 1f, 1f));
             var dir = new Vector2(MathF.Cos(_heading), -MathF.Sin(_heading));
-            var tip = center + dir * 10f;
-            var left = center + dir.Rotated(Mathf.DegToRad(140)) * 6f;
-            var right = center + dir.Rotated(Mathf.DegToRad(-140)) * 6f;
+            var tip = ownScreen + dir * 10f;
+            var left = ownScreen + dir.Rotated(Mathf.DegToRad(140)) * 6f;
+            var right = ownScreen + dir.Rotated(Mathf.DegToRad(-140)) * 6f;
             DrawPolygon(new[] { tip, left, right }, new[] { new Color(0.3f, 0.75f, 1f, 1f) });
         }
     }

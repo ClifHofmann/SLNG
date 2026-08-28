@@ -63,7 +63,8 @@
       "title": "Minimap",
       "zoom_hint": "Scroll to zoom",
       "nearby": "Nearby",
-      "none_nearby": "No one else nearby."
+      "none_nearby": "No one else nearby.",
+      "jump_hint": "Double-click to jump here"
     },
     "worldmap": {
       "title": "World Map",
