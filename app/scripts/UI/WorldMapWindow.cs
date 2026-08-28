@@ -77,13 +77,6 @@ public partial class WorldMapWindow : SLNGWindow
     private ulong? _selectedRegionHandle;
     private System.Numerics.Vector3 _selectedLocal;
 
-    // Other avatars in the CURRENT region -- same two-source merge as MinimapOverlay (World's
-    // exact-but-draw-distance-limited entities + CoarseLocationUpdate's region-wide-but-coarse
-    // snapshot). A region the map is merely showing (not connected to) has no radar data at all,
-    // same limitation the spec already accepts for "Friends markers are a later add".
-    private volatile NearbyAvatarsEvent? _pendingNearby;
-    private NearbyAvatarsEvent? _lastNearby;
-
     private bool _dragging;
     private bool _dragMoved;
     private Vector2 _dragLastScreen;
@@ -167,14 +160,12 @@ public partial class WorldMapWindow : SLNGWindow
         _assetService = assetService;
         _world = world;
         _session.RegionDiscovered += (s, info) => { _pendingRegions.Enqueue(info); CallDeferred(MethodName.DrainPendingRegions); };
-        _session.NearbyAvatarsUpdated += (s, e) => _pendingNearby = e;
 
         _regions.Clear();
         _tileTextures.Clear();
         _tileRequested.Clear();
         _requestedRect = null;
         _selectedRegionHandle = null;
-        _lastNearby = null;
         _centered = false;
         _teleportButton.Disabled = true;
         _infoLabel.Text = L10n.Tr("ui.worldmap.hint");
@@ -193,8 +184,6 @@ public partial class WorldMapWindow : SLNGWindow
     public override void _Process(double delta)
     {
         if (!Visible) return;
-        var pending = System.Threading.Interlocked.Exchange(ref _pendingNearby, null);
-        if (pending != null) _lastNearby = pending;
         CenterOnAvatarIfNeeded();
         RedrawCanvas();
     }
@@ -492,53 +481,33 @@ public partial class WorldMapWindow : SLNGWindow
             tiles.Add((rect, tex));
         }
         _canvas.Tiles = tiles;
-        var (own, others) = ComputeAvatarMarkers();
-        _canvas.OwnMarker = own;
-        _canvas.OtherMarkers = others;
+        _canvas.OwnMarker = ComputeOwnMarker();
         _canvas.SelectedMarker = ComputeSelectedMarker();
         _canvas.QueueRedraw();
     }
 
-    /// <summary>Own marker plus every OTHER avatar in the region we're actually connected to --
-    /// a region the map is merely displaying (not connected to) has no radar data, same
-    /// limitation the spec already accepts for "Friends markers are a later add". Positions are
-    /// merged by agent id from two sources, same as <see cref="MinimapOverlay"/>: <see cref="World"/>
-    /// (exact, draw-distance-limited) and <see cref="_lastNearby"/> (CoarseLocationUpdate --
-    /// coarse, but region-wide, so it also covers avatars outside draw distance).</summary>
-    private (Vector2? Own, List<Vector2> Others) ComputeAvatarMarkers()
+    /// <summary>Deliberately own-avatar-only, unlike <see cref="MinimapOverlay"/>. The world map
+    /// and the minimap are two different tools (per the spec and 2026-08-28 clarification): the
+    /// minimap is the per-region avatar radar; the world map is a grid-wide sim search/teleport
+    /// tool, and showing OTHER avatars there would need CoarseLocationUpdate data for regions this
+    /// client isn't even connected to, which does not exist -- exactly the real SL/Firestorm World
+    /// Map's own behaviour (it shows your own position, not a radar of strangers).</summary>
+    private Vector2? ComputeOwnMarker()
     {
-        var others = new List<Vector2>();
-        if (_world == null || _session == null) return (null, others);
+        if (_world == null || _session == null) return null;
         ulong regionHandle = _session.CurrentRegionHandle;
-        if (regionHandle == 0) return (null, others);
-        var (ox, oy) = RegionOrigin(regionHandle);
+        if (regionHandle == 0) return null;
 
-        var byAgent = new Dictionary<Guid, System.Numerics.Vector3>();
-        if (_lastNearby != null && _lastNearby.RegionHandle == regionHandle)
-        {
-            foreach (var a in _lastNearby.Avatars) byAgent[a.AgentId] = a.Position;
-        }
-
-        Vector2? own = null;
-        Guid ownAgentId = Guid.Empty;
         foreach (var entity in _world.Query<AvatarComponent>())
         {
             if (entity.RegionHandle != regionHandle) continue;
             var avatar = entity.GetComponent<AvatarComponent>();
             var t = entity.GetComponent<TransformComponent>();
-            if (avatar == null || t == null) continue;
-
-            byAgent[avatar.AgentId] = t.Position; // World's live position wins over the coarse one
-            if (avatar.IsLocalAgent)
-            {
-                own = GlobalToScreen(ox + t.Position.X, oy + t.Position.Y);
-                ownAgentId = avatar.AgentId;
-            }
+            if (avatar is not { IsLocalAgent: true } || t == null) continue;
+            var (ox, oy) = RegionOrigin(regionHandle);
+            return GlobalToScreen(ox + t.Position.X, oy + t.Position.Y);
         }
-        if (ownAgentId != Guid.Empty) byAgent.Remove(ownAgentId);
-
-        foreach (var pos in byAgent.Values) others.Add(GlobalToScreen(ox + pos.X, oy + pos.Y));
-        return (own, others);
+        return null;
     }
 
     private Vector2? ComputeSelectedMarker()
@@ -557,7 +526,6 @@ public partial class WorldMapWindow : SLNGWindow
         public Action<InputEvent>? OnInput;
         public List<(Rect2 Rect, Texture2D? Tex)> Tiles = new();
         public Vector2? OwnMarker;
-        public List<Vector2> OtherMarkers = new();
         public Vector2? SelectedMarker;
 
         public override void _GuiInput(InputEvent @event) => OnInput?.Invoke(@event);
@@ -579,9 +547,6 @@ public partial class WorldMapWindow : SLNGWindow
                 DrawLine(sel - new Vector2(8, 0), sel + new Vector2(8, 0), col, 2f);
                 DrawLine(sel - new Vector2(0, 8), sel + new Vector2(0, 8), col, 2f);
             }
-
-            foreach (var pos in OtherMarkers)
-                DrawCircle(pos, 4f, new Color(1f, 0.85f, 0.3f, 0.9f));
 
             if (OwnMarker is { } own)
             {

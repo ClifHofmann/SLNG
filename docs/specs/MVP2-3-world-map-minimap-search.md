@@ -83,8 +83,13 @@ teleport). There is no map of any kind.
   by agent id, so both draw-distance-limited and off-screen avatars show up.
 - **`WorldMapWindow : SLNGWindow`** — drag to pan, wheel to zoom, click to inspect a point,
   double-click to teleport. Tiles fetched via `RequestMapBlocks` and rendered through the
-  existing texture/`GpuCache` path (a map tile is an ordinary JPEG2000 asset). Shows the same
-  merged own+other avatar markers as the minimap, for whichever region is actually connected.
+  existing texture/`GpuCache` path (a map tile is an ordinary JPEG2000 asset). Shows only the
+  own-avatar marker, deliberately — **the world map and the minimap are two different tools**
+  (2026-08-28 clarification): the world map is a grid-wide sim search/teleport window, the
+  minimap is the per-region avatar radar. This matches real SL/Firestorm, where the World Map
+  shows your own position but never other residents (privacy) and the Mini-Map is the separate
+  floater that shows everyone nearby. An intermediate revision briefly merged `CoarseLocationUpdate`
+  into the world map too, showing other avatars there; reverted once this was clarified.
   Reachable from both the "World" toolbar buttons and the top menu (World → World Map / Minimap).
 - **Threading:** every `await`-resumed continuation (search, region-resolve, teleport, tile
   fetch) parks its result and calls `CallDeferred` before touching a Control — Godot's main
@@ -99,9 +104,11 @@ teleport). There is no map of any kind.
   `OnScriptDialog`'s test; no-connection graceful-failure for every new async wrapper).
 
 ## Known limitations (deferred, not blocking)
-- The world map's avatar radar only covers the region the client is actually **connected to** —
-  a region merely being *displayed* on the map (panned to, not logged into) has no avatar data,
-  same as the spec's own "Friends markers are a later add" scope cut.
+- The world map never shows other avatars, anywhere, by design (see above) — only the minimap
+  does, and only for the region the client is actually **connected to**; a region merely being
+  *displayed* on the minimap's own (whole-region, non-panning) view doesn't apply here since it
+  never shows anything but the current region. "Friends markers" on the world map itself remain
+  a later add, per the original scope cut.
 - A map click's teleport target always uses Z=0 (the simulator is relied on to place the avatar
   at a sane height); there's no ground-height lookup from the map tile.
 - No point-of-interest icons (telehubs, popular places, land-for-sale) — `GridManager.MapItemsAsync`
