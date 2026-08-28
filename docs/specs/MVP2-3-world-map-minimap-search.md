@@ -66,12 +66,25 @@ teleport). There is no map of any kind.
 - [x] Region search resolves a name to a location and can teleport there.
 - [x] "Arrived in `<region>`" feedback shows after a successful teleport / region crossing.
 - [x] No LMV type on `GridSession`'s public API; background events are marshalled.
-- [ ] **Reconfirm in-world after the 2026-08-28 fixes** — the first live-test round found the
-      minimap roster click, the world map teleport, and (root cause, found from the added
-      diagnostics) a teleport re-entrancy race that cross-wired overlapping attempts; all three
-      are fixed and unit-tested/`--selftest`-clean, but not yet re-verified against a live
-      OpenSim session -- specifically, a single (non-overlapping) map-click teleport should now
-      actually complete.
+- [x] **World map teleport reconfirmed in-world, 2026-08-28** — a single map click + double-click
+      on "Swondo Flower Island" produced `[WorldMap] Teleport result: success=True message=""` in
+      `godot.log`, immediately followed by new region asset activity (fresh texture fetches),
+      i.e. an actual region crossing, not just a truthy return value. The re-entrancy race is
+      fixed.
+- [ ] **Minimap roster click** — the `RefreshListIfChanged` fix is unit-tested/`--selftest`-clean
+      but not yet separately reconfirmed in-world (the click-tracking `[HUD] click` log line
+      doesn't distinguish which `Button` was pressed, so a roster click can't be told apart from
+      any other button click after the fact -- needs the tester to confirm directly).
+- [x] **World map window fits the screen, 2026-08-28** — same-day follow-up: the window opened
+      640x520 at a hardcoded (200,100) regardless of actual screen size and ran off the bottom.
+      Root cause was an ordering bug: `PersistId` was set AFTER `base._Ready()`, so
+      `SLNGWindow`'s own `LoadPersistedGeometry()`/`ClampToViewport()` (both called from inside
+      `base._Ready()`) ran as no-ops, and the hardcoded default below was never clamped into the
+      real viewport either. Fixed by setting `PersistId` before `base._Ready()` (matching
+      `EnvironmentWindow`'s already-correct order) and shrinking the first-open-only default to
+      600x460 at (160,60) -- `MinimapOverlay` had the identical ordering bug, fixed the same way.
+      A resize now also actually persists across relaunches (it silently didn't before, for the
+      same reason).
 
 ## Live-test fixes (2026-08-28)
 The first actual in-world test found two real bugs the unit tests couldn't catch (both are pure

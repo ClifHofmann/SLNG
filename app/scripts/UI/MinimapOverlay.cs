@@ -60,13 +60,21 @@ public partial class MinimapOverlay : SLNGWindow
 
     public override void _Ready()
     {
+        // PersistId MUST be set before base._Ready() -- see WorldMapWindow._Ready()'s identical
+        // comment for why (SLNGWindow's LoadPersistedGeometry()/ClampToViewport() are no-ops
+        // without it, and this class had the same wrong ordering).
+        PersistId = "minimap";
         base._Ready();
 
-        PersistId = "minimap";
         Title = L10n.Tr("ui.minimap.title");
         CustomMinimumSize = new Vector2(360, 260);
-        Size = new Vector2(420, 300);
-        Position = new Vector2(900, 60);
+        // Only the FIRST-ever open needs a hardcoded default -- see WorldMapWindow for the same
+        // Position == Vector2.Zero signal ("nothing was restored").
+        if (Position == Vector2.Zero)
+        {
+            Size = new Vector2(420, 300);
+            Position = new Vector2(900, 60);
+        }
         Visible = false;
 
         var hbox = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };

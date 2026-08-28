@@ -83,13 +83,27 @@ public partial class WorldMapWindow : SLNGWindow
 
     public override void _Ready()
     {
+        // PersistId MUST be set before base._Ready() -- that's where SLNGWindow's own
+        // LoadPersistedGeometry()/ClampToViewport() run, and both are no-ops without it. Setting
+        // it after (as this class originally did) meant a saved size/position from a previous
+        // session was silently never restored, AND the hardcoded first-open defaults below were
+        // never clamped into the actual viewport -- live-tested 2026-08-28: the window opened
+        // 640x520 at (200,100) regardless of screen size and could run off the bottom.
+        PersistId = "world_map";
         base._Ready();
 
-        PersistId = "world_map";
         Title = L10n.Tr("ui.worldmap.title");
         CustomMinimumSize = new Vector2(480, 380);
-        Size = new Vector2(640, 520);
-        Position = new Vector2(200, 100);
+        // Only the FIRST-ever open needs a hardcoded default -- base._Ready() already restored
+        // (and clamped) a previously saved size/position if one exists, in which case Position is
+        // no longer the Control's untouched (0,0) default. A smaller/higher default than before
+        // (600x460 at (160,60), was 640x520 at (200,100)) so it comfortably fits without relying
+        // on a clamp that only fires on drag/resize, not on this initial placement.
+        if (Position == Vector2.Zero)
+        {
+            Size = new Vector2(600, 460);
+            Position = new Vector2(160, 60);
+        }
         Visible = false;
 
         var vbox = new VBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
