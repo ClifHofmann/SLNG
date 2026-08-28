@@ -101,6 +101,28 @@ teleport). There is no map of any kind.
       flags, `AddResizeHandles`/`ApplyResize`), and both the live drag AND
       `RestorePersistedGeometry` now clamp against the current viewport as a maximum, so a value
       already saved before this fix self-heals on next load instead of staying broken forever.
+- [x] **Crash fixed: disposed `ImageTexture` in `MapCanvas._Draw`, 2026-08-28** — the tester
+      reported an exception; `godot.log` showed `System.ObjectDisposedException: Cannot access a
+      disposed object. Object name: 'Godot.ImageTexture'` at `WorldMapWindow.MapCanvas._Draw()`
+      → `DrawTextureRect`, repeated roughly 28,000 times in one log (once per frame, since
+      `_Process` calls `QueueRedraw()` every frame while visible). Cause: `LoadTileAsync` called
+      `GpuCache.GetOrUploadTextureAsync` without ever pinning the result with `AddRef` — the
+      tile's cache entry started at RefCount 0 (the method's default) and was eviction-eligible
+      the instant some OTHER texture (an object, an avatar bake, another map tile) pushed the
+      shared 256 MB `GpuCache` budget over the edge, even while this window was still actively
+      drawing it every frame. `GpuCache`'s own code already documents this exact bug class
+      happening once before for `ObjectRenderer` (see `_pendingRefDelta`'s doc comment) — this
+      was the same class of bug in a different, newer call site. Fixed by calling
+      `GpuCache.AddRef`/`ReleaseRef` around a tile's lifetime (pin on successful load, release
+      when `_tileTextures` is cleared for a relogin), matching `ObjectRenderer`'s own established
+      convention: `GetOrUploadTextureAsync` itself stays ref-neutral (no `initialRefCount`
+      passed), explicit `AddRef`/`ReleaseRef` is the sole ref-counting mechanism, avoiding
+      `initialRefCount`'s "first caller wins" ambiguity when two callers might request the same
+      id. **A second, unrelated exception of the same class** (`[MainThreadWork] item threw:
+      Cannot access a disposed object`, same `ImageTexture` message, different call site) also
+      appears in the same log; not investigated or fixed here -- flagged as a separate follow-up
+      (likely `UserProfileWindow`'s own `LoadTextureIntoAsync`, which has the identical missing-
+      `AddRef` pattern, confirmed by inspection but not live-tested).
 
 ## Live-test fixes (2026-08-28)
 The first actual in-world test found two real bugs the unit tests couldn't catch (both are pure

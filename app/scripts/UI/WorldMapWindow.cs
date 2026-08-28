@@ -175,6 +175,16 @@ public partial class WorldMapWindow : SLNGWindow
         _world = world;
         _session.RegionDiscovered += (s, info) => { _pendingRegions.Enqueue(info); CallDeferred(MethodName.DrainPendingRegions); };
 
+        // Give back every GpuCache ref this window is holding (see LoadTileAsync's doc comment)
+        // before dropping our own references -- otherwise these entries stay pinned forever,
+        // even though nothing can ever release them once _tileTextures/_regions are cleared.
+        if (_gpuCache != null)
+        {
+            foreach (var handle in _tileTextures.Keys)
+                if (_regions.TryGetValue(handle, out var info))
+                    _gpuCache.ReleaseRef(info.MapImageId);
+        }
+
         _regions.Clear();
         _tileTextures.Clear();
         _tileRequested.Clear();
@@ -467,6 +477,16 @@ public partial class WorldMapWindow : SLNGWindow
         if (_gpuCache == null || _assetService == null) return;
         var tex = await _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: false).ConfigureAwait(false);
         if (tex == null) return;
+        // Pin it: GetOrUploadTextureAsync's cache entry starts at RefCount 0 (nothing else here
+        // passes initialRefCount, matching ObjectRenderer's own AddRef/ReleaseRef-only convention
+        // rather than relying on initialRefCount's "first caller wins" ambiguity), so without this
+        // the tile is eviction-eligible the moment some OTHER texture (an object, an avatar bake,
+        // another map tile) pushes the shared 256MB GpuCache budget over the edge -- even while
+        // this window is actively drawing it every frame. Live-tested 2026-08-28: an evicted (and
+        // disposed) tile texture crashed MapCanvas._Draw() with ObjectDisposedException on every
+        // single subsequent frame, flooding godot.log at ~60 Hz. Released in Initialize() when
+        // _tileTextures is cleared for a relogin.
+        _gpuCache.AddRef(textureId);
         _pendingTiles.Enqueue((regionHandle, tex));
         CallDeferred(MethodName.DrainPendingTiles);
     }
