@@ -413,6 +413,23 @@ public partial class TerrainRenderer : Node3D
         _ = FetchTerrainTexturesAsync(regionHandle);
         // The primary region's real water height only lands here -- re-place the void plane.
         if (regionHandle == _primaryRegionHandle) RefreshVoidWater();
+
+        // BUG-NET-03 seam: this region's mesh closes the +X / +Z edge of its West / South / SW
+        // neighbours (see RebuildTerrain's EdgeHeight bridge). If one of those already finished
+        // loading it won't rebuild on its own to pick up this new edge data -- nudge it once.
+        uint gx = (uint)(regionHandle >> 32), gy = (uint)(regionHandle & 0xFFFFFFFF);
+        if (_world != null && _world.Terrains.TryGetValue(regionHandle, out var t))
+        {
+            uint w = (uint)Math.Max(1, t.Width), h = (uint)Math.Max(1, t.Height);
+            MarkDirtyIfPresent(((ulong)(gx - w) << 32) | gy);       // West
+            MarkDirtyIfPresent(((ulong)gx << 32) | (gy - h));       // South
+            MarkDirtyIfPresent(((ulong)(gx - w) << 32) | (gy - h)); // South-West
+        }
+    }
+
+    private void MarkDirtyIfPresent(ulong regionHandle)
+    {
+        if (_regions.ContainsKey(regionHandle)) _dirtyRegions.Add(regionHandle);
     }
 
     private async System.Threading.Tasks.Task FetchTerrainTexturesAsync(ulong regionHandle)
@@ -609,7 +626,58 @@ public partial class TerrainRenderer : Node3D
         // time them would mean hoisting every one of them out by hand.
         long geometryStart = System.Diagnostics.Stopwatch.GetTimestamp();
 
-        var vertexOf = new int[width * height];
+        // BUG-NET-03 seam fix: the heightmap is `width` samples wide (local x 0..width-1) but the
+        // region is `width` METRES wide -- the column at local x == width belongs to the East
+        // neighbour. The old loop stopped a quad short on each of the +X and +Z edges, so world
+        // x in [width-1, width] (and the matching Z strip) had terrain from NEITHER region and the
+        // void-water/sky showed through as a grey canyon along every sim border. The mesh now runs
+        // one row/column further, and that closing edge takes its height from the adjacent region's
+        // edge sample when that region has loaded (a seamless join), otherwise flat-extrapolates
+        // this region's own edge (a 1 m lip of ground -- still far better than a gap). OnTerrain
+        // SettingsUpdated nudges the W/S/SW neighbours so a late arrival closes the seam too.
+        RegionTerrain? eastN = null, northN = null, neN = null;
+        if (_world != null)
+        {
+            uint gx = (uint)(regionHandle >> 32), gy = (uint)(regionHandle & 0xFFFFFFFF);
+            _world.Terrains.TryGetValue(((ulong)(gx + (uint)width) << 32) | gy, out eastN);
+            _world.Terrains.TryGetValue(((ulong)gx << 32) | (gy + (uint)height), out northN);
+            _world.Terrains.TryGetValue(((ulong)(gx + (uint)width) << 32) | (gy + (uint)height), out neN);
+        }
+
+        // Height at a grid point, x in 0..width, z in 0..height. Interior reads this region; the
+        // x==width / z==height edge bridges to a neighbour, falling back to this region's own edge.
+        float EdgeHeight(int x, int z)
+        {
+            if (x < width && z < height) return heights[z * width + x];
+
+            if (x == width && z < height)
+            {
+                if (eastN != null && eastN.TryGetKnownHeight(0, Math.Min(z, eastN.Height - 1), out var eh)) return eh;
+                return heights[z * width + (width - 1)];
+            }
+            if (z == height && x < width)
+            {
+                if (northN != null && northN.TryGetKnownHeight(Math.Min(x, northN.Width - 1), 0, out var nh)) return nh;
+                return heights[(height - 1) * width + x];
+            }
+            // Corner (x==width && z==height)
+            if (neN != null && neN.TryGetKnownHeight(0, 0, out var ch)) return ch;
+            if (eastN != null && eastN.TryGetKnownHeight(0, Math.Min(height - 1, eastN.Height - 1), out var ech)) return ech;
+            return heights[(height - 1) * width + (width - 1)];
+        }
+
+        // Whether a grid point is safe to build a quad from. Interior demands a real streamed
+        // patch (see the collider note below); the closing edge only needs this region's matching
+        // edge cell known -- the bridge value is a bonus, its absence just means extrapolation.
+        bool EdgeKnown(int x, int z)
+        {
+            int cx = Math.Min(x, width - 1);
+            int cz = Math.Min(z, height - 1);
+            return regionTerrain.TryGetKnownHeight(cx, cz, out _);
+        }
+
+        int meshW = width + 1;
+        var vertexOf = new int[meshW * (height + 1)];
         System.Array.Fill(vertexOf, -1);
 
         var verts = new List<Vector3>();
@@ -618,11 +686,11 @@ public partial class TerrainRenderer : Node3D
 
         int VertexFor(int x, int z)
         {
-            int cell = z * width + x;
+            int cell = z * meshW + x;
             int existing = vertexOf[cell];
             if (existing >= 0) return existing;
 
-            verts.Add(new Vector3(x, heights[cell], -z));
+            verts.Add(new Vector3(x, EdgeHeight(x, z), -z));
             normals.Add(Vector3.Zero);
             vertexOf[cell] = verts.Count - 1;
             return vertexOf[cell];
@@ -640,9 +708,9 @@ public partial class TerrainRenderer : Node3D
             normals[c] += n;
         }
 
-        for (int z = 0; z < height - 1; z++)
+        for (int z = 0; z < height; z++)
         {
-            for (int x = 0; x < width - 1; x++)
+            for (int x = 0; x < width; x++)
             {
                 // Skip any quad touching a cell whose patch hasn't streamed in yet (see
                 // RegionTerrain.TryGetKnownHeight) rather than building it from the array's 0.0f
@@ -652,10 +720,8 @@ public partial class TerrainRenderer : Node3D
                 // terrain. Leaving a hole means the raycast genuinely misses, hasGround stays false,
                 // and the avatar holds position until the real patch arrives and a later rebuild
                 // fills it in.
-                if (!regionTerrain.TryGetKnownHeight(x, z, out _) ||
-                    !regionTerrain.TryGetKnownHeight(x + 1, z, out _) ||
-                    !regionTerrain.TryGetKnownHeight(x, z + 1, out _) ||
-                    !regionTerrain.TryGetKnownHeight(x + 1, z + 1, out _))
+                if (!EdgeKnown(x, z) || !EdgeKnown(x + 1, z) ||
+                    !EdgeKnown(x, z + 1) || !EdgeKnown(x + 1, z + 1))
                 {
                     continue;
                 }
