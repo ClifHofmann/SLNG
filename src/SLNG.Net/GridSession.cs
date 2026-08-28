@@ -277,6 +277,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // length inconsistent" decode failures / white untextured objects); HTTP is reliable.
         _client.Settings.TexturePipeline.Enabled = true;
         _client.Settings.TexturePipeline.UseHttpTextures = true;
+
+        // BUG-NET-03: connect to neighbor simulators so terrain/objects past the 256 m border
+        // render ("Man kann nicht über die Sim-Grenze sehen"). LibreMetaverse 3.1.3 defaults this
+        // to FALSE (AgentSettings.cs:10), and with it off NetworkManager.EnableSimulatorHandler
+        // (NetworkManager.cs:1463) drops every EnableSimulator the grid sends outright -- no child
+        // circuit is ever opened, so the world simply ends at the current region's edge. Nothing
+        // else in this class filters neighbor data: OnObjectUpdate / OnLandPatchReceived /
+        // OnKillObject / OnSimConnected(terrain settings) all already pass e.Simulator.Handle
+        // straight through, the ECS World is keyed by (regionHandle, localId), and
+        // RenderConfig.ToGodot offsets by the region's global corner -- so once the circuits exist
+        // the neighbor content flows to the correct world position on its own. DisableSimulator
+        // (handled by LibreMetaverse) then fires our OnSimDisconnected -> World.RemoveRegion to
+        // unload a region we've moved away from.
+        _client.Settings.Agent.MultipleSims = true;
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
         _client.Objects.TerseObjectUpdate += OnTerseObjectUpdate;
@@ -569,6 +583,26 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             RegionConnected?.Invoke(this, sim.Handle);
         }
+        else
+        {
+            // BUG-NET-03: a neighbor circuit just came up. Infrequent lifecycle event -- log it
+            // unconditionally so a live session can confirm the cross-border fetch is working
+            // (or see exactly which neighbors the grid offered and we connected).
+            Console.WriteLine($"[Neighbor] connected {sim.Name} ({sim.Handle}) {NeighborDir(sim.Handle)}");
+        }
+    }
+
+    /// <summary>Compass direction of a neighbor region handle relative to the current sim, for the
+    /// BUG-NET-03 diagnostic line. Region grid is 256 m per step.</summary>
+    private string NeighborDir(ulong neighborHandle)
+    {
+        var cur = _client.Network.CurrentSim;
+        if (cur == null) return "";
+        long dx = ((long)(uint)(neighborHandle >> 32) - (long)(uint)(cur.Handle >> 32)) / 256;
+        long dy = ((long)(uint)(neighborHandle & 0xFFFFFFFF) - (long)(uint)(cur.Handle & 0xFFFFFFFF)) / 256;
+        string ns = dy > 0 ? "N" : dy < 0 ? "S" : "";
+        string ew = dx > 0 ? "E" : dx < 0 ? "W" : "";
+        return $"{ns}{ew} ({dx:+0;-0;0},{dy:+0;-0;0})";
     }
 
     /// <summary>Captures the region's environment once its capabilities are live (FEAT-ENV-01
@@ -2135,6 +2169,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private void OnSimDisconnected(object? sender, SimDisconnectedEventArgs e)
     {
+        // BUG-NET-03: with neighbor circuits (MultipleSims) this now also fires for a neighbor
+        // the grid told us to drop (DisableSimulator) as we moved away from a border -- the
+        // consumer (WorldSimulation) unloads that region's entities/terrain via World.RemoveRegion.
+        Console.WriteLine($"[Neighbor] disconnected {e.Simulator.Name} ({e.Simulator.Handle})");
         RegionDisconnectedReceived?.Invoke(this, new RegionDisconnectedEvent(e.Simulator.Handle));
     }
 

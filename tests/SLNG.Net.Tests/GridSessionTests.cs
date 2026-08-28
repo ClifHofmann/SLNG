@@ -278,6 +278,26 @@ public class GridSessionTests
             session.TeleportToGlobalPosition("Some Region", 256000.0, 256000.0, 25.0)));
     }
 
+    // BUG-NET-03: neighbor-region visibility hinges entirely on this flag. LibreMetaverse 3.1.3
+    // defaults Agent.MultipleSims to FALSE, and with it off NetworkManager.EnableSimulatorHandler
+    // drops every EnableSimulator the grid sends -- no neighbor circuit is ever opened and the
+    // world ends at the current region's border. Pin it so a future settings cleanup can't
+    // silently regress cross-sim rendering.
+    [Fact]
+    public void GridSession_enables_multiple_sims_for_neighbor_regions()
+    {
+        using var session = new GridSession();
+
+        var client = typeof(GridSession)
+            .GetField("_client", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(session)!;
+        var settings = client.GetType().GetProperty("Settings")!.GetValue(client)!;
+        var agent = settings.GetType().GetProperty("Agent")!.GetValue(settings)!;
+        var multipleSims = (bool)agent.GetType().GetField("MultipleSims")!.GetValue(agent)!;
+
+        Assert.True(multipleSims, "Agent.MultipleSims must stay true (BUG-NET-03).");
+    }
+
     // FEAT-UI-18: the loading overlay is driven off GridSession.TeleportProgress, a neutral event
     // mapped from LibreMetaverse's TeleportEventArgs by the private OnLmvTeleportProgress handler
     // (no LMV type crosses the boundary -- AGENTS.md). Same reflection pattern as OnScriptDialog
