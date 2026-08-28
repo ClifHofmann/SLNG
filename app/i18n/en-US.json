@@ -59,6 +59,12 @@
     "map": {
       "arrived_in": "Arrived in {0}"
     },
+    "minimap": {
+      "title": "Minimap",
+      "zoom_hint": "Scroll to zoom",
+      "nearby": "Nearby",
+      "none_nearby": "No one else nearby."
+    },
     "worldmap": {
       "title": "World Map",
       "search_placeholder": "Region name, or region name x y z",

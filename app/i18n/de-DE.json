@@ -59,6 +59,12 @@
     "map": {
       "arrived_in": "Angekommen in {0}"
     },
+    "minimap": {
+      "title": "Minikarte",
+      "zoom_hint": "Scrollen zum Zoomen",
+      "nearby": "In der Nähe",
+      "none_nearby": "Niemand sonst in der Nähe."
+    },
     "worldmap": {
       "title": "Weltkarte",
       "search_placeholder": "Regionsname, oder Regionsname x y z",

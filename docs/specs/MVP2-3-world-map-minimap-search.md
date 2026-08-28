@@ -59,6 +59,8 @@ teleport). There is no map of any kind.
 ## Acceptance criteria
 - [x] Minimap shows the current region, own position/heading, and moving dots for nearby
       avatars; toggles with "Toggle HUD".
+- [x] Minimap is zoomable (mouse wheel) and lists nearby avatars by name; clicking a name
+      highlights that avatar's dot on the radar (2026-08-28 addendum).
 - [x] World map window renders region tiles for an area around the avatar and pans/zooms.
 - [x] Double-clicking the map teleports the avatar to that region + local position.
 - [x] Region search resolves a name to a location and can teleport there.
@@ -75,12 +77,24 @@ teleport). There is no map of any kind.
   `ResolveRegionByNameAsync`/`ResolveRegionByHandleAsync` (`GetGridRegionAsync`), and
   `TeleportToAsync(handle, localPos)` (mirrors `TeleportToLandmarkAsync`'s progress-message +
   post-teleport position resync). No LMV `GridRegion`/`Simulator`/`Vector3` crosses out.
-- **`MinimapOverlay`** (new, not an `SLNGWindow` — a StatsOverlay-style corner panel) maps the
-  *whole current region* onto a square canvas rather than panning/zooming with the avatar —
-  correct for a standard 256 m region and much simpler; a varregion just stretches the same
-  square. Own position/heading comes from `World`'s local `AvatarComponent`; nearby dots merge
-  `World` (exact, draw-distance-limited) with `CoarseLocationUpdate` (coarse, region-wide) keyed
-  by agent id, so both draw-distance-limited and off-screen avatars show up.
+- **`MinimapOverlay : SLNGWindow`** — first shipped as a passive StatsOverlay-style corner panel
+  mapping the whole current region onto a fixed square canvas; **2026-08-28 addendum** promoted it
+  to a full `SLNGWindow` (draggable/resizable, per the UI Standard — a zoomable radar plus a
+  clickable roster is real interactive content, not a passive readout) with:
+  - **Zoom** (mouse wheel over the radar): avatar-centred visible range, 16–512 m, default 64 m
+    (replacing the earlier whole-region-fixed view — a real minimap should let you tighten or
+    widen the view, not just watch a static square).
+  - **Roster list**: every nearby avatar by name, scrollable, sorted alphabetically. World-tracked
+    avatars (within draw distance) already carry a name via `AvatarComponent`; a CoarseLocationUpdate-
+    only avatar (outside draw distance) has none, so it's lazily resolved via
+    `GridSession.RequestAvatarName`/`NameResolved` — the exact pattern `FriendsPanel` already uses.
+  - **Click-to-highlight**: clicking a roster row selects that agent id; the radar draws a red ring
+    around their dot if they're within the current visible range. Same selected-row stylebox idiom
+    as `FriendsPanel.BuildRow`.
+  Own position/heading still comes from `World`'s local `AvatarComponent`; nearby dots+names still
+  merge `World` (exact, draw-distance-limited, has names) with `CoarseLocationUpdate` (coarse,
+  region-wide, id-only) keyed by agent id, so both draw-distance-limited and off-screen avatars
+  show up in both the radar and the roster.
 - **`WorldMapWindow : SLNGWindow`** — drag to pan, wheel to zoom, click to inspect a point,
   double-click to teleport. Tiles fetched via `RequestMapBlocks` and rendered through the
   existing texture/`GpuCache` path (a map tile is an ordinary JPEG2000 asset). Shows only the
@@ -98,8 +112,8 @@ teleport). There is no map of any kind.
 - **Phase 4 arrival toast** waits (via a `_Process` drain, not a fixed delay) for
   `GridSession.CurrentRegionName` to actually be populated before showing the toast, since
   `RegionConnected` can fire before the RegionHandshake that carries the name arrives.
-- Localised: `ui.worldmap.*`, `ui.map.arrived_in`, `ui.menu.world_map`/`ui.menu.minimap`
-  (en-US + de-DE, `--selftest` locale parity 200/200).
+- Localised: `ui.worldmap.*`, `ui.map.arrived_in`, `ui.menu.world_map`/`ui.menu.minimap`,
+  `ui.minimap.*` (en-US + de-DE, `--selftest` locale parity 204/204).
 - Tests: 6 new `GridSessionTests` (wire-event → DTO mapping via reflection, same pattern as
   `OnScriptDialog`'s test; no-connection graceful-failure for every new async wrapper).
 
