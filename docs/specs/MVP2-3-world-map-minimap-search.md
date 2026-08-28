@@ -104,6 +104,20 @@ teleport). There is no map of any kind.
       same axis map `RenderConfig.ToGodot` documents for positions (a direction needs no origin
       subtraction, just the axis permutation). Falls back to approaching from wherever the camera
       already was when the facing isn't known.
+- [x] **...and pans there smoothly instead of snapping, 2026-08-28 third clarification** —
+      "funktioniert, ich fänd es nur besser wenn es ein Schwenken und kein hartes Switchen wäre"
+      (works, but I'd find it better as a pan than a hard switch). `AvatarController` gained a
+      generic smooth-transition layer: `StartTransition`/`UpdateTransition` interpolate orbit
+      yaw/pitch/zoom/target (smoothstep-eased, 0.5 s) from wherever the camera's orbit actually
+      was toward the new framing, instead of `AimOrbitAt` snapping those fields instantly. Both
+      `FocusOn` (Alt+Click) and `FocusOnAvatarFrontal` (the minimap jump) go through `AimOrbitAt`,
+      so Alt+Click's "look at this point" gesture picked up the same smooth settle as a side
+      effect, not a separate ask -- and matches the real viewer's own feel slightly more closely
+      there too. Any manual camera input (drag-orbit, pan pad, scroll/keyboard zoom, WASD
+      movement) cancels an in-progress transition immediately, so the user is never fighting an
+      animation still in flight; `_transitionStartTarget` recovers the camera's actual current
+      orbit centre by inverting `Position = target + Basis.Z * zoom`, which works whether or not
+      `_orbitTarget` was set at all (i.e. even transitioning FROM "orbiting the local avatar").
 - [x] **Right-click a roster row opens the avatar context menu, 2026-08-28 addition** — the SAME
       shared menu (`InWorldContextMenu.ShowAvatarMenu`) the in-world right-click-an-avatar gesture
       already used, not a second one-off menu. `MinimapOverlay.OnAvatarContextMenuRequested`

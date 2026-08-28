@@ -60,6 +60,7 @@ public partial class AvatarController : Camera3D
     // Public API for CameraHUD
     public void RotateCamera(Vector2 delta)
     {
+        _transitioning = false; // manual input always wins over an in-progress camera pan
         _orbitYaw -= delta.X;
         _orbitPitch -= delta.Y;
         _orbitPitch = Mathf.Clamp(_orbitPitch, -1.5f, 1.5f);
@@ -71,11 +72,13 @@ public partial class AvatarController : Camera3D
     /// -- it is a persistent framing offset, cleared by <see cref="ResetCamera"/> (Escape).</summary>
     public void PanCamera(Vector2 delta)
     {
+        _transitioning = false;
         _panOffset += new Vector3(delta.X, delta.Y, 0);
     }
 
     public void ZoomCamera(float delta)
     {
+        _transitioning = false;
         _zoom += delta;
         _zoom = Mathf.Clamp(_zoom, 0.5f, 50.0f);
     }
@@ -90,6 +93,7 @@ public partial class AvatarController : Camera3D
     /// zoom approaches 0, same as the classic "zoom to mouse position" editor convention.</summary>
     private void ZoomTowardCursor(float zoomDelta, Vector2 mousePos)
     {
+        _transitioning = false;
         float oldZoom = _zoom;
         _zoom = Mathf.Clamp(_zoom + zoomDelta, 0.5f, 200.0f);
         if (Mathf.IsEqualApprox(_zoom, oldZoom)) return;
@@ -118,6 +122,7 @@ public partial class AvatarController : Camera3D
     }
     public void ResetCamera()
     {
+        _transitioning = false;
         _orbitYaw = 0f;
         _orbitPitch = 0f;
         _panOffset = Vector3.Zero;
@@ -169,10 +174,15 @@ public partial class AvatarController : Camera3D
     /// third-person camera math orbits this point instead of the local avatar.</summary>
     private void AimOrbitAt(Vector3 target, Vector3 fromPos, float zoom)
     {
-        _orbitTarget = target;
-        _zoom = Mathf.Clamp(zoom, 0.5f, 200.0f);
+        zoom = Mathf.Clamp(zoom, 0.5f, 200.0f);
 
-        if (fromPos.DistanceSquaredTo(target) <= 0.0001f) return;
+        if (fromPos.DistanceSquaredTo(target) <= 0.0001f)
+        {
+            // No meaningful direction to derive an angle from -- move to this target/zoom without
+            // changing which way the camera is currently pointed.
+            StartTransition(target, _yaw + _orbitYaw, _pitch + _orbitPitch, zoom);
+            return;
+        }
 
         // Up vector must not be parallel to the look direction.
         var lookDir = (target - fromPos).Normalized();
@@ -182,17 +192,63 @@ public partial class AvatarController : Camera3D
         var lookTransform = new Transform3D(Basis.Identity, fromPos).LookingAt(target, cameraUp);
         var euler = lookTransform.Basis.GetEuler(Godot.EulerOrder.Yxz);
 
-        float targetPitch = euler.X;
-        float targetYaw = euler.Y;
+        StartTransition(target, euler.Y, euler.X, zoom);
+    }
 
-        _orbitPitch = targetPitch - _pitch;
+    /// <summary>Captures where the camera's orbit actually is RIGHT NOW (absolute yaw/pitch, not
+    /// just the <see cref="_orbitYaw"/>/<see cref="_orbitPitch"/> offset, since <see cref="_yaw"/>/
+    /// <see cref="_pitch"/> can keep changing during the transition as the local avatar turns) and
+    /// starts a smooth interpolation toward the new framing, applied each frame in
+    /// <see cref="_Process"/>. <paramref name="endYawAbs"/>/<paramref name="endPitchAbs"/> are
+    /// ABSOLUTE angles (as <c>Transform.Basis.GetEuler</c> returns), matching what
+    /// <see cref="_transitionStartYaw"/>/<see cref="_transitionStartPitch"/> capture.</summary>
+    private void StartTransition(Godot.Vector3 endTarget, float endYawAbs, float endPitchAbs, float endZoom)
+    {
+        // Position = effectiveTarget + Basis.Z * zoom (see _Process) -- inverting that recovers
+        // the current effective orbit centre regardless of whether _orbitTarget was set at all,
+        // so a transition starting from "orbiting the local avatar" (_orbitTarget null) still has
+        // a real point in space to pan FROM.
+        _transitionStartTarget = Position - Transform.Basis.Z * _zoom;
+        _transitionStartYaw = _yaw + _orbitYaw;
+        _transitionStartPitch = _pitch + _orbitPitch;
+        _transitionStartZoom = _zoom;
 
-        float yawDiff = targetYaw - (_yaw + _orbitYaw);
-        while (yawDiff > Mathf.Pi) yawDiff -= Mathf.Tau;
-        while (yawDiff < -Mathf.Pi) yawDiff += Mathf.Tau;
+        // Shortest angular path, same wraparound AimOrbitAt used to apply this instantly before.
+        float yawDelta = endYawAbs - _transitionStartYaw;
+        while (yawDelta > Mathf.Pi) yawDelta -= Mathf.Tau;
+        while (yawDelta < -Mathf.Pi) yawDelta += Mathf.Tau;
 
-        _orbitYaw += yawDiff;
+        _transitionEndTarget = endTarget;
+        _transitionEndYaw = _transitionStartYaw + yawDelta;
+        _transitionEndPitch = endPitchAbs;
+        _transitionEndZoom = endZoom;
+
+        _transitionElapsed = 0f;
+        _transitioning = true;
         _panOffset = Godot.Vector3.Zero;
+    }
+
+    /// <summary>Advances an in-progress <see cref="StartTransition"/> and applies this frame's
+    /// interpolated framing to <see cref="_orbitTarget"/>/<see cref="_orbitYaw"/>/
+    /// <see cref="_orbitPitch"/>/<see cref="_zoom"/> -- called from <see cref="_Process"/>, before
+    /// those are read to compute <c>Position</c>. No-op (and leaves those fields alone) once no
+    /// transition is active, whether it finished normally or was cancelled by manual input.</summary>
+    private void UpdateTransition(double delta)
+    {
+        if (!_transitioning) return;
+
+        _transitionElapsed += (float)delta;
+        float t = Mathf.Clamp(_transitionElapsed / TransitionDuration, 0f, 1f);
+        float eased = t * t * (3f - 2f * t); // smoothstep -- eases in and out, not a linear pan
+
+        _orbitTarget = _transitionStartTarget.Lerp(_transitionEndTarget, eased);
+        float yaw = Mathf.Lerp(_transitionStartYaw, _transitionEndYaw, eased);
+        float pitch = Mathf.Lerp(_transitionStartPitch, _transitionEndPitch, eased);
+        _zoom = Mathf.Lerp(_transitionStartZoom, _transitionEndZoom, eased);
+        _orbitYaw = yaw - _yaw;
+        _orbitPitch = pitch - _pitch;
+
+        if (t >= 1f) _transitioning = false;
     }
 
     public void SetPresetView(string preset)
@@ -222,6 +278,20 @@ public partial class AvatarController : Camera3D
     private float _orbitYaw = 0f;
     private float _orbitPitch = 0f;
     private Godot.Vector3? _orbitTarget = null;
+
+    // Smooth camera transition (FocusOn/FocusOnAvatarFrontal) -- live-tested 2026-08-28: an
+    // instant snap to the new framing read as a jarring hard cut, not the "pan there" feel a
+    // "jump to this person" gesture should have. Interpolates orbit yaw/pitch/zoom/target from
+    // wherever the camera actually was toward the new framing over TransitionDuration seconds.
+    // Cancelled by ANY manual camera input (drag/scroll/wheel/WASD) -- see each of those methods
+    // -- so the user always regains immediate control rather than fighting an in-progress pan.
+    private const float TransitionDuration = 0.5f;
+    private bool _transitioning;
+    private float _transitionElapsed;
+    private float _transitionStartYaw, _transitionStartPitch, _transitionStartZoom;
+    private Godot.Vector3 _transitionStartTarget;
+    private float _transitionEndYaw, _transitionEndPitch, _transitionEndZoom;
+    private Godot.Vector3 _transitionEndTarget;
 
     // Set by AbortCameraDrag: blocks orbit re-engagement until the left button is physically
     // released once. Without it, a focus-out / mouse-exit that fires mid-drag (X11, some Windows
@@ -529,6 +599,7 @@ public partial class AvatarController : Camera3D
                 // Any movement/turn snaps the orbit camera back behind the avatar.
                 if (!isSitting && (isFwd || isBack || isLeft || isRight))
                 {
+                    _transitioning = false;
                     _orbitYaw = 0f;
                     _orbitPitch = 0f;
                     _orbitTarget = null;
@@ -790,12 +861,16 @@ public partial class AvatarController : Camera3D
                 // Keyboard zoom polling (+ and - keys)
                 if (Input.IsKeyPressed(Key.Equal) || Input.IsKeyPressed(Key.KpAdd))
                 {
+                    _transitioning = false;
                     _zoom = Mathf.Max(0.5f, _zoom - 15.0f * (float)delta);
                 }
                 if (Input.IsKeyPressed(Key.Minus) || Input.IsKeyPressed(Key.KpSubtract))
                 {
+                    _transitioning = false;
                     _zoom = Mathf.Min(200.0f, _zoom + 15.0f * (float)delta);
                 }
+
+                UpdateTransition(delta);
 
                 Godot.Vector3 targetPos;
                 if (_orbitTarget.HasValue)
