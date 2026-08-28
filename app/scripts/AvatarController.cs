@@ -120,6 +120,48 @@ public partial class AvatarController : Camera3D
         _panOffset.X += cursorOffset.X * (1f - ratio);
         _panOffset.Y += cursorOffset.Y * (1f - ratio);
     }
+
+    /// <summary>Single entry point for every wheel/drag zoom. Picks the right strategy for the
+    /// current camera mode (BUG-UI-05):
+    /// <list type="bullet">
+    /// <item>When an Alt+Click focus point is active (<see cref="_orbitTarget"/> set, or a
+    /// non-avatar-follow glide toward one still running), the camera is aimed at a KNOWN 3D point,
+    /// so zoom is a pure dolly along the camera-&gt;target line: just change <see cref="_zoom"/>.
+    /// The old code always ran <see cref="ZoomTowardCursor"/>'s screen-space <see cref="_panOffset"/>
+    /// nudge here too, which -- combined with it killing the focus glide mid-interpolation -- left
+    /// the pivot frozen at a half-way Lerp point offset by an accumulating pan, i.e. every scroll
+    /// zoomed toward a point that was neither the clicked object nor the screen centre (the exact
+    /// bug reported). If a glide is still in flight, the whole zoom ramp is shifted by the same
+    /// delta so the pan keeps running toward the target and simply rests nearer/further, rather
+    /// than the wheel event snapping it dead.</item>
+    /// <item>With no focus point (ordinary avatar-follow), there is no stored 3D point to zoom at,
+    /// so the screen-space "keep whatever's under the cursor anchored" approximation
+    /// (<see cref="ZoomTowardCursor"/>) is still the right behaviour -- unchanged.</item>
+    /// </list></summary>
+    private void ZoomBy(float zoomDelta, Vector2 mousePos)
+    {
+        bool glidingToFocus = _transitioning && !_transitionEndIsAvatarFollow;
+        if (!_orbitTarget.HasValue && !glidingToFocus)
+        {
+            ZoomTowardCursor(zoomDelta, mousePos);
+            return;
+        }
+
+        float clamped = Mathf.Clamp(_zoom + zoomDelta, 0.5f, 200f);
+        float applied = clamped - _zoom;
+        _zoom = clamped;
+
+        if (glidingToFocus)
+        {
+            // Slide the entire in-progress zoom interpolation by the applied delta: the glide
+            // still eases toward the focus point, it just ends at the new distance. Leaving
+            // _transitioning alone (unlike ZoomTowardCursor) is the whole point -- the pivot must
+            // still arrive at the clicked object.
+            _transitionStartZoom = Mathf.Clamp(_transitionStartZoom + applied, 0.5f, 200f);
+            _transitionEndZoom = Mathf.Clamp(_transitionEndZoom + applied, 0.5f, 200f);
+        }
+    }
+
     /// <summary>Smoothly pans/zooms back to directly behind the avatar (Escape) -- exactly
     /// <see cref="SetPresetView"/>'s "rear" case, so the two share one implementation.</summary>
     public void ResetCamera() => SetPresetView("rear");
@@ -479,11 +521,11 @@ public partial class AvatarController : Camera3D
 
             if (!hasUiFocus && mouseBtn.ButtonIndex == MouseButton.WheelUp)
             {
-                ZoomTowardCursor(-0.5f, mouseBtn.Position);
+                ZoomBy(-0.5f, mouseBtn.Position);
             }
             else if (!hasUiFocus && mouseBtn.ButtonIndex == MouseButton.WheelDown)
             {
-                ZoomTowardCursor(0.5f, mouseBtn.Position);
+                ZoomBy(0.5f, mouseBtn.Position);
             }
         }
 
@@ -595,7 +637,9 @@ public partial class AvatarController : Camera3D
             var orbitDelta = currentPos - _orbitLastMousePos;
             const float sensitivity = 0.003f;
             _orbitYaw -= orbitDelta.X * sensitivity;
-            ZoomTowardCursor(orbitDelta.Y * sensitivity * 50.0f, _altZoomAnchorPos);
+            // BUG-UI-05: dolly toward the Alt+Click hit point (set by FocusOn on engage) rather
+            // than the screen-space _panOffset nudge, which drifted the pivot off the object.
+            ZoomBy(orbitDelta.Y * sensitivity * 50.0f, _altZoomAnchorPos);
             _orbitLastMousePos = currentPos;
         }
 
