@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.11.6-alpha";
+    public const string AppVersion = "v0.11.7-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -321,6 +321,7 @@ public partial class Boot : Control
                 if (_inventoryPanel != null) { _inventoryPanel.QueueFree(); _inventoryPanel = null; }
                 Input.MouseMode = Input.MouseModeEnum.Visible;
                 _teleportActive = false;
+                _teleportCameraResetPending = false;
                 _teleportOverlay?.ForceHide();
             }
         };
@@ -946,6 +947,7 @@ public partial class Boot : Control
         // FEAT-UI-18: teleport loading overlay. Drain every buffered stage this frame -- the last
         // one wins for what's displayed, and a terminal stage still gets to dismiss it.
         while (_pendingTeleportProgress.TryDequeue(out var tp)) ApplyTeleportProgress(tp);
+        if (_teleportCameraResetPending) TryApplyTeleportCameraReset();
 
         // FEAT-ENV-02: Use the server's synced time if we have received a SimulatorViewerTimeMessage,
         // otherwise fall back to local UtcNow.
@@ -1472,6 +1474,13 @@ public partial class Boot : Control
     // shown "Arrived" / a failure and begun its fade-out.
     private bool _teleportActive;
 
+    // FEAT-UI-18 review feedback: after arriving, pan the camera back behind the avatar (a
+    // teleport should not leave it aimed at whatever it was focused on before). Deferred via
+    // _Process until the local avatar entity has actually been re-placed into the destination
+    // region, so ResetCamera's avatar-follow target isn't a stale pre-teleport position.
+    private bool _teleportCameraResetPending;
+    private double _teleportCameraResetDeadlineMsec;
+
     /// <summary>Drives the teleport loading overlay from a buffered <see cref="TeleportProgressEvent"/>
     /// (see the drain in _Process). Text is our own localised per-stage string rather than
     /// LibreMetaverse's inconsistent English progress narration; a real failure reason (timeout,
@@ -1491,6 +1500,8 @@ public partial class Boot : Control
             case SLNG.Core.TeleportStage.Finished:
                 _teleportActive = false;
                 _teleportOverlay.Finish(true, SLNG.App.UI.L10n.Tr("ui.teleport.arrived"));
+                _teleportCameraResetPending = true;
+                _teleportCameraResetDeadlineMsec = Time.GetTicksMsec() + 4000; // fire anyway if the avatar never confirms
                 break;
             case SLNG.Core.TeleportStage.Failed:
                 _teleportActive = false;
@@ -1502,6 +1513,31 @@ public partial class Boot : Control
                 _teleportActive = false;
                 _teleportOverlay.Finish(false, SLNG.App.UI.L10n.Tr("ui.teleport.cancelled"));
                 break;
+        }
+    }
+
+    /// <summary>FEAT-UI-18 review feedback: snap the camera back behind the avatar once a teleport
+    /// lands. Waits until the local avatar entity's region handle catches up to the session's
+    /// current region (the first AvatarUpdate from the destination sim, applied by
+    /// WorldSimulation.Pump) so ResetCamera's follow target isn't a stale pre-teleport position;
+    /// a hard deadline stops the flag from ever stranding.</summary>
+    private void TryApplyTeleportCameraReset()
+    {
+        bool avatarInDestination = false;
+        if (_world != null && _session != null && _session.CurrentRegionHandle != 0)
+        {
+            foreach (var e in _world.GetAllEntities())
+            {
+                if (e.GetComponent<SLNG.Core.Components.AvatarComponent>()?.IsLocalAgent != true) continue;
+                avatarInDestination = e.RegionHandle == _session.CurrentRegionHandle;
+                break;
+            }
+        }
+
+        if (avatarInDestination || Time.GetTicksMsec() >= _teleportCameraResetDeadlineMsec)
+        {
+            _teleportCameraResetPending = false;
+            _avatarController?.ResetCamera();
         }
     }
 
@@ -1518,6 +1554,7 @@ public partial class Boot : Control
         // FEAT-UI-18: a teleport overlay left up from the previous session has no more progress
         // events coming -- drop it so the login loading screen isn't stacked under it.
         _teleportActive = false;
+        _teleportCameraResetPending = false;
         _teleportOverlay?.ForceHide();
 
         if (_session != null)
@@ -1931,7 +1968,14 @@ public partial class Boot : Control
     // Deferred target for GridSession.RegionConnected. The handle travels as a string because a
     // region handle can exceed long.MaxValue and ulong is not a Variant-safe CallDeferred arg.
     private void ApplyRegionOrigin(string regionHandle)
-        => RenderConfig.SetRegionOrigin(ulong.Parse(regionHandle));
+    {
+        var handle = ulong.Parse(regionHandle);
+        RenderConfig.SetRegionOrigin(handle);
+        // BUG-NET-03: after the origin moves, tell the terrain renderer which region we're in so
+        // its void-water plane sits at this region's water height (order matters -- it reads the
+        // origin we just set).
+        _terrainRenderer?.SetPrimaryRegion(handle);
+    }
 
     private int _logLineCount;
 
