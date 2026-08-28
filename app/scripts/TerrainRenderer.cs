@@ -53,6 +53,17 @@ public partial class TerrainRenderer : Node3D
     /// shader's hardcoded default.</summary>
     public ShaderMaterial WaterMaterial => _waterMaterial;
 
+    // BUG-NET-03 review feedback: one large water plane that fills the void PAST a region's edge
+    // where no neighbor region exists, so a borderless region reads as sitting in an ocean rather
+    // than a platform floating in the skybox void. It sits a hair below the per-region planes
+    // (which carry each region's exact water height) so those win wherever they exist; the water
+    // shader derives its wave phase from world position, so the big plane and the region planes
+    // stay seamless across the overlap despite the depth bias.
+    private MeshInstance3D? _voidWater;
+    private ulong _primaryRegionHandle;
+    private const float VoidWaterSize = 16384f;
+    private const float VoidWaterDepthBias = 0.05f;
+
     private World? _world;
     private SLNG.Assets.AssetService? _assetService;
     private GpuCache? _gpuCache;
@@ -346,6 +357,53 @@ public partial class TerrainRenderer : Node3D
 
         var waterShader = ResourceLoader.Load<Shader>("res://materials/water.gdshader");
         _waterMaterial.Shader = waterShader;
+
+        // BUG-NET-03: the horizon-filling void water plane (see the field comment). Hidden until
+        // SetPrimaryRegion places it at the current region's water height. Coarse tessellation
+        // (128 m/quad) -- it is only ever the distant background, and the wave detail that mesh
+        // density feeds is imperceptible past the region edge.
+        _voidWater = new MeshInstance3D
+        {
+            Name = "VoidWaterPlane",
+            Visible = false,
+            Mesh = new PlaneMesh
+            {
+                Size = new Vector2(VoidWaterSize, VoidWaterSize),
+                SubdivideWidth = 127,
+                SubdivideDepth = 127,
+            },
+            MaterialOverride = _waterMaterial,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        AddChild(_voidWater);
+    }
+
+    /// <summary>Tells the renderer which region the avatar is actually in, so the BUG-NET-03
+    /// void-water plane can sit at that region's water height and stay centred near the floating
+    /// origin. Call on login and every region change, AFTER
+    /// <see cref="RenderConfig.SetRegionOrigin"/> for the same handle.</summary>
+    public void SetPrimaryRegion(ulong regionHandle)
+    {
+        _primaryRegionHandle = regionHandle;
+        RefreshVoidWater();
+    }
+
+    private void RefreshVoidWater()
+    {
+        if (_voidWater == null || _primaryRegionHandle == 0) return;
+
+        float waterHeight = 20f; // OpenSim default, used until real settings arrive
+        int width = 256, height = 256;
+        if (_world != null && _world.Terrains.TryGetValue(_primaryRegionHandle, out var terrain))
+        {
+            waterHeight = terrain.WaterHeight;
+            if (terrain.Width > 0) width = terrain.Width;
+            if (terrain.Height > 0) height = terrain.Height;
+        }
+
+        var centre = RenderConfig.ToGodot(_primaryRegionHandle, new System.Numerics.Vector3(width / 2f, height / 2f, 0f));
+        _voidWater.Position = new Vector3(centre.X, waterHeight - VoidWaterDepthBias, centre.Z);
+        _voidWater.Visible = true;
     }
 
     private void OnTerrainSettingsUpdated(object? sender, ulong regionHandle)
@@ -353,6 +411,8 @@ public partial class TerrainRenderer : Node3D
         // Settings arrived. Trigger a rebuild and also start fetching textures.
         _dirtyRegions.Add(regionHandle);
         _ = FetchTerrainTexturesAsync(regionHandle);
+        // The primary region's real water height only lands here -- re-place the void plane.
+        if (regionHandle == _primaryRegionHandle) RefreshVoidWater();
     }
 
     private async System.Threading.Tasks.Task FetchTerrainTexturesAsync(ulong regionHandle)
