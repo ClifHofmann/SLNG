@@ -81,14 +81,26 @@ teleport). There is no map of any kind.
       to the grid for this.
 - [x] **World map window fits the screen, 2026-08-28** — same-day follow-up: the window opened
       640x520 at a hardcoded (200,100) regardless of actual screen size and ran off the bottom.
-      Root cause was an ordering bug: `PersistId` was set AFTER `base._Ready()`, so
-      `SLNGWindow`'s own `LoadPersistedGeometry()`/`ClampToViewport()` (both called from inside
-      `base._Ready()`) ran as no-ops, and the hardcoded default below was never clamped into the
-      real viewport either. Fixed by setting `PersistId` before `base._Ready()` (matching
-      `EnvironmentWindow`'s already-correct order) and shrinking the first-open-only default to
-      600x460 at (160,60) -- `MinimapOverlay` had the identical ordering bug, fixed the same way.
-      A resize now also actually persists across relaunches (it silently didn't before, for the
-      same reason).
+      First fix attempt reordered `PersistId`/`base._Ready()` (matching `EnvironmentWindow`'s
+      order) and shrank the first-open default to 600x460 at (160,60) -- `MinimapOverlay` had the
+      identical reordering applied too. **This diagnosis was wrong**, corrected the same day (see
+      the next entry): `SLNGWindow.RestorePersistedGeometry` runs via `CallDeferred`, specifically
+      so subclass defaults are already applied by the time it runs regardless of when `PersistId`
+      is set within `_Ready()` -- the reorder was harmless but didn't touch the actual cause.
+- [x] **Real root cause: unbounded single-corner resize corrupted saved geometry, 2026-08-28** —
+      the window "too tall, off the bottom" report recurred after the reorder "fix", with
+      `user://preferences.cfg` showing `world_map_size=Vector2(480, 1236)`. `SLNGWindow` only ever
+      had ONE resize handle (the bottom-right corner), which COUPLES width and height on every
+      drag -- there was no way to narrow the window without also dragging its height. An errant
+      drag (likely while trying to narrow it) drove height to 1236 px, and
+      `RestorePersistedGeometry` only ever enforced a MINIMUM size against `CustomMinimumSize`,
+      never a maximum, so the broken value reloaded forever on every subsequent launch. Also
+      directly requested by the tester independently ("es wäre gut wenn man Fenster an allen
+      Seiten anfassen könnte"). Fixed in `SLNGWindow` (shared by every window in the app, not
+      just the world map): all 4 edges + 4 corners now get their own resize handle (`ResizeEdge`
+      flags, `AddResizeHandles`/`ApplyResize`), and both the live drag AND
+      `RestorePersistedGeometry` now clamp against the current viewport as a maximum, so a value
+      already saved before this fix self-heals on next load instead of staying broken forever.
 
 ## Live-test fixes (2026-08-28)
 The first actual in-world test found two real bugs the unit tests couldn't catch (both are pure
