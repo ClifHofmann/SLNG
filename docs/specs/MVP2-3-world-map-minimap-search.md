@@ -104,6 +104,24 @@ Godot-input/UX issues, invisible to a headless test):
      result) so any future failure is visible in `godot.log` instead of only in UI text that
      never reaches the console.
 
+**2026-08-28 correction, same day:** the zoom explanation above was wrong -- live-tester report:
+they had already zoomed in manually, saw the target sim rendered, clicked/double-clicked it
+directly, and teleport still did nothing. Re-examined the session's `godot.log`: the click
+coordinates show a genuine double-click (two `MapCanvas` clicks at the IDENTICAL pixel,
+back-to-back) plus a separate click on a `Button` positioned where the Teleport button sits --
+i.e. the click DID register at the Godot input level, by both available routes. Re-verified
+OpenSim's server-side `TeleportLocationRequest` handler (`LLClientView.HandleTeleportLocationRequest`
+in the vendored `opensim_fetch` source) -- it resolves a cross-region handle correctly with no
+special-case restriction, so this isn't a known protocol gap either. Since LibreMetaverse's own
+teleport logging is silenced (`Settings.LogLevel = Error`, set deliberately for unrelated reasons
+in `GridSession`'s constructor) and this session predates the `GD.Print` diagnostics added above,
+the log cannot show whether `TeleportToAsync` actually ran or what LibreMetaverse reported back --
+the remaining gap is genuinely unobservable from evidence gathered so far. Added a further
+`GD.Print` at the point of the click itself (`HandlePointAction`: screen/global coords, computed
+handle, whether it was already a known/resolved region) and at the click-resolve outcome
+(`ApplyResolvedRegion`), so the FULL chain -- click -> resolve (if needed) -> teleport request ->
+result -- is traceable in `godot.log` on the next attempt. `v0.10.3-alpha`.
+
 ## Implementation notes (as shipped on `feature/MVP2-3-world-map-minimap-search`)
 - **`GridSession`** gained neutral DTOs (`NearbyAvatar`/`NearbyAvatarsEvent`, `MapRegionInfo` —
   see `src/SLNG.Core/GridEvents.cs`) and wrappers over `GridClient.Grid`: `NearbyAvatarsUpdated`

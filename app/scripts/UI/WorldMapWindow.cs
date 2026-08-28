@@ -357,10 +357,15 @@ public partial class WorldMapWindow : SLNGWindow
         _selectedRegionHandle = regionHandle;
         _selectedLocal = local;
 
-        if (_regions.TryGetValue(regionHandle, out var known))
+        bool known = _regions.TryGetValue(regionHandle, out var info);
+        GD.Print($"[WorldMap] Point clicked: screen={screenPos} global=({gx:0.#},{gy:0.#}) "
+            + $"handle={regionHandle} local={local} teleport={teleport} known={known}"
+            + (known ? $" name=\"{info!.Name}\"" : ""));
+
+        if (known)
         {
             _teleportButton.Disabled = false;
-            _infoLabel.Text = $"{known.Name}  ({local.X:0}, {local.Y:0})";
+            _infoLabel.Text = $"{info!.Name}  ({local.X:0}, {local.Y:0})";
             RedrawCanvas();
             if (teleport) OnTeleportPressed();
         }
@@ -399,6 +404,9 @@ public partial class WorldMapWindow : SLNGWindow
         // The user clicked somewhere else while this was in flight -- its answer no longer
         // applies to the current selection.
         if (pending == null || _selectedRegionHandle != pending.RegionHandle) return;
+
+        GD.Print($"[WorldMap] Resolved handle {pending.RegionHandle}: "
+            + (pending.Info != null ? $"found \"{pending.Info.Name}\"" : "no region there") + $", teleportAfter={pending.TeleportAfter}");
 
         if (pending.Info != null)
         {
