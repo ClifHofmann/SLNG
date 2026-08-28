@@ -86,21 +86,11 @@ public partial class MinimapOverlay : SLNGWindow
 
     public override void _Ready()
     {
-        // PersistId MUST be set before base._Ready() -- see WorldMapWindow._Ready()'s identical
-        // comment for why (SLNGWindow's LoadPersistedGeometry()/ClampToViewport() are no-ops
-        // without it, and this class had the same wrong ordering).
         PersistId = "minimap";
         base._Ready();
 
         Title = L10n.Tr("ui.minimap.title");
         CustomMinimumSize = new Vector2(360, 260);
-        // Only the FIRST-ever open needs a hardcoded default -- see WorldMapWindow for the same
-        // Position == Vector2.Zero signal ("nothing was restored").
-        if (Position == Vector2.Zero)
-        {
-            Size = new Vector2(420, 300);
-            Position = new Vector2(900, 60);
-        }
         Visible = false;
 
         var hbox = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
@@ -165,6 +155,19 @@ public partial class MinimapOverlay : SLNGWindow
         _avatarList = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         _avatarList.AddThemeConstantOverride("separation", 2);
         scroll.AddChild(_avatarList);
+
+        // Deferred so it runs AFTER base._Ready()'s own CallDeferred(RestorePersistedGeometry) --
+        // see WorldMapWindow's identical fix/comment for why a synchronous "Position == Vector2.Zero"
+        // check right after base._Ready() (this class's own earlier revision) was wrong.
+        CallDeferred(MethodName.ApplyFirstOpenDefaultIfNeeded);
+    }
+
+    /// <summary>Only the FIRST-ever open needs this -- see the <c>CallDeferred</c> comment above.</summary>
+    private void ApplyFirstOpenDefaultIfNeeded()
+    {
+        if (Position != Vector2.Zero) return; // RestorePersistedGeometry already set a real value
+        Size = new Vector2(420, 300);
+        Position = new Vector2(900, 60);
     }
 
     /// <summary>Boot hands over the world/session once after both exist. Both are read-only from

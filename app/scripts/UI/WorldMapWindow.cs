@@ -83,27 +83,11 @@ public partial class WorldMapWindow : SLNGWindow
 
     public override void _Ready()
     {
-        // PersistId MUST be set before base._Ready() -- that's where SLNGWindow's own
-        // LoadPersistedGeometry()/ClampToViewport() run, and both are no-ops without it. Setting
-        // it after (as this class originally did) meant a saved size/position from a previous
-        // session was silently never restored, AND the hardcoded first-open defaults below were
-        // never clamped into the actual viewport -- live-tested 2026-08-28: the window opened
-        // 640x520 at (200,100) regardless of screen size and could run off the bottom.
         PersistId = "world_map";
         base._Ready();
 
         Title = L10n.Tr("ui.worldmap.title");
         CustomMinimumSize = new Vector2(480, 380);
-        // Only the FIRST-ever open needs a hardcoded default -- base._Ready() already restored
-        // (and clamped) a previously saved size/position if one exists, in which case Position is
-        // no longer the Control's untouched (0,0) default. A smaller/higher default than before
-        // (600x460 at (160,60), was 640x520 at (200,100)) so it comfortably fits without relying
-        // on a clamp that only fires on drag/resize, not on this initial placement.
-        if (Position == Vector2.Zero)
-        {
-            Size = new Vector2(600, 460);
-            Position = new Vector2(160, 60);
-        }
         Visible = false;
 
         var vbox = new VBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
@@ -161,6 +145,27 @@ public partial class WorldMapWindow : SLNGWindow
         };
         _teleportButton.Pressed += OnTeleportPressed;
         bottomRow.AddChild(_teleportButton);
+
+        // Deferred so it runs AFTER base._Ready()'s own CallDeferred(RestorePersistedGeometry)
+        // (Godot's deferred-call queue is FIFO, and that one was enqueued first, inside
+        // base._Ready() above) -- so by the time this fires, Position already reflects a
+        // restored value if one exists. A synchronous "if Position == Vector2.Zero" check
+        // immediately after base._Ready() (an earlier revision of this fix) was wrong: the
+        // restore is ALSO deferred, so nothing has actually happened yet at that point in the
+        // SAME _Ready() call -- live-tested 2026-08-28, a resized window still reopened at the
+        // hardcoded default on every subsequent launch.
+        CallDeferred(MethodName.ApplyFirstOpenDefaultIfNeeded);
+    }
+
+    /// <summary>Only the FIRST-ever open needs this -- see the <c>CallDeferred</c> comment above
+    /// for why it's deferred rather than synchronous. A smaller/higher default than the very
+    /// first revision shipped (600x460 at (160,60), was 640x520 at (200,100)) so it comfortably
+    /// fits without relying on a clamp that only fires on drag/resize, not initial placement.</summary>
+    private void ApplyFirstOpenDefaultIfNeeded()
+    {
+        if (Position != Vector2.Zero) return; // RestorePersistedGeometry already set a real value
+        Size = new Vector2(600, 460);
+        Position = new Vector2(160, 60);
     }
 
     /// <summary>Boot hands over the session/asset plumbing once, after all three exist -- and

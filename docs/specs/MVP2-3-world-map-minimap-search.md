@@ -118,6 +118,16 @@ teleport). There is no map of any kind.
       animation still in flight; `_transitionStartTarget` recovers the camera's actual current
       orbit centre by inverting `Position = target + Basis.Z * zoom`, which works whether or not
       `_orbitTarget` was set at all (i.e. even transitioning FROM "orbiting the local avatar").
+- [x] **Camera Reset/preset views also pan smoothly, 2026-08-28 fourth request** — "das sanfte
+      Zoomen wäre auch beim Kamera-Reset toll" (the smooth zoom would be nice for camera reset
+      too). `ResetCamera` (Escape) and `SetPresetView` (front/side/rear) now go through the SAME
+      `StartTransition` the minimap jump uses, instead of snapping instantly -- `ResetCamera` is
+      now just `SetPresetView("rear")`, since that was already exactly its behaviour. Ending a
+      reset/preset transition hands back to the DYNAMIC avatar-follow target (`_orbitTarget` to
+      `null`) rather than freezing on a fixed point (`UpdateTransition` re-reads
+      `GetLocalAvatarFollowTarget()` every frame of such a transition, not just at the start, so a
+      walking avatar doesn't leave the camera panning toward a half-second-stale snapshot of where
+      they used to be).
 - [x] **Right-click a roster row opens the avatar context menu, 2026-08-28 addition** — the SAME
       shared menu (`InWorldContextMenu.ShowAvatarMenu`) the in-world right-click-an-avatar gesture
       already used, not a second one-off menu. `MinimapOverlay.OnAvatarContextMenuRequested`
@@ -149,6 +159,22 @@ teleport). There is no map of any kind.
       flags, `AddResizeHandles`/`ApplyResize`), and both the live drag AND
       `RestorePersistedGeometry` now clamp against the current viewport as a maximum, so a value
       already saved before this fix self-heals on next load instead of staying broken forever.
+- [x] **Fixed: the window still never reopened at its last resized size, 2026-08-28** — the
+      `PersistId`-reordering "fix" two entries up left a real bug behind: it added a synchronous
+      `if (Position == Vector2.Zero) { apply hardcoded default }` check immediately after
+      `base._Ready()`, on the (also wrong, same root misunderstanding) assumption that the
+      restore had already happened by that point. Since `RestorePersistedGeometry` is
+      `CallDeferred`, NOTHING has actually run yet at that line in the SAME `_Ready()` call --
+      `Position` is unconditionally still the Control's untouched `(0,0)`, so the hardcoded
+      default fired on literally every open, not just the first. It should still have been
+      overwritten a moment later when the deferred restore actually ran... except by then the
+      window was already visible with the wrong size, which is what "doesn't open at the last
+      size" looks like even though the underlying value was briefly correct. Fixed by moving the
+      first-open fallback into its OWN `CallDeferred` call, made at the END of `_Ready()` (in both
+      `WorldMapWindow` and `MinimapOverlay`) -- Godot's deferred-call queue is FIFO, and
+      `base._Ready()`'s own `CallDeferred(RestorePersistedGeometry)` was enqueued first, so this
+      one is guaranteed to run strictly after it and can reliably check "did the restore already
+      set a real Position" instead of guessing at a still-in-flight timing.
 - [x] **Crash fixed: disposed `ImageTexture` in `MapCanvas._Draw`, 2026-08-28** — the tester
       reported an exception; `godot.log` showed `System.ObjectDisposedException: Cannot access a
       disposed object. Object name: 'Godot.ImageTexture'` at `WorldMapWindow.MapCanvas._Draw()`
