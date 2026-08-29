@@ -102,6 +102,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;
     public event EventHandler<AvatarAppearanceEvent>? AvatarAppearanceReceived;
     public event EventHandler<AvatarAnimationEvent>? AvatarAnimationReceived;
+
+    /// <summary>FEAT-UI-16: the set of items the local avatar is wearing may have changed (a bake
+    /// completed, an appearance relay arrived). Raised on a LibreMetaverse network thread — marshal
+    /// before touching a scene node. The inventory "Worn" tab also polls while visible, so a missed
+    /// raise (e.g. an attachment attach/detach, which has no clean LMV event) self-heals.</summary>
+    public event EventHandler? WornItemsChanged;
+
     public event EventHandler<FriendStatusEvent>? FriendStatusChanged;
     public event EventHandler<InstantMessageEvent>? InstantMessageReceived;
     public event EventHandler<ScriptDialogEvent>? ScriptDialogReceived;
@@ -1645,6 +1652,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             LogVisualParamHealth();
         }
 
+        // FEAT-UI-16: a self appearance relay can change the worn wearable set.
+        if (e.AvatarID == _client.Self.AgentID)
+            WornItemsChanged?.Invoke(this, EventArgs.Empty);
+
         var textures = new Dictionary<int, Guid>();
         if (e.FaceTextures != null)
         {
@@ -1735,6 +1746,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     private void OnAppearanceSet(object? sender, AppearanceSetEventArgs e)
     {
         if (!e.Success) return;
+
+        // FEAT-UI-16: a completed bake / outfit apply changes the worn set.
+        WornItemsChanged?.Invoke(this, EventArgs.Empty);
 
         // Risk-free diagnostic for the avatar-corruption incident (2026-08-02). SendAppearance is
         // OFF, so nothing here is transmitted -- this only records what LibreMetaverse WOULD have
@@ -3009,6 +3023,87 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         catch { }
 
         return result;
+    }
+
+    /// <summary>Which <see cref="WornCategory"/> a system wearable of the given SL <c>AssetType</c>
+    /// wire value falls under. FEAT-UI-16.</summary>
+    internal static WornCategory CategorizeWearable(int assetType)
+        => assetType == (int)LibreMetaverse.AssetType.Bodypart
+            ? WornCategory.BodyPart
+            : WornCategory.Clothing;
+
+    /// <summary>Whether a raw SL attachment-point value is a HUD point (31..38 =
+    /// <c>HUDCenter2</c>..<c>HUDBottomRight</c>) or a body point. Mirrors the HUD test in
+    /// <see cref="DetachAllAttachments"/>. FEAT-UI-16.</summary>
+    internal static WornCategory CategorizeAttachment(int attachPointRaw)
+        => attachPointRaw >= 31 && attachPointRaw <= 38
+            ? WornCategory.Hud
+            : WornCategory.Attachment;
+
+    /// <summary>Every item the local avatar is wearing right now — live attachments and the live
+    /// wearables set, plus anything referenced only by a Current-Outfit link (reported with
+    /// <c>Live == false</c>: a stale link, or a wear that has not taken effect). Backs the
+    /// inventory "Worn" tab (FEAT-UI-16); <see cref="GetWornItemsMap"/> still backs the
+    /// "(getragen)" labels in the folder tree.</summary>
+    public IReadOnlyList<WornItem> GetWornItems()
+    {
+        var byId = new Dictionary<Guid, WornItem>();
+        var store = _client.Inventory.Store;
+
+        string NameOf(LibreMetaverse.UUID id) =>
+            (store?.GetNodeOrDefault(id)?.Data as LibreMetaverse.InventoryItem)?.Name ?? string.Empty;
+
+        try
+        {
+            foreach (var kvp in _client.Appearance.GetAttachmentsByItemId())
+            {
+                var id = kvp.Key.Guid;
+                if (id == Guid.Empty) continue;
+                byId[id] = new WornItem(id, NameOf(kvp.Key),
+                    CategorizeAttachment((int)kvp.Value), FormatAttachmentPoint(kvp.Value),
+                    (int)LibreMetaverse.AssetType.Object, Live: true);
+            }
+        }
+        catch { }
+
+        try
+        {
+            foreach (var w in _client.Appearance.GetWearables())
+            {
+                var id = w.ItemID.Guid;
+                if (id == Guid.Empty || byId.ContainsKey(id)) continue;
+                byId[id] = new WornItem(id, NameOf(w.ItemID),
+                    CategorizeWearable((int)w.AssetType), null, (int)w.AssetType, Live: true);
+            }
+        }
+        catch { }
+
+        try
+        {
+            var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+            var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
+            if (cofNode != null)
+            {
+                foreach (var childNode in cofNode.Nodes.Values)
+                {
+                    if (childNode.Data is not LibreMetaverse.InventoryItem link) continue;
+                    var targetUuid = link.IsLink() ? link.ResolvedItemID : link.UUID;
+                    var id = targetUuid.Guid;
+                    if (id == Guid.Empty || byId.ContainsKey(id)) continue;
+
+                    var target = store?.GetNodeOrDefault(targetUuid)?.Data as LibreMetaverse.InventoryItem;
+                    int assetType = (int)(target?.AssetType ?? link.AssetType);
+                    var cat = assetType == (int)LibreMetaverse.AssetType.Bodypart ? WornCategory.BodyPart
+                        : assetType == (int)LibreMetaverse.AssetType.Clothing ? WornCategory.Clothing
+                        : WornCategory.Attachment;
+                    byId[id] = new WornItem(id, target?.Name ?? link.Name ?? string.Empty,
+                        cat, null, assetType, Live: false);
+                }
+            }
+        }
+        catch { }
+
+        return byId.Values.ToList();
     }
 
     /// <summary>Creates a new inventory subfolder — used for the Create Landmark dialog's
