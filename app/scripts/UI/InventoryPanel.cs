@@ -488,17 +488,20 @@ public partial class InventoryPanel : SLNGWindow
             var linkResult = await _session.DetachItemAsync(linkTargetId).ConfigureAwait(false);
             result = new SLNG.Core.DetachResult(
                 result.WasAttached || linkResult.WasAttached,
-                result.StaleLinksRemoved + linkResult.StaleLinksRemoved);
+                result.StaleLinksRemoved + linkResult.StaleLinksRemoved,
+                result.WearableRemoved || linkResult.WearableRemoved);
         }
 
         // "Detached." unconditionally was the misleading part of the original report: for an item
         // that only had a stale Current-Outfit link the detach packet is a server-side no-op, so
-        // the row stayed exactly as it was under a success message. Say which of the two happened.
-        string status = result.WasAttached
-            ? "Detached."
-            : result.StaleLinksRemoved > 0
-                ? $"Was not attached — removed {result.StaleLinksRemoved} stale outfit link(s)."
-                : "Was not attached, and no outfit link found.";
+        // the row stayed exactly as it was under a success message. Say which of the cases happened.
+        string status = result.WearableRemoved
+            ? "Removed worn layer — rebaking…"
+            : result.WasAttached
+                ? "Detached."
+                : result.StaleLinksRemoved > 0
+                    ? $"Was not attached — removed {result.StaleLinksRemoved} stale outfit link(s)."
+                    : "Was not attached, and no outfit link found.";
 
         Callable.From(() =>
         {

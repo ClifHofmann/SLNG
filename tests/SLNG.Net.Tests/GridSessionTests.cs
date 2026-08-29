@@ -362,4 +362,89 @@ public class GridSessionTests
 
         Assert.False(raised);
     }
+
+    // ---- FEAT-AVATAR-01: system-wearable remove/add routing ---------------------------------
+
+    // The routing decision: a system wearable (typed InventoryWearable, or asset type Clothing/
+    // Bodypart) goes through AppearanceManager.AddToOutfit/RemoveFromOutfit; everything else is an
+    // attachment and keeps the Attach/Detach path. This is the "picks the right LibreMetaverse
+    // call" acceptance criterion, extracted as a pure function so it needs no live client.
+    [Theory]
+    [InlineData(true, 0, true)]     // typed as InventoryWearable
+    [InlineData(false, 5, true)]    // AssetType.Clothing
+    [InlineData(false, 13, true)]   // AssetType.Bodypart
+    [InlineData(false, 6, false)]   // AssetType.Object
+    [InlineData(false, 3, false)]   // AssetType.Landmark
+    [InlineData(false, -1, false)]  // unknown
+    public void ClassifyItem_routes_wearables_and_attachments(bool isWearable, int assetType, bool expectWearable)
+    {
+        var expected = expectWearable ? GridSession.WearableKind.Wearable : GridSession.WearableKind.Attachment;
+        Assert.Equal(expected, GridSession.ClassifyItem(isWearable, assetType));
+    }
+
+    // The gate the FEAT-AVATAR-01 landmine calls for: a wearable edit (each schedules an
+    // AgentSetAppearance) is refused unless LibreMetaverse holds a full, non-default VisualParams
+    // set. Empty / too-short / all-default (0 or 128) must all read as unsafe.
+    [Fact]
+    public void VisualParamsHealthy_rejects_empty_short_and_default_sets()
+    {
+        Assert.False(GridSession.VisualParamsHealthy(null));
+        Assert.False(GridSession.VisualParamsHealthy(System.Array.Empty<byte>()));
+        Assert.False(GridSession.VisualParamsHealthy(new byte[GridSession.MinHealthyVisualParams - 1]));
+
+        var allZero = new byte[218];
+        Assert.False(GridSession.VisualParamsHealthy(allZero));
+
+        var allMid = new byte[218];
+        System.Array.Fill(allMid, (byte)128);
+        Assert.False(GridSession.VisualParamsHealthy(allMid));
+    }
+
+    [Fact]
+    public void VisualParamsHealthy_accepts_a_full_varied_set()
+    {
+        var real = new byte[218];
+        for (int i = 0; i < real.Length; i++) real[i] = (byte)(i % 7 + 1); // 1..7, never 0 or 128
+        Assert.True(GridSession.VisualParamsHealthy(real));
+
+        // A realistic mix (some sliders genuinely at 0/128, most not) is still healthy.
+        var mixed = new byte[218];
+        for (int i = 0; i < mixed.Length; i++) mixed[i] = (byte)(i % 3 == 0 ? 0 : 40 + i % 90);
+        Assert.True(GridSession.VisualParamsHealthy(mixed));
+    }
+
+    // TrySeedVisualParams copies the sim's self-appearance shape into LMV when it holds nothing
+    // better -- the only place MyVisualParameters gets a truthful value while the appearance
+    // workflow is disabled. It must seed once from a healthy relay and then leave it alone.
+    [Fact]
+    public void OnAvatarAppearance_seeds_MyVisualParameters_from_a_healthy_self_relay()
+    {
+        using var session = new GridSession();
+        var client = (GridClient)typeof(GridSession)
+            .GetField("_client", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(session)!;
+
+        Assert.Empty(client.Appearance.MyVisualParameters); // starts empty (workflow off)
+
+        var relay = new byte[218];
+        for (int i = 0; i < relay.Length; i++) relay[i] = (byte)(i % 5 + 3);
+
+        var sim = new Simulator(client, new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 9000), 1234UL);
+
+        AvatarAppearanceEventArgs Relay(byte[] vp) => new(
+            sim, client.Self.AgentID, false,
+            new Primitive.TextureEntryFace(null),
+            System.Array.Empty<Primitive.TextureEntryFace>(),
+            new System.Collections.Generic.List<byte>(vp),
+            0, 0, (AppearanceFlags)0, 0);
+
+        var method = typeof(GridSession).GetMethod("OnAvatarAppearance", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        method.Invoke(session, new object?[] { null, Relay(relay) });
+
+        Assert.Equal(relay, client.Appearance.MyVisualParameters);
+
+        // A later (shorter) relay must not clobber the seeded set.
+        method.Invoke(session, new object?[] { null, Relay(new byte[10]) });
+        Assert.Equal(relay, client.Appearance.MyVisualParameters);
+    }
 }
