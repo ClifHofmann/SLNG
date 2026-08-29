@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-ENV-02`
 - **Track:** `ui` / `net` / `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — confirmed in-world 2026-08-29
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
