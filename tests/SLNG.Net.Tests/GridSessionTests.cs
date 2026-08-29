@@ -206,6 +206,24 @@ public class GridSessionTests
         Assert.Empty(worn);
     }
 
+    // FEAT-INV-03: outfit cleanup. With no connection there is no Current Outfit folder and no
+    // Trash, so it must return an all-zero result rather than throw — same "no-op gracefully while
+    // disconnected" contract as every other GridSession path.
+    [Fact]
+    public void CleanUpCurrentOutfit_without_connection_returns_zero()
+    {
+        using var session = new GridSession();
+        var r = session.CleanUpCurrentOutfit();
+        Assert.Equal(0, r.Total);
+        Assert.Equal(0, r.DeadLinks);
+        Assert.Equal(0, r.TrashedTargetLinks);
+        Assert.Equal(0, r.UnwornAttachmentLinks);
+    }
+
+    [Fact]
+    public void OutfitCleanupResult_Total_sums_the_three_reasons()
+        => Assert.Equal(6, new SLNG.Core.OutfitCleanupResult(1, 2, 3).Total);
+
     // MVP2-3: minimap radar. OnCoarseLocationUpdate is private (same LMV-boundary reasoning as
     // OnScriptDialog above), invoked via reflection with a hand-built CoarseLocationUpdateEventArgs
     // -- the same shape GridManager.CoarseLocationHandler raises off the wire packet.

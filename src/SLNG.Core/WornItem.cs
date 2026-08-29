@@ -37,3 +37,14 @@ public sealed record WornItem(
     string? AttachPoint,
     int AssetType,
     bool Live);
+
+/// <summary>Outcome of <c>SLNG.Net.GridSession.CleanUpCurrentOutfit</c> (FEAT-INV-03) — how many
+/// Current-Outfit links were moved to Trash, by reason. All are recoverable from Trash.</summary>
+/// <param name="DeadLinks">Links that resolved to no target at all.</param>
+/// <param name="TrashedTargetLinks">Links whose target item was itself already in Trash.</param>
+/// <param name="UnwornAttachmentLinks">Links to attachment/object items that were not attached.</param>
+public sealed record OutfitCleanupResult(int DeadLinks, int TrashedTargetLinks, int UnwornAttachmentLinks)
+{
+    /// <summary>Total links moved to Trash.</summary>
+    public int Total => DeadLinks + TrashedTargetLinks + UnwornAttachmentLinks;
+}

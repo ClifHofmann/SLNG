@@ -38,6 +38,7 @@ public partial class InventoryPanel : SLNGWindow
     private Label _wornStatus = null!;
     private PopupMenu _wornMenu = null!;
     private Timer _wornTimer = null!;
+    private Button _wornCleanupBtn = null!;
 
     public override void _Ready()
     {
@@ -155,6 +156,18 @@ public partial class InventoryPanel : SLNGWindow
         wornStatusMargin.AddChild(_wornStatus);
         _wornView.AddChild(wornStatusMargin);
 
+        // FEAT-INV-03: prune dead / unworn-attachment links from the Current Outfit.
+        _wornCleanupBtn = new Button { Text = "🧹 Outfit aufräumen", Flat = true };
+        _wornCleanupBtn.TooltipText = "Tote Outfit-Links und nicht getragene Anhänge in den " +
+            "Papierkorb verschieben (Kleidung & Körperteile bleiben; alles wiederherstellbar).";
+        _wornCleanupBtn.Pressed += OnWornCleanupPressed;
+        var cleanupMargin = new MarginContainer();
+        cleanupMargin.AddThemeConstantOverride("margin_left", 8);
+        cleanupMargin.AddThemeConstantOverride("margin_right", 8);
+        cleanupMargin.AddThemeConstantOverride("margin_bottom", 4);
+        cleanupMargin.AddChild(_wornCleanupBtn);
+        _wornView.AddChild(cleanupMargin);
+
         _wornMenu = new PopupMenu();
         _wornMenu.AddItem("Ablegen", 0);
         _wornMenu.IdPressed += OnWornMenuPressed;
@@ -227,6 +240,9 @@ public partial class InventoryPanel : SLNGWindow
         if (Visible)
         {
             PopulateRoots();
+            // FEAT-INV-03: re-fetch the Current Outfit folder so an outfit change made in another
+            // viewer shows without a relog (no-op until PopulateRoots has loaded it once).
+            if (_session?.CurrentOutfitFolderId is { } cofId) RefreshFolder(cofId);
             if (_wornView.Visible) RefreshWorn();
         }
     }
@@ -356,6 +372,30 @@ public partial class InventoryPanel : SLNGWindow
             RefreshWorn();
             if (_session.CurrentOutfitFolderId is { } cofId) RefreshFolder(cofId);
         }).CallDeferred();
+    }
+
+    // FEAT-INV-03: prune the Current Outfit. Synchronous — reads the LibreMetaverse inventory
+    // store and sends MoveItem packets, no blocking I/O. Everything moves links to Trash, never
+    // real items, and never a Clothing/Bodypart link or a worn item.
+    private void OnWornCleanupPressed()
+    {
+        if (_session == null) return;
+
+        var r = _session.CleanUpCurrentOutfit();
+        if (r.Total == 0)
+        {
+            _wornStatus.Text = "Outfit ist sauber — nichts zu entfernen.";
+            return;
+        }
+
+        var parts = new System.Collections.Generic.List<string>();
+        int dead = r.DeadLinks + r.TrashedTargetLinks;
+        if (dead > 0) parts.Add($"{dead} tote(r) Link(s)");
+        if (r.UnwornAttachmentLinks > 0) parts.Add($"{r.UnwornAttachmentLinks} nicht getragene(r) Anhang/Anhänge");
+        _wornStatus.Text = $"{string.Join(" + ", parts)} → Papierkorb.";
+
+        RefreshWorn();
+        if (_session.CurrentOutfitFolderId is { } cofId) RefreshFolder(cofId);
     }
 
     private void PopulateRoots()

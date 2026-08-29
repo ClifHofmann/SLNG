@@ -2849,14 +2849,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     // the DetachAttachmentIntoInv packets above matched nothing, and the COF link
                     // that made it LOOK worn survived every refresh.
                     //
-                    // Only when nothing was actually attached: for a real attachment the sim
-                    // removes the link itself as part of the detach, and racing it from here could
-                    // strip the outfit entry of an item whose detach then failed.
+                    // FEAT-INV-03: this now runs for a real attachment too. It used to be gated on
+                    // !wasAttached, trusting the sim to drop the link as part of the detach -- but
+                    // OpenSim does not do that reliably, so the link survived and the item was
+                    // re-worn on the next login. The race the old comment worried about ("detach
+                    // then failed") is a non-issue here: wasAttached means LibreMetaverse had it in
+                    // live attachments, so the detach we just sent almost certainly took, and even
+                    // if not, the link is in Trash (recoverable), not purged.
                     //
                     // Moved to Trash rather than purged. The link is not the item -- the real
                     // object stays where it lives in inventory -- but an outfit is still user data
                     // and Trash keeps a mistake recoverable, unlike RemoveItemsAsync.
-                    if (!wasAttached && staleKeys.Count > 0 && TrashFolderId is { } trashId)
+                    if (staleKeys.Count > 0 && TrashFolderId is { } trashId)
                     {
                         var trashUuid = new LibreMetaverse.UUID(trashId);
                         foreach (var k in staleKeys)
@@ -2903,6 +2907,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (sim == null) return 0;
 
         var ids = new List<uint>();
+        var itemIds = new List<Guid>();
         var report = new List<(uint LocalId, LibreMetaverse.AttachmentPoint Point, string Name)>();
         foreach (var p in sim.ObjectsPrimitives.Values)
         {
@@ -2915,6 +2920,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (hudOnly && !isHud) continue;
             ids.Add(p.LocalID);
             report.Add((p.LocalID, ap, p.Properties?.Name ?? ""));
+
+            // FEAT-INV-03: the inventory item id travels in the AttachItemID name-value -- the
+            // same field the sim matches DetachAttachmentIntoInv on. Needed to trash the COF link
+            // so "Detach All" survives a relog.
+            var attId = ExtractAttachItemId(p);
+            if (attId != Guid.Empty) itemIds.Add(attId);
         }
 
         // Named, not just counted: "0 detached" and "3 detached but one is still on screen" are
@@ -2923,7 +2934,151 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             Console.Error.WriteLine($"[Detach] localId={localId} point={point} \"{name}\"");
 
         if (ids.Count > 0) _client.Objects.DetachObjects(sim, ids);
+
+        int linksRemoved = RemoveOutfitLinksForItems(itemIds);
+        if (linksRemoved > 0)
+            Console.Error.WriteLine($"[Detach] moved {linksRemoved} Current-Outfit link(s) to Trash");
+
         return ids.Count;
+    }
+
+    /// <summary>Pulls the <c>AttachItemID</c> name-value (the inventory item id) off an attachment
+    /// prim, or <see cref="Guid.Empty"/> if it isn't present / parseable. FEAT-INV-03.</summary>
+    private static Guid ExtractAttachItemId(Primitive p)
+    {
+        try
+        {
+            if (p.NameValues == null) return Guid.Empty;
+            foreach (var nv in p.NameValues)
+            {
+                if (nv.Name != "AttachItemID") continue;
+                if (LibreMetaverse.UUID.TryParse(nv.Value?.ToString() ?? string.Empty, out var u))
+                    return u.Guid;
+            }
+        }
+        catch { }
+        return Guid.Empty;
+    }
+
+    /// <summary>Moves every Current-Outfit link that points at one of <paramref name="itemIds"/>
+    /// (or whose own id is in the set) to Trash and drops it from the local store. Returns how
+    /// many were moved. Edits the outfit only -- the linked items stay in inventory. FEAT-INV-03.</summary>
+    private int RemoveOutfitLinksForItems(ICollection<Guid> itemIds)
+    {
+        if (itemIds.Count == 0 || TrashFolderId is not { } trashId) return 0;
+
+        var store = _client.Inventory.Store;
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
+        if (cofNode == null) return 0;
+
+        var trashUuid = new LibreMetaverse.UUID(trashId);
+        var want = new HashSet<Guid>(itemIds);
+        var linkKeys = new List<LibreMetaverse.UUID>();
+        foreach (var childNode in cofNode.Nodes.Values)
+        {
+            if (childNode.Data is not LibreMetaverse.InventoryItem link) continue;
+            var target = link.IsLink()
+                ? (link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID)
+                : link.UUID;
+            if (want.Contains(link.UUID.Guid) || want.Contains(target.Guid))
+                linkKeys.Add(link.UUID);
+        }
+
+        int moved = 0;
+        foreach (var k in linkKeys)
+        {
+            if (k == LibreMetaverse.UUID.Zero) continue;
+            try
+            {
+                _client.Inventory.MoveItem(k, trashUuid);
+                cofNode.Nodes.Remove(k);
+                moved++;
+            }
+            catch { }
+        }
+        return moved;
+    }
+
+    /// <summary>Walks up from <paramref name="node"/> to see if any ancestor folder is the Trash
+    /// folder. Bounded so a cyclic store can't hang it. FEAT-INV-03.</summary>
+    private bool IsUnderTrash(LibreMetaverse.InventoryNode node)
+    {
+        if (TrashFolderId is not { } trashId) return false;
+        var trashUuid = new LibreMetaverse.UUID(trashId);
+        var cur = node;
+        for (int guard = 0; guard < 32 && cur != null; guard++)
+        {
+            if (cur.Data != null && cur.Data.UUID == trashUuid) return true;
+            cur = cur.Parent;
+        }
+        return false;
+    }
+
+    /// <summary>Tidies the Current Outfit Folder: moves to Trash (a) links that resolve to
+    /// nothing, (b) links whose target item is already in Trash, and (c) links to
+    /// <c>AssetType.Object</c> items that are not currently attached. Never touches a
+    /// Clothing/Bodypart link (removing one needs a rebake -- FEAT-AVATAR-01) or a currently-worn
+    /// item. Links are trashed, not purged -- recoverable. FEAT-INV-03.</summary>
+    public OutfitCleanupResult CleanUpCurrentOutfit()
+    {
+        if (TrashFolderId is not { } trashId) return new OutfitCleanupResult(0, 0, 0);
+
+        var store = _client.Inventory.Store;
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
+        if (cofNode == null) return new OutfitCleanupResult(0, 0, 0);
+
+        var trashUuid = new LibreMetaverse.UUID(trashId);
+
+        HashSet<Guid> liveAttachIds;
+        try { liveAttachIds = _client.Appearance.GetAttachmentsByItemId().Keys.Select(k => k.Guid).ToHashSet(); }
+        catch { liveAttachIds = new HashSet<Guid>(); }
+
+        int dead = 0, trashedTarget = 0, unworn = 0;
+
+        bool Trash(LibreMetaverse.UUID linkKey)
+        {
+            if (linkKey == LibreMetaverse.UUID.Zero) return false;
+            try
+            {
+                _client.Inventory.MoveItem(linkKey, trashUuid);
+                cofNode!.Nodes.Remove(linkKey);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        foreach (var childNode in cofNode.Nodes.Values.ToList())
+        {
+            if (childNode.Data is not LibreMetaverse.InventoryItem link || !link.IsLink()) continue;
+
+            var targetUuid = link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID;
+
+            if (targetUuid == LibreMetaverse.UUID.Zero)
+            {
+                if (Trash(link.UUID)) dead++;
+                continue;
+            }
+
+            var targetNode = store?.GetNodeOrDefault(targetUuid);
+            if (targetNode != null && IsUnderTrash(targetNode))
+            {
+                if (Trash(link.UUID)) trashedTarget++;
+                continue;
+            }
+
+            // Only prune an attachment we can positively identify as an Object and know is not
+            // worn. An uncached target, or any Clothing/Bodypart, is left alone.
+            if (targetNode?.Data is LibreMetaverse.InventoryItem target
+                && target.AssetType == LibreMetaverse.AssetType.Object
+                && !liveAttachIds.Contains(targetUuid.Guid))
+            {
+                if (Trash(link.UUID)) unworn++;
+            }
+        }
+
+        return new OutfitCleanupResult(dead, trashedTarget, unworn);
     }
 
     /// <summary>
