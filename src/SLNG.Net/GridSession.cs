@@ -1743,15 +1743,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>The modern SL VisualParams set is 218 bytes; a materially shorter relay is
-    /// incomplete and must not be seeded or sent. FEAT-AVATAR-01.</summary>
+    /// incomplete. FEAT-AVATAR-01.</summary>
     internal const int MinHealthyVisualParams = 200;
 
     private bool _visualParamsSeeded;
 
     /// <summary>True if <paramref name="vp"/> reads as a genuine shape: long enough, and not the
-    /// all-zero / all-128 array of a never-populated default set. This is the gate the
-    /// FEAT-AVATAR-01 landmine calls for — no wearable edit (each schedules an AgentSetAppearance)
-    /// may proceed unless LibreMetaverse holds a set that passes this.</summary>
+    /// all-zero / all-128 array of a never-populated default set.</summary>
     internal static bool VisualParamsHealthy(byte[]? vp)
     {
         if (vp == null || vp.Length < MinHealthyVisualParams) return false;
@@ -1762,11 +1760,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>Copies the simulator's self-appearance VisualParams into
-    /// <c>AppearanceManager.MyVisualParameters</c> once, when LibreMetaverse holds nothing better.
-    /// LMV's own workflow (which would populate it) is disabled, but the sim relays our real shape
-    /// in every self <c>AvatarAppearance</c> — so this is the only place MyVisualParameters gets a
-    /// truthful value, and it is what stops a later wearable-edit rebake from sending an empty set
-    /// (the 2026-08-02 flattening).</summary>
+    /// <c>AppearanceManager.MyVisualParameters</c> once, when LibreMetaverse holds nothing better,
+    /// so <c>LogVisualParamHealth()</c> reports a real value while LMV's own workflow is disabled.
+    ///
+    /// NOTE: this does NOT make a wearable-edit rebake safe. <c>AppearanceManager.MakeAppearancePacket</c>
+    /// rebuilds every param from the decoded <c>wearable.Asset</c> (falling back to
+    /// <c>DefaultValue</c> when the asset was never downloaded) and then OVERWRITES
+    /// <c>MyVisualParameters</c> — it never reads the seeded value. FEAT-AVATAR-01 Phase 1's
+    /// wearable send is reverted for exactly this reason.</summary>
     private void TrySeedVisualParams(List<byte>? incoming)
     {
         if (_visualParamsSeeded) return;
@@ -1781,13 +1782,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         _client.Appearance.MyVisualParameters = arr!;
         _visualParamsSeeded = true;
-        Console.Error.WriteLine($"[VisualParams] seeded {arr!.Length} params from self AvatarAppearance relay");
+        Console.Error.WriteLine($"[VisualParams] seeded {arr!.Length} params from self AvatarAppearance relay (diagnostic only)");
     }
 
-    /// <summary>Which LibreMetaverse call a "Wear" / "Detach" on an inventory item routes to. A
-    /// system wearable (Clothing/Bodypart layer — Alpha, Skin, Shape, Tattoo, Universal, …) is NOT
-    /// an attachment: the sim ignores <c>DetachAttachmentIntoInv</c> for it, so it goes through
-    /// <c>AppearanceManager.AddToOutfit</c> / <c>RemoveFromOutfit</c> instead (FEAT-AVATAR-01).</summary>
+    /// <summary>Whether a "Wear" / "Detach" on an inventory item targets a system wearable
+    /// (Clothing/Bodypart layer — Alpha, Skin, Shape, Tattoo, Universal, …) rather than an
+    /// attachment. FEAT-AVATAR-01.</summary>
     internal enum WearableKind { Attachment, Wearable }
 
     /// <summary>Classifies a resolved inventory item. Pure function of the two facts that decide it,
@@ -1799,12 +1799,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
            || assetType == (int)LibreMetaverse.AssetType.Bodypart
             ? WearableKind.Wearable
             : WearableKind.Attachment;
-
-    /// <summary>True when a wearable change is safe to send: LibreMetaverse holds a healthy
-    /// VisualParams set, so the <c>AgentSetAppearance</c> that <c>AddToOutfit</c> /
-    /// <c>RemoveFromOutfit</c> unconditionally schedules carries the avatar's real shape and cannot
-    /// flatten it.</summary>
-    private bool AppearanceEditSafe => VisualParamsHealthy(_client.Appearance.MyVisualParameters);
 
     private void OnAppearanceSet(object? sender, AppearanceSetEventArgs e)
     {
@@ -2776,9 +2770,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>
-    /// Wears an inventory item. A system wearable (Clothing/Bodypart layer) is added to the
-    /// current outfit via <c>AppearanceManager.AddToOutfit</c>; an attachment/object is attached
-    /// via <c>Attach</c>. Handles both real inventory item IDs and link IDs.
+    /// Wears an inventory item. An attachment/object is attached via <c>Attach</c>. A system
+    /// wearable (Clothing/Bodypart layer) is currently a no-op with a log line — see the comment
+    /// in the wearable branch (FEAT-AVATAR-01). Handles both real inventory item IDs and link IDs.
     /// </summary>
     public Task AttachItemAsync(Guid itemId, byte attachPoint = 0, bool replace = false)
     {
@@ -2794,21 +2788,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         if (itemNode?.Data is LibreMetaverse.InventoryItem realItem)
         {
-            // FEAT-AVATAR-01: route wearables through the outfit path, not Attach (the sim
-            // ignores an attach for a Clothing/Bodypart layer). AddToOutfit schedules a rebake
-            // unconditionally, so only proceed when the shape baseline is safe.
-            bool isWearable = ClassifyItem(realItem is LibreMetaverse.InventoryWearable, (int)realItem.AssetType)
-                == WearableKind.Wearable;
-            if (isWearable)
+            // FEAT-AVATAR-01: a system wearable is not an attachment, but the outfit path that
+            // would apply it (AddToOutfit) unconditionally triggers AppearanceManager's rebake,
+            // and MakeAppearancePacket builds that AgentSetAppearance from decoded wearable assets
+            // that were never downloaded (SendAppearance=false) — so it sends the DEFAULT shape and
+            // the sim persists it (the 2026-08-02 incident; reproduced live 2026-08-29). Until a
+            // safe rebake path exists (Phase 2), do NOT send anything for a wearable.
+            if (ClassifyItem(realItem is LibreMetaverse.InventoryWearable, (int)realItem.AssetType)
+                == WearableKind.Wearable)
             {
-                if (!AppearanceEditSafe)
-                {
-                    Console.Error.WriteLine("[Appearance] wear refused: visual params not seeded — " +
-                        "cannot rebake safely (FEAT-AVATAR-01)");
-                    return Task.CompletedTask;
-                }
-                bool isBodypart = realItem.AssetType == LibreMetaverse.AssetType.Bodypart;
-                _client.Appearance.AddToOutfit(realItem, replace || isBodypart);
+                Console.Error.WriteLine($"[Appearance] wear of \"{realItem.Name}\" ({realItem.AssetType}) " +
+                    "not sent: system-wearable rebake path is unsafe while SendAppearance is off (FEAT-AVATAR-01)");
                 return Task.CompletedTask;
             }
 
@@ -2830,10 +2820,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>
-    /// Takes an inventory item off the agent. A system wearable (Clothing/Bodypart layer) is
-    /// removed from the current outfit via <c>AppearanceManager.RemoveFromOutfit</c>; an
-    /// attachment is removed via <c>DetachAttachmentIntoInv</c> (plus stale-COF-link cleanup).
-    /// Handles both real inventory item IDs and link IDs inside Current Outfit.
+    /// Takes an inventory item off the agent. An attachment is removed via
+    /// <c>DetachAttachmentIntoInv</c> (plus stale-COF-link cleanup). A system wearable
+    /// (Clothing/Bodypart layer) is currently NOT removed — see the comment in the wearable branch
+    /// (FEAT-AVATAR-01). Handles both real inventory item IDs and link IDs inside Current Outfit.
     /// </summary>
     public Task<DetachResult> DetachItemAsync(Guid itemId)
     {
@@ -2841,12 +2831,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var store = _client.Inventory.Store;
         var node = store?.GetNodeOrDefault(itemUuid);
 
-        // FEAT-AVATAR-01: a system wearable is not an attachment — the sim ignores
-        // DetachAttachmentIntoInv for a Clothing/Bodypart layer, which is the whole "I click
-        // Detach and nothing happens" report. Route it through RemoveFromOutfit, which drops it
-        // from the outfit, sends AgentIsNowWearing and schedules a rebake. RemoveFromOutfit skips
-        // body parts internally (a Shape/Skin can only be replaced, never removed), matching the
-        // viewer. A rebake sends an AgentSetAppearance, so refuse unless the shape baseline is safe.
+        // FEAT-AVATAR-01: a system wearable is not an attachment (the sim ignores
+        // DetachAttachmentIntoInv for a Clothing/Bodypart layer), but the only path that would
+        // take it off — AppearanceManager.RemoveFromOutfit — unconditionally triggers a rebake,
+        // and MakeAppearancePacket builds that AgentSetAppearance from decoded wearable assets that
+        // were never downloaded (SendAppearance=false), so it sends the DEFAULT shape and the sim
+        // persists it. Reproduced live 2026-08-29 (removing an Alpha layer flattened the avatar).
+        // Until Phase 2 gives a safe rebake path, do NOT send anything for a wearable.
         {
             var real = node?.Data as LibreMetaverse.InventoryItem;
             if (real is { } && real.IsLink())
@@ -2854,15 +2845,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (real is { }
                 && ClassifyItem(real is LibreMetaverse.InventoryWearable, (int)real.AssetType) == WearableKind.Wearable)
             {
-                if (!AppearanceEditSafe)
-                {
-                    Console.Error.WriteLine("[Appearance] detach refused: visual params not seeded — " +
-                        "cannot rebake safely (FEAT-AVATAR-01)");
-                    return Task.FromResult(new DetachResult(false, 0));
-                }
-                _client.Appearance.RemoveFromOutfit(real);
-                Console.Error.WriteLine($"[Appearance] removed worn layer \"{real.Name}\" ({real.AssetType}) via RemoveFromOutfit");
-                return Task.FromResult(new DetachResult(false, 0, WearableRemoved: true));
+                Console.Error.WriteLine($"[Appearance] detach of \"{real.Name}\" ({real.AssetType}) " +
+                    "not sent: system-wearable rebake path is unsafe while SendAppearance is off (FEAT-AVATAR-01)");
+                return Task.FromResult(new DetachResult(false, 0));
             }
         }
 

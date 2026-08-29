@@ -2,7 +2,9 @@
 
 - **Feature ID:** `FEAT-AVATAR-01`
 - **Track:** `net` / `render`
-- **Status:** `🚧 In Progress` (Phase 1 landed; needs in-world A/B before Phase 2)
+- **Status:** `🚧 In Progress` (Phase 1's wearable send was reverted after a live corruption repro
+  2026-08-29 — see "The second load-bearing gotcha"; only the param-seed + classification + tests
+  remain)
 - **Owner:** `claude`
 - **Agent:** `protocol-re` (net side) → `graphics-engineer` (bake/render side)
 - **Dep:** `M4-3` (Appearance & BoM)
@@ -68,24 +70,34 @@ Therefore:
 - it **is also** the exact `AgentSetAppearance` path the 2026-08-02 `SendAppearance=false` guard
   was protecting — so the guard alone does not make these calls safe.
 
-### The safe lever
-The simulator relays the **self** `AvatarAppearance` at login with a full ~218-byte
-`VisualParams` block (SLNG's morph pipeline, `AvatarComponent.VisualParams` →
-`AvatarShapeService`, already consumes it). LibreMetaverse never copies that block into
-`AppearanceManager.MyVisualParameters` — that field is only populated by its own (disabled)
-appearance workflow (SSB response `visual_params`, or the client-side bake decoding wearable
-assets). `MyVisualParameters` is a **public field**, settable from `GridSession`.
+### The second load-bearing gotcha (found by a live corruption repro, 2026-08-29)
+`AppearanceManager.MakeAppearancePacket()` — which builds the outgoing `AgentSetAppearance` —
+**does not read `MyVisualParameters` at all.** It rebuilds every one of the 218 (or 251 with
+Physics) params from `wearable.Asset.Params`, and for any param not supplied by a worn wearable's
+**decoded asset** it uses `vp.DefaultValue`. Then it *overwrites* `MyVisualParameters` with the
+result (`AppearanceManager.cs:2500-2544`).
 
-Seeding `MyVisualParameters` from the login relay makes any subsequent `AgentSetAppearance`
-carry the avatar's real shape as its baseline — directly neutralising the 2026-08-02 root cause
-("empty params → simulator stores defaults"). Confirmed still-empty on 3.1.3: every recent
-`godot.log` shows `[VisualParams] LibreMetaverse holds NO visual parameters`.
+With `SendAppearance = false` LibreMetaverse never downloads/decodes the wearable assets, so
+`wearable.Asset` is `null` for every wearable → every param falls to `DefaultValue` → the packet
+is the **default shape**. Seeding `MyVisualParameters` from the login relay does nothing to stop
+this — the seed is never consulted and is then clobbered.
 
-Residual risk: on a **client-side-baking** region `RequestSetAppearanceAsync` rebuilds
-`MyVisualParameters` from *downloaded wearable assets*, overwriting the seed. If those downloads
-succeed the params are still correct (that is their authoritative source); if one fails, LMV's
-own behaviour applies. This is why Phase 1 does not flip the auto-triggers and why acceptance
-criterion 4 (Firestorm A/B) can only be closed live.
+The client-side-bake branch of `RequestSetAppearanceAsync` (3.1.3) *does* call
+`GatherAgentWearablesAsync` + `DownloadWearablesAsync` + `CreateBakesAsync` before sending, so
+**if** those downloads all succeed the packet carries the real shape. Whether they succeed on a
+given grid/session is not observable from SLNG's log, and a single failure sends defaults.
+
+**Live repro 2026-08-29 (`v0.11.10-alpha`):** the user removed an "Apollo Meshbody Full Alpha"
+Clothing layer via the Phase-1 `RemoveFromOutfit` route; `godot.log` shows the seed
+(`[VisualParams] seeded 253 params`) and then `[Appearance] removed worn layer … via
+RemoveFromOutfit`, after which the avatar rendered as nothing. This is the 2026-08-02 failure
+mode. Phase 1's wearable **send was reverted** the same day — `AttachItemAsync` /
+`DetachItemAsync` now classify the item and, for a wearable, log and send **nothing**.
+
+### The param-seed (kept — diagnostic only)
+`GridSession.OnAvatarAppearance` still seeds `MyVisualParameters` from the self relay. It is
+harmless and lets `LogVisualParamHealth()` report a real value, but per the gotcha above it is
+**not** a safety mechanism.
 
 ## Constraints / landmines
 - **Do not just flip `SendAppearance = true`.** A wearable edit must be refused unless
@@ -97,28 +109,34 @@ criterion 4 (Firestorm A/B) can only be closed live.
 
 ## Phase plan
 
-### Phase 1 — routing split + param seed (landed, `v0.11.10-alpha`) — no auto-trigger change
-1. **Seed `MyVisualParameters`.** `GridSession.OnAvatarAppearance`, for the self avatar: if the
-   incoming `VisualParams` passes `VisualParamsHealthy()` and LibreMetaverse currently holds a
-   shorter/empty set, copy it into `_client.Appearance.MyVisualParameters`. Log
-   `[VisualParams] seeded N params from self AvatarAppearance relay`.
-2. **Classify + route.** `ClassifyItem(bool isInventoryWearable, int assetType)` →
-   `{ Wearable, Attachment }` (`InventoryWearable`, or `AssetType.Clothing` / `AssetType.Bodypart`
-   → `Wearable`). `AttachItemAsync` routes `Wearable` → `AddToOutfit(item, replace || isBodypart)`;
-   `DetachItemAsync` routes `Wearable` → `RemoveFromOutfit(item)`. Attachments keep the current
-   `Attach` / `Detach` path unchanged.
-3. **Gate.** If the item is a `Wearable` but `AppearanceEditSafe` is false (params not seeded /
-   not healthy), send **nothing** — log `[Appearance] wearable edit refused: <reason>` and return
-   a result the UI surfaces. A rebake can then never fire on an empty param set.
-4. `SendAppearance` stays `false`: the login / region-change / rebake-request auto-triggers are
-   still off; only a user-initiated wearable edit produces a send, and it now carries a real shape.
-5. `DetachResult` gains `bool WearableRemoved`; `InventoryPanel` reports "Removed worn layer —
-   rebaking…" for that case.
+### Phase 1 — landed then partly reverted (`v0.11.10` → `v0.11.11-alpha`)
+Kept:
+- **Param seed.** `GridSession.OnAvatarAppearance` seeds `MyVisualParameters` from the healthy
+  self relay (diagnostic only — see the gotcha).
+- **Classification.** `ClassifyItem(bool isInventoryWearable, int assetType)` → `{ Wearable,
+  Attachment }`. `AttachItemAsync` / `DetachItemAsync` use it.
+- Tests for `ClassifyItem` / `VisualParamsHealthy` / the seed.
 
-### Phase 2 — enable the auto-triggers (needs live A/B first)
-Once the Firestorm A/B confirms Phase 1 does not regress the shape: flip `SendAppearance = true`
-(guarded by the same health check) so region-change re-bakes and sim `RebakeAvatarTextures`
-requests are honoured, and so a fresh login computes a bake instead of relying on the relay.
+Reverted (2026-08-29 live repro):
+- The wearable **send**. `AttachItemAsync` / `DetachItemAsync` no longer call `AddToOutfit` /
+  `RemoveFromOutfit` — for a wearable they log `[Appearance] … not sent: system-wearable rebake
+  path is unsafe while SendAppearance is off (FEAT-AVATAR-01)` and return `DetachResult(false, 0)`.
+  A `DetachAttachmentIntoInv` for a Clothing/Bodypart layer was always a no-op, so this is not a
+  regression — the layer still cannot be removed, but nothing gets corrupted.
+
+### Phase 2 — a rebake path that cannot send defaults
+The problem is structural: any call that ends in `MakeAppearancePacket` needs the worn wearable
+assets **decoded** first, or it sends `DefaultValue` for every param. Options to evaluate:
+- **SSB-only.** If `AppearanceManager.ServerBakingRegion()` **and** the `UpdateAvatarAppearance`
+  cap is present, `RequestSetAppearanceAsync` takes the SSB branch, which POSTs only
+  `{cof_version}` and lets the **server** composite — no client-computed shape leaves the viewer.
+  Gate the wearable send on that being true; otherwise keep refusing. (OSGrid support varies —
+  measure.)
+- **Force a wearable download first.** Drive `GatherAgentWearablesAsync` + `DownloadWearablesAsync`
+  (or a full guarded `SendAppearance=true` + `RequestSetAppearance`) and only send once every
+  `_client.Appearance.GetWearables()` entry has a non-null `.Asset`. Needs a real success signal,
+  not a timer.
+- Either way the first live test must be A/B'd in Firestorm on a throwaway/non-critical layer.
 
 ### Phase 3 — render verification (likely no code)
 Confirm `AvatarRenderer.UpdateVisual` step 3 + `RecomputeMeshVisibility` (M4-7) pick up the fresh
@@ -134,10 +152,10 @@ bake ids after a wearable edit. Expected to already work once real bakes arrive.
 - [x] Unit test: wearable vs attachment routing picks the right LibreMetaverse call.
 
 ## Affected files
-- `src/SLNG.Net/GridSession.cs` — `OnAvatarAppearance` param seed; `ClassifyItem` /
-  `VisualParamsHealthy` / `AppearanceEditSafe` helpers; `AttachItemAsync` / `DetachItemAsync`
-  routing split.
-- `src/SLNG.Core/AvatarProfile.cs` — `DetachResult.WearableRemoved`.
-- `app/scripts/UI/InventoryPanel.cs` — surface the wearable-removed / refused messages.
-- `tests/SLNG.Net.Tests/GridSessionTests.cs` — classification + health-check + routing tests.
+- `src/SLNG.Net/GridSession.cs` — `OnAvatarAppearance` param seed (`TrySeedVisualParams`);
+  `ClassifyItem` / `VisualParamsHealthy` helpers; `AttachItemAsync` / `DetachItemAsync` classify
+  the item and refuse (log, no send) for a wearable.
+- `src/SLNG.Core/AvatarProfile.cs` — `DetachResult.WearableRemoved` field added (kept for Phase 2;
+  currently never set true).
+- `tests/SLNG.Net.Tests/GridSessionTests.cs` — classification + health-check + seed tests.
 - `app/scripts/AvatarRenderer.cs` — Phase 3 verify only.
