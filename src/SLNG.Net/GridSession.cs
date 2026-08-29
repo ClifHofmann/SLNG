@@ -3027,15 +3027,38 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var store = _client.Inventory.Store;
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
         var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
-        if (cofNode == null) return new OutfitCleanupResult(0, 0, 0);
+        if (cofNode == null)
+        {
+            Console.Error.WriteLine("[OutfitCleanup] no Current Outfit folder in the store — nothing to do");
+            return new OutfitCleanupResult(0, 0, 0);
+        }
 
         var trashUuid = new LibreMetaverse.UUID(trashId);
 
-        HashSet<Guid> liveAttachIds;
-        try { liveAttachIds = _client.Appearance.GetAttachmentsByItemId().Keys.Select(k => k.Guid).ToHashSet(); }
-        catch { liveAttachIds = new HashSet<Guid>(); }
+        // "Worn right now" from the SCENE, not LibreMetaverse's GetAttachmentsByItemId() cache --
+        // that cache lags a detach, which is exactly the "I took it all off but the outfit still
+        // lists it" case. A prim parented to our avatar carries the item id in its AttachItemID
+        // name-value.
+        var wornAttachItemIds = new HashSet<Guid>();
+        try
+        {
+            var sim = _client.Network.CurrentSim;
+            if (sim != null)
+                foreach (var p in sim.ObjectsPrimitives.Values)
+                {
+                    if (p == null || p.ParentID != _client.Self.LocalID) continue;
+                    var aid = ExtractAttachItemId(p);
+                    if (aid != Guid.Empty) wornAttachItemIds.Add(aid);
+                }
+        }
+        catch { }
+
+        HashSet<Guid> cacheAttachIds;
+        try { cacheAttachIds = _client.Appearance.GetAttachmentsByItemId().Keys.Select(k => k.Guid).ToHashSet(); }
+        catch { cacheAttachIds = new HashSet<Guid>(); }
 
         int dead = 0, trashedTarget = 0, unworn = 0;
+        int links = 0, wearableSkipped = 0, wornSkipped = 0, uncachedSkipped = 0;
 
         bool Trash(LibreMetaverse.UUID linkKey)
         {
@@ -3052,6 +3075,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         foreach (var childNode in cofNode.Nodes.Values.ToList())
         {
             if (childNode.Data is not LibreMetaverse.InventoryItem link || !link.IsLink()) continue;
+            links++;
 
             var targetUuid = link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID;
 
@@ -3068,15 +3092,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 continue;
             }
 
-            // Only prune an attachment we can positively identify as an Object and know is not
-            // worn. An uncached target, or any Clothing/Bodypart, is left alone.
-            if (targetNode?.Data is LibreMetaverse.InventoryItem target
-                && target.AssetType == LibreMetaverse.AssetType.Object
-                && !liveAttachIds.Contains(targetUuid.Guid))
-            {
-                if (Trash(link.UUID)) unworn++;
-            }
+            var target = targetNode?.Data as LibreMetaverse.InventoryItem;
+            if (target == null) { uncachedSkipped++; continue; }
+            if (target.AssetType != LibreMetaverse.AssetType.Object) { wearableSkipped++; continue; }
+            if (wornAttachItemIds.Contains(targetUuid.Guid)) { wornSkipped++; continue; }
+
+            if (Trash(link.UUID)) unworn++;
         }
+
+        Console.Error.WriteLine(
+            $"[OutfitCleanup] links={links} scene-worn={wornAttachItemIds.Count} cache-worn={cacheAttachIds.Count} " +
+            $"| trashed dead={dead} target-in-trash={trashedTarget} unworn-attachment={unworn} " +
+            $"| kept worn={wornSkipped} clothing/bodypart={wearableSkipped} uncached={uncachedSkipped}");
 
         return new OutfitCleanupResult(dead, trashedTarget, unworn);
     }
