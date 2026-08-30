@@ -253,6 +253,13 @@ public class GridSessionTests
         Assert.Equal(0, await session.WearOutfitAttachmentsAsync(Guid.NewGuid()));
     }
 
+    [Fact]
+    public async Task GetOutfitContentsAsync_without_connection_is_empty()
+    {
+        using var session = new GridSession();
+        Assert.Empty(await session.GetOutfitContentsAsync(Guid.NewGuid()));
+    }
+
     // MVP2-3: minimap radar. OnCoarseLocationUpdate is private (same LMV-boundary reasoning as
     // OnScriptDialog above), invoked via reflection with a hand-built CoarseLocationUpdateEventArgs
     // -- the same shape GridManager.CoarseLocationHandler raises off the wire packet.

@@ -507,11 +507,11 @@ public partial class InventoryPanel : SLNGWindow
         _ = LoadOutfitContentsAsync(item, folderId);
     }
 
-    private async System.Threading.Tasks.Task LoadOutfitContentsAsync(TreeItem row, Guid folderId)
+    private async System.Threading.Tasks.Task LoadOutfitContentsAsync(TreeItem row, Guid folderId, bool isRetry = false)
     {
-        System.Collections.Generic.IReadOnlyList<SLNG.Core.InventoryEntry> children =
-            System.Array.Empty<SLNG.Core.InventoryEntry>();
-        try { children = await _session!.FetchInventoryChildrenAsync(folderId).ConfigureAwait(false); }
+        System.Collections.Generic.IReadOnlyList<SLNG.Core.WornItem> items =
+            System.Array.Empty<SLNG.Core.WornItem>();
+        try { items = await _session!.GetOutfitContentsAsync(folderId).ConfigureAwait(false); }
         catch (Exception ex) { GD.PrintErr($"[Outfits] contents fetch failed: {ex.Message}"); }
 
         Callable.From(() =>
@@ -521,7 +521,6 @@ public partial class InventoryPanel : SLNGWindow
             var child = row.GetFirstChild();
             while (child != null) { var next = child.GetNext(); child.Free(); child = next; }
 
-            var items = children.Where(c => !c.IsFolder).ToList();
             if (items.Count == 0)
             {
                 var empty = _outfitsTree.CreateItem(row);
@@ -530,19 +529,36 @@ public partial class InventoryPanel : SLNGWindow
                 empty.SetCustomColor(0, new Color(1, 1, 1, 0.4f));
                 return;
             }
-            foreach (var e in items.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
+
+            bool anyPending = false;
+            foreach (var it in items.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
             {
                 var c = _outfitsTree.CreateItem(row);
-                string icon = e.AssetType switch
+                string icon = it.Category switch
                 {
-                    13 => "🧍", // Bodypart
-                    5 => "👕",  // Clothing
-                    6 => "📦",  // Object
-                    _ => "•"
+                    SLNG.Core.WornCategory.BodyPart => "🧍",
+                    SLNG.Core.WornCategory.Clothing => "👕",
+                    SLNG.Core.WornCategory.Hud => "🖥",
+                    _ => "📦",
                 };
-                c.SetText(0, $"{icon} {e.Name}");
-                c.SetMetadata(0, ""); // child rows are display-only; keeps wear/menu handlers off them
+                string name = string.IsNullOrEmpty(it.Name) ? "(lädt…)" : it.Name;
+                if (string.IsNullOrEmpty(it.Name)) anyPending = true;
+                // A saved outfit item that you're also wearing right now is gold, like the Angezogen tab.
+                c.SetText(0, $"{icon} {name}");
+                c.SetMetadata(0, ""); // child rows are display-only
                 c.SetSelectable(0, false);
+                if (it.Live) c.SetCustomColor(0, new Color(1.0f, 0.88f, 0.4f));
+            }
+
+            // Names arrive from RequestFetchInventory a moment later — reload once.
+            if (anyPending && !isRetry)
+            {
+                var t = GetTree().CreateTimer(1.3);
+                t.Timeout += () =>
+                {
+                    if (IsInstanceValid(this) && IsInstanceValid(row) && !row.Collapsed)
+                        _ = LoadOutfitContentsAsync(row, folderId, isRetry: true);
+                };
             }
         }).CallDeferred();
     }

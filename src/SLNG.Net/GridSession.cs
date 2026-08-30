@@ -3364,21 +3364,36 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (MyOutfitsFolderId is not { } outfitsId) return null;
         name = string.IsNullOrWhiteSpace(name) ? "Outfit" : name.Trim();
 
+        // First pass fires RequestFetchInventory for any worn item whose name isn't cached yet
+        // (wearables have no in-scene prim to fall back on). Give it a moment, then re-read so the
+        // links get their real names instead of a "Link" placeholder.
+        var worn = GetWornItems();
+        if (worn.Any(w => w.Live && string.IsNullOrEmpty(w.Name)))
+        {
+            try { await Task.Delay(700, ct).ConfigureAwait(false); } catch (OperationCanceledException) { throw; }
+            worn = GetWornItems();
+        }
+
         var folder = _client.Inventory.CreateFolder(new LibreMetaverse.UUID(outfitsId), name);
         if (folder == LibreMetaverse.UUID.Zero) return null;
 
-        foreach (var w in GetWornItems())
+        foreach (var w in worn)
         {
             if (!w.Live || w.ItemId == Guid.Empty) continue;
             ct.ThrowIfCancellationRequested();
+
+            var linkName = w.Name;
+            if (string.IsNullOrEmpty(linkName))
+                linkName = (_client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(w.ItemId))?.Data
+                    as LibreMetaverse.InventoryItem)?.Name ?? string.Empty;
+
             var invType = w.Category is WornCategory.BodyPart or WornCategory.Clothing
                 ? LibreMetaverse.InventoryType.Wearable
                 : LibreMetaverse.InventoryType.Object;
             try
             {
                 await _client.Inventory.CreateLinkAsync(
-                    folder, new LibreMetaverse.UUID(w.ItemId),
-                    string.IsNullOrEmpty(w.Name) ? "Link" : w.Name, string.Empty,
+                    folder, new LibreMetaverse.UUID(w.ItemId), linkName, string.Empty,
                     invType, LibreMetaverse.UUID.Zero, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { throw; }
@@ -3386,6 +3401,51 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
 
         return folder.Guid;
+    }
+
+    /// <summary>The contents of a saved outfit folder as resolved <see cref="WornItem"/>s — each
+    /// link's <b>target</b> name / asset type (not the link's own), category, and whether that
+    /// item is worn right now (<c>Live</c>). Fires <c>RequestFetchInventory</c> for any target the
+    /// store doesn't have yet, so a second call fills the gaps. FEAT-INV-04.</summary>
+    public async Task<IReadOnlyList<WornItem>> GetOutfitContentsAsync(Guid outfitFolderId, CancellationToken ct = default)
+    {
+        var children = await FetchInventoryChildrenAsync(outfitFolderId, ct).ConfigureAwait(false);
+        var store = _client.Inventory.Store;
+        var wornNow = new HashSet<Guid>(GetWornItems().Where(w => w.Live).Select(w => w.ItemId));
+
+        var result = new List<WornItem>();
+        var toFetch = new Dictionary<LibreMetaverse.UUID, LibreMetaverse.UUID>();
+
+        foreach (var e in children)
+        {
+            if (e.IsFolder) continue;
+
+            var targetId = e.IsLink && e.LinkTargetId != Guid.Empty ? e.LinkTargetId : e.Id;
+            var targetUuid = new LibreMetaverse.UUID(targetId);
+            var target = store?.GetNodeOrDefault(targetUuid)?.Data as LibreMetaverse.InventoryItem;
+
+            int assetType = target != null ? (int)target.AssetType : e.AssetType;
+            string name = target?.Name ?? string.Empty;
+            // The link's own name is only useful if it isn't the "Link" placeholder.
+            if (name.Length == 0 && !string.Equals(e.Name, "Link", StringComparison.OrdinalIgnoreCase))
+                name = e.Name;
+            if (name.Length == 0 && targetUuid != LibreMetaverse.UUID.Zero
+                && _wornDetailFetchRequested.Add(targetUuid.Guid))
+                toFetch[targetUuid] = _client.Self.AgentID;
+
+            var cat = assetType == (int)LibreMetaverse.AssetType.Bodypart ? WornCategory.BodyPart
+                : assetType == (int)LibreMetaverse.AssetType.Clothing ? WornCategory.Clothing
+                : assetType == (int)LibreMetaverse.AssetType.Object ? WornCategory.Attachment
+                : WornCategory.Clothing; // unresolved link — usually a wearable; refines once fetched
+
+            result.Add(new WornItem(targetId, name, cat, null, assetType, Live: wornNow.Contains(targetId)));
+        }
+
+        if (toFetch.Count > 0)
+        {
+            try { _client.Inventory.RequestFetchInventory(toFetch); } catch { }
+        }
+        return result;
     }
 
     /// <summary>Wears the <b>attachment</b> part of a saved outfit — every link in
