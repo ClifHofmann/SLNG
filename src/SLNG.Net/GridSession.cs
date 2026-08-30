@@ -2546,6 +2546,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// attachment by name without a dedicated UI (browse to it in the existing inventory tree).</summary>
     public Guid? CurrentOutfitFolderId => _client.Inventory.FindFolderForType(FolderType.CurrentOutfit).Guid;
 
+    /// <summary>Folder id of the <c>#Outfits</c> system folder (each direct subfolder is one saved
+    /// outfit), or null if the grid doesn't have one / before login. FEAT-INV-04.</summary>
+    public Guid? MyOutfitsFolderId
+    {
+        get
+        {
+            var id = _client.Inventory.FindFolderForType(FolderType.MyOutfits);
+            return id == LibreMetaverse.UUID.Zero ? null : id.Guid;
+        }
+    }
+
     /// <summary>Checks if a folder is the Landmarks system folder or any descendant subfolder of it.</summary>
     public bool IsInLandmarksSubtree(Guid folderId)
     {
@@ -3327,6 +3338,84 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
 
         return byId.Values.ToList();
+    }
+
+    /// <summary>The saved outfits — every direct subfolder of the <c>#Outfits</c> system folder.
+    /// Empty if the grid has no <c>#Outfits</c> folder or we're not connected. FEAT-INV-04.</summary>
+    public async Task<IReadOnlyList<OutfitEntry>> GetSavedOutfitsAsync(CancellationToken ct = default)
+    {
+        if (MyOutfitsFolderId is not { } outfitsId) return Array.Empty<OutfitEntry>();
+
+        var children = await FetchInventoryChildrenAsync(outfitsId, ct).ConfigureAwait(false);
+        var result = new List<OutfitEntry>();
+        foreach (var e in children)
+            if (e.IsFolder)
+                result.Add(new OutfitEntry(e.Id, e.Name));
+        result.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+        return result;
+    }
+
+    /// <summary>Saves the current outfit as a new <c>#Outfits</c> subfolder — a link to every item
+    /// currently worn (body parts, wearables, attachments). Pure inventory writes, no rebake.
+    /// Returns the new folder id, or null if there's no <c>#Outfits</c> folder / the create failed.
+    /// FEAT-INV-04.</summary>
+    public async Task<Guid?> SaveCurrentOutfitAsync(string name, CancellationToken ct = default)
+    {
+        if (MyOutfitsFolderId is not { } outfitsId) return null;
+        name = string.IsNullOrWhiteSpace(name) ? "Outfit" : name.Trim();
+
+        var folder = _client.Inventory.CreateFolder(new LibreMetaverse.UUID(outfitsId), name);
+        if (folder == LibreMetaverse.UUID.Zero) return null;
+
+        foreach (var w in GetWornItems())
+        {
+            if (!w.Live || w.ItemId == Guid.Empty) continue;
+            ct.ThrowIfCancellationRequested();
+            var invType = w.Category is WornCategory.BodyPart or WornCategory.Clothing
+                ? LibreMetaverse.InventoryType.Wearable
+                : LibreMetaverse.InventoryType.Object;
+            try
+            {
+                await _client.Inventory.CreateLinkAsync(
+                    folder, new LibreMetaverse.UUID(w.ItemId),
+                    string.IsNullOrEmpty(w.Name) ? "Link" : w.Name, string.Empty,
+                    invType, LibreMetaverse.UUID.Zero, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { /* best-effort per link */ }
+        }
+
+        return folder.Guid;
+    }
+
+    /// <summary>Wears the <b>attachment</b> part of a saved outfit — every link in
+    /// <paramref name="outfitFolderId"/> whose target is an <c>AssetType.Object</c>. Wearables
+    /// (Clothing/Bodypart) are skipped: applying those is a rebake and waits on FEAT-AVATAR-01
+    /// Phase 2. Returns how many attach calls were sent. FEAT-INV-04.</summary>
+    public async Task<int> WearOutfitAttachmentsAsync(Guid outfitFolderId, CancellationToken ct = default)
+    {
+        var children = await FetchInventoryChildrenAsync(outfitFolderId, ct).ConfigureAwait(false);
+        var store = _client.Inventory.Store;
+        int sent = 0;
+
+        foreach (var e in children)
+        {
+            if (e.IsFolder) continue;
+            ct.ThrowIfCancellationRequested();
+
+            var targetUuid = new LibreMetaverse.UUID(e.IsLink ? e.LinkTargetId : e.Id);
+            var target = store?.GetNodeOrDefault(targetUuid)?.Data as LibreMetaverse.InventoryItem;
+            var assetType = target?.AssetType ?? (LibreMetaverse.AssetType)e.AssetType;
+
+            // Skip only what we can positively identify as a wearable; attach the rest (an
+            // Attach for a wearable is a server-side no-op anyway).
+            if (assetType is LibreMetaverse.AssetType.Clothing or LibreMetaverse.AssetType.Bodypart)
+                continue;
+
+            await AttachItemAsync(e.Id, replace: false).ConfigureAwait(false);
+            sent++;
+        }
+        return sent;
     }
 
     /// <summary>Creates a new inventory subfolder — used for the Create Landmark dialog's

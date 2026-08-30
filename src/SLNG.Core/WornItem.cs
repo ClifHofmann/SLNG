@@ -38,6 +38,12 @@ public sealed record WornItem(
     int AssetType,
     bool Live);
 
+/// <summary>One saved outfit — a direct subfolder of the <c>#Outfits</c> system folder
+/// (FEAT-INV-04). Engine/protocol-neutral; produced by <c>SLNG.Net.GridSession.GetSavedOutfitsAsync</c>.</summary>
+/// <param name="FolderId">Inventory folder id of the outfit.</param>
+/// <param name="Name">Folder name = the outfit's display name.</param>
+public sealed record OutfitEntry(Guid FolderId, string Name);
+
 /// <summary>Outcome of <c>SLNG.Net.GridSession.CleanUpCurrentOutfit</c> (FEAT-INV-03) — how many
 /// Current-Outfit links were moved to Trash, by reason. All are recoverable from Trash.</summary>
 /// <param name="DeadLinks">Links that resolved to no target at all.</param>

@@ -224,6 +224,35 @@ public class GridSessionTests
     public void OutfitCleanupResult_Total_sums_the_three_reasons()
         => Assert.Equal(6, new SLNG.Core.OutfitCleanupResult(1, 2, 3).Total);
 
+    // FEAT-INV-04: outfits browser. Every path must no-op / return empty while disconnected.
+    [Fact]
+    public void MyOutfitsFolderId_is_null_without_connection()
+    {
+        using var session = new GridSession();
+        Assert.Null(session.MyOutfitsFolderId);
+    }
+
+    [Fact]
+    public async Task GetSavedOutfitsAsync_without_connection_is_empty()
+    {
+        using var session = new GridSession();
+        Assert.Empty(await session.GetSavedOutfitsAsync());
+    }
+
+    [Fact]
+    public async Task SaveCurrentOutfitAsync_without_connection_returns_null()
+    {
+        using var session = new GridSession();
+        Assert.Null(await session.SaveCurrentOutfitAsync("Test"));
+    }
+
+    [Fact]
+    public async Task WearOutfitAttachmentsAsync_without_connection_returns_zero()
+    {
+        using var session = new GridSession();
+        Assert.Equal(0, await session.WearOutfitAttachmentsAsync(Guid.NewGuid()));
+    }
+
     // MVP2-3: minimap radar. OnCoarseLocationUpdate is private (same LMV-boundary reasoning as
     // OnScriptDialog above), invoked via reflection with a hand-built CoarseLocationUpdateEventArgs
     // -- the same shape GridManager.CoarseLocationHandler raises off the wire packet.
