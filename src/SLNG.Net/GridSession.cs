@@ -2971,6 +2971,31 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return Guid.Empty;
     }
 
+    /// <summary>The avatar's attachments as they exist in the SCENE right now — prims parented to
+    /// the local agent, keyed by inventory item id (<c>AttachItemID</c>), valued by attachment
+    /// point. This is the authoritative "worn right now" for attachments;
+    /// <c>AppearanceManager.GetAttachmentsByItemId()</c> is a cache that keeps listing an item for
+    /// a while after it's detached (see the project memory). FEAT-INV-03 / FEAT-INV-04.</summary>
+    private Dictionary<Guid, LibreMetaverse.AttachmentPoint> GetSceneWornAttachments()
+    {
+        var map = new Dictionary<Guid, LibreMetaverse.AttachmentPoint>();
+        try
+        {
+            var sim = _client.Network.CurrentSim;
+            if (sim == null) return map;
+            foreach (var p in sim.ObjectsPrimitives.Values)
+            {
+                if (p == null || p.ParentID != _client.Self.LocalID) continue;
+                var pt = p.PrimData.AttachmentPoint;
+                if (pt == LibreMetaverse.AttachmentPoint.Default) continue;
+                var aid = ExtractAttachItemId(p);
+                if (aid != Guid.Empty) map[aid] = pt;
+            }
+        }
+        catch { }
+        return map;
+    }
+
     /// <summary>Moves every Current-Outfit link that points at one of <paramref name="itemIds"/>
     /// (or whose own id is in the set) to Trash and drops it from the local store. Returns how
     /// many were moved. Edits the outfit only -- the linked items stay in inventory. FEAT-INV-03.</summary>
@@ -3048,21 +3073,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         // "Worn right now" from the SCENE, not LibreMetaverse's GetAttachmentsByItemId() cache --
         // that cache lags a detach, which is exactly the "I took it all off but the outfit still
-        // lists it" case. A prim parented to our avatar carries the item id in its AttachItemID
-        // name-value.
-        var wornAttachItemIds = new HashSet<Guid>();
-        try
-        {
-            var sim = _client.Network.CurrentSim;
-            if (sim != null)
-                foreach (var p in sim.ObjectsPrimitives.Values)
-                {
-                    if (p == null || p.ParentID != _client.Self.LocalID) continue;
-                    var aid = ExtractAttachItemId(p);
-                    if (aid != Guid.Empty) wornAttachItemIds.Add(aid);
-                }
-        }
-        catch { }
+        // lists it" case.
+        var wornAttachItemIds = new HashSet<Guid>(GetSceneWornAttachments().Keys);
 
         HashSet<Guid> cacheAttachIds;
         try { cacheAttachIds = _client.Appearance.GetAttachmentsByItemId().Keys.Select(k => k.Guid).ToHashSet(); }
@@ -3180,15 +3192,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         var result = new Dictionary<Guid, string>();
 
-        try
-        {
-            var atts = _client.Appearance.GetAttachmentsByItemId();
-            foreach (var kvp in atts)
-            {
-                result[kvp.Key.Guid] = FormatAttachmentPoint(kvp.Value);
-            }
-        }
-        catch { }
+        // Scene-derived, not GetAttachmentsByItemId() — that cache lags a detach (project memory).
+        foreach (var kvp in GetSceneWornAttachments())
+            result[kvp.Key] = FormatAttachmentPoint(kvp.Value);
 
         try
         {
@@ -3250,9 +3256,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         string StoreName(LibreMetaverse.UUID id) =>
             (store?.GetNodeOrDefault(id)?.Data as LibreMetaverse.InventoryItem)?.Name ?? string.Empty;
 
-        // Scene fallback: a worn attachment's prim carries a name even when its inventory item
-        // hasn't been fetched into the local store (the tree loads folders lazily). Keyed by the
-        // AttachItemID name-value, same as everywhere else in this class.
+        // Worn attachments come from the SCENE, not AppearanceManager.GetAttachmentsByItemId() --
+        // that cache keeps listing an item after it's detached, which showed detached attachments
+        // as still-worn in the tab (project memory). A prim parented to us also carries a usable
+        // name in Properties.Name when the inventory item isn't in the lazily-loaded store yet.
         var scenePrimNames = new Dictionary<Guid, string>();
         try
         {
@@ -3270,21 +3277,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         var unresolved = new List<LibreMetaverse.UUID>();
 
-        try
+        foreach (var kvp in GetSceneWornAttachments())
         {
-            foreach (var kvp in _client.Appearance.GetAttachmentsByItemId())
-            {
-                var id = kvp.Key.Guid;
-                if (id == Guid.Empty) continue;
-                var name = StoreName(kvp.Key);
-                if (name.Length == 0 && scenePrimNames.TryGetValue(id, out var sn)) name = sn;
-                if (name.Length == 0) unresolved.Add(kvp.Key);
-                byId[id] = new WornItem(id, name,
-                    CategorizeAttachment((int)kvp.Value), FormatAttachmentPoint(kvp.Value),
-                    (int)LibreMetaverse.AssetType.Object, Live: true);
-            }
+            var id = kvp.Key;
+            if (id == Guid.Empty) continue;
+            var uuid = new LibreMetaverse.UUID(id);
+            var name = StoreName(uuid);
+            if (name.Length == 0 && scenePrimNames.TryGetValue(id, out var sn)) name = sn;
+            if (name.Length == 0) unresolved.Add(uuid);
+            byId[id] = new WornItem(id, name,
+                CategorizeAttachment((int)kvp.Value), FormatAttachmentPoint(kvp.Value),
+                (int)LibreMetaverse.AssetType.Object, Live: true);
         }
-        catch { }
 
         try
         {
