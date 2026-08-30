@@ -3570,6 +3570,50 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return sent;
     }
 
+    /// <summary>Makes the avatar's <b>attachments</b> match a saved outfit's: detaches every worn
+    /// attachment the outfit doesn't contain, then attaches the outfit's objects that aren't worn.
+    /// Items common to both are left alone. Clothing / body parts are untouched — swapping those
+    /// is a rebake (FEAT-AVATAR-01 Phase 2). Returns (detached, attached). FEAT-INV-04.</summary>
+    public async Task<(int Detached, int Attached)> ReplaceWornWithOutfitAttachmentsAsync(
+        Guid outfitFolderId, CancellationToken ct = default)
+    {
+        var contents = await GetOutfitContentsAsync(outfitFolderId, ct).ConfigureAwait(false);
+        if (contents.Any(w => string.IsNullOrEmpty(w.Name)))
+        {
+            try { await Task.Delay(800, ct).ConfigureAwait(false); } catch (OperationCanceledException) { throw; }
+            contents = await GetOutfitContentsAsync(outfitFolderId, ct).ConfigureAwait(false);
+        }
+
+        // Everything the outfit references (so we never detach an item it wants to keep), and the
+        // subset we're confident is an attachment (so we only attach real objects).
+        var targetAll = new HashSet<Guid>(contents.Select(w => w.ItemId));
+        var targetObjs = new HashSet<Guid>(contents
+            .Where(w => w.Category is WornCategory.Attachment or WornCategory.Hud)
+            .Select(w => w.ItemId));
+
+        var wornAttach = GetSceneWornAttachments().Keys.ToHashSet();
+
+        int detached = 0, attached = 0;
+
+        foreach (var id in wornAttach)
+        {
+            if (targetAll.Contains(id)) continue;
+            ct.ThrowIfCancellationRequested();
+            await DetachItemAsync(id).ConfigureAwait(false);
+            detached++;
+        }
+
+        foreach (var id in targetObjs)
+        {
+            if (wornAttach.Contains(id)) continue;
+            ct.ThrowIfCancellationRequested();
+            await AttachItemAsync(id, replace: false).ConfigureAwait(false);
+            attached++;
+        }
+
+        return (detached, attached);
+    }
+
     /// <summary>Creates a new inventory subfolder — used for the Create Landmark dialog's
     /// "new folder" affordance, but generic. Note: the 3-arg <c>CreateFolder</c> overload that
     /// takes a <c>FolderType</c> de-dupes on preferred type and would hand back the *existing*

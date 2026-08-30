@@ -232,10 +232,11 @@ public partial class InventoryPanel : SLNGWindow
         _outfitsView.AddChild(outfitsStatusMargin);
 
         _outfitsMenu = new PopupMenu();
-        _outfitsMenu.AddItem("Anziehen (nur Anhänge)", 0);
+        _outfitsMenu.AddItem("Anziehen (Anhänge dazu)", 0);
+        _outfitsMenu.AddItem("Ersetzen (Anhänge tauschen)", 1);
         _outfitsMenu.AddSeparator();
-        _outfitsMenu.AddItem("Aktuelles Getrage hinzufügen", 1);
-        _outfitsMenu.AddItem("Mit aktuellem Getrage ersetzen", 2);
+        _outfitsMenu.AddItem("Getrage ins Outfit übernehmen", 2);
+        _outfitsMenu.AddItem("Outfit auf aktuelles Getrage setzen", 3);
         _outfitsMenu.IdPressed += OnOutfitsMenuPressed;
 
         _outfitsTree = new Tree
@@ -617,10 +618,29 @@ public partial class InventoryPanel : SLNGWindow
         if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out var folderId)) return;
         switch (id)
         {
-            case 0: _ = WearOutfitAsync(folderId); break;
-            case 1: _ = ModifyOutfitAsync(folderId, replace: false); break;
-            case 2: _ = ModifyOutfitAsync(folderId, replace: true); break;
+            case 0: _ = WearOutfitAsync(folderId); break;                     // attach the outfit's objects, keep current
+            case 1: _ = ReplaceWornWithOutfitAsync(folderId); break;          // make my attachments match the outfit
+            case 2: _ = ModifyOutfitAsync(folderId, replace: false); break;   // add current worn -> the saved outfit
+            case 3: _ = ModifyOutfitAsync(folderId, replace: true); break;    // saved outfit contents := current worn
         }
+    }
+
+    private async System.Threading.Tasks.Task ReplaceWornWithOutfitAsync(Guid folderId)
+    {
+        Callable.From(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = "Tausche Anhänge…"; }).CallDeferred();
+
+        (int Detached, int Attached) r = (0, 0);
+        string? err = null;
+        try { r = await _session!.ReplaceWornWithOutfitAttachmentsAsync(folderId).ConfigureAwait(false); }
+        catch (Exception ex) { err = ex.Message; }
+
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            _outfitsStatus.Text = err != null
+                ? $"Fehler: {err}"
+                : $"{r.Detached} abgelegt, {r.Attached} angezogen. Kleidung & Körper unverändert (Phase 2).";
+        }).CallDeferred();
     }
 
     private async System.Threading.Tasks.Task WearOutfitAsync(Guid folderId)
