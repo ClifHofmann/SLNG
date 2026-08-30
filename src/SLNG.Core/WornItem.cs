@@ -42,7 +42,9 @@ public sealed record WornItem(
 /// (FEAT-INV-04). Engine/protocol-neutral; produced by <c>SLNG.Net.GridSession.GetSavedOutfitsAsync</c>.</summary>
 /// <param name="FolderId">Inventory folder id of the outfit.</param>
 /// <param name="Name">Folder name = the outfit's display name.</param>
-public sealed record OutfitEntry(Guid FolderId, string Name);
+/// <param name="IsCurrent">This is the outfit the avatar is wearing — the Current Outfit Folder
+/// carries a folder-link to it (the mechanism SL / Firestorm use).</param>
+public sealed record OutfitEntry(Guid FolderId, string Name, bool IsCurrent = false);
 
 /// <summary>Outcome of <c>SLNG.Net.GridSession.CleanUpCurrentOutfit</c> (FEAT-INV-03) — how many
 /// Current-Outfit links were moved to Trash, by reason. All are recoverable from Trash.</summary>

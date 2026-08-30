@@ -497,8 +497,9 @@ public partial class InventoryPanel : SLNGWindow
             foreach (var o in outfits)
             {
                 var row = _outfitsTree.CreateItem(root);
-                row.SetText(0, "👗 " + o.Name);
+                row.SetText(0, (o.IsCurrent ? "✅ " : "👗 ") + o.Name);
                 row.SetMetadata(0, o.FolderId.ToString());
+                if (o.IsCurrent) row.SetCustomColor(0, new Color(1.0f, 0.88f, 0.4f));
                 row.Collapsed = true;
                 var placeholder = _outfitsTree.CreateItem(row);
                 placeholder.SetText(0, "…");
@@ -506,6 +507,11 @@ public partial class InventoryPanel : SLNGWindow
             }
         }).CallDeferred();
     }
+
+    private static string StripOutfitPrefix(string s)
+        => s.StartsWith("✅ ") ? s["✅ ".Length..]
+         : s.StartsWith("👗 ") ? s["👗 ".Length..]
+         : s;
 
     // Lazy-load an outfit folder's contents on first expand, like the main inventory tree.
     private void OnOutfitItemCollapsed(TreeItem item)
@@ -581,9 +587,19 @@ public partial class InventoryPanel : SLNGWindow
         {
             if (name.Length == 0) { _outfitsStatus.Text = "Erst einen Namen eingeben."; return; }
             bool ok = _session.RenameOutfitAsync(renameId, name);
-            _outfitsStatus.Text = ok ? $"Umbenannt in „{name}“." : "Umbenennen fehlgeschlagen.";
+            if (ok)
+            {
+                _outfitsStatus.Text = $"Umbenannt in „{name}“.";
+                // Update the row in place — a server re-fetch can still race and return the old name.
+                for (var r = _outfitsTree.GetRoot()?.GetFirstChild(); r != null; r = r.GetNext())
+                    if (Guid.TryParse(r.GetMetadata(0).AsString(), out var fid) && fid == renameId)
+                    {
+                        r.SetText(0, (r.GetText(0).StartsWith("✅ ") ? "✅ " : "👗 ") + name);
+                        break;
+                    }
+            }
+            else _outfitsStatus.Text = "Umbenennen fehlgeschlagen.";
             CancelRenameOutfit();
-            RefreshOutfits();
             return;
         }
 
@@ -652,9 +668,7 @@ public partial class InventoryPanel : SLNGWindow
         if (!Guid.TryParse(row.GetMetadata(0).AsString(), out var folderId)) return;
         _renamingOutfitId = folderId;
 
-        var current = row.GetText(0);
-        if (current.StartsWith("👗 ")) current = current["👗 ".Length..];
-        _outfitNameEdit.Text = current.Trim();
+        _outfitNameEdit.Text = StripOutfitPrefix(row.GetText(0)).Trim();
         _outfitSaveBtn.Text = "✏️ Umbenennen";
         _outfitsStatus.Text = "Neuen Namen eingeben, dann Enter / „Umbenennen“.";
         _outfitNameEdit.GrabFocus();
@@ -708,6 +722,7 @@ public partial class InventoryPanel : SLNGWindow
             _outfitsStatus.Text = err != null
                 ? $"Fehler: {err}"
                 : $"{r.Detached} abgelegt, {r.Attached} angezogen. Kleidung & Körper unverändert (Phase 2).";
+            if (err == null) RefreshOutfits(); // the ✅ "getragen" marker moved
         }).CallDeferred();
     }
 

@@ -3344,17 +3344,39 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return byId.Values.ToList();
     }
 
-    /// <summary>The saved outfits — every direct subfolder of the <c>#Outfits</c> system folder.
-    /// Empty if the grid has no <c>#Outfits</c> folder or we're not connected. FEAT-INV-04.</summary>
+    /// <summary>The saved outfits — every direct subfolder of the <c>#Outfits</c> system folder,
+    /// with the one the avatar is currently wearing flagged. Empty if the grid has no
+    /// <c>#Outfits</c> folder or we're not connected. FEAT-INV-04.</summary>
     public async Task<IReadOnlyList<OutfitEntry>> GetSavedOutfitsAsync(CancellationToken ct = default)
     {
         if (MyOutfitsFolderId is not { } outfitsId) return Array.Empty<OutfitEntry>();
+
+        // The Current Outfit Folder carries a folder-link to the outfit it's "based on"
+        // (SL / Firestorm mechanism) — that's the active one.
+        var activeOutfit = Guid.Empty;
+        try
+        {
+            var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+            if (cofUuid != LibreMetaverse.UUID.Zero)
+            {
+                await FetchInventoryChildrenAsync(cofUuid.Guid, ct).ConfigureAwait(false); // populate store
+                var cofNode = _client.Inventory.Store?.GetNodeOrDefault(cofUuid);
+                if (cofNode != null)
+                    foreach (var n in cofNode.Nodes.Values)
+                        if (n.Data is LibreMetaverse.InventoryItem it
+                            && it.AssetType == LibreMetaverse.AssetType.LinkFolder
+                            && it.AssetUUID != LibreMetaverse.UUID.Zero)
+                        { activeOutfit = it.AssetUUID.Guid; break; }
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { }
 
         var children = await FetchInventoryChildrenAsync(outfitsId, ct).ConfigureAwait(false);
         var result = new List<OutfitEntry>();
         foreach (var e in children)
             if (e.IsFolder)
-                result.Add(new OutfitEntry(e.Id, e.Name));
+                result.Add(new OutfitEntry(e.Id, e.Name, e.Id == activeOutfit));
         result.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
         return result;
     }
@@ -3611,7 +3633,45 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             attached++;
         }
 
+        await SetCurrentOutfitLinkAsync(outfitFolderId, ct).ConfigureAwait(false);
         return (detached, attached);
+    }
+
+    /// <summary>Points the Current Outfit Folder at a saved outfit — trashes any existing
+    /// folder-link in the COF and creates one to <paramref name="outfitFolderId"/>. This is the
+    /// marker SL / Firestorm (and <see cref="GetSavedOutfitsAsync"/>) use for "the outfit you're
+    /// wearing". FEAT-INV-04.</summary>
+    private async Task SetCurrentOutfitLinkAsync(Guid outfitFolderId, CancellationToken ct)
+    {
+        if (outfitFolderId == Guid.Empty) return;
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        if (cofUuid == LibreMetaverse.UUID.Zero) return;
+
+        try
+        {
+            await FetchInventoryChildrenAsync(cofUuid.Guid, ct).ConfigureAwait(false);
+            var cofNode = _client.Inventory.Store?.GetNodeOrDefault(cofUuid);
+            if (cofNode != null && TrashFolderId is { } trashId && trashId != Guid.Empty)
+            {
+                var trashUuid = new LibreMetaverse.UUID(trashId);
+                foreach (var n in cofNode.Nodes.Values.ToList())
+                    if (n.Data is LibreMetaverse.InventoryItem it && it.AssetType == LibreMetaverse.AssetType.LinkFolder)
+                        try { _client.Inventory.MoveItem(it.UUID, trashUuid); cofNode.Nodes.Remove(it.UUID); } catch { }
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { }
+
+        var name = (_client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(outfitFolderId))?.Data
+            as LibreMetaverse.InventoryFolder)?.Name ?? "Outfit";
+        try
+        {
+            await _client.Inventory.CreateLinkAsync(
+                cofUuid, new LibreMetaverse.UUID(outfitFolderId), name, string.Empty,
+                LibreMetaverse.InventoryType.Folder, LibreMetaverse.UUID.Zero, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { }
     }
 
     /// <summary>Takes off the <b>attachment</b> part of a saved outfit — detaches every currently
