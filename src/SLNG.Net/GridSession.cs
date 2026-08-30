@@ -3355,10 +3355,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return result;
     }
 
-    /// <summary>Saves the current outfit as a new <c>#Outfits</c> subfolder — a link to every item
-    /// currently worn (body parts, wearables, attachments). Pure inventory writes, no rebake.
-    /// Returns the new folder id, or null if there's no <c>#Outfits</c> folder / the create failed.
-    /// FEAT-INV-04.</summary>
+    /// <summary>Saves the current outfit into a <c>#Outfits</c> subfolder — a link to every item
+    /// currently worn (body parts, wearables, attachments). Pure inventory writes, no rebake. A
+    /// same-named subfolder is reused (and only the missing links added) rather than spawning a
+    /// duplicate. Returns the folder id, or null if there's no <c>#Outfits</c> folder / the create
+    /// failed. FEAT-INV-04.</summary>
     public async Task<Guid?> SaveCurrentOutfitAsync(string name, CancellationToken ct = default)
     {
         if (MyOutfitsFolderId is not { } outfitsId) return null;
@@ -3374,12 +3375,35 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             worn = GetWornItems();
         }
 
-        var folder = _client.Inventory.CreateFolder(new LibreMetaverse.UUID(outfitsId), name);
+        // Reuse an existing same-name outfit folder rather than creating a duplicate.
+        var folder = LibreMetaverse.UUID.Zero;
+        var outfitsNode = _client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(outfitsId));
+        if (outfitsNode != null)
+            foreach (var n in outfitsNode.Nodes.Values)
+                if (n.Data is LibreMetaverse.InventoryFolder f
+                    && string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase))
+                { folder = f.UUID; break; }
+        if (folder == LibreMetaverse.UUID.Zero)
+            folder = _client.Inventory.CreateFolder(new LibreMetaverse.UUID(outfitsId), name);
         if (folder == LibreMetaverse.UUID.Zero) return null;
+
+        // Targets already linked in that folder — don't re-link them (idempotent re-save).
+        var already = new HashSet<Guid>();
+        try
+        {
+            foreach (var e in await FetchInventoryChildrenAsync(folder.Guid, ct).ConfigureAwait(false))
+            {
+                if (e.IsFolder) continue;
+                var t = e.IsLink && e.LinkTargetId != Guid.Empty ? e.LinkTargetId : e.Id;
+                if (t != Guid.Empty) already.Add(t);
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { }
 
         foreach (var w in worn)
         {
-            if (!w.Live || w.ItemId == Guid.Empty) continue;
+            if (!w.Live || w.ItemId == Guid.Empty || already.Contains(w.ItemId)) continue;
             ct.ThrowIfCancellationRequested();
 
             var linkName = w.Name;
@@ -3415,12 +3439,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         var result = new List<WornItem>();
         var toFetch = new Dictionary<LibreMetaverse.UUID, LibreMetaverse.UUID>();
+        var seen = new HashSet<Guid>();
 
         foreach (var e in children)
         {
             if (e.IsFolder) continue;
 
             var targetId = e.IsLink && e.LinkTargetId != Guid.Empty ? e.LinkTargetId : e.Id;
+            if (targetId != Guid.Empty && !seen.Add(targetId)) continue; // dedup duplicate links
             var targetUuid = new LibreMetaverse.UUID(targetId);
             var target = store?.GetNodeOrDefault(targetUuid)?.Data as LibreMetaverse.InventoryItem;
 
