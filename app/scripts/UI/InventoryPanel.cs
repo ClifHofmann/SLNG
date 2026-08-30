@@ -46,6 +46,7 @@ public partial class InventoryPanel : SLNGWindow
     private Label _outfitsStatus = null!;
     private LineEdit _outfitNameEdit = null!;
     private PopupMenu _outfitsMenu = null!;
+    private readonly HashSet<Guid> _loadedOutfitFolders = new();
 
     public override void _Ready()
     {
@@ -243,6 +244,7 @@ public partial class InventoryPanel : SLNGWindow
         };
         _outfitsTree.AddChild(_outfitsMenu);
         _outfitsTree.ItemActivated += OnOutfitActivated;
+        _outfitsTree.ItemCollapsed += OnOutfitItemCollapsed;
         _outfitsTree.GuiInput += OnOutfitsGuiInput;
         _outfitsView.AddChild(_outfitsTree);
     }
@@ -481,12 +483,66 @@ public partial class InventoryPanel : SLNGWindow
             }
             if (outfits.Count == 0) { _outfitsStatus.Text = "Noch keine gespeicherten Outfits."; return; }
 
-            _outfitsStatus.Text = $"{outfits.Count} Outfit(s) · Doppelklick = Anhänge anziehen";
+            _outfitsStatus.Text = $"{outfits.Count} Outfit(s) · aufklappen zum Anschauen · Rechtsklick = Anhänge anziehen";
+            _loadedOutfitFolders.Clear();
             foreach (var o in outfits)
             {
                 var row = _outfitsTree.CreateItem(root);
                 row.SetText(0, "👗 " + o.Name);
                 row.SetMetadata(0, o.FolderId.ToString());
+                row.Collapsed = true;
+                var placeholder = _outfitsTree.CreateItem(row);
+                placeholder.SetText(0, "…");
+                placeholder.SetSelectable(0, false);
+            }
+        }).CallDeferred();
+    }
+
+    // Lazy-load an outfit folder's contents on first expand, like the main inventory tree.
+    private void OnOutfitItemCollapsed(TreeItem item)
+    {
+        if (item.Collapsed) return; // fires both directions; only expansion loads
+        if (!Guid.TryParse(item.GetMetadata(0).AsString(), out var folderId)) return; // not an outfit row
+        if (!_loadedOutfitFolders.Add(folderId)) return; // already loaded
+        _ = LoadOutfitContentsAsync(item, folderId);
+    }
+
+    private async System.Threading.Tasks.Task LoadOutfitContentsAsync(TreeItem row, Guid folderId)
+    {
+        System.Collections.Generic.IReadOnlyList<SLNG.Core.InventoryEntry> children =
+            System.Array.Empty<SLNG.Core.InventoryEntry>();
+        try { children = await _session!.FetchInventoryChildrenAsync(folderId).ConfigureAwait(false); }
+        catch (Exception ex) { GD.PrintErr($"[Outfits] contents fetch failed: {ex.Message}"); }
+
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(_outfitsTree) || !IsInstanceValid(row)) return;
+
+            var child = row.GetFirstChild();
+            while (child != null) { var next = child.GetNext(); child.Free(); child = next; }
+
+            var items = children.Where(c => !c.IsFolder).ToList();
+            if (items.Count == 0)
+            {
+                var empty = _outfitsTree.CreateItem(row);
+                empty.SetText(0, "(leer)");
+                empty.SetSelectable(0, false);
+                empty.SetCustomColor(0, new Color(1, 1, 1, 0.4f));
+                return;
+            }
+            foreach (var e in items.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                var c = _outfitsTree.CreateItem(row);
+                string icon = e.AssetType switch
+                {
+                    13 => "🧍", // Bodypart
+                    5 => "👕",  // Clothing
+                    6 => "📦",  // Object
+                    _ => "•"
+                };
+                c.SetText(0, $"{icon} {e.Name}");
+                c.SetMetadata(0, ""); // child rows are display-only; keeps wear/menu handlers off them
+                c.SetSelectable(0, false);
             }
         }).CallDeferred();
     }
@@ -517,11 +573,13 @@ public partial class InventoryPanel : SLNGWindow
         }).CallDeferred();
     }
 
+    // Double-click just folds/unfolds the outfit to look inside. Wearing is right-click only, so
+    // exploring a list of outfits can't accidentally attach a pile of objects.
     private void OnOutfitActivated()
     {
         var row = _outfitsTree.GetSelected();
-        if (row != null && Guid.TryParse(row.GetMetadata(0).AsString(), out var folderId))
-            _ = WearOutfitAsync(folderId);
+        if (row != null && Guid.TryParse(row.GetMetadata(0).AsString(), out _))
+            row.Collapsed = !row.Collapsed;
     }
 
     private void OnOutfitsGuiInput(InputEvent @event)
