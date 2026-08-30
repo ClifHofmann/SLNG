@@ -3359,55 +3359,46 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return result;
     }
 
-    /// <summary>Saves the current outfit into a <c>#Outfits</c> subfolder — a link to every item
-    /// currently worn (body parts, wearables, attachments). Pure inventory writes, no rebake. A
-    /// same-named subfolder is reused (and only the missing links added) rather than spawning a
-    /// duplicate. Returns the folder id, or null if there's no <c>#Outfits</c> folder / the create
-    /// failed. FEAT-INV-04.</summary>
-    public async Task<Guid?> SaveCurrentOutfitAsync(string name, CancellationToken ct = default)
+    /// <summary>Current worn set, re-read once after a short wait if any name is still unresolved
+    /// (wearables have no in-scene prim to fall back on), so links get real names not "Link".</summary>
+    private async Task<IReadOnlyList<WornItem>> GetWornItemsWithNamesAsync(CancellationToken ct)
     {
-        if (MyOutfitsFolderId is not { } outfitsId) return null;
-        name = string.IsNullOrWhiteSpace(name) ? "Outfit" : name.Trim();
-
-        // First pass fires RequestFetchInventory for any worn item whose name isn't cached yet
-        // (wearables have no in-scene prim to fall back on). Give it a moment, then re-read so the
-        // links get their real names instead of a "Link" placeholder.
         var worn = GetWornItems();
         if (worn.Any(w => w.Live && string.IsNullOrEmpty(w.Name)))
         {
             try { await Task.Delay(700, ct).ConfigureAwait(false); } catch (OperationCanceledException) { throw; }
             worn = GetWornItems();
         }
+        return worn;
+    }
 
-        // Reuse an existing same-name outfit folder rather than creating a duplicate.
-        var folder = LibreMetaverse.UUID.Zero;
-        var outfitsNode = _client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(outfitsId));
-        if (outfitsNode != null)
-            foreach (var n in outfitsNode.Nodes.Values)
-                if (n.Data is LibreMetaverse.InventoryFolder f
-                    && string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase))
-                { folder = f.UUID; break; }
-        if (folder == LibreMetaverse.UUID.Zero)
-            folder = _client.Inventory.CreateFolder(new LibreMetaverse.UUID(outfitsId), name);
-        if (folder == LibreMetaverse.UUID.Zero) return null;
-
-        // Targets already linked in that folder — don't re-link them (idempotent re-save).
-        var already = new HashSet<Guid>();
+    /// <summary>The set of inventory-item ids an outfit folder already links to.</summary>
+    private async Task<HashSet<Guid>> GetOutfitTargetIdsAsync(Guid outfitFolderId, CancellationToken ct)
+    {
+        var set = new HashSet<Guid>();
         try
         {
-            foreach (var e in await FetchInventoryChildrenAsync(folder.Guid, ct).ConfigureAwait(false))
+            foreach (var e in await FetchInventoryChildrenAsync(outfitFolderId, ct).ConfigureAwait(false))
             {
                 if (e.IsFolder) continue;
                 var t = e.IsLink && e.LinkTargetId != Guid.Empty ? e.LinkTargetId : e.Id;
-                if (t != Guid.Empty) already.Add(t);
+                if (t != Guid.Empty) set.Add(t);
             }
         }
         catch (OperationCanceledException) { throw; }
         catch { }
+        return set;
+    }
 
+    /// <summary>Creates a link in <paramref name="folder"/> for each live worn item not in
+    /// <paramref name="skip"/>. Returns how many links were created.</summary>
+    private async Task<int> LinkWornIntoAsync(
+        LibreMetaverse.UUID folder, IReadOnlyList<WornItem> worn, HashSet<Guid> skip, CancellationToken ct)
+    {
+        int added = 0;
         foreach (var w in worn)
         {
-            if (!w.Live || w.ItemId == Guid.Empty || already.Contains(w.ItemId)) continue;
+            if (!w.Live || w.ItemId == Guid.Empty || skip.Contains(w.ItemId)) continue;
             ct.ThrowIfCancellationRequested();
 
             var linkName = w.Name;
@@ -3423,12 +3414,83 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 await _client.Inventory.CreateLinkAsync(
                     folder, new LibreMetaverse.UUID(w.ItemId), linkName, string.Empty,
                     invType, LibreMetaverse.UUID.Zero, ct).ConfigureAwait(false);
+                added++;
             }
             catch (OperationCanceledException) { throw; }
             catch { /* best-effort per link */ }
         }
+        return added;
+    }
 
+    /// <summary>Saves the current outfit into a <c>#Outfits</c> subfolder — a link to every item
+    /// currently worn (body parts, wearables, attachments). Pure inventory writes, no rebake. A
+    /// same-named subfolder is reused (and only the missing links added) rather than spawning a
+    /// duplicate. Returns the folder id, or null if there's no <c>#Outfits</c> folder / the create
+    /// failed. FEAT-INV-04.</summary>
+    public async Task<Guid?> SaveCurrentOutfitAsync(string name, CancellationToken ct = default)
+    {
+        if (MyOutfitsFolderId is not { } outfitsId) return null;
+        name = string.IsNullOrWhiteSpace(name) ? "Outfit" : name.Trim();
+
+        var worn = await GetWornItemsWithNamesAsync(ct).ConfigureAwait(false);
+
+        // Reuse an existing same-name outfit folder rather than creating a duplicate.
+        var folder = LibreMetaverse.UUID.Zero;
+        var outfitsNode = _client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(outfitsId));
+        if (outfitsNode != null)
+            foreach (var n in outfitsNode.Nodes.Values)
+                if (n.Data is LibreMetaverse.InventoryFolder f
+                    && string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase))
+                { folder = f.UUID; break; }
+        if (folder == LibreMetaverse.UUID.Zero)
+            folder = _client.Inventory.CreateFolder(new LibreMetaverse.UUID(outfitsId), name);
+        if (folder == LibreMetaverse.UUID.Zero) return null;
+
+        var already = await GetOutfitTargetIdsAsync(folder.Guid, ct).ConfigureAwait(false);
+        await LinkWornIntoAsync(folder, worn, already, ct).ConfigureAwait(false);
         return folder.Guid;
+    }
+
+    /// <summary>Adds the current worn set to an existing outfit folder — links only the items that
+    /// aren't already in it. Returns how many links were added. FEAT-INV-04.</summary>
+    public async Task<int> AddCurrentToOutfitAsync(Guid outfitFolderId, CancellationToken ct = default)
+    {
+        if (outfitFolderId == Guid.Empty) return 0;
+        var worn = await GetWornItemsWithNamesAsync(ct).ConfigureAwait(false);
+        var already = await GetOutfitTargetIdsAsync(outfitFolderId, ct).ConfigureAwait(false);
+        return await LinkWornIntoAsync(new LibreMetaverse.UUID(outfitFolderId), worn, already, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Replaces an existing outfit folder's contents with the current worn set: every
+    /// existing link is moved to Trash, then the whole worn set is linked in fresh. Returns how
+    /// many links the outfit now has. FEAT-INV-04.</summary>
+    public async Task<int> ReplaceOutfitWithCurrentAsync(Guid outfitFolderId, CancellationToken ct = default)
+    {
+        if (outfitFolderId == Guid.Empty || TrashFolderId is not { } trashId) return 0;
+        var trashUuid = new LibreMetaverse.UUID(trashId);
+        var folderUuid = new LibreMetaverse.UUID(outfitFolderId);
+
+        var worn = await GetWornItemsWithNamesAsync(ct).ConfigureAwait(false);
+
+        IReadOnlyList<InventoryEntry> existing;
+        try { existing = await FetchInventoryChildrenAsync(outfitFolderId, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch { existing = Array.Empty<InventoryEntry>(); }
+
+        var folderNode = _client.Inventory.Store?.GetNodeOrDefault(folderUuid);
+        foreach (var e in existing)
+        {
+            if (e.IsFolder) continue;
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                _client.Inventory.MoveItem(new LibreMetaverse.UUID(e.Id), trashUuid);
+                folderNode?.Nodes.Remove(new LibreMetaverse.UUID(e.Id));
+            }
+            catch { }
+        }
+
+        return await LinkWornIntoAsync(folderUuid, worn, new HashSet<Guid>(), ct).ConfigureAwait(false);
     }
 
     /// <summary>The contents of a saved outfit folder as resolved <see cref="WornItem"/>s — each

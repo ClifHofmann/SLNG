@@ -233,6 +233,9 @@ public partial class InventoryPanel : SLNGWindow
 
         _outfitsMenu = new PopupMenu();
         _outfitsMenu.AddItem("Anziehen (nur Anhänge)", 0);
+        _outfitsMenu.AddSeparator();
+        _outfitsMenu.AddItem("Aktuelles Getrage hinzufügen", 1);
+        _outfitsMenu.AddItem("Mit aktuellem Getrage ersetzen", 2);
         _outfitsMenu.IdPressed += OnOutfitsMenuPressed;
 
         _outfitsTree = new Tree
@@ -612,7 +615,12 @@ public partial class InventoryPanel : SLNGWindow
     {
         var row = _outfitsTree.GetSelected();
         if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out var folderId)) return;
-        if (id == 0) _ = WearOutfitAsync(folderId);
+        switch (id)
+        {
+            case 0: _ = WearOutfitAsync(folderId); break;
+            case 1: _ = ModifyOutfitAsync(folderId, replace: false); break;
+            case 2: _ = ModifyOutfitAsync(folderId, replace: true); break;
+        }
     }
 
     private async System.Threading.Tasks.Task WearOutfitAsync(Guid folderId)
@@ -630,6 +638,41 @@ public partial class InventoryPanel : SLNGWindow
                 : n == 0
                     ? "Keine Anhänge in diesem Outfit."
                     : $"{n} Anhang/Anhänge angezogen. Kleidung & Körper folgen mit FEAT-AVATAR-01 Phase 2.";
+        }).CallDeferred();
+    }
+
+    // "hinzufügen" (replace=false) or "ersetzen" (replace=true) on an existing outfit folder.
+    private async System.Threading.Tasks.Task ModifyOutfitAsync(Guid folderId, bool replace)
+    {
+        Callable.From(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = replace ? "Ersetze…" : "Füge hinzu…"; }).CallDeferred();
+
+        int n = 0;
+        string? err = null;
+        try
+        {
+            n = replace
+                ? await _session!.ReplaceOutfitWithCurrentAsync(folderId).ConfigureAwait(false)
+                : await _session!.AddCurrentToOutfitAsync(folderId).ConfigureAwait(false);
+        }
+        catch (Exception ex) { err = ex.Message; }
+
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            _outfitsStatus.Text = err != null
+                ? $"Fehler: {err}"
+                : replace
+                    ? $"Outfit ersetzt — {n} Teil(e) verlinkt."
+                    : n == 0 ? "Nichts hinzuzufügen — alles schon im Outfit."
+                             : $"{n} Teil(e) zum Outfit hinzugefügt.";
+
+            // Reload that outfit's contents if it's expanded.
+            var row = _outfitsTree.GetSelected();
+            if (row != null && Guid.TryParse(row.GetMetadata(0).AsString(), out var fid) && fid == folderId)
+            {
+                _loadedOutfitFolders.Remove(folderId);
+                if (!row.Collapsed) _ = LoadOutfitContentsAsync(row, folderId);
+            }
         }).CallDeferred();
     }
 

@@ -37,6 +37,11 @@ subfolder being one saved outfit (a set of inventory links). SLNG had no UI for 
 - `Task<int> WearOutfitAttachmentsAsync(Guid outfitFolderId)` — fetches the folder's links and
   calls `AttachItemAsync` for each whose target is `AssetType.Object`; wearables are skipped and
   counted. Returns how many attach calls were sent.
+- `Task<int> AddCurrentToOutfitAsync(Guid outfitFolderId)` — links the currently-worn items that
+  aren't already in the folder. `Task<int> ReplaceOutfitWithCurrentAsync(Guid outfitFolderId)` —
+  moves every existing link in the folder to Trash, then links the whole worn set fresh. Shared
+  helpers `GetWornItemsWithNamesAsync` / `GetOutfitTargetIdsAsync` / `LinkWornIntoAsync` back
+  these and `SaveCurrentOutfitAsync`.
 
 ### Core
 - `src/SLNG.Core/WornItem.cs` — add `OutfitEntry(Guid FolderId, string Name)`.
