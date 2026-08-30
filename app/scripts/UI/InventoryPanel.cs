@@ -45,8 +45,10 @@ public partial class InventoryPanel : SLNGWindow
     private Tree _outfitsTree = null!;
     private Label _outfitsStatus = null!;
     private LineEdit _outfitNameEdit = null!;
+    private Button _outfitSaveBtn = null!;
     private PopupMenu _outfitsMenu = null!;
     private readonly HashSet<Guid> _loadedOutfitFolders = new();
+    private Guid? _renamingOutfitId;
 
     public override void _Ready()
     {
@@ -212,10 +214,10 @@ public partial class InventoryPanel : SLNGWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill
         };
         _outfitNameEdit.TextSubmitted += _ => OnSaveOutfitPressed();
-        var saveBtn = new Button { Text = "💾 Speichern" };
-        saveBtn.Pressed += OnSaveOutfitPressed;
+        _outfitSaveBtn = new Button { Text = "💾 Speichern" };
+        _outfitSaveBtn.Pressed += OnSaveOutfitPressed;
         saveRow.AddChild(_outfitNameEdit);
-        saveRow.AddChild(saveBtn);
+        saveRow.AddChild(_outfitSaveBtn);
         var saveMargin = new MarginContainer();
         saveMargin.AddThemeConstantOverride("margin_left", 8);
         saveMargin.AddThemeConstantOverride("margin_right", 8);
@@ -252,7 +254,6 @@ public partial class InventoryPanel : SLNGWindow
         _outfitsTree.AddChild(_outfitsMenu);
         _outfitsTree.ItemActivated += OnOutfitActivated;
         _outfitsTree.ItemCollapsed += OnOutfitItemCollapsed;
-        _outfitsTree.ItemEdited += OnOutfitRenamed;
         _outfitsTree.GuiInput += OnOutfitsGuiInput;
         _outfitsView.AddChild(_outfitsTree);
     }
@@ -465,7 +466,7 @@ public partial class InventoryPanel : SLNGWindow
     private void RefreshOutfits()
     {
         if (_session == null) return;
-        _outfitsStatus.Text = "Lädt…";
+        if (_renamingOutfitId is null) _outfitsStatus.Text = "Lädt…";
         _ = RefreshOutfitsAsync();
     }
 
@@ -575,6 +576,17 @@ public partial class InventoryPanel : SLNGWindow
     {
         if (_session == null) return;
         var name = _outfitNameEdit.Text.Trim();
+
+        if (_renamingOutfitId is { } renameId)
+        {
+            if (name.Length == 0) { _outfitsStatus.Text = "Erst einen Namen eingeben."; return; }
+            bool ok = _session.RenameOutfitAsync(renameId, name);
+            _outfitsStatus.Text = ok ? $"Umbenannt in „{name}“." : "Umbenennen fehlgeschlagen.";
+            CancelRenameOutfit();
+            RefreshOutfits();
+            return;
+        }
+
         if (name.Length == 0) { _outfitsStatus.Text = "Erst einen Namen eingeben."; return; }
         _outfitsStatus.Text = $"Speichere „{name}“…";
         _ = SaveOutfitAsync(name);
@@ -611,6 +623,7 @@ public partial class InventoryPanel : SLNGWindow
         if (@event is not InputEventMouseButton mb || !mb.Pressed || mb.ButtonIndex != MouseButton.Right) return;
         var row = _outfitsTree.GetItemAtPosition(mb.Position);
         if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out _)) return;
+        if (_renamingOutfitId is not null) CancelRenameOutfit();
         row.Select(0);
         _outfitsMenu.Position = (Vector2I)GetGlobalMousePosition();
         _outfitsMenu.Popup();
@@ -631,27 +644,28 @@ public partial class InventoryPanel : SLNGWindow
         }
     }
 
+    // Rename via the name field at the top (Tree cell-editing needs keyboard focus, which this
+    // tree deliberately doesn't take). The "💾 Speichern" button doubles as "✏️ Umbenennen"
+    // while a rename is armed.
     private void BeginRenameOutfit(TreeItem row)
     {
-        row.SetEditable(0, true);
-        _outfitsTree.EditSelected(true);
+        if (!Guid.TryParse(row.GetMetadata(0).AsString(), out var folderId)) return;
+        _renamingOutfitId = folderId;
+
+        var current = row.GetText(0);
+        if (current.StartsWith("👗 ")) current = current["👗 ".Length..];
+        _outfitNameEdit.Text = current.Trim();
+        _outfitSaveBtn.Text = "✏️ Umbenennen";
+        _outfitsStatus.Text = "Neuen Namen eingeben, dann Enter / „Umbenennen“.";
+        _outfitNameEdit.GrabFocus();
+        _outfitNameEdit.SelectAll();
     }
 
-    private void OnOutfitRenamed()
+    private void CancelRenameOutfit()
     {
-        var row = _outfitsTree.GetEdited();
-        if (row == null) return;
-        row.SetEditable(0, false);
-        if (!Guid.TryParse(row.GetMetadata(0).AsString(), out var folderId)) return;
-
-        var name = row.GetText(0);
-        if (name.StartsWith("👗 ")) name = name["👗 ".Length..];
-        name = name.Trim();
-        if (name.Length == 0) { RefreshOutfits(); return; }
-
-        if (_session?.RenameOutfitAsync(folderId, name) == true)
-            _outfitsStatus.Text = $"Umbenannt in „{name}“.";
-        RefreshOutfits();
+        _renamingOutfitId = null;
+        _outfitSaveBtn.Text = "💾 Speichern";
+        _outfitNameEdit.Text = "";
     }
 
     private async System.Threading.Tasks.Task RemoveOutfitFromWornAsync(Guid folderId)
