@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-16`
 - **Track:** `ui` / `net`
-- **Status:** `🧪 Review` (implemented `v0.11.10-alpha`, needs in-world check)
+- **Status:** `✅ Done` (confirmed in-world 2026-08-30)
 - **Owner:** `claude`
 - **Agent:** `ux-designer`
 - **Dep:** `MVP3-1`

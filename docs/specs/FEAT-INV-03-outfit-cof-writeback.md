@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-INV-03`
 - **Track:** `net` / `ui`
-- **Status:** `🧪 Review` (implemented `v0.11.11-alpha`, needs in-world check)
+- **Status:** `✅ Done` (confirmed in-world 2026-08-30)
 - **Owner:** `claude`
 - **Agent:** `protocol-re`
 - **Dep:** `FEAT-UI-16`, `MVP3-1`
