@@ -3614,6 +3614,50 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return (detached, attached);
     }
 
+    /// <summary>Takes off the <b>attachment</b> part of a saved outfit — detaches every currently
+    /// worn attachment the outfit contains. Clothing / body parts untouched. Returns how many were
+    /// detached. FEAT-INV-04.</summary>
+    public async Task<int> RemoveOutfitFromWornAsync(Guid outfitFolderId, CancellationToken ct = default)
+    {
+        var contents = await GetOutfitContentsAsync(outfitFolderId, ct).ConfigureAwait(false);
+        var ids = new HashSet<Guid>(contents.Select(w => w.ItemId));
+        var wornAttach = GetSceneWornAttachments().Keys.ToHashSet();
+
+        int detached = 0;
+        foreach (var id in wornAttach)
+        {
+            if (!ids.Contains(id)) continue;
+            ct.ThrowIfCancellationRequested();
+            await DetachItemAsync(id).ConfigureAwait(false);
+            detached++;
+        }
+        return detached;
+    }
+
+    /// <summary>Renames a saved outfit folder. FEAT-INV-04.</summary>
+    public bool RenameOutfitAsync(Guid folderId, string newName)
+    {
+        newName = newName?.Trim() ?? string.Empty;
+        if (folderId == Guid.Empty || newName.Length == 0) return false;
+        var node = _client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(folderId));
+        if (node?.Data is not LibreMetaverse.InventoryFolder f) return false;
+        _client.Inventory.UpdateFolderProperties(f.UUID, f.ParentUUID, newName, f.PreferredType);
+        return true;
+    }
+
+    /// <summary>Moves a saved outfit folder to Trash (recoverable — the linked items stay in
+    /// inventory). FEAT-INV-04.</summary>
+    public bool DeleteOutfitAsync(Guid folderId)
+    {
+        if (folderId == Guid.Empty || TrashFolderId is not { } trashId || trashId == Guid.Empty) return false;
+        if (_client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(folderId))?.Data is not LibreMetaverse.InventoryFolder)
+            return false;
+        _client.Inventory.MoveFolder(new LibreMetaverse.UUID(folderId), new LibreMetaverse.UUID(trashId));
+        var node = _client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(folderId));
+        if (node != null) node.Parent?.Nodes.Remove(new LibreMetaverse.UUID(folderId));
+        return true;
+    }
+
     /// <summary>Creates a new inventory subfolder — used for the Create Landmark dialog's
     /// "new folder" affordance, but generic. Note: the 3-arg <c>CreateFolder</c> overload that
     /// takes a <c>FolderType</c> de-dupes on preferred type and would hand back the *existing*

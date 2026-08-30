@@ -232,11 +232,14 @@ public partial class InventoryPanel : SLNGWindow
         _outfitsView.AddChild(outfitsStatusMargin);
 
         _outfitsMenu = new PopupMenu();
-        _outfitsMenu.AddItem("Anziehen (Anhänge dazu)", 0);
-        _outfitsMenu.AddItem("Ersetzen (Anhänge tauschen)", 1);
+        _outfitsMenu.AddItem("Aktuelles Outfit ersetzen", 0);
+        _outfitsMenu.AddItem("Zu aktuellem Outfit hinzufügen", 1);
+        _outfitsMenu.AddItem("Von aktuellem Outfit entfernen", 2);
         _outfitsMenu.AddSeparator();
-        _outfitsMenu.AddItem("Getrage ins Outfit übernehmen", 2);
-        _outfitsMenu.AddItem("Outfit auf aktuelles Getrage setzen", 3);
+        _outfitsMenu.AddItem("Outfit neu benennen", 3);
+        _outfitsMenu.AddItem("Outfit speichern (= akt. Getrage)", 4);
+        _outfitsMenu.AddSeparator();
+        _outfitsMenu.AddItem("Outfit löschen", 5);
         _outfitsMenu.IdPressed += OnOutfitsMenuPressed;
 
         _outfitsTree = new Tree
@@ -249,6 +252,7 @@ public partial class InventoryPanel : SLNGWindow
         _outfitsTree.AddChild(_outfitsMenu);
         _outfitsTree.ItemActivated += OnOutfitActivated;
         _outfitsTree.ItemCollapsed += OnOutfitItemCollapsed;
+        _outfitsTree.ItemEdited += OnOutfitRenamed;
         _outfitsTree.GuiInput += OnOutfitsGuiInput;
         _outfitsView.AddChild(_outfitsTree);
     }
@@ -618,10 +622,60 @@ public partial class InventoryPanel : SLNGWindow
         if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out var folderId)) return;
         switch (id)
         {
-            case 0: _ = WearOutfitAsync(folderId); break;                     // attach the outfit's objects, keep current
-            case 1: _ = ReplaceWornWithOutfitAsync(folderId); break;          // make my attachments match the outfit
-            case 2: _ = ModifyOutfitAsync(folderId, replace: false); break;   // add current worn -> the saved outfit
-            case 3: _ = ModifyOutfitAsync(folderId, replace: true); break;    // saved outfit contents := current worn
+            case 0: _ = ReplaceWornWithOutfitAsync(folderId); break;          // make my attachments match the outfit
+            case 1: _ = WearOutfitAsync(folderId); break;                     // attach the outfit's objects, keep current
+            case 2: _ = RemoveOutfitFromWornAsync(folderId); break;           // detach the outfit's attachments
+            case 3: BeginRenameOutfit(row); break;
+            case 4: _ = ModifyOutfitAsync(folderId, replace: true); break;    // saved outfit contents := current worn
+            case 5: DeleteOutfitAsync(folderId); break;
+        }
+    }
+
+    private void BeginRenameOutfit(TreeItem row)
+    {
+        row.SetEditable(0, true);
+        _outfitsTree.EditSelected(true);
+    }
+
+    private void OnOutfitRenamed()
+    {
+        var row = _outfitsTree.GetEdited();
+        if (row == null) return;
+        row.SetEditable(0, false);
+        if (!Guid.TryParse(row.GetMetadata(0).AsString(), out var folderId)) return;
+
+        var name = row.GetText(0);
+        if (name.StartsWith("👗 ")) name = name["👗 ".Length..];
+        name = name.Trim();
+        if (name.Length == 0) { RefreshOutfits(); return; }
+
+        if (_session?.RenameOutfitAsync(folderId, name) == true)
+            _outfitsStatus.Text = $"Umbenannt in „{name}“.";
+        RefreshOutfits();
+    }
+
+    private async System.Threading.Tasks.Task RemoveOutfitFromWornAsync(Guid folderId)
+    {
+        Callable.From(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = "Entferne…"; }).CallDeferred();
+        int n = 0;
+        string? err = null;
+        try { n = await _session!.RemoveOutfitFromWornAsync(folderId).ConfigureAwait(false); }
+        catch (Exception ex) { err = ex.Message; }
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            _outfitsStatus.Text = err != null ? $"Fehler: {err}"
+                : n == 0 ? "Nichts davon getragen."
+                         : $"{n} Anhang/Anhänge abgelegt. Kleidung & Körper unverändert (Phase 2).";
+        }).CallDeferred();
+    }
+
+    private void DeleteOutfitAsync(Guid folderId)
+    {
+        if (_session?.DeleteOutfitAsync(folderId) == true)
+        {
+            _outfitsStatus.Text = "Outfit in den Papierkorb verschoben.";
+            RefreshOutfits();
         }
     }
 
