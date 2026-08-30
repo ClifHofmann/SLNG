@@ -178,6 +178,52 @@ public class GridSessionTests
         Assert.Equal(0, session.DetachAllAttachments(hudOnly: false));
     }
 
+    // FEAT-UI-16: the "Worn" tab classifies each worn item into one of four groups. Pure
+    // functions of the SL wire value that decides it, so they unit-test without a live client.
+    [Theory]
+    [InlineData(13, WornCategory.BodyPart)]   // AssetType.Bodypart
+    [InlineData(5, WornCategory.Clothing)]    // AssetType.Clothing
+    [InlineData(0, WornCategory.Clothing)]    // anything else a wearable slot could report
+    public void CategorizeWearable_splits_bodyparts_from_clothing(int assetType, WornCategory expected)
+        => Assert.Equal(expected, GridSession.CategorizeWearable(assetType));
+
+    [Theory]
+    [InlineData(2, WornCategory.Attachment)]   // AttachmentPoint.Chest
+    [InlineData(30, WornCategory.Attachment)]  // last body point before the HUD range
+    [InlineData(31, WornCategory.Hud)]         // HUDCenter2
+    [InlineData(35, WornCategory.Hud)]         // HUDCenter
+    [InlineData(38, WornCategory.Hud)]         // HUDBottomRight
+    [InlineData(39, WornCategory.Attachment)]  // Neck — past the HUD range again
+    public void CategorizeAttachment_splits_HUD_points_from_body_points(int rawPoint, WornCategory expected)
+        => Assert.Equal(expected, GridSession.CategorizeAttachment(rawPoint));
+
+    [Fact]
+    public void GetWornItems_without_connection_is_empty_and_does_not_throw()
+    {
+        using var session = new GridSession();
+        var worn = session.GetWornItems();
+        Assert.NotNull(worn);
+        Assert.Empty(worn);
+    }
+
+    // FEAT-INV-03: outfit cleanup. With no connection there is no Current Outfit folder and no
+    // Trash, so it must return an all-zero result rather than throw — same "no-op gracefully while
+    // disconnected" contract as every other GridSession path.
+    [Fact]
+    public void CleanUpCurrentOutfit_without_connection_returns_zero()
+    {
+        using var session = new GridSession();
+        var r = session.CleanUpCurrentOutfit();
+        Assert.Equal(0, r.Total);
+        Assert.Equal(0, r.DeadLinks);
+        Assert.Equal(0, r.TrashedTargetLinks);
+        Assert.Equal(0, r.UnwornAttachmentLinks);
+    }
+
+    [Fact]
+    public void OutfitCleanupResult_Total_sums_the_three_reasons()
+        => Assert.Equal(6, new SLNG.Core.OutfitCleanupResult(1, 2, 3).Total);
+
     // MVP2-3: minimap radar. OnCoarseLocationUpdate is private (same LMV-boundary reasoning as
     // OnScriptDialog above), invoked via reflection with a hand-built CoarseLocationUpdateEventArgs
     // -- the same shape GridManager.CoarseLocationHandler raises off the wire packet.
