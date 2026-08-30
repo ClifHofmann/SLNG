@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.11.14-alpha";
+    public const string AppVersion = "v0.11.25-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1277,6 +1277,11 @@ public partial class Boot : Control
             {
                 // Ctrl+I like the real viewers — plain I would fire while typing in chat.
                 _inventoryPanel?.Toggle();
+            }
+            else if (keyEvent.Keycode == Key.O && keyEvent.CtrlPressed)
+            {
+                // Ctrl+O — open the inventory straight on the Outfits tab (FEAT-INV-04).
+                _inventoryPanel?.OpenOnOutfits();
             }
         }
     }

@@ -30,7 +30,7 @@ public partial class InventoryPanel : SLNGWindow
     private PopupMenu _contextMenu = null!;
     private LineEdit _searchBox = null!;
 
-    // FEAT-UI-16: "Inventar" / "Angezogen" tabs.
+    // FEAT-UI-16 / FEAT-INV-04: "Inventar" / "Angezogen" / "Outfits" tabs.
     private TabBar _tabs = null!;
     private VBoxContainer _inventoryView = null!;
     private VBoxContainer _wornView = null!;
@@ -39,6 +39,16 @@ public partial class InventoryPanel : SLNGWindow
     private PopupMenu _wornMenu = null!;
     private Timer _wornTimer = null!;
     private Button _wornCleanupBtn = null!;
+
+    // FEAT-INV-04: Outfits tab.
+    private VBoxContainer _outfitsView = null!;
+    private Tree _outfitsTree = null!;
+    private Label _outfitsStatus = null!;
+    private LineEdit _outfitNameEdit = null!;
+    private Button _outfitSaveBtn = null!;
+    private PopupMenu _outfitsMenu = null!;
+    private readonly HashSet<Guid> _loadedOutfitFolders = new();
+    private Guid? _renamingOutfitId;
 
     public override void _Ready()
     {
@@ -67,6 +77,7 @@ public partial class InventoryPanel : SLNGWindow
         _tabs = new TabBar();
         _tabs.AddTab("Inventar");
         _tabs.AddTab("Angezogen");
+        _tabs.AddTab("Outfits");
         _tabs.TabChanged += OnTabChanged;
         var tabsMargin = new MarginContainer();
         tabsMargin.AddThemeConstantOverride("margin_left", 8);
@@ -190,6 +201,61 @@ public partial class InventoryPanel : SLNGWindow
         _wornTimer = new Timer { WaitTime = 2.5, Autostart = false, OneShot = false };
         _wornTimer.Timeout += () => { if (IsInstanceValid(this) && _wornView.Visible) RefreshWorn(); };
         AddChild(_wornTimer);
+
+        // ---- "Outfits" view (FEAT-INV-04) --------------------------------------------------
+        _outfitsView = new VBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill, Visible = false };
+        _outfitsView.AddThemeConstantOverride("separation", 0);
+        vbox.AddChild(_outfitsView);
+
+        var saveRow = new HBoxContainer();
+        _outfitNameEdit = new LineEdit
+        {
+            PlaceholderText = "Name für aktuelles Outfit…",
+            SizeFlagsHorizontal = SizeFlags.ExpandFill
+        };
+        _outfitNameEdit.TextSubmitted += _ => OnSaveOutfitPressed();
+        _outfitSaveBtn = new Button { Text = "💾 Speichern" };
+        _outfitSaveBtn.Pressed += OnSaveOutfitPressed;
+        saveRow.AddChild(_outfitNameEdit);
+        saveRow.AddChild(_outfitSaveBtn);
+        var saveMargin = new MarginContainer();
+        saveMargin.AddThemeConstantOverride("margin_left", 8);
+        saveMargin.AddThemeConstantOverride("margin_right", 8);
+        saveMargin.AddThemeConstantOverride("margin_top", 8);
+        saveMargin.AddThemeConstantOverride("margin_bottom", 4);
+        saveMargin.AddChild(saveRow);
+        _outfitsView.AddChild(saveMargin);
+
+        _outfitsStatus = new Label();
+        var outfitsStatusMargin = new MarginContainer();
+        outfitsStatusMargin.AddThemeConstantOverride("margin_left", 12);
+        outfitsStatusMargin.AddThemeConstantOverride("margin_bottom", 4);
+        outfitsStatusMargin.AddChild(_outfitsStatus);
+        _outfitsView.AddChild(outfitsStatusMargin);
+
+        _outfitsMenu = new PopupMenu();
+        _outfitsMenu.AddItem("Aktuelles Outfit ersetzen", 0);
+        _outfitsMenu.AddItem("Zu aktuellem Outfit hinzufügen", 1);
+        _outfitsMenu.AddItem("Von aktuellem Outfit entfernen", 2);
+        _outfitsMenu.AddSeparator();
+        _outfitsMenu.AddItem("Outfit neu benennen", 3);
+        _outfitsMenu.AddItem("Outfit speichern (= akt. Getrage)", 4);
+        _outfitsMenu.AddSeparator();
+        _outfitsMenu.AddItem("Outfit löschen", 5);
+        _outfitsMenu.IdPressed += OnOutfitsMenuPressed;
+
+        _outfitsTree = new Tree
+        {
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            HideRoot = true,
+            FocusMode = FocusModeEnum.None,
+            AllowRmbSelect = true
+        };
+        _outfitsTree.AddChild(_outfitsMenu);
+        _outfitsTree.ItemActivated += OnOutfitActivated;
+        _outfitsTree.ItemCollapsed += OnOutfitItemCollapsed;
+        _outfitsTree.GuiInput += OnOutfitsGuiInput;
+        _outfitsView.AddChild(_outfitsTree);
     }
 
     private partial class InventoryTree : Tree
@@ -248,22 +314,27 @@ public partial class InventoryPanel : SLNGWindow
         }
     }
 
+    /// <summary>Ctrl+O: show the inventory window on the Outfits tab (FEAT-INV-04).</summary>
+    public void OpenOnOutfits()
+    {
+        Visible = true;
+        PopulateRoots();
+        if (_tabs.CurrentTab == 2) OnTabChanged(2); // already on the tab — just refresh
+        else _tabs.CurrentTab = 2;                  // fires TabChanged -> shows + refreshes
+    }
+
     // ---- FEAT-UI-16: Worn tab -------------------------------------------------------------
 
     private void OnTabChanged(long tab)
     {
-        bool worn = tab == 1;
-        _inventoryView.Visible = !worn;
-        _wornView.Visible = worn;
-        if (worn)
-        {
-            RefreshWorn();
-            _wornTimer.Start();
-        }
-        else
-        {
-            _wornTimer.Stop();
-        }
+        _inventoryView.Visible = tab == 0;
+        _wornView.Visible = tab == 1;
+        _outfitsView.Visible = tab == 2;
+
+        if (tab == 1) { RefreshWorn(); _wornTimer.Start(); }
+        else _wornTimer.Stop();
+
+        if (tab == 2) RefreshOutfits();
     }
 
     // WornItemsChanged fires on a LibreMetaverse network thread — hop to the main thread the
@@ -397,6 +468,324 @@ public partial class InventoryPanel : SLNGWindow
 
         RefreshWorn();
         if (_session.CurrentOutfitFolderId is { } cofId) RefreshFolder(cofId);
+    }
+
+    // ---- FEAT-INV-04: Outfits tab -------------------------------------------------------
+
+    private void RefreshOutfits()
+    {
+        if (_session == null) return;
+        if (_renamingOutfitId is null) _outfitsStatus.Text = "Lädt…";
+        _ = RefreshOutfitsAsync();
+    }
+
+    private async System.Threading.Tasks.Task RefreshOutfitsAsync()
+    {
+        System.Collections.Generic.IReadOnlyList<SLNG.Core.OutfitEntry> outfits =
+            System.Array.Empty<SLNG.Core.OutfitEntry>();
+        string? err = null;
+        try { outfits = await _session!.GetSavedOutfitsAsync().ConfigureAwait(false); }
+        catch (Exception ex) { err = ex.Message; }
+
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(_outfitsTree)) return;
+            _outfitsTree.Clear();
+            var root = _outfitsTree.CreateItem();
+
+            if (err != null) { _outfitsStatus.Text = $"Fehler: {err}"; return; }
+            if (_session?.MyOutfitsFolderId is null)
+            {
+                _outfitsStatus.Text = "Dieses Grid hat keinen #Outfits-Ordner.";
+                return;
+            }
+            if (outfits.Count == 0) { _outfitsStatus.Text = "Noch keine gespeicherten Outfits."; return; }
+
+            _outfitsStatus.Text = $"{outfits.Count} Outfit(s) · aufklappen zum Anschauen · Rechtsklick = Anhänge anziehen";
+            _loadedOutfitFolders.Clear();
+            foreach (var o in outfits)
+            {
+                var row = _outfitsTree.CreateItem(root);
+                row.SetText(0, (o.IsCurrent ? "✅ " : "👗 ") + o.Name);
+                row.SetMetadata(0, o.FolderId.ToString());
+                if (o.IsCurrent) row.SetCustomColor(0, new Color(1.0f, 0.88f, 0.4f));
+                row.Collapsed = true;
+                var placeholder = _outfitsTree.CreateItem(row);
+                placeholder.SetText(0, "…");
+                placeholder.SetSelectable(0, false);
+            }
+        }).CallDeferred();
+    }
+
+    private static string StripOutfitPrefix(string s)
+        => s.StartsWith("✅ ") ? s["✅ ".Length..]
+         : s.StartsWith("👗 ") ? s["👗 ".Length..]
+         : s;
+
+    // Lazy-load an outfit folder's contents on first expand, like the main inventory tree.
+    private void OnOutfitItemCollapsed(TreeItem item)
+    {
+        if (item.Collapsed) return; // fires both directions; only expansion loads
+        if (!Guid.TryParse(item.GetMetadata(0).AsString(), out var folderId)) return; // not an outfit row
+        if (!_loadedOutfitFolders.Add(folderId)) return; // already loaded
+        _ = LoadOutfitContentsAsync(item, folderId);
+    }
+
+    private async System.Threading.Tasks.Task LoadOutfitContentsAsync(TreeItem row, Guid folderId, bool isRetry = false)
+    {
+        System.Collections.Generic.IReadOnlyList<SLNG.Core.WornItem> items =
+            System.Array.Empty<SLNG.Core.WornItem>();
+        try { items = await _session!.GetOutfitContentsAsync(folderId).ConfigureAwait(false); }
+        catch (Exception ex) { GD.PrintErr($"[Outfits] contents fetch failed: {ex.Message}"); }
+
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(_outfitsTree) || !IsInstanceValid(row)) return;
+
+            var child = row.GetFirstChild();
+            while (child != null) { var next = child.GetNext(); child.Free(); child = next; }
+
+            if (items.Count == 0)
+            {
+                var empty = _outfitsTree.CreateItem(row);
+                empty.SetText(0, "(leer)");
+                empty.SetSelectable(0, false);
+                empty.SetCustomColor(0, new Color(1, 1, 1, 0.4f));
+                return;
+            }
+
+            bool anyPending = false;
+            foreach (var it in items.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                var c = _outfitsTree.CreateItem(row);
+                string icon = it.Category switch
+                {
+                    SLNG.Core.WornCategory.BodyPart => "🧍",
+                    SLNG.Core.WornCategory.Clothing => "👕",
+                    SLNG.Core.WornCategory.Hud => "🖥",
+                    _ => "📦",
+                };
+                string name = string.IsNullOrEmpty(it.Name) ? "(lädt…)" : it.Name;
+                if (string.IsNullOrEmpty(it.Name)) anyPending = true;
+                // A saved outfit item that you're also wearing right now is gold, like the Angezogen tab.
+                c.SetText(0, $"{icon} {name}");
+                c.SetMetadata(0, ""); // child rows are display-only
+                c.SetSelectable(0, false);
+                if (it.Live) c.SetCustomColor(0, new Color(1.0f, 0.88f, 0.4f));
+            }
+
+            // Names arrive from RequestFetchInventory a moment later — reload once.
+            if (anyPending && !isRetry)
+            {
+                var t = GetTree().CreateTimer(1.3);
+                t.Timeout += () =>
+                {
+                    if (IsInstanceValid(this) && IsInstanceValid(row) && !row.Collapsed)
+                        _ = LoadOutfitContentsAsync(row, folderId, isRetry: true);
+                };
+            }
+        }).CallDeferred();
+    }
+
+    private void OnSaveOutfitPressed()
+    {
+        if (_session == null) return;
+        var name = _outfitNameEdit.Text.Trim();
+
+        if (_renamingOutfitId is { } renameId)
+        {
+            if (name.Length == 0) { _outfitsStatus.Text = "Erst einen Namen eingeben."; return; }
+            bool ok = _session.RenameOutfitAsync(renameId, name);
+            if (ok)
+            {
+                _outfitsStatus.Text = $"Umbenannt in „{name}“.";
+                // Update the row in place — a server re-fetch can still race and return the old name.
+                for (var r = _outfitsTree.GetRoot()?.GetFirstChild(); r != null; r = r.GetNext())
+                    if (Guid.TryParse(r.GetMetadata(0).AsString(), out var fid) && fid == renameId)
+                    {
+                        r.SetText(0, (r.GetText(0).StartsWith("✅ ") ? "✅ " : "👗 ") + name);
+                        break;
+                    }
+            }
+            else _outfitsStatus.Text = "Umbenennen fehlgeschlagen.";
+            CancelRenameOutfit();
+            return;
+        }
+
+        if (name.Length == 0) { _outfitsStatus.Text = "Erst einen Namen eingeben."; return; }
+        _outfitsStatus.Text = $"Speichere „{name}“…";
+        _ = SaveOutfitAsync(name);
+    }
+
+    private async System.Threading.Tasks.Task SaveOutfitAsync(string name)
+    {
+        Guid? id = null;
+        string? err = null;
+        try { id = await _session!.SaveCurrentOutfitAsync(name).ConfigureAwait(false); }
+        catch (Exception ex) { err = ex.Message; }
+
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            if (err != null) _outfitsStatus.Text = $"Fehler: {err}";
+            else if (id is null) _outfitsStatus.Text = "Kein #Outfits-Ordner auf diesem Grid.";
+            else { _outfitsStatus.Text = $"„{name}“ gespeichert."; _outfitNameEdit.Text = ""; }
+            RefreshOutfits();
+        }).CallDeferred();
+    }
+
+    // Double-click just folds/unfolds the outfit to look inside. Wearing is right-click only, so
+    // exploring a list of outfits can't accidentally attach a pile of objects.
+    private void OnOutfitActivated()
+    {
+        var row = _outfitsTree.GetSelected();
+        if (row != null && Guid.TryParse(row.GetMetadata(0).AsString(), out _))
+            row.Collapsed = !row.Collapsed;
+    }
+
+    private void OnOutfitsGuiInput(InputEvent @event)
+    {
+        if (@event is not InputEventMouseButton mb || !mb.Pressed || mb.ButtonIndex != MouseButton.Right) return;
+        var row = _outfitsTree.GetItemAtPosition(mb.Position);
+        if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out _)) return;
+        if (_renamingOutfitId is not null) CancelRenameOutfit();
+        row.Select(0);
+        _outfitsMenu.Position = (Vector2I)GetGlobalMousePosition();
+        _outfitsMenu.Popup();
+    }
+
+    private void OnOutfitsMenuPressed(long id)
+    {
+        var row = _outfitsTree.GetSelected();
+        if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out var folderId)) return;
+        switch (id)
+        {
+            case 0: _ = ReplaceWornWithOutfitAsync(folderId); break;          // make my attachments match the outfit
+            case 1: _ = WearOutfitAsync(folderId); break;                     // attach the outfit's objects, keep current
+            case 2: _ = RemoveOutfitFromWornAsync(folderId); break;           // detach the outfit's attachments
+            case 3: BeginRenameOutfit(row); break;
+            case 4: _ = ModifyOutfitAsync(folderId, replace: true); break;    // saved outfit contents := current worn
+            case 5: DeleteOutfitAsync(folderId); break;
+        }
+    }
+
+    // Rename via the name field at the top (Tree cell-editing needs keyboard focus, which this
+    // tree deliberately doesn't take). The "💾 Speichern" button doubles as "✏️ Umbenennen"
+    // while a rename is armed.
+    private void BeginRenameOutfit(TreeItem row)
+    {
+        if (!Guid.TryParse(row.GetMetadata(0).AsString(), out var folderId)) return;
+        _renamingOutfitId = folderId;
+
+        _outfitNameEdit.Text = StripOutfitPrefix(row.GetText(0)).Trim();
+        _outfitSaveBtn.Text = "✏️ Umbenennen";
+        _outfitsStatus.Text = "Neuen Namen eingeben, dann Enter / „Umbenennen“.";
+        _outfitNameEdit.GrabFocus();
+        _outfitNameEdit.SelectAll();
+    }
+
+    private void CancelRenameOutfit()
+    {
+        _renamingOutfitId = null;
+        _outfitSaveBtn.Text = "💾 Speichern";
+        _outfitNameEdit.Text = "";
+    }
+
+    private async System.Threading.Tasks.Task RemoveOutfitFromWornAsync(Guid folderId)
+    {
+        Callable.From(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = "Entferne…"; }).CallDeferred();
+        int n = 0;
+        string? err = null;
+        try { n = await _session!.RemoveOutfitFromWornAsync(folderId).ConfigureAwait(false); }
+        catch (Exception ex) { err = ex.Message; }
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            _outfitsStatus.Text = err != null ? $"Fehler: {err}"
+                : n == 0 ? "Nichts davon getragen."
+                         : $"{n} Anhang/Anhänge abgelegt. Kleidung & Körper unverändert (Phase 2).";
+        }).CallDeferred();
+    }
+
+    private void DeleteOutfitAsync(Guid folderId)
+    {
+        if (_session?.DeleteOutfitAsync(folderId) == true)
+        {
+            _outfitsStatus.Text = "Outfit in den Papierkorb verschoben.";
+            RefreshOutfits();
+        }
+    }
+
+    private async System.Threading.Tasks.Task ReplaceWornWithOutfitAsync(Guid folderId)
+    {
+        Callable.From(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = "Tausche Anhänge…"; }).CallDeferred();
+
+        (int Detached, int Attached) r = (0, 0);
+        string? err = null;
+        try { r = await _session!.ReplaceWornWithOutfitAttachmentsAsync(folderId).ConfigureAwait(false); }
+        catch (Exception ex) { err = ex.Message; }
+
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            _outfitsStatus.Text = err != null
+                ? $"Fehler: {err}"
+                : $"{r.Detached} abgelegt, {r.Attached} angezogen. Kleidung & Körper unverändert (Phase 2).";
+            if (err == null) RefreshOutfits(); // the ✅ "getragen" marker moved
+        }).CallDeferred();
+    }
+
+    private async System.Threading.Tasks.Task WearOutfitAsync(Guid folderId)
+    {
+        int n = 0;
+        string? err = null;
+        try { n = await _session!.WearOutfitAttachmentsAsync(folderId).ConfigureAwait(false); }
+        catch (Exception ex) { err = ex.Message; }
+
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            _outfitsStatus.Text = err != null
+                ? $"Fehler: {err}"
+                : n == 0
+                    ? "Keine Anhänge in diesem Outfit."
+                    : $"{n} Anhang/Anhänge angezogen. Kleidung & Körper folgen mit FEAT-AVATAR-01 Phase 2.";
+        }).CallDeferred();
+    }
+
+    // "hinzufügen" (replace=false) or "ersetzen" (replace=true) on an existing outfit folder.
+    private async System.Threading.Tasks.Task ModifyOutfitAsync(Guid folderId, bool replace)
+    {
+        Callable.From(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = replace ? "Ersetze…" : "Füge hinzu…"; }).CallDeferred();
+
+        int n = 0;
+        string? err = null;
+        try
+        {
+            n = replace
+                ? await _session!.ReplaceOutfitWithCurrentAsync(folderId).ConfigureAwait(false)
+                : await _session!.AddCurrentToOutfitAsync(folderId).ConfigureAwait(false);
+        }
+        catch (Exception ex) { err = ex.Message; }
+
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            _outfitsStatus.Text = err != null
+                ? $"Fehler: {err}"
+                : replace
+                    ? $"Outfit ersetzt — {n} Teil(e) verlinkt."
+                    : n == 0 ? "Nichts hinzuzufügen — alles schon im Outfit."
+                             : $"{n} Teil(e) zum Outfit hinzugefügt.";
+
+            // Reload that outfit's contents if it's expanded.
+            var row = _outfitsTree.GetSelected();
+            if (row != null && Guid.TryParse(row.GetMetadata(0).AsString(), out var fid) && fid == folderId)
+            {
+                _loadedOutfitFolders.Remove(folderId);
+                if (!row.Collapsed) _ = LoadOutfitContentsAsync(row, folderId);
+            }
+        }).CallDeferred();
     }
 
     private void PopulateRoots()
