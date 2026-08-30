@@ -3351,15 +3351,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         if (MyOutfitsFolderId is not { } outfitsId) return Array.Empty<OutfitEntry>();
 
-        // The Current Outfit Folder carries a folder-link to the outfit it's "based on"
-        // (SL / Firestorm mechanism) — that's the active one.
+        var children = await FetchInventoryChildrenAsync(outfitsId, ct).ConfigureAwait(false);
+        var folders = children.Where(e => e.IsFolder).ToList();
+
+        // (1) The Current Outfit Folder carries a folder-link to the outfit it's "based on"
+        // (SL / Firestorm mechanism). Cheap — one fetch.
         var activeOutfit = Guid.Empty;
         try
         {
             var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
             if (cofUuid != LibreMetaverse.UUID.Zero)
             {
-                await FetchInventoryChildrenAsync(cofUuid.Guid, ct).ConfigureAwait(false); // populate store
+                await FetchInventoryChildrenAsync(cofUuid.Guid, ct).ConfigureAwait(false);
                 var cofNode = _client.Inventory.Store?.GetNodeOrDefault(cofUuid);
                 if (cofNode != null)
                     foreach (var n in cofNode.Nodes.Values)
@@ -3372,12 +3375,38 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         catch (OperationCanceledException) { throw; }
         catch { }
 
-        var children = await FetchInventoryChildrenAsync(outfitsId, ct).ConfigureAwait(false);
-        var result = new List<OutfitEntry>();
-        foreach (var e in children)
-            if (e.IsFolder)
-                result.Add(new OutfitEntry(e.Id, e.Name, e.Id == activeOutfit));
-        result.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+        // (2) Fallback (common on OpenSim, which doesn't write that folder-link): the current
+        // outfit is the fully-worn one with the most items — i.e. every item it links is worn now.
+        if (activeOutfit == Guid.Empty && folders.Count is > 0 and <= 60)
+        {
+            var wornIds = new HashSet<Guid>(GetWornItems().Where(w => w.Live).Select(w => w.ItemId));
+            if (wornIds.Count > 0)
+            {
+                int bestCount = 0;
+                var contents = await Task.WhenAll(folders.Select(f =>
+                    FetchInventoryChildrenAsync(f.Id, ct))).ConfigureAwait(false);
+                for (int i = 0; i < folders.Count; i++)
+                {
+                    var targets = contents[i]
+                        .Where(e => !e.IsFolder)
+                        .Select(e => e.IsLink && e.LinkTargetId != Guid.Empty ? e.LinkTargetId : e.Id)
+                        .Where(g => g != Guid.Empty)
+                        .ToHashSet();
+                    if (targets.Count > bestCount && targets.IsSubsetOf(wornIds))
+                    {
+                        bestCount = targets.Count;
+                        activeOutfit = folders[i].Id;
+                    }
+                }
+            }
+        }
+
+        Console.Error.WriteLine($"[SavedOutfits] {folders.Count} outfits, active={activeOutfit}");
+
+        var result = folders
+            .Select(e => new OutfitEntry(e.Id, e.Name, e.Id == activeOutfit && activeOutfit != Guid.Empty))
+            .OrderBy(o => o.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
         return result;
     }
 

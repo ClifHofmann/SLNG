@@ -314,6 +314,15 @@ public partial class InventoryPanel : SLNGWindow
         }
     }
 
+    /// <summary>Ctrl+O: show the inventory window on the Outfits tab (FEAT-INV-04).</summary>
+    public void OpenOnOutfits()
+    {
+        Visible = true;
+        PopulateRoots();
+        if (_tabs.CurrentTab == 2) OnTabChanged(2); // already on the tab — just refresh
+        else _tabs.CurrentTab = 2;                  // fires TabChanged -> shows + refreshes
+    }
+
     // ---- FEAT-UI-16: Worn tab -------------------------------------------------------------
 
     private void OnTabChanged(long tab)
