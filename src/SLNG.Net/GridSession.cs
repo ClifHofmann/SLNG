@@ -3222,6 +3222,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             ? WornCategory.Hud
             : WornCategory.Attachment;
 
+    /// <summary>Item ids we've already asked the grid to fetch details for (FEAT-UI-16 name
+    /// resolution). Prevents <see cref="GetWornItems"/> re-requesting the same ids on every poll.</summary>
+    private readonly HashSet<Guid> _wornDetailFetchRequested = new();
+
     /// <summary>Every item the local avatar is wearing right now — live attachments and the live
     /// wearables set, plus anything referenced only by a Current-Outfit link (reported with
     /// <c>Live == false</c>: a stale link, or a wear that has not taken effect). Backs the
@@ -3232,8 +3236,28 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var byId = new Dictionary<Guid, WornItem>();
         var store = _client.Inventory.Store;
 
-        string NameOf(LibreMetaverse.UUID id) =>
+        string StoreName(LibreMetaverse.UUID id) =>
             (store?.GetNodeOrDefault(id)?.Data as LibreMetaverse.InventoryItem)?.Name ?? string.Empty;
+
+        // Scene fallback: a worn attachment's prim carries a name even when its inventory item
+        // hasn't been fetched into the local store (the tree loads folders lazily). Keyed by the
+        // AttachItemID name-value, same as everywhere else in this class.
+        var scenePrimNames = new Dictionary<Guid, string>();
+        try
+        {
+            var sim = _client.Network.CurrentSim;
+            if (sim != null)
+                foreach (var p in sim.ObjectsPrimitives.Values)
+                {
+                    if (p == null || p.ParentID != _client.Self.LocalID) continue;
+                    var aid = ExtractAttachItemId(p);
+                    var nm = p.Properties?.Name;
+                    if (aid != Guid.Empty && !string.IsNullOrEmpty(nm)) scenePrimNames[aid] = nm!;
+                }
+        }
+        catch { }
+
+        var unresolved = new List<LibreMetaverse.UUID>();
 
         try
         {
@@ -3241,7 +3265,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             {
                 var id = kvp.Key.Guid;
                 if (id == Guid.Empty) continue;
-                byId[id] = new WornItem(id, NameOf(kvp.Key),
+                var name = StoreName(kvp.Key);
+                if (name.Length == 0 && scenePrimNames.TryGetValue(id, out var sn)) name = sn;
+                if (name.Length == 0) unresolved.Add(kvp.Key);
+                byId[id] = new WornItem(id, name,
                     CategorizeAttachment((int)kvp.Value), FormatAttachmentPoint(kvp.Value),
                     (int)LibreMetaverse.AssetType.Object, Live: true);
             }
@@ -3254,7 +3281,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             {
                 var id = w.ItemID.Guid;
                 if (id == Guid.Empty || byId.ContainsKey(id)) continue;
-                byId[id] = new WornItem(id, NameOf(w.ItemID),
+                var name = StoreName(w.ItemID);
+                if (name.Length == 0) unresolved.Add(w.ItemID);
+                byId[id] = new WornItem(id, name,
                     CategorizeWearable((int)w.AssetType), null, (int)w.AssetType, Live: true);
             }
         }
@@ -3278,12 +3307,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     var cat = assetType == (int)LibreMetaverse.AssetType.Bodypart ? WornCategory.BodyPart
                         : assetType == (int)LibreMetaverse.AssetType.Clothing ? WornCategory.Clothing
                         : WornCategory.Attachment;
-                    byId[id] = new WornItem(id, target?.Name ?? link.Name ?? string.Empty,
-                        cat, null, assetType, Live: false);
+                    var name = target?.Name ?? link.Name ?? string.Empty;
+                    if (name.Length == 0 && scenePrimNames.TryGetValue(id, out var sn)) name = sn;
+                    if (name.Length == 0 && targetUuid != LibreMetaverse.UUID.Zero) unresolved.Add(targetUuid);
+                    byId[id] = new WornItem(id, name, cat, null, assetType, Live: false);
                 }
             }
         }
         catch { }
+
+        // Pull missing item details into the store so the next poll has real names. Requested
+        // once per id per session -- the tab's 2.5 s refresh (FEAT-UI-16) surfaces the result.
+        var toFetch = new Dictionary<LibreMetaverse.UUID, LibreMetaverse.UUID>();
+        foreach (var u in unresolved)
+            if (_wornDetailFetchRequested.Add(u.Guid)) toFetch[u] = _client.Self.AgentID;
+        if (toFetch.Count > 0)
+        {
+            try { _client.Inventory.RequestFetchInventory(toFetch); } catch { }
+        }
 
         return byId.Values.ToList();
     }
