@@ -77,30 +77,45 @@ public class VisualParamOrderTests
     }
 
     /// <summary>
-    /// THE BUG. <c>MakeAppearancePacket</c> fills the 218 wire slots from the first 218 entries of
-    /// <c>VisualParams.Params</c> — but those are the first 218 of ALL params, not of the
-    /// transmitted ones. This test records how far the two sequences actually diverge.
+    /// THE BUG, with its measured severity. <c>MakeAppearancePacket</c> fills the 218 wire slots
+    /// from the first 218 entries of <c>VisualParams.Params</c> — but those are the first 218 of
+    /// ALL 672 params, not of the 253 transmitted ones. As soon as a never-transmitted group-1/2
+    /// param sorts in among them, every subsequent slot shifts.
     ///
-    /// A non-empty divergence means <c>AppearanceManager.MyVisualParameters</c> is NOT in
-    /// Group0ParamIds order, and therefore must never be handed to
-    /// <c>AvatarShapeService.ComputeEffectiveWeights</c> (or trusted as a shape) — it would assign
-    /// each byte to the wrong parameter, which is what a torn/exploded avatar looks like.
+    /// Measured against the pinned LibreMetaverse 3.1.3: the two sequences agree for the first 23
+    /// slots and diverge from index 23 onward — <b>195 of 218 values end up on the wrong
+    /// parameter</b>. That is why every attempt to drive an appearance send through
+    /// <c>AppearanceManager</c> corrupted the stored shape (2026-08-02 deformed, 2026-08-29 flat,
+    /// 2026-08-31 torn rigged head), and why <c>Settings.Agent.SendAppearance</c> must stay off.
+    ///
+    /// It equally means <c>AppearanceManager.MyVisualParameters</c> must never be handed to
+    /// <c>AvatarShapeService.ComputeEffectiveWeights</c> or trusted as a shape — see
+    /// <c>GridSession.OnAppearanceSet</c>.
+    ///
+    /// If a future LibreMetaverse upgrade makes this test fail, the bug was fixed upstream and
+    /// FEAT-AVATAR-01 can be reopened.
     /// </summary>
     [Fact]
-    public void First218_of_Params_diverges_from_the_transmitted_order()
+    public void MakeAppearancePacket_order_disagrees_with_the_wire_order()
     {
         var wire = VisualParams.Group0ParamIds;
         var makePacketOrder = VisualParams.Params.Keys.Take(WireParamCount).ToArray();
 
         int firstMismatch = -1;
+        int agreeing = 0;
         for (int i = 0; i < WireParamCount; i++)
         {
-            if (wire[i] != makePacketOrder[i]) { firstMismatch = i; break; }
+            if (wire[i] == makePacketOrder[i]) agreeing++;
+            else if (firstMismatch < 0) firstMismatch = i;
         }
 
         Assert.True(firstMismatch >= 0,
-            "The two orderings now agree — MakeAppearancePacket's output would be wire-correct. " +
-            "If a LibreMetaverse upgrade caused this, revisit FEAT-AVATAR-01: feeding " +
-            "MyVisualParameters into the shape service may have become safe.");
+            "The two orderings now AGREE — MakeAppearancePacket's output would be wire-correct. " +
+            "If a LibreMetaverse upgrade caused this, reopen FEAT-AVATAR-01: SendAppearance and a " +
+            "real wearable rebake may have become safe.");
+
+        // Pin the measured severity so an upgrade that merely shifts it is noticed too.
+        Assert.Equal(23, firstMismatch);
+        Assert.Equal(23, agreeing);
     }
 }
