@@ -38,7 +38,8 @@
       "sculpt_u_nudge_right_coarse": "Sculpt-U verschieben: +16 Rasterspalten",
       "environment": "Umgebung (Windlight)...",
       "world_map": "Weltkarte...",
-      "minimap": "Minikarte"
+      "minimap": "Minikarte",
+      "rebake_avatar": "Avatar neu backen (Strg+Alt+R)"
     },
     "hud": {
       "stand_up": "Aufstehen"

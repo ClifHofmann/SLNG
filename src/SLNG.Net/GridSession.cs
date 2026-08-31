@@ -2030,6 +2030,26 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
+    /// <summary>FEAT-AVATAR-01: recomposites the baked textures from the currently worn set and
+    /// re-sends the appearance — the manual rebake every viewer offers (Firestorm: Ctrl+Alt+R).
+    /// Same corrected path as a wearable edit: LibreMetaverse bakes, then
+    /// <see cref="SendCorrectedAppearance"/> replaces its scrambled packet. Use it when a wearable
+    /// change did not visibly take.</summary>
+    public void RebakeAvatar()
+    {
+        if (!_client.Network.Connected)
+        {
+            Console.Error.WriteLine("[Appearance] rebake skipped: not connected");
+            return;
+        }
+
+        ArmAppearanceCorrection();
+        // forceRebake: clears the cached bake ids so the layers are genuinely recomposited rather
+        // than the previous bake being re-advertised -- which is the whole point of a manual rebake.
+        _ = _client.Appearance.RequestSetAppearance(true);
+        Console.Error.WriteLine("[Appearance] manual rebake requested -- correction armed");
+    }
+
     private Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
     {
         ArmAppearanceCorrection();
