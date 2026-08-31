@@ -2263,7 +2263,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
             Console.Error.WriteLine($"[Bake] textures downloaded: {got}/{wanted.Count}, decoded: {decodedTex}/{got}");
 
-            // 5. Bake each channel and report. Nothing is uploaded or sent.
+            // 5. Bake each channel, and -- when asked -- upload it. Uploading is deliberately
+            //    separated from sending: RequestUploadBakedTextureAsync goes through the
+            //    UploadBakedTexture capability, which stores an asset and returns its id. It costs
+            //    nothing, creates no inventory item and changes nothing about the avatar. What
+            //    changes an avatar is the AgentSetAppearance that carries the new ids, and that
+            //    still does not happen here. This is the step that proves the grid accepts a bake
+            //    of this size before anything irreversible is built on top of it.
+            bool upload = Environment.GetEnvironmentVariable("SLNG_BAKE_UPLOAD") == "1";
+            var uploaded = new Dictionary<int, LibreMetaverse.UUID>();
+            Console.Error.WriteLine(upload
+                ? "[Bake] SLNG_BAKE_UPLOAD=1 -- bakes will be UPLOADED (assets only; appearance still not sent)"
+                : "[Bake] upload disabled (set SLNG_BAKE_UPLOAD=1 to store the bakes as assets)");
+
             foreach (var bakeType in new[] { BakeType.Head, BakeType.UpperBody, BakeType.LowerBody, BakeType.Eyes, BakeType.Hair })
             {
                 var indices = AppearanceManager.BakeTypeToTextures(bakeType);
@@ -2307,18 +2319,46 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 // so the bytes above are meaningless no matter how good the image is. This is the
                 // number that says whether a bake could actually be uploaded.
                 int reBytes = 0;
+                byte[] slngBake = Array.Empty<byte>();
                 if (img != null && _bakeEncoder != null)
                 {
                     var bgra = ToBgra(img);
                     var encoder = _bakeEncoder;
                     int w = img.Width, h = img.Height;
-                    var encoded = await Task.Run(() => encoder.EncodeBake(bgra, w, h), ct).ConfigureAwait(false);
-                    reBytes = encoded.Length;
+                    slngBake = await Task.Run(() => encoder.EncodeBake(bgra, w, h), ct).ConfigureAwait(false);
+                    reBytes = slngBake.Length;
+                }
+
+                string uploadNote = string.Empty;
+                if (upload && reBytes > 0)
+                {
+                    try
+                    {
+                        var id = await _client.Assets.RequestUploadBakedTextureAsync(slngBake, ct).ConfigureAwait(false);
+                        if (id != LibreMetaverse.UUID.Zero)
+                        {
+                            uploaded[(int)AppearanceManager.BakeTypeToAgentTextureIndex(bakeType)] = id;
+                            uploadNote = $"  uploaded={id.ToString()[..8]}";
+                        }
+                        else uploadNote = "  upload REJECTED (grid returned no asset id)";
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex) { uploadNote = $"  upload FAILED: {ex.Message}"; }
                 }
 
                 Console.Error.WriteLine($"[Bake] {bakeType,-10} inputs={indices.Count} withTexture={fed} usable={usable} " +
                     $"-> lmv {(bytes > 0 ? bytes + "B" : "NOTHING")} / slng {(reBytes > 0 ? reBytes + "B" : "NOTHING")}  {composed}" +
-                    (detail.Count > 0 ? "  [" + string.Join(" ", detail) + "]" : ""));
+                    (detail.Count > 0 ? "  [" + string.Join(" ", detail) + "]" : "") + uploadNote);
+            }
+
+            if (upload)
+            {
+                // A partial set is the dangerous case: an appearance built from it would carry empty
+                // slots and strip the avatar. Report completeness explicitly so the next step can
+                // refuse rather than discover it on a live avatar.
+                var have = AgentAppearanceParams.EssentialBakeSlots.Count(s => uploaded.ContainsKey(s));
+                Console.Error.WriteLine($"[Bake] uploaded {have}/{AgentAppearanceParams.EssentialBakeSlots.Length} " +
+                    $"essential slots: {string.Join("  ", AgentAppearanceParams.EssentialBakeSlots.Select(s => $"{s}=" + (uploaded.TryGetValue(s, out var u) ? u.ToString()[..8] : "MISSING")))}");
             }
 
             Console.Error.WriteLine("[Bake] dry run complete -- nothing uploaded, nothing sent");
