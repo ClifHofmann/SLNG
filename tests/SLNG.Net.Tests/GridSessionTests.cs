@@ -552,24 +552,13 @@ public class GridSessionTests
         Assert.False(session.RegionHasServerSideBaking());
     }
 
-    // The decode-then-send gate: without a connection there are no worn wearables to decode, so it
-    // returns false and the caller must refuse the edit rather than send a partial appearance.
-    [Fact]
-    public async Task EnsureWornWearablesDecodedAsync_is_false_without_connection()
-    {
-        using var session = new GridSession();
-        var method = typeof(GridSession).GetMethod("EnsureWornWearablesDecodedAsync",
-            BindingFlags.NonPublic | BindingFlags.Instance)!;
-        var result = await (Task<bool>)method.Invoke(session, new object?[] { CancellationToken.None })!;
-        Assert.False(result);
-    }
-
     [Fact]
     public async Task DetachItemAsync_wearable_without_connection_does_not_throw()
     {
         using var session = new GridSession();
-        // Nothing resolves from an empty store, so this exercises the graceful path; the point is
-        // that the FEAT-AVATAR-01 wearable branch never sends without a prepared appearance.
+        // Nothing resolves from an empty store; the FEAT-AVATAR-01 wearable branch is a no-op that
+        // never touches the appearance pipeline (every send path was found to corrupt the stored
+        // appearance — reverted 2026-08-31).
         var result = await session.DetachItemAsync(Guid.NewGuid());
         Assert.False(result.WearableRemoved);
         Assert.False(result.WasAttached);

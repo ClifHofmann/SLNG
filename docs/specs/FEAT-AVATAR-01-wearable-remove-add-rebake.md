@@ -2,10 +2,13 @@
 
 - **Feature ID:** `FEAT-AVATAR-01`
 - **Track:** `net` / `render`
-- **Status:** `🧪 Review` — Phase 2 (decode-then-send) landed `v0.11.27-alpha`, awaiting in-world A/B.
-  Phase 1's wearable send was reverted after a live corruption repro
-  2026-08-29 — see "The second load-bearing gotcha"; only the param-seed + classification + tests
-  remain)
+- **Status:** `⏸️ BLOCKED` — every send path corrupts the stored appearance on OSGrid. The remove/
+  add is a **no-op with a log line** as of `v0.11.29-alpha`. Three attempts, all reverted:
+  `v0.11.26` SSB gate (never fires on OpenSim), `v0.11.27` decode-then-send, `v0.11.28` + LLUDP
+  worn-list fetch — the last one got the full worn list and decoded every wearable, and the
+  resulting `RequestSetAppearanceAsync` STILL sent a broken bake (`MyVisualParameters` 127/218
+  zero, avatar flattened, live 2026-08-31). Root cause is structural — see below. Do not retry
+  without a fundamentally different approach.
 - **Owner:** `claude`
 - **Agent:** `protocol-re` (net side) → `graphics-engineer` (bake/render side)
 - **Dep:** `M4-3` (Appearance & BoM)
@@ -125,7 +128,41 @@ Reverted (2026-08-29 live repro):
   A `DetachAttachmentIntoInv` for a Clothing/Bodypart layer was always a no-op, so this is not a
   regression — the layer still cannot be removed, but nothing gets corrupted.
 
-### Phase 2 — decode-then-send (landed `v0.11.26` → reworked `v0.11.27-alpha`, `feature/FEAT-AVATAR-01-wearable-remove-add-rebake`)
+### Phase 2 — ABANDONED. Three send attempts, all corrupted the stored appearance (reverted `v0.11.29-alpha`)
+
+**Summary of what does not work, so nobody tries it again:**
+
+| Attempt | Idea | Result on OSGrid (live 2026-08-31) |
+|---|---|---|
+| `v0.11.26` | Gate on `RegionHasServerSideBaking()` (SL cap path — `RequestSetAppearanceAsync` POSTs only `{ cof_version }`, server composites) | Never fires. LMV's `ServerBakingRegion()` = `RegionProtocols.AgentAppearanceService` + `UpdateAvatarAppearance` cap, both **SL-only**. OpenSim's server-side appearance (XBakes, which the user confirmed configured) is a *different* mechanism the check doesn't see. Feature dead on OSGrid. |
+| `v0.11.27` | Client-side: decode every worn wearable first (`RequestAgentWornAsync` + `Assets.RequestAssetAsync` + `AssetWearable.Decode()` onto `WearableData.Asset`), then `RemoveFromOutfit`/`AddToOutfit` so `MakeAppearancePacket` builds real params | `no worn wearables resolved from COF` — `RequestAgentWornAsync` (COF / `FetchInventoryDescendents2`) returns empty on OSGrid, and with `SendAppearance` off LMV never sent `AgentWearablesRequest` at login, so `AppearanceManager.Wearables` was empty. |
+| `v0.11.28` | + `RequestWornWearablesViaLludpAsync()`: send the LLUDP `AgentWearablesRequestPacket` ourselves, wait for `AgentWearablesReply` | Worn list **arrived**, all wearables **decoded**, `RemoveFromOutfit`/`AddToOutfit` fired — and `RequestSetAppearanceAsync` **STILL sent a broken bake**. `[VisualParams]` came back **127 of 218 params zero**, avatar flattened (screenshot). |
+
+**Root cause — structural, not a bug in any one attempt.** `SendAppearance=false` means the whole
+bake pipeline (`Simulator_OnCapabilitiesReceived`, the `AgentWearablesUpdate` trigger,
+`RebakeAvatarTextures`) never initialised for the session. Calling `RequestSetAppearanceAsync`
+*once*, mid-session, bakes from that cold, partial state and uploads garbage baked textures + a
+half-built param set, which the sim persists. Flipping `SendAppearance=true` is the 2026-08-02
+landmine (`MyVisualParameters` empty → default shape persisted). There is no middle path from
+outside LibreMetaverse.
+
+**What a real fix would need** (none pursued): (a) fork/patch LibreMetaverse so a wearable edit
+can run a *fully* initialised bake without the login-time `SendAppearance` gate; or (b) turn
+`SendAppearance=true` and add a hard pre-send assertion that `MyVisualParameters` is a genuine
+218-value spread (not the weak `VisualParamsHealthy` check — `127 zero` passed that) matching the
+sim's last relay, with an explicit user opt-in; or (c) a server-side (region module) approach
+entirely outside the viewer.
+
+**Left in the code:** `ClassifyItem`, `VisualParamsHealthy`, `TrySeedVisualParams` (diagnostic),
+`RegionHasServerSideBaking()` (harmless query + test), `LogAppearanceEditReadiness()` (logs
+"disabled" once per region). `AttachItemAsync`/`DetachItemAsync` route a Clothing/Bodypart layer
+to `WearWearableAsync`/`RemoveWearableAsync`, which **log + raise `WearableEditUnavailable` and
+change nothing**.
+
+---
+
+<details><summary>Original Phase 2 write-up (obsolete — kept for the LibreMetaverse RE it contains)</summary>
+
 **First cut was SSB-only** — gate the send on `RegionHasServerSideBaking()` (the SL cap path, where
 `RequestSetAppearanceAsync` POSTs only `{ cof_version }` to `UpdateAvatarAppearance`,
 `AppearanceManager.cs:2225`, and the server composites). Live-tested 2026-08-31: **the client
@@ -173,6 +210,8 @@ test still A/B in Firestorm on a non-critical Alpha layer.
 
 **Not** manually seeding `MyVisualParameters` (Phase 1's approach) — `MakeAppearancePacket` ignores
 it and rebuilds from `wearable.Asset`. Decoding the assets is the only thing that helps.
+
+</details>
 
 ### Phase 3 — render verification (likely no code)
 Confirm `AvatarRenderer.UpdateVisual` step 3 + `RecomputeMeshVisibility` (M4-7) pick up the fresh

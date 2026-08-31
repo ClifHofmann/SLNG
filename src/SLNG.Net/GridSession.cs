@@ -1834,159 +1834,57 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private bool _appearanceReadinessLogged;
 
-    /// <summary>Logs, once per region, which wearable-edit path applies here — SL SSB (server bakes,
-    /// nothing local needed) vs client-side (worn wearables get decoded first, then the edit sends).
-    /// So a later "why did the wearable not change" has an answer in the log. FEAT-AVATAR-01.</summary>
+    /// <summary>Logs, once per region, that system-wearable edits are disabled and why — so a
+    /// "the alpha layer won't come off" has an answer in the log. FEAT-AVATAR-01.</summary>
     private void LogAppearanceEditReadiness()
     {
         if (_appearanceReadinessLogged) return;
         _appearanceReadinessLogged = true;
         string region = _client.Network.CurrentSim?.Name ?? "?";
-        Console.Error.WriteLine(RegionHasServerSideBaking()
-            ? $"[Appearance] {region}: SL server-side baking — wearable edits go straight through (server composites)"
-            : $"[Appearance] {region}: client-side bake path — a wearable edit first decodes every worn wearable, then sends");
+        Console.Error.WriteLine($"[Appearance] {region}: system-wearable edits disabled " +
+            "(FEAT-AVATAR-01 — no safe rebake path with SendAppearance off; every attempt corrupts the stored appearance)");
     }
 
-    /// <summary>FEAT-AVATAR-01: raised when a system-wearable wear/detach was refused because its
-    /// visual params could not be made safe to send (a worn wearable — usually the Shape — could
-    /// not be fetched/decoded, so <c>MakeAppearancePacket</c> would fall back to
-    /// <c>vp.DefaultValue</c> and flatten the stored shape). Payload is the item name.</summary>
+    /// <summary>FEAT-AVATAR-01: raised when a system-wearable wear/detach was refused because there
+    /// is no safe way to trigger the rebake (see the block comment above
+    /// <see cref="WearWearableAsync"/>). Payload is the item name, for a user-facing notice.</summary>
     public event EventHandler<string>? WearableEditUnavailable;
 
-    private readonly SemaphoreSlim _wearableDecodeGate = new(1, 1);
+    // FEAT-AVATAR-01 — the system-wearable REBAKE is REVERTED (again). Three approaches were tried
+    // and all corrupted the user's stored appearance on OSGrid, requiring a Firestorm repair:
+    //   v0.11.26  gate on RegionHasServerSideBaking()          -> never fires (LMV's SSB check is
+    //             SL-only; OpenSim's XBakes SSA is a different thing).
+    //   v0.11.27  decode every worn wearable, then RemoveFromOutfit/AddToOutfit
+    //   v0.11.28  + fetch the worn list via LLUDP AgentWearablesRequest first
+    //             -> the worn list came through and the wearables decoded, but the resulting
+    //                RequestSetAppearanceAsync still sent a broken bake: MyVisualParameters came back
+    //                127-of-218 zero and the avatar flattened (live 2026-08-31, screenshot).
+    // Root cause is structural: with SendAppearance=false the whole bake pipeline
+    // (Simulator_OnCapabilitiesReceived / AgentWearablesUpdate trigger / RebakeAvatarTextures) never
+    // initialised, so calling RequestSetAppearanceAsync once mid-session bakes from a cold, partial
+    // state and uploads garbage. Flipping SendAppearance=true is the 2026-08-02 landmine
+    // (MyVisualParameters empty -> default shape persisted). See the spec + the
+    // libremetaverse-sendappearance-flag memory: this feature is blocked until either LMV is
+    // patched/forked, or SendAppearance can be turned on with verified param health.
+    //
+    // Kept as a no-op: the wearable is classified (ClassifyItem) and, for a Clothing/Bodypart
+    // layer, we log + WearableEditUnavailable and change nothing. A DetachAttachmentIntoInv for a
+    // wearable was always a server-side no-op, so this is not a regression.
 
-    /// <summary>Sends the legacy <c>AgentWearablesRequest</c> LLUDP packet and waits for the sim's
-    /// <c>AgentWearablesUpdate</c> reply, which populates <c>AppearanceManager.Wearables</c>. This
-    /// is what OpenSim answers reliably; LibreMetaverse's own login flow would send this, but that
-    /// path is gated by <c>SendAppearance</c> (kept false), so with the flag off nobody asks and
-    /// the worn list stays empty. Mirrors LMV's private <c>GatherAgentWearablesViaLLUDPAsync</c>.
-    /// Best-effort: returns after the reply or a 10 s timeout. FEAT-AVATAR-01.</summary>
-    private async Task RequestWornWearablesViaLludpAsync(CancellationToken ct)
+    private Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
     {
-        if (!_client.Network.Connected) return;
-
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        void OnReply(object? s, LibreMetaverse.AgentWearablesReplyEventArgs e) => tcs.TrySetResult(true);
-        _client.Appearance.AgentWearablesReply += OnReply;
-        try
-        {
-            var request = new LibreMetaverse.Packets.AgentWearablesRequestPacket
-            {
-                AgentData = { AgentID = _client.Self.AgentID, SessionID = _client.Self.SessionID }
-            };
-            _client.Network.SendPacket(request);
-            await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(10), ct)).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { Console.Error.WriteLine($"[Appearance] AgentWearablesRequest failed: {ex.Message}"); }
-        finally { _client.Appearance.AgentWearablesReply -= OnReply; }
+        Console.Error.WriteLine($"[Appearance] wear of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
+            "system-wearable rebake is disabled (FEAT-AVATAR-01 — every send path corrupts the stored appearance)");
+        WearableEditUnavailable?.Invoke(this, wearable.Name);
+        return Task.CompletedTask;
     }
 
-    /// <summary>Downloads and decodes every currently-worn wearable's asset so a following
-    /// <c>RemoveFromOutfit</c>/<c>AddToOutfit</c> → <c>RequestSetAppearanceAsync</c> →
-    /// <c>MakeAppearancePacket</c> rebuilds the 218 visual params from the real Shape/Skin assets
-    /// instead of <c>vp.DefaultValue</c> for the ones it can't decode (the 2026-08-02 / 2026-08-29
-    /// flatten). <c>DownloadWearablesAsync</c> inside <c>RequestSetAppearanceAsync</c> then finds
-    /// everything already on <c>WearableData.Asset</c> and skips its own fetch. Returns false — and
-    /// the caller must then refuse the edit — if a Shape is not worn or any worn wearable can't be
-    /// fetched/decoded; sending a partial set is exactly the corruption this guards against.</summary>
-    private async Task<bool> EnsureWornWearablesDecodedAsync(CancellationToken ct = default)
+    private Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
     {
-        if (!_client.Network.Connected) return false;
-
-        await _wearableDecodeGate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            // Populate LibreMetaverse's worn-wearable list. With SendAppearance=false it never sent
-            // an AgentWearablesRequest at login, so AppearanceManager.Wearables is empty -- ask now,
-            // LLUDP first (OpenSim answers AgentWearablesRequest reliably; the COF-based
-            // RequestAgentWornAsync returned nothing on OSGrid, live 2026-08-31 -- its
-            // FetchInventoryDescendents2 path is flaky there).
-            await RequestWornWearablesViaLludpAsync(ct).ConfigureAwait(false);
-            if (!_client.Appearance.GetWearables().Any())
-            {
-                try { await _client.Appearance.RequestAgentWornAsync(ct).ConfigureAwait(false); }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex) { Console.Error.WriteLine($"[Appearance] RequestAgentWorn failed: {ex.Message}"); }
-            }
-
-            var worn = _client.Appearance.GetWearables().ToList();
-            if (worn.Count == 0)
-            {
-                Console.Error.WriteLine("[Appearance] no worn wearables resolved (LLUDP + COF both empty) — refusing wearable edit");
-                return false;
-            }
-            if (worn.All(w => w.WearableType != LibreMetaverse.WearableType.Shape))
-            {
-                Console.Error.WriteLine("[Appearance] no Shape among worn wearables — refusing wearable edit (would default body params)");
-                return false;
-            }
-
-            foreach (var w in worn)
-            {
-                if (w.Asset != null) continue;
-                try
-                {
-                    var asset = await _client.Assets
-                        .RequestAssetAsync(w.AssetID, w.AssetType, priority: true, ct)
-                        .ConfigureAwait(false);
-                    if (asset is LibreMetaverse.Assets.AssetWearable aw && aw.Decode())
-                        w.Asset = aw;
-                    else
-                        Console.Error.WriteLine($"[Appearance] wearable {w.WearableType} ({w.AssetID}) did not fetch/decode");
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[Appearance] wearable {w.WearableType} ({w.AssetID}) fetch error: {ex.Message}");
-                }
-            }
-
-            bool allDecoded = _client.Appearance.GetWearables().All(w => w.Asset != null);
-            if (!allDecoded)
-                Console.Error.WriteLine("[Appearance] not every worn wearable decoded — refusing wearable edit");
-            return allDecoded;
-        }
-        finally
-        {
-            _wearableDecodeGate.Release();
-        }
-    }
-
-    /// <summary>Whether it is safe to route a system-wearable edit through
-    /// <c>AppearanceManager</c> right now: true immediately on an SL SSB region, otherwise only
-    /// after <see cref="EnsureWornWearablesDecodedAsync"/> succeeds. Raises
-    /// <see cref="WearableEditUnavailable"/> with <paramref name="itemName"/> when it returns
-    /// false. FEAT-AVATAR-01.</summary>
-    private async Task<bool> PrepareWearableEditAsync(string itemName, CancellationToken ct = default)
-    {
-        if (RegionHasServerSideBaking()) return true;
-        if (await EnsureWornWearablesDecodedAsync(ct).ConfigureAwait(false)) return true;
-
-        Console.Error.WriteLine($"[Appearance] edit of \"{itemName}\" not sent: worn wearables could not be decoded, " +
-            "a client-side rebake would persist a default shape (FEAT-AVATAR-01)");
-        WearableEditUnavailable?.Invoke(this, itemName);
-        return false;
-    }
-
-    /// <summary>FEAT-AVATAR-01: puts a system wearable on. Prepares a safe rebake first
-    /// (see <see cref="PrepareWearableEditAsync"/>); if that fails, nothing is sent.</summary>
-    private async Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
-    {
-        if (!await PrepareWearableEditAsync(wearable.Name).ConfigureAwait(false)) return;
-        _client.Appearance.AddToOutfit(wearable, replace);
-        Console.Error.WriteLine($"[Appearance] wore wearable \"{wearable.Name}\" ({wearable.AssetType}) — rebake requested");
-    }
-
-    /// <summary>FEAT-AVATAR-01: takes a system wearable off. Prepares a safe rebake first;
-    /// if that fails, returns <c>DetachResult(false, 0)</c> and sends nothing.</summary>
-    private async Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
-    {
-        if (!await PrepareWearableEditAsync(wearable.Name).ConfigureAwait(false))
-            return new DetachResult(false, 0);
-        _client.Appearance.RemoveFromOutfit(wearable);
-        Console.Error.WriteLine($"[Appearance] removed wearable \"{wearable.Name}\" ({wearable.AssetType}) — rebake requested");
-        return new DetachResult(false, 0, WearableRemoved: true);
+        Console.Error.WriteLine($"[Appearance] detach of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
+            "system-wearable rebake is disabled (FEAT-AVATAR-01 — every send path corrupts the stored appearance)");
+        WearableEditUnavailable?.Invoke(this, wearable.Name);
+        return Task.FromResult(new DetachResult(false, 0));
     }
 
     private void OnAppearanceSet(object? sender, AppearanceSetEventArgs e)
@@ -4686,7 +4584,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Grid.CoarseLocationUpdate -= OnCoarseLocationUpdate;
         _client.Grid.GridRegion -= OnGridRegion;
         _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
-        _wearableDecodeGate.Dispose();
         Logout();
     }
 }
