@@ -255,6 +255,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                         if (!System.IO.File.Exists(dest))
                             System.IO.File.Copy(tgaFile, dest);
                     }
+
+                    BakeResourceLayers.UpscaleAll(lindenDir, Console.Error.WriteLine);
                 }
             }
             catch (System.IO.IOException) { }
