@@ -1449,6 +1449,7 @@ public partial class AvatarRenderer : Node3D
         {
             wasBom = true; bomIndex = bakeIdx;
             texId = avatarVisual.LoadedTextures.TryGetValue(bakeIdx, out var bakeTexId) ? bakeTexId : Guid.Empty;
+            LogBomFace(meshId, faceIndex, bomIndex, texId);
         }
 
         if (texId == Guid.Empty || _assetService == null || _gpuCache == null)
@@ -1525,6 +1526,30 @@ public partial class AvatarRenderer : Node3D
     /// has a handful of faces and they are rebuilt only when their content changes, so the cost of
     /// saying it out loud is a handful of lines per session.</summary>
     private static readonly System.Collections.Generic.HashSet<string> _hudFaceLogged = new();
+
+    private static readonly System.Collections.Generic.HashSet<string> _bomFaceLogged = new();
+
+    /// <summary>FEAT-AVATAR-01: reports every Bakes-on-Mesh face and whether its channel actually
+    /// resolved to an avatar bake. Unconditional (not behind --diag) and deduplicated per
+    /// mesh/face/outcome, so it costs a handful of lines per session.
+    ///
+    /// It exists because "the mesh head renders grey" has two completely different causes that look
+    /// identical on screen: the face never carried a BoM magic id at all (so there is nothing to
+    /// resolve), or it did and the avatar's bake for that channel has not arrived. The existing
+    /// [FaceTex] line covers only the second and is Logger.Debug, i.e. unreachable without --diag —
+    /// the same blind spot that cost two diagnostic rounds on FEAT-RENDER-06's black HUDs.</summary>
+    private static void LogBomFace(Guid meshId, int faceIndex, int bakeIndex, Guid resolved)
+    {
+        string outcome = resolved == Guid.Empty ? "UNRESOLVED" : resolved.ToString("N")[..8];
+        string key = $"{meshId:N}:{faceIndex}:{bakeIndex}:{outcome}";
+        lock (_bomFaceLogged)
+        {
+            if (!_bomFaceLogged.Add(key)) return;
+        }
+
+        GD.Print($"[BomFace] mesh={meshId.ToString("N")[..8]} face={faceIndex} " +
+            $"channel={bakeIndex} -> {(resolved == Guid.Empty ? "UNRESOLVED (avatar bake not loaded)" : "bake " + outcome)}");
+    }
 
     private static void LogHudFace(PrimShaderFamily.Surface surface, Guid meshId, int faceIndex,
         FaceTexture ft, Color tint, string outcome)
@@ -1694,16 +1719,34 @@ public partial class AvatarRenderer : Node3D
         AvatarVisual avatarVisual, MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace, Guid meshId = default)
     {
         bool usesBom = false;
+        var channels = new System.Collections.Generic.SortedSet<int>();
         void Scan(FaceTexture f)
         {
-            if (SLNG.Assets.BakedTextureIds.TryGetBakeIndex(f.TextureId, out _))
+            if (SLNG.Assets.BakedTextureIds.TryGetBakeIndex(f.TextureId, out int ch))
+            {
                 usesBom = true;
+                channels.Add(ch);
+            }
         }
         if (faces != null) foreach (var f in faces) Scan(f);
         Scan(defaultFace);
 
         if (usesBom)
             avatarVisual.BomAttachments.Add((mi, faceIndices, faces, defaultFace));
+
+        // FEAT-AVATAR-01: says whether a worn mesh takes part in Bakes-on-Mesh at all. A mesh head
+        // that registers NO channels renders from its own textures (or grey, if it has none) and no
+        // amount of fixing the bake pipeline will change it -- a completely different diagnosis from
+        // "registered channel 8 but the bake never arrived". Deduplicated via LogBomFace's set.
+        string key = $"reg:{meshId:N}:{string.Join(',', channels)}";
+        bool announce;
+        lock (_bomFaceLogged) { announce = _bomFaceLogged.Add(key); }
+        if (announce)
+        {
+            GD.Print($"[BomFace] mesh={meshId.ToString("N")[..8]} registered " +
+                (usesBom ? $"BoM channels [{string.Join(", ", channels)}] over {faceIndices.Length} face(s)"
+                         : $"NO BoM channels over {faceIndices.Length} face(s) -- renders from its own textures"));
+        }
 
         RecomputeMeshVisibility(avatarVisual);
     }
