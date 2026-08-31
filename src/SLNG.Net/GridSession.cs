@@ -2231,7 +2231,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             catch { /* best effort -- unresolved targets are reported below */ }
         }
 
-        int unresolved = 0;
+        // One link per wearable. A COF can hold several links to the same item -- this one holds 20
+        // for 10 wearables, each item linked twice, once with an ordering token and once without.
+        // Wearing a layer twice draws it twice, and the untokened copy sinks to the bottom of the
+        // stack, so a duplicate of an opaque skin quietly reappears underneath everything. Keep the
+        // link that carries a valid token; it is the one the viewer's own ordering is built on.
+        int unresolved = 0, duplicates = 0;
+        var chosen = new Dictionary<LibreMetaverse.UUID, (LibreMetaverse.InventoryWearable Wearable, string? Description)>();
+        var order = new List<LibreMetaverse.UUID>();
+
         foreach (var entry in links)
         {
             if (entry is not LibreMetaverse.InventoryItem link) continue;
@@ -2248,6 +2256,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 continue;
             }
 
+            bool tokened = WearableLayerOrder.IsValidOrderString(link.Description, (int)w.WearableType);
+
+            if (chosen.TryGetValue(target, out var existing))
+            {
+                duplicates++;
+                bool existingTokened = WearableLayerOrder.IsValidOrderString(existing.Description, (int)w.WearableType);
+                if (tokened && !existingTokened) chosen[target] = (w, link.Description);
+                continue;
+            }
+
+            chosen[target] = (w, link.Description);
+            order.Add(target);
+        }
+
+        foreach (var target in order)
+        {
+            var (w, description) = chosen[target];
             worn.Add(new AppearanceManager.WearableData
             {
                 ItemID = target,
@@ -2255,15 +2280,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 AssetType = w.AssetType,
                 WearableType = w.WearableType,
             });
+            _cofLinkDescriptions[target] = description ?? string.Empty;
+
             Console.Error.WriteLine($"[Bake]   COF {w.WearableType,-10} \"{w.Name}\"" +
-                (string.IsNullOrEmpty(link.Description) ? "" : $"  desc=\"{link.Description}\""));
+                (string.IsNullOrEmpty(description) ? "" : $"  desc=\"{description}\""));
         }
 
+        if (duplicates > 0)
+            Console.Error.WriteLine($"[Bake]   COF: dropped {duplicates} duplicate link(s) -- the outfit folder links some items more than once");
         if (unresolved > 0)
             Console.Error.WriteLine($"[Bake]   COF: {unresolved} wearable link(s) did not resolve -- baking would miss them");
 
         return worn;
     }
+
+    /// <summary>Layer-ordering tokens read off the COF links while collecting the worn set, kept so
+    /// the ordering step uses the same link the wearable was chosen from rather than looking the
+    /// folder up again — with duplicate links present, a second lookup can pick the other one.</summary>
+    private readonly Dictionary<LibreMetaverse.UUID, string> _cofLinkDescriptions = new();
 
     /// <summary>Puts the worn wearables into the layer order Second Life actually stacks them in:
     /// grouped by type, and within a type sorted by the ordering token the viewer stores in the
@@ -2271,22 +2305,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <see cref="WearableLayerOrder"/> for the rule and its source.</summary>
     private List<AppearanceManager.WearableData> OrderWearablesAsTheViewerDoes(List<AppearanceManager.WearableData> worn)
     {
-        // itemId -> the COF link's description, which is where the layer position is kept. The
-        // wearable item itself does not carry it; only the link does.
-        var descriptions = new Dictionary<LibreMetaverse.UUID, string>();
-        var store = _client.Inventory.Store;
-        var cof = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
-        var cofNode = cof != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cof) : null;
-
-        if (cofNode != null)
-        {
-            foreach (var child in cofNode.Nodes.Values)
-            {
-                if (child.Data is not LibreMetaverse.InventoryItem link) continue;
-                var target = link.IsLink() ? link.ResolvedItemID : link.UUID;
-                if (target != LibreMetaverse.UUID.Zero) descriptions[target] = link.Description ?? string.Empty;
-            }
-        }
+        // The tokens recorded while the worn set was collected. Deliberately not a fresh folder
+        // lookup: with duplicate links present, looking up again can land on the other link -- the
+        // untokened one -- and lose the ordering that was just resolved.
+        var descriptions = _cofLinkDescriptions;
 
         var result = new List<AppearanceManager.WearableData>();
         foreach (var group in worn.GroupBy(w => w.WearableType))
