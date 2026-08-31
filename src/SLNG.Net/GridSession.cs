@@ -3859,6 +3859,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 foreach (var childNode in cofNode.Nodes.Values)
                 {
                     if (childNode.Data is not LibreMetaverse.InventoryItem link) continue;
+
+                    // Skip the outfit FOLDER link. The Current Outfit Folder carries one link to
+                    // the outfit folder itself so a viewer can name the worn outfit -- Firestorm
+                    // shows it as "Aktuelles Outfit: <name>". It is not a worn item, and listing it
+                    // put the outfit's own name in the attachments group as a permanently
+                    // "(nicht aktiv)" row (reported live: "Standard Enzo").
+                    if (link.AssetType == LibreMetaverse.AssetType.LinkFolder) continue;
+
                     var targetUuid = link.IsLink() ? link.ResolvedItemID : link.UUID;
                     var id = targetUuid.Guid;
                     if (id == Guid.Empty || byId.ContainsKey(id)) continue;
