@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.12.3-alpha";
+    public const string AppVersion = "v0.12.4-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -2001,16 +2001,14 @@ public partial class Boot : Control
     {
         if (_session == null) return;
         _session.RebakeAvatar();
-        _chatWindow?.AppendLocalChatMessage("System",
-            "Avatar wird neu gebacken — das kann ein paar Sekunden dauern.");
     }
 
     // FEAT-AVATAR-01: deferred target for GridSession.WearableEditUnavailable.
-    private void NotifyWearableEditUnavailable(string reason)
+    private void NotifyWearableEditUnavailable(string itemName)
         => _chatWindow?.AppendLocalChatMessage("System",
-            "ACHTUNG: Die Appearance-Korrektur wurde NICHT gesendet (Prüfung fehlgeschlagen: " +
-            $"{reason}). Deine gespeicherte Shape ist jetzt möglicherweise fehlerhaft — bitte in " +
-            "einem anderen Viewer die Shape neu anziehen und keine weiteren Wearables ändern.");
+            $"'{itemName}' wurde nicht geändert: SLNG kann die Bake-Texturen noch nicht erzeugen, " +
+            "die eine Wearable-Änderung braucht — der Avatar würde seine Haut-/Kopftextur verlieren. " +
+            "Bitte vorerst in einem anderen Viewer ändern (FEAT-AVATAR-01).");
 
     private int _logLineCount;
 

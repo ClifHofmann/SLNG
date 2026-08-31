@@ -2037,37 +2037,43 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// change did not visibly take.</summary>
     public void RebakeAvatar()
     {
-        if (!_client.Network.Connected)
-        {
-            Console.Error.WriteLine("[Appearance] rebake skipped: not connected");
-            return;
-        }
-
-        ArmAppearanceCorrection();
-        // forceRebake: clears the cached bake ids so the layers are genuinely recomposited rather
-        // than the previous bake being re-advertised -- which is the whole point of a manual rebake.
-        _ = _client.Appearance.RequestSetAppearance(true);
-        Console.Error.WriteLine("[Appearance] manual rebake requested -- correction armed");
+        // DISABLED 2026-08-31, second blocker found live -- see SendCorrectedAppearance's comment.
+        // The visual params are correct now, but the packet also carries LibreMetaverse's freshly
+        // baked TextureEntry, and those bakes are not usable: after a wearable edit from SLNG the
+        // avatar's head lost its texture on the GRID and only came back after a Firestorm login
+        // re-baked it. Triggering a rebake here would write those unusable bakes again.
+        Console.Error.WriteLine("[Appearance] rebake not sent: LibreMetaverse's client-side bake " +
+            "produces unusable baked textures (FEAT-AVATAR-01) -- rebake in another viewer for now");
+        WearableEditUnavailable?.Invoke(this, "rebake");
     }
+
+    // DISABLED 2026-08-31 -- the SECOND blocker, found live after the first was fixed.
+    //
+    // The visual-param half now works: a corrected AgentSetAppearance keeps the shape intact
+    // (measured, 107-of-218 zero exactly matching the sim's own relay, across a wear and a detach).
+    // But the packet also carries LibreMetaverse's freshly baked TextureEntry, and those bakes are
+    // NOT usable: after a wearable edit from SLNG the avatar's head lost its texture ON THE GRID --
+    // Firestorm showed it untextured too -- and it only came back after a Firestorm login re-baked
+    // it. So the send trades a scrambled shape for destroyed bake textures, which is no better.
+    //
+    // Params are solved; baking is not. Until SLNG can produce (or verify) a usable bake, a
+    // wearable edit stays a logged no-op. Not a regression: DetachAttachmentIntoInv was always a
+    // server-side no-op for a Clothing/Bodypart layer. See the spec.
 
     private Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
     {
-        ArmAppearanceCorrection();
-        _client.Appearance.AddToOutfit(wearable, replace);
-        // Bake now instead of waiting out LibreMetaverse's 5 s REBAKE_DELAY -- this cancels the
-        // scheduled one and starts immediately. The correction rides on the AppearanceSet that follows.
-        _ = _client.Appearance.RequestSetAppearance(true);
-        Console.Error.WriteLine($"[Appearance] wearing \"{wearable.Name}\" ({wearable.AssetType}) -- rebake requested, correction armed");
+        Console.Error.WriteLine($"[Appearance] wear of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
+            "LibreMetaverse's client-side bake produces unusable baked textures (FEAT-AVATAR-01)");
+        WearableEditUnavailable?.Invoke(this, wearable.Name);
         return Task.CompletedTask;
     }
 
     private Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
     {
-        ArmAppearanceCorrection();
-        _client.Appearance.RemoveFromOutfit(wearable);
-        _ = _client.Appearance.RequestSetAppearance(true);
-        Console.Error.WriteLine($"[Appearance] removing \"{wearable.Name}\" ({wearable.AssetType}) -- rebake requested, correction armed");
-        return Task.FromResult(new DetachResult(false, 0, WearableRemoved: true));
+        Console.Error.WriteLine($"[Appearance] detach of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
+            "LibreMetaverse's client-side bake produces unusable baked textures (FEAT-AVATAR-01)");
+        WearableEditUnavailable?.Invoke(this, wearable.Name);
+        return Task.FromResult(new DetachResult(false, 0));
     }
 
     /// <summary>The simulator's own last relay of the self avatar's shape, captured in
@@ -3726,7 +3732,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     var name = target?.Name ?? link.Name ?? string.Empty;
                     if (name.Length == 0 && scenePrimNames.TryGetValue(id, out var sn)) name = sn;
                     if (name.Length == 0 && targetUuid != LibreMetaverse.UUID.Zero) unresolved.Add(targetUuid);
-                    byId[id] = new WornItem(id, name, cat, null, assetType, Live: false);
+
+                    // A Current-Outfit link IS the worn state for a WEARABLE. There is nothing else
+                    // to check it against: unlike an attachment, a Clothing/Bodypart layer has no
+                    // in-scene object, so BUG-NET-02's "stale link with no live attachment" test
+                    // simply does not apply to it. Marking these not-live was wrong and showed most
+                    // of the outfit as "(nicht aktiv)" while Firestorm -- which reads the COF --
+                    // listed the same items as worn.
+                    //
+                    // The legacy AgentWearablesUpdate cannot stand in for this: it carries ONE
+                    // wearable per type slot, so a modern multi-layer outfit (several skin/tattoo
+                    // layers) is unrepresentable in it and the extra layers never appear in
+                    // Appearance.GetWearables() at all. The COF is the only complete source.
+                    bool live = cat is WornCategory.BodyPart or WornCategory.Clothing;
+                    byId[id] = new WornItem(id, name, cat, null, assetType, Live: live);
                 }
             }
         }
