@@ -436,11 +436,13 @@ public partial class InventoryPanel : SLNGWindow
         Callable.From(() =>
         {
             if (!IsInstanceValid(this)) return;
-            _wornStatus.Text = result.WasAttached
-                ? "Abgelegt."
-                : result.StaleLinksRemoved > 0
-                    ? $"War nicht getragen — {result.StaleLinksRemoved} veraltete(n) Outfit-Link entfernt."
-                    : "War nicht getragen.";
+            _wornStatus.Text = result.WearableRemoved
+                ? "Wearable entfernt — Server bäckt neu…"
+                : result.WasAttached
+                    ? "Abgelegt."
+                    : result.StaleLinksRemoved > 0
+                        ? $"War nicht getragen — {result.StaleLinksRemoved} veraltete(n) Outfit-Link entfernt."
+                        : "War nicht getragen.";
             RefreshWorn();
             if (_session.CurrentOutfitFolderId is { } cofId) RefreshFolder(cofId);
         }).CallDeferred();
@@ -1116,17 +1118,20 @@ public partial class InventoryPanel : SLNGWindow
             var linkResult = await _session.DetachItemAsync(linkTargetId).ConfigureAwait(false);
             result = new SLNG.Core.DetachResult(
                 result.WasAttached || linkResult.WasAttached,
-                result.StaleLinksRemoved + linkResult.StaleLinksRemoved);
+                result.StaleLinksRemoved + linkResult.StaleLinksRemoved,
+                result.WearableRemoved || linkResult.WearableRemoved);
         }
 
         // "Detached." unconditionally was the misleading part of the original report: for an item
         // that only had a stale Current-Outfit link the detach packet is a server-side no-op, so
         // the row stayed exactly as it was under a success message. Say which of the two happened.
-        string status = result.WasAttached
-            ? "Detached."
-            : result.StaleLinksRemoved > 0
-                ? $"Was not attached — removed {result.StaleLinksRemoved} stale outfit link(s)."
-                : "Was not attached, and no outfit link found.";
+        string status = result.WearableRemoved
+            ? "Wearable removed — server re-baking…"
+            : result.WasAttached
+                ? "Detached."
+                : result.StaleLinksRemoved > 0
+                    ? $"Was not attached — removed {result.StaleLinksRemoved} stale outfit link(s)."
+                    : "Was not attached, and no outfit link found.";
 
         Callable.From(() =>
         {

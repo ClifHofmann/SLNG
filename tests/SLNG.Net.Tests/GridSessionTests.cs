@@ -541,4 +541,25 @@ public class GridSessionTests
         method.Invoke(session, new object?[] { null, Relay(new byte[10]) });
         Assert.Equal(relay, client.Appearance.MyVisualParameters);
     }
+
+    // FEAT-AVATAR-01 Phase 2: a system-wearable edit is only sent on a server-side-baking region.
+    // With no connection there is no region, so the gate is closed and the detach/wear no-ops
+    // instead of driving RemoveFromOutfit -> a client-side rebake that could persist a default shape.
+    [Fact]
+    public void RegionHasServerSideBaking_is_false_without_connection()
+    {
+        using var session = new GridSession();
+        Assert.False(session.RegionHasServerSideBaking());
+    }
+
+    [Fact]
+    public async Task DetachItemAsync_wearable_without_connection_does_not_throw()
+    {
+        using var session = new GridSession();
+        // Nothing resolves from an empty store, so this exercises the graceful path; the point is
+        // that the FEAT-AVATAR-01 wearable branch never sends without server-side baking.
+        var result = await session.DetachItemAsync(Guid.NewGuid());
+        Assert.False(result.WearableRemoved);
+        Assert.False(result.WasAttached);
+    }
 }

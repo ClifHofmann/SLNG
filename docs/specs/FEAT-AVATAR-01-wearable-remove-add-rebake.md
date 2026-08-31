@@ -2,7 +2,8 @@
 
 - **Feature ID:** `FEAT-AVATAR-01`
 - **Track:** `net` / `render`
-- **Status:** `🚧 In Progress` (Phase 1's wearable send was reverted after a live corruption repro
+- **Status:** `🧪 Review` — Phase 2 (SSB-gated send) landed `v0.11.26-alpha`, awaiting in-world A/B.
+  Phase 1's wearable send was reverted after a live corruption repro
   2026-08-29 — see "The second load-bearing gotcha"; only the param-seed + classification + tests
   remain)
 - **Owner:** `claude`
@@ -124,19 +125,39 @@ Reverted (2026-08-29 live repro):
   A `DetachAttachmentIntoInv` for a Clothing/Bodypart layer was always a no-op, so this is not a
   regression — the layer still cannot be removed, but nothing gets corrupted.
 
-### Phase 2 — a rebake path that cannot send defaults
-The problem is structural: any call that ends in `MakeAppearancePacket` needs the worn wearable
-assets **decoded** first, or it sends `DefaultValue` for every param. Options to evaluate:
-- **SSB-only.** If `AppearanceManager.ServerBakingRegion()` **and** the `UpdateAvatarAppearance`
-  cap is present, `RequestSetAppearanceAsync` takes the SSB branch, which POSTs only
-  `{cof_version}` and lets the **server** composite — no client-computed shape leaves the viewer.
-  Gate the wearable send on that being true; otherwise keep refusing. (OSGrid support varies —
-  measure.)
-- **Force a wearable download first.** Drive `GatherAgentWearablesAsync` + `DownloadWearablesAsync`
-  (or a full guarded `SendAppearance=true` + `RequestSetAppearance`) and only send once every
-  `_client.Appearance.GetWearables()` entry has a non-null `.Asset`. Needs a real success signal,
-  not a timer.
-- Either way the first live test must be A/B'd in Firestorm on a throwaway/non-critical layer.
+### Phase 2 — SSB-gated wearable send (landed `v0.11.26-alpha`, `feature/FEAT-AVATAR-01-wearable-remove-add-rebake`)
+Chosen the **SSB-only** option — it is *provably* safe by construction. Verified against the pinned
+LibreMetaverse 3.1.3: `RemoveFromOutfit`/`AddToOutfit` → `DelayedRequestSetAppearance` →
+`RequestSetAppearanceAsync`; on a server-side-baking region that path's only outgoing request is
+`UpdateAvatarAppearanceAsync`, whose POST body is `new OSDMap { ["cof_version"] = N }`
+(`AppearanceManager.cs:2225`) — **no visual params, no shape, no wearable data**. The server reads
+the Current Outfit Folder from inventory and composites the bake. There is no code path by which a
+wrong client shape can be persisted.
+
+- `GridSession.RegionHasServerSideBaking()` = `Network.Connected` **and** `ServerBakingRegion()`
+  **and** `CurrentSim.Caps.CapabilityURI("UpdateAvatarAppearance") != null`. Both halves are
+  required: LibreMetaverse itself falls back to the unsafe client-side bake when the cap is absent
+  even though the protocol flag is set (`RequestSetAppearanceAsync:3264`), which is exactly why the
+  2026-08-29 OSGrid repro flattened the avatar.
+- `AttachItemAsync` / `DetachItemAsync` wearable branch: if `RegionHasServerSideBaking()` →
+  `AddToOutfit(item, replace)` / `RemoveFromOutfit(item)` and (`DetachItemAsync`) return
+  `DetachResult(WearableRemoved: true)`. Otherwise → refuse: log `[Appearance] … not sent: region
+  has no server-side baking …` and raise `WearableEditUnavailable` (→ `Boot` shows a nearby-chat
+  System line "‹item› kann hier nicht geändert werden — die Region hat kein Server-Side Baking").
+- `GridSession.LogServerSideBakingStatus()` writes one line per region at `EventQueueRunning`
+  (caps are up by then): `[Appearance] <region>: server-side baking available/UNAVAILABLE
+  (protocol=…, cap=…)` — so "why did nothing happen" always has an answer in the log.
+- `InventoryPanel` reports `WearableRemoved` distinctly ("Wearable removed — server re-baking…").
+
+**Not the "force a wearable download first" option** (make the non-SSB client-side path safe by
+decoding all worn wearables before the send): LibreMetaverse exposes no download-only trigger, and
+`RequestSetAppearanceAsync` cannot be aborted between its internal `DownloadWearablesAsync` (which
+continues on partial failure) and `MakeAppearancePacket`. Left as a possible Phase 4 if a
+non-SSB grid ever needs it.
+
+**Needs in-world verification:** on an SSB region, detach an Alpha layer → system body returns, no
+relog; A/B in Firestorm on a non-critical layer to confirm the shape is untouched. On a non-SSB
+region the edit must (safely) do nothing but log + chat-notify.
 
 ### Phase 3 — render verification (likely no code)
 Confirm `AvatarRenderer.UpdateVisual` step 3 + `RecomputeMeshVisibility` (M4-7) pick up the fresh
