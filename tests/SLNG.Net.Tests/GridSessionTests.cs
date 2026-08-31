@@ -178,6 +178,100 @@ public class GridSessionTests
         Assert.Equal(0, session.DetachAllAttachments(hudOnly: false));
     }
 
+    // FEAT-UI-16: the "Worn" tab classifies each worn item into one of four groups. Pure
+    // functions of the SL wire value that decides it, so they unit-test without a live client.
+    [Theory]
+    [InlineData(13, WornCategory.BodyPart)]   // AssetType.Bodypart
+    [InlineData(5, WornCategory.Clothing)]    // AssetType.Clothing
+    [InlineData(0, WornCategory.Clothing)]    // anything else a wearable slot could report
+    public void CategorizeWearable_splits_bodyparts_from_clothing(int assetType, WornCategory expected)
+        => Assert.Equal(expected, GridSession.CategorizeWearable(assetType));
+
+    [Theory]
+    [InlineData(2, WornCategory.Attachment)]   // AttachmentPoint.Chest
+    [InlineData(30, WornCategory.Attachment)]  // last body point before the HUD range
+    [InlineData(31, WornCategory.Hud)]         // HUDCenter2
+    [InlineData(35, WornCategory.Hud)]         // HUDCenter
+    [InlineData(38, WornCategory.Hud)]         // HUDBottomRight
+    [InlineData(39, WornCategory.Attachment)]  // Neck — past the HUD range again
+    public void CategorizeAttachment_splits_HUD_points_from_body_points(int rawPoint, WornCategory expected)
+        => Assert.Equal(expected, GridSession.CategorizeAttachment(rawPoint));
+
+    [Fact]
+    public void GetWornItems_without_connection_is_empty_and_does_not_throw()
+    {
+        using var session = new GridSession();
+        var worn = session.GetWornItems();
+        Assert.NotNull(worn);
+        Assert.Empty(worn);
+    }
+
+    // FEAT-INV-03: outfit cleanup. With no connection there is no Current Outfit folder and no
+    // Trash, so it must return an all-zero result rather than throw — same "no-op gracefully while
+    // disconnected" contract as every other GridSession path.
+    [Fact]
+    public void CleanUpCurrentOutfit_without_connection_returns_zero()
+    {
+        using var session = new GridSession();
+        var r = session.CleanUpCurrentOutfit();
+        Assert.Equal(0, r.Total);
+        Assert.Equal(0, r.DeadLinks);
+        Assert.Equal(0, r.TrashedTargetLinks);
+        Assert.Equal(0, r.UnwornAttachmentLinks);
+    }
+
+    [Fact]
+    public void OutfitCleanupResult_Total_sums_the_three_reasons()
+        => Assert.Equal(6, new SLNG.Core.OutfitCleanupResult(1, 2, 3).Total);
+
+    // FEAT-INV-04: outfits browser. Every path must no-op / return empty while disconnected.
+    [Fact]
+    public void MyOutfitsFolderId_is_null_without_connection()
+    {
+        using var session = new GridSession();
+        Assert.Null(session.MyOutfitsFolderId);
+    }
+
+    [Fact]
+    public async Task GetSavedOutfitsAsync_without_connection_is_empty()
+    {
+        using var session = new GridSession();
+        Assert.Empty(await session.GetSavedOutfitsAsync());
+    }
+
+    [Fact]
+    public async Task SaveCurrentOutfitAsync_without_connection_returns_null()
+    {
+        using var session = new GridSession();
+        Assert.Null(await session.SaveCurrentOutfitAsync("Test"));
+    }
+
+    [Fact]
+    public async Task WearOutfitAttachmentsAsync_without_connection_returns_zero()
+    {
+        using var session = new GridSession();
+        Assert.Equal(0, await session.WearOutfitAttachmentsAsync(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public async Task GetOutfitContentsAsync_without_connection_is_empty()
+    {
+        using var session = new GridSession();
+        Assert.Empty(await session.GetOutfitContentsAsync(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public async Task AddAndReplaceOutfit_without_connection_return_zero()
+    {
+        using var session = new GridSession();
+        Assert.Equal(0, await session.AddCurrentToOutfitAsync(Guid.NewGuid()));
+        Assert.Equal(0, await session.ReplaceOutfitWithCurrentAsync(Guid.NewGuid()));
+        Assert.Equal((0, 0), await session.ReplaceWornWithOutfitAttachmentsAsync(Guid.NewGuid()));
+        Assert.Equal(0, await session.RemoveOutfitFromWornAsync(Guid.NewGuid()));
+        Assert.False(session.RenameOutfitAsync(Guid.NewGuid(), "x"));
+        Assert.False(session.DeleteOutfitAsync(Guid.NewGuid()));
+    }
+
     // MVP2-3: minimap radar. OnCoarseLocationUpdate is private (same LMV-boundary reasoning as
     // OnScriptDialog above), invoked via reflection with a hand-built CoarseLocationUpdateEventArgs
     // -- the same shape GridManager.CoarseLocationHandler raises off the wire packet.
