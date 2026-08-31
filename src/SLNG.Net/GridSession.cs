@@ -1989,6 +1989,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         if (!_client.Network.Connected) return;
 
+        // Belt and braces. With SendAppearance off and no direct RequestSetAppearance call left,
+        // LibreMetaverse never bakes, so OnAppearanceSet never fires and this is unreachable --
+        // but "unreachable" is exactly what was assumed about the login send that broke the avatar.
+        // The one thing this method must never do is transmit while writing is disabled.
+        if (!_client.Settings.Agent.SendAppearance)
+        {
+            Console.Error.WriteLine("[Appearance] correction suppressed: appearance writing is disabled");
+            return;
+        }
+
         try
         {
             // The bake decoded these; Asset.Params is the wearable's own paramId -> weight map.
@@ -2151,10 +2161,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             Console.Error.WriteLine($"[Appearance] bake-state report failed: {ex.Message}");
         }
 
-        // forceRebake: clears the cached bake ids so the layers are genuinely recomposited rather
-        // than the previous bake being re-advertised. The corrected AgentSetAppearance follows on
-        // the AppearanceSet this raises (see OnAppearanceSet), with both guards in front of it.
-        _ = _client.Appearance.RequestSetAppearance(true);
+        // HARD STOP 2026-08-31. Every appearance send is disabled while SendAppearance is off.
+        // RequestSetAppearance is NOT gated by that flag -- it bakes and sends whatever
+        // MakeAppearancePacket produces -- so a wearable edit or a rebake still reached the grid
+        // even with the pipeline nominally disabled, from a cold state where LibreMetaverse has no
+        // decoded wearables and no bakes. That combination is what has broken this avatar
+        // repeatedly. Nothing here sends until the whole path has been proven on a throwaway alt.
+        Console.Error.WriteLine("[Appearance] not sent: appearance writing is disabled (FEAT-AVATAR-01)");
+        WearableEditUnavailable?.Invoke(this, "appearance writing disabled");
+        return;
     }
 
     // Both blockers are now handled, each by a guard that refuses to send rather than guessing:
@@ -2174,20 +2189,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
     {
-        _client.Appearance.AddToOutfit(wearable, replace);
-        // Bake now rather than waiting out LibreMetaverse's 5 s REBAKE_DELAY -- this cancels the
-        // scheduled one. The correction rides on the AppearanceSet that follows.
-        _ = _client.Appearance.RequestSetAppearance(true);
-        Console.Error.WriteLine($"[Appearance] wearing \"{wearable.Name}\" ({wearable.AssetType}) -- rebake requested, correction armed");
+        Console.Error.WriteLine($"[Appearance] wear of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
+            "appearance writing is disabled (FEAT-AVATAR-01)");
+        WearableEditUnavailable?.Invoke(this, wearable.Name);
         return Task.CompletedTask;
     }
 
     private Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
     {
-        _client.Appearance.RemoveFromOutfit(wearable);
-        _ = _client.Appearance.RequestSetAppearance(true);
-        Console.Error.WriteLine($"[Appearance] removing \"{wearable.Name}\" ({wearable.AssetType}) -- rebake requested, correction armed");
-        return Task.FromResult(new DetachResult(false, 0, WearableRemoved: true));
+        Console.Error.WriteLine($"[Appearance] detach of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
+            "appearance writing is disabled (FEAT-AVATAR-01)");
+        WearableEditUnavailable?.Invoke(this, wearable.Name);
+        return Task.FromResult(new DetachResult(false, 0));
     }
 
     /// <summary>The simulator's own last relay of the self avatar's shape, captured in
