@@ -1862,13 +1862,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (_appearanceReadinessLogged) return;
         _appearanceReadinessLogged = true;
         string region = _client.Network.CurrentSim?.Name ?? "?";
-        Console.Error.WriteLine($"[Appearance] {region}: system-wearable edits disabled — LibreMetaverse's " +
-            "MakeAppearancePacket writes 195 of 218 visual params to the wrong slot (FEAT-AVATAR-01)");
+        Console.Error.WriteLine($"[Appearance] {region}: system-wearable edits enabled — every bake is " +
+            "followed by a corrected AgentSetAppearance, since LibreMetaverse writes 195 of 218 " +
+            "visual params to the wrong slot (FEAT-AVATAR-01)");
     }
 
-    /// <summary>FEAT-AVATAR-01: raised when a system-wearable wear/detach was refused because there
-    /// is no safe way to trigger the rebake (see the block comment above
-    /// <see cref="WearWearableAsync"/>). Payload is the item name, for a user-facing notice.</summary>
+    /// <summary>FEAT-AVATAR-01: raised when the corrected <c>AgentSetAppearance</c> failed its
+    /// pre-send verification and was therefore NOT sent — meaning LibreMetaverse's scrambled packet
+    /// is what the grid now holds and the avatar needs repairing in another viewer. Payload is the
+    /// verification failure, for a user-facing notice. Should never fire; if it does, that is the
+    /// signal to stop editing wearables.</summary>
     public event EventHandler<string>? WearableEditUnavailable;
 
     // FEAT-AVATAR-01 — system-wearable remove/add. Blocked on an upstream bug, MEASURED not guessed.
@@ -1885,25 +1888,118 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     // torn rigged head), and no amount of preparing the wearables first can fix it -- the three
     // attempts that tried are in the spec.
     //
-    // So the edit is a logged no-op. Not a regression: DetachAttachmentIntoInv was always a
-    // server-side no-op for a Clothing/Bodypart layer, so the layer could never be removed anyway.
-    // The way out is to build the AgentSetAppearance ourselves -- MakeAppearancePacket() is public,
-    // so its VisualParam array can be permuted into wire order and sent directly. See the spec.
+    // The way out, implemented here, needs no fork: let LibreMetaverse do the half it gets right
+    // (compositing and uploading the bake textures), then immediately send a CORRECTED
+    // AgentSetAppearance over the top -- MakeAppearancePacket() is public, so its fresh TextureEntry
+    // is reusable while VisualParam[] and AgentData.Size are rebuilt by AgentAppearanceParams.
+    // OpenSim's LLClientView.HandlerAgentSetAppearance never reads AgentData.SerialNum and never
+    // rejects a repeat, so last write wins and the corrected packet is what gets stored. See
+    // SendCorrectedAppearance below and the spec for the trade-off this accepts.
+
+    // How long after a wearable edit corrections stay armed. LibreMetaverse bakes on a 5 s
+    // REBAKE_DELAY timer and may bake more than once for one edit; every completed bake must be
+    // corrected, so this covers the whole settling window rather than a single event.
+    private static readonly TimeSpan AppearanceCorrectionWindow = TimeSpan.FromSeconds(45);
+    private long _appearanceCorrectionUntilTicks;
+
+    private void ArmAppearanceCorrection() => Interlocked.Exchange(
+        ref _appearanceCorrectionUntilTicks, DateTime.UtcNow.Add(AppearanceCorrectionWindow).Ticks);
+
+    private bool AppearanceCorrectionArmed
+        => DateTime.UtcNow.Ticks < Interlocked.Read(ref _appearanceCorrectionUntilTicks);
+
+    /// <summary>Sends an <c>AgentSetAppearance</c> whose visual parameters are in the order the
+    /// simulator actually reads, replacing the scrambled one LibreMetaverse just sent.
+    ///
+    /// <para>Called from <see cref="OnAppearanceSet"/>, i.e. after LibreMetaverse has finished a
+    /// bake: at that point it has composited and uploaded the baked textures (its baker is correct)
+    /// and has already sent its own packet with <b>195 of 218 params on the wrong parameter</b>.
+    /// <c>MakeAppearancePacket()</c> is public, so the good half — the freshly baked
+    /// <c>TextureEntry</c> and the wearable cache blocks — can be reused verbatim while
+    /// <c>VisualParam[]</c> and <c>AgentData.Size</c> are rebuilt correctly by
+    /// <see cref="AgentAppearanceParams"/>.</para>
+    ///
+    /// <para>This works because OpenSim's <c>LLClientView.HandlerAgentSetAppearance</c> never looks
+    /// at <c>AgentData.SerialNum</c> and never rejects a repeat — last write wins. There is
+    /// therefore a brief window (until this lands) in which the scrambled appearance is the stored
+    /// one; that is the accepted trade-off of not forking LibreMetaverse.</para>
+    ///
+    /// <para>Refuses to send if the built array does not verify
+    /// (<see cref="AgentAppearanceParams.VerifyRoundTrip"/>) — leaving LibreMetaverse's bad packet
+    /// standing is worse than nothing, but sending a second unverified one is worse still.</para></summary>
+    private void SendCorrectedAppearance()
+    {
+        if (!_client.Network.Connected) return;
+
+        try
+        {
+            // The bake decoded these; Asset.Params is the wearable's own paramId -> weight map.
+            var wearableParams = _client.Appearance.GetWearables()
+                .Where(w => w.Asset != null)
+                .Select(w => (IReadOnlyDictionary<int, float>)w.Asset!.Params)
+                .ToList();
+
+            if (wearableParams.Count == 0)
+            {
+                Console.Error.WriteLine("[Appearance] correction skipped: no decoded wearables to build a shape from");
+                return;
+            }
+
+            var packet = _client.Appearance.MakeAppearancePacket();
+            int length = packet.VisualParam?.Length ?? AgentAppearanceParams.DefaultLength;
+
+            var wire = AgentAppearanceParams.BuildWireArray(wearableParams, length);
+            if (!AgentAppearanceParams.VerifyRoundTrip(wire, wearableParams, out var failure))
+            {
+                Console.Error.WriteLine($"[Appearance] correction NOT sent -- verification failed: {failure}");
+                WearableEditUnavailable?.Invoke(this, failure);
+                return;
+            }
+
+            var blocks = new LibreMetaverse.Packets.AgentSetAppearancePacket.VisualParamBlock[wire.Length];
+            for (int i = 0; i < wire.Length; i++)
+                blocks[i] = new LibreMetaverse.Packets.AgentSetAppearancePacket.VisualParamBlock { ParamValue = wire[i] };
+            packet.VisualParam = blocks;
+
+            // Height is derived from params 33/198/503/682/692/842, which LibreMetaverse reads off
+            // whatever its mis-ordered loop landed on -- so its Size is wrong for the same reason.
+            packet.AgentData.Size = new Vector3(0.45f, 0.6f,
+                AgentAppearanceParams.ComputeAgentHeight(wearableParams));
+
+            _client.Network.SendPacket(packet);
+
+            // Keep LibreMetaverse's own copy consistent with what the grid now holds, so anything
+            // else reading it is not looking at the scrambled array.
+            _client.Appearance.MyVisualParameters = wire;
+
+            int nonDefault = wire.Count(b => b != 0);
+            Console.Error.WriteLine($"[Appearance] corrected AgentSetAppearance sent " +
+                $"({wire.Length} params, {nonDefault} non-zero, height {packet.AgentData.Size.Z:F2} m)");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Appearance] correction failed: {ex.Message}");
+        }
+    }
 
     private Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
     {
-        Console.Error.WriteLine($"[Appearance] wear of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
-            "LibreMetaverse would write a scrambled shape to your account (FEAT-AVATAR-01)");
-        WearableEditUnavailable?.Invoke(this, wearable.Name);
+        ArmAppearanceCorrection();
+        _client.Appearance.AddToOutfit(wearable, replace);
+        // Bake now instead of waiting out LibreMetaverse's 5 s REBAKE_DELAY -- this cancels the
+        // scheduled one and starts immediately. The correction rides on the AppearanceSet that follows.
+        _ = _client.Appearance.RequestSetAppearance(true);
+        Console.Error.WriteLine($"[Appearance] wearing \"{wearable.Name}\" ({wearable.AssetType}) -- rebake requested, correction armed");
         return Task.CompletedTask;
     }
 
     private Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
     {
-        Console.Error.WriteLine($"[Appearance] detach of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
-            "LibreMetaverse would write a scrambled shape to your account (FEAT-AVATAR-01)");
-        WearableEditUnavailable?.Invoke(this, wearable.Name);
-        return Task.FromResult(new DetachResult(false, 0));
+        ArmAppearanceCorrection();
+        _client.Appearance.RemoveFromOutfit(wearable);
+        _ = _client.Appearance.RequestSetAppearance(true);
+        Console.Error.WriteLine($"[Appearance] removing \"{wearable.Name}\" ({wearable.AssetType}) -- rebake requested, correction armed");
+        return Task.FromResult(new DetachResult(false, 0, WearableRemoved: true));
     }
 
     /// <summary>The simulator's own last relay of the self avatar's shape, captured in
@@ -1921,15 +2017,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // FEAT-UI-16: a completed bake / outfit apply changes the worn set.
         WornItemsChanged?.Invoke(this, EventArgs.Empty);
 
-        // Risk-free diagnostic for the avatar-corruption incident (2026-08-02). SendAppearance is
-        // OFF, so nothing here is transmitted -- this only records what LibreMetaverse WOULD have
-        // sent as AgentSetAppearance, which is what silently overwrote the user's stored shape.
-        //
-        // The suspicion is the visual parameters: if LMV holds an empty or default-filled array
-        // rather than the values the simulator sent us, then every appearance send replaces a real
-        // shape with a default one -- which is exactly what "avatar suddenly squat and deformed,
-        // in Firestorm too" looks like. A rebake feature must not be built until this reads sane.
+        // Records what LibreMetaverse just put into MyVisualParameters. That array is in
+        // MakeAppearancePacket's (wrong) order, so this is a diagnostic only -- never a shape.
         LogVisualParamHealth();
+
+        // FEAT-AVATAR-01: LibreMetaverse has just baked (correctly) and sent an AgentSetAppearance
+        // whose visual params are scrambled. Replace it with a correctly-ordered one while its
+        // fresh bake textures are still what MakeAppearancePacket hands out. Only after a wearable
+        // edit armed it -- an unsolicited bake is not ours to answer for.
+        if (AppearanceCorrectionArmed) SendCorrectedAppearance();
 
         var te = _client.Appearance.MyTextures;
         var faces = te?.FaceTextures;

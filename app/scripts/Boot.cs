@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.11.34-alpha";
+    public const string AppVersion = "v0.12.0-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1987,10 +1987,11 @@ public partial class Boot : Control
     }
 
     // FEAT-AVATAR-01: deferred target for GridSession.WearableEditUnavailable.
-    private void NotifyWearableEditUnavailable(string itemName)
+    private void NotifyWearableEditUnavailable(string reason)
         => _chatWindow?.AppendLocalChatMessage("System",
-            $"'{itemName}': System-Wearables (Alpha/Shape/Skin) können nicht geändert werden — " +
-            "LibreMetaverse würde dabei eine zerwürfelte Shape in deinen Account schreiben (FEAT-AVATAR-01).");
+            "ACHTUNG: Die Appearance-Korrektur wurde NICHT gesendet (Prüfung fehlgeschlagen: " +
+            $"{reason}). Deine gespeicherte Shape ist jetzt möglicherweise fehlerhaft — bitte in " +
+            "einem anderen Viewer die Shape neu anziehen und keine weiteren Wearables ändern.");
 
     private int _logLineCount;
 

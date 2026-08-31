@@ -108,6 +108,48 @@ internal static class AgentAppearanceParams
         return (float)height;
     }
 
+    /// <summary>Re-reads a built array the way the simulator will and checks every slot carries the
+    /// weight it was built from. The last gate before anything reaches the grid: this task has
+    /// corrupted a real avatar three times, each because a wrong assumption was only visible after
+    /// the packet had already been persisted. If this returns false, do not send.</summary>
+    internal static bool VerifyRoundTrip(
+        byte[] wire, IReadOnlyList<IReadOnlyDictionary<int, float>> wearableParams, out string failure)
+    {
+        var ids = VisualParams.Group0ParamIds;
+
+        if (wire.Length == 0 || wire.Length > ids.Length)
+        {
+            failure = $"array length {wire.Length} is not a plausible wire length (id table holds {ids.Length})";
+            return false;
+        }
+
+        var decoded = DecodeWireArray(wire);
+
+        for (int i = 0; i < wire.Length; i++)
+        {
+            int id = ids[i];
+            if (!VisualParams.Params.TryGetValue(id, out var vp)) continue;
+
+            if (!decoded.TryGetValue(id, out var got))
+            {
+                failure = $"param {id} (slot {i}) missing after round trip";
+                return false;
+            }
+
+            float expected = ResolveWeight(id, wearableParams);
+            // One byte over the parameter's own range is the transport's resolution.
+            float tolerance = (vp.MaxValue - vp.MinValue) / 255f + 1e-4f;
+            if (Math.Abs(got - expected) > tolerance)
+            {
+                failure = $"param {id} (slot {i}) round-tripped to {got}, expected {expected}";
+                return false;
+            }
+        }
+
+        failure = string.Empty;
+        return true;
+    }
+
     /// <summary>Reads a wire array back the way the simulator and <c>AvatarShapeService</c> do —
     /// positionally against <c>Group0ParamIds</c>. Exists so a built array can be round-tripped and
     /// verified BEFORE anything is sent; that verification is the whole reason this class is worth

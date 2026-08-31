@@ -126,6 +126,60 @@ public class AgentAppearanceParamsTests
         Assert.InRange(shortest, 1.0f, 3.0f);
     }
 
+    /// <summary>The gate that stands between this code and the user's stored appearance: a
+    /// correctly built array must verify.</summary>
+    [Fact]
+    public void VerifyRoundTrip_accepts_an_array_this_class_built()
+    {
+        var worn = new[] { Wearable((VisualParams.Group0ParamIds[0], 0.5f)) };
+        var built = AgentAppearanceParams.BuildWireArray(worn);
+
+        Assert.True(AgentAppearanceParams.VerifyRoundTrip(built, worn, out var failure), failure);
+        Assert.Equal(string.Empty, failure);
+    }
+
+    /// <summary>…and must reject one that is not. Fed the encoder's own ordering — the exact
+    /// mistake that corrupted the avatar three times — verification has to catch it rather than
+    /// let a second bad packet reach the grid.</summary>
+    [Fact]
+    public void VerifyRoundTrip_rejects_an_array_in_encoder_order()
+    {
+        var ids = VisualParams.Group0ParamIds;
+
+        // Author a distinct weight per transmitted param, as a real worn set would.
+        var authored = new Dictionary<int, float>();
+        for (int i = 0; i < AgentAppearanceParams.DefaultLength; i++)
+        {
+            var vp = VisualParams.Params[ids[i]];
+            authored[ids[i]] = vp.MinValue + (i % 17 + 1) / 18f * (vp.MaxValue - vp.MinValue);
+        }
+        var worn = new[] { authored };
+
+        // Build the array the way MakeAppearancePacket does: values ordered by the first 218 of
+        // ALL params instead of the transmitted ones.
+        var encoderIds = VisualParams.Params.Keys.Take(AgentAppearanceParams.DefaultLength).ToArray();
+        var mis = new byte[AgentAppearanceParams.DefaultLength];
+        for (int i = 0; i < mis.Length; i++)
+        {
+            var vp = VisualParams.Params[encoderIds[i]];
+            float w = AgentAppearanceParams.ResolveWeight(encoderIds[i], worn);
+            mis[i] = Utils.FloatToByte(w, vp.MinValue, vp.MaxValue);
+        }
+
+        Assert.False(AgentAppearanceParams.VerifyRoundTrip(mis, worn, out var failure));
+        Assert.NotEqual(string.Empty, failure);
+    }
+
+    [Fact]
+    public void VerifyRoundTrip_rejects_an_implausible_length()
+    {
+        var worn = new[] { Wearable() };
+
+        Assert.False(AgentAppearanceParams.VerifyRoundTrip(System.Array.Empty<byte>(), worn, out _));
+        Assert.False(AgentAppearanceParams.VerifyRoundTrip(
+            new byte[VisualParams.Group0ParamIds.Length + 1], worn, out _));
+    }
+
     /// <summary>
     /// Demonstrates the upstream bug directly: reading a wire-order array as if it were in
     /// MakeAppearancePacket's order (first 218 of all Params) mis-assigns the overwhelming majority
