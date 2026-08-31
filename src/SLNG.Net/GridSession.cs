@@ -2186,6 +2186,46 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return raw;
     }
 
+    /// <summary>Puts the worn wearables into the layer order Second Life actually stacks them in:
+    /// grouped by type, and within a type sorted by the ordering token the viewer stores in the
+    /// Current Outfit Folder link's description. Bottom layer first — see
+    /// <see cref="WearableLayerOrder"/> for the rule and its source.</summary>
+    private List<AppearanceManager.WearableData> OrderWearablesAsTheViewerDoes(List<AppearanceManager.WearableData> worn)
+    {
+        // itemId -> the COF link's description, which is where the layer position is kept. The
+        // wearable item itself does not carry it; only the link does.
+        var descriptions = new Dictionary<LibreMetaverse.UUID, string>();
+        var store = _client.Inventory.Store;
+        var cof = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        var cofNode = cof != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cof) : null;
+
+        if (cofNode != null)
+        {
+            foreach (var child in cofNode.Nodes.Values)
+            {
+                if (child.Data is not LibreMetaverse.InventoryItem link) continue;
+                var target = link.IsLink() ? link.ResolvedItemID : link.UUID;
+                if (target != LibreMetaverse.UUID.Zero) descriptions[target] = link.Description ?? string.Empty;
+            }
+        }
+
+        var result = new List<AppearanceManager.WearableData>();
+        foreach (var group in worn.GroupBy(w => w.WearableType))
+        {
+            result.AddRange(WearableLayerOrder.Sort(
+                group,
+                (int)group.Key,
+                w => descriptions.TryGetValue(w.ItemID, out var d) ? d : null,
+                w => w.ItemID.ToString()));
+        }
+
+        int tokened = worn.Count(w => descriptions.TryGetValue(w.ItemID, out var d)
+                                      && WearableLayerOrder.IsValidOrderString(d, (int)w.WearableType));
+        Console.Error.WriteLine($"[Bake] layer order: {tokened}/{worn.Count} wearables carry a COF ordering token");
+
+        return result;
+    }
+
     /// <summary>Writes a bake input or result out as a PNG so it can be looked at. Everything about
     /// this task that was decided from numbers alone turned out to be decidable only from the
     /// picture.</summary>
@@ -2275,8 +2315,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             //    receives more than one. So give each wearable its own scratch array, which keeps
             //    LibreMetaverse's own colour and alpha-mask logic, and collect the results in wear
             //    order (bottom layer first, as SL stacks them).
+            //    Order matters as much as membership: where two layers of one type overlap, the
+            //    topmost wins, and two of the worn tattoos are fully opaque head skins. See
+            //    WearableLayerOrder -- the position lives in the COF link's description, not in the
+            //    order LibreMetaverse returns.
+            var ordered = OrderWearablesAsTheViewerDoes(worn.Where(w => w.Asset != null).ToList());
+
             var layers = new List<AppearanceManager.TextureData>();
-            foreach (var w in worn.Where(w => w.Asset != null))
+            foreach (var w in ordered)
             {
                 var scratch = new AppearanceManager.TextureData[(int)AvatarTextureIndex.NumberOfEntries];
                 for (int i = 0; i < scratch.Length; i++) scratch[i] = new AppearanceManager.TextureData();
