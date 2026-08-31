@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.12.6-alpha";
+    public const string AppVersion = "v0.13.0-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -2001,6 +2001,8 @@ public partial class Boot : Control
     {
         if (_session == null) return;
         _session.RebakeAvatar();
+        _chatWindow?.AppendLocalChatMessage("System",
+            "Avatar wird neu gebacken — das kann ein paar Sekunden dauern.");
     }
 
     // FEAT-AVATAR-01: deferred target for GridSession.WearableEditUnavailable.

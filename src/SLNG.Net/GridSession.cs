@@ -278,23 +278,33 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // the stored shape with defaults. That is the whole explanation for the squat, deformed
         // avatar, and it is why a rebake feature must stay blocked -- it would take the same path.
         //
-        // 2026-08-31 -- the REASON is now measured, not suspected, and it is not "our params are
-        // empty". LibreMetaverse's own encoder is broken: AppearanceManager.MakeAppearancePacket
-        // fills the 218 wire slots by iterating VisualParams.Params -- ALL 672 params, including the
+        // 2026-08-31 -- the REASON is now measured, not suspected, and it was never the baking.
+        // LibreMetaverse's ENCODER is broken: AppearanceManager.MakeAppearancePacket fills the 218
+        // wire slots by iterating VisualParams.Params -- ALL 672 params, including the
         // never-transmitted group-1/2 ones -- and taking the first 218, while the wire order is
         // VisualParams.Group0ParamIds (the 253 TRANSMITTED ids). The two agree for 23 slots and
         // diverge from index 23 on: 195 of 218 values land on the WRONG parameter. Pinned by
-        // SLNG.Assets.Tests.VisualParamOrderTests.
+        // SLNG.Assets.Tests.VisualParamOrderTests, and confirmed against the reference viewer,
+        // which filters by param group where LibreMetaverse does not
+        // (indra/llappearanceutility/llprocessparams.cpp:155-163).
         //
-        // So ANY path that reaches MakeAppearancePacket writes a scrambled shape to the account --
-        // which is exactly the 2026-08-02 (deformed), 2026-08-29 (flat) and 2026-08-31 (torn rigged
-        // head) incidents, all three explained by one upstream bug. A SLNG_APPEARANCE_SYNC env-var
-        // opt-in briefly existed here and was REMOVED: a switch that provably corrupts account data
-        // is not an experiment, it is a footgun. This stays false until LibreMetaverse is patched
-        // (the test above fails when it is), or until SLNG builds and sends a correctly-ordered
-        // AgentSetAppearance itself -- MakeAppearancePacket() is public, so its VisualParam array
-        // can be reordered to wire order before sending. See the spec.
-        _client.Settings.Agent.SendAppearance = false;
+        // That single upstream bug explains 2026-08-02 (deformed), 2026-08-29 (flat) and
+        // 2026-08-31 (torn rigged head) alike. The BAKING was never implicated: it demonstrably
+        // worked for the eleven days this flag was on (80577c6 "fix self-avatar bake pipeline",
+        // 2026-07-22 -> 783220e, 2026-08-02), and turning it off is what left the self avatar
+        // permanently unbaked.
+        //
+        // RE-ENABLED 2026-08-31, now that all three failure modes are closed:
+        //   1. Param order      -- AgentAppearanceParams rebuilds the array in wire order and
+        //                          SendCorrectedAppearance replaces LibreMetaverse's packet with
+        //                          it, refusing to send unless VerifyRoundTrip passes.
+        //   2. Renderer input   -- OnAppearanceSet no longer hands MyVisualParameters (encoder
+        //                          order) to the shape service; that was the torn rigged head.
+        //   3. Empty bake slots -- MergeBakeSlots fills any missing bake from the simulator's own
+        //                          last relay and refuses to send an incomplete set.
+        // With the pipeline running, the bakes are real, so guard 3 has nothing to rescue and a
+        // wearable change can finally produce a NEW bake instead of only preserving the old one.
+        _client.Settings.Agent.SendAppearance = true;
 
         // Use the HTTP GetTexture CAP instead of the legacy UDP image transfer. UDP transfers
         // time out and hand back truncated JPEG2000 streams on busy grids (the "Tile part
@@ -1951,18 +1961,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
-    // How long after a wearable edit corrections stay armed. LibreMetaverse bakes on a 5 s
-    // REBAKE_DELAY timer and may bake more than once for one edit; every completed bake must be
-    // corrected, so this covers the whole settling window rather than a single event.
-    private static readonly TimeSpan AppearanceCorrectionWindow = TimeSpan.FromSeconds(45);
-    private long _appearanceCorrectionUntilTicks;
-
-    private void ArmAppearanceCorrection() => Interlocked.Exchange(
-        ref _appearanceCorrectionUntilTicks, DateTime.UtcNow.Add(AppearanceCorrectionWindow).Ticks);
-
-    private bool AppearanceCorrectionArmed
-        => DateTime.UtcNow.Ticks < Interlocked.Read(ref _appearanceCorrectionUntilTicks);
-
     /// <summary>Sends an <c>AgentSetAppearance</c> whose visual parameters are in the order the
     /// simulator actually reads, replacing the scrambled one LibreMetaverse just sent.
     ///
@@ -2079,18 +2077,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// change did not visibly take.</summary>
     public void RebakeAvatar()
     {
-        // The rebake itself is DISABLED -- see the block comment above WearWearableAsync. What this
-        // does instead is REPORT the state a send would have used, which is the open question:
-        // whether LibreMetaverse holds real baked textures at all.
-        //
-        // Zero risk: MakeAppearancePacket() only reads Textures[] and Wearables to build a packet.
-        // Nothing is transmitted here.
         if (!_client.Network.Connected)
         {
-            Console.Error.WriteLine("[Appearance] diagnostic skipped: not connected");
+            Console.Error.WriteLine("[Appearance] rebake skipped: not connected");
             return;
         }
 
+        // Report the bake state first -- it is the one number that says whether a rebake can work
+        // at all (all-ZERO means LibreMetaverse composited nothing), and it costs nothing.
         try
         {
             var packet = _client.Appearance.MakeAppearancePacket();
@@ -2115,17 +2109,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 .Select(kv => $"{kv.Key}={kv.Value.ToString("N")[..8]}"));
 
             Console.Error.WriteLine(
-                $"[Appearance] DIAGNOSTIC (nothing sent)\n" +
+                $"[Appearance] rebake requested -- state before:\n" +
                 $"  LibreMetaverse bake slots : {string.Join("  ", report)}\n" +
                 $"  worn wearables            : {wearables} ({decoded} decoded)\n" +
-                $"  simulator's last relay    : {(relay.Length == 0 ? "(none seen)" : relay)}\n" +
-                $"  -> ZERO/DEFAULT above means LibreMetaverse has no bake of its own, so a send " +
-                $"would have written empty bake ids and stripped the avatar's textures.");
+                $"  simulator's last relay    : {(relay.Length == 0 ? "(none seen)" : relay)}");
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[Appearance] diagnostic failed: {ex.Message}");
+            Console.Error.WriteLine($"[Appearance] bake-state report failed: {ex.Message}");
         }
+
+        // forceRebake: clears the cached bake ids so the layers are genuinely recomposited rather
+        // than the previous bake being re-advertised. The corrected AgentSetAppearance follows on
+        // the AppearanceSet this raises (see OnAppearanceSet), with both guards in front of it.
+        _ = _client.Appearance.RequestSetAppearance(true);
     }
 
     // Both blockers are now handled, each by a guard that refuses to send rather than guessing:
@@ -2145,7 +2142,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
     {
-        ArmAppearanceCorrection();
         _client.Appearance.AddToOutfit(wearable, replace);
         // Bake now rather than waiting out LibreMetaverse's 5 s REBAKE_DELAY -- this cancels the
         // scheduled one. The correction rides on the AppearanceSet that follows.
@@ -2156,7 +2152,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
     {
-        ArmAppearanceCorrection();
         _client.Appearance.RemoveFromOutfit(wearable);
         _ = _client.Appearance.RequestSetAppearance(true);
         Console.Error.WriteLine($"[Appearance] removing \"{wearable.Name}\" ({wearable.AssetType}) -- rebake requested, correction armed");
@@ -2190,9 +2185,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         // FEAT-AVATAR-01: LibreMetaverse has just baked (correctly) and sent an AgentSetAppearance
         // whose visual params are scrambled. Replace it with a correctly-ordered one while its
-        // fresh bake textures are still what MakeAppearancePacket hands out. Only after a wearable
-        // edit armed it -- an unsolicited bake is not ours to answer for.
-        if (AppearanceCorrectionArmed) SendCorrectedAppearance();
+        // fresh bake textures are still what MakeAppearancePacket hands out.
+        //
+        // UNCONDITIONAL, deliberately. With SendAppearance on, LibreMetaverse bakes and sends on
+        // its own -- at login (Simulator_OnCapabilitiesReceived), on a region change, and on the
+        // simulator's RebakeAvatarTextures request -- not only after a wearable edit we initiated.
+        // Every one of those writes the scrambled param array to the account, so every one of them
+        // has to be followed by the correction. Gating this on a user action would have left the
+        // login send uncorrected, which is the single most damaging one.
+        SendCorrectedAppearance();
 
         var te = _client.Appearance.MyTextures;
         var faces = te?.FaceTextures;
