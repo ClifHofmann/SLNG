@@ -588,7 +588,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // default one, so CurrentSim reliably reflects that.
         if (sim == _client.Network.CurrentSim)
         {
-            _ssbStatusLogged = false; // FEAT-AVATAR-01: re-check server-side baking for the new region
+            _appearanceReadinessLogged = false; // FEAT-AVATAR-01: re-check the wearable-edit path for the new region
             RegionConnected?.Invoke(this, sim.Handle);
         }
         else
@@ -623,7 +623,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // FEAT-AVATAR-01: report whether system-wearable edits are safe here. Logged once per
         // region, at EventQueueRunning rather than SimConnected because the UpdateAvatarAppearance
         // capability is only resolvable after the caps handshake completes.
-        LogServerSideBakingStatus();
+        LogAppearanceEditReadiness();
 
         _ = Task.Run(async () =>
         {
@@ -1817,47 +1817,143 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             ? WearableKind.Wearable
             : WearableKind.Attachment;
 
-    /// <summary>FEAT-AVATAR-01: true only when the current region does BOTH halves of server-side
-    /// baking — advertises the <c>AgentAppearanceService</c> protocol AND registers the
-    /// <c>UpdateAvatarAppearance</c> capability. This is the ONLY state in which a system-wearable
-    /// edit is safe: <c>RemoveFromOutfit</c>/<c>AddToOutfit</c> then reach
-    /// <c>RequestSetAppearanceAsync</c>'s SSB branch, whose outgoing request is a cap POST carrying
-    /// only <c>{ cof_version }</c> — no visual params, no shape — so a wrong client shape can never
-    /// be persisted. When the protocol flag is set but the cap is missing (a known OpenSim quirk —
-    /// <c>RequestSetAppearanceAsync</c> ~3264, and why the 2026-08-29 OSGrid repro flattened the
-    /// avatar) LibreMetaverse falls back to client-side baking + <c>AgentSetAppearance</c>, which is
-    /// exactly the corruption path — so both halves are required.</summary>
+    /// <summary>FEAT-AVATAR-01: true only when the current region does the full SL server-side-baking
+    /// handshake — advertises the <c>AgentAppearanceService</c> protocol AND registers the
+    /// <c>UpdateAvatarAppearance</c> capability. Here a wearable edit needs no local preparation:
+    /// <c>RemoveFromOutfit</c>/<c>AddToOutfit</c> reach <c>RequestSetAppearanceAsync</c>'s SSB branch,
+    /// whose only outgoing request is a cap POST of <c>{ cof_version }</c> — no visual params, no
+    /// shape — and the server composites. This is an SL path; OpenSim's own server-side appearance
+    /// (XBakes) does NOT set these (<c>RequestSetAppearanceAsync</c> ~3264 and the comment at
+    /// <c>MakeAppearancePacket</c> ~2952 both say "always false on OpenSim"), so on OpenSim this is
+    /// false and the wearable edit takes the client-side path — safe only after
+    /// <see cref="EnsureWornWearablesDecodedAsync"/>.</summary>
     public bool RegionHasServerSideBaking()
         => _client.Network.Connected
            && _client.Appearance.ServerBakingRegion()
            && _client.Network.CurrentSim?.Caps?.CapabilityURI("UpdateAvatarAppearance") != null;
 
-    private bool _ssbStatusLogged;
+    private bool _appearanceReadinessLogged;
 
-    /// <summary>Logs, once per region, whether system-wearable edits are enabled here — so a later
-    /// "why did nothing happen" has an answer in the log. FEAT-AVATAR-01.</summary>
-    private void LogServerSideBakingStatus()
+    /// <summary>Logs, once per region, which wearable-edit path applies here — SL SSB (server bakes,
+    /// nothing local needed) vs client-side (worn wearables get decoded first, then the edit sends).
+    /// So a later "why did the wearable not change" has an answer in the log. FEAT-AVATAR-01.</summary>
+    private void LogAppearanceEditReadiness()
     {
-        if (_ssbStatusLogged) return;
-        _ssbStatusLogged = true;
+        if (_appearanceReadinessLogged) return;
+        _appearanceReadinessLogged = true;
         string region = _client.Network.CurrentSim?.Name ?? "?";
-        if (RegionHasServerSideBaking())
+        Console.Error.WriteLine(RegionHasServerSideBaking()
+            ? $"[Appearance] {region}: SL server-side baking — wearable edits go straight through (server composites)"
+            : $"[Appearance] {region}: client-side bake path — a wearable edit first decodes every worn wearable, then sends");
+    }
+
+    /// <summary>FEAT-AVATAR-01: raised when a system-wearable wear/detach was refused because its
+    /// visual params could not be made safe to send (a worn wearable — usually the Shape — could
+    /// not be fetched/decoded, so <c>MakeAppearancePacket</c> would fall back to
+    /// <c>vp.DefaultValue</c> and flatten the stored shape). Payload is the item name.</summary>
+    public event EventHandler<string>? WearableEditUnavailable;
+
+    private readonly SemaphoreSlim _wearableDecodeGate = new(1, 1);
+
+    /// <summary>Downloads and decodes every currently-worn wearable's asset so a following
+    /// <c>RemoveFromOutfit</c>/<c>AddToOutfit</c> → <c>RequestSetAppearanceAsync</c> →
+    /// <c>MakeAppearancePacket</c> rebuilds the 218 visual params from the real Shape/Skin assets
+    /// instead of <c>vp.DefaultValue</c> for the ones it can't decode (the 2026-08-02 / 2026-08-29
+    /// flatten). <c>DownloadWearablesAsync</c> inside <c>RequestSetAppearanceAsync</c> then finds
+    /// everything already on <c>WearableData.Asset</c> and skips its own fetch. Returns false — and
+    /// the caller must then refuse the edit — if a Shape is not worn or any worn wearable can't be
+    /// fetched/decoded; sending a partial set is exactly the corruption this guards against.</summary>
+    private async Task<bool> EnsureWornWearablesDecodedAsync(CancellationToken ct = default)
+    {
+        if (!_client.Network.Connected) return false;
+
+        await _wearableDecodeGate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            Console.Error.WriteLine($"[Appearance] {region}: server-side baking available — system-wearable edits enabled");
+            // Populate the worn-wearable list from the Current Outfit Folder (ItemID/AssetID/type;
+            // Asset stays null until fetched). Non-fatal if it throws -- fall through to the check.
+            try { await _client.Appearance.RequestAgentWornAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { Console.Error.WriteLine($"[Appearance] RequestAgentWorn failed: {ex.Message}"); }
+
+            var worn = _client.Appearance.GetWearables().ToList();
+            if (worn.Count == 0)
+            {
+                Console.Error.WriteLine("[Appearance] no worn wearables resolved from COF — refusing wearable edit");
+                return false;
+            }
+            if (worn.All(w => w.WearableType != LibreMetaverse.WearableType.Shape))
+            {
+                Console.Error.WriteLine("[Appearance] no Shape among worn wearables — refusing wearable edit (would default body params)");
+                return false;
+            }
+
+            foreach (var w in worn)
+            {
+                if (w.Asset != null) continue;
+                try
+                {
+                    var asset = await _client.Assets
+                        .RequestAssetAsync(w.AssetID, w.AssetType, priority: true, ct)
+                        .ConfigureAwait(false);
+                    if (asset is LibreMetaverse.Assets.AssetWearable aw && aw.Decode())
+                        w.Asset = aw;
+                    else
+                        Console.Error.WriteLine($"[Appearance] wearable {w.WearableType} ({w.AssetID}) did not fetch/decode");
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[Appearance] wearable {w.WearableType} ({w.AssetID}) fetch error: {ex.Message}");
+                }
+            }
+
+            bool allDecoded = _client.Appearance.GetWearables().All(w => w.Asset != null);
+            if (!allDecoded)
+                Console.Error.WriteLine("[Appearance] not every worn wearable decoded — refusing wearable edit");
+            return allDecoded;
         }
-        else
+        finally
         {
-            bool proto = _client.Network.Connected && _client.Appearance.ServerBakingRegion();
-            bool cap = _client.Network.CurrentSim?.Caps?.CapabilityURI("UpdateAvatarAppearance") != null;
-            Console.Error.WriteLine($"[Appearance] {region}: server-side baking UNAVAILABLE " +
-                $"(protocol={proto}, cap={cap}) — system-wearable edits disabled here (would risk a default-shape rebake)");
+            _wearableDecodeGate.Release();
         }
     }
 
-    /// <summary>Raised when a system-wearable wear/detach was refused because the current region
-    /// has no server-side baking (see <see cref="RegionHasServerSideBaking"/>). Payload is the
-    /// item name, for a user-facing notice. FEAT-AVATAR-01.</summary>
-    public event EventHandler<string>? WearableEditUnavailable;
+    /// <summary>Whether it is safe to route a system-wearable edit through
+    /// <c>AppearanceManager</c> right now: true immediately on an SL SSB region, otherwise only
+    /// after <see cref="EnsureWornWearablesDecodedAsync"/> succeeds. Raises
+    /// <see cref="WearableEditUnavailable"/> with <paramref name="itemName"/> when it returns
+    /// false. FEAT-AVATAR-01.</summary>
+    private async Task<bool> PrepareWearableEditAsync(string itemName, CancellationToken ct = default)
+    {
+        if (RegionHasServerSideBaking()) return true;
+        if (await EnsureWornWearablesDecodedAsync(ct).ConfigureAwait(false)) return true;
+
+        Console.Error.WriteLine($"[Appearance] edit of \"{itemName}\" not sent: worn wearables could not be decoded, " +
+            "a client-side rebake would persist a default shape (FEAT-AVATAR-01)");
+        WearableEditUnavailable?.Invoke(this, itemName);
+        return false;
+    }
+
+    /// <summary>FEAT-AVATAR-01: puts a system wearable on. Prepares a safe rebake first
+    /// (see <see cref="PrepareWearableEditAsync"/>); if that fails, nothing is sent.</summary>
+    private async Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
+    {
+        if (!await PrepareWearableEditAsync(wearable.Name).ConfigureAwait(false)) return;
+        _client.Appearance.AddToOutfit(wearable, replace);
+        Console.Error.WriteLine($"[Appearance] wore wearable \"{wearable.Name}\" ({wearable.AssetType}) — rebake requested");
+    }
+
+    /// <summary>FEAT-AVATAR-01: takes a system wearable off. Prepares a safe rebake first;
+    /// if that fails, returns <c>DetachResult(false, 0)</c> and sends nothing.</summary>
+    private async Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
+    {
+        if (!await PrepareWearableEditAsync(wearable.Name).ConfigureAwait(false))
+            return new DetachResult(false, 0);
+        _client.Appearance.RemoveFromOutfit(wearable);
+        Console.Error.WriteLine($"[Appearance] removed wearable \"{wearable.Name}\" ({wearable.AssetType}) — rebake requested");
+        return new DetachResult(false, 0, WearableRemoved: true);
+    }
 
     private void OnAppearanceSet(object? sender, AppearanceSetEventArgs e)
     {
@@ -2844,10 +2940,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     /// <summary>
     /// Wears an inventory item. An attachment/object is attached via <c>Attach</c>. A system
-    /// wearable (Clothing/Bodypart layer) is added via <c>AppearanceManager.AddToOutfit</c> — but
-    /// only on a region with server-side baking (<see cref="RegionHasServerSideBaking"/>); without
-    /// it the rebake would run client-side and could persist a default shape (FEAT-AVATAR-01), so
-    /// the wear is refused with <see cref="WearableEditUnavailable"/>. Handles item IDs and links.
+    /// wearable (Clothing/Bodypart layer) is added via <c>AppearanceManager.AddToOutfit</c> — on an
+    /// SL server-side-baking region straight through, otherwise only after every currently-worn
+    /// wearable is decoded so the rebake can't persist a default shape (FEAT-AVATAR-01); if that
+    /// preparation fails the wear is refused with <see cref="WearableEditUnavailable"/>. Handles
+    /// item IDs and links.
     /// </summary>
     public Task AttachItemAsync(Guid itemId, byte attachPoint = 0, bool replace = false)
     {
@@ -2864,25 +2961,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (itemNode?.Data is LibreMetaverse.InventoryItem realItem)
         {
             // FEAT-AVATAR-01: a system wearable is not an attachment. AddToOutfit → RequestSetAppearance
-            // is the only path that applies it, and it triggers a rebake. That is safe ONLY on a
-            // server-side-baking region (the outgoing request is a cap POST of just the COF version,
-            // server composites). Without SSB the rebake runs client-side and MakeAppearancePacket
-            // can emit a DEFAULT shape the sim then persists (the 2026-08-02 incident; reproduced
-            // live 2026-08-29 on an OSGrid region whose SSB protocol flag was set but the cap absent).
+            // triggers a rebake; MakeAppearancePacket rebuilds the 218 visual params from the DECODED
+            // worn wearables, falling back to vp.DefaultValue for any it can't decode — which is how
+            // the 2026-08-02 / 2026-08-29 flatten happened. PrepareWearableEditAsync makes that safe
+            // (SL SSB: server composes, nothing sent; else: decode every worn wearable first).
             if (ClassifyItem(realItem is LibreMetaverse.InventoryWearable, (int)realItem.AssetType)
                 == WearableKind.Wearable)
             {
-                if (!RegionHasServerSideBaking())
-                {
-                    Console.Error.WriteLine($"[Appearance] wear of \"{realItem.Name}\" ({realItem.AssetType}) " +
-                        "not sent: region has no server-side baking, a client-side rebake could persist a default shape (FEAT-AVATAR-01)");
-                    WearableEditUnavailable?.Invoke(this, realItem.Name);
-                    return Task.CompletedTask;
-                }
-
-                _client.Appearance.AddToOutfit(realItem, replace);
-                Console.Error.WriteLine($"[Appearance] wore wearable \"{realItem.Name}\" ({realItem.AssetType}) — server-side rebake requested");
-                return Task.CompletedTask;
+                return WearWearableAsync(realItem, replace);
             }
 
             _client.Appearance.Attach(realItem, (LibreMetaverse.AttachmentPoint)attachPoint, replace);
@@ -2905,11 +2991,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <summary>
     /// Takes an inventory item off the agent. An attachment is removed via
     /// <c>DetachAttachmentIntoInv</c> (plus stale-COF-link cleanup). A system wearable
-    /// (Clothing/Bodypart layer) is removed via <c>AppearanceManager.RemoveFromOutfit</c> — but
-    /// only on a region with server-side baking (<see cref="RegionHasServerSideBaking"/>); without
-    /// it the rebake would run client-side and could persist a default shape (FEAT-AVATAR-01), so
-    /// the detach is refused with <see cref="WearableEditUnavailable"/>. Handles item IDs and links
-    /// inside Current Outfit.
+    /// (Clothing/Bodypart layer) is removed via <c>AppearanceManager.RemoveFromOutfit</c> — on an
+    /// SL server-side-baking region straight through, otherwise only after every currently-worn
+    /// wearable is decoded so the rebake can't persist a default shape (FEAT-AVATAR-01); if that
+    /// preparation fails the detach is refused with <see cref="WearableEditUnavailable"/>. Handles
+    /// item IDs and links inside Current Outfit.
     /// </summary>
     public Task<DetachResult> DetachItemAsync(Guid itemId)
     {
@@ -2919,10 +3005,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         // FEAT-AVATAR-01: a system wearable is not an attachment (the sim ignores
         // DetachAttachmentIntoInv for a Clothing/Bodypart layer). RemoveFromOutfit → RequestSetAppearance
-        // is the path that takes it off, and it triggers a rebake — safe ONLY on a server-side-baking
-        // region (cap POST of just the COF version). Without SSB the client-side rebake can emit a
-        // DEFAULT shape the sim persists (reproduced live 2026-08-29: removing an Alpha layer
-        // flattened the avatar on an OSGrid region whose SSB cap was absent).
+        // triggers a rebake; see WearWearableAsync's comment for why it needs preparation.
         {
             var real = node?.Data as LibreMetaverse.InventoryItem;
             if (real is { } && real.IsLink())
@@ -2930,17 +3013,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (real is { }
                 && ClassifyItem(real is LibreMetaverse.InventoryWearable, (int)real.AssetType) == WearableKind.Wearable)
             {
-                if (!RegionHasServerSideBaking())
-                {
-                    Console.Error.WriteLine($"[Appearance] detach of \"{real.Name}\" ({real.AssetType}) " +
-                        "not sent: region has no server-side baking, a client-side rebake could persist a default shape (FEAT-AVATAR-01)");
-                    WearableEditUnavailable?.Invoke(this, real.Name);
-                    return Task.FromResult(new DetachResult(false, 0));
-                }
-
-                _client.Appearance.RemoveFromOutfit(real);
-                Console.Error.WriteLine($"[Appearance] removed wearable \"{real.Name}\" ({real.AssetType}) — server-side rebake requested");
-                return Task.FromResult(new DetachResult(false, 0, WearableRemoved: true));
+                return RemoveWearableAsync(real);
             }
         }
 
@@ -4579,6 +4652,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Grid.CoarseLocationUpdate -= OnCoarseLocationUpdate;
         _client.Grid.GridRegion -= OnGridRegion;
         _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
+        _wearableDecodeGate.Dispose();
         Logout();
     }
 }

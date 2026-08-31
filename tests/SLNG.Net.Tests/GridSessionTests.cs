@@ -542,9 +542,9 @@ public class GridSessionTests
         Assert.Equal(relay, client.Appearance.MyVisualParameters);
     }
 
-    // FEAT-AVATAR-01 Phase 2: a system-wearable edit is only sent on a server-side-baking region.
-    // With no connection there is no region, so the gate is closed and the detach/wear no-ops
-    // instead of driving RemoveFromOutfit -> a client-side rebake that could persist a default shape.
+    // FEAT-AVATAR-01 Phase 2: RegionHasServerSideBaking is the fast-path — true only on an SL SSB
+    // region (protocol + UpdateAvatarAppearance cap). OpenSim never sets these, so it is false there
+    // and a wearable edit goes through the decode-then-send path instead.
     [Fact]
     public void RegionHasServerSideBaking_is_false_without_connection()
     {
@@ -552,12 +552,24 @@ public class GridSessionTests
         Assert.False(session.RegionHasServerSideBaking());
     }
 
+    // The decode-then-send gate: without a connection there are no worn wearables to decode, so it
+    // returns false and the caller must refuse the edit rather than send a partial appearance.
+    [Fact]
+    public async Task EnsureWornWearablesDecodedAsync_is_false_without_connection()
+    {
+        using var session = new GridSession();
+        var method = typeof(GridSession).GetMethod("EnsureWornWearablesDecodedAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var result = await (Task<bool>)method.Invoke(session, new object?[] { CancellationToken.None })!;
+        Assert.False(result);
+    }
+
     [Fact]
     public async Task DetachItemAsync_wearable_without_connection_does_not_throw()
     {
         using var session = new GridSession();
         // Nothing resolves from an empty store, so this exercises the graceful path; the point is
-        // that the FEAT-AVATAR-01 wearable branch never sends without server-side baking.
+        // that the FEAT-AVATAR-01 wearable branch never sends without a prepared appearance.
         var result = await session.DetachItemAsync(Guid.NewGuid());
         Assert.False(result.WearableRemoved);
         Assert.False(result.WasAttached);
