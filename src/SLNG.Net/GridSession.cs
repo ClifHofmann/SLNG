@@ -2011,6 +2011,39 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 return;
             }
 
+            // Bake textures. LibreMetaverse only composites when SendAppearance is on, and it is
+            // not -- so its Textures[] can be all-zero, and a packet built from it says "I have no
+            // baked textures". The simulator persists that and the avatar renders untextured for
+            // everyone until something re-bakes it: measured live 2026-08-31, the head lost its
+            // texture on the grid and only came back after a Firestorm login. Fill any empty slot
+            // from the simulator's own last relay, and refuse outright if that still leaves a hole.
+            var currentBakes = new Dictionary<int, Guid>();
+            var teBytes = packet.ObjectData.TextureEntry;
+            var entry = teBytes is { Length: > 1 }
+                ? new Primitive.TextureEntry(teBytes, 0, teBytes.Length) : null;
+            foreach (int slot in AgentAppearanceParams.EssentialBakeSlots)
+            {
+                var face = entry?.FaceTextures is { } fs && slot < fs.Length ? fs[slot] : null;
+                var id = face?.TextureID ?? LibreMetaverse.UUID.Zero;
+                currentBakes[slot] = id == AppearanceManager.DEFAULT_AVATAR_TEXTURE ? Guid.Empty : id.Guid;
+            }
+
+            var merged = AgentAppearanceParams.MergeBakeSlots(currentBakes, _lastSelfRelayBakes, out bool bakesComplete);
+            if (!bakesComplete)
+            {
+                Console.Error.WriteLine("[Appearance] correction NOT sent -- incomplete bake set " +
+                    $"({string.Join(" ", merged.OrderBy(k => k.Key).Select(k => $"{k.Key}={(k.Value == Guid.Empty ? "EMPTY" : "ok")}"))}); " +
+                    "sending it would strip the avatar's textures");
+                WearableEditUnavailable?.Invoke(this, "incomplete bake set");
+                return;
+            }
+
+            if (entry != null)
+            {
+                foreach (var kv in merged) entry.CreateFace((uint)kv.Key).TextureID = new LibreMetaverse.UUID(kv.Value);
+                packet.ObjectData.TextureEntry = entry.GetBytes();
+            }
+
             var blocks = new LibreMetaverse.Packets.AgentSetAppearancePacket.VisualParamBlock[wire.Length];
             for (int i = 0; i < wire.Length; i++)
                 blocks[i] = new LibreMetaverse.Packets.AgentSetAppearancePacket.VisualParamBlock { ParamValue = wire[i] };
@@ -2028,8 +2061,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             _client.Appearance.MyVisualParameters = wire;
 
             int nonDefault = wire.Count(b => b != 0);
+            int preserved = merged.Count(kv => currentBakes[kv.Key] == Guid.Empty);
             Console.Error.WriteLine($"[Appearance] corrected AgentSetAppearance sent " +
-                $"({wire.Length} params, {nonDefault} non-zero, height {packet.AgentData.Size.Z:F2} m)");
+                $"({wire.Length} params, {nonDefault} non-zero, height {packet.AgentData.Size.Z:F2} m, " +
+                $"{preserved}/{merged.Count} bake slots preserved from the previous appearance)");
         }
         catch (Exception ex)
         {
@@ -2093,33 +2128,39 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
-    // DISABLED 2026-08-31 -- the SECOND blocker, found live after the first was fixed.
+    // Both blockers are now handled, each by a guard that refuses to send rather than guessing:
     //
-    // The visual-param half now works: a corrected AgentSetAppearance keeps the shape intact
-    // (measured, 107-of-218 zero exactly matching the sim's own relay, across a wear and a detach).
-    // But the packet also carries LibreMetaverse's freshly baked TextureEntry, and those bakes are
-    // NOT usable: after a wearable edit from SLNG the avatar's head lost its texture ON THE GRID --
-    // Firestorm showed it untextured too -- and it only came back after a Firestorm login re-baked
-    // it. So the send trades a scrambled shape for destroyed bake textures, which is no better.
+    //   1. Visual-param ORDER. LibreMetaverse writes 195 of 218 params to the wrong slot;
+    //      AgentAppearanceParams rebuilds them in wire order and VerifyRoundTrip re-reads the
+    //      result the way the simulator will before anything goes out.
+    //   2. Bake TEXTURES. LibreMetaverse only composites under SendAppearance, which is off, so its
+    //      Textures[] can be all-zero -- measured 2026-08-31 as 8/9/10/11/20 = ZERO. Sending that
+    //      says "I have no baked textures" and strips the avatar on the grid, which is exactly what
+    //      happened. MergeBakeSlots fills empty slots from the simulator's own last relay and the
+    //      send is refused outright if a hole remains.
     //
-    // Params are solved; baking is not. Until SLNG can produce (or verify) a usable bake, a
-    // wearable edit stays a logged no-op. Not a regression: DetachAttachmentIntoInv was always a
-    // server-side no-op for a Clothing/Bodypart layer. See the spec.
+    // What this cannot do is produce a NEW bake, so a change that needs one (an alpha layer
+    // altering what the system body shows) may not become visible until another viewer re-bakes.
+    // It is non-destructive either way, which is the property that was missing.
 
     private Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
     {
-        Console.Error.WriteLine($"[Appearance] wear of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
-            "LibreMetaverse's client-side bake produces unusable baked textures (FEAT-AVATAR-01)");
-        WearableEditUnavailable?.Invoke(this, wearable.Name);
+        ArmAppearanceCorrection();
+        _client.Appearance.AddToOutfit(wearable, replace);
+        // Bake now rather than waiting out LibreMetaverse's 5 s REBAKE_DELAY -- this cancels the
+        // scheduled one. The correction rides on the AppearanceSet that follows.
+        _ = _client.Appearance.RequestSetAppearance(true);
+        Console.Error.WriteLine($"[Appearance] wearing \"{wearable.Name}\" ({wearable.AssetType}) -- rebake requested, correction armed");
         return Task.CompletedTask;
     }
 
     private Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
     {
-        Console.Error.WriteLine($"[Appearance] detach of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
-            "LibreMetaverse's client-side bake produces unusable baked textures (FEAT-AVATAR-01)");
-        WearableEditUnavailable?.Invoke(this, wearable.Name);
-        return Task.FromResult(new DetachResult(false, 0));
+        ArmAppearanceCorrection();
+        _client.Appearance.RemoveFromOutfit(wearable);
+        _ = _client.Appearance.RequestSetAppearance(true);
+        Console.Error.WriteLine($"[Appearance] removing \"{wearable.Name}\" ({wearable.AssetType}) -- rebake requested, correction armed");
+        return Task.FromResult(new DetachResult(false, 0, WearableRemoved: true));
     }
 
     /// <summary>The simulator's own last relay of the self avatar's shape, captured in

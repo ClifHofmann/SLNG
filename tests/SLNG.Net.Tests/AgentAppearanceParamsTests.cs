@@ -180,6 +180,57 @@ public class AgentAppearanceParamsTests
             new byte[VisualParams.Group0ParamIds.Length + 1], worn, out _));
     }
 
+    // --- bake slots -------------------------------------------------------------------------
+    // Measured live 2026-08-31: LibreMetaverse's Textures[] were 8=ZERO 9=ZERO 10=ZERO 11=ZERO
+    // 20=ZERO while the simulator's relay held real ids. Sending that stripped the avatar's
+    // textures on the grid. These pin the guard that prevents it.
+
+    private static readonly Guid A = Guid.NewGuid(), B = Guid.NewGuid(), C = Guid.NewGuid();
+
+    [Fact]
+    public void MergeBakeSlots_fills_empty_slots_from_the_last_known_good_set()
+    {
+        var current = new Dictionary<int, Guid> { [8] = Guid.Empty, [9] = A };
+        var fallback = new Dictionary<int, Guid> { [8] = B, [9] = C, [10] = A, [11] = B, [20] = C };
+
+        var merged = AgentAppearanceParams.MergeBakeSlots(current, fallback, out bool complete);
+
+        Assert.True(complete);
+        Assert.Equal(B, merged[8]);  // empty -> fallback
+        Assert.Equal(A, merged[9]);  // present -> kept
+        Assert.Equal(A, merged[10]); // absent -> fallback
+    }
+
+    /// <summary>The all-ZERO case actually measured. Every slot must come from the fallback, and
+    /// the result must be complete — otherwise a send would strip the avatar.</summary>
+    [Fact]
+    public void MergeBakeSlots_recovers_a_completely_empty_bake_set()
+    {
+        var current = AgentAppearanceParams.EssentialBakeSlots.ToDictionary(s => s, _ => Guid.Empty);
+        var fallback = AgentAppearanceParams.EssentialBakeSlots.ToDictionary(s => s, _ => Guid.NewGuid());
+
+        var merged = AgentAppearanceParams.MergeBakeSlots(current, fallback, out bool complete);
+
+        Assert.True(complete);
+        Assert.All(AgentAppearanceParams.EssentialBakeSlots,
+            s => Assert.Equal(fallback[s], merged[s]));
+    }
+
+    /// <summary>With nothing to fall back on there is no safe packet to build — the caller must
+    /// refuse rather than send empties, which is exactly the mistake that caused the damage.</summary>
+    [Fact]
+    public void MergeBakeSlots_reports_incomplete_when_nothing_can_fill_a_slot()
+    {
+        var current = new Dictionary<int, Guid> { [8] = A };
+        var fallback = new Dictionary<int, Guid>();
+
+        var merged = AgentAppearanceParams.MergeBakeSlots(current, fallback, out bool complete);
+
+        Assert.False(complete);
+        Assert.Equal(A, merged[8]);
+        Assert.Equal(Guid.Empty, merged[9]);
+    }
+
     /// <summary>
     /// Demonstrates the upstream bug directly: reading a wire-order array as if it were in
     /// MakeAppearancePacket's order (first 218 of all Params) mis-assigns the overwhelming majority
