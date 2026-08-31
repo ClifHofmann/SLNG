@@ -166,6 +166,8 @@ public partial class AvatarRenderer : Node3D
     private AssetService? _assetService;
     private GpuCache? _gpuCache;
     private SLNG.Net.GridSession? _session;
+    // FEAT-AVATAR-01: last-logged self bake-channel signature, to dedupe the [SelfBake] diagnostic.
+    private string _lastSelfBakeSig = "";
     private AvatarSkeleton? _avatarSkeleton;
     // Throttles the [RootApply] ground-truth diagnostic in UpdateVisual to ~1/sec.
     private double _timeSinceRootPosLog = 0;
@@ -687,6 +689,20 @@ public partial class AvatarRenderer : Node3D
                     visual.LoadedTextures[bakeIndex] = textureId;
                     anyBakeChanged = true;
                     _ = LoadAndApplyTextureAsync(visual, bakeIndex, textureId);
+                }
+            }
+
+            // FEAT-AVATAR-01: dump the self avatar's bake channels whenever they change, so a live
+            // test can see whether the head bake (channel 8 = head+eyelashes) actually arrived and
+            // is a real id vs an EMPTY placeholder. Deduplicated so it isn't per-frame spam.
+            if (anyBakeChanged && avatar.IsLocalAgent)
+            {
+                string line = string.Join("  ", avatar.BakedTextures.OrderBy(k => k.Key)
+                    .Select(k => $"{k.Key}={(k.Value == Guid.Empty ? "EMPTY" : k.Value.ToString("N")[..8])}"));
+                if (line != _lastSelfBakeSig)
+                {
+                    _lastSelfBakeSig = line;
+                    GD.Print("[SelfBake] channels  " + line);
                 }
             }
 
