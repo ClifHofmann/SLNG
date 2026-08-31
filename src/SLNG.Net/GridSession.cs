@@ -4,6 +4,7 @@ using LibreMetaverse;
 using LibreMetaverse.Imaging;
 using LibreMetaverse.Packets;
 using LibreMetaverse.StructuredData;
+using Microsoft.Extensions.Logging;
 using SLNG.Core;
 
 namespace SLNG.Net;
@@ -214,10 +215,29 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // Warnings are rare and are exactly the "this silently did not work" class. Set
         // SLNG_LMV_DEBUG=1 for the full Debug trace (per-texture, per-wearable, per-bake timings)
         // when actually chasing a bake.
-        LibreMetaverse.Settings.LogLevel =
-            Environment.GetEnvironmentVariable("SLNG_LMV_DEBUG") is "1" or "true" or "TRUE"
-                ? Microsoft.Extensions.Logging.LogLevel.Debug
-                : Microsoft.Extensions.Logging.LogLevel.Warning;
+        var lmvLevel = Environment.GetEnvironmentVariable("SLNG_LMV_DEBUG") is "1" or "true" or "TRUE"
+            ? Microsoft.Extensions.Logging.LogLevel.Debug
+            : Microsoft.Extensions.Logging.LogLevel.Warning;
+        LibreMetaverse.Settings.LogLevel = lmvLevel;
+
+        // Settings.LogLevel alone does not silence LibreMetaverse: it builds its own console logger
+        // factory on first use, and that factory carries its own minimum level. Debug lines from the
+        // bake ("[Bake]: created head master bake", "[XBakes]: Number of alpha wearable textures")
+        // printed on every channel of every bake despite the level being Warning. Hand it a factory
+        // filtered to the level actually wanted.
+        try
+        {
+            LibreMetaverse.Logger.SetLoggerFactory(
+                Microsoft.Extensions.Logging.LoggerFactory.Create(b => b
+                    .SetMinimumLevel(lmvLevel)
+                    .AddSimpleConsole(o => o.SingleLine = true)),
+                "SLNG");
+        }
+        catch (Exception ex)
+        {
+            // Never worth failing a login over log plumbing.
+            Console.Error.WriteLine($"[Net] could not install the LibreMetaverse log filter: {ex.Message}");
+        }
 
         // BakeLayer.LoadResourceLayer (client-side avatar bake compositing, e.g. head_color.tga)
         // resolves default system-avatar layer textures via ResourceDir + "static_assets", and
@@ -2298,7 +2318,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// what an avatar wears — and, unlike the legacy <c>AgentWearablesReply</c>, can hold several
     /// layers of one type. Also reports every link it finds, since "which of my layers does the
     /// client see" turned out to be the question behind a wrong face.</summary>
-    private async Task<List<AppearanceManager.WearableData>> CollectWornWearablesForBakeAsync(CancellationToken ct)
+    private async Task<List<AppearanceManager.WearableData>> CollectWornWearablesForBakeAsync(bool verbose, CancellationToken ct)
     {
         var worn = new List<AppearanceManager.WearableData>();
         var cof = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
@@ -2387,11 +2407,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             });
             _cofLinkDescriptions[target] = description ?? string.Empty;
 
-            Console.Error.WriteLine($"[Bake]   COF {w.WearableType,-10} \"{w.Name}\"" +
-                (string.IsNullOrEmpty(description) ? "" : $"  desc=\"{description}\""));
+            if (verbose)
+                Console.Error.WriteLine($"[Bake]   COF {w.WearableType,-10} \"{w.Name}\"" +
+                    (string.IsNullOrEmpty(description) ? "" : $"  desc=\"{description}\""));
         }
 
-        if (duplicates > 0)
+        if (duplicates > 0 && verbose)
             Console.Error.WriteLine($"[Bake]   COF: dropped {duplicates} duplicate link(s) -- the outfit folder links some items more than once");
         if (unresolved > 0)
             Console.Error.WriteLine($"[Bake]   COF: {unresolved} wearable link(s) did not resolve -- baking would miss them");
@@ -2408,7 +2429,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// grouped by type, and within a type sorted by the ordering token the viewer stores in the
     /// Current Outfit Folder link's description. Bottom layer first — see
     /// <see cref="WearableLayerOrder"/> for the rule and its source.</summary>
-    private List<AppearanceManager.WearableData> OrderWearablesAsTheViewerDoes(List<AppearanceManager.WearableData> worn)
+    private List<AppearanceManager.WearableData> OrderWearablesAsTheViewerDoes(List<AppearanceManager.WearableData> worn, bool verbose)
     {
         // The tokens recorded while the worn set was collected. Deliberately not a fresh folder
         // lookup: with duplicate links present, looking up again can land on the other link -- the
@@ -2427,7 +2448,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         int tokened = worn.Count(w => descriptions.TryGetValue(w.ItemID, out var d)
                                       && WearableLayerOrder.IsValidOrderString(d, (int)w.WearableType));
-        Console.Error.WriteLine($"[Bake] layer order: {tokened}/{worn.Count} wearables carry a COF ordering token");
+        if (verbose)
+            Console.Error.WriteLine($"[Bake] layer order: {tokened}/{worn.Count} wearables carry a COF ordering token");
 
         return result;
     }
@@ -2461,6 +2483,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             return "nicht verbunden";
         }
 
+        // The bake pipeline is proven, so its running commentary is noise on every wardrobe
+        // change. Everything that diagnosed it stays one env var away; what remains by default is
+        // the outcome plus anything that went wrong.
+        bool verbose = Environment.GetEnvironmentVariable("SLNG_BAKE_VERBOSE") == "1";
+
         try
         {
             // 1. Worn wearables. LLUDP first -- the COF route measured empty on OSGrid.
@@ -2473,8 +2500,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // login and 5 after it, because Firestorm rewrote the region's list on login. The four
             // that vanished were tattoo layers -- including the skin the avatar is actually wearing.
             // Baking from the region's copy would have replaced the user's face with a different one.
-            var worn = await CollectWornWearablesForBakeAsync(ct).ConfigureAwait(false);
-            Console.Error.WriteLine($"[Bake] worn wearables: COF {worn.Count}, region's legacy list {legacy.Count}");
+            var worn = await CollectWornWearablesForBakeAsync(verbose, ct).ConfigureAwait(false);
+            if (verbose)
+                Console.Error.WriteLine($"[Bake] worn wearables: COF {worn.Count}, region's legacy list {legacy.Count}");
 
             if (worn.Count == 0)
             {
@@ -2506,7 +2534,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { Console.Error.WriteLine($"[Bake]   {w.WearableType}: {ex.Message}"); }
             }
-            Console.Error.WriteLine($"[Bake] decoded {decoded}/{worn.Count} wearable assets");
+            if (decoded < worn.Count)
+                Console.Error.WriteLine($"[Bake] WARNING: only {decoded}/{worn.Count} wearable assets decoded -- layers will be missing");
 
             // 2b. What each worn wearable actually declares. The Head bake came back with no skin
             //     texture at all -- its only input was Hair:32x32 -- so it composited the built-in
@@ -2515,7 +2544,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             //     DEFAULT_AVATAR_TEXTURE is mapped to Zero and disappears. This says which of the
             //     two it is -- a skin that declares no head texture, or one whose head texture is
             //     the default and is being dropped on purpose.
-            foreach (var w in worn.Where(w => w.Asset != null))
+            foreach (var w in verbose ? worn.Where(w => w.Asset != null) : Enumerable.Empty<AppearanceManager.WearableData>())
             {
                 var declared = w.Asset!.Textures;
                 Console.Error.WriteLine($"[Bake]   worn {w.WearableType,-10} " +
@@ -2547,7 +2576,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             //    topmost wins, and two of the worn tattoos are fully opaque head skins. See
             //    WearableLayerOrder -- the position lives in the COF link's description, not in the
             //    order LibreMetaverse returns.
-            var ordered = OrderWearablesAsTheViewerDoes(worn.Where(w => w.Asset != null).ToList());
+            var ordered = OrderWearablesAsTheViewerDoes(worn.Where(w => w.Asset != null).ToList(), verbose);
 
             var layers = new List<AppearanceManager.TextureData>();
             foreach (var w in ordered)
@@ -2563,11 +2592,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     layers.Add(scratch[i]);
                 }
             }
-            Console.Error.WriteLine($"[Bake] layers from {worn.Count(w => w.Asset != null)} wearables: {layers.Count}");
+            if (verbose)
+                Console.Error.WriteLine($"[Bake] layers from {worn.Count(w => w.Asset != null)} wearables: {layers.Count}");
 
             // 4. Fetch every referenced texture.
             var wanted = layers.Select(t => t.TextureID).Distinct().ToList();
-            Console.Error.WriteLine($"[Bake] textures referenced by the worn set: {wanted.Count}");
+            if (verbose)
+                Console.Error.WriteLine($"[Bake] textures referenced by the worn set: {wanted.Count}");
             int got = 0, decodedTex = 0;
             foreach (var id in wanted)
             {
@@ -2588,8 +2619,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     if (ok && tex.Image != null)
                     {
                         decodedTex++;
-                        Console.Error.WriteLine($"[Bake]   texture {id.ToString()[..8]} -> {tex.Image.Width}x{tex.Image.Height} " +
-                            $"channels={tex.Image.Channels} ({tex.AssetData?.Length ?? 0} bytes asset)");
+                        if (verbose)
+                            Console.Error.WriteLine($"[Bake]   texture {id.ToString()[..8]} -> {tex.Image.Width}x{tex.Image.Height} " +
+                                $"channels={tex.Image.Channels} ({tex.AssetData?.Length ?? 0} bytes asset)");
                     }
                     else
                     {
@@ -2604,13 +2636,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     // two faces, one of them inverted, while UpperBody composited cleanly -- so the
                     // question is whether a single input already looks like that or whether the
                     // layering produces it, and only the inputs themselves answer it.
-                    var slot = layers.FirstOrDefault(t => t.TextureID == id)?.TextureIndex;
-                    DumpPreview($"in_{slot}_{id.ToString()[..8]}", tex.Image);
+                    if (verbose)
+                    {
+                        var slot = layers.FirstOrDefault(t => t.TextureID == id)?.TextureIndex;
+                        DumpPreview($"in_{slot}_{id.ToString()[..8]}", tex.Image);
+                    }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { Console.Error.WriteLine($"[Bake]   texture {id} -> {ex.Message}"); }
             }
-            Console.Error.WriteLine($"[Bake] textures downloaded: {got}/{wanted.Count}, decoded: {decodedTex}/{got}");
+            if (verbose)
+                Console.Error.WriteLine($"[Bake] textures downloaded: {got}/{wanted.Count}, decoded: {decodedTex}/{got}");
+            else if (decodedTex < wanted.Count)
+                Console.Error.WriteLine($"[Bake] WARNING: only {decodedTex}/{wanted.Count} textures decoded -- the bake will be incomplete");
 
             // 5. Bake each channel, and -- when asked -- upload it. Uploading is deliberately
             //    separated from sending: RequestUploadBakedTextureAsync goes through the
@@ -2619,16 +2657,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             //    changes an avatar is the AgentSetAppearance that carries the new ids, and that
             //    still does not happen here. This is the step that proves the grid accepts a bake
             //    of this size before anything irreversible is built on top of it.
-            // Sending implies uploading -- an appearance can only reference bakes that exist.
-            bool send = Environment.GetEnvironmentVariable("SLNG_BAKE_SEND") == "1";
-            bool upload = send || Environment.GetEnvironmentVariable("SLNG_BAKE_UPLOAD") == "1";
+            // Baking applies by default now: the pipeline was verified against the reference
+            // viewer's own bakes for this avatar (head 2.6/255) and confirmed in-world. SLNG_BAKE_DRY
+            // still holds everything back, which is what to reach for if an outfit ever bakes wrong
+            // -- it composites and previews without touching the account.
+            bool send = Environment.GetEnvironmentVariable("SLNG_BAKE_DRY") != "1";
+            bool upload = send;
             var uploaded = new Dictionary<int, LibreMetaverse.UUID>();
             bool sent = false;
-            Console.Error.WriteLine(send
-                ? "[Bake] SLNG_BAKE_SEND=1 -- this bake will be UPLOADED and APPLIED to the avatar"
-                : upload
-                    ? "[Bake] SLNG_BAKE_UPLOAD=1 -- bakes will be UPLOADED (assets only; appearance not sent)"
-                    : "[Bake] dry run (SLNG_BAKE_UPLOAD=1 to store the bakes, SLNG_BAKE_SEND=1 to apply them)");
+            if (!send)
+                Console.Error.WriteLine("[Bake] SLNG_BAKE_DRY=1 -- composited only; nothing uploaded, nothing sent");
 
             foreach (var bakeType in new[] { BakeType.Head, BakeType.UpperBody, BakeType.LowerBody, BakeType.Eyes, BakeType.Hair })
             {
@@ -2684,10 +2722,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     reBytes = slngBake.Length;
                 }
 
-                // Write the composite out so it can actually be looked at. No byte count says
-                // whether a bake shows the right face, and sending one that does not is how this
-                // avatar was broken before.
-                DumpPreview(bakeType.ToString(), img);
+                // Write the composite out so it can actually be looked at. Only on request: these
+                // are megabyte PNGs and a wardrobe change should not spend that every time.
+                if (verbose) DumpPreview(bakeType.ToString(), img);
 
                 string uploadNote = string.Empty;
                 if (upload && reBytes > 0)
@@ -2706,9 +2743,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     catch (Exception ex) { uploadNote = $"  upload FAILED: {ex.Message}"; }
                 }
 
-                Console.Error.WriteLine($"[Bake] {bakeType,-10} inputs={indices.Count} withTexture={fed} usable={usable} " +
-                    $"-> lmv {(bytes > 0 ? bytes + "B" : "NOTHING")} / slng {(reBytes > 0 ? reBytes + "B" : "NOTHING")}  {composed}" +
-                    (detail.Count > 0 ? "  [" + string.Join(" ", detail) + "]" : "") + uploadNote);
+                if (verbose)
+                {
+                    Console.Error.WriteLine($"[Bake] {bakeType,-10} inputs={indices.Count} withTexture={fed} usable={usable} " +
+                        $"-> lmv {(bytes > 0 ? bytes + "B" : "NOTHING")} / slng {(reBytes > 0 ? reBytes + "B" : "NOTHING")}  {composed}" +
+                        (detail.Count > 0 ? "  [" + string.Join(" ", detail) + "]" : "") + uploadNote);
+                }
+                else if (reBytes == 0)
+                {
+                    Console.Error.WriteLine($"[Bake] WARNING: {bakeType} produced no texture{uploadNote}");
+                }
             }
 
             if (upload)
@@ -2717,7 +2761,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 // slots and strip the avatar. Report completeness explicitly so the next step can
                 // refuse rather than discover it on a live avatar.
                 var have = AgentAppearanceParams.EssentialBakeSlots.Count(s => uploaded.ContainsKey(s));
-                Console.Error.WriteLine($"[Bake] uploaded {have}/{AgentAppearanceParams.EssentialBakeSlots.Length} " +
+                if (verbose || have < AgentAppearanceParams.EssentialBakeSlots.Length)
+                    Console.Error.WriteLine($"[Bake] uploaded {have}/{AgentAppearanceParams.EssentialBakeSlots.Length} " +
                     $"essential slots: {string.Join("  ", AgentAppearanceParams.EssentialBakeSlots.Select(s => $"{s}=" + (uploaded.TryGetValue(s, out var u) ? u.ToString()[..8] : "MISSING")))}");
 
                 if (send)
@@ -2731,10 +2776,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
                     sent = SendAppearanceFromOwnBake(uploaded, wearableParams);
                 }
-                else
-                {
-                    Console.Error.WriteLine("[Bake] not sent (set SLNG_BAKE_SEND=1 to apply this bake to the avatar)");
-                }
+
             }
 
             // 6. The reference: the bakes a working viewer produced for this same avatar, which the
@@ -2742,10 +2784,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             //    says "right" rather than "plausible", and it costs nothing since they are ordinary
             //    texture assets. Skipped once we have sent, because the relay now holds OUR ids and
             //    fetching them would only compare the bake against itself.
-            if (send)
+            if (send || !verbose)
             {
-                Console.Error.WriteLine("[Bake] reference bakes not fetched -- the grid now holds this bake, " +
-                    "so there is nothing left to compare against");
+                // Nothing to compare against once we have sent -- the relay now holds our own ids --
+                // and five texture fetches are not worth spending on an unasked-for comparison.
             }
             else
             {
@@ -2765,18 +2807,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 }
             }
 
-            Console.Error.WriteLine(send
-                ? "[Bake] complete -- this bake was uploaded and applied to the avatar"
-                : upload
-                    ? "[Bake] complete -- bakes uploaded as assets; the avatar is unchanged"
-                    : "[Bake] dry run complete -- nothing uploaded, nothing sent");
-
             return send
-                ? (sent ? $"Aussehen neu gebacken und ans Grid gesendet ({worn.Count} Kleidungsstücke)."
+                ? (sent ? $"Aussehen neu gebacken ({worn.Count} Kleidungsstücke)."
                         : "Bake fertig, aber NICHT gesendet — Grund steht im Log ([Appearance]-Zeile).")
-                : upload
-                    ? "Bake fertig und als Assets hochgeladen — der Avatar bleibt unverändert."
-                    : "Bake-Trockenlauf fertig — Ergebnis im Log ([Bake]-Zeilen), nichts gesendet.";
+                : "Bake fertig — nichts gesendet (SLNG_BAKE_DRY=1).";
         }
         catch (OperationCanceledException) { return "abgebrochen"; }
         catch (Exception ex)
