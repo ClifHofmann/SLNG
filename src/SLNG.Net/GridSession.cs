@@ -2736,26 +2736,39 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 }
             }
 
-            // 6. The reference. The simulator still holds the bakes a working viewer produced for
-            //    this same avatar, so fetch and write those out too. Comparing our composite against
-            //    Firestorm's is the only check that says "right" rather than "plausible" -- and it
-            //    costs nothing, since these are ordinary texture assets.
-            foreach (var (slot, name) in new[] { (8, "Head"), (9, "UpperBody"), (10, "LowerBody"), (11, "Eyes"), (20, "Hair") })
+            // 6. The reference: the bakes a working viewer produced for this same avatar, which the
+            //    simulator still holds. Comparing our composite against those is the only check that
+            //    says "right" rather than "plausible", and it costs nothing since they are ordinary
+            //    texture assets. Skipped once we have sent, because the relay now holds OUR ids and
+            //    fetching them would only compare the bake against itself.
+            if (send)
             {
-                if (!_lastSelfRelayBakes.TryGetValue(slot, out var id) || id == Guid.Empty) continue;
-                try
+                Console.Error.WriteLine("[Bake] reference bakes not fetched -- the grid now holds this bake, " +
+                    "so there is nothing left to compare against");
+            }
+            else
+            {
+                foreach (var (slot, name) in new[] { (8, "Head"), (9, "UpperBody"), (10, "LowerBody"), (11, "Eyes"), (20, "Hair") })
                 {
-                    var tex = await _client.Appearance.TextureProvider
-                        .RequestTextureAsync(new LibreMetaverse.UUID(id), ct).ConfigureAwait(false);
-                    if (tex == null) continue;
-                    try { if (!tex.Decode()) continue; } catch { continue; }
-                    DumpPreview($"ref_{name}_{id.ToString()[..8]}", tex.Image);
+                    if (!_lastSelfRelayBakes.TryGetValue(slot, out var id) || id == Guid.Empty) continue;
+                    try
+                    {
+                        var tex = await _client.Appearance.TextureProvider
+                            .RequestTextureAsync(new LibreMetaverse.UUID(id), ct).ConfigureAwait(false);
+                        if (tex == null) continue;
+                        try { if (!tex.Decode()) continue; } catch { continue; }
+                        DumpPreview($"ref_{name}_{id.ToString()[..8]}", tex.Image);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex) { Console.Error.WriteLine($"[Bake]   reference {name}: {ex.Message}"); }
                 }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex) { Console.Error.WriteLine($"[Bake]   reference {name}: {ex.Message}"); }
             }
 
-            Console.Error.WriteLine("[Bake] dry run complete -- nothing uploaded, nothing sent");
+            Console.Error.WriteLine(send
+                ? "[Bake] complete -- this bake was uploaded and applied to the avatar"
+                : upload
+                    ? "[Bake] complete -- bakes uploaded as assets; the avatar is unchanged"
+                    : "[Bake] dry run complete -- nothing uploaded, nothing sent");
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
