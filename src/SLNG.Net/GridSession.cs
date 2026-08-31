@@ -2236,15 +2236,40 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                                 : e.Value.ToString()[..8])))));
             }
 
-            // 3. Per-texture-index data, exactly as AppearanceManager builds it.
-            var textures = new AppearanceManager.TextureData[(int)AvatarTextureIndex.NumberOfEntries];
-            for (int i = 0; i < textures.Length; i++) textures[i] = new AppearanceManager.TextureData();
+            // 3. One layer per WEARABLE per texture slot -- not one per slot.
+            //
+            //    AppearanceManager keeps a single TextureData[] indexed by AvatarTextureIndex and
+            //    calls DecodeWearableParams once per wearable into it, so each wearable overwrites
+            //    the previous one's slot. Measured 2026-08-31 with five worn Tattoo layers: four
+            //    distinct HeadTattoo textures and two UpperTattoo textures were silently discarded,
+            //    and because the last tattoo declares HeadTattoo=DEFAULT (which maps to Zero) the
+            //    head slot ended up empty. That is why the Head bake had no skin at all and
+            //    composited the built-in Linden head.
+            //
+            //    The real viewer keeps a local texture per (slot, wearable) -- LLLocalTextureObject
+            //    -- and Baker.Bake is already built for it: AddTexture appends to a flat list, the
+            //    layer loop draws each in turn, and tattooTextures is a List. It simply never
+            //    receives more than one. So give each wearable its own scratch array, which keeps
+            //    LibreMetaverse's own colour and alpha-mask logic, and collect the results in wear
+            //    order (bottom layer first, as SL stacks them).
+            var layers = new List<AppearanceManager.TextureData>();
             foreach (var w in worn.Where(w => w.Asset != null))
-                AppearanceManager.DecodeWearableParams(w, ref textures);
+            {
+                var scratch = new AppearanceManager.TextureData[(int)AvatarTextureIndex.NumberOfEntries];
+                for (int i = 0; i < scratch.Length; i++) scratch[i] = new AppearanceManager.TextureData();
+                AppearanceManager.DecodeWearableParams(w, ref scratch);
+
+                for (int i = 0; i < scratch.Length; i++)
+                {
+                    if (scratch[i].TextureID == LibreMetaverse.UUID.Zero) continue;
+                    scratch[i].TextureIndex = (AvatarTextureIndex)i;
+                    layers.Add(scratch[i]);
+                }
+            }
+            Console.Error.WriteLine($"[Bake] layers from {worn.Count(w => w.Asset != null)} wearables: {layers.Count}");
 
             // 4. Fetch every referenced texture.
-            var wanted = textures.Where(t => t.TextureID != LibreMetaverse.UUID.Zero)
-                                 .Select(t => t.TextureID).Distinct().ToList();
+            var wanted = layers.Select(t => t.TextureID).Distinct().ToList();
             Console.Error.WriteLine($"[Bake] textures referenced by the worn set: {wanted.Count}");
             int got = 0, decodedTex = 0;
             foreach (var id in wanted)
@@ -2275,7 +2300,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                             $"(ok={ok}, image={(tex.Image == null ? "null" : "set")}) -- this channel will bake blank");
                     }
 
-                    foreach (var t in textures) if (t.TextureID == id) t.Texture = tex;
+                    // Every layer referencing this id -- several wearables can share one texture.
+                    foreach (var t in layers) if (t.TextureID == id) t.Texture = tex;
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { Console.Error.WriteLine($"[Bake]   texture {id} -> {ex.Message}"); }
@@ -2301,18 +2327,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 var oven = new LibreMetaverse.Imaging.Baker(bakeType);
                 int fed = 0, usable = 0;
                 var detail = new List<string>();
-                foreach (var idx in indices)
+                // Every layer belonging to this channel, in wear order -- several may share a slot
+                // (five tattoos all contribute a HeadTattoo), which is exactly what the old
+                // one-slot-one-texture feed threw away.
+                foreach (var t in layers.Where(l => indices.Contains(l.TextureIndex)))
                 {
-                    var t = textures[(int)idx];
-                    t.TextureIndex = idx;
                     oven.AddTexture(t);
                     if (t.Texture == null) continue;
                     fed++;
                     // Decoded image present is what the baker can actually composite; a fetched
                     // but undecoded texture contributes nothing and is the difference between a
                     // real bake and a 507-byte blank.
-                    if (t.Texture.Image != null) { usable++; detail.Add($"{idx}:{t.Texture.Image.Width}x{t.Texture.Image.Height}"); }
-                    else detail.Add($"{idx}:UNDECODED");
+                    if (t.Texture.Image != null) { usable++; detail.Add($"{t.TextureIndex}:{t.Texture.Image.Width}x{t.Texture.Image.Height}"); }
+                    else detail.Add($"{t.TextureIndex}:UNDECODED");
                 }
 
                 await Task.Run(() => oven.Bake(), ct).ConfigureAwait(false);
