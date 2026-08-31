@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.17.0-alpha";
+    public const string AppVersion = "v0.17.1-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1291,6 +1291,12 @@ public partial class Boot : Control
                 // (FEAT-AVATAR-01). Also in the World menu.
                 RebakeAvatar();
             }
+            else if (keyEvent.Keycode == Key.T && keyEvent.CtrlPressed && keyEvent.AltPressed)
+            {
+                // Ctrl+Alt+T — put a known-answer test skin in the inventory (FEAT-AVATAR-01).
+                // Creates items and uploads assets, so it stays a deliberate keystroke.
+                CreateTestSkin();
+            }
         }
     }
 
@@ -2027,6 +2033,26 @@ public partial class Boot : Control
 
     private void NotifyBakeResult(string result)
         => _chatWindow?.AppendLocalChatMessage("System", result);
+
+    // FEAT-AVATAR-01: a generated skin with one known colour per bake channel, so "did the right
+    // layer reach the right channel, the right way up" is answerable by looking.
+    private void CreateTestSkin()
+    {
+        if (_session == null) return;
+        _chatWindow?.AppendLocalChatMessage("System", "Testhaut wird erzeugt und hochgeladen …");
+        _ = CreateTestSkinAndReportAsync();
+    }
+
+    private async System.Threading.Tasks.Task CreateTestSkinAndReportAsync()
+    {
+        if (_session == null) return;
+
+        string result;
+        try { result = await _session.CreateTestSkinAsync().ConfigureAwait(false); }
+        catch (System.Exception ex) { result = $"Testhaut fehlgeschlagen: {ex.Message}"; }
+
+        CallDeferred(nameof(NotifyBakeResult), result);
+    }
 
     // FEAT-AVATAR-01: deferred target for GridSession.WearableEditUnavailable.
     private void NotifyWearableEditUnavailable(string reason)

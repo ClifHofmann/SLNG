@@ -2475,6 +2475,96 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         catch (Exception ex) { Console.Error.WriteLine($"[Bake]   preview '{name}' failed: {ex.Message}"); }
     }
 
+    /// <summary>
+    /// FEAT-AVATAR-01: creates a known-answer test skin in the inventory — three generated textures
+    /// plus a Skin bodypart that references them. See <see cref="TestSkinTextures"/> for why a
+    /// synthetic skin answers questions a real one cannot.
+    ///
+    /// <para>Creates inventory items and uploads assets, so it is a deliberate action rather than
+    /// part of any automatic path. It does not wear anything: the new skin appears in Body Parts and
+    /// is put on like any other, which keeps the thing being tested (wearing a skin and rebaking)
+    /// the thing the tester actually does.</para>
+    /// </summary>
+    /// <returns>A short status line for the chat.</returns>
+    public async Task<string> CreateTestSkinAsync(CancellationToken ct = default)
+    {
+        if (!_client.Network.Connected) return "nicht verbunden";
+        if (_bakeEncoder == null) return "kein Bake-Encoder verfügbar";
+
+        try
+        {
+            const uint all = (uint)LibreMetaverse.PermissionMask.All;
+            var perms = new LibreMetaverse.Permissions(all, all, all, all, all);
+
+            var textureFolder = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.Texture);
+            var bodypartFolder = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.BodyPart);
+            string stamp = DateTime.Now.ToString("HH:mm:ss");
+
+            var slots = new[]
+            {
+                (Slot: AvatarTextureIndex.HeadBodypaint, Label: "Kopf"),
+                (Slot: AvatarTextureIndex.UpperBodypaint, Label: "Oberkörper"),
+                (Slot: AvatarTextureIndex.LowerBodypaint, Label: "Unterkörper"),
+            };
+
+            var textures = new Dictionary<AvatarTextureIndex, LibreMetaverse.UUID>();
+            foreach (var (slot, label) in slots)
+            {
+                var bgra = TestSkinTextures.Build(slot);
+                var encoder = _bakeEncoder;
+                var j2k = await Task.Run(
+                    () => encoder.EncodeBake(bgra, TestSkinTextures.Size, TestSkinTextures.Size), ct)
+                    .ConfigureAwait(false);
+                if (j2k.Length == 0) return $"Testtextur ({label}) konnte nicht kodiert werden";
+
+                var (ok, status, _, assetId) = await _client.Inventory.RequestCreateItemFromAssetAsync(
+                    j2k, $"SLNG Testhaut {stamp} — {label}", "Generierte Testtextur (FEAT-AVATAR-01)",
+                    LibreMetaverse.AssetType.Texture, LibreMetaverse.InventoryType.Texture,
+                    textureFolder, perms, ct).ConfigureAwait(false);
+
+                if (!ok || assetId == LibreMetaverse.UUID.Zero)
+                    return $"Upload der {label}-Textur fehlgeschlagen: {status}";
+
+                textures[slot] = assetId;
+                Console.Error.WriteLine($"[TestSkin] {label} -> {assetId}");
+            }
+
+            // The wearable itself. No visual params on purpose: a skin's colour params tint every
+            // layer it contributes, and the whole point here is that what comes out is exactly what
+            // went in.
+            var skin = new LibreMetaverse.Assets.AssetBodypart
+            {
+                Name = $"SLNG Testhaut {stamp}",
+                Description = "Bekannte Farben pro Kanal (Kopf grün, Oberkörper blau, Unterkörper rot)",
+                WearableType = LibreMetaverse.WearableType.Skin,
+                Creator = _client.Self.AgentID,
+                Owner = _client.Self.AgentID,
+                LastOwner = _client.Self.AgentID,
+                Permissions = perms,
+            };
+            foreach (var kv in textures) skin.Textures[kv.Key] = kv.Value;
+            skin.Encode();
+
+            var (skinOk, skinStatus, itemId, _) = await _client.Inventory.RequestCreateItemFromAssetAsync(
+                skin.AssetData, skin.Name, skin.Description,
+                LibreMetaverse.AssetType.Bodypart, LibreMetaverse.InventoryType.Wearable,
+                bodypartFolder, perms, ct).ConfigureAwait(false);
+
+            if (!skinOk || itemId == LibreMetaverse.UUID.Zero)
+                return $"Anlegen der Testhaut fehlgeschlagen: {skinStatus}";
+
+            Console.Error.WriteLine($"[TestSkin] created \"{skin.Name}\" ({itemId}) in Body Parts");
+            return $"\"{skin.Name}\" liegt in Körperteile — anziehen, dann Strg+Alt+R. " +
+                   "Kopf grün, Oberkörper blau, Unterkörper rot.";
+        }
+        catch (OperationCanceledException) { return "abgebrochen"; }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[TestSkin] failed: {ex}");
+            return $"Testhaut fehlgeschlagen: {ex.Message}";
+        }
+    }
+
     public async Task<string> BakeAvatarAsync(CancellationToken ct = default)
     {
         if (!_client.Network.Connected)
