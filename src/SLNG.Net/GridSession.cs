@@ -2189,6 +2189,111 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return raw;
     }
 
+    /// <summary>
+    /// FEAT-AVATAR-01: tells the grid what the avatar now looks like — the last step of the bake.
+    ///
+    /// <para>Everything here was built from measurement, because this exact packet corrupted a real
+    /// avatar three times. The visual parameters come from <see cref="AgentAppearanceParams"/>,
+    /// which orders them the way the wire does; LibreMetaverse's own encoder mis-orders 195 of 218
+    /// and truncates 35 more. The baked-texture ids come from bakes this client composited, encoded
+    /// and uploaded itself, verified against the reference viewer's own bakes for the same avatar at
+    /// a mean channel difference of 2.6/255.</para>
+    ///
+    /// <para>Three refusals stand in front of the send, in order of how badly each failed before:
+    /// the parameter array must survive a round trip, every essential bake slot must hold a real id,
+    /// and an incomplete set falls back to the ids the simulator already had rather than sending
+    /// empties — an empty slot is persisted and renders the avatar untextured for everyone.</para>
+    /// </summary>
+    /// <param name="bakes">Bake slot (<c>AvatarTextureIndex</c>) → uploaded asset id.</param>
+    /// <param name="wearableParams">The worn wearables' decoded paramId → weight maps, in layer order.</param>
+    /// <returns>True when the packet was sent.</returns>
+    private bool SendAppearanceFromOwnBake(
+        IReadOnlyDictionary<int, LibreMetaverse.UUID> bakes,
+        IReadOnlyList<IReadOnlyDictionary<int, float>> wearableParams)
+    {
+        if (!_client.Network.Connected)
+        {
+            Console.Error.WriteLine("[Appearance] not sent: not connected");
+            return false;
+        }
+
+        // 1. Shape. Never LibreMetaverse's array -- see AgentAppearanceParams for why.
+        byte[] wire;
+        if (wearableParams.Count > 0)
+        {
+            wire = AgentAppearanceParams.BuildWireArray(wearableParams);
+            if (!AgentAppearanceParams.VerifyRoundTrip(wire, wearableParams, out var failure))
+            {
+                Console.Error.WriteLine($"[Appearance] NOT sent: built params failed verification ({failure})");
+                return false;
+            }
+        }
+        else if (_lastSelfRelayVisualParams.Length > 0)
+        {
+            // No decoded wearables: send back the shape the simulator itself last reported, which is
+            // already in wire order and is by definition what the account holds.
+            wire = _lastSelfRelayVisualParams;
+            Console.Error.WriteLine($"[Appearance] no decoded wearables -- keeping the simulator's own shape ({wire.Length} params)");
+        }
+        else
+        {
+            Console.Error.WriteLine("[Appearance] NOT sent: no shape to send (no wearables decoded, no relay seen)");
+            return false;
+        }
+
+        // 2. Bake slots. Anything we did not upload falls back to what the grid already had; a hole
+        //    after that means refusing, because sending an empty slot strips the avatar for everyone.
+        var current = bakes.ToDictionary(kv => kv.Key, kv => kv.Value.Guid);
+        var merged = AgentAppearanceParams.MergeBakeSlots(current, _lastSelfRelayBakes, out bool complete);
+        if (!complete)
+        {
+            Console.Error.WriteLine("[Appearance] NOT sent: incomplete bake set (" +
+                string.Join(" ", merged.OrderBy(k => k.Key).Select(k => $"{k.Key}={(k.Value == Guid.Empty ? "EMPTY" : "ok")}")) +
+                ") -- sending it would strip the avatar's textures");
+            return false;
+        }
+
+        // 3. Texture entry: the bake ids in their slots, the default avatar texture everywhere else,
+        //    which is what a viewer sends.
+        var entry = new Primitive.TextureEntry(AppearanceManager.DEFAULT_AVATAR_TEXTURE);
+        foreach (var kv in merged)
+            entry.CreateFace((uint)kv.Key).TextureID = new LibreMetaverse.UUID(kv.Value);
+
+        var packet = new LibreMetaverse.Packets.AgentSetAppearancePacket
+        {
+            AgentData =
+            {
+                AgentID = _client.Self.AgentID,
+                SessionID = _client.Self.SessionID,
+                SerialNum = _appearanceSerial++,
+                // Height comes from params 33/198/503/682/692/842, resolved by id rather than by
+                // loop position -- LibreMetaverse reads them off whatever its mis-ordered loop
+                // landed on, so its Size is wrong for the same reason its array is.
+                Size = new Vector3(0.45f, 0.6f, AgentAppearanceParams.ComputeAgentHeight(wearableParams)),
+            },
+            ObjectData = { TextureEntry = entry.GetBytes() },
+            VisualParam = wire
+                .Select(b => new LibreMetaverse.Packets.AgentSetAppearancePacket.VisualParamBlock { ParamValue = b })
+                .ToArray(),
+            WearableData = Array.Empty<LibreMetaverse.Packets.AgentSetAppearancePacket.WearableDataBlock>(),
+        };
+
+        _client.Network.SendPacket(packet);
+
+        // Keep LibreMetaverse's own copy consistent with what the grid now holds, so anything else
+        // reading it is not looking at the scrambled array.
+        _client.Appearance.MyVisualParameters = wire;
+        foreach (var kv in merged) _lastSelfRelayBakes[kv.Key] = kv.Value;
+
+        int fromUs = merged.Count(kv => current.TryGetValue(kv.Key, out var c) && c == kv.Value && c != Guid.Empty);
+        Console.Error.WriteLine($"[Appearance] SENT: {wire.Length} params, height {packet.AgentData.Size.Z:F2} m, " +
+            $"{fromUs}/{merged.Count} bake slots from this bake -- " +
+            string.Join(" ", merged.OrderBy(k => k.Key).Select(k => $"{k.Key}={k.Value.ToString()[..8]}")));
+        return true;
+    }
+
+    private uint _appearanceSerial = 1;
+
     /// <summary>Builds the worn set from the Current Outfit Folder, which is what actually defines
     /// what an avatar wears — and, unlike the legacy <c>AgentWearablesReply</c>, can hold several
     /// layers of one type. Also reports every link it finds, since "which of my layers does the
@@ -2514,11 +2619,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             //    changes an avatar is the AgentSetAppearance that carries the new ids, and that
             //    still does not happen here. This is the step that proves the grid accepts a bake
             //    of this size before anything irreversible is built on top of it.
-            bool upload = Environment.GetEnvironmentVariable("SLNG_BAKE_UPLOAD") == "1";
+            // Sending implies uploading -- an appearance can only reference bakes that exist.
+            bool send = Environment.GetEnvironmentVariable("SLNG_BAKE_SEND") == "1";
+            bool upload = send || Environment.GetEnvironmentVariable("SLNG_BAKE_UPLOAD") == "1";
             var uploaded = new Dictionary<int, LibreMetaverse.UUID>();
-            Console.Error.WriteLine(upload
-                ? "[Bake] SLNG_BAKE_UPLOAD=1 -- bakes will be UPLOADED (assets only; appearance still not sent)"
-                : "[Bake] upload disabled (set SLNG_BAKE_UPLOAD=1 to store the bakes as assets)");
+            Console.Error.WriteLine(send
+                ? "[Bake] SLNG_BAKE_SEND=1 -- this bake will be UPLOADED and APPLIED to the avatar"
+                : upload
+                    ? "[Bake] SLNG_BAKE_UPLOAD=1 -- bakes will be UPLOADED (assets only; appearance not sent)"
+                    : "[Bake] dry run (SLNG_BAKE_UPLOAD=1 to store the bakes, SLNG_BAKE_SEND=1 to apply them)");
 
             foreach (var bakeType in new[] { BakeType.Head, BakeType.UpperBody, BakeType.LowerBody, BakeType.Eyes, BakeType.Hair })
             {
@@ -2609,6 +2718,22 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 var have = AgentAppearanceParams.EssentialBakeSlots.Count(s => uploaded.ContainsKey(s));
                 Console.Error.WriteLine($"[Bake] uploaded {have}/{AgentAppearanceParams.EssentialBakeSlots.Length} " +
                     $"essential slots: {string.Join("  ", AgentAppearanceParams.EssentialBakeSlots.Select(s => $"{s}=" + (uploaded.TryGetValue(s, out var u) ? u.ToString()[..8] : "MISSING")))}");
+
+                if (send)
+                {
+                    // The wearables in layer order, each as its decoded paramId -> weight map. Same
+                    // list the bake was composited from, so shape and textures describe one outfit.
+                    var wearableParams = ordered
+                        .Where(w => w.Asset != null)
+                        .Select(w => (IReadOnlyDictionary<int, float>)w.Asset!.Params)
+                        .ToList();
+
+                    SendAppearanceFromOwnBake(uploaded, wearableParams);
+                }
+                else
+                {
+                    Console.Error.WriteLine("[Bake] not sent (set SLNG_BAKE_SEND=1 to apply this bake to the avatar)");
+                }
             }
 
             // 6. The reference. The simulator still holds the bakes a working viewer produced for
