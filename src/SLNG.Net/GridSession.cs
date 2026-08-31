@@ -2184,6 +2184,27 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return raw;
     }
 
+    /// <summary>Writes a bake input or result out as a PNG so it can be looked at. Everything about
+    /// this task that was decided from numbers alone turned out to be decidable only from the
+    /// picture.</summary>
+    private void DumpPreview(string name, ManagedImage? image)
+    {
+        if (image?.Red == null || _bakeEncoder == null) return;
+
+        try
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "slng_bake");
+            Directory.CreateDirectory(dir);
+            var png = _bakeEncoder.EncodePreviewPng(ToBgra(image), image.Width, image.Height);
+            if (png.Length == 0) return;
+
+            var path = Path.Combine(dir, $"{name}.png");
+            File.WriteAllBytes(path, png);
+            Console.Error.WriteLine($"[Bake]   preview -> {path}");
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"[Bake]   preview '{name}' failed: {ex.Message}"); }
+    }
+
     public async Task DryRunBakeAsync(CancellationToken ct = default)
     {
         if (!_client.Network.Connected)
@@ -2302,6 +2323,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
                     // Every layer referencing this id -- several wearables can share one texture.
                     foreach (var t in layers) if (t.TextureID == id) t.Texture = tex;
+
+                    // Write the input out too. The Head composite came back holding what looks like
+                    // two faces, one of them inverted, while UpperBody composited cleanly -- so the
+                    // question is whether a single input already looks like that or whether the
+                    // layering produces it, and only the inputs themselves answer it.
+                    var slot = layers.FirstOrDefault(t => t.TextureID == id)?.TextureIndex;
+                    DumpPreview($"in_{slot}_{id.ToString()[..8]}", tex.Image);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { Console.Error.WriteLine($"[Bake]   texture {id} -> {ex.Message}"); }
@@ -2378,23 +2406,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 // Write the composite out so it can actually be looked at. No byte count says
                 // whether a bake shows the right face, and sending one that does not is how this
                 // avatar was broken before.
-                if (img != null && reBytes > 0 && _bakeEncoder != null)
-                {
-                    try
-                    {
-                        var dir = Path.Combine(Path.GetTempPath(), "slng_bake");
-                        Directory.CreateDirectory(dir);
-                        var png = _bakeEncoder.EncodePreviewPng(ToBgra(img), img.Width, img.Height);
-                        if (png.Length > 0)
-                        {
-                            var path = Path.Combine(dir, $"{bakeType}.png");
-                            await File.WriteAllBytesAsync(path, png, ct).ConfigureAwait(false);
-                            Console.Error.WriteLine($"[Bake]   preview -> {path}");
-                        }
-                    }
-                    catch (OperationCanceledException) { throw; }
-                    catch (Exception ex) { Console.Error.WriteLine($"[Bake]   preview failed: {ex.Message}"); }
-                }
+                DumpPreview(bakeType.ToString(), img);
 
                 string uploadNote = string.Empty;
                 if (upload && reBytes > 0)
@@ -2426,6 +2438,25 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 var have = AgentAppearanceParams.EssentialBakeSlots.Count(s => uploaded.ContainsKey(s));
                 Console.Error.WriteLine($"[Bake] uploaded {have}/{AgentAppearanceParams.EssentialBakeSlots.Length} " +
                     $"essential slots: {string.Join("  ", AgentAppearanceParams.EssentialBakeSlots.Select(s => $"{s}=" + (uploaded.TryGetValue(s, out var u) ? u.ToString()[..8] : "MISSING")))}");
+            }
+
+            // 6. The reference. The simulator still holds the bakes a working viewer produced for
+            //    this same avatar, so fetch and write those out too. Comparing our composite against
+            //    Firestorm's is the only check that says "right" rather than "plausible" -- and it
+            //    costs nothing, since these are ordinary texture assets.
+            foreach (var (slot, name) in new[] { (8, "Head"), (9, "UpperBody"), (10, "LowerBody"), (11, "Eyes"), (20, "Hair") })
+            {
+                if (!_lastSelfRelayBakes.TryGetValue(slot, out var id) || id == Guid.Empty) continue;
+                try
+                {
+                    var tex = await _client.Appearance.TextureProvider
+                        .RequestTextureAsync(new LibreMetaverse.UUID(id), ct).ConfigureAwait(false);
+                    if (tex == null) continue;
+                    try { if (!tex.Decode()) continue; } catch { continue; }
+                    DumpPreview($"ref_{name}_{id.ToString()[..8]}", tex.Image);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { Console.Error.WriteLine($"[Bake]   reference {name}: {ex.Message}"); }
             }
 
             Console.Error.WriteLine("[Bake] dry run complete -- nothing uploaded, nothing sent");
