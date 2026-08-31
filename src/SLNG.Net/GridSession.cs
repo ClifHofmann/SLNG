@@ -2249,8 +2249,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
                 await Task.Run(() => oven.Bake(), ct).ConfigureAwait(false);
                 int bytes = oven.BakedTexture?.AssetData?.Length ?? 0;
+
+                // Separate "the compositing wrote nothing" from "it composited and the ENCODER
+                // produced nothing". Baker.Bake ends in AssetTexture.Encode ->
+                // CompleteConfigurationPresets.Streaming.Encode(Image.ExportBitmap()), so a filled
+                // ManagedImage with a tiny AssetData means the encode is at fault, while a uniform
+                // image means DrawLayer never put anything in. Distinct red values is the cheapest
+                // test: a blank image has exactly one.
+                string composed = "image=null";
+                var img = oven.BakedTexture?.Image;
+                if (img?.Red != null)
+                {
+                    var seen = new HashSet<byte>();
+                    for (int i = 0; i < img.Red.Length && seen.Count <= 8; i++) seen.Add(img.Red[i]);
+                    composed = $"image={img.Width}x{img.Height} distinctRed={(seen.Count > 8 ? ">8" : seen.Count.ToString())}";
+                }
+
                 Console.Error.WriteLine($"[Bake] {bakeType,-10} inputs={indices.Count} withTexture={fed} usable={usable} " +
-                    $"-> {(bytes > 0 ? bytes + " bytes" : "NOTHING")}" +
+                    $"-> {(bytes > 0 ? bytes + " bytes" : "NOTHING")}  {composed}" +
                     (detail.Count > 0 ? "  [" + string.Join(" ", detail) + "]" : ""));
             }
 
