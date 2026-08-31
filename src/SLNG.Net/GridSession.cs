@@ -2217,6 +2217,25 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
             Console.Error.WriteLine($"[Bake] decoded {decoded}/{worn.Count} wearable assets");
 
+            // 2b. What each worn wearable actually declares. The Head bake came back with no skin
+            //     texture at all -- its only input was Hair:32x32 -- so it composited the built-in
+            //     Linden head instead of the avatar's own face. DecodeWearableParams is a straight
+            //     copy of wearable.Asset.Textures with one exception: an entry pointing at
+            //     DEFAULT_AVATAR_TEXTURE is mapped to Zero and disappears. This says which of the
+            //     two it is -- a skin that declares no head texture, or one whose head texture is
+            //     the default and is being dropped on purpose.
+            foreach (var w in worn.Where(w => w.Asset != null))
+            {
+                var declared = w.Asset!.Textures;
+                Console.Error.WriteLine($"[Bake]   worn {w.WearableType,-10} " +
+                    (declared.Count == 0
+                        ? "declares NO textures"
+                        : string.Join("  ", declared.Select(e =>
+                            $"{e.Key}=" + (e.Value == AppearanceManager.DEFAULT_AVATAR_TEXTURE ? "DEFAULT"
+                                : e.Value == LibreMetaverse.UUID.Zero ? "ZERO"
+                                : e.Value.ToString()[..8])))));
+            }
+
             // 3. Per-texture-index data, exactly as AppearanceManager builds it.
             var textures = new AppearanceManager.TextureData[(int)AvatarTextureIndex.NumberOfEntries];
             for (int i = 0; i < textures.Length; i++) textures[i] = new AppearanceManager.TextureData();
