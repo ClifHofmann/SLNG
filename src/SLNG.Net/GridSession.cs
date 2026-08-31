@@ -200,9 +200,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public GridSession()
     {
         // Quiet LibreMetaverse's own console logger (set before the client/logger initializes).
-        // On a busy grid it floods stdout with Info spam ("Received a resend of already
-        // processed packet", texture-pipeline chatter); warnings/errors still come through.
-        LibreMetaverse.Settings.LogLevel = Microsoft.Extensions.Logging.LogLevel.Error;
+        // On a busy grid Info floods stdout ("Received a resend of already processed packet",
+        // texture-pipeline chatter), which is why this was clamped.
+        //
+        // WARNING, not Error, since 2026-08-31. Clamping to Error hid the entire appearance/bake
+        // diagnostic surface, and the FEAT-AVATAR-01 investigation spent days blind to it -- every
+        // line that would have said WHY a bake produced nothing is Warn or below:
+        //   "Baker produced no texture data for {bakeType}"
+        //   "Texture {id} failed to download, one or more bakes will be incomplete"
+        //   "Wearable {id} ({type}) failed to download or wrong asset type"
+        //   "One or more agent wearables failed to download, appearance will be incomplete"
+        // Warnings are rare and are exactly the "this silently did not work" class. Set
+        // SLNG_LMV_DEBUG=1 for the full Debug trace (per-texture, per-wearable, per-bake timings)
+        // when actually chasing a bake.
+        LibreMetaverse.Settings.LogLevel =
+            Environment.GetEnvironmentVariable("SLNG_LMV_DEBUG") is "1" or "true" or "TRUE"
+                ? Microsoft.Extensions.Logging.LogLevel.Debug
+                : Microsoft.Extensions.Logging.LogLevel.Warning;
 
         // BakeLayer.LoadResourceLayer (client-side avatar bake compositing, e.g. head_color.tga)
         // resolves default system-avatar layer textures via ResourceDir + "static_assets", and
