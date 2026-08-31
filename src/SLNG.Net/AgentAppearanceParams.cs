@@ -30,12 +30,17 @@ namespace SLNG.Net;
 /// </summary>
 internal static class AgentAppearanceParams
 {
-    /// <summary>Wire array length for an avatar with no Physics layer — what the simulator expects
-    /// and what <c>MakeAppearancePacket</c> allocates. Matches LibreMetaverse's own constant.</summary>
-    internal const int DefaultLength = 218;
-
-    /// <summary>Wire array length once a Physics wearable is worn.</summary>
-    internal const int PhysicsLength = 251;
+    /// <summary>The real wire length: every transmitted parameter, i.e. <c>Group0ParamIds</c>.
+    ///
+    /// <para>NOT LibreMetaverse's 218. Measured live 2026-08-31 — the simulator's own
+    /// <c>AvatarAppearance</c> relay carries <b>253</b> params, exactly
+    /// <c>Group0ParamIds.Length</c>. <c>MakeAppearancePacket</c> allocates 218 (251 with a Physics
+    /// layer), so on top of scrambling the order it also <b>truncates 35 parameters</b>. Building
+    /// to 218 would inherit that truncation, so this follows the id table instead.</para>
+    ///
+    /// <para>Safe to send: OpenSim reads <c>appear.VisualParam.Length</c> dynamically
+    /// (<c>LLClientView.HandlerAgentSetAppearance</c>) rather than assuming a fixed size.</para></summary>
+    internal static int DefaultLength => VisualParams.Group0ParamIds.Length;
 
     /// <summary>Resolves one transmitted parameter's weight the way both the viewer and
     /// LibreMetaverse do: the first worn wearable that carries the id wins, otherwise the
@@ -55,13 +60,12 @@ internal static class AgentAppearanceParams
     /// belongs to <c>Group0ParamIds[i]</c>, which is what the simulator, LibreMetaverse's
     /// <c>Avatar.DecodeVisualParams</c> and SLNG's <c>AvatarShapeService</c> all assume.
     ///
-    /// <paramref name="length"/> is the wire length (<see cref="DefaultLength"/> /
-    /// <see cref="PhysicsLength"/>); it is clamped to the id table, which is longer (253).</summary>
+    /// <paramref name="length"/> is the wire length; it is clamped to the id table.</summary>
     internal static byte[] BuildWireArray(
-        IReadOnlyList<IReadOnlyDictionary<int, float>> wearableParams, int length = DefaultLength)
+        IReadOnlyList<IReadOnlyDictionary<int, float>> wearableParams, int length = 0)
     {
         var ids = VisualParams.Group0ParamIds;
-        int n = Math.Min(length, ids.Length);
+        int n = length <= 0 ? ids.Length : Math.Min(length, ids.Length);
         var result = new byte[n];
 
         for (int i = 0; i < n; i++)

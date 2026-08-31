@@ -30,10 +30,11 @@ namespace SLNG.Assets.Tests;
 /// </summary>
 public class VisualParamOrderTests
 {
-    /// <summary>What <c>MakeAppearancePacket</c> allocates for an avatar with no Physics layer,
-    /// and the length OpenSim actually relays back (measured live 2026-08-31: "218 params").
-    /// Note this is SHORTER than <see cref="VisualParams.Group0ParamIds"/> — see
-    /// <see cref="Group0ParamIds_is_longer_than_the_wire_array"/>.</summary>
+    /// <summary>What <c>MakeAppearancePacket</c> allocates for an avatar with no Physics layer.
+    /// This is NOT the real wire length: the simulator's own relay was measured at <b>253</b>
+    /// params (live 2026-08-31), matching <see cref="VisualParams.Group0ParamIds"/> exactly — so
+    /// LibreMetaverse truncates 35 parameters on top of mis-ordering the rest. Kept as the constant
+    /// these tests compare AGAINST, since it is what the broken encoder produces.</summary>
     private const int WireParamCount = 218;
 
     [Fact]
@@ -49,18 +50,20 @@ public class VisualParamOrderTests
     }
 
     /// <summary>
-    /// Records that the transmitted-id table is LONGER than the array actually on the wire: 253
-    /// ids vs the 218 bytes MakeAppearancePacket allocates and OpenSim relays. Both LibreMetaverse's
-    /// decoder and SLNG's shape service stop at the shorter of the two, so the tail ids are simply
-    /// never assigned — which is fine ONLY as long as the packet's bytes line up with the FRONT of
-    /// this table. Pinned so a LibreMetaverse upgrade that changes either number is noticed.
+    /// Records that <c>MakeAppearancePacket</c> also TRUNCATES. The id table holds 253 transmitted
+    /// params and the simulator's own relay was measured at 253 (live 2026-08-31,
+    /// "seeded 253 params from self AvatarAppearance relay"), but LibreMetaverse allocates 218 —
+    /// so 35 parameters are dropped entirely, independently of the ordering bug. SLNG builds to
+    /// <c>Group0ParamIds.Length</c> for exactly this reason. Pinned so a LibreMetaverse upgrade
+    /// that changes either number is noticed.
     /// </summary>
     [Fact]
-    public void Group0ParamIds_is_longer_than_the_wire_array()
+    public void MakeAppearancePacket_also_truncates_the_wire_array()
     {
         Assert.True(VisualParams.Group0ParamIds.Length > WireParamCount,
-            $"expected the id table to exceed the {WireParamCount}-byte wire array, " +
+            $"expected the id table to exceed LibreMetaverse's {WireParamCount}-slot array, " +
             $"got {VisualParams.Group0ParamIds.Length}");
+        Assert.Equal(253, VisualParams.Group0ParamIds.Length);
     }
 
     [Fact]

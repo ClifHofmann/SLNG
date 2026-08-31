@@ -1899,8 +1899,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _appearanceReadinessLogged = true;
         string region = _client.Network.CurrentSim?.Name ?? "?";
         Console.Error.WriteLine($"[Appearance] {region}: system-wearable edits enabled — every bake is " +
-            "followed by a corrected AgentSetAppearance, since LibreMetaverse writes 195 of 218 " +
-            "visual params to the wrong slot (FEAT-AVATAR-01)");
+            "followed by a corrected AgentSetAppearance: LibreMetaverse puts 195 of 218 visual " +
+            "params in the wrong slot AND truncates the wire array from 253 to 218 (FEAT-AVATAR-01)");
     }
 
     /// <summary>FEAT-AVATAR-01: raised when the corrected <c>AgentSetAppearance</c> failed its
@@ -2022,7 +2022,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 .ToList();
 
             var packet = _client.Appearance.MakeAppearancePacket();
-            int length = packet.VisualParam?.Length ?? AgentAppearanceParams.DefaultLength;
+            // Deliberately NOT packet.VisualParam.Length: LibreMetaverse allocates 218 (251 with a
+            // Physics layer) while the wire actually carries 253 -- the simulator's own relay was
+            // measured at 253, matching Group0ParamIds. Following LMV's length would truncate 35
+            // parameters on top of the ordering bug. OpenSim reads the length dynamically.
+            int length = AgentAppearanceParams.DefaultLength;
 
             byte[] wire;
             if (wearableParams.Count > 0)
