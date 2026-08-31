@@ -80,20 +80,65 @@ Every route into the appearance system — `AddToOutfit`, `RemoveFromOutfit`, `R
 wearables first (Phase 2's attempts) makes the *values* correct but they are still written to the
 wrong *slots*. That is why v0.11.28 corrupted the avatar even with the full worn list decoded.
 
+### How the real viewer avoids this
+
+`indra/llappearanceutility/llprocessparams.cpp:155-163` iterates every param too — but **filters by
+group** before emitting:
+
+```cpp
+for (param = avatar.getFirstVisualParam(); param; param = avatar.getNextVisualParam())
+{
+    if (param->getGroup() == VISUAL_PARAM_GROUP_TWEAKABLE ||
+        param->getGroup() == VISUAL_PARAM_GROUP_TRANSMIT_NOT_TWEAKABLE)
+    { /* emit */ }
+}
+```
+
+That filtered set *is* `Group0ParamIds`. LibreMetaverse is missing the filter and truncates at 218
+instead. (On modern Second Life the question is moot — the viewer no longer sends
+`AgentSetAppearance` at all, it uses server-side baking. The `AgentSetAppearance` path still matters
+on OpenSim.)
+
 ### <a id="the-way-out"></a>The way out
 
-`AppearanceManager.MakeAppearancePacket()` is **public**. So SLNG can, without forking LibreMetaverse:
+**Step 1 is DONE and proven** (`v0.11.34-alpha`): `SLNG.Net.AgentAppearanceParams` builds the
+visual-parameter array in `Group0ParamIds` order, reinstating the group filter LibreMetaverse
+dropped. Its signatures are LibreMetaverse-free — each worn wearable is passed as its decoded
+`paramId → weight` map — so every rule is unit-tested without a live client:
 
-1. Ensure the worn wearables are gathered + decoded (the `v0.11.28` code did this correctly — LLUDP
-   `AgentWearablesRequest` for the list, `Assets.RequestAssetAsync` + `AssetWearable.Decode()` for
-   each; recoverable from git history).
-2. Call `MakeAppearancePacket()` to get the packet with correct *values*.
-3. **Permute `packet.VisualParam[]` into `Group0ParamIds` order** — build the id→value map from the
-   encoder's own iteration, then re-emit in wire order.
-4. Send it with `Network.SendPacket`, bypassing `RequestSetAppearance` entirely.
+- `BuildWireArray(wearableParams, length)` — wire-order byte array.
+- `ResolveWeight(id, …)` — first worn wearable that carries the id wins, else the param's default
+  (the viewer's / LibreMetaverse's own rule).
+- `ComputeAgentHeight(…)` — `AgentData.Size.Z`, resolved **by id**. LibreMetaverse reads these off
+  whatever its mis-ordered loop landed on, so its agent height is wrong for the same reason.
+- `DecodeWireArray(wire)` — reads it back the way the sim does, for verification.
 
-Guard rails for that pass: assert the permuted array round-trips (decode it back and compare against
-the sim's last relay for params no wearable changed), and test on a throwaway alt first.
+`AgentAppearanceParamsTests` proves the round trip: author a distinct weight for all 218 transmitted
+params, build, decode positionally, and require every value back on its own parameter (within one
+byte of transport resolution). **This is the offline proof the three failed attempts never had** —
+each of those was validated by sending to a live grid and looking at the avatar, which is exactly
+how an ordering bug hides.
+
+**What is still missing before anything can be sent — do not skip this.** Two blockers, both found
+while wiring the send:
+
+1. **The baked textures.** A correct `AgentSetAppearance` carries the composited bake ids in its
+   `TextureEntry`, not just the params. Producing those needs the client-side bake pipeline, which
+   `SendAppearance=false` never starts — so the packet would carry placeholder ids and *lose the
+   avatar's skin server-side* even with perfect params. Fixing the params alone is not sufficient.
+2. **The worn-set bookkeeping is private.** `AppearanceManager.Wearables` and
+   `SendAgentIsNowWearing()` are both `private`, and `RemoveFromOutfit`/`AddToOutfit` end in
+   `DelayedRequestSetAppearance()` — i.e. the broken send — so they cannot be used to do the COF
+   half either. SLNG would have to send `AgentIsNowWearing` itself and do its own COF link
+   manipulation (it already does the latter for FEAT-INV-03).
+
+So the remaining work is a **bake** problem, not a param problem. Open questions to settle first,
+by measurement, before writing more code:
+
+- Does OpenSim's XBakes/SSA recomposite from the COF alone, so a viewer only needs the COF update +
+  `AgentIsNowWearing` and no `AgentSetAppearance` at all? If yes, this gets much smaller.
+- If not, can the bake be driven without `SendAppearance` — or does that reintroduce the cold-state
+  problem the Phase 2 attempts hit?
 
 Alternatively, fix it upstream and unpin — `VisualParamOrderTests` fails the moment the orderings
 agree, which is the signal to reopen this task.
