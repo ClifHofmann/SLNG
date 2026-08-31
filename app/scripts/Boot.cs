@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.14.3-alpha";
+    public const string AppVersion = "v0.14.4-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -2000,9 +2000,14 @@ public partial class Boot : Control
     private void RebakeAvatar()
     {
         if (_session == null) return;
+        // FEAT-AVATAR-01: a real rebake still cannot be sent (see GridSession.RebakeAvatar).
+        // What this runs is the DRY RUN: the actual bake, locally, with nothing uploaded and
+        // nothing transmitted -- the only way to learn whether the bake works without writing to
+        // the account, which every earlier attempt had to do.
         _session.RebakeAvatar();
         _chatWindow?.AppendLocalChatMessage("System",
-            "Avatar wird neu gebacken — das kann ein paar Sekunden dauern.");
+            "Bake-Trockenlauf gestartet — Ergebnis steht im Log ([Bake]-Zeilen). Es wird nichts gesendet.");
+        _ = _session.DryRunBakeAsync();
     }
 
     // FEAT-AVATAR-01: deferred target for GridSession.WearableEditUnavailable.

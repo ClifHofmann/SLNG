@@ -2135,6 +2135,106 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// Same corrected path as a wearable edit: LibreMetaverse bakes, then
     /// <see cref="SendCorrectedAppearance"/> replaces its scrambled packet. Use it when a wearable
     /// change did not visibly take.</summary>
+    /// <summary>FEAT-AVATAR-01: runs the real bake locally and reports what it produced, WITHOUT
+    /// uploading and WITHOUT sending anything.
+    ///
+    /// <para>This is possible because LibreMetaverse's pieces are all public — <c>Baker</c>,
+    /// <c>AppearanceManager.DecodeWearableParams</c>, <c>BakeTypeToTextures</c> and the
+    /// <c>TextureProvider</c> — so the compositing step can be driven on its own instead of
+    /// through <c>RequestSetAppearance</c>, which bakes, uploads AND sends in one call. Every
+    /// previous attempt to learn anything about the bake had to send to find out; this does not.</para>
+    ///
+    /// <para>Mirrors <c>CreateBakeAsync</c>: gather the worn wearables, decode their assets, let
+    /// <c>DecodeWearableParams</c> fill the per-index <c>TextureData</c>, fetch those textures,
+    /// then feed each bake channel's indices to a <c>Baker</c> and report the result size.</para></summary>
+    public async Task DryRunBakeAsync(CancellationToken ct = default)
+    {
+        if (!_client.Network.Connected)
+        {
+            Console.Error.WriteLine("[Bake] dry run skipped: not connected");
+            return;
+        }
+
+        try
+        {
+            // 1. Worn wearables. LLUDP first -- the COF route measured empty on OSGrid.
+            await RequestWornWearablesViaLludpAsync(ct).ConfigureAwait(false);
+            var worn = _client.Appearance.GetWearables().ToList();
+            Console.Error.WriteLine($"[Bake] worn wearables: {worn.Count}");
+            if (worn.Count == 0) { Console.Error.WriteLine("[Bake] nothing to bake from"); return; }
+
+            // 2. Decode each wearable's asset -- DecodeWearableParams reads wearable.Asset.
+            int decoded = 0;
+            foreach (var w in worn)
+            {
+                if (w.Asset != null) { decoded++; continue; }
+                try
+                {
+                    var asset = await _client.Assets
+                        .RequestAssetAsync(w.AssetID, w.AssetType, priority: true, ct).ConfigureAwait(false);
+                    if (asset is LibreMetaverse.Assets.AssetWearable aw && aw.Decode()) { w.Asset = aw; decoded++; }
+                    else Console.Error.WriteLine($"[Bake]   {w.WearableType}: asset {w.AssetID} did not fetch/decode");
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { Console.Error.WriteLine($"[Bake]   {w.WearableType}: {ex.Message}"); }
+            }
+            Console.Error.WriteLine($"[Bake] decoded {decoded}/{worn.Count} wearable assets");
+
+            // 3. Per-texture-index data, exactly as AppearanceManager builds it.
+            var textures = new AppearanceManager.TextureData[(int)AvatarTextureIndex.NumberOfEntries];
+            for (int i = 0; i < textures.Length; i++) textures[i] = new AppearanceManager.TextureData();
+            foreach (var w in worn.Where(w => w.Asset != null))
+                AppearanceManager.DecodeWearableParams(w, ref textures);
+
+            // 4. Fetch every referenced texture.
+            var wanted = textures.Where(t => t.TextureID != LibreMetaverse.UUID.Zero)
+                                 .Select(t => t.TextureID).Distinct().ToList();
+            Console.Error.WriteLine($"[Bake] textures referenced by the worn set: {wanted.Count}");
+            int got = 0;
+            foreach (var id in wanted)
+            {
+                try
+                {
+                    var tex = await _client.Appearance.TextureProvider.RequestTextureAsync(id, ct).ConfigureAwait(false);
+                    if (tex == null) { Console.Error.WriteLine($"[Bake]   texture {id} -> null"); continue; }
+                    try { tex.Decode(); } catch { }
+                    foreach (var t in textures) if (t.TextureID == id) t.Texture = tex;
+                    got++;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { Console.Error.WriteLine($"[Bake]   texture {id} -> {ex.Message}"); }
+            }
+            Console.Error.WriteLine($"[Bake] textures downloaded: {got}/{wanted.Count}");
+
+            // 5. Bake each channel and report. Nothing is uploaded or sent.
+            foreach (var bakeType in new[] { BakeType.Head, BakeType.UpperBody, BakeType.LowerBody, BakeType.Eyes, BakeType.Hair })
+            {
+                var indices = AppearanceManager.BakeTypeToTextures(bakeType);
+                var oven = new LibreMetaverse.Imaging.Baker(bakeType);
+                int fed = 0;
+                foreach (var idx in indices)
+                {
+                    var t = textures[(int)idx];
+                    t.TextureIndex = idx;
+                    oven.AddTexture(t);
+                    if (t.Texture != null) fed++;
+                }
+
+                await Task.Run(() => oven.Bake(), ct).ConfigureAwait(false);
+                int bytes = oven.BakedTexture?.AssetData?.Length ?? 0;
+                Console.Error.WriteLine($"[Bake] {bakeType,-10} inputs={indices.Count} withTexture={fed} " +
+                    $"-> {(bytes > 0 ? bytes + " bytes" : "NOTHING")}");
+            }
+
+            Console.Error.WriteLine("[Bake] dry run complete -- nothing uploaded, nothing sent");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Bake] dry run failed: {ex.Message}");
+        }
+    }
+
     public void RebakeAvatar()
     {
         if (!_client.Network.Connected)

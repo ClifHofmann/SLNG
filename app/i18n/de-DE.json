@@ -39,7 +39,7 @@
       "environment": "Umgebung (Windlight)...",
       "world_map": "Weltkarte...",
       "minimap": "Minikarte",
-      "rebake_avatar": "Avatar neu backen (Strg+Alt+R)"
+      "rebake_avatar": "Bake-Trockenlauf (Strg+Alt+R)"
     },
     "hud": {
       "stand_up": "Aufstehen"
