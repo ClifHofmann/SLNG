@@ -33,11 +33,9 @@ jobs:
 
   selftest:
     name: smoke test (Godot --selftest)
-    # windows-latest, not ubuntu: Windows is the declared primary target, it is what the
-    # release build in build_installer.yml runs on, and the .NET job above is already red on
-    # Linux for an unrelated native-dependency reason (SculptStitchingNoneTests). Putting the
-    # smoke test on the platform we ship keeps its signal readable instead of adding a second
-    # red X nobody separates from the first.
+    # windows-latest, not ubuntu: Windows is the declared primary target and it is what the
+    # release build in build_installer.yml runs on, so the smoke test belongs on the platform
+    # we ship.
     runs-on: windows-latest
     defaults:
       run:

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net.Http;
 using LibreMetaverse;
+using LibreMetaverse.Imaging;
 using LibreMetaverse.Packets;
 using LibreMetaverse.StructuredData;
 using SLNG.Core;
@@ -2147,6 +2148,42 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <para>Mirrors <c>CreateBakeAsync</c>: gather the worn wearables, decode their assets, let
     /// <c>DecodeWearableParams</c> fill the per-index <c>TextureData</c>, fetch those textures,
     /// then feed each bake channel's indices to a <c>Baker</c> and report the result size.</para></summary>
+    private IBakeTextureEncoder? _bakeEncoder;
+
+    /// <summary>Supplies the JPEG2000 encoder used for avatar bakes. Set by the composition root
+    /// (<c>app</c>), because the codec lives in <c>SLNG.Assets</c> and the layering forbids
+    /// <c>SLNG.Net</c> from referencing it — see <see cref="IBakeTextureEncoder"/>.</summary>
+    public void UseBakeEncoder(IBakeTextureEncoder encoder) => _bakeEncoder = encoder;
+
+    /// <summary>Converts a composited bake into the tightly packed 8-bit BGRA the encoder expects.
+    /// Mirrors <c>ManagedImage.ExportBitmap</c> so the two cannot drift, but stays in plain bytes so
+    /// no SkiaSharp type has to cross into this assembly.</summary>
+    private static byte[] ToBgra(ManagedImage img)
+    {
+        int n = img.Width * img.Height;
+        var raw = new byte[n * 4];
+        bool color = img.Red != null && img.Green != null && img.Blue != null;
+        bool alpha = img.Alpha != null;
+
+        for (int i = 0; i < n; i++)
+        {
+            if (color)
+            {
+                raw[i * 4 + 0] = img.Blue![i];
+                raw[i * 4 + 1] = img.Green![i];
+                raw[i * 4 + 2] = img.Red![i];
+            }
+            else if (alpha)
+            {
+                // Alpha-only layer: replicate to RGB the way ExportBitmap does.
+                raw[i * 4 + 0] = raw[i * 4 + 1] = raw[i * 4 + 2] = img.Alpha![i];
+            }
+            raw[i * 4 + 3] = color && alpha ? img.Alpha![i] : byte.MaxValue;
+        }
+
+        return raw;
+    }
+
     public async Task DryRunBakeAsync(CancellationToken ct = default)
     {
         if (!_client.Network.Connected)
@@ -2265,8 +2302,22 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     composed = $"image={img.Width}x{img.Height} distinctRed={(seen.Count > 8 ? ">8" : seen.Count.ToString())}";
                 }
 
+                // Re-encode what the Baker composited. LibreMetaverse's own Encode is hardcoded to a
+                // CoreJ2K preset that is broken in the pinned version -- see IBakeTextureEncoder --
+                // so the bytes above are meaningless no matter how good the image is. This is the
+                // number that says whether a bake could actually be uploaded.
+                int reBytes = 0;
+                if (img != null && _bakeEncoder != null)
+                {
+                    var bgra = ToBgra(img);
+                    var encoder = _bakeEncoder;
+                    int w = img.Width, h = img.Height;
+                    var encoded = await Task.Run(() => encoder.EncodeBake(bgra, w, h), ct).ConfigureAwait(false);
+                    reBytes = encoded.Length;
+                }
+
                 Console.Error.WriteLine($"[Bake] {bakeType,-10} inputs={indices.Count} withTexture={fed} usable={usable} " +
-                    $"-> {(bytes > 0 ? bytes + " bytes" : "NOTHING")}  {composed}" +
+                    $"-> lmv {(bytes > 0 ? bytes + "B" : "NOTHING")} / slng {(reBytes > 0 ? reBytes + "B" : "NOTHING")}  {composed}" +
                     (detail.Count > 0 ? "  [" + string.Join(" ", detail) + "]" : ""));
             }
 

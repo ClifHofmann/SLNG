@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.14.6-alpha";
+    public const string AppVersion = "v0.14.7-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1600,6 +1600,10 @@ public partial class Boot : Control
         _lastArrivalRegionShown = ""; // MVP2-3: a relogin into the same region must still toast
         _world = new SLNG.Core.ECS.World();
         _session = new GridSession();
+        // FEAT-AVATAR-01: the JPEG2000 codec lives in SLNG.Assets and SLNG.Net may not reference it,
+        // so the composition root supplies it. Without this a bake composites correctly and then
+        // encodes to a few hundred bytes of nothing.
+        _session.UseBakeEncoder(new SLNG.Assets.J2KBakeTextureEncoder());
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
 
         // Server-side deselect (M5-2 acceptance criterion): fires on any client-side
