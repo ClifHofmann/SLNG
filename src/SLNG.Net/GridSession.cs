@@ -1679,16 +1679,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 LogVisualParamHealth();
             }
 
-            // FEAT-AVATAR-01: when the appearance workflow is OFF (default), LMV's
-            // MyVisualParameters stays empty -- seed it from the sim's relay of our real ~218-byte
-            // shape so a diagnostic read shows something truthful. With SLNG_APPEARANCE_SYNC the
-            // workflow is on and LMV owns MyVisualParameters -- do NOT overwrite it.
+            // FEAT-AVATAR-01: remember the simulator's own relay of our shape. This array is in
+            // Group0ParamIds (wire/decoder) order, which is what AvatarShapeService reads it as --
+            // see _lastSelfRelayVisualParams. It is the ONLY trustworthy shape source for the self
+            // avatar; LMV's MyVisualParameters is built in a DIFFERENT order (see OnAppearanceSet).
+            if (VisualParamsHealthy(e.VisualParams?.ToArray()))
+                _lastSelfRelayVisualParams = e.VisualParams!.ToArray();
+
+            // With the workflow OFF (default), LMV's MyVisualParameters stays empty -- seed it so a
+            // diagnostic read shows something truthful. With SLNG_APPEARANCE_SYNC the workflow is on
+            // and LMV owns that array -- do NOT overwrite it.
             if (!_appearanceSync)
                 TrySeedVisualParams(e.VisualParams);
-            else if (!VisualParamsHealthy(_client.Appearance.MyVisualParameters))
-                Console.Error.WriteLine("[Appearance] WARNING (SLNG_APPEARANCE_SYNC): LMV's MyVisualParameters " +
-                    $"reads unhealthy ({_client.Appearance.MyVisualParameters.Length} bytes) against a good sim relay " +
-                    "-- your stored shape may be getting corrupted. Repair in Firestorm and unset the variable.");
         }
 
         // FEAT-UI-16: a self appearance relay can change the worn wearable set.
@@ -1919,6 +1921,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return Task.FromResult(new DetachResult(false, 0, WearableRemoved: true));
     }
 
+    /// <summary>The simulator's own last relay of the self avatar's shape, captured in
+    /// <see cref="OnAvatarAppearance"/>. In <c>VisualParams.Group0ParamIds</c> order — the wire /
+    /// decoder order that <c>AvatarShapeService.ComputeEffectiveWeights</c> indexes positionally.
+    /// Kept because it is the only shape array in that order: LibreMetaverse's
+    /// <c>MyVisualParameters</c> is built by <c>MakeAppearancePacket</c> in a different one
+    /// (see <see cref="OnAppearanceSet"/>). FEAT-AVATAR-01.</summary>
+    private byte[] _lastSelfRelayVisualParams = Array.Empty<byte>();
+
     private void OnAppearanceSet(object? sender, AppearanceSetEventArgs e)
     {
         if (!e.Success) return;
@@ -1957,10 +1967,30 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         if (textures.Count == 0) return;
 
+        // FEAT-AVATAR-01 -- the shape MUST NOT come from Appearance.MyVisualParameters here.
+        //
+        // Two different orderings exist and they are not interchangeable (pinned by
+        // SLNG.Assets.Tests.VisualParamOrderTests):
+        //   * DECODER order = VisualParams.Group0ParamIds, ascending id over the TRANSMITTED params.
+        //     This is what the simulator sends, what LMV's Avatar.DecodeVisualParams assumes, and
+        //     what AvatarShapeService.ComputeEffectiveWeights indexes positionally.
+        //   * ENCODER order = whatever AppearanceManager.MakeAppearancePacket produces: it iterates
+        //     VisualParams.Params -- ALL params, including the never-transmitted group-1/2 ones --
+        //     and takes the first 218, then copies that into MyVisualParameters.
+        // The first 218 of Params are provably NOT the first 218 of Group0ParamIds, so
+        // MyVisualParameters assigns each byte to the WRONG parameter when read as a shape.
+        //
+        // This event only fires when LibreMetaverse runs its own bake, i.e. never while
+        // SendAppearance is off -- which is why the bug stayed latent. With SLNG_APPEARANCE_SYNC on
+        // it fires, and feeding the encoder-order array to the shape service scrambled every
+        // skeletal param: live 2026-08-31 the rigged mesh head tore apart.
+        //
+        // The valuable part of this event is the freshly composited BAKE IDS. Take those, and pair
+        // them with the simulator's own last relay of the shape, which is in decoder order.
         RaiseAvatarAppearance(new AvatarAppearanceEvent(
             _client.Network.CurrentSim?.Handle ?? 0,
             _client.Self.AgentID.Guid,
-            _client.Appearance.MyVisualParameters ?? Array.Empty<byte>(),
+            _lastSelfRelayVisualParams,
             textures));
     }
 
