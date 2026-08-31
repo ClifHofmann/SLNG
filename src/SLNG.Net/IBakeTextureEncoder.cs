@@ -28,4 +28,10 @@ public interface IBakeTextureEncoder
     /// and then worn by everyone who sees the avatar.</summary>
     /// <returns>A JPEG2000 codestream ready to upload, or an empty array if encoding failed.</returns>
     byte[] EncodeBake(byte[] bgra, int width, int height);
+
+    /// <summary>Encodes the same pixels as a PNG, for looking at. An avatar bake is only correct if
+    /// it shows the right face, and that is not something any byte count can establish — this task
+    /// has corrupted a real avatar three times by sending data that measured fine. Rendering the
+    /// composite to a viewable file makes the last check possible before anything is sent.</summary>
+    byte[] EncodePreviewPng(byte[] bgra, int width, int height);
 }

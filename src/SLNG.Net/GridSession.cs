@@ -2375,6 +2375,27 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     reBytes = slngBake.Length;
                 }
 
+                // Write the composite out so it can actually be looked at. No byte count says
+                // whether a bake shows the right face, and sending one that does not is how this
+                // avatar was broken before.
+                if (img != null && reBytes > 0 && _bakeEncoder != null)
+                {
+                    try
+                    {
+                        var dir = Path.Combine(Path.GetTempPath(), "slng_bake");
+                        Directory.CreateDirectory(dir);
+                        var png = _bakeEncoder.EncodePreviewPng(ToBgra(img), img.Width, img.Height);
+                        if (png.Length > 0)
+                        {
+                            var path = Path.Combine(dir, $"{bakeType}.png");
+                            await File.WriteAllBytesAsync(path, png, ct).ConfigureAwait(false);
+                            Console.Error.WriteLine($"[Bake]   preview -> {path}");
+                        }
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex) { Console.Error.WriteLine($"[Bake]   preview failed: {ex.Message}"); }
+                }
+
                 string uploadNote = string.Empty;
                 if (upload && reBytes > 0)
                 {

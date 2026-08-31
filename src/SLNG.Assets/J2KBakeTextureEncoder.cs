@@ -25,15 +25,31 @@ public sealed class J2KBakeTextureEncoder : IBakeTextureEncoder
     /// <inheritdoc/>
     public byte[] EncodeBake(byte[] bgra, int width, int height)
     {
-        if (width <= 0 || height <= 0 || bgra.Length < width * height * 4) return System.Array.Empty<byte>();
-
-        var info = new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Unpremul);
-        using var bitmap = new SKBitmap(info);
-
-        nint pixels = bitmap.GetPixels();
-        if (pixels == nint.Zero) return System.Array.Empty<byte>();
-        Marshal.Copy(bgra, 0, pixels, width * height * 4);
+        using var bitmap = ToBitmap(bgra, width, height);
+        if (bitmap == null) return System.Array.Empty<byte>();
 
         return CompleteConfigurationPresets.Streaming.ForLossless().Encode(bitmap);
+    }
+
+    /// <inheritdoc/>
+    public byte[] EncodePreviewPng(byte[] bgra, int width, int height)
+    {
+        using var bitmap = ToBitmap(bgra, width, height);
+        if (bitmap == null) return System.Array.Empty<byte>();
+
+        using var data = bitmap.Encode(SKEncodedImageFormat.Png, 90);
+        return data?.ToArray() ?? System.Array.Empty<byte>();
+    }
+
+    private static SKBitmap? ToBitmap(byte[] bgra, int width, int height)
+    {
+        if (width <= 0 || height <= 0 || bgra.Length < width * height * 4) return null;
+
+        var bitmap = new SKBitmap(new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Unpremul));
+        nint pixels = bitmap.GetPixels();
+        if (pixels == nint.Zero) { bitmap.Dispose(); return null; }
+
+        Marshal.Copy(bgra, 0, pixels, width * height * 4);
+        return bitmap;
     }
 }
