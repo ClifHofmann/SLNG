@@ -2,17 +2,10 @@
 
 - **Feature ID:** `FEAT-AVATAR-01`
 - **Track:** `net` / `render`
-- **Status:** `⏸️ default-off, opt-in experiment` (`v0.11.30-alpha`). Default: remove/add is a
-  logged **no-op** — every "prepare it ourselves" approach corrupted the stored appearance on
-  OSGrid (see the ABANDONED table below). **`SLNG_APPEARANCE_SYNC=1`** flips
-  `Settings.Agent.SendAppearance` on, so LibreMetaverse **3.1.3** runs its full appearance
-  pipeline from login (download all worn wearables, keep the 218 params current, bake +
-  `AgentSetAppearance`) — the same thing Firestorm does. The 2026-08-02 corruption was on LMV
-  **3.0.0**, before the big appearance/bake rework; 3.1.3 may build correct params now. **If it
-  doesn't, the first login corrupts the stored shape** — `LogVisualParamHealth()` logs the
-  outcome (`[VisualParams]` line) and `OnAvatarAppearance` prints a loud WARNING if
-  `MyVisualParameters` reads unhealthy against a good sim relay. Test on a throwaway alt / with
-  Firestorm ready.
+- **Status:** `⏸️ BLOCKED on an upstream LibreMetaverse bug — cause MEASURED` (`v0.11.33-alpha`).
+  Remove/add is a logged **no-op**. See **[Root cause](#root-cause-libremetaverse-scrambles-195-of-218-visual-params)**
+  — one upstream bug explains all three live corruption incidents, and no client-side preparation
+  can work around it. The way out is written up under **[The way out](#the-way-out)**.
 - **Owner:** `claude`
 - **Agent:** `protocol-re` (net side) → `graphics-engineer` (bake/render side)
 - **Dep:** `M4-3` (Appearance & BoM)
@@ -45,6 +38,65 @@ for the self avatar.
 Removing or adding a system wearable in SLNG updates the avatar within a few seconds — the
 system body/head shows or hides to match — without a relog, and without regressing the shape
 (the `SendAppearance` incident must not recur).
+
+## Root cause: LibreMetaverse scrambles 195 of 218 visual params
+
+Found 2026-08-31 by reading the source after three live corruptions. **One upstream bug explains
+every incident.** Pinned by `SLNG.Assets.Tests.VisualParamOrderTests`.
+
+LibreMetaverse carries **two different visual-parameter orderings**, and they are not interchangeable:
+
+| | What it is | Length | Who uses it |
+|---|---|---|---|
+| **Decoder order** | `VisualParams.Group0ParamIds` — the **transmitted** params (group 0 + group 3), ascending by numeric id | **253** | the simulator's `AvatarAppearance` packet, LMV's `Avatar.DecodeVisualParams`, and SLNG's `AvatarShapeService.ComputeEffectiveWeights` (all index it **positionally**) |
+| **Encoder order** | first 218 entries of `VisualParams.Params` — **every** param including the never-transmitted group-1/2 ones | **672** total, first 218 taken | `AppearanceManager.MakeAppearancePacket`, which writes them into the outgoing `AgentSetAppearance` **and** into `MyVisualParameters` |
+
+Measured divergence:
+
+```
+Group0ParamIds.Length = 253      VisualParams.Params.Count = 672
+first mismatch index  = 23
+slots agreeing        = 23 / 218
+```
+
+The two sequences agree for the first 23 slots and then permanently separate, because
+non-transmitted params sort in among the low ids. **195 of 218 values are written to the wrong
+parameter**, and the simulator persists that as the avatar's shape.
+
+### What this explains
+
+- **2026-08-02** "avatar squat & deformed, in Firestorm too" — the send scrambled the stored shape.
+  (The contemporaneous diagnosis, "`MyVisualParameters` is empty", was a *symptom* seen before the
+  first send, not the cause.)
+- **2026-08-29** removing an Alpha layer flattened the avatar — same send, same scramble.
+- **2026-08-31** the rigged mesh head tore apart under `SLNG_APPEARANCE_SYNC` — this time
+  *client-side*: `GridSession.OnAppearanceSet` handed `MyVisualParameters` (encoder order) to the
+  renderer, which read it as decoder order, so every skeletal param got a foreign value.
+
+### Why no client-side preparation can fix it
+
+Every route into the appearance system — `AddToOutfit`, `RemoveFromOutfit`, `ReplaceOutfitAsync`,
+`RequestSetAppearance` — ends in `MakeAppearancePacket`. Downloading and decoding all worn
+wearables first (Phase 2's attempts) makes the *values* correct but they are still written to the
+wrong *slots*. That is why v0.11.28 corrupted the avatar even with the full worn list decoded.
+
+### <a id="the-way-out"></a>The way out
+
+`AppearanceManager.MakeAppearancePacket()` is **public**. So SLNG can, without forking LibreMetaverse:
+
+1. Ensure the worn wearables are gathered + decoded (the `v0.11.28` code did this correctly — LLUDP
+   `AgentWearablesRequest` for the list, `Assets.RequestAssetAsync` + `AssetWearable.Decode()` for
+   each; recoverable from git history).
+2. Call `MakeAppearancePacket()` to get the packet with correct *values*.
+3. **Permute `packet.VisualParam[]` into `Group0ParamIds` order** — build the id→value map from the
+   encoder's own iteration, then re-emit in wire order.
+4. Send it with `Network.SendPacket`, bypassing `RequestSetAppearance` entirely.
+
+Guard rails for that pass: assert the permuted array round-trips (decode it back and compare against
+the sim's last relay for params no wearable changed), and test on a throwaway alt first.
+
+Alternatively, fix it upstream and unpin — `VisualParamOrderTests` fails the moment the orderings
+agree, which is the signal to reopen this task.
 
 ## Findings — LibreMetaverse 3.1.3 (confirmed against the pinned package)
 
@@ -159,7 +211,18 @@ just work now. `LogVisualParamHealth()` + a loud WARNING in `OnAvatarAppearance`
 the params come back healthy; if they don't the login already corrupted the shape. Off by default.
 Or (c) a server-side (region module) approach entirely outside the viewer.
 
-### SLNG_APPEARANCE_SYNC — the experiment (`v0.11.30-alpha`)
+### SLNG_APPEARANCE_SYNC — the experiment (`v0.11.30-alpha`, WITHDRAWN in `v0.11.33-alpha`)
+
+**Outcome:** it ran, it did not corrupt the *stored* shape in that one session (Firestorm stayed
+healthy), but it tore SLNG's own rigged mesh head apart — and reading the source afterwards showed
+why *and* showed the send is broken regardless: see
+[Root cause](#root-cause-libremetaverse-scrambles-195-of-218-visual-params). A switch that provably
+scrambles account data is a footgun, not an experiment, so the env var was removed and
+`SendAppearance` is hard `false` again. The client-side half of that session's damage —
+`OnAppearanceSet` feeding encoder-order params to the renderer — is fixed in `v0.11.32-alpha`.
+
+Original description follows.
+
 - `GridSession` ctor reads `SLNG_APPEARANCE_SYNC` (`1`/`true`); when set, `SendAppearance = true`
   and it prints a warning line to stderr.
 - `AttachItemAsync`/`DetachItemAsync` wearable branch → `WearWearableAsync`/`RemoveWearableAsync`:
