@@ -2193,22 +2193,60 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// what an avatar wears — and, unlike the legacy <c>AgentWearablesReply</c>, can hold several
     /// layers of one type. Also reports every link it finds, since "which of my layers does the
     /// client see" turned out to be the question behind a wrong face.</summary>
-    private List<AppearanceManager.WearableData> CollectWornWearablesForBake()
+    private async Task<List<AppearanceManager.WearableData>> CollectWornWearablesForBakeAsync(CancellationToken ct)
     {
         var worn = new List<AppearanceManager.WearableData>();
-        var store = _client.Inventory.Store;
         var cof = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
-        var cofNode = cof != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cof) : null;
-        if (cofNode == null) return worn;
+        if (cof == LibreMetaverse.UUID.Zero) return worn;
 
-        foreach (var child in cofNode.Nodes.Values)
+        // Ask for the folder rather than reading the store: the store only holds what has already
+        // been fetched, and at bake time nothing has opened the inventory yet. Reading it straight
+        // reported an empty COF and silently fell back to the region's stale list.
+        var links = await _client.Inventory.FolderContentsAsync(
+            cof, _client.Self.AgentID, fetchFolders: false, fetchItems: true,
+            LibreMetaverse.InventorySortOrder.ByName, ct).ConfigureAwait(false);
+        if (links == null) return worn;
+
+        // A COF entry is a link; the wearable it points at is a separate item that also has to be
+        // present before its type and asset can be read.
+        var targets = new Dictionary<LibreMetaverse.UUID, LibreMetaverse.UUID>();
+        foreach (var entry in links)
         {
-            if (child.Data is not LibreMetaverse.InventoryItem link) continue;
+            if (entry is not LibreMetaverse.InventoryItem link) continue;
+            if (link.AssetType == LibreMetaverse.AssetType.LinkFolder) continue;
+            var target = link.IsLink() ? link.ResolvedItemID : link.UUID;
+            if (target != LibreMetaverse.UUID.Zero) targets[target] = _client.Self.AgentID;
+        }
+
+        var store = _client.Inventory.Store;
+        if (targets.Count > 0 && targets.Keys.Any(id => store?.GetNodeOrDefault(id)?.Data is not LibreMetaverse.InventoryWearable))
+        {
+            try
+            {
+                _client.Inventory.RequestFetchInventory(targets);
+                // No completion event covers a bulk fetch, so give the replies a moment to land.
+                await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { /* best effort -- unresolved targets are reported below */ }
+        }
+
+        int unresolved = 0;
+        foreach (var entry in links)
+        {
+            if (entry is not LibreMetaverse.InventoryItem link) continue;
             if (link.AssetType == LibreMetaverse.AssetType.LinkFolder) continue;
 
             var target = link.IsLink() ? link.ResolvedItemID : link.UUID;
             if (target == LibreMetaverse.UUID.Zero) continue;
-            if (store?.GetNodeOrDefault(target)?.Data is not LibreMetaverse.InventoryWearable w) continue;
+
+            if (store?.GetNodeOrDefault(target)?.Data is not LibreMetaverse.InventoryWearable w)
+            {
+                // Attachments live in the COF too, so only count links that stayed unresolved.
+                if (link.AssetType is LibreMetaverse.AssetType.Clothing or LibreMetaverse.AssetType.Bodypart)
+                    unresolved++;
+                continue;
+            }
 
             worn.Add(new AppearanceManager.WearableData
             {
@@ -2220,6 +2258,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             Console.Error.WriteLine($"[Bake]   COF {w.WearableType,-10} \"{w.Name}\"" +
                 (string.IsNullOrEmpty(link.Description) ? "" : $"  desc=\"{link.Description}\""));
         }
+
+        if (unresolved > 0)
+            Console.Error.WriteLine($"[Bake]   COF: {unresolved} wearable link(s) did not resolve -- baking would miss them");
 
         return worn;
     }
@@ -2305,13 +2346,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // login and 5 after it, because Firestorm rewrote the region's list on login. The four
             // that vanished were tattoo layers -- including the skin the avatar is actually wearing.
             // Baking from the region's copy would have replaced the user's face with a different one.
-            var worn = CollectWornWearablesForBake();
+            var worn = await CollectWornWearablesForBakeAsync(ct).ConfigureAwait(false);
             Console.Error.WriteLine($"[Bake] worn wearables: COF {worn.Count}, region's legacy list {legacy.Count}");
 
             if (worn.Count == 0)
             {
                 Console.Error.WriteLine("[Bake] COF empty -- falling back to the region's list");
                 worn = legacy;
+            }
+            else if (worn.Count < legacy.Count)
+            {
+                // The COF is authoritative, but fewer entries than the region knows about usually
+                // means links are still unresolved rather than genuinely unworn -- and baking from a
+                // short set drops layers off the avatar. Say so instead of quietly proceeding.
+                Console.Error.WriteLine("[Bake] WARNING: the COF resolved fewer wearables than the region lists; " +
+                    "some links may not have loaded yet");
             }
             if (worn.Count == 0) { Console.Error.WriteLine("[Bake] nothing to bake from"); return; }
 
