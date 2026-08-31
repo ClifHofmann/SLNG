@@ -22,6 +22,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private readonly GridClient _client;
 
+    /// <summary>FEAT-AVATAR-01: true when <c>SLNG_APPEARANCE_SYNC</c> opted into
+    /// <c>Settings.Agent.SendAppearance</c> — LibreMetaverse then runs its full appearance pipeline
+    /// and system-wearable remove/add is routed through <c>AppearanceManager</c>. See the ctor.</summary>
+    private readonly bool _appearanceSync;
+
     /// <summary>Correlates a ParcelProperties reply with our own request. The simulator also pushes
     /// ParcelProperties unprompted on a parcel crossing, so matching on the sequence id is what
     /// keeps an unrelated push from being read as our answer.</summary>
@@ -277,7 +282,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // So every AgentSetAppearance we sent carried no shape at all, and the simulator replaced
         // the stored shape with defaults. That is the whole explanation for the squat, deformed
         // avatar, and it is why a rebake feature must stay blocked -- it would take the same path.
-        _client.Settings.Agent.SendAppearance = false;
+        //
+        // FEAT-AVATAR-01 experiment: setting SLNG_APPEARANCE_SYNC=1 opts INTO SendAppearance. That
+        // 2026-08-02 corruption was on LibreMetaverse 3.0.0; the project is now on 3.1.3, which had
+        // a major appearance/bake rework in between. With the flag on, LMV runs the full pipeline
+        // from login exactly as Firestorm does -- download every worn wearable, keep the 218 visual
+        // params current from the real Shape, bake + AgentSetAppearance -- and system-wearable
+        // remove/add then works through AppearanceManager. If 3.1.3 still builds bad params the
+        // FIRST login corrupts the stored shape and needs a Firestorm repair; LogVisualParamHealth()
+        // reports the outcome immediately (watch the [VisualParams] line). OFF by default.
+        _appearanceSync = Environment.GetEnvironmentVariable("SLNG_APPEARANCE_SYNC") is "1" or "true" or "TRUE";
+        _client.Settings.Agent.SendAppearance = _appearanceSync;
+        if (_appearanceSync)
+            Console.Error.WriteLine("[Appearance] SLNG_APPEARANCE_SYNC set -- SendAppearance ON (experiment). " +
+                "Watch the [VisualParams] line after login; if it reports most of 218 params at 0, your stored " +
+                "shape is being corrupted -- relog Firestorm, re-wear your shape, and unset the variable.");
 
         // Use the HTTP GetTexture CAP instead of the legacy UDP image transfer. UDP transfers
         // time out and hand back truncated JPEG2000 streams on busy grids (the "Tile part
@@ -1660,12 +1679,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 LogVisualParamHealth();
             }
 
-            // FEAT-AVATAR-01: LibreMetaverse's own appearance workflow is off (SendAppearance),
-            // so Appearance.MyVisualParameters stays empty -- and an empty set is exactly what
-            // flattened the stored shape on 2026-08-02 when an AgentSetAppearance went out. The
-            // sim, however, relays our real ~218-byte shape in THIS packet. Seed it into LMV so
-            // any AgentSetAppearance a later wearable edit schedules carries the real baseline.
-            TrySeedVisualParams(e.VisualParams);
+            // FEAT-AVATAR-01: when the appearance workflow is OFF (default), LMV's
+            // MyVisualParameters stays empty -- seed it from the sim's relay of our real ~218-byte
+            // shape so a diagnostic read shows something truthful. With SLNG_APPEARANCE_SYNC the
+            // workflow is on and LMV owns MyVisualParameters -- do NOT overwrite it.
+            if (!_appearanceSync)
+                TrySeedVisualParams(e.VisualParams);
+            else if (!VisualParamsHealthy(_client.Appearance.MyVisualParameters))
+                Console.Error.WriteLine("[Appearance] WARNING (SLNG_APPEARANCE_SYNC): LMV's MyVisualParameters " +
+                    $"reads unhealthy ({_client.Appearance.MyVisualParameters.Length} bytes) against a good sim relay " +
+                    "-- your stored shape may be getting corrupted. Repair in Firestorm and unset the variable.");
         }
 
         // FEAT-UI-16: a self appearance relay can change the worn wearable set.
@@ -1834,15 +1857,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private bool _appearanceReadinessLogged;
 
-    /// <summary>Logs, once per region, that system-wearable edits are disabled and why — so a
-    /// "the alpha layer won't come off" has an answer in the log. FEAT-AVATAR-01.</summary>
+    /// <summary>Logs, once per region, whether system-wearable edits are on (SLNG_APPEARANCE_SYNC)
+    /// or the safe no-op — so "the alpha layer won't come off" has an answer in the log.
+    /// FEAT-AVATAR-01.</summary>
     private void LogAppearanceEditReadiness()
     {
         if (_appearanceReadinessLogged) return;
         _appearanceReadinessLogged = true;
         string region = _client.Network.CurrentSim?.Name ?? "?";
-        Console.Error.WriteLine($"[Appearance] {region}: system-wearable edits disabled " +
-            "(FEAT-AVATAR-01 — no safe rebake path with SendAppearance off; every attempt corrupts the stored appearance)");
+        Console.Error.WriteLine(_appearanceSync
+            ? $"[Appearance] {region}: system-wearable edits ON via SLNG_APPEARANCE_SYNC (experiment — watch [VisualParams])"
+            : $"[Appearance] {region}: system-wearable edits disabled (set SLNG_APPEARANCE_SYNC=1 to enable — FEAT-AVATAR-01)");
     }
 
     /// <summary>FEAT-AVATAR-01: raised when a system-wearable wear/detach was refused because there
@@ -1850,41 +1875,48 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <see cref="WearWearableAsync"/>). Payload is the item name, for a user-facing notice.</summary>
     public event EventHandler<string>? WearableEditUnavailable;
 
-    // FEAT-AVATAR-01 — the system-wearable REBAKE is REVERTED (again). Three approaches were tried
-    // and all corrupted the user's stored appearance on OSGrid, requiring a Firestorm repair:
-    //   v0.11.26  gate on RegionHasServerSideBaking()          -> never fires (LMV's SSB check is
-    //             SL-only; OpenSim's XBakes SSA is a different thing).
-    //   v0.11.27  decode every worn wearable, then RemoveFromOutfit/AddToOutfit
-    //   v0.11.28  + fetch the worn list via LLUDP AgentWearablesRequest first
-    //             -> the worn list came through and the wearables decoded, but the resulting
-    //                RequestSetAppearanceAsync still sent a broken bake: MyVisualParameters came back
-    //                127-of-218 zero and the avatar flattened (live 2026-08-31, screenshot).
-    // Root cause is structural: with SendAppearance=false the whole bake pipeline
-    // (Simulator_OnCapabilitiesReceived / AgentWearablesUpdate trigger / RebakeAvatarTextures) never
-    // initialised, so calling RequestSetAppearanceAsync once mid-session bakes from a cold, partial
-    // state and uploads garbage. Flipping SendAppearance=true is the 2026-08-02 landmine
-    // (MyVisualParameters empty -> default shape persisted). See the spec + the
-    // libremetaverse-sendappearance-flag memory: this feature is blocked until either LMV is
-    // patched/forked, or SendAppearance can be turned on with verified param health.
+    // FEAT-AVATAR-01 — system-wearable remove/add.
     //
-    // Kept as a no-op: the wearable is classified (ClassifyItem) and, for a Clothing/Bodypart
-    // layer, we log + WearableEditUnavailable and change nothing. A DetachAttachmentIntoInv for a
-    // wearable was always a server-side no-op, so this is not a regression.
+    // History: with SendAppearance=false the bake pipeline never initialises, so any one-off
+    // RequestSetAppearanceAsync bakes from a cold, partial state and persists garbage. Three
+    // "prepare it ourselves first" attempts (v0.11.26 SSB gate, v0.11.27 decode-first, v0.11.28
+    // + LLUDP worn list) all still corrupted the stored shape live on OSGrid (MyVisualParameters
+    // 127/218 zero, flat avatar). There is no middle path from outside LibreMetaverse.
+    //
+    // So: gate the whole thing on SLNG_APPEARANCE_SYNC (see the ctor). With it set, SendAppearance
+    // is true and LibreMetaverse 3.1.3 runs its full pipeline from login exactly as Firestorm does
+    // -- AddToOutfit/RemoveFromOutfit then Just Work through AppearanceManager. Without it (the
+    // default) the wearable is classified and the edit is a logged no-op: a DetachAttachmentIntoInv
+    // for a Clothing/Bodypart layer was always a server-side no-op, so this is not a regression.
 
     private Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
     {
-        Console.Error.WriteLine($"[Appearance] wear of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
-            "system-wearable rebake is disabled (FEAT-AVATAR-01 — every send path corrupts the stored appearance)");
-        WearableEditUnavailable?.Invoke(this, wearable.Name);
+        if (!_appearanceSync)
+        {
+            Console.Error.WriteLine($"[Appearance] wear of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
+                "SLNG_APPEARANCE_SYNC is not set (FEAT-AVATAR-01)");
+            WearableEditUnavailable?.Invoke(this, wearable.Name);
+            return Task.CompletedTask;
+        }
+
+        _client.Appearance.AddToOutfit(wearable, replace);
+        Console.Error.WriteLine($"[Appearance] wore wearable \"{wearable.Name}\" ({wearable.AssetType}) — rebake requested (SLNG_APPEARANCE_SYNC)");
         return Task.CompletedTask;
     }
 
     private Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
     {
-        Console.Error.WriteLine($"[Appearance] detach of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
-            "system-wearable rebake is disabled (FEAT-AVATAR-01 — every send path corrupts the stored appearance)");
-        WearableEditUnavailable?.Invoke(this, wearable.Name);
-        return Task.FromResult(new DetachResult(false, 0));
+        if (!_appearanceSync)
+        {
+            Console.Error.WriteLine($"[Appearance] detach of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
+                "SLNG_APPEARANCE_SYNC is not set (FEAT-AVATAR-01)");
+            WearableEditUnavailable?.Invoke(this, wearable.Name);
+            return Task.FromResult(new DetachResult(false, 0));
+        }
+
+        _client.Appearance.RemoveFromOutfit(wearable);
+        Console.Error.WriteLine($"[Appearance] removed wearable \"{wearable.Name}\" ({wearable.AssetType}) — rebake requested (SLNG_APPEARANCE_SYNC)");
+        return Task.FromResult(new DetachResult(false, 0, WearableRemoved: true));
     }
 
     private void OnAppearanceSet(object? sender, AppearanceSetEventArgs e)

@@ -2,13 +2,17 @@
 
 - **Feature ID:** `FEAT-AVATAR-01`
 - **Track:** `net` / `render`
-- **Status:** `⏸️ BLOCKED` — every send path corrupts the stored appearance on OSGrid. The remove/
-  add is a **no-op with a log line** as of `v0.11.29-alpha`. Three attempts, all reverted:
-  `v0.11.26` SSB gate (never fires on OpenSim), `v0.11.27` decode-then-send, `v0.11.28` + LLUDP
-  worn-list fetch — the last one got the full worn list and decoded every wearable, and the
-  resulting `RequestSetAppearanceAsync` STILL sent a broken bake (`MyVisualParameters` 127/218
-  zero, avatar flattened, live 2026-08-31). Root cause is structural — see below. Do not retry
-  without a fundamentally different approach.
+- **Status:** `⏸️ default-off, opt-in experiment` (`v0.11.30-alpha`). Default: remove/add is a
+  logged **no-op** — every "prepare it ourselves" approach corrupted the stored appearance on
+  OSGrid (see the ABANDONED table below). **`SLNG_APPEARANCE_SYNC=1`** flips
+  `Settings.Agent.SendAppearance` on, so LibreMetaverse **3.1.3** runs its full appearance
+  pipeline from login (download all worn wearables, keep the 218 params current, bake +
+  `AgentSetAppearance`) — the same thing Firestorm does. The 2026-08-02 corruption was on LMV
+  **3.0.0**, before the big appearance/bake rework; 3.1.3 may build correct params now. **If it
+  doesn't, the first login corrupts the stored shape** — `LogVisualParamHealth()` logs the
+  outcome (`[VisualParams]` line) and `OnAvatarAppearance` prints a loud WARNING if
+  `MyVisualParameters` reads unhealthy against a good sim relay. Test on a throwaway alt / with
+  Firestorm ready.
 - **Owner:** `claude`
 - **Agent:** `protocol-re` (net side) → `graphics-engineer` (bake/render side)
 - **Dep:** `M4-3` (Appearance & BoM)
@@ -146,12 +150,28 @@ half-built param set, which the sim persists. Flipping `SendAppearance=true` is 
 landmine (`MyVisualParameters` empty → default shape persisted). There is no middle path from
 outside LibreMetaverse.
 
-**What a real fix would need** (none pursued): (a) fork/patch LibreMetaverse so a wearable edit
-can run a *fully* initialised bake without the login-time `SendAppearance` gate; or (b) turn
-`SendAppearance=true` and add a hard pre-send assertion that `MyVisualParameters` is a genuine
-218-value spread (not the weak `VisualParamsHealthy` check — `127 zero` passed that) matching the
-sim's last relay, with an explicit user opt-in; or (c) a server-side (region module) approach
-entirely outside the viewer.
+**What a real fix would need** (option b is now the `SLNG_APPEARANCE_SYNC` experiment):
+(a) fork/patch LibreMetaverse so a wearable edit can run a *fully* initialised bake without the
+login-time `SendAppearance` gate; or **(b) turn `SendAppearance=true` from login** so LMV's whole
+pipeline runs as Firestorm's does — this is `SLNG_APPEARANCE_SYNC=1` (`v0.11.30-alpha`). The
+2026-08-02 failure was on LMV 3.0.0; 3.1.3 had a major appearance/bake rework since, so this may
+just work now. `LogVisualParamHealth()` + a loud WARNING in `OnAvatarAppearance` report whether
+the params come back healthy; if they don't the login already corrupted the shape. Off by default.
+Or (c) a server-side (region module) approach entirely outside the viewer.
+
+### SLNG_APPEARANCE_SYNC — the experiment (`v0.11.30-alpha`)
+- `GridSession` ctor reads `SLNG_APPEARANCE_SYNC` (`1`/`true`); when set, `SendAppearance = true`
+  and it prints a warning line to stderr.
+- `AttachItemAsync`/`DetachItemAsync` wearable branch → `WearWearableAsync`/`RemoveWearableAsync`:
+  with the flag, real `AddToOutfit`/`RemoveFromOutfit` (LMV owns the rebake); without, the no-op.
+- `OnAvatarAppearance` skips `TrySeedVisualParams` when the flag is on (LMV owns
+  `MyVisualParameters`), and prints `[Appearance] WARNING (SLNG_APPEARANCE_SYNC): … unhealthy …`
+  if LMV's param set reads bad against a good sim relay.
+- `LogAppearanceEditReadiness()` logs "edits ON via SLNG_APPEARANCE_SYNC" vs "disabled".
+- **Test:** run with the var set, on OSGrid (throwaway alt), Firestorm ready. Watch the first
+  `[VisualParams]` line after login — varied values ≈ good; most of 218 at 0 = corrupted, relog
+  Firestorm + re-wear the shape + unset the var. If good, detach an Alpha layer → system body
+  should return with the shape intact.
 
 **Left in the code:** `ClassifyItem`, `VisualParamsHealthy`, `TrySeedVisualParams` (diagnostic),
 `RegionHasServerSideBaking()` (harmless query + test), `LogAppearanceEditReadiness()` (logs
