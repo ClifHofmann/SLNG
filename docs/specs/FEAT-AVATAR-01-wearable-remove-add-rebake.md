@@ -178,10 +178,28 @@ The only shape that fits without forking LibreMetaverse:
 3. Verify it round-trips (`DecodeWireArray`) before sending, then `Network.SendPacket` it. The
    server persists the last write, so the final stored appearance is the correct one.
 
-This deliberately accepts a brief window in which the bad appearance is stored. That is a real
-trade-off and needs the user's explicit agreement plus a throwaway alt for the first run — the
-alternative is forking LibreMetaverse to add the missing group filter to `MakeAppearancePacket`,
-which is a one-line fix upstream and would make all of this unnecessary.
+This deliberately accepts a brief window in which the bad appearance is stored.
+
+**Two facts make this workable rather than a gamble, both read from source (2026-08-31):**
+
+- **OpenSim ignores the appearance serial number.** `LLClientView.HandlerAgentSetAppearance`
+  (`LLClientView.cs:9017-9048`) reads `VisualParam`, `TextureEntry` and `WearableData` and forwards
+  them straight to `OnSetAppearance` — it never looks at `AgentData.SerialNum` and never rejects an
+  out-of-order or duplicate packet. **Last write wins**, so a corrected packet sent immediately
+  after LibreMetaverse's bad one reliably replaces it.
+- **LibreMetaverse's *baker* is fine.** Only the packet encoder is wrong. `MakeParamValues()` — the
+  dictionary fed to the Baker — even carries the right rule (`if (kvp.Value.Group != 0) continue;`
+  with the comment *"Only Group-0 parameters are sent in AgentSetAppearance packets"*). So the
+  composited bake textures LibreMetaverse produces are usable as-is; only `VisualParam[]` and
+  `AgentData.Size` need replacing.
+
+**Upgrading does not help.** Checked `v3.1.4` (released 2026-08-26, after the pinned 3.1.3):
+`MakeAppearancePacket` is **unchanged** — still `foreach (var kvp in VisualParams.Params)` with no
+group filter and a `vpIndex >= nrParams` cut-off. The filter exists only in `MakeParamValues`. Worth
+reporting upstream: they clearly know the rule, it is just missing where the packet is built.
+
+So no fork is required. Report it upstream as a one-condition fix, and meanwhile run the
+send-corrected-after workaround. First live run still belongs on a throwaway alt.
 
 Alternatively, fix it upstream and unpin — `VisualParamOrderTests` fails the moment the orderings
 agree, which is the signal to reopen this task.
