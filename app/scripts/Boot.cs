@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.11.34-alpha";
+    public const string AppVersion = "v0.14.1-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -384,6 +384,8 @@ public partial class Boot : Control
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) OpenCreateLandmarkWindow(hudLayer);
         };
+
+        _topMenu.OnRebakeAvatar = RebakeAvatar;
 
         // Escape hatch for a stuck attachment/HUD that inventory "Detach"
         // (DetachAttachmentIntoInv) can't shift -- ObjectDetach by localId instead.
@@ -1283,6 +1285,12 @@ public partial class Boot : Control
                 // Ctrl+O — open the inventory straight on the Outfits tab (FEAT-INV-04).
                 _inventoryPanel?.OpenOnOutfits();
             }
+            else if (keyEvent.Keycode == Key.R && keyEvent.CtrlPressed && keyEvent.AltPressed)
+            {
+                // Ctrl+Alt+R — rebake the avatar, the same shortcut the real viewer uses
+                // (FEAT-AVATAR-01). Also in the World menu.
+                RebakeAvatar();
+            }
         }
     }
 
@@ -1986,11 +1994,21 @@ public partial class Boot : Control
         _terrainRenderer?.SetPrimaryRegion(handle);
     }
 
+    /// <summary>FEAT-AVATAR-01: manual avatar rebake — World menu entry and Ctrl+Alt+R, the same
+    /// shortcut the real viewer uses. Recomposites the bakes from the worn set and re-sends the
+    /// corrected appearance; the escape hatch when a wearable change did not visibly take.</summary>
+    private void RebakeAvatar()
+    {
+        if (_session == null) return;
+        _session.RebakeAvatar();
+        _chatWindow?.AppendLocalChatMessage("System",
+            "Avatar wird neu gebacken — das kann ein paar Sekunden dauern.");
+    }
+
     // FEAT-AVATAR-01: deferred target for GridSession.WearableEditUnavailable.
-    private void NotifyWearableEditUnavailable(string itemName)
+    private void NotifyWearableEditUnavailable(string reason)
         => _chatWindow?.AppendLocalChatMessage("System",
-            $"'{itemName}': System-Wearables (Alpha/Shape/Skin) können nicht geändert werden — " +
-            "LibreMetaverse würde dabei eine zerwürfelte Shape in deinen Account schreiben (FEAT-AVATAR-01).");
+            $"'{reason}' konnte nicht geändert werden — die Änderung wurde verworfen.");
 
     private int _logLineCount;
 

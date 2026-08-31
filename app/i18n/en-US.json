@@ -38,7 +38,8 @@
       "sculpt_u_nudge_right_coarse": "Nudge sculpt U: +16 grid columns",
       "environment": "Environment (Windlight)...",
       "world_map": "World Map...",
-      "minimap": "Minimap"
+      "minimap": "Minimap",
+      "rebake_avatar": "Rebake Avatar (Ctrl+Alt+R)"
     },
     "hud": {
       "stand_up": "Stand Up"

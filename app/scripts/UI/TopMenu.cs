@@ -21,6 +21,10 @@ namespace SLNG.App.UI
         public Action? OnOpenMinimap;
         /// <summary>true = HUD-point attachments only, false = every attachment.</summary>
         public Action<bool>? OnDetachAttachments;
+        /// <summary>FEAT-AVATAR-01: "Avatar neu backen" (Ctrl+Alt+R), the manual equivalent of the
+        /// real viewer's rebake — recomposites the baked textures from the worn set and re-sends the
+        /// appearance. The escape hatch when a wearable change did not visibly take.</summary>
+        public Action? OnRebakeAvatar;
 
         public override void _Ready()
         {
@@ -102,6 +106,8 @@ namespace SLNG.App.UI
             worldMenu.AddItem(L10n.Tr("ui.menu.world_map"), 4);
             worldMenu.AddItem(L10n.Tr("ui.menu.minimap"), 5);
             worldMenu.AddSeparator();
+            worldMenu.AddItem(L10n.Tr("ui.menu.rebake_avatar"), 6);
+            worldMenu.AddSeparator();
             worldMenu.AddItem(L10n.Tr("ui.menu.detach_all_huds"), 1);
             worldMenu.AddItem(L10n.Tr("ui.menu.detach_all_attachments"), 2);
             worldMenu.IdPressed += (id) => {
@@ -109,6 +115,7 @@ namespace SLNG.App.UI
                 else if (id == 3) OnOpenEnvironment?.Invoke();
                 else if (id == 4) OnOpenWorldMap?.Invoke();
                 else if (id == 5) OnOpenMinimap?.Invoke();
+                else if (id == 6) OnRebakeAvatar?.Invoke();
                 else if (id == 1) OnDetachAttachments?.Invoke(true);
                 else if (id == 2) OnDetachAttachments?.Invoke(false);
             };

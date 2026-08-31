@@ -705,7 +705,7 @@ public partial class InventoryPanel : SLNGWindow
             if (!IsInstanceValid(this)) return;
             _outfitsStatus.Text = err != null ? $"Fehler: {err}"
                 : n == 0 ? "Nichts davon getragen."
-                         : $"{n} Anhang/Anhänge abgelegt. Kleidung & Körper unverändert (Phase 2).";
+                         : $"{n} Teil(e) abgelegt — Kleidung wird nach einem Rebake sichtbar.";
         }).CallDeferred();
     }
 

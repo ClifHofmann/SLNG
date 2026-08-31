@@ -108,6 +108,89 @@ internal static class AgentAppearanceParams
         return (float)height;
     }
 
+    /// <summary>Re-reads a built array the way the simulator will and checks every slot carries the
+    /// weight it was built from. The last gate before anything reaches the grid: this task has
+    /// corrupted a real avatar three times, each because a wrong assumption was only visible after
+    /// the packet had already been persisted. If this returns false, do not send.</summary>
+    internal static bool VerifyRoundTrip(
+        byte[] wire, IReadOnlyList<IReadOnlyDictionary<int, float>> wearableParams, out string failure)
+    {
+        var ids = VisualParams.Group0ParamIds;
+
+        if (wire.Length == 0 || wire.Length > ids.Length)
+        {
+            failure = $"array length {wire.Length} is not a plausible wire length (id table holds {ids.Length})";
+            return false;
+        }
+
+        var decoded = DecodeWireArray(wire);
+
+        for (int i = 0; i < wire.Length; i++)
+        {
+            int id = ids[i];
+            if (!VisualParams.Params.TryGetValue(id, out var vp)) continue;
+
+            if (!decoded.TryGetValue(id, out var got))
+            {
+                failure = $"param {id} (slot {i}) missing after round trip";
+                return false;
+            }
+
+            float expected = ResolveWeight(id, wearableParams);
+            // One byte over the parameter's own range is the transport's resolution.
+            float tolerance = (vp.MaxValue - vp.MinValue) / 255f + 1e-4f;
+            if (Math.Abs(got - expected) > tolerance)
+            {
+                failure = $"param {id} (slot {i}) round-tripped to {got}, expected {expected}";
+                return false;
+            }
+        }
+
+        failure = string.Empty;
+        return true;
+    }
+
+    /// <summary>The bake slots an avatar's appearance must carry, as AvatarTextureIndex values:
+    /// head, upper body, lower body, eyes, hair. Sending any of these empty tells the simulator
+    /// "I have no baked texture here", which it persists — the avatar then renders untextured for
+    /// everyone, in every viewer, until something re-bakes it. Measured live 2026-08-31.</summary>
+    internal static readonly int[] EssentialBakeSlots = { 8, 9, 10, 11, 20 };
+
+    /// <summary>Fills empty bake slots from a known-good set — the simulator's own last relay,
+    /// which some viewer demonstrably produced and uploaded.
+    ///
+    /// <para>This exists because LibreMetaverse only composites bakes when
+    /// <c>Settings.Agent.SendAppearance</c> is on, and it is not: its <c>Textures[]</c> therefore
+    /// sits at all-zero, and a packet built from it carries <b>no</b> baked textures. Sending that
+    /// is what stripped the avatar's head texture on the grid — not a broken bake, an absent one.
+    /// Preserving the previous ids makes an appearance send non-destructive even when nothing
+    /// baked.</para></summary>
+    /// <param name="current">Slot → id as the outgoing packet currently has it.</param>
+    /// <param name="fallback">Slot → id from the simulator's last relay.</param>
+    /// <param name="complete">True when every <see cref="EssentialBakeSlots"/> entry ended up with
+    /// a real id. When false the caller must NOT send — an incomplete bake set is the failure this
+    /// whole helper exists to prevent.</param>
+    internal static Dictionary<int, Guid> MergeBakeSlots(
+        IReadOnlyDictionary<int, Guid> current,
+        IReadOnlyDictionary<int, Guid> fallback,
+        out bool complete)
+    {
+        var merged = new Dictionary<int, Guid>();
+        complete = true;
+
+        foreach (int slot in EssentialBakeSlots)
+        {
+            Guid id = current.TryGetValue(slot, out var c) && c != Guid.Empty
+                ? c
+                : fallback.TryGetValue(slot, out var f) ? f : Guid.Empty;
+
+            merged[slot] = id;
+            if (id == Guid.Empty) complete = false;
+        }
+
+        return merged;
+    }
+
     /// <summary>Reads a wire array back the way the simulator and <c>AvatarShapeService</c> do —
     /// positionally against <c>Group0ParamIds</c>. Exists so a built array can be round-tripped and
     /// verified BEFORE anything is sent; that verification is the whole reason this class is worth
