@@ -78,7 +78,10 @@ public record AvatarClassifiedInfo(Guid ClassifiedId, string Name);
 /// <param name="WasAttached">The item really was attached; a detach packet was sent for it.</param>
 /// <param name="StaleLinksRemoved">Current-Outfit links moved to Trash because nothing was
 /// actually attached.</param>
-public record DetachResult(bool WasAttached, int StaleLinksRemoved);
+/// <param name="WearableRemoved">The item is a system wearable (Clothing/Bodypart), not an
+/// attachment, and was taken off via <c>AppearanceManager.RemoveFromOutfit</c> (FEAT-AVATAR-01) —
+/// a rebake follows. <c>WasAttached</c> is false in this case.</param>
+public record DetachResult(bool WasAttached, int StaleLinksRemoved, bool WearableRemoved = false);
 
 /// <summary>2nd Life / 1st Life profile pages arrived. Identity data, not world-simulation
 /// state, so intentionally not an <see cref="IWorldEvent"/> — UI subscribes on GridSession.</summary>

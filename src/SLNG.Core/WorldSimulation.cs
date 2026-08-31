@@ -656,7 +656,12 @@ public sealed class WorldSimulation : IDisposable
         if (entity != null)
         {
             var avatar = entity.GetComponent<AvatarComponent>()!;
-            avatar.VisualParams = e.VisualParams;
+            // An empty parameter array means "this event carries no shape", NOT "use the default
+            // shape" -- clobbering a good set with it would visibly reset the avatar's proportions.
+            // A bake-completion event legitimately carries fresh textures but no shape of its own
+            // (FEAT-AVATAR-01: GridSession.OnAppearanceSet), so keep whatever shape we already had.
+            if (e.VisualParams is { Length: > 0 })
+                avatar.VisualParams = e.VisualParams;
             avatar.BakedTextures = e.BakedTextures;
             avatar.HoverOffsetZ = e.HoverOffsetZ;
             entity.SetComponent(avatar);

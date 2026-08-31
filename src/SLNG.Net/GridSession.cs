@@ -277,6 +277,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // So every AgentSetAppearance we sent carried no shape at all, and the simulator replaced
         // the stored shape with defaults. That is the whole explanation for the squat, deformed
         // avatar, and it is why a rebake feature must stay blocked -- it would take the same path.
+        //
+        // 2026-08-31 -- the REASON is now measured, not suspected, and it is not "our params are
+        // empty". LibreMetaverse's own encoder is broken: AppearanceManager.MakeAppearancePacket
+        // fills the 218 wire slots by iterating VisualParams.Params -- ALL 672 params, including the
+        // never-transmitted group-1/2 ones -- and taking the first 218, while the wire order is
+        // VisualParams.Group0ParamIds (the 253 TRANSMITTED ids). The two agree for 23 slots and
+        // diverge from index 23 on: 195 of 218 values land on the WRONG parameter. Pinned by
+        // SLNG.Assets.Tests.VisualParamOrderTests.
+        //
+        // So ANY path that reaches MakeAppearancePacket writes a scrambled shape to the account --
+        // which is exactly the 2026-08-02 (deformed), 2026-08-29 (flat) and 2026-08-31 (torn rigged
+        // head) incidents, all three explained by one upstream bug. A SLNG_APPEARANCE_SYNC env-var
+        // opt-in briefly existed here and was REMOVED: a switch that provably corrupts account data
+        // is not an experiment, it is a footgun. This stays false until LibreMetaverse is patched
+        // (the test above fails when it is), or until SLNG builds and sends a correctly-ordered
+        // AgentSetAppearance itself -- MakeAppearancePacket() is public, so its VisualParam array
+        // can be reordered to wire order before sending. See the spec.
         _client.Settings.Agent.SendAppearance = false;
 
         // Use the HTTP GetTexture CAP instead of the legacy UDP image transfer. UDP transfers
@@ -588,6 +605,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // default one, so CurrentSim reliably reflects that.
         if (sim == _client.Network.CurrentSim)
         {
+            _appearanceReadinessLogged = false; // FEAT-AVATAR-01: re-check the wearable-edit path for the new region
             RegionConnected?.Invoke(this, sim.Handle);
         }
         else
@@ -618,6 +636,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     private void OnEventQueueRunning(object? sender, LibreMetaverse.EventQueueRunningEventArgs e)
     {
         if (e.Simulator != _client.Network.CurrentSim) return;
+
+        // FEAT-AVATAR-01: report whether system-wearable edits are safe here. Logged once per
+        // region, at EventQueueRunning rather than SimConnected because the UpdateAvatarAppearance
+        // capability is only resolvable after the caps handshake completes.
+        LogAppearanceEditReadiness();
 
         _ = Task.Run(async () =>
         {
@@ -1646,10 +1669,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // hung off AppearanceSet, which only fires when LibreMetaverse runs its own bake -- i.e.
         // exactly the path SendAppearance=false disables -- so it could never fire in the
         // configuration it was written to diagnose. This event arrives regardless.
-        if (e.AvatarID == _client.Self.AgentID && !_visualParamsLogged)
+        if (e.AvatarID == _client.Self.AgentID)
         {
-            _visualParamsLogged = true;
-            LogVisualParamHealth();
+            if (!_visualParamsLogged)
+            {
+                _visualParamsLogged = true;
+                LogVisualParamHealth();
+            }
+
+            // FEAT-AVATAR-01: remember the simulator's own relay of our shape. This array is in
+            // Group0ParamIds (wire/decoder) order, which is what AvatarShapeService reads it as --
+            // see _lastSelfRelayVisualParams. It is the ONLY trustworthy shape source for the self
+            // avatar; LMV's MyVisualParameters is built in a DIFFERENT order (see OnAppearanceSet).
+            if (VisualParamsHealthy(e.VisualParams?.ToArray()))
+                _lastSelfRelayVisualParams = e.VisualParams!.ToArray();
+
+            // The appearance workflow is off, so LMV's MyVisualParameters stays empty -- seed it
+            // so a diagnostic read shows something truthful.
+            TrySeedVisualParams(e.VisualParams);
         }
 
         // FEAT-UI-16: a self appearance relay can change the worn wearable set.
@@ -1743,6 +1780,140 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
+    /// <summary>The modern SL VisualParams set is 218 bytes; a materially shorter relay is
+    /// incomplete. FEAT-AVATAR-01.</summary>
+    internal const int MinHealthyVisualParams = 200;
+
+    private bool _visualParamsSeeded;
+
+    /// <summary>True if <paramref name="vp"/> reads as a genuine shape: long enough, and not the
+    /// all-zero / all-128 array of a never-populated default set.</summary>
+    internal static bool VisualParamsHealthy(byte[]? vp)
+    {
+        if (vp == null || vp.Length < MinHealthyVisualParams) return false;
+        int defaulted = 0;
+        foreach (var b in vp)
+            if (b == 0 || b == 128) defaulted++;
+        return defaulted < vp.Length;
+    }
+
+    /// <summary>Copies the simulator's self-appearance VisualParams into
+    /// <c>AppearanceManager.MyVisualParameters</c> once, when LibreMetaverse holds nothing better,
+    /// so <c>LogVisualParamHealth()</c> reports a real value while LMV's own workflow is disabled.
+    ///
+    /// NOTE: this does NOT make a wearable-edit rebake safe. <c>AppearanceManager.MakeAppearancePacket</c>
+    /// rebuilds every param from the decoded <c>wearable.Asset</c> (falling back to
+    /// <c>DefaultValue</c> when the asset was never downloaded) and then OVERWRITES
+    /// <c>MyVisualParameters</c> — it never reads the seeded value. FEAT-AVATAR-01 Phase 1's
+    /// wearable send is reverted for exactly this reason.</summary>
+    private void TrySeedVisualParams(List<byte>? incoming)
+    {
+        if (_visualParamsSeeded) return;
+        var arr = incoming?.ToArray();
+        if (!VisualParamsHealthy(arr)) return;
+        if (VisualParamsHealthy(_client.Appearance.MyVisualParameters)
+            && _client.Appearance.MyVisualParameters.Length >= arr!.Length)
+        {
+            _visualParamsSeeded = true; // LMV already has an equal-or-better set
+            return;
+        }
+
+        _client.Appearance.MyVisualParameters = arr!;
+        _visualParamsSeeded = true;
+        Console.Error.WriteLine($"[VisualParams] seeded {arr!.Length} params from self AvatarAppearance relay (diagnostic only)");
+    }
+
+    /// <summary>Whether a "Wear" / "Detach" on an inventory item targets a system wearable
+    /// (Clothing/Bodypart layer — Alpha, Skin, Shape, Tattoo, Universal, …) rather than an
+    /// attachment. FEAT-AVATAR-01.</summary>
+    internal enum WearableKind { Attachment, Wearable }
+
+    /// <summary>Classifies a resolved inventory item. Pure function of the two facts that decide it,
+    /// so it unit-tests without a live client: LibreMetaverse types it as an
+    /// <c>InventoryWearable</c>, or its asset type is Clothing (5) or Bodypart (13).</summary>
+    internal static WearableKind ClassifyItem(bool isInventoryWearable, int assetType)
+        => isInventoryWearable
+           || assetType == (int)LibreMetaverse.AssetType.Clothing
+           || assetType == (int)LibreMetaverse.AssetType.Bodypart
+            ? WearableKind.Wearable
+            : WearableKind.Attachment;
+
+    /// <summary>FEAT-AVATAR-01: true only when the current region does the full SL server-side-baking
+    /// handshake — advertises the <c>AgentAppearanceService</c> protocol AND registers the
+    /// <c>UpdateAvatarAppearance</c> capability. Here a wearable edit needs no local preparation:
+    /// <c>RemoveFromOutfit</c>/<c>AddToOutfit</c> reach <c>RequestSetAppearanceAsync</c>'s SSB branch,
+    /// whose only outgoing request is a cap POST of <c>{ cof_version }</c> — no visual params, no
+    /// shape — and the server composites. This is an SL path; OpenSim's own server-side appearance
+    /// (XBakes) does NOT set these (<c>RequestSetAppearanceAsync</c> ~3264 and the comment at
+    /// <c>MakeAppearancePacket</c> ~2952 both say "always false on OpenSim"), so on OpenSim this is
+    /// false and the wearable edit takes the client-side path — safe only after
+    /// <see cref="EnsureWornWearablesDecodedAsync"/>.</summary>
+    public bool RegionHasServerSideBaking()
+        => _client.Network.Connected
+           && _client.Appearance.ServerBakingRegion()
+           && _client.Network.CurrentSim?.Caps?.CapabilityURI("UpdateAvatarAppearance") != null;
+
+    private bool _appearanceReadinessLogged;
+
+    /// <summary>Logs, once per region, that system-wearable edits are disabled and why — so "the
+    /// alpha layer won't come off" has an answer in the log. FEAT-AVATAR-01.</summary>
+    private void LogAppearanceEditReadiness()
+    {
+        if (_appearanceReadinessLogged) return;
+        _appearanceReadinessLogged = true;
+        string region = _client.Network.CurrentSim?.Name ?? "?";
+        Console.Error.WriteLine($"[Appearance] {region}: system-wearable edits disabled — LibreMetaverse's " +
+            "MakeAppearancePacket writes 195 of 218 visual params to the wrong slot (FEAT-AVATAR-01)");
+    }
+
+    /// <summary>FEAT-AVATAR-01: raised when a system-wearable wear/detach was refused because there
+    /// is no safe way to trigger the rebake (see the block comment above
+    /// <see cref="WearWearableAsync"/>). Payload is the item name, for a user-facing notice.</summary>
+    public event EventHandler<string>? WearableEditUnavailable;
+
+    // FEAT-AVATAR-01 — system-wearable remove/add. Blocked on an upstream bug, MEASURED not guessed.
+    //
+    // AppearanceManager.MakeAppearancePacket builds the outgoing AgentSetAppearance by iterating
+    // VisualParams.Params (ALL 672 params) and taking the first 218, but the wire order is
+    // VisualParams.Group0ParamIds (the 253 TRANSMITTED ids). They agree for 23 slots and diverge
+    // from index 23 on -- 195 of 218 values land on the WRONG parameter, and the sim persists that.
+    // Pinned by SLNG.Assets.Tests.VisualParamOrderTests.
+    //
+    // Every route into AppearanceManager hits it: AddToOutfit / RemoveFromOutfit /
+    // ReplaceOutfitAsync / RequestSetAppearance all reach MakeAppearancePacket. That is the single
+    // explanation for all three live incidents (2026-08-02 deformed, 2026-08-29 flat, 2026-08-31
+    // torn rigged head), and no amount of preparing the wearables first can fix it -- the three
+    // attempts that tried are in the spec.
+    //
+    // So the edit is a logged no-op. Not a regression: DetachAttachmentIntoInv was always a
+    // server-side no-op for a Clothing/Bodypart layer, so the layer could never be removed anyway.
+    // The way out is to build the AgentSetAppearance ourselves -- MakeAppearancePacket() is public,
+    // so its VisualParam array can be permuted into wire order and sent directly. See the spec.
+
+    private Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
+    {
+        Console.Error.WriteLine($"[Appearance] wear of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
+            "LibreMetaverse would write a scrambled shape to your account (FEAT-AVATAR-01)");
+        WearableEditUnavailable?.Invoke(this, wearable.Name);
+        return Task.CompletedTask;
+    }
+
+    private Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
+    {
+        Console.Error.WriteLine($"[Appearance] detach of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
+            "LibreMetaverse would write a scrambled shape to your account (FEAT-AVATAR-01)");
+        WearableEditUnavailable?.Invoke(this, wearable.Name);
+        return Task.FromResult(new DetachResult(false, 0));
+    }
+
+    /// <summary>The simulator's own last relay of the self avatar's shape, captured in
+    /// <see cref="OnAvatarAppearance"/>. In <c>VisualParams.Group0ParamIds</c> order — the wire /
+    /// decoder order that <c>AvatarShapeService.ComputeEffectiveWeights</c> indexes positionally.
+    /// Kept because it is the only shape array in that order: LibreMetaverse's
+    /// <c>MyVisualParameters</c> is built by <c>MakeAppearancePacket</c> in a different one
+    /// (see <see cref="OnAppearanceSet"/>). FEAT-AVATAR-01.</summary>
+    private byte[] _lastSelfRelayVisualParams = Array.Empty<byte>();
+
     private void OnAppearanceSet(object? sender, AppearanceSetEventArgs e)
     {
         if (!e.Success) return;
@@ -1781,10 +1952,30 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         if (textures.Count == 0) return;
 
+        // FEAT-AVATAR-01 -- the shape MUST NOT come from Appearance.MyVisualParameters here.
+        //
+        // Two different orderings exist and they are not interchangeable (pinned by
+        // SLNG.Assets.Tests.VisualParamOrderTests):
+        //   * DECODER order = VisualParams.Group0ParamIds, ascending id over the TRANSMITTED params.
+        //     This is what the simulator sends, what LMV's Avatar.DecodeVisualParams assumes, and
+        //     what AvatarShapeService.ComputeEffectiveWeights indexes positionally.
+        //   * ENCODER order = whatever AppearanceManager.MakeAppearancePacket produces: it iterates
+        //     VisualParams.Params -- ALL params, including the never-transmitted group-1/2 ones --
+        //     and takes the first 218, then copies that into MyVisualParameters.
+        // The first 218 of Params are provably NOT the first 218 of Group0ParamIds, so
+        // MyVisualParameters assigns each byte to the WRONG parameter when read as a shape.
+        //
+        // This event only fires when LibreMetaverse runs its own bake, i.e. never while
+        // SendAppearance is off -- which is why the bug stayed latent. With SLNG_APPEARANCE_SYNC on
+        // it fires, and feeding the encoder-order array to the shape service scrambled every
+        // skeletal param: live 2026-08-31 the rigged mesh head tore apart.
+        //
+        // The valuable part of this event is the freshly composited BAKE IDS. Take those, and pair
+        // them with the simulator's own last relay of the shape, which is in decoder order.
         RaiseAvatarAppearance(new AvatarAppearanceEvent(
             _client.Network.CurrentSim?.Handle ?? 0,
             _client.Self.AgentID.Guid,
-            _client.Appearance.MyVisualParameters ?? Array.Empty<byte>(),
+            _lastSelfRelayVisualParams,
             textures));
     }
 
@@ -2727,8 +2918,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>
-    /// Attaches an inventory item (Object/HUD/Attachment) to the agent.
-    /// Handles both real inventory item IDs and link IDs.
+    /// Wears an inventory item. An attachment/object is attached via <c>Attach</c>. A system
+    /// wearable (Clothing/Bodypart layer) is added via <c>AppearanceManager.AddToOutfit</c> — on an
+    /// SL server-side-baking region straight through, otherwise only after every currently-worn
+    /// wearable is decoded so the rebake can't persist a default shape (FEAT-AVATAR-01); if that
+    /// preparation fails the wear is refused with <see cref="WearableEditUnavailable"/>. Handles
+    /// item IDs and links.
     /// </summary>
     public Task AttachItemAsync(Guid itemId, byte attachPoint = 0, bool replace = false)
     {
@@ -2744,6 +2939,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         if (itemNode?.Data is LibreMetaverse.InventoryItem realItem)
         {
+            // FEAT-AVATAR-01: a system wearable is not an attachment. AddToOutfit → RequestSetAppearance
+            // triggers a rebake; MakeAppearancePacket rebuilds the 218 visual params from the DECODED
+            // worn wearables, falling back to vp.DefaultValue for any it can't decode — which is how
+            // the 2026-08-02 / 2026-08-29 flatten happened. PrepareWearableEditAsync makes that safe
+            // (SL SSB: server composes, nothing sent; else: decode every worn wearable first).
+            if (ClassifyItem(realItem is LibreMetaverse.InventoryWearable, (int)realItem.AssetType)
+                == WearableKind.Wearable)
+            {
+                return WearWearableAsync(realItem, replace);
+            }
+
             _client.Appearance.Attach(realItem, (LibreMetaverse.AttachmentPoint)attachPoint, replace);
         }
         else
@@ -2762,14 +2968,33 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>
-    /// Detaches an inventory item / attachment from the agent.
-    /// Handles both real inventory item IDs and link IDs inside Current Outfit.
+    /// Takes an inventory item off the agent. An attachment is removed via
+    /// <c>DetachAttachmentIntoInv</c> (plus stale-COF-link cleanup). A system wearable
+    /// (Clothing/Bodypart layer) is removed via <c>AppearanceManager.RemoveFromOutfit</c> — on an
+    /// SL server-side-baking region straight through, otherwise only after every currently-worn
+    /// wearable is decoded so the rebake can't persist a default shape (FEAT-AVATAR-01); if that
+    /// preparation fails the detach is refused with <see cref="WearableEditUnavailable"/>. Handles
+    /// item IDs and links inside Current Outfit.
     /// </summary>
     public Task<DetachResult> DetachItemAsync(Guid itemId)
     {
         var itemUuid = new LibreMetaverse.UUID(itemId);
         var store = _client.Inventory.Store;
         var node = store?.GetNodeOrDefault(itemUuid);
+
+        // FEAT-AVATAR-01: a system wearable is not an attachment (the sim ignores
+        // DetachAttachmentIntoInv for a Clothing/Bodypart layer). RemoveFromOutfit → RequestSetAppearance
+        // triggers a rebake; see WearWearableAsync's comment for why it needs preparation.
+        {
+            var real = node?.Data as LibreMetaverse.InventoryItem;
+            if (real is { } && real.IsLink())
+                real = store?.GetNodeOrDefault(real.ResolvedItemID)?.Data as LibreMetaverse.InventoryItem ?? real;
+            if (real is { }
+                && ClassifyItem(real is LibreMetaverse.InventoryWearable, (int)real.AssetType) == WearableKind.Wearable)
+            {
+                return RemoveWearableAsync(real);
+            }
+        }
 
         var uuidsToDetach = new HashSet<LibreMetaverse.UUID>();
         if (itemUuid != LibreMetaverse.UUID.Zero) uuidsToDetach.Add(itemUuid);

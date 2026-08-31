@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.11.25-alpha";
+    public const string AppVersion = "v0.11.34-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1686,6 +1686,10 @@ public partial class Boot : Control
         // arrival toast / region environment above.
         _session.TeleportProgress += (s, e) => _pendingTeleportProgress.Enqueue(e);
 
+        // FEAT-AVATAR-01: a wear/detach of a system wearable was refused because this region has no
+        // server-side baking. Tell the user in nearby chat (fires on a network thread — marshal).
+        _session.WearableEditUnavailable += (s, name) => CallDeferred(nameof(NotifyWearableEditUnavailable), name);
+
         var creds = new LoginCredentials
         {
             GridLoginUri = _gridInput.Text,
@@ -1981,6 +1985,12 @@ public partial class Boot : Control
         // origin we just set).
         _terrainRenderer?.SetPrimaryRegion(handle);
     }
+
+    // FEAT-AVATAR-01: deferred target for GridSession.WearableEditUnavailable.
+    private void NotifyWearableEditUnavailable(string itemName)
+        => _chatWindow?.AppendLocalChatMessage("System",
+            $"'{itemName}': System-Wearables (Alpha/Shape/Skin) können nicht geändert werden — " +
+            "LibreMetaverse würde dabei eine zerwürfelte Shape in deinen Account schreiben (FEAT-AVATAR-01).");
 
     private int _logLineCount;
 
