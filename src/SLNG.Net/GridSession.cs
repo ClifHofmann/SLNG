@@ -1896,6 +1896,54 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     // rejects a repeat, so last write wins and the corrected packet is what gets stored. See
     // SendCorrectedAppearance below and the spec for the trade-off this accepts.
 
+    /// <summary>Sends the legacy <c>AgentWearablesRequest</c> and waits for the simulator's
+    /// <c>AgentWearablesUpdate</c>, which is what populates <c>AppearanceManager.Wearables</c>.
+    ///
+    /// <para>LibreMetaverse would send this itself at login, but only under
+    /// <c>Settings.Agent.SendAppearance</c> — which stays off (see the ctor) — so with the flag off
+    /// nobody ever asks and the worn set is empty for the whole session. That empty set is why the
+    /// "Angezogen" tab showed every Clothing/Bodypart layer as "(nicht aktiv)": <c>GetWornItems</c>
+    /// marks an item live from <c>GetWearables()</c>, and could only ever see the COF link instead.
+    /// It is also what a wearable edit needs to build an appearance from.</para>
+    ///
+    /// <para>Mirrors LibreMetaverse's own private <c>GatherAgentWearablesViaLLUDPAsync</c>. Prefer
+    /// this over the COF route (<c>RequestAgentWornAsync</c>): measured 2026-08-31, that one returns
+    /// empty on OSGrid, while OpenSim answers this packet reliably. Best-effort — returns on the
+    /// reply or after a 10 s timeout, and never throws into the caller.</para></summary>
+    private async Task RequestWornWearablesViaLludpAsync(CancellationToken ct)
+    {
+        if (!_client.Network.Connected) return;
+
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnReply(object? s, LibreMetaverse.AgentWearablesReplyEventArgs e) => tcs.TrySetResult(true);
+
+        _client.Appearance.AgentWearablesReply += OnReply;
+        try
+        {
+            var request = new LibreMetaverse.Packets.AgentWearablesRequestPacket
+            {
+                AgentData = { AgentID = _client.Self.AgentID, SessionID = _client.Self.SessionID }
+            };
+            _client.Network.SendPacket(request);
+
+            await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(10), ct)).ConfigureAwait(false);
+
+            int count = _client.Appearance.GetWearables().Count();
+            Console.Error.WriteLine(count > 0
+                ? $"[Appearance] worn wearables resolved: {count}"
+                : "[Appearance] no worn wearables returned — the Worn tab will show layers as inactive");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Appearance] AgentWearablesRequest failed: {ex.Message}");
+        }
+        finally
+        {
+            _client.Appearance.AgentWearablesReply -= OnReply;
+        }
+    }
+
     // How long after a wearable edit corrections stay armed. LibreMetaverse bakes on a 5 s
     // REBAKE_DELAY timer and may bake more than once for one edit; every completed bake must be
     // corrected, so this covers the whole settling window rather than a single event.
@@ -2572,6 +2620,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (response is null)
             {
                 return LoginResult.Fail("no-response", "Grid returned no login response.");
+            }
+
+            if (response.Success)
+            {
+                // FEAT-AVATAR-01: ask the simulator for the worn wearable set. LibreMetaverse would
+                // do this itself at login, but only under Settings.Agent.SendAppearance, which is
+                // off -- so without this AppearanceManager.Wearables stays empty for the whole
+                // session. Two things depend on it: the Worn tab ("Angezogen") marks every
+                // Clothing/Bodypart layer "(nicht aktiv)" because GetWornItems can only see the COF
+                // link, and a wearable edit has no worn set to build an appearance from.
+                // Fire-and-forget: nothing in the login path should wait on it.
+                _ = RequestWornWearablesViaLludpAsync(CancellationToken.None);
             }
 
             return response.Success
