@@ -132,13 +132,56 @@ while wiring the send:
    half either. SLNG would have to send `AgentIsNowWearing` itself and do its own COF link
    manipulation (it already does the latter for FEAT-INV-03).
 
-So the remaining work is a **bake** problem, not a param problem. Open questions to settle first,
-by measurement, before writing more code:
+So the remaining work is a **bake** problem, not a param problem.
 
-- Does OpenSim's XBakes/SSA recomposite from the COF alone, so a viewer only needs the COF update +
-  `AgentIsNowWearing` and no `AgentSetAppearance` at all? If yes, this gets much smaller.
-- If not, can the bake be driven without `SendAppearance` — or does that reintroduce the cold-state
-  problem the Phase 2 attempts hit?
+### The bake question — ANSWERED from OpenSim source (2026-08-31)
+
+Both open questions are settled, at zero risk, by reading the server:
+
+**1. No, OpenSim does not recomposite from the Current Outfit Folder.** `AvatarFactoryModule`'s
+`AgentIsNowWearing` handler updates only the worn list and then explicitly waits for the viewer
+(`AvatarFactoryModule.cs:1251-1254`):
+
+```csharp
+sp.Appearance.Wearables = avatAppearance.Wearables;
+// We don't need to send the appearance here since the "iswearing" will trigger a new set
+// of visual param and baked texture changes. When those complete, the new appearance will be sent
+QueueAppearanceSave(client.AgentId);
+```
+
+So `AgentIsNowWearing` alone changes nothing visible. The server expects a following
+`SetAppearance` carrying **new visual params AND new baked textures**.
+
+**2. XBakes is a bake *cache*, not a baker.** `XBakesModule : IBakedTextureModule` exposes only
+`Get(UUID)` / `Store(UUID, WearableCacheItem[])` — it stores textures the *viewer* already baked and
+uploaded, so they survive relogs and region crossings. It never composites anything. The grid having
+`[XBakes] URL = …` configured therefore does not move any work off the client.
+
+**Conclusion: the client must bake.** There is no shortcut and no server-side path. FEAT-AVATAR-01
+is really "SLNG needs a working client-side avatar bake", and the visual-param fix above is one
+necessary piece of it, not the whole thing.
+
+### Remaining plan (not built)
+
+LibreMetaverse *does* implement baking (`AppearanceManager.Baking.cs`, `BakeLayer`,
+`DownloadWearablesAsync`, `UploadBakedTexture`). The obstacle is that `RequestSetAppearanceAsync`
+bakes, uploads **and sends** in one call, with no interception point — so its correct textures
+arrive together with its scrambled params.
+
+The only shape that fits without forking LibreMetaverse:
+
+1. Let `RequestSetAppearance` run: it downloads wearables, composites the bakes, uploads them, and
+   sends one **bad** `AgentSetAppearance`.
+2. Immediately build a **corrected** packet: `MakeAppearancePacket()` for the freshly-baked
+   `TextureEntry`, with `VisualParam[]` replaced by `AgentAppearanceParams.BuildWireArray(...)` and
+   `AgentData.Size.Z` by `ComputeAgentHeight(...)`.
+3. Verify it round-trips (`DecodeWireArray`) before sending, then `Network.SendPacket` it. The
+   server persists the last write, so the final stored appearance is the correct one.
+
+This deliberately accepts a brief window in which the bad appearance is stored. That is a real
+trade-off and needs the user's explicit agreement plus a throwaway alt for the first run — the
+alternative is forking LibreMetaverse to add the missing group filter to `MakeAppearancePacket`,
+which is a one-line fix upstream and would make all of this unnecessary.
 
 Alternatively, fix it upstream and unpin — `VisualParamOrderTests` fails the moment the orderings
 agree, which is the signal to reopen this task.
