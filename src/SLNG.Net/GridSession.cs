@@ -2190,40 +2190,68 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             var wanted = textures.Where(t => t.TextureID != LibreMetaverse.UUID.Zero)
                                  .Select(t => t.TextureID).Distinct().ToList();
             Console.Error.WriteLine($"[Bake] textures referenced by the worn set: {wanted.Count}");
-            int got = 0;
+            int got = 0, decodedTex = 0;
             foreach (var id in wanted)
             {
                 try
                 {
                     var tex = await _client.Appearance.TextureProvider.RequestTextureAsync(id, ct).ConfigureAwait(false);
                     if (tex == null) { Console.Error.WriteLine($"[Bake]   texture {id} -> null"); continue; }
-                    try { tex.Decode(); } catch { }
-                    foreach (var t in textures) if (t.TextureID == id) t.Texture = tex;
                     got++;
+
+                    // Report the decode instead of swallowing it. AssetTexture.Decode runs
+                    // J2kImage.DecodeToImage<SKBitmap>, which throws outright when CoreJ2K's Skia
+                    // image creator is not registered -- and a bake composited from undecoded
+                    // textures comes out blank, which looks like "the baker did nothing".
+                    bool ok;
+                    try { ok = tex.Decode(); }
+                    catch (Exception dex) { ok = false; Console.Error.WriteLine($"[Bake]   texture {id} decode threw: {dex.Message}"); }
+
+                    if (ok && tex.Image != null)
+                    {
+                        decodedTex++;
+                        Console.Error.WriteLine($"[Bake]   texture {id.ToString()[..8]} -> {tex.Image.Width}x{tex.Image.Height} " +
+                            $"channels={tex.Image.Channels} ({tex.AssetData?.Length ?? 0} bytes asset)");
+                    }
+                    else
+                    {
+                        Console.Error.WriteLine($"[Bake]   texture {id.ToString()[..8]} -> decode FAILED " +
+                            $"(ok={ok}, image={(tex.Image == null ? "null" : "set")}) -- this channel will bake blank");
+                    }
+
+                    foreach (var t in textures) if (t.TextureID == id) t.Texture = tex;
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { Console.Error.WriteLine($"[Bake]   texture {id} -> {ex.Message}"); }
             }
-            Console.Error.WriteLine($"[Bake] textures downloaded: {got}/{wanted.Count}");
+            Console.Error.WriteLine($"[Bake] textures downloaded: {got}/{wanted.Count}, decoded: {decodedTex}/{got}");
 
             // 5. Bake each channel and report. Nothing is uploaded or sent.
             foreach (var bakeType in new[] { BakeType.Head, BakeType.UpperBody, BakeType.LowerBody, BakeType.Eyes, BakeType.Hair })
             {
                 var indices = AppearanceManager.BakeTypeToTextures(bakeType);
                 var oven = new LibreMetaverse.Imaging.Baker(bakeType);
-                int fed = 0;
+                int fed = 0, usable = 0;
+                var detail = new List<string>();
                 foreach (var idx in indices)
                 {
                     var t = textures[(int)idx];
                     t.TextureIndex = idx;
                     oven.AddTexture(t);
-                    if (t.Texture != null) fed++;
+                    if (t.Texture == null) continue;
+                    fed++;
+                    // Decoded image present is what the baker can actually composite; a fetched
+                    // but undecoded texture contributes nothing and is the difference between a
+                    // real bake and a 507-byte blank.
+                    if (t.Texture.Image != null) { usable++; detail.Add($"{idx}:{t.Texture.Image.Width}x{t.Texture.Image.Height}"); }
+                    else detail.Add($"{idx}:UNDECODED");
                 }
 
                 await Task.Run(() => oven.Bake(), ct).ConfigureAwait(false);
                 int bytes = oven.BakedTexture?.AssetData?.Length ?? 0;
-                Console.Error.WriteLine($"[Bake] {bakeType,-10} inputs={indices.Count} withTexture={fed} " +
-                    $"-> {(bytes > 0 ? bytes + " bytes" : "NOTHING")}");
+                Console.Error.WriteLine($"[Bake] {bakeType,-10} inputs={indices.Count} withTexture={fed} usable={usable} " +
+                    $"-> {(bytes > 0 ? bytes + " bytes" : "NOTHING")}" +
+                    (detail.Count > 0 ? "  [" + string.Join(" ", detail) + "]" : ""));
             }
 
             Console.Error.WriteLine("[Bake] dry run complete -- nothing uploaded, nothing sent");
