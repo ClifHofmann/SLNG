@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.13.3-alpha";
+    public const string AppVersion = "v0.14.0-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -2008,8 +2008,7 @@ public partial class Boot : Control
     // FEAT-AVATAR-01: deferred target for GridSession.WearableEditUnavailable.
     private void NotifyWearableEditUnavailable(string reason)
         => _chatWindow?.AppendLocalChatMessage("System",
-            $"Appearance nicht gesendet ({reason}) — die Änderung wurde verworfen, damit dein " +
-            "Avatar keine Texturen verliert. Bitte vorerst in einem anderen Viewer ändern.");
+            $"'{reason}' konnte nicht geändert werden — die Änderung wurde verworfen.");
 
     private int _logLineCount;
 

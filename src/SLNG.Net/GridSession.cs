@@ -2187,20 +2187,146 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     // altering what the system body shows) may not become visible until another viewer re-bakes.
     // It is non-destructive either way, which is the property that was missing.
 
-    private Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
+    /// <summary>Collects the worn system wearables from the Current Outfit Folder as
+    /// (itemId, wearableType) pairs — the payload of <c>AgentIsNowWearing</c>.
+    ///
+    /// <para>Read from the COF rather than <c>AppearanceManager.Wearables</c> on purpose: the
+    /// legacy <c>AgentWearablesUpdate</c> that populates the latter carries only ONE wearable per
+    /// type slot, so a modern multi-layer outfit (several skin/tattoo layers) is unrepresentable in
+    /// it. The COF is the complete set, and OpenSim's handler does
+    /// <c>Wearables[type].Add(...)</c> — an add, not an assign — so multiple layers of one type are
+    /// accepted.</para></summary>
+    private List<(LibreMetaverse.UUID ItemId, byte WearableType)> CollectWornWearablesFromCof(
+        LibreMetaverse.UUID? excludeItem = null, (LibreMetaverse.UUID Id, byte Type)? extra = null)
     {
-        Console.Error.WriteLine($"[Appearance] wear of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
-            "appearance writing is disabled (FEAT-AVATAR-01)");
-        WearableEditUnavailable?.Invoke(this, wearable.Name);
-        return Task.CompletedTask;
+        var worn = new List<(LibreMetaverse.UUID, byte)>();
+        var store = _client.Inventory.Store;
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
+        if (cofNode == null) return worn;
+
+        foreach (var childNode in cofNode.Nodes.Values)
+        {
+            if (childNode.Data is not LibreMetaverse.InventoryItem link) continue;
+            if (link.AssetType == LibreMetaverse.AssetType.LinkFolder) continue;
+
+            var targetUuid = link.IsLink() ? link.ResolvedItemID : link.UUID;
+            if (targetUuid == LibreMetaverse.UUID.Zero) continue;
+            if (excludeItem.HasValue && (targetUuid == excludeItem.Value || link.UUID == excludeItem.Value)) continue;
+
+            if (store?.GetNodeOrDefault(targetUuid)?.Data is not LibreMetaverse.InventoryWearable w) continue;
+            worn.Add((targetUuid, (byte)w.WearableType));
+        }
+
+        if (extra.HasValue && !worn.Any(e => e.Item1 == extra.Value.Id))
+            worn.Add((extra.Value.Id, extra.Value.Type));
+
+        return worn;
     }
 
-    private Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
+    /// <summary>Tells the simulator which system wearables are worn now.
+    ///
+    /// <para>This is the ONE appearance-related packet that is safe to send from SLNG today: it
+    /// carries item ids and wearable-type bytes and <b>nothing else</b> — no visual parameters, no
+    /// texture entry — so it cannot write a wrong shape or strip a bake, which is what every
+    /// previous attempt did. OpenSim's <c>AvatarFactoryModule</c> applies it to
+    /// <c>sp.Appearance.Wearables</c> and persists it (<c>QueueAppearanceSave</c>), then waits for
+    /// a viewer to bake. So the change is genuinely recorded server-side; it becomes VISIBLE once
+    /// something re-bakes, which SLNG cannot do yet.</para></summary>
+    private void SendAgentIsNowWearing(List<(LibreMetaverse.UUID ItemId, byte WearableType)> worn)
     {
-        Console.Error.WriteLine($"[Appearance] detach of \"{wearable.Name}\" ({wearable.AssetType}) not sent: " +
-            "appearance writing is disabled (FEAT-AVATAR-01)");
-        WearableEditUnavailable?.Invoke(this, wearable.Name);
-        return Task.FromResult(new DetachResult(false, 0));
+        var packet = new LibreMetaverse.Packets.AgentIsNowWearingPacket
+        {
+            AgentData = { AgentID = _client.Self.AgentID, SessionID = _client.Self.SessionID },
+            WearableData = worn
+                .Select(w => new LibreMetaverse.Packets.AgentIsNowWearingPacket.WearableDataBlock
+                {
+                    ItemID = w.ItemId,
+                    WearableType = w.WearableType,
+                })
+                .ToArray(),
+        };
+
+        _client.Network.SendPacket(packet);
+        Console.Error.WriteLine($"[Appearance] AgentIsNowWearing sent ({worn.Count} wearable(s))");
+    }
+
+    /// <summary>Puts a system wearable on: adds its Current-Outfit link, then tells the simulator
+    /// the new worn set. Deliberately does NOT go through <c>AppearanceManager.AddToOutfit</c>,
+    /// which ends in the appearance send that has corrupted this avatar three times.</summary>
+    private async Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
+    {
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        if (cofUuid == LibreMetaverse.UUID.Zero)
+        {
+            Console.Error.WriteLine($"[Appearance] wear of \"{wearable.Name}\" not sent: no Current Outfit folder");
+            WearableEditUnavailable?.Invoke(this, wearable.Name);
+            return;
+        }
+
+        try
+        {
+            await _client.Inventory.CreateLinkAsync(
+                cofUuid, wearable.UUID, wearable.Name, wearable.Description,
+                LibreMetaverse.InventoryType.Wearable, LibreMetaverse.UUID.Zero).ConfigureAwait(false);
+
+            byte type = wearable is LibreMetaverse.InventoryWearable iw ? (byte)iw.WearableType : (byte)0;
+            SendAgentIsNowWearing(CollectWornWearablesFromCof(extra: (wearable.UUID, type)));
+
+            Console.Error.WriteLine($"[Appearance] wore \"{wearable.Name}\" ({wearable.AssetType}) " +
+                "-- recorded server-side; becomes visible after a rebake");
+            WornItemsChanged?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Appearance] wear of \"{wearable.Name}\" failed: {ex.Message}");
+            WearableEditUnavailable?.Invoke(this, wearable.Name);
+        }
+    }
+
+    /// <summary>Takes a system wearable off: trashes its Current-Outfit link(s), then tells the
+    /// simulator the new worn set. The link goes to Trash rather than being purged — a COF link is
+    /// still user data, same reasoning as BUG-NET-02's stale-link cleanup.</summary>
+    private async Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
+    {
+        var store = _client.Inventory.Store;
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
+        var trashUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.Trash);
+
+        if (cofNode == null || trashUuid == LibreMetaverse.UUID.Zero)
+        {
+            Console.Error.WriteLine($"[Appearance] detach of \"{wearable.Name}\" not sent: no Current Outfit / Trash folder");
+            WearableEditUnavailable?.Invoke(this, wearable.Name);
+            return new DetachResult(false, 0);
+        }
+
+        int removed = 0;
+        foreach (var childNode in cofNode.Nodes.Values.ToList())
+        {
+            if (childNode.Data is not LibreMetaverse.InventoryItem link) continue;
+            if (link.AssetType == LibreMetaverse.AssetType.LinkFolder) continue;
+
+            var targetUuid = link.IsLink() ? link.ResolvedItemID : link.UUID;
+            if (targetUuid != wearable.UUID && link.UUID != wearable.UUID) continue;
+
+            try { _client.Inventory.MoveItem(link.UUID, trashUuid); cofNode.Nodes.Remove(link.UUID); removed++; }
+            catch (Exception ex) { Console.Error.WriteLine($"[Appearance] could not trash COF link: {ex.Message}"); }
+        }
+
+        if (removed == 0)
+        {
+            Console.Error.WriteLine($"[Appearance] \"{wearable.Name}\" has no Current-Outfit link -- nothing to take off");
+            return new DetachResult(false, 0);
+        }
+
+        SendAgentIsNowWearing(CollectWornWearablesFromCof(excludeItem: wearable.UUID));
+        Console.Error.WriteLine($"[Appearance] removed \"{wearable.Name}\" ({wearable.AssetType}) " +
+            $"-- {removed} outfit link(s) trashed, recorded server-side; becomes visible after a rebake");
+        WornItemsChanged?.Invoke(this, EventArgs.Empty);
+
+        await Task.CompletedTask.ConfigureAwait(false);
+        return new DetachResult(false, removed, WearableRemoved: true);
     }
 
     /// <summary>The simulator's own last relay of the self avatar's shape, captured in
