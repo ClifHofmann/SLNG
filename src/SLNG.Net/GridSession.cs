@@ -1855,6 +1855,33 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private readonly SemaphoreSlim _wearableDecodeGate = new(1, 1);
 
+    /// <summary>Sends the legacy <c>AgentWearablesRequest</c> LLUDP packet and waits for the sim's
+    /// <c>AgentWearablesUpdate</c> reply, which populates <c>AppearanceManager.Wearables</c>. This
+    /// is what OpenSim answers reliably; LibreMetaverse's own login flow would send this, but that
+    /// path is gated by <c>SendAppearance</c> (kept false), so with the flag off nobody asks and
+    /// the worn list stays empty. Mirrors LMV's private <c>GatherAgentWearablesViaLLUDPAsync</c>.
+    /// Best-effort: returns after the reply or a 10 s timeout. FEAT-AVATAR-01.</summary>
+    private async Task RequestWornWearablesViaLludpAsync(CancellationToken ct)
+    {
+        if (!_client.Network.Connected) return;
+
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnReply(object? s, LibreMetaverse.AgentWearablesReplyEventArgs e) => tcs.TrySetResult(true);
+        _client.Appearance.AgentWearablesReply += OnReply;
+        try
+        {
+            var request = new LibreMetaverse.Packets.AgentWearablesRequestPacket
+            {
+                AgentData = { AgentID = _client.Self.AgentID, SessionID = _client.Self.SessionID }
+            };
+            _client.Network.SendPacket(request);
+            await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(10), ct)).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { Console.Error.WriteLine($"[Appearance] AgentWearablesRequest failed: {ex.Message}"); }
+        finally { _client.Appearance.AgentWearablesReply -= OnReply; }
+    }
+
     /// <summary>Downloads and decodes every currently-worn wearable's asset so a following
     /// <c>RemoveFromOutfit</c>/<c>AddToOutfit</c> → <c>RequestSetAppearanceAsync</c> →
     /// <c>MakeAppearancePacket</c> rebuilds the 218 visual params from the real Shape/Skin assets
@@ -1870,16 +1897,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         await _wearableDecodeGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            // Populate the worn-wearable list from the Current Outfit Folder (ItemID/AssetID/type;
-            // Asset stays null until fetched). Non-fatal if it throws -- fall through to the check.
-            try { await _client.Appearance.RequestAgentWornAsync(ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex) { Console.Error.WriteLine($"[Appearance] RequestAgentWorn failed: {ex.Message}"); }
+            // Populate LibreMetaverse's worn-wearable list. With SendAppearance=false it never sent
+            // an AgentWearablesRequest at login, so AppearanceManager.Wearables is empty -- ask now,
+            // LLUDP first (OpenSim answers AgentWearablesRequest reliably; the COF-based
+            // RequestAgentWornAsync returned nothing on OSGrid, live 2026-08-31 -- its
+            // FetchInventoryDescendents2 path is flaky there).
+            await RequestWornWearablesViaLludpAsync(ct).ConfigureAwait(false);
+            if (!_client.Appearance.GetWearables().Any())
+            {
+                try { await _client.Appearance.RequestAgentWornAsync(ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { Console.Error.WriteLine($"[Appearance] RequestAgentWorn failed: {ex.Message}"); }
+            }
 
             var worn = _client.Appearance.GetWearables().ToList();
             if (worn.Count == 0)
             {
-                Console.Error.WriteLine("[Appearance] no worn wearables resolved from COF — refusing wearable edit");
+                Console.Error.WriteLine("[Appearance] no worn wearables resolved (LLUDP + COF both empty) — refusing wearable edit");
                 return false;
             }
             if (worn.All(w => w.WearableType != LibreMetaverse.WearableType.Shape))

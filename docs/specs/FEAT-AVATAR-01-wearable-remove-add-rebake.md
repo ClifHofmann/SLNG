@@ -141,11 +141,20 @@ checks `RegionProtocols.AgentAppearanceService` + the `UpdateAvatarAppearance` c
 every param whose worn wearable it couldn't decode — a flat avatar when the Shape bodypart is
 missing. So make that impossible before letting the edit fire:
 
-- `EnsureWornWearablesDecodedAsync()` — `RequestAgentWornAsync()` to list the worn wearables from
-  COF, then `_client.Assets.RequestAssetAsync(w.AssetID, w.AssetType, …)` + `AssetWearable.Decode()`
-  for each, writing the result onto `WearableData.Asset` (the same reference objects LMV's
-  `DownloadWearablesAsync` reads, so it then skips its own fetch). Returns **false** — caller must
-  refuse — if no Shape is worn or any wearable fails to fetch/decode. Serialised by a `SemaphoreSlim`.
+- `EnsureWornWearablesDecodedAsync()`:
+  1. **Get the worn list.** With `SendAppearance` off, LibreMetaverse never sent an
+     `AgentWearablesRequest` at login, so `AppearanceManager.Wearables` is empty. So
+     `RequestWornWearablesViaLludpAsync()` — send the LLUDP `AgentWearablesRequestPacket`
+     ourselves and wait for `AgentWearablesReply` (OpenSim answers this reliably; mirrors LMV's
+     private `GatherAgentWearablesViaLLUDPAsync`). Fall back to `RequestAgentWornAsync()` (COF)
+     only if that's still empty — **live 2026-08-31 the COF path returned nothing on every OSGrid
+     region** (`FetchInventoryDescendents2` cap flakiness), which was the "no worn wearables
+     resolved from COF" refusal.
+  2. **Decode.** `_client.Assets.RequestAssetAsync(w.AssetID, w.AssetType, …)` +
+     `AssetWearable.Decode()` for each, writing onto `WearableData.Asset` (the same reference
+     objects LMV's `DownloadWearablesAsync` reads, so it skips its own fetch).
+  3. **Verify.** Returns **false** — caller must refuse — if no Shape is worn or any wearable
+     fails to fetch/decode. Serialised by a `SemaphoreSlim`.
 - `PrepareWearableEditAsync(name)` = `RegionHasServerSideBaking()` (SL fast-path, nothing local) ||
   `EnsureWornWearablesDecodedAsync()`; on false → log + raise `WearableEditUnavailable`.
 - `AttachItemAsync` / `DetachItemAsync` wearable branch → `WearWearableAsync` / `RemoveWearableAsync`
