@@ -2164,8 +2164,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         int n = img.Width * img.Height;
         var raw = new byte[n * 4];
-        bool color = img.Red != null && img.Green != null && img.Blue != null;
-        bool alpha = img.Alpha != null;
+        // Test lengths, not nulls: ManagedImage initialises every channel to Array.Empty<byte>(),
+        // so an absent channel is an empty array and a null check passes straight into an
+        // out-of-range read. Measured on the Color-only EyesIris texture.
+        bool color = img.Red.Length >= n && img.Green.Length >= n && img.Blue.Length >= n;
+        bool alpha = img.Alpha.Length >= n;
 
         for (int i = 0; i < n; i++)
         {
