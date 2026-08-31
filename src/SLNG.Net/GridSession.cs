@@ -302,9 +302,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         //                          order) to the shape service; that was the torn rigged head.
         //   3. Empty bake slots -- MergeBakeSlots fills any missing bake from the simulator's own
         //                          last relay and refuses to send an incomplete set.
-        // With the pipeline running, the bakes are real, so guard 3 has nothing to rescue and a
-        // wearable change can finally produce a NEW bake instead of only preserving the old one.
-        _client.Settings.Agent.SendAppearance = true;
+        // OFF AGAIN 2026-08-31, same day. Turning it on exposed a hole in the correction itself:
+        // SendCorrectedAppearance bailed out with "no decoded wearables to build a shape from" on
+        // the LOGIN bake, which left LibreMetaverse's scrambled packet standing as the last word.
+        // An early return there is worse than useless -- once LMV has sent, the only safe move is
+        // to overwrite it, never to stay silent. Fixed by falling back to the simulator's own last
+        // relay for the params, but this flag stays off until that fallback has been verified
+        // in-world, because with it on EVERY login writes to the account before a human can react.
+        _client.Settings.Agent.SendAppearance = false;
 
         // Use the HTTP GetTexture CAP instead of the legacy UDP image transfer. UDP transfers
         // time out and hand back truncated JPEG2000 streams on busy grids (the "Tile part
@@ -1992,21 +1997,48 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 .Select(w => (IReadOnlyDictionary<int, float>)w.Asset!.Params)
                 .ToList();
 
-            if (wearableParams.Count == 0)
-            {
-                Console.Error.WriteLine("[Appearance] correction skipped: no decoded wearables to build a shape from");
-                return;
-            }
-
             var packet = _client.Appearance.MakeAppearancePacket();
             int length = packet.VisualParam?.Length ?? AgentAppearanceParams.DefaultLength;
 
-            var wire = AgentAppearanceParams.BuildWireArray(wearableParams, length);
-            if (!AgentAppearanceParams.VerifyRoundTrip(wire, wearableParams, out var failure))
+            byte[] wire;
+            if (wearableParams.Count > 0)
             {
-                Console.Error.WriteLine($"[Appearance] correction NOT sent -- verification failed: {failure}");
-                WearableEditUnavailable?.Invoke(this, failure);
-                return;
+                wire = AgentAppearanceParams.BuildWireArray(wearableParams, length);
+                if (!AgentAppearanceParams.VerifyRoundTrip(wire, wearableParams, out var failure))
+                {
+                    // Fall through to the relay below rather than returning: LibreMetaverse has
+                    // ALREADY sent its scrambled packet by the time we get here, so staying silent
+                    // leaves that as the account's stored shape. Overwriting with the simulator's
+                    // own last relay is always at least as good as what it already had.
+                    Console.Error.WriteLine($"[Appearance] built params rejected ({failure}) -- falling back to the simulator's relay");
+                    wire = Array.Empty<byte>();
+                }
+            }
+            else
+            {
+                wire = Array.Empty<byte>();
+            }
+
+            if (wire.Length == 0)
+            {
+                // No usable wearable-derived shape -- happens on the LOGIN bake, where
+                // LibreMetaverse can complete without any wearable asset decoded. Send back the
+                // shape the simulator itself last told us, which is already in wire order and is by
+                // definition what the account holds. Measured 2026-08-31: an early return here left
+                // LibreMetaverse's scrambled login packet standing and broke the avatar, which is
+                // why this path must still SEND rather than skip.
+                if (_lastSelfRelayVisualParams.Length == 0)
+                {
+                    Console.Error.WriteLine("[Appearance] correction NOT sent: no decoded wearables AND no simulator relay yet " +
+                        "-- LibreMetaverse's packet stands, appearance may be wrong until a rebake");
+                    WearableEditUnavailable?.Invoke(this, "no shape available to correct with");
+                    return;
+                }
+
+                wire = _lastSelfRelayVisualParams.Length > length
+                    ? _lastSelfRelayVisualParams.Take(length).ToArray()
+                    : _lastSelfRelayVisualParams;
+                Console.Error.WriteLine($"[Appearance] no decoded wearables -- restoring the simulator's own last shape ({wire.Length} params)");
             }
 
             // Bake textures. LibreMetaverse only composites when SendAppearance is on, and it is
