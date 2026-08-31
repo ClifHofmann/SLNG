@@ -2,10 +2,12 @@
 
 - **Feature ID:** `FEAT-AVATAR-01`
 - **Track:** `net` / `render`
-- **Status:** `⏸️ BLOCKED on an upstream LibreMetaverse bug — cause MEASURED` (`v0.11.33-alpha`).
-  Remove/add is a logged **no-op**. See **[Root cause](#root-cause-libremetaverse-scrambles-195-of-218-visual-params)**
-  — one upstream bug explains all three live corruption incidents, and no client-side preparation
-  can work around it. The way out is written up under **[The way out](#the-way-out)**.
+- **Status:** `🧪 Review` (`v0.14.1-alpha`) — **wearable remove/add works**, via the Current Outfit
+  Folder + `AgentIsNowWearing`, bypassing `AppearanceManager` entirely. The change is recorded and
+  persisted server-side; it becomes *visible* after any viewer re-bakes, which SLNG cannot do yet.
+  That bake is the single remaining piece — see **[Where it stands](#where-it-stands)**.
+  Background: **[Root cause](#root-cause-libremetaverse-scrambles-195-of-218-visual-params)** —
+  one upstream bug explains all three live corruption incidents.
 - **Owner:** `claude`
 - **Agent:** `protocol-re` (net side) → `graphics-engineer` (bake/render side)
 - **Dep:** `M4-3` (Appearance & BoM)
@@ -38,6 +40,46 @@ for the self avatar.
 Removing or adding a system wearable in SLNG updates the avatar within a few seconds — the
 system body/head shows or hides to match — without a relog, and without regressing the shape
 (the `SendAppearance` incident must not recur).
+
+## <a id="where-it-stands"></a>Where it stands (`v0.14.1-alpha`)
+
+**Solved — wearable remove/add, without touching the appearance.** Every earlier attempt went
+through `AppearanceManager`, which always ends in `MakeAppearancePacket` and its two defects. The
+working path avoids it completely:
+
+- **Wear** → `Inventory.CreateLinkAsync` into the Current Outfit Folder.
+- **Remove** → delete the matching COF link(s) (`RemoveItemAsync` — a COF link is a pointer, not
+  content; the wearable stays in inventory and re-wearing makes a new link, so trashing them only
+  piled up junk).
+- **Both** → `SendAgentIsNowWearing` with the new worn set, read from the COF.
+
+`AgentIsNowWearing` is the one appearance-related packet that is safe today: **item ids and
+wearable-type bytes, nothing else** — no visual params, no texture entry — so it cannot write a
+wrong shape or strip a bake. OpenSim's `AvatarFactoryModule` applies it to
+`sp.Appearance.Wearables` and persists it (`QueueAppearanceSave`), then waits for a viewer to bake
+(`AvatarFactoryModule.cs:1251-1254`).
+
+The worn set is collected from the **COF**, not `AppearanceManager.Wearables`: the legacy
+`AgentWearablesUpdate` carries one wearable per type slot, so a multi-layer outfit is
+unrepresentable in it. OpenSim's handler does `Wearables[type].Add(...)`, so multiple layers of one
+type are accepted.
+
+Also covered: the Outfits tab's "Von aktuellem Outfit entfernen" now takes the outfit's worn
+Clothing/Bodypart layers off too — its "Kleidung & Körper unverändert (Phase 2)" limit existed only
+because wearables could not be removed at all.
+
+**Remaining — the bake.** The change is stored but not yet *visible*: baked textures only change
+when a viewer composites and uploads new ones. A relog in SLNG is not enough (the simulator replays
+the stored bake); a Firestorm login or `Ctrl+Alt+R` re-bakes and the change then applies
+everywhere, SLNG included.
+
+So the open work is exactly one thing: **SLNG needs to bake**. It is comparatively low-risk — a
+bake only produces and uploads textures, it writes no shape — which is the opposite of everything
+that went wrong here.
+
+**Do NOT** reach for `AppearanceManager` to get there: `SendAppearance` stays `false`, and
+`RequestSetAppearance` is not gated by it, so calling it still sends. Every such path is a
+deliberate no-op with a `SendCorrectedAppearance` guard behind it.
 
 ## Root cause: LibreMetaverse scrambles 195 of 218 visual params
 
