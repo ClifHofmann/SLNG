@@ -2453,12 +2453,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         catch (Exception ex) { Console.Error.WriteLine($"[Bake]   preview '{name}' failed: {ex.Message}"); }
     }
 
-    public async Task DryRunBakeAsync(CancellationToken ct = default)
+    public async Task<string> BakeAvatarAsync(CancellationToken ct = default)
     {
         if (!_client.Network.Connected)
         {
-            Console.Error.WriteLine("[Bake] dry run skipped: not connected");
-            return;
+            Console.Error.WriteLine("[Bake] skipped: not connected");
+            return "nicht verbunden";
         }
 
         try
@@ -2489,7 +2489,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 Console.Error.WriteLine("[Bake] WARNING: the COF resolved fewer wearables than the region lists; " +
                     "some links may not have loaded yet");
             }
-            if (worn.Count == 0) { Console.Error.WriteLine("[Bake] nothing to bake from"); return; }
+            if (worn.Count == 0) { Console.Error.WriteLine("[Bake] nothing to bake from"); return "nichts zum Backen gefunden"; }
 
             // 2. Decode each wearable's asset -- DecodeWearableParams reads wearable.Asset.
             int decoded = 0;
@@ -2623,6 +2623,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             bool send = Environment.GetEnvironmentVariable("SLNG_BAKE_SEND") == "1";
             bool upload = send || Environment.GetEnvironmentVariable("SLNG_BAKE_UPLOAD") == "1";
             var uploaded = new Dictionary<int, LibreMetaverse.UUID>();
+            bool sent = false;
             Console.Error.WriteLine(send
                 ? "[Bake] SLNG_BAKE_SEND=1 -- this bake will be UPLOADED and APPLIED to the avatar"
                 : upload
@@ -2728,7 +2729,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                         .Select(w => (IReadOnlyDictionary<int, float>)w.Asset!.Params)
                         .ToList();
 
-                    SendAppearanceFromOwnBake(uploaded, wearableParams);
+                    sent = SendAppearanceFromOwnBake(uploaded, wearableParams);
                 }
                 else
                 {
@@ -2769,11 +2770,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 : upload
                     ? "[Bake] complete -- bakes uploaded as assets; the avatar is unchanged"
                     : "[Bake] dry run complete -- nothing uploaded, nothing sent");
+
+            return send
+                ? (sent ? $"Aussehen neu gebacken und ans Grid gesendet ({worn.Count} Kleidungsstücke)."
+                        : "Bake fertig, aber NICHT gesendet — Grund steht im Log ([Appearance]-Zeile).")
+                : upload
+                    ? "Bake fertig und als Assets hochgeladen — der Avatar bleibt unverändert."
+                    : "Bake-Trockenlauf fertig — Ergebnis im Log ([Bake]-Zeilen), nichts gesendet.";
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { return "abgebrochen"; }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[Bake] dry run failed: {ex.Message}");
+            Console.Error.WriteLine($"[Bake] failed: {ex.Message}");
+            return $"Bake fehlgeschlagen: {ex.Message}";
         }
     }
 
@@ -2827,8 +2836,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // even with the pipeline nominally disabled, from a cold state where LibreMetaverse has no
         // decoded wearables and no bakes. That combination is what has broken this avatar
         // repeatedly. Nothing here sends until the whole path has been proven on a throwaway alt.
-        Console.Error.WriteLine("[Appearance] not sent: appearance writing is disabled (FEAT-AVATAR-01)");
-        WearableEditUnavailable?.Invoke(this, "appearance writing disabled");
+        // This stop covers LibreMetaverse's OWN send path only. SLNG composites, uploads and sends
+        // its own appearance (SendAppearanceFromOwnBake) -- so this is no longer a refusal the user
+        // needs to hear about, and reporting it as a discarded change was simply wrong.
+        Console.Error.WriteLine("[Appearance] LibreMetaverse's own send stays disabled; SLNG bakes and sends its own");
         return;
     }
 
