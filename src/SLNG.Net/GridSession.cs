@@ -2189,6 +2189,41 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return raw;
     }
 
+    /// <summary>Builds the worn set from the Current Outfit Folder, which is what actually defines
+    /// what an avatar wears — and, unlike the legacy <c>AgentWearablesReply</c>, can hold several
+    /// layers of one type. Also reports every link it finds, since "which of my layers does the
+    /// client see" turned out to be the question behind a wrong face.</summary>
+    private List<AppearanceManager.WearableData> CollectWornWearablesForBake()
+    {
+        var worn = new List<AppearanceManager.WearableData>();
+        var store = _client.Inventory.Store;
+        var cof = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        var cofNode = cof != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cof) : null;
+        if (cofNode == null) return worn;
+
+        foreach (var child in cofNode.Nodes.Values)
+        {
+            if (child.Data is not LibreMetaverse.InventoryItem link) continue;
+            if (link.AssetType == LibreMetaverse.AssetType.LinkFolder) continue;
+
+            var target = link.IsLink() ? link.ResolvedItemID : link.UUID;
+            if (target == LibreMetaverse.UUID.Zero) continue;
+            if (store?.GetNodeOrDefault(target)?.Data is not LibreMetaverse.InventoryWearable w) continue;
+
+            worn.Add(new AppearanceManager.WearableData
+            {
+                ItemID = target,
+                AssetID = w.AssetUUID,
+                AssetType = w.AssetType,
+                WearableType = w.WearableType,
+            });
+            Console.Error.WriteLine($"[Bake]   COF {w.WearableType,-10} \"{w.Name}\"" +
+                (string.IsNullOrEmpty(link.Description) ? "" : $"  desc=\"{link.Description}\""));
+        }
+
+        return worn;
+    }
+
     /// <summary>Puts the worn wearables into the layer order Second Life actually stacks them in:
     /// grouped by type, and within a type sorted by the ordering token the viewer stores in the
     /// Current Outfit Folder link's description. Bottom layer first — see
@@ -2262,8 +2297,22 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             // 1. Worn wearables. LLUDP first -- the COF route measured empty on OSGrid.
             await RequestWornWearablesViaLludpAsync(ct).ConfigureAwait(false);
-            var worn = _client.Appearance.GetWearables().ToList();
-            Console.Error.WriteLine($"[Bake] worn wearables: {worn.Count}");
+            var legacy = _client.Appearance.GetWearables().ToList();
+
+            // The Current Outfit Folder is what actually defines the worn set. The legacy
+            // AgentWearablesReply is whatever the region last had written to it, and that is not the
+            // same thing: measured 2026-08-31, the same code resolved 9 wearables before a Firestorm
+            // login and 5 after it, because Firestorm rewrote the region's list on login. The four
+            // that vanished were tattoo layers -- including the skin the avatar is actually wearing.
+            // Baking from the region's copy would have replaced the user's face with a different one.
+            var worn = CollectWornWearablesForBake();
+            Console.Error.WriteLine($"[Bake] worn wearables: COF {worn.Count}, region's legacy list {legacy.Count}");
+
+            if (worn.Count == 0)
+            {
+                Console.Error.WriteLine("[Bake] COF empty -- falling back to the region's list");
+                worn = legacy;
+            }
             if (worn.Count == 0) { Console.Error.WriteLine("[Bake] nothing to bake from"); return; }
 
             // 2. Decode each wearable's asset -- DecodeWearableParams reads wearable.Asset.
