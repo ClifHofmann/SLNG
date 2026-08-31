@@ -1706,6 +1706,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
         }
 
+        // FEAT-AVATAR-01: the simulator's own view of our baked textures -- the last set known to
+        // actually work, since some other viewer produced them. Kept as the reference the bake
+        // diagnostic compares LibreMetaverse's (possibly empty) Textures[] against, and the
+        // fallback any future send must use rather than writing empty bake ids.
+        if (e.AvatarID == _client.Self.AgentID && textures.Count > 0)
+            _lastSelfRelayBakes = new Dictionary<int, Guid>(textures);
+
         // AvatarAppearanceEventArgs doesn't expose the packet's AppearanceHover field (see
         // AvatarAppearanceEvent's doc comment for why it matters), but LibreMetaverse's own
         // internal AvatarAppearanceHandler already parsed it into the cached Avatar object's
@@ -2037,14 +2044,53 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// change did not visibly take.</summary>
     public void RebakeAvatar()
     {
-        // DISABLED 2026-08-31, second blocker found live -- see SendCorrectedAppearance's comment.
-        // The visual params are correct now, but the packet also carries LibreMetaverse's freshly
-        // baked TextureEntry, and those bakes are not usable: after a wearable edit from SLNG the
-        // avatar's head lost its texture on the GRID and only came back after a Firestorm login
-        // re-baked it. Triggering a rebake here would write those unusable bakes again.
-        Console.Error.WriteLine("[Appearance] rebake not sent: LibreMetaverse's client-side bake " +
-            "produces unusable baked textures (FEAT-AVATAR-01) -- rebake in another viewer for now");
-        WearableEditUnavailable?.Invoke(this, "rebake");
+        // The rebake itself is DISABLED -- see the block comment above WearWearableAsync. What this
+        // does instead is REPORT the state a send would have used, which is the open question:
+        // whether LibreMetaverse holds real baked textures at all.
+        //
+        // Zero risk: MakeAppearancePacket() only reads Textures[] and Wearables to build a packet.
+        // Nothing is transmitted here.
+        if (!_client.Network.Connected)
+        {
+            Console.Error.WriteLine("[Appearance] diagnostic skipped: not connected");
+            return;
+        }
+
+        try
+        {
+            var packet = _client.Appearance.MakeAppearancePacket();
+            var te = packet.ObjectData.TextureEntry;
+            var entry = te is { Length: > 1 } ? new Primitive.TextureEntry(te, 0, te.Length) : null;
+
+            var report = new List<string>();
+            foreach (var idx in new[] { 8, 9, 10, 11, 20 }) // head, upper, lower, eyes, hair
+            {
+                var face = entry?.FaceTextures is { } faces && idx < faces.Length ? faces[idx] : null;
+                var id = face?.TextureID ?? LibreMetaverse.UUID.Zero;
+                report.Add($"{idx}=" + (id == LibreMetaverse.UUID.Zero ? "ZERO"
+                    : id == AppearanceManager.DEFAULT_AVATAR_TEXTURE ? "DEFAULT"
+                    : id.ToString()[..8]));
+            }
+
+            int wearables = _client.Appearance.GetWearables().Count();
+            int decoded = _client.Appearance.GetWearables().Count(w => w.Asset != null);
+            var relay = string.Join(" ", _lastSelfRelayBakes
+                .Where(kv => kv.Key is 8 or 9 or 10 or 11 or 20)
+                .OrderBy(kv => kv.Key)
+                .Select(kv => $"{kv.Key}={kv.Value.ToString("N")[..8]}"));
+
+            Console.Error.WriteLine(
+                $"[Appearance] DIAGNOSTIC (nothing sent)\n" +
+                $"  LibreMetaverse bake slots : {string.Join("  ", report)}\n" +
+                $"  worn wearables            : {wearables} ({decoded} decoded)\n" +
+                $"  simulator's last relay    : {(relay.Length == 0 ? "(none seen)" : relay)}\n" +
+                $"  -> ZERO/DEFAULT above means LibreMetaverse has no bake of its own, so a send " +
+                $"would have written empty bake ids and stripped the avatar's textures.");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Appearance] diagnostic failed: {ex.Message}");
+        }
     }
 
     // DISABLED 2026-08-31 -- the SECOND blocker, found live after the first was fixed.
@@ -2083,6 +2129,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <c>MyVisualParameters</c> is built by <c>MakeAppearancePacket</c> in a different one
     /// (see <see cref="OnAppearanceSet"/>). FEAT-AVATAR-01.</summary>
     private byte[] _lastSelfRelayVisualParams = Array.Empty<byte>();
+
+    /// <summary>The simulator's own last view of our baked textures, keyed by AvatarTextureIndex
+    /// (8 head, 9 upper, 10 lower, 11 eyes, 20 hair). These demonstrably work — another viewer
+    /// composited and uploaded them. FEAT-AVATAR-01 keeps them as the reference the bake diagnostic
+    /// compares LibreMetaverse's own <c>Textures[]</c> against.</summary>
+    private Dictionary<int, Guid> _lastSelfRelayBakes = new();
 
     private void OnAppearanceSet(object? sender, AppearanceSetEventArgs e)
     {

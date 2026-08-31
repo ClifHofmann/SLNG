@@ -39,7 +39,7 @@
       "environment": "Environment (Windlight)...",
       "world_map": "World Map...",
       "minimap": "Minimap",
-      "rebake_avatar": "Rebake Avatar (Ctrl+Alt+R)"
+      "rebake_avatar": "Appearance diagnostic (Ctrl+Alt+R)"
     },
     "hud": {
       "stand_up": "Stand Up"
