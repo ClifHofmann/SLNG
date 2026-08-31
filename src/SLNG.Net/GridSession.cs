@@ -2284,19 +2284,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
-    /// <summary>Takes a system wearable off: trashes its Current-Outfit link(s), then tells the
-    /// simulator the new worn set. The link goes to Trash rather than being purged — a COF link is
-    /// still user data, same reasoning as BUG-NET-02's stale-link cleanup.</summary>
+    /// <summary>Takes a system wearable off: deletes its Current-Outfit link(s), then tells the
+    /// simulator the new worn set.
+    ///
+    /// <para>The link is REMOVED, not trashed. BUG-NET-02 moves stale COF links to Trash because
+    /// there the link is the only evidence of an ambiguous state and might be wanted back. Here the
+    /// removal is what the user asked for, and a COF link is a pointer, not content — the wearable
+    /// itself stays in inventory and wearing it again just makes a new link. Trashing would only
+    /// pile up junk (raised live: "die Links landen dann aber nicht jedes Mal im Trash?").</para></summary>
     private async Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
     {
         var store = _client.Inventory.Store;
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
         var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
-        var trashUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.Trash);
 
-        if (cofNode == null || trashUuid == LibreMetaverse.UUID.Zero)
+        if (cofNode == null)
         {
-            Console.Error.WriteLine($"[Appearance] detach of \"{wearable.Name}\" not sent: no Current Outfit / Trash folder");
+            Console.Error.WriteLine($"[Appearance] detach of \"{wearable.Name}\" not sent: no Current Outfit folder");
             WearableEditUnavailable?.Invoke(this, wearable.Name);
             return new DetachResult(false, 0);
         }
@@ -2310,8 +2314,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             var targetUuid = link.IsLink() ? link.ResolvedItemID : link.UUID;
             if (targetUuid != wearable.UUID && link.UUID != wearable.UUID) continue;
 
-            try { _client.Inventory.MoveItem(link.UUID, trashUuid); cofNode.Nodes.Remove(link.UUID); removed++; }
-            catch (Exception ex) { Console.Error.WriteLine($"[Appearance] could not trash COF link: {ex.Message}"); }
+            try
+            {
+                await _client.Inventory.RemoveItemAsync(link.UUID).ConfigureAwait(false);
+                cofNode.Nodes.Remove(link.UUID);
+                removed++;
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"[Appearance] could not remove COF link: {ex.Message}"); }
         }
 
         if (removed == 0)
@@ -2322,10 +2331,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         SendAgentIsNowWearing(CollectWornWearablesFromCof(excludeItem: wearable.UUID));
         Console.Error.WriteLine($"[Appearance] removed \"{wearable.Name}\" ({wearable.AssetType}) " +
-            $"-- {removed} outfit link(s) trashed, recorded server-side; becomes visible after a rebake");
+            $"-- {removed} outfit link(s) removed, recorded server-side; becomes visible after a rebake");
         WornItemsChanged?.Invoke(this, EventArgs.Empty);
 
-        await Task.CompletedTask.ConfigureAwait(false);
         return new DetachResult(false, removed, WearableRemoved: true);
     }
 
@@ -4405,15 +4413,35 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var ids = new HashSet<Guid>(contents.Select(w => w.ItemId));
         var wornAttach = GetSceneWornAttachments().Keys.ToHashSet();
 
-        int detached = 0;
+        int removed = 0;
         foreach (var id in wornAttach)
         {
             if (!ids.Contains(id)) continue;
             ct.ThrowIfCancellationRequested();
             await DetachItemAsync(id).ConfigureAwait(false);
-            detached++;
+            removed++;
         }
-        return detached;
+
+        // FEAT-AVATAR-01: the outfit's system wearables too. This used to stop at attachments
+        // ("Kleidung & Körper unverändert (Phase 2)") only because a wearable could not be removed
+        // at all -- DetachAttachmentIntoInv is a server-side no-op for a Clothing/Bodypart layer.
+        // DetachItemAsync now routes those through the COF + AgentIsNowWearing path instead, so the
+        // limitation is gone. Only the ones actually worn: an outfit lists what it contains, and
+        // GetWornItems says what is on right now.
+        var wornWearables = GetWornItems()
+            .Where(w => w.Live && w.Category is WornCategory.Clothing or WornCategory.BodyPart)
+            .Select(w => w.ItemId)
+            .ToHashSet();
+
+        foreach (var id in wornWearables)
+        {
+            if (!ids.Contains(id)) continue;
+            ct.ThrowIfCancellationRequested();
+            var result = await DetachItemAsync(id).ConfigureAwait(false);
+            if (result.WearableRemoved) removed++;
+        }
+
+        return removed;
     }
 
     /// <summary>Renames a saved outfit folder. FEAT-INV-04.</summary>
