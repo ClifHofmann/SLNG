@@ -3008,8 +3008,26 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                         var id = await _client.Assets.RequestUploadBakedTextureAsync(slngBake, ct).ConfigureAwait(false);
                         if (id != LibreMetaverse.UUID.Zero)
                         {
+                            // Read it back. An upload capability answering with an asset id is not
+                            // the same as the asset existing -- NewFileAgentInventory did exactly
+                            // that for four inventory items on this grid -- and an appearance
+                            // pointing at bake ids that resolve to nothing renders the avatar
+                            // untextured, which is what SLNG shows while Firestorm, using its own
+                            // bake, shows the outfit correctly.
+                            var readBack = await _client.Appearance.TextureProvider
+                                .RequestTextureAsync(id, ct).ConfigureAwait(false);
+                            bool readable = false;
+                            try { readable = readBack != null && readBack.Decode() && readBack.Image != null; }
+                            catch { readable = false; }
+
                             uploaded[(int)AppearanceManager.BakeTypeToAgentTextureIndex(bakeType)] = id;
-                            uploadNote = $"  uploaded={id.ToString()[..8]}";
+                            uploadNote = readable
+                                ? $"  uploaded={id.ToString()[..8]} (verified {readBack!.Image!.Width}x{readBack.Image.Height})"
+                                : $"  uploaded={id.ToString()[..8]} but READ-BACK FAILED -- the grid did not keep it";
+
+                            if (!readable)
+                                Console.Error.WriteLine($"[Bake] WARNING: {bakeType} bake {id} cannot be fetched back; " +
+                                    "the avatar will render untextured for anyone using it");
                         }
                         else uploadNote = "  upload REJECTED (grid returned no asset id)";
                     }
