@@ -1782,6 +1782,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
         }
 
+        // Remembered for the local appearance refresh after our own bake, which has no incoming
+        // event to read a hover height from and must not silently reset it to zero.
+        if (e.AvatarID == _client.Self.AgentID) _lastSelfHoverOffsetZ = hoverOffsetZ;
+
         AvatarAppearanceReceived?.Invoke(this, new AvatarAppearanceEvent(
             e.Simulator.Handle,
             e.AvatarID.Guid,
@@ -2328,6 +2332,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         Console.Error.WriteLine($"[Appearance] SENT: {wire.Length} params, height {packet.AgentData.Size.Z:F2} m, " +
             $"{fromUs}/{merged.Count} bake slots from this bake -- " +
             string.Join(" ", merged.OrderBy(k => k.Key).Select(k => $"{k.Key}={k.Value.ToString()[..8]}")));
+
+        // Tell our own renderer what we just baked. Nothing else will: the simulator stores an
+        // AgentSetAppearance but does not echo an AvatarAppearance back to the sender, so the only
+        // path that carries new bake ids to the scene never fires for the local avatar. Measured
+        // 2026-09-01 -- the avatar stayed untextured after a correct bake and correct upload, and
+        // came up right on the next login, which is the same ids arriving through the login path
+        // instead. A viewer knows its own bake; this is the local half of that.
+        AvatarAppearanceReceived?.Invoke(this, new AvatarAppearanceEvent(
+            _client.Network.CurrentSim?.Handle ?? 0,
+            _client.Self.AgentID.Guid,
+            wire,
+            merged.ToDictionary(kv => kv.Key, kv => kv.Value),
+            _lastSelfHoverOffsetZ));
+
         return true;
     }
 
@@ -3356,6 +3374,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <c>MyVisualParameters</c> is built by <c>MakeAppearancePacket</c> in a different one
     /// (see <see cref="OnAppearanceSet"/>). FEAT-AVATAR-01.</summary>
     private byte[] _lastSelfRelayVisualParams = Array.Empty<byte>();
+    private float _lastSelfHoverOffsetZ;
 
     /// <summary>The simulator's own last view of our baked textures, keyed by AvatarTextureIndex
     /// (8 head, 9 upper, 10 lower, 11 eyes, 20 hair). These demonstrably work — another viewer
