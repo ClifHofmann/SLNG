@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.18.3-alpha";
+    public const string AppVersion = "v0.18.4-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -387,6 +387,7 @@ public partial class Boot : Control
 
         _topMenu.OnRebakeAvatar = RebakeAvatar;
         _topMenu.OnCreateTestSkin = CreateTestSkin;
+        _topMenu.OnBakeTestPattern = BakeTestPattern;
 
         // Escape hatch for a stuck attachment/HUD that inventory "Detach"
         // (DetachAttachmentIntoInv) can't shift -- ObjectDetach by localId instead.
@@ -2021,12 +2022,23 @@ public partial class Boot : Control
         _ = BakeAvatarAndReportAsync();
     }
 
-    private async System.Threading.Tasks.Task BakeAvatarAndReportAsync()
+    // FEAT-AVATAR-01: bakes the generated test pattern on top of every channel instead of an
+    // inventory item. The generated skin could not answer whether the bake works -- as a Skin it
+    // sits under the worn tattoo layers, two of which are opaque -- and this route depends on no
+    // inventory item, no COF link and no layer ordering.
+    private void BakeTestPattern()
+    {
+        if (_session == null) return;
+        _chatWindow?.AppendLocalChatMessage("System", "Testmuster wird gebacken …");
+        _ = BakeAvatarAndReportAsync(testPattern: true);
+    }
+
+    private async System.Threading.Tasks.Task BakeAvatarAndReportAsync(bool testPattern = false)
     {
         if (_session == null) return;
 
         string result;
-        try { result = await _session.BakeAvatarAsync().ConfigureAwait(false); }
+        try { result = await _session.BakeAvatarAsync(testPattern).ConfigureAwait(false); }
         catch (System.Exception ex) { result = $"Bake fehlgeschlagen: {ex.Message}"; }
 
         CallDeferred(nameof(NotifyBakeResult), result);

@@ -2177,6 +2177,25 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <c>SLNG.Net</c> from referencing it — see <see cref="IBakeTextureEncoder"/>.</summary>
     public void UseBakeEncoder(IBakeTextureEncoder encoder) => _bakeEncoder = encoder;
 
+    /// <summary>Builds a <see cref="ManagedImage"/> from tightly packed 8-bit BGRA — the inverse of
+    /// <see cref="ToBgra"/>, so a generated pattern can be handed to the baker as if it had been
+    /// downloaded and decoded like any other texture.</summary>
+    private static ManagedImage ToManagedImage(byte[] bgra, int size)
+    {
+        var image = new ManagedImage(size, size,
+            ManagedImage.ImageChannels.Color | ManagedImage.ImageChannels.Alpha);
+
+        for (int i = 0; i < size * size; i++)
+        {
+            image.Blue[i] = bgra[i * 4 + 0];
+            image.Green[i] = bgra[i * 4 + 1];
+            image.Red[i] = bgra[i * 4 + 2];
+            image.Alpha[i] = bgra[i * 4 + 3];
+        }
+
+        return image;
+    }
+
     /// <summary>Converts a composited bake into the tightly packed 8-bit BGRA the encoder expects.
     /// Mirrors <c>ManagedImage.ExportBitmap</c> so the two cannot drift, but stays in plain bytes so
     /// no SkiaSharp type has to cross into this assembly.</summary>
@@ -2702,7 +2721,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
-    public async Task<string> BakeAvatarAsync(CancellationToken ct = default)
+    public async Task<string> BakeAvatarAsync(bool testPattern = false, CancellationToken ct = default)
     {
         if (!_client.Network.Connected)
         {
@@ -2714,6 +2733,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // change. Everything that diagnosed it stays one env var away; what remains by default is
         // the outcome plus anything that went wrong.
         bool verbose = Environment.GetEnvironmentVariable("SLNG_BAKE_VERBOSE") == "1";
+        testPattern |= Environment.GetEnvironmentVariable("SLNG_BAKE_TESTPATTERN") == "1";
 
         try
         {
@@ -2877,6 +2897,33 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             else if (decodedTex < wanted.Count)
                 Console.Error.WriteLine($"[Bake] WARNING: only {decodedTex}/{wanted.Count} textures decoded -- the bake will be incomplete");
 
+            // 4b. Test pattern. The generated skin proved impossible to see: as a Skin it is the
+            //     bottom of the stack and two worn tattoo layers are fully opaque, and getting an
+            //     item to persist and stay worn on this grid cost two rounds without ever answering
+            //     the question it was created for. Feeding the same known-answer textures straight
+            //     into the bake as the topmost layer of each channel answers it directly -- no
+            //     inventory item, no COF link, no layer ordering, nothing that can quietly cover it.
+            if (testPattern)
+            {
+                foreach (var slot in new[]
+                {
+                    AvatarTextureIndex.HeadBodypaint,
+                    AvatarTextureIndex.UpperBodypaint,
+                    AvatarTextureIndex.LowerBodypaint,
+                })
+                {
+                    layers.Add(new AppearanceManager.TextureData
+                    {
+                        TextureIndex = slot,
+                        TextureID = LibreMetaverse.UUID.Random(),
+                        Texture = new LibreMetaverse.Assets.AssetTexture(
+                            ToManagedImage(TestSkinTextures.Build(slot), TestSkinTextures.Size)),
+                    });
+                }
+                Console.Error.WriteLine("[Bake] TEST PATTERN on top of every channel " +
+                    "(head green, upper body blue, lower body red)");
+            }
+
             // 5. Bake each channel, and -- when asked -- upload it. Uploading is deliberately
             //    separated from sending: RequestUploadBakedTextureAsync goes through the
             //    UploadBakedTexture capability, which stores an asset and returns its id. It costs
@@ -3035,7 +3082,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
 
             return send
-                ? (sent ? $"Aussehen neu gebacken ({worn.Count} Kleidungsstücke)."
+                ? (sent ? (testPattern
+                        ? "Testmuster gebacken und gesendet — Kopf grün, Oberkörper blau, Unterkörper rot."
+                        : $"Aussehen neu gebacken ({worn.Count} Kleidungsstücke).")
                         : "Bake fertig, aber NICHT gesendet — Grund steht im Log ([Appearance]-Zeile).")
                 : "Bake fertig — nichts gesendet (SLNG_BAKE_DRY=1).";
         }

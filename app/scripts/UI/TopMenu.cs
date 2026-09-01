@@ -26,6 +26,7 @@ namespace SLNG.App.UI
         /// appearance. The escape hatch when a wearable change did not visibly take.</summary>
         public Action? OnRebakeAvatar;
         public Action? OnCreateTestSkin;
+        public Action? OnBakeTestPattern;
 
         public override void _Ready()
         {
@@ -128,8 +129,10 @@ namespace SLNG.App.UI
             devMenu.AddItem(L10n.Tr("ui.menu.toggle_wireframe"), 0);
             devMenu.AddItem(L10n.Tr("ui.menu.measure_render_baseline"), 1);
             devMenu.AddItem(L10n.Tr("ui.menu.create_test_skin"), 2);
+            devMenu.AddItem(L10n.Tr("ui.menu.bake_test_pattern"), 3);
             devMenu.IdPressed += (id) => {
                 if (id == 2) OnCreateTestSkin?.Invoke();
+                else if (id == 3) OnBakeTestPattern?.Invoke();
                 else if (id == 0) OnToggleWireframe?.Invoke();
                 else if (id == 1) OnMeasureRenderBaseline?.Invoke();
             };

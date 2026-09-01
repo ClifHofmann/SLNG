@@ -28,6 +28,7 @@
       "toggle_wireframe": "Toggle Wireframe",
       "measure_render_baseline": "Measure Render Baseline (10s)",
       "create_test_skin": "Create test skin (Ctrl+Alt+T)",
+      "bake_test_pattern": "Bake test pattern",
       "sculpt_v_nudge_down": "Nudge sculpt V: -1 grid row",
       "sculpt_v_nudge_up": "Nudge sculpt V: +1 grid row",
       "sculpt_v_nudge_down_coarse": "Nudge sculpt V: -16 grid rows",

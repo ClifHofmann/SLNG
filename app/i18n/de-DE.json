@@ -28,6 +28,7 @@
       "toggle_wireframe": "Drahtmodell umschalten",
       "measure_render_baseline": "Render-Baseline messen (10s)",
       "create_test_skin": "Testhaut erzeugen (Strg+Alt+T)",
+      "bake_test_pattern": "Testmuster backen",
       "sculpt_v_nudge_down": "Sculpt-V verschieben: -1 Rasterzeile",
       "sculpt_v_nudge_up": "Sculpt-V verschieben: +1 Rasterzeile",
       "sculpt_v_nudge_down_coarse": "Sculpt-V verschieben: -16 Rasterzeilen",
