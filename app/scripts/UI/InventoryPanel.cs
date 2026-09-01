@@ -1,4 +1,4 @@
-using Godot;
+﻿using Godot;
 using SLNG.Net;
 using System;
 using System.Collections.Generic;
@@ -389,7 +389,8 @@ public partial class InventoryPanel : SLNGWindow
             foreach (var it in group)
             {
                 var row = _wornTree.CreateItem(header);
-                string text = string.IsNullOrEmpty(it.Name) ? "(unbenannt)" : it.Name;
+                string text = InventoryIcons.ForWornItem(it.AssetType, it.Category) + " " +
+                    (string.IsNullOrEmpty(it.Name) ? "(unbenannt)" : it.Name);
                 if (!string.IsNullOrEmpty(it.AttachPoint)) text += $"  ·  {it.AttachPoint}";
                 if (!it.Live) text += "  (nicht aktiv)";
                 row.SetText(0, text);
@@ -560,13 +561,9 @@ public partial class InventoryPanel : SLNGWindow
             foreach (var it in items.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
             {
                 var c = _outfitsTree.CreateItem(row);
-                string icon = it.Category switch
-                {
-                    SLNG.Core.WornCategory.BodyPart => "🧍",
-                    SLNG.Core.WornCategory.Clothing => "👕",
-                    SLNG.Core.WornCategory.Hud => "🖥",
-                    _ => "📦",
-                };
+                // The shared table, not a second coarser one: the same item showing a different
+                // glyph depending on which list it appears in is its own small confusion.
+                string icon = InventoryIcons.ForWornItem(it.AssetType, it.Category);
                 string name = string.IsNullOrEmpty(it.Name) ? "(lädt…)" : it.Name;
                 if (string.IsNullOrEmpty(it.Name)) anyPending = true;
                 // A saved outfit item that you're also wearing right now is gold, like the Angezogen tab.
@@ -805,12 +802,12 @@ public partial class InventoryPanel : SLNGWindow
         _folderItems.Clear();
         var hidden = _tree.CreateItem();
 
-        var myInv = AddFolderItem(hidden, rootId, "My Inventory");
+        var myInv = AddFolderItem(hidden, rootId, "My Inventory", SLNG.Core.FolderTypeIds.Root);
         LoadFolder(myInv, rootId);
         myInv.Collapsed = false;
 
         if (_session.LibraryRootId is { } libraryId)
-            AddFolderItem(hidden, libraryId, "Library");
+            AddFolderItem(hidden, libraryId, "Library", SLNG.Core.FolderTypeIds.Root);
 
         // The Current Outfit folder used to be pinned open here as a poor-man's worn-items view.
         // The "Angezogen" tab (FEAT-UI-16) replaced that — it's live, grouped, and marks stale
@@ -871,10 +868,10 @@ public partial class InventoryPanel : SLNGWindow
 
     /// <summary>Adds a folder row with a "…" placeholder child, so the expander arrow shows
     /// before the folder's real contents have ever been fetched.</summary>
-    private TreeItem AddFolderItem(TreeItem parent, Guid folderId, string name)
+    private TreeItem AddFolderItem(TreeItem parent, Guid folderId, string name, int preferredFolderType = -1)
     {
         var item = _tree.CreateItem(parent);
-        item.SetText(0, name);
+        item.SetText(0, $"{InventoryIcons.ForFolderType(preferredFolderType)} {name}");
         item.SetMetadata(0, folderId.ToString());
         item.Collapsed = true;
         _folderItems[folderId] = item;
@@ -1245,7 +1242,7 @@ public partial class InventoryPanel : SLNGWindow
         // Folders first, then items — each group keeps the server's by-name order.
         foreach (var entry in children)
             if (entry.IsFolder)
-                AddFolderItem(item, entry.Id, entry.Name);
+                AddFolderItem(item, entry.Id, entry.Name, entry.PreferredFolderType);
         foreach (var entry in children)
         {
             if (entry.IsFolder) continue;
@@ -1263,10 +1260,11 @@ public partial class InventoryPanel : SLNGWindow
             int assetType = (isKnownItem || isLandmarkSubtree) ? SLNG.Core.AssetTypeIds.Landmark : entry.AssetType;
 
             // Links (Current Outfit etc.) point at another inventory item — mark them so an
-            // apparently duplicated item is readable as the link it is. Landmarks get a globe
-            // prefix so they're recognizable in the tree without opening the context menu.
+            // apparently duplicated item is readable as the link it is. Every item is prefixed with
+            // its type's icon; a link shows the icon of what it points AT, which is what makes a
+            // Current Outfit listing readable at all.
             string text = entry.IsLink ? entry.Name + "  ⇢" : entry.Name;
-            if (assetType == SLNG.Core.AssetTypeIds.Landmark) text = "🌐 " + text;
+            text = InventoryIcons.ForAssetType(assetType) + " " + text;
             text += entry.GetPermissionSuffix();
 
             bool isWorn = wornMap.TryGetValue(entry.Id, out var loc) || (entry.IsLink && wornMap.TryGetValue(entry.LinkTargetId, out loc));

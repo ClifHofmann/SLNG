@@ -67,7 +67,54 @@ public sealed record InventoryEntry(
 /// doc comment; add more members only when a consumer actually needs them.</summary>
 public static class AssetTypeIds
 {
+    public const int Texture = 0;
+    public const int Sound = 1;
+    public const int CallingCard = 2;
     public const int Landmark = 3;
+    public const int Clothing = 5;
+    public const int Object = 6;
+    public const int Notecard = 7;
+    public const int Folder = 8;
+    public const int LslText = 10;
+    public const int LslBytecode = 11;
+    public const int Bodypart = 13;
+    public const int Animation = 20;
+    public const int Gesture = 21;
+    public const int Link = 24;
+    public const int LinkFolder = 25;
+    public const int Mesh = 49;
+    public const int Settings = 56;
+    public const int Material = 57;
+}
+
+/// <summary>SL FolderType wire values for the system folders the UI marks out. Ordinary folders
+/// carry -1. Same rule as <see cref="AssetTypeIds"/>: named only where something branches on it.</summary>
+public static class FolderTypeIds
+{
+    public const int Texture = 0;
+    public const int Sound = 1;
+    public const int CallingCard = 2;
+    public const int Landmark = 3;
+    public const int Clothing = 5;
+    public const int Object = 6;
+    public const int Notecard = 7;
+    public const int Root = 8;
+    public const int LslText = 10;
+    public const int Bodypart = 13;
+    public const int Trash = 14;
+    public const int Snapshot = 15;
+    public const int LostAndFound = 16;
+    public const int Animation = 20;
+    public const int Gesture = 21;
+    public const int Favorites = 23;
+    public const int CurrentOutfit = 46;
+    public const int Outfit = 47;
+    public const int MyOutfits = 48;
+    public const int Mesh = 49;
+    public const int Inbox = 50;
+    public const int Outbox = 51;
+    public const int Settings = 56;
+    public const int Material = 57;
 }
 
 /// <summary>
