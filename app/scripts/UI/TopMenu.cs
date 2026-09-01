@@ -1,4 +1,4 @@
-using Godot;
+﻿using Godot;
 using System;
 
 namespace SLNG.App.UI
@@ -25,6 +25,7 @@ namespace SLNG.App.UI
         /// real viewer's rebake — recomposites the baked textures from the worn set and re-sends the
         /// appearance. The escape hatch when a wearable change did not visibly take.</summary>
         public Action? OnRebakeAvatar;
+        public Action? OnCreateTestSkin;
 
         public override void _Ready()
         {
@@ -126,8 +127,10 @@ namespace SLNG.App.UI
             devMenu.Name = L10n.Tr("ui.menu.developer");
             devMenu.AddItem(L10n.Tr("ui.menu.toggle_wireframe"), 0);
             devMenu.AddItem(L10n.Tr("ui.menu.measure_render_baseline"), 1);
+            devMenu.AddItem(L10n.Tr("ui.menu.create_test_skin"), 2);
             devMenu.IdPressed += (id) => {
-                if (id == 0) OnToggleWireframe?.Invoke();
+                if (id == 2) OnCreateTestSkin?.Invoke();
+                else if (id == 0) OnToggleWireframe?.Invoke();
                 else if (id == 1) OnMeasureRenderBaseline?.Invoke();
             };
             menuBar.AddChild(devMenu);

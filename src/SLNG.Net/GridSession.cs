@@ -3987,6 +3987,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// attachment by name without a dedicated UI (browse to it in the existing inventory tree).</summary>
     public Guid? CurrentOutfitFolderId => _client.Inventory.FindFolderForType(FolderType.CurrentOutfit).Guid;
 
+    /// <summary>The Body Parts folder — where <see cref="CreateTestSkinAsync"/> puts the skin, so the
+    /// UI can refresh exactly that folder rather than making the user close and reopen the window to
+    /// see an item it was just told about.</summary>
+    public Guid? BodyPartsFolderId => _client.Inventory.FindFolderForType(FolderType.BodyPart).Guid;
+
+    /// <summary>The Textures folder — the other destination <see cref="CreateTestSkinAsync"/> writes
+    /// to.</summary>
+    public Guid? TexturesFolderId => _client.Inventory.FindFolderForType(FolderType.Texture).Guid;
+
     /// <summary>Folder id of the <c>#Outfits</c> system folder (each direct subfolder is one saved
     /// outfit), or null if the grid doesn't have one / before login. FEAT-INV-04.</summary>
     public Guid? MyOutfitsFolderId

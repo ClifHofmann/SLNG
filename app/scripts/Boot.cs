@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.17.1-alpha";
+    public const string AppVersion = "v0.17.2-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -386,6 +386,7 @@ public partial class Boot : Control
         };
 
         _topMenu.OnRebakeAvatar = RebakeAvatar;
+        _topMenu.OnCreateTestSkin = CreateTestSkin;
 
         // Escape hatch for a stuck attachment/HUD that inventory "Detach"
         // (DetachAttachmentIntoInv) can't shift -- ObjectDetach by localId instead.
@@ -2051,7 +2052,18 @@ public partial class Boot : Control
         try { result = await _session.CreateTestSkinAsync().ConfigureAwait(false); }
         catch (System.Exception ex) { result = $"Testhaut fehlgeschlagen: {ex.Message}"; }
 
-        CallDeferred(nameof(NotifyBakeResult), result);
+        CallDeferred(nameof(NotifyTestSkinCreated), result);
+    }
+
+    // The item exists on the grid the moment the create call returns, but an already-expanded
+    // folder in the tree is showing a cached listing -- so being told "it is in Body Parts" while
+    // Body Parts visibly does not contain it is worse than not being told at all.
+    private void NotifyTestSkinCreated(string result)
+    {
+        NotifyBakeResult(result);
+
+        if (_session?.BodyPartsFolderId is { } bodyParts) _inventoryPanel?.RefreshFolder(bodyParts);
+        if (_session?.TexturesFolderId is { } textures) _inventoryPanel?.RefreshFolder(textures);
     }
 
     // FEAT-AVATAR-01: deferred target for GridSession.WearableEditUnavailable.
