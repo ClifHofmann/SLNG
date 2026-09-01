@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using SLNG.Core;
 using SLNG.Core.Components;
 using SLNG.Net;
@@ -147,7 +147,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.19.1-alpha";
+    public const string AppVersion = "v0.19.2-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1709,6 +1709,8 @@ public partial class Boot : Control
         // FEAT-AVATAR-01: a wear/detach of a system wearable was refused because this region has no
         // server-side baking. Tell the user in nearby chat (fires on a network thread — marshal).
         _session.WearableEditUnavailable += (s, name) => CallDeferred(nameof(NotifyWearableEditUnavailable), name);
+        // A refusal is not a failure -- it already carries the explanation, so it is shown as-is.
+        _session.WearableEditRefused += (s, reason) => CallDeferred(nameof(NotifyBakeResult), reason);
 
         var creds = new LoginCredentials
         {

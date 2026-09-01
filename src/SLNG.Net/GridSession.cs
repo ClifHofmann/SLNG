@@ -1937,6 +1937,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// signal to stop editing wearables.</summary>
     public event EventHandler<string>? WearableEditUnavailable;
 
+    /// <summary>Raised when a wardrobe edit is refused because Second Life does not allow it — a
+    /// body part being taken off, say. Separate from <see cref="WearableEditUnavailable"/>, which
+    /// means "this should work and did not": this one carries a finished explanation for the user,
+    /// not a failure.</summary>
+    public event EventHandler<string>? WearableEditRefused;
+
     // FEAT-AVATAR-01 — system-wearable remove/add. Blocked on an upstream bug, MEASURED not guessed.
     //
     // AppearanceManager.MakeAppearancePacket builds the outgoing AgentSetAppearance by iterating
@@ -3284,6 +3290,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         try
         {
             byte type = wearable is LibreMetaverse.InventoryWearable iw ? (byte)iw.WearableType : (byte)0;
+            var wearType = wearable is LibreMetaverse.InventoryWearable iw2
+                ? iw2.WearableType : LibreMetaverse.WearableType.Invalid;
+
+            // Body parts replace, they do not layer: an avatar has exactly one shape, skin, hair
+            // and eyes. Without this a second one is simply added -- and since the layer-ordering
+            // token is written below, it would even be given a position in a stack that cannot
+            // exist. Take the old one's link out first, so wearing means swapping.
+            if (WearableRules.ReplacesSameType(wearable.AssetType, wearType))
+            {
+                int replaced = await RemoveCofLinksOfWearableTypeAsync(type, keep: wearable.UUID)
+                    .ConfigureAwait(false);
+                if (replaced > 0)
+                    Console.Error.WriteLine($"[Appearance] replacing {replaced} worn {wearType} " +
+                        "-- body parts are replaced, not layered");
+            }
 
             // The COF link's description is where Second Life keeps the layer's position in the
             // stack -- '@' + type * 100 + index, see WearableLayerOrder. Passing the item's own
@@ -3322,8 +3343,54 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// removal is what the user asked for, and a COF link is a pointer, not content — the wearable
     /// itself stays in inventory and wearing it again just makes a new link. Trashing would only
     /// pile up junk (raised live: "die Links landen dann aber nicht jedes Mal im Trash?").</para></summary>
+    /// <summary>Removes the Current Outfit links for every worn wearable of one type, except
+    /// <paramref name="keep"/> — the "replace" half of wearing a body part. Returns how many were
+    /// taken off.</summary>
+    private async Task<int> RemoveCofLinksOfWearableTypeAsync(byte wearableType, LibreMetaverse.UUID keep)
+    {
+        var store = _client.Inventory.Store;
+        var cof = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        var cofNode = cof != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cof) : null;
+        if (cofNode == null) return 0;
+
+        var doomed = new List<LibreMetaverse.UUID>();
+        foreach (var child in cofNode.Nodes.Values)
+        {
+            if (child.Data is not LibreMetaverse.InventoryItem link) continue;
+            if (link.AssetType == LibreMetaverse.AssetType.LinkFolder) continue;
+
+            var target = link.IsLink() ? link.ResolvedItemID : link.UUID;
+            if (target == keep || target == LibreMetaverse.UUID.Zero) continue;
+            if (store?.GetNodeOrDefault(target)?.Data is not LibreMetaverse.InventoryWearable worn) continue;
+            if ((byte)worn.WearableType != wearableType) continue;
+
+            doomed.Add(link.UUID);
+        }
+
+        foreach (var linkId in doomed)
+        {
+            try { await _client.Inventory.RemoveItemAsync(linkId).ConfigureAwait(false); }
+            catch (Exception ex) { Console.Error.WriteLine($"[Appearance] could not remove COF link: {ex.Message}"); }
+        }
+
+        return doomed.Count;
+    }
+
     private async Task<DetachResult> RemoveWearableAsync(LibreMetaverse.InventoryItem wearable)
     {
+        // Body parts are replace-only: an avatar always has exactly one shape, skin, hair and eyes,
+        // and a real viewer offers no take-off for them at all. Removing the COF link the way this
+        // does for clothing would leave the avatar with no shape.
+        var wearableType = wearable is LibreMetaverse.InventoryWearable w
+            ? w.WearableType : LibreMetaverse.WearableType.Invalid;
+        if (!WearableRules.CanTakeOff(wearable.AssetType, wearableType))
+        {
+            string reason = WearableRules.TakeOffRefusedReason(wearableType);
+            Console.Error.WriteLine($"[Appearance] refused to take off \"{wearable.Name}\": {reason}");
+            WearableEditRefused?.Invoke(this, reason);
+            return new DetachResult(false, 0);
+        }
+
         var store = _client.Inventory.Store;
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
         var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
