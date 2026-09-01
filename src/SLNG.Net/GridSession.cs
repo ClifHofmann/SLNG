@@ -2500,6 +2500,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             var bodypartFolder = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.BodyPart);
             string stamp = DateTime.Now.ToString("HH:mm:ss");
 
+            Console.Error.WriteLine($"[TestSkin] folders: textures={textureFolder} bodyparts={bodypartFolder}");
+            if (bodypartFolder == LibreMetaverse.UUID.Zero || textureFolder == LibreMetaverse.UUID.Zero)
+                return "Inventarordner (Texturen / Körperteile) noch nicht geladen — Inventar einmal öffnen und erneut versuchen";
+
             var slots = new[]
             {
                 (Slot: AvatarTextureIndex.HeadBodypaint, Label: "Kopf"),
@@ -2517,7 +2521,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     .ConfigureAwait(false);
                 if (j2k.Length == 0) return $"Testtextur ({label}) konnte nicht kodiert werden";
 
-                var (ok, status, _, assetId) = await _client.Inventory.RequestCreateItemFromAssetAsync(
+                var (ok, status, texItem, assetId) = await _client.Inventory.RequestCreateItemFromAssetAsync(
                     j2k, $"SLNG Testhaut {stamp} — {label}", "Generierte Testtextur (FEAT-AVATAR-01)",
                     LibreMetaverse.AssetType.Texture, LibreMetaverse.InventoryType.Texture,
                     textureFolder, perms, ct).ConfigureAwait(false);
@@ -2526,7 +2530,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     return $"Upload der {label}-Textur fehlgeschlagen: {status}";
 
                 textures[slot] = assetId;
-                Console.Error.WriteLine($"[TestSkin] {label} -> {assetId}");
+                Console.Error.WriteLine($"[TestSkin] {label}: item={texItem} asset={assetId} " +
+                    $"({j2k.Length} bytes, status={status})");
             }
 
             // The wearable itself. No visual params on purpose: a skin's colour params tint every
@@ -2554,7 +2559,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 return $"Anlegen der Testhaut fehlgeschlagen: {skinStatus}";
 
             Console.Error.WriteLine($"[TestSkin] created \"{skin.Name}\" ({itemId}) in Body Parts");
-            return $"\"{skin.Name}\" liegt in Körperteile — anziehen, dann Strg+Alt+R. " +
+
+            // Verify rather than trust the response. Measured 2026-09-01: the grid returned real
+            // item and asset ids for all four creates, and after a relog not one of them was in the
+            // inventory. A create call that reports success and leaves nothing behind is worse than
+            // one that fails, because it sends the user looking for something that is not there.
+            bool present = await FolderHoldsAsync(bodypartFolder, itemId, "Body Parts", ct).ConfigureAwait(false);
+            await FolderHoldsAsync(textureFolder, LibreMetaverse.UUID.Zero, "Textures", ct).ConfigureAwait(false);
+
+            if (!present)
+                return "Grid meldete Erfolg, aber die Haut steht nicht im Ordner — " +
+                       "NewFileAgentInventory hat sie nicht gespeichert (Details im Log).";
+
+            return $"\"{skin.Name}\" liegt in Körperteile — anziehen, dann neu backen. " +
                    "Kopf grün, Oberkörper blau, Unterkörper rot.";
         }
         catch (OperationCanceledException) { return "abgebrochen"; }
@@ -2562,6 +2579,34 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             Console.Error.WriteLine($"[TestSkin] failed: {ex}");
             return $"Testhaut fehlgeschlagen: {ex.Message}";
+        }
+    }
+
+    /// <summary>Re-reads a folder from the grid and reports what is in it — the check that separates
+    /// "the create call answered with an id" from "the item exists". Pass <c>UUID.Zero</c> to just
+    /// list the folder.</summary>
+    private async Task<bool> FolderHoldsAsync(
+        LibreMetaverse.UUID folder, LibreMetaverse.UUID item, string label, CancellationToken ct)
+    {
+        try
+        {
+            var listing = await _client.Inventory.FolderContentsAsync(
+                folder, _client.Self.AgentID, fetchFolders: false, fetchItems: true,
+                LibreMetaverse.InventorySortOrder.ByName, ct).ConfigureAwait(false);
+
+            bool present = item != LibreMetaverse.UUID.Zero && listing?.Any(e => e.UUID == item) == true;
+            var names = listing?.Take(6).Select(e => e.Name) ?? Enumerable.Empty<string>();
+
+            Console.Error.WriteLine($"[TestSkin] {label}: {listing?.Count ?? -1} item(s)" +
+                (item != LibreMetaverse.UUID.Zero ? $", the new one is {(present ? "PRESENT" : "MISSING")}" : "") +
+                (names.Any() ? "  [" + string.Join(" | ", names) + "]" : ""));
+            return present;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[TestSkin] {label}: listing failed: {ex.Message}");
+            return false;
         }
     }
 
