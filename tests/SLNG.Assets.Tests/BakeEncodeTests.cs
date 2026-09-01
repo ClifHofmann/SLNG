@@ -1,3 +1,4 @@
+using System.Linq;
 using CoreJ2K;
 using CoreJ2K.Configuration;
 using SkiaSharp;
@@ -143,5 +144,56 @@ public class BakeEncodeTests
 
         Assert.Empty(encoder.EncodeBake(new byte[16], 64, 64));
         Assert.Empty(encoder.EncodeBake(new byte[16], 0, 0));
+    }
+
+    /// <summary>
+    /// THE CONTAINER. Second Life textures are raw JPEG2000 codestreams, which start with the SOC
+    /// and SIZ markers FF 4F FF 51 — verified against a texture pulled off the grid (2048x2048,
+    /// four components, MCT on, no file-format boxes).
+    ///
+    /// <para>CoreJ2K wraps its output in JP2 boxes by default, so the stream began
+    /// 00 00 00 0C 6A 50 20 20 instead. That upload is accepted, stored and served, and then renders
+    /// as flat grey in a real viewer while decoding perfectly here — because CoreJ2K reads back its
+    /// own container. Measured 2026-09-01 on three uploaded test textures, seen in Firestorm.</para>
+    ///
+    /// <para>This is the check the round-trip test could not make: decoding with the same library
+    /// that encoded proves the data survives, not that anyone else can read it.</para>
+    /// </summary>
+    [Fact]
+    public void Bake_encoder_emits_a_raw_codestream_not_a_jp2_file()
+    {
+        using var source = Gradient(256);
+
+        byte[] encoded = new J2KBakeTextureEncoder().EncodeBake(Bgra(source), 256, 256);
+
+        Assert.True(encoded.Length > 4, "nothing encoded");
+        Assert.Equal(new byte[] { 0xFF, 0x4F, 0xFF, 0x51 }, encoded.Take(4).ToArray());
+    }
+
+    /// <summary>The colour transform and component count have to match what the grid ships too: four
+    /// 8-bit components with the multiple-component transform on. Read straight out of the SIZ and
+    /// COD markers, so a preset change that silently drops colour is caught here rather than by
+    /// someone looking at a grey avatar.</summary>
+    [Fact]
+    public void Bake_encoder_keeps_four_components_and_the_colour_transform()
+    {
+        using var source = Gradient(256);
+        byte[] j2k = new J2KBakeTextureEncoder().EncodeBake(Bgra(source), 256, 256);
+
+        int components = -1, mct = -1;
+        for (int p = 2; p < j2k.Length - 3 && j2k[p] == 0xFF;)
+        {
+            byte marker = j2k[p + 1];
+            if (marker == 0x93) break; // SOD — pixel data from here on
+            int length = (j2k[p + 2] << 8) | j2k[p + 3];
+            int seg = p + 4;
+
+            if (marker == 0x51) components = (j2k[seg + 34] << 8) | j2k[seg + 35]; // SIZ.Csiz
+            if (marker == 0x52) mct = j2k[seg + 4];                                 // COD.SGcod MCT
+            p += 2 + length;
+        }
+
+        Assert.Equal(4, components);
+        Assert.Equal(1, mct);
     }
 }

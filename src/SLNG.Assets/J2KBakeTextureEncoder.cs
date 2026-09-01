@@ -28,7 +28,13 @@ public sealed class J2KBakeTextureEncoder : IBakeTextureEncoder
         using var bitmap = ToBitmap(bgra, width, height);
         if (bitmap == null) return System.Array.Empty<byte>();
 
-        return CompleteConfigurationPresets.Streaming.ForLossless().Encode(bitmap);
+        // WithFileFormat(false) is not a detail. CoreJ2K wraps its output in JP2 file-format boxes
+        // by default -- the stream starts 00 00 00 0C 6A 50 20 20 -- and Second Life textures are
+        // raw JPEG2000 codestreams starting FF 4F FF 51. Verified against a texture off the grid.
+        // A JP2-wrapped upload is accepted, stored and served, and then renders grey in a real
+        // viewer: measured 2026-09-01, three uploaded test textures showed as flat grey in
+        // Firestorm while decoding perfectly here, because CoreJ2K reads back its own container.
+        return CompleteConfigurationPresets.Streaming.ForLossless().WithFileFormat(false).Encode(bitmap);
     }
 
     /// <inheritdoc/>
