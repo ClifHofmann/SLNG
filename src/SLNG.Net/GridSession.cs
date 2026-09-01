@@ -2498,7 +2498,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
             var textureFolder = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.Texture);
             var bodypartFolder = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.BodyPart);
-            string stamp = DateTime.Now.ToString("HH:mm:ss");
+            // Plain ASCII, no colon and no dash: the legacy create packet mangled a name
+            // containing "07:46:24 — Kopf" into a hex dump truncated at the colon.
+            string stamp = DateTime.Now.ToString("HHmmss");
 
             Console.Error.WriteLine($"[TestSkin] folders: textures={textureFolder} bodyparts={bodypartFolder}");
             if (bodypartFolder == LibreMetaverse.UUID.Zero || textureFolder == LibreMetaverse.UUID.Zero)
@@ -2506,13 +2508,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
             var slots = new[]
             {
-                (Slot: AvatarTextureIndex.HeadBodypaint, Label: "Kopf"),
-                (Slot: AvatarTextureIndex.UpperBodypaint, Label: "Oberkörper"),
-                (Slot: AvatarTextureIndex.LowerBodypaint, Label: "Unterkörper"),
+                (Slot: AvatarTextureIndex.HeadBodypaint, Label: "Kopf", Ascii: "Head"),
+                (Slot: AvatarTextureIndex.UpperBodypaint, Label: "Oberkörper", Ascii: "Upper"),
+                (Slot: AvatarTextureIndex.LowerBodypaint, Label: "Unterkörper", Ascii: "Lower"),
             };
 
             var textures = new Dictionary<AvatarTextureIndex, LibreMetaverse.UUID>();
-            foreach (var (slot, label) in slots)
+            foreach (var (slot, label, ascii) in slots)
             {
                 var bgra = TestSkinTextures.Build(slot);
                 var encoder = _bakeEncoder;
@@ -2522,7 +2524,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 if (j2k.Length == 0) return $"Testtextur ({label}) konnte nicht kodiert werden";
 
                 var (ok, texItem, assetId, how) = await CreateInventoryItemVerifiedAsync(
-                    j2k, $"SLNG Testhaut {stamp} — {label}", "Generierte Testtextur (FEAT-AVATAR-01)",
+                    j2k, $"SLNG Testhaut {stamp} {ascii}", "Generierte Testtextur (FEAT-AVATAR-01)",
                     LibreMetaverse.AssetType.Texture, LibreMetaverse.InventoryType.Texture,
                     wearableType: null, textureFolder, perms, ct).ConfigureAwait(false);
 
@@ -2548,6 +2550,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 Permissions = perms,
             };
             foreach (var kv in textures) skin.Textures[kv.Key] = kv.Value;
+
+            // A skin with no visual params at all is not something a viewer ever writes, and an
+            // asset that no viewer would produce is a poor thing to test a grid with. These are the
+            // three the skin wearable is defined by -- rainbow, ruddiness, pigment -- at neutral
+            // values, so the test colours come through exactly as generated.
+            skin.Params[108] = 0f;  // rainbow colour
+            skin.Params[110] = 0f;  // red skin (ruddiness)
+            skin.Params[111] = 0.5f; // pigment
             skin.Encode();
 
             var (skinOk, itemId, _, skinHow) = await CreateInventoryItemVerifiedAsync(
@@ -2638,8 +2648,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     invType, LibreMetaverse.PermissionMask.All, ct).ConfigureAwait(false);
 
             var itemId = item?.UUID ?? LibreMetaverse.UUID.Zero;
-            bool present = itemId != LibreMetaverse.UUID.Zero
-                && await FolderHoldsAsync(folder, itemId, "verify(legacy)", ct).ConfigureAwait(false);
+            Console.Error.WriteLine($"[Inventory] legacy create \"{name}\": asset={assetId} item=" +
+                (item == null ? "NULL (no CreateInventoryItem reply)" : itemId.ToString()));
+
+            if (itemId == LibreMetaverse.UUID.Zero)
+                return (false, LibreMetaverse.UUID.Zero, assetId, "legacy-no-item");
+
+            // The sim indexes a new item a moment after acknowledging it, so a single immediate
+            // listing can miss one that is really there. Give it one retry before calling it lost --
+            // reporting a working create as a failure is its own kind of wrong answer.
+            bool present = await FolderHoldsAsync(folder, itemId, "verify(legacy)", ct).ConfigureAwait(false);
+            if (!present)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+                present = await FolderHoldsAsync(folder, itemId, "verify(legacy, retry)", ct).ConfigureAwait(false);
+            }
 
             return (present, itemId, assetId, present ? "legacy" : "legacy-not-stored");
         }
