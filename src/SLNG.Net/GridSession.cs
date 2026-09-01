@@ -2521,17 +2521,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     .ConfigureAwait(false);
                 if (j2k.Length == 0) return $"Testtextur ({label}) konnte nicht kodiert werden";
 
-                var (ok, status, texItem, assetId) = await _client.Inventory.RequestCreateItemFromAssetAsync(
+                var (ok, texItem, assetId, how) = await CreateInventoryItemVerifiedAsync(
                     j2k, $"SLNG Testhaut {stamp} — {label}", "Generierte Testtextur (FEAT-AVATAR-01)",
                     LibreMetaverse.AssetType.Texture, LibreMetaverse.InventoryType.Texture,
-                    textureFolder, perms, ct).ConfigureAwait(false);
+                    wearableType: null, textureFolder, perms, ct).ConfigureAwait(false);
 
                 if (!ok || assetId == LibreMetaverse.UUID.Zero)
-                    return $"Upload der {label}-Textur fehlgeschlagen: {status}";
+                    return $"Upload der {label}-Textur fehlgeschlagen ({how}) — Details im Log";
 
                 textures[slot] = assetId;
                 Console.Error.WriteLine($"[TestSkin] {label}: item={texItem} asset={assetId} " +
-                    $"({j2k.Length} bytes, status={status})");
+                    $"({j2k.Length} bytes, via {how})");
             }
 
             // The wearable itself. No visual params on purpose: a skin's colour params tint every
@@ -2550,27 +2550,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             foreach (var kv in textures) skin.Textures[kv.Key] = kv.Value;
             skin.Encode();
 
-            var (skinOk, skinStatus, itemId, _) = await _client.Inventory.RequestCreateItemFromAssetAsync(
+            var (skinOk, itemId, _, skinHow) = await CreateInventoryItemVerifiedAsync(
                 skin.AssetData, skin.Name, skin.Description,
                 LibreMetaverse.AssetType.Bodypart, LibreMetaverse.InventoryType.Wearable,
-                bodypartFolder, perms, ct).ConfigureAwait(false);
+                LibreMetaverse.WearableType.Skin, bodypartFolder, perms, ct).ConfigureAwait(false);
 
             if (!skinOk || itemId == LibreMetaverse.UUID.Zero)
-                return $"Anlegen der Testhaut fehlgeschlagen: {skinStatus}";
+                return $"Anlegen der Testhaut fehlgeschlagen ({skinHow}) — Details im Log";
 
-            Console.Error.WriteLine($"[TestSkin] created \"{skin.Name}\" ({itemId}) in Body Parts");
+            Console.Error.WriteLine($"[TestSkin] created \"{skin.Name}\" ({itemId}) via {skinHow}");
 
             // Verify rather than trust the response. Measured 2026-09-01: the grid returned real
             // item and asset ids for all four creates, and after a relog not one of them was in the
             // inventory. A create call that reports success and leaves nothing behind is worse than
             // one that fails, because it sends the user looking for something that is not there.
-            bool present = await FolderHoldsAsync(bodypartFolder, itemId, "Body Parts", ct).ConfigureAwait(false);
-            await FolderHoldsAsync(textureFolder, LibreMetaverse.UUID.Zero, "Textures", ct).ConfigureAwait(false);
-
-            if (!present)
-                return "Grid meldete Erfolg, aber die Haut steht nicht im Ordner — " +
-                       "NewFileAgentInventory hat sie nicht gespeichert (Details im Log).";
-
             return $"\"{skin.Name}\" liegt in Körperteile — anziehen, dann neu backen. " +
                    "Kopf grün, Oberkörper blau, Unterkörper rot.";
         }
@@ -2579,6 +2572,82 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             Console.Error.WriteLine($"[TestSkin] failed: {ex}");
             return $"Testhaut fehlgeschlagen: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Creates one inventory item from asset data, and confirms it exists afterwards.
+    ///
+    /// <para>Two paths, because the modern one is not dependable. Measured on OSGrid 2026-09-01:
+    /// <c>NewFileAgentInventory</c> answered every create with a real <c>new_inventory_item</c> and
+    /// <c>new_asset</c> — which is all LibreMetaverse checks before reporting success — and stored
+    /// nothing. Four items, none of them in their folder afterwards, none of them there after a
+    /// relog. So the capability is tried, the result is verified against the folder, and on failure
+    /// the legacy transaction path is used instead: upload the asset, then create the item
+    /// referencing the same transaction id.</para>
+    ///
+    /// <para>The verification is the point. A create that reports success and leaves nothing behind
+    /// is worse than one that fails, because it sends the user looking for something that is not
+    /// there — which is exactly what happened.</para>
+    /// </summary>
+    private async Task<(bool Ok, LibreMetaverse.UUID ItemId, LibreMetaverse.UUID AssetId, string How)>
+        CreateInventoryItemVerifiedAsync(
+            byte[] data, string name, string description,
+            LibreMetaverse.AssetType assetType, LibreMetaverse.InventoryType invType,
+            LibreMetaverse.WearableType? wearableType, LibreMetaverse.UUID folder,
+            LibreMetaverse.Permissions perms, CancellationToken ct)
+    {
+        // 1. The capability.
+        try
+        {
+            var (ok, status, itemId, assetId) = await _client.Inventory.RequestCreateItemFromAssetAsync(
+                data, name, description, assetType, invType, folder, perms, ct).ConfigureAwait(false);
+
+            if (ok && itemId != LibreMetaverse.UUID.Zero
+                   && await FolderHoldsAsync(folder, itemId, "verify(cap)", ct).ConfigureAwait(false))
+            {
+                return (true, itemId, assetId, "capability");
+            }
+
+            Console.Error.WriteLine($"[Inventory] NewFileAgentInventory did not store \"{name}\" " +
+                $"(ok={ok}, status='{status}') -- falling back to the legacy transaction path");
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Inventory] NewFileAgentInventory failed for \"{name}\": {ex.Message}");
+        }
+
+        // 2. The legacy path: upload the asset under a transaction id, then create the item that
+        //    references it. Older, and on this grid the one that is actually wired up.
+        try
+        {
+            var transaction = LibreMetaverse.UUID.Random();
+            var assetId = await _client.Assets
+                .RequestUploadAsync(assetType, data, storeLocal: false, transaction, ct).ConfigureAwait(false);
+            if (assetId == LibreMetaverse.UUID.Zero)
+            {
+                Console.Error.WriteLine($"[Inventory] legacy upload of \"{name}\" returned no asset id");
+                return (false, LibreMetaverse.UUID.Zero, LibreMetaverse.UUID.Zero, "legacy-upload-failed");
+            }
+
+            var item = wearableType.HasValue
+                ? await _client.Inventory.CreateItemAsync(folder, name, description, assetType, transaction,
+                    invType, wearableType.Value, LibreMetaverse.PermissionMask.All, ct).ConfigureAwait(false)
+                : await _client.Inventory.CreateItemAsync(folder, name, description, assetType, transaction,
+                    invType, LibreMetaverse.PermissionMask.All, ct).ConfigureAwait(false);
+
+            var itemId = item?.UUID ?? LibreMetaverse.UUID.Zero;
+            bool present = itemId != LibreMetaverse.UUID.Zero
+                && await FolderHoldsAsync(folder, itemId, "verify(legacy)", ct).ConfigureAwait(false);
+
+            return (present, itemId, assetId, present ? "legacy" : "legacy-not-stored");
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Inventory] legacy create of \"{name}\" failed: {ex.Message}");
+            return (false, LibreMetaverse.UUID.Zero, LibreMetaverse.UUID.Zero, "legacy-threw");
         }
     }
 

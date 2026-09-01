@@ -40,10 +40,9 @@ which means **`dotnet build SLNG.sln` compiles none of `app/`** — a change to 
 window builds "clean" without ever being compiled. Build both, or the client will run yesterday's
 assembly.
 
-`--selftest` loads every shader, locale file and the Bento skeleton through the engine and exits
-non-zero on the first one that does not come up (see `app/scripts/SelfTest.cs`). It does not log in,
-so it needs no credentials and no reachable grid. It is the only check that compiles the shaders:
-`godot --headless --editor --quit` reports success on a shader that cannot compile.
+The full pre-commit sequence, including the traps that make a "clean" build a lie, is the
+`slng-verify` skill (`.claude/skills/slng-verify/SKILL.md`) — readable as plain Markdown by
+any tool, invocable as `/slng-verify` in Claude Code.
 
 Verified toolchain: **.NET SDK 8** and **Godot 4.7-stable (.NET/mono)**.
 
@@ -121,6 +120,8 @@ A task is done when: it builds (`dotnet build`), tests pass (`dotnet test`), the
 acceptance criteria in its roadmap entry are met, `dotnet format` is clean, and the
 change is committed on its own branch with a Conventional-Commit message.
 
+Mechanical checklist: `.claude/skills/slng-verify/SKILL.md` (`/slng-verify`).
+
 ## Parallel-agent rules (short form — full version in docs/AI_WORKFLOW.md)
 
 - Each work item runs on its **own branch + git worktree**. Never two agents in one
@@ -132,12 +133,24 @@ change is committed on its own branch with a Conventional-Commit message.
   (`AGENTS.md`, `SLNG.sln`), do it in a tiny dedicated commit and rebase often.
 - Integrate through `main` via small PRs, not long-lived branches.
 
-## Versioning rule
+## Area-specific rules
 
-- **Always update the version number**: When implementing a new feature, a fix, or significant UI change, you MUST update the AppVersion constant in  pp/scripts/Boot.cs (e.g. from  0.1.0-alpha to  0.1.1-alpha or  0.2.0-alpha) to reflect the new state. This ensures the version is visible on the login screen and title bar.
+The rules below are scoped to one directory and live next to it, so they load only when
+that area is being worked on. All three are plain Markdown — Gemini CLI can load them with
+`@<path>`; Claude Code picks them up automatically via each skill's `paths:` field.
 
-## UI Standards (enforced — from code review)
-- **Unified Window System:** All floating, draggable UI windows (such as Camera HUD, Inventory, Properties) MUST inherit from SLNG.App.UI.SLNGWindow. Do not use native Godot Window nodes or bare PanelContainers for popups. This ensures a consistent dark glassmorphism style, dragging behavior, and uniform title bars across the entire client.
+| Area | File | Covers |
+|---|---|---|
+| `src/**` | `.claude/skills/src-rules/SKILL.md` | layering detail, the LibreMetaverse boundary, network-thread safety, LMV decoding traps |
+| `app/**` | `.claude/skills/app-rules/SKILL.md` | **`SLNGWindow` for all floating UI**, **the `AppVersion` bump rule**, the separate `app/` build, Godot/SL rendering traps |
+| `tests/**` | `.claude/skills/tests-rules/SKILL.md` | what a test must assert, fixtures, the local-OpenSim-only policy |
+
+Two of these are hard requirements and are called out here so they are not missed:
+
+- **Every floating, draggable UI window MUST inherit `SLNG.App.UI.SLNGWindow`.** No native
+  Godot `Window` nodes, no bare `PanelContainer` popups.
+- **Every feature, fix or significant UI change MUST bump `AppVersion`** in
+  `app/scripts/Boot.cs` — it is shown on the login screen and in the title bar.
 
 ## Feature Tracking & ID Convention
 

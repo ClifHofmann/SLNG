@@ -31,6 +31,6 @@ Invoke proactively. Example: when starting a networking task, hand the spec to
   matching branch in your own worktree (see `docs/AI_WORKFLOW.md`).
 - Keep `src/` free of `using Godot;`.
 - Prefer test-first for protocol and asset code.
-- When you finish a task, run `dotnet build` + `dotnet test`, then commit with the
-  task id in the message.
+- When you finish a task, run `/slng-verify` (it covers the steps `dotnet build`
+  alone misses), then commit with the task id in the message.
 - Don't explain your thought process. Don't include introductory or concluding sentences like "Here's the code" or "I'm going to perform step 1 now...". No explanations, no filler text.

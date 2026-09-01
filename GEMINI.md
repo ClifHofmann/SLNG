@@ -27,6 +27,16 @@ e.g.:
 
 This keeps one shared set of role definitions for both tools.
 
+The same trick works for the area-specific rule files listed in `AGENTS.md`
+(**Area-specific rules**) — they are plain Markdown too:
+
+```
+@.claude/skills/src-rules/SKILL.md      before touching src/
+@.claude/skills/app-rules/SKILL.md      before touching app/
+@.claude/skills/tests-rules/SKILL.md    before touching tests/
+@.claude/skills/slng-verify/SKILL.md    the full pre-commit sequence
+```
+
 ## Updating the progress dashboard
 
 `docs/PROGRESS_UPDATE.md` is the procedure, written for both tools. Gemini owns steps 0-4
