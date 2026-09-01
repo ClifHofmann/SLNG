@@ -1746,6 +1746,21 @@ public partial class AvatarRenderer : Node3D
             GD.Print($"[BomFace] mesh={meshId.ToString("N")[..8]} registered " +
                 (usesBom ? $"BoM channels [{string.Join(", ", channels)}] over {faceIndices.Length} face(s)"
                          : $"NO BoM channels over {faceIndices.Length} face(s) -- renders from its own textures"));
+
+            // FEAT-AVATAR-01: a mesh that registered channels at login and NO channels after an
+            // appearance send has had its face textures replaced somewhere between the wire and
+            // here -- and which ids it now carries is the difference between "the sim resent it
+            // without a texture entry", "something wrote the resolved bake id back over the magic
+            // one", and "it genuinely stopped using BoM". Only the ids themselves separate those.
+            if (!usesBom)
+            {
+                var ids = (faces ?? System.Array.Empty<FaceTexture>())
+                    .Take(6)
+                    .Select(f => f.TextureId == Guid.Empty ? "EMPTY" : f.TextureId.ToString("N")[..8]);
+                GD.Print($"[BomFace]   face ids: [{string.Join(" ", ids)}]  " +
+                    $"default={(defaultFace.TextureId == Guid.Empty ? "EMPTY" : defaultFace.TextureId.ToString("N")[..8])}" +
+                    $"  facesArray={(faces == null ? "null" : faces.Length.ToString())}");
+            }
         }
 
         RecomputeMeshVisibility(avatarVisual);
