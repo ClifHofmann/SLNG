@@ -3198,11 +3198,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         try
         {
-            await _client.Inventory.CreateLinkAsync(
-                cofUuid, wearable.UUID, wearable.Name, wearable.Description,
-                LibreMetaverse.InventoryType.Wearable, LibreMetaverse.UUID.Zero).ConfigureAwait(false);
-
             byte type = wearable is LibreMetaverse.InventoryWearable iw ? (byte)iw.WearableType : (byte)0;
+
+            // The COF link's description is where Second Life keeps the layer's position in the
+            // stack -- '@' + type * 100 + index, see WearableLayerOrder. Passing the item's own
+            // description there, as this did, leaves every layer SLNG puts on untokened, and an
+            // untokened layer sorts BELOW every tokened one. So anything worn here landed at the
+            // bottom of its type's stack and disappeared under whatever was already on. A new layer
+            // belongs on top, which is index = however many of that type are already worn.
+            int existing = wearable is LibreMetaverse.InventoryWearable
+                ? CollectWornWearablesFromCof().Count(e => e.WearableType == type)
+                : 0;
+            string linkDescription = wearable is LibreMetaverse.InventoryWearable
+                ? WearableLayerOrder.BuildOrderString(type, existing)
+                : wearable.Description;
+
+            await _client.Inventory.CreateLinkAsync(
+                cofUuid, wearable.UUID, wearable.Name, linkDescription,
+                LibreMetaverse.InventoryType.Wearable, LibreMetaverse.UUID.Zero).ConfigureAwait(false);
             SendAgentIsNowWearing(CollectWornWearablesFromCof(extra: (wearable.UUID, type)));
 
             Console.Error.WriteLine($"[Appearance] wore \"{wearable.Name}\" ({wearable.AssetType}) " +
