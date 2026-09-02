@@ -156,7 +156,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.20.0-alpha";
+    public const string AppVersion = "v0.20.10-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1268,19 +1268,63 @@ public partial class Boot : Control
         }
     }
 
+    /// <summary>Maps a login URI to the short grid name GridDropdown already uses for it
+    /// ("Second Life", "OSGrid", ...), so the same wording shows up everywhere a grid is named.
+    /// Falls back to the URI's host for anything not one of GridDropdown's known entries -- a
+    /// custom OpenSim grid the user typed by hand -- rather than the whole login.cgi URL.</summary>
+    private string GetGridDisplayName(string? gridLoginUri)
+    {
+        if (string.IsNullOrEmpty(gridLoginUri)) return "?";
+        for (int i = 0; i < _gridDropdown.ItemCount; i++)
+        {
+            if ((string)_gridDropdown.GetItemMetadata(i) == gridLoginUri)
+                return _gridDropdown.GetItemText(i);
+        }
+        return System.Uri.TryCreate(gridLoginUri, System.UriKind.Absolute, out var uri) ? uri.Host : gridLoginUri;
+    }
+
+    /// <summary>Selects the GridDropdown entry matching a login URI, or clears the selection when
+    /// it doesn't match one of the known grids (a custom grid) -- so the dropdown never shows a
+    /// grid other than the one actually loaded into GridInput (found live: selecting a saved
+    /// Second Life profile left the dropdown showing whatever it last had, "OSGrid" by default,
+    /// while the login URL underneath it was really agni's).</summary>
+    private void SyncGridDropdownToUri(string? gridLoginUri)
+    {
+        for (int i = 0; i < _gridDropdown.ItemCount; i++)
+        {
+            if ((string)_gridDropdown.GetItemMetadata(i) == gridLoginUri)
+            {
+                _gridDropdown.Select(i);
+                return;
+            }
+        }
+        _gridDropdown.Selected = -1;
+    }
+
     private void LoadProfiles()
     {
         _profileDropdown.Clear();
         _savedProfiles.Clear();
         _profileDropdown.AddItem("--- Select Profile ---");
-        
+
         if (_loginsConfig.Load("user://logins.cfg") == Error.Ok)
         {
             var sections = _loginsConfig.GetSections();
             foreach (var profile in sections)
             {
                 if (profile == "Settings" || profile == "Window") continue;
-                _profileDropdown.AddItem(profile);
+
+                // The saved profile's storage KEY is its own thing (see the login-success handler
+                // below) and stays whatever it always was for backward compatibility with an
+                // existing logins.cfg -- only the dropdown's TEXT changes here, to "first last /
+                // grid" instead of the raw key, which for an older save is "first last @
+                // https://login.agni.lindenlab.com/cgi-bin/login.cgi" (a URL, not a grid name).
+                string first = (string)_loginsConfig.GetValue(profile, "first", "");
+                string last = (string)_loginsConfig.GetValue(profile, "last", "");
+                string grid = (string)_loginsConfig.GetValue(profile, "grid", "");
+                string display = $"{first} {last} / {GetGridDisplayName(grid)}";
+
+                _profileDropdown.AddItem(display);
                 _savedProfiles.Add(profile);
             }
 
@@ -1309,6 +1353,7 @@ public partial class Boot : Control
         _firstInput.Text = (string)_loginsConfig.GetValue(profile, "first", "");
         _lastInput.Text = (string)_loginsConfig.GetValue(profile, "last", "");
         _passInput.Text = (string)_loginsConfig.GetValue(profile, "pass", "");
+        SyncGridDropdownToUri(_gridInput.Text);
 
         _loginsConfig.SetValue("Settings", "last_profile", profile);
         _loginsConfig.Save("user://logins.cfg");

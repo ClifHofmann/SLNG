@@ -18,6 +18,15 @@ public partial class ObjectRenderer : Node3D
     // object would become unclickable/un-editable, not just un-standable-on.
     private const uint PhantomLayer = 1u << 2;
 
+    // BUG-RENDER-06 follow-up (answered, reverted): flipped on to settle whether the "still
+    // flips" trees have a legacy (Blinn-Phong) material -- they don't (zero [LegacyMaterial]
+    // lines, same as [PbrMaterial]). Both trees are pure-texture faces with no material object
+    // at all, so no double-sided signal exists anywhere in the data for them; the remaining
+    // suspect is LibreMetaverse's own FacetedMesh.TryDecodeFromAsset possibly dropping/mangling
+    // triangles for this content, not a culling-logic gap (confirmed against the real
+    // lldrawpoolalpha.cpp: culling is lifted only for particles and mDoubleSided GLTF materials,
+    // exactly what SLNG already does). See HANDOVER.md's BUG-RENDER-06 follow-up for the full
+    // trail of ruled-out hypotheses before picking this back up.
     private static readonly bool DebugLegacyMaterials = false;
 
     private World? _world;
@@ -122,6 +131,13 @@ public partial class ObjectRenderer : Node3D
     // face materials, so it needs its own lock rather than the main-thread-only convention the
     // sets below follow.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _legacyMaterialsSeen = new();
+
+    /// <summary>BUG-RENDER-06 follow-up: one line per distinct PBR/glTF material id, so a report
+    /// like "leaves still flip after the double-sided fix" can be settled from the log alone --
+    /// was this face's material never marked double-sided in the first place (a real content/asset
+    /// choice, not a bug here), or is it a different mechanism entirely. Always on, same reasoning
+    /// as [LegacyMaterial]'s "one line per distinct material, not per face."</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _pbrMaterialsSeen = new();
 
     private readonly HashSet<Guid> _sculptFallbacksLogged = new();
     private readonly HashSet<Guid> _meshLoadFailuresLogged = new();
@@ -1867,6 +1883,12 @@ public partial class ObjectRenderer : Node3D
             var pbr = await _assetService.GetMaterialAsync(ft.RenderMaterialId);
             if (pbr != null)
             {
+                if (_pbrMaterialsSeen.TryAdd(ft.RenderMaterialId, 0))
+                {
+                    GD.Print($"[PbrMaterial] {ft.RenderMaterialId.ToString()[..8]} " +
+                             $"alphaMode={pbr.AlphaMode} doubleSided={pbr.DoubleSided}");
+                }
+
                 var baseColor = new Godot.Color(pbr.BaseColorFactor.X, pbr.BaseColorFactor.Y, pbr.BaseColorFactor.Z, pbr.BaseColorFactor.W) * colorTint;
                 material.SetShaderParameter(PrimShaderFamily.AlbedoColor, baseColor);
                 material.SetShaderParameter(PrimShaderFamily.MetallicFactor, pbr.MetallicFactor);
@@ -1892,6 +1914,16 @@ public partial class ObjectRenderer : Node3D
                 {
                     material.Shader = PrimShaderFamily.Scissor;
                     material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, pbr.AlphaCutoff);
+                }
+
+                // BUG-RENDER-06: glTF's own doubleSided flag, mirrored the same way alphaMode
+                // is above — authoritative, never a guess. Swap to whichever WorldPrim shader was
+                // just selected's cull_disabled twin. Legacy Blinn-Phong materials have no
+                // equivalent flag (this branch only runs for a face with a real PBR material), so
+                // nothing else needs to check this.
+                if (pbr.DoubleSided)
+                {
+                    material.Shader = DoubleSidedTwin(material.Shader);
                 }
 
                 var tasks = new List<System.Threading.Tasks.Task>();
@@ -2342,6 +2374,23 @@ public partial class ObjectRenderer : Node3D
 
         // Geometry surfaces now exist — (re)apply per-face materials.
         _ = ApplyFaceMaterialsAsync(state);
+    }
+
+    /// <summary>BUG-RENDER-06: maps a WorldPrim shader (whichever <c>Kind</c> the alpha-mode logic
+    /// above just chose) to its cull_disabled twin, for a face whose material declares glTF's
+    /// <c>doubleSided</c>. Godot's <c>render_mode cull_*</c> is compile-time, so this can't be a
+    /// material property flip — it's a reference-equality lookup against the small, closed set of
+    /// WorldPrim shaders <see cref="PrimShaderFamily"/> hands out (Avatar/HUD never reach here;
+    /// they are already cull_disabled unconditionally). Falls back to the opaque double-sided
+    /// variant for a shader this method doesn't recognise, rather than throwing — safer than
+    /// silently leaving a double-sided face back-face culled.</summary>
+    private static Shader DoubleSidedTwin(Shader current)
+    {
+        if (current == PrimShaderFamily.Scissor)
+            return PrimShaderFamily.Select(PrimShaderFamily.Kind.Scissor, PrimShaderFamily.Surface.WorldPrim, doubleSided: true);
+        if (current == PrimShaderFamily.Blend)
+            return PrimShaderFamily.Select(PrimShaderFamily.Kind.Blend, PrimShaderFamily.Surface.WorldPrim, doubleSided: true);
+        return PrimShaderFamily.Select(PrimShaderFamily.Kind.Opaque, PrimShaderFamily.Surface.WorldPrim, doubleSided: true);
     }
 
     /// <summary>Structural equality for the per-face texture/color array — used to detect a

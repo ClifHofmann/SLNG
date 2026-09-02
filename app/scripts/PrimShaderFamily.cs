@@ -42,6 +42,18 @@ public static class PrimShaderFamily
     private const string ScissorPath = "res://materials/prim/prim_scissor.gdshader";
     private const string BlendPath = "res://materials/prim/prim_blend.gdshader";
 
+    // BUG-RENDER-06: the real viewer back-face culls WorldPrim faces by default, EXCEPT a face
+    // whose GLTF material explicitly declares mDoubleSided (lldrawpool.cpp:839, :856) --
+    // ObjectRenderer.cs already documented this exception but had no variant to route such a face
+    // to, so every alpha-blended double-sided leaf card still culled like an ordinary one-sided
+    // face, popping in and out of view as the camera crossed its facing (reported as the tree
+    // canopy "flickering" while moving/zooming). Only WorldPrim needs these: Avatar and Hud are
+    // already cull_disabled unconditionally (see Surface's own doc comment), so there is nothing
+    // for a double-sided flag to change there.
+    private const string OpaqueDoubleSidedPath = "res://materials/prim/prim_opaque_doublesided.gdshader";
+    private const string ScissorDoubleSidedPath = "res://materials/prim/prim_scissor_doublesided.gdshader";
+    private const string BlendDoubleSidedPath = "res://materials/prim/prim_blend_doublesided.gdshader";
+
     private const string OpaqueAvatarPath = "res://materials/prim/prim_opaque_avatar.gdshader";
     private const string ScissorAvatarPath = "res://materials/prim/prim_scissor_avatar.gdshader";
     private const string BlendAvatarPath = "res://materials/prim/prim_blend_avatar.gdshader";
@@ -58,6 +70,10 @@ public static class PrimShaderFamily
     private static readonly Lazy<Shader> _opaque = MakeLazy(OpaquePath);
     private static readonly Lazy<Shader> _scissor = MakeLazy(ScissorPath);
     private static readonly Lazy<Shader> _blend = MakeLazy(BlendPath);
+
+    private static readonly Lazy<Shader> _opaqueDoubleSided = MakeLazy(OpaqueDoubleSidedPath);
+    private static readonly Lazy<Shader> _scissorDoubleSided = MakeLazy(ScissorDoubleSidedPath);
+    private static readonly Lazy<Shader> _blendDoubleSided = MakeLazy(BlendDoubleSidedPath);
 
     private static readonly Lazy<Shader> _opaqueAvatar = MakeLazy(OpaqueAvatarPath);
     private static readonly Lazy<Shader> _scissorAvatar = MakeLazy(ScissorAvatarPath);
@@ -122,8 +138,14 @@ public static class PrimShaderFamily
         Hud,
     }
 
-    /// <summary>Picks the compiled variant for a transparency treatment on a given surface.</summary>
-    public static Shader Select(Kind kind, Surface surface) => surface switch
+    /// <summary>Picks the compiled variant for a transparency treatment on a given surface.
+    /// <paramref name="doubleSided"/> (BUG-RENDER-06) routes a <see cref="Surface.WorldPrim"/>
+    /// face to its cull_disabled twin -- pass it ONLY from a face's own
+    /// <c>PbrMaterialData.DoubleSided</c>, never as a default. It is a no-op for
+    /// <see cref="Surface.Avatar"/>/<see cref="Surface.Hud"/>, which are already cull_disabled
+    /// unconditionally (see <see cref="Surface"/>'s own doc comment) -- nothing for it to
+    /// change there.</summary>
+    public static Shader Select(Kind kind, Surface surface, bool doubleSided = false) => surface switch
     {
         Surface.Avatar => kind switch
         {
@@ -136,6 +158,12 @@ public static class PrimShaderFamily
             Kind.Scissor => _scissorHud.Value,
             Kind.Blend => _blendHud.Value,
             _ => _opaqueHud.Value,
+        },
+        _ when doubleSided => kind switch
+        {
+            Kind.Scissor => _scissorDoubleSided.Value,
+            Kind.Blend => _blendDoubleSided.Value,
+            _ => _opaqueDoubleSided.Value,
         },
         _ => kind switch
         {
@@ -157,6 +185,9 @@ public static class PrimShaderFamily
         _ = _opaqueHud.Value;
         _ = _scissorHud.Value;
         _ = _blendHud.Value;
+        _ = _opaqueDoubleSided.Value;
+        _ = _scissorDoubleSided.Value;
+        _ = _blendDoubleSided.Value;
     }
 
     // --- Uniform names (see app/materials/prim/prim_common.gdshaderinc) ---------------------

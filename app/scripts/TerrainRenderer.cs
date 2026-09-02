@@ -358,6 +358,30 @@ public partial class TerrainRenderer : Node3D
         var waterShader = ResourceLoader.Load<Shader>("res://materials/water.gdshader");
         _waterMaterial.Shader = waterShader;
 
+        // BUG-RENDER-05: water needs to draw BEHIND every other transparent surface, always --
+        // not just the ones taught to beat it one at a time. ObjectParticles.cs already hit this
+        // exact class of bug for emitters (RenderPriority = 1, "draw after the water") and its own
+        // comment already explains why: two transparent surfaces at the SAME priority fall back to
+        // Godot's camera-DISTANCE sort, which is an approximate object-level (AABB) heuristic, not
+        // a per-pixel one -- and water's plane (up to VoidWaterSize = 16384m) has an AABB centre
+        // that bears no relation to which of its fragments a given tree canopy pixel is actually
+        // behind. BUG-RENDER-03 fixed the DEPTH-write half of this (water no longer forces a wrong
+        // depth-test failure), but a tree's alpha-blended leaf mesh has no RenderPriority override
+        // of its own, so it still ties with water at the default (0) and can still lose the
+        // distance tiebreak -- confirmed live: leaves render correctly until they cross the
+        // horizon/water-height band in screen space, then vanish under the water plane, exactly
+        // the AABB-sort failure mode.
+        //
+        // Fixing water's priority instead of every consumer's is the general fix: ANY
+        // default-priority transparent object (foliage, a translucent prim, an attachment) now
+        // reliably draws in front of water, matching the real viewer's own approach of treating
+        // water as its own dedicated pass rather than sorting it against everything else
+        // (lldrawpool.h's POOL_ALPHA_PRE_WATER / POOL_WATER / POOL_ALPHA_POST_WATER split,
+        // referenced in ObjectParticles.cs's own comment). RenderPriority buckets are compared
+        // FIRST, before any distance tiebreak within a bucket -- this is a hard guarantee, not
+        // another heuristic.
+        _waterMaterial.RenderPriority = -1;
+
         // BUG-NET-03: the horizon-filling void water plane (see the field comment). Hidden until
         // SetPrimaryRegion places it at the current region's water height. Coarse tessellation
         // (128 m/quad) -- it is only ever the distant background, and the wave detail that mesh

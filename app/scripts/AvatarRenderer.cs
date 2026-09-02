@@ -893,7 +893,10 @@ public partial class AvatarRenderer : Node3D
         // Trade-off: pinned avatar textures are never reclaimed for the app's lifetime (a slow,
         // bounded-by-avatars-seen leak) rather than a real dispose-tracked lifecycle; safe default
         // until AvatarRenderer gets proper AddRef/ReleaseRef bookkeeping like ObjectRenderer's.
-        var godotTexture = await _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true);
+        // bakeChannel: bakeIndex -- BUG-AVATAR-02: a bake texture needs SL's dedicated
+        // bake-texture host, not the generic per-face fetch every other texture uses. See
+        // GridSession.FetchBakeTextureDataAsync's doc comment for why.
+        var godotTexture = await _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true, bakeChannel: bakeIndex);
 
         if (godotTexture == null)
         {
@@ -1490,7 +1493,11 @@ public partial class AvatarRenderer : Node3D
         // viewer does: KDU decodes a truncated progressive codestream on purpose, which is exactly
         // why Firestorm shows these same HUDs while we did not.
         bool rejectDegraded = surface != PrimShaderFamily.Surface.Hud;
-        var built = await _gpuCache.GetOrUploadTextureAsync(texId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: rejectDegraded).ConfigureAwait(false);
+        // BUG-AVATAR-02: a BoM face's texId IS a bake channel's texture (resolved just above from
+        // the magic id) -- fetch it through SL's dedicated bake-texture host, same as the system
+        // mesh path (LoadAndApplyTextureAsync). See GridSession.FetchBakeTextureDataAsync's doc
+        // comment for why the generic per-face path 403s every one of these.
+        var built = await _gpuCache.GetOrUploadTextureAsync(texId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: rejectDegraded, bakeChannel: wasBom ? bomIndex : null).ConfigureAwait(false);
         if (built == null)
         {
             // Not silent: an untextured face renders as flat AlbedoColor (usually white), which
@@ -2733,9 +2740,6 @@ public partial class AvatarRenderer : Node3D
         AvatarBodyPartMesh part, System.Numerics.Vector3[] positions, System.Numerics.Vector3[] normals,
         Dictionary<string, int> skinSlots)
     {
-        // Non-indexed surface: expand each face into 3 unique vertex entries so
-        // GenerateTangents() works correctly and the approach mirrors the existing
-        // attachment-mesh builder.
         var st = new SurfaceTool();
         st.Begin(Mesh.PrimitiveType.Triangles);
 
@@ -2747,19 +2751,22 @@ public partial class AvatarRenderer : Node3D
         // shader + a gizmo pointing at the real light direction. Fix: submit each triangle's 3
         // vertices in reversed order — every per-vertex step below is order-independent, so only
         // the ORDER the 3 indices of each triangle are visited changes.
-        for (int i = 0; i < part.Positions.Length; i++)
+        //
+        // Local helper: submits one vertex (shared skinning/normal/UV logic used both for the
+        // base N vertices below and for the handful of degenerate-triangle duplicates further
+        // down) and returns the index Godot assigned it.
+        int nextIndex = 0;
+        int SubmitVertex(int srcIndex, Godot.Vector2 uv)
         {
-            var p  = positions[i];
-            var n  = normals[i];
-            var uv = part.UVs[i];
+            var p = positions[srcIndex];
+            var n = normals[srcIndex];
 
-            // Resolve skin slot indices
             int s1 = 0, s2 = 0;
-            if (part.Bone1Names[i] != null && skinSlots.TryGetValue(part.Bone1Names[i]!, out int ss1)) s1 = ss1;
-            if (part.Bone2Names[i] != null && skinSlots.TryGetValue(part.Bone2Names[i]!, out int ss2)) s2 = ss2;
+            if (part.Bone1Names[srcIndex] != null && skinSlots.TryGetValue(part.Bone1Names[srcIndex]!, out int ss1)) s1 = ss1;
+            if (part.Bone2Names[srcIndex] != null && skinSlots.TryGetValue(part.Bone2Names[srcIndex]!, out int ss2)) s2 = ss2;
 
-            float w1 = part.Bone1Weights[i];
-            float w2 = part.Bone2Weights[i];
+            float w1 = part.Bone1Weights[srcIndex];
+            float w2 = part.Bone2Weights[srcIndex];
 
             // Normalize the two SL weights so they sum to 1 — Godot expects normalized
             // skin weights and a zero-sum vertex would not deform at all.
@@ -2768,21 +2775,86 @@ public partial class AvatarRenderer : Node3D
             else { w1 = 1f; w2 = 0f; }
 
             // SL is Z-up; Godot is Y-up: SL(X,Y,Z) → Godot(X,Z,−Y)
-            st.SetBones(new int[]   { s1,  s2,  0,   0   });
-            st.SetWeights(new float[]{ w1,  w2,  0f,  0f  });
+            st.SetBones(new int[] { s1, s2, 0, 0 });
+            st.SetWeights(new float[] { w1, w2, 0f, 0f });
             st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+            st.SetUV(uv);
+            st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
+            return nextIndex++;
+        }
+
+        for (int i = 0; i < part.Positions.Length; i++)
+        {
+            var uv = part.UVs[i];
             // SL/OpenGL texture origin is bottom-left (V grows up); Godot/Vulkan is top-left
             // (V grows down) and Magick decodes row 0 = top. Flip V so the baked skin lands
             // on the correct body parts instead of mirrored (front texture on the back, etc).
-            st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
-            st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
+            SubmitVertex(i, new Godot.Vector2(uv.X, 1.0f - uv.Y));
         }
+
+        // BUG-RENDER-04: LL's own avatar_head/eye/upper_body/hair .llm meshes contain a small
+        // number of genuinely degenerate triangles — measured via a throwaway probe against the
+        // real .llm data (SLNG.Assets.AvatarBodyMeshService's raw output; every NORMAL is
+        // well-formed, this is purely a triangle-shape issue), two different ways:
+        //
+        //   - ~152 triangles have ~zero area in POSITION space (two or three of their vertices
+        //     coincide or are collinear) — a known real quirk of this vintage of hand-authored
+        //     mesh, used to close a UV chart without adding a visible sliver. Genuinely invisible
+        //     either way: zero screen-space area whether present or dropped.
+        //   - ~7 triangles have ~zero area in UV space only (their positions are fine, but their
+        //     three UV coordinates are collinear/coincident) — real seam vertices sharing
+        //     collapsed UV coordinates.
+        //
+        // GenerateTangents() computes each triangle's tangent from the UV gradient scaled by the
+        // position edges; either kind of degeneracy drives that computation toward 0/0, and Godot's
+        // engine prints "Vector3 cannot be normalized... Making (0, 0, 0) as a fallback" once per
+        // affected vertex — (152 + 7) × 3 ≈ 477 lines of pure console noise at every avatar
+        // (re)build, matching what was actually observed (474).
+        //
+        // Fix, one for each kind — neither changes what renders:
+        //   - Position-degenerate: drop the triangle from the index buffer entirely. It has zero
+        //     screen-space area, so omitting it is visually identical to submitting it, and it
+        //     removes the degenerate input at its source instead of asking GenerateTangents() to
+        //     cope with it.
+        //   - UV-degenerate only: duplicate just that triangle's 3 vertices and nudge one UV by a
+        //     sub-texel 1/8192 offset (invisible at any resolution this project bakes to) so
+        //     GenerateTangents() has a non-degenerate UV to compute from. Every other, well-formed
+        //     triangle keeps sharing the original indexed vertices exactly as before, so this
+        //     cannot introduce a seam anywhere that wasn't already zero-area.
+        const float DegenerateAreaEpsilon = 1e-10f;
+        const float DegenerateUvAreaEpsilon = 1e-8f;
+        const float UvNudge = 1f / 8192f;
 
         for (int t = 0; t + 2 < part.Indices.Length; t += 3)
         {
-            st.AddIndex(part.Indices[t]);
-            st.AddIndex(part.Indices[t + 2]);
-            st.AddIndex(part.Indices[t + 1]);
+            int ia = part.Indices[t], ib = part.Indices[t + 1], ic = part.Indices[t + 2];
+
+            var pa = positions[ia];
+            var faceNormal = System.Numerics.Vector3.Cross(positions[ib] - pa, positions[ic] - pa);
+            if (faceNormal.LengthSquared() < DegenerateAreaEpsilon)
+            {
+                continue; // zero screen-space area — dropping it changes nothing visible
+            }
+
+            var uvA = part.UVs[ia];
+            var uvB = part.UVs[ib];
+            var uvC = part.UVs[ic];
+            float uvArea = (uvB.X - uvA.X) * (uvC.Y - uvA.Y) - (uvC.X - uvA.X) * (uvB.Y - uvA.Y);
+
+            if (MathF.Abs(uvArea) >= DegenerateUvAreaEpsilon)
+            {
+                st.AddIndex(ia);
+                st.AddIndex(ic);
+                st.AddIndex(ib);
+                continue;
+            }
+
+            int na = SubmitVertex(ia, new Godot.Vector2(uvA.X + UvNudge, 1.0f - uvA.Y));
+            int nb = SubmitVertex(ib, new Godot.Vector2(uvB.X, 1.0f - uvB.Y));
+            int nc = SubmitVertex(ic, new Godot.Vector2(uvC.X, 1.0f - uvC.Y));
+            st.AddIndex(na);
+            st.AddIndex(nc);
+            st.AddIndex(nb);
         }
 
         st.GenerateTangents();

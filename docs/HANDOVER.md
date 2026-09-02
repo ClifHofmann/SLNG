@@ -307,6 +307,346 @@ Fix: `water.gdshader` → `depth_draw_opaque`, matching every sibling shader's o
 `--selftest` confirms it still compiles (11 uniforms, unchanged). **Not yet re-verified
 in-world.** [Spec](file:///E:/Git/SLNG/docs/specs/BUG-RENDER-03-water-depth-draw-always.md).
 
+**`BUG-NET-05`/`BUG-NET-06`, found via HTTP Toolkit (MITM proxy) in a parallel debugging
+session, same day.** Two kinds of console spam on Aditi: repeated
+`EnvironmentSettings GET non-success: ServiceUnavailable` (Aditi's legacy Windlight cap looks
+like a permanent 503 stub post-EEP) and repeated `Failed to fetch texture <id> over HTTP:
+Forbidden` for the same id. The env-poll half was fixed correctly: a 60s backoff in
+`RepollEnvironmentLoopAsync` on a `ServiceUnavailable` response.
+
+**The first attempt at the texture half was a regression, found and corrected in THIS session
+right after.** It set `Settings.TexturePipeline.UseHttpTextures = false` — which does nothing
+for the actual spam (`FetchTextureDataAsync`, SLNG's own world-object fetch, never reads that
+flag at all) but DOES gate every avatar-BAKE texture fetch:
+`GridClientBakingTextureProvider.RequestTextureAsync` → `RequestImageAsync` →
+`RequestImageInternal`, which falls back to the legacy UDP pipeline when the flag is off —
+exactly the path this same file's own adjacent comment already documents as unreliable ("UDP
+transfers time out and hand back truncated JPEG2000 streams... white untextured objects"). A
+real risk of making `BUG-AVATAR-01`'s blank avatar WORSE while fixing nothing. **Reverted to
+`true`.** The actual fix: `FetchTextureViaHttpRangeAsync`'s retry set dropped `Forbidden` — a
+403 is a permanent, deliberate denial (unlike a transient 503 or a not-yet-propagated 404), so
+retrying it 5× at 2s intervals was the wasted load actually producing those log lines. Also ran
+`dotnet format` — the originating commit had left whitespace violations in `GridSession.cs`.
+**Not yet re-verified in-world.**
+[Spec](file:///E:/Git/SLNG/docs/specs/BUG-NET-05-06-texture-and-env-fetch-spam.md).
+
+**`BUG-AVATAR-02` — the white avatar's actual root cause, found and fixed.** Finished the
+`godot.log` search myself (`grep -n "SelfBake\|Bake\]\|Appearance\]" godot2026-*.log` across the
+rotated logs, not just the live one) instead of leaving it to a later session: `[SelfBake]`
+proved the sim relayed real, stable bake ids — the SAME ten channel ids across every relog from
+13:48 to 15:31. Every one of them failed with `HTTP 403` (`dda710d4` was indeed unrelated, a
+plain world-object texture). The user then captured the actual HTTP exchange with HTTP Toolkit
+(MITM proxy): SLNG's request to `asset-cdn.glb.agni.lindenlab.com/?texture_id=...` got a raw AWS
+S3 `AccessDenied` — and a side-by-side capture of **Firestorm** fetching the identical id showed
+it using a totally different host and shape:
+`bake-texture.glb.agni.lindenlab.com/texture/<agent-id>/eyes/<texture-id>` → 200 OK, real bytes.
+Avatar bakes are served through their OWN dedicated CDN, not the generic one every other texture
+uses — real reference-viewer infrastructure (`llappcorehttp.h`'s `bake-texture` HTTP pool,
+`llavatarappearancedefines.cpp`'s slot-name table), which neither LibreMetaverse 3.1.3 nor SLNG's
+own fetch code had ever implemented. Fix: new `SLNG.Core.BakeChannelNames` (all 11 slot names,
+read from the reference table, not guessed from the one — "eyes" — actually observed),
+`GridSession.FetchBakeTextureDataAsync` + `ParseLindenGridShortName`, `AssetService.
+GetBakeTextureAsync`, wired into both places a bake texture is fetched
+(`AvatarRenderer.LoadAndApplyTextureAsync` for the system mesh, and the BoM face-material path
+for a mesh body/head). `v0.20.0-alpha`, 16 new tests. **Not yet re-verified in-world — untried
+against a real avatar.** Also notable: this also happens to be the reason **also on real SL,
+`asset-cdn.glb.agni.lindenlab.com` matches what a legitimate `GetTexture`/`ViewerAsset`
+capability resolves to** — the 403 there is real and by design; SLNG was simply asking the wrong
+host for a bake specifically, not doing anything wrong for ordinary textures.
+[Spec](file:///E:/Git/SLNG/docs/specs/BUG-AVATAR-02-bake-texture-403.md).
+
+**A process failure worth remembering, found while investigating the above.** Grepping for a
+comment string from earlier this session (the §2.b `DumpPreview` gate) turned up nothing at all —
+`BUG-AVATAR-01`'s `RebakeAvatar` SSB branch, the `BakeAvatarAsync`/`CreateTestSkinAsync` SSB
+guards, the `_isLindenGrid` field and its login-time assignment, and `BUG-NET-04`'s
+`OnSimChanged` subscription had ALL silently vanished from `GridSession.cs` — even though
+`godot.log` proves the `RebakeAvatar` fix was tested and working at 13:48. Best explanation:
+between then and the `dd1f2ab` commit (~15:15, "Restored FEAT-SL-01 uncommitted state" + the
+BUG-NET-05/06 work), whatever process wrote that commit worked from a partial/stale copy of this
+file and silently dropped everything added after that snapshot. All of it was re-applied from
+the original reasoning (still fresh in-session) rather than re-derived from scratch — but the
+lesson stands: **when a file this large is being edited across tools/sessions in parallel, verify
+a fix is still present by grep after any external commit, don't assume "committed" means
+"complete."**
+
+**`BUG-NET-07`, found re-testing `BUG-NET-06` — the 60s backoff was dead code.** The user went
+back to Agni with HTTP Toolkit and still saw a sustained burst of 503 `cap invocation rate
+exceeded` for the same `/cap/<uuid>`, with `Retry-After: 4`. First guess in this session (mine,
+not the user's) was EventQueueGet — wrong, and never actually said to the user before being
+caught: a captured 200-OK body for the identical cap UUID decodes to `ambient`/`blue_density`/
+`sun_angle`/`waterFogColor`/`wave1Dir` — exactly the legacy `EnvironmentSettings` keys
+`EnvironmentLlsdParser.cs` already parses. **The user's own read — "Das 503 ist das windlight
+zeugs" — was correct.** Root cause: `BUG-NET-06`'s cooldown (`capture?.Error?.Contains
+("ServiceUnavailable")`, wait 60s before re-polling) could never fire, because LibreMetaverse's
+`EnvironmentManager.GetRegionEnvironmentAsync`/`GetParcelEnvironmentAsync`/
+`GetLegacyEnvironmentAsync` all swallow the HTTP status on a non-2xx response internally
+(`Logger.Warn`, return `null`) — `FetchRegionEnvironmentAsync` only ever set its own `error` from
+a caught exception, never a plain failed response, so `capture.Error` stayed null on every 503 and
+`RepollEnvironmentLoopAsync` kept re-asking every 2.5s forever. Checked whether upgrading the
+pinned LibreMetaverse 3.1.3 → 3.1.4 would help (`gh api repos/cinderblocks/libremetaverse/tags`,
+nuspec diff) — turned out unnecessary: 3.1.3 already ships its own client-side rate limiter
+(`CapsRateLimiter`/`RateLimitingCapsHandler`, confirmed by reflection against the actual pinned
+assembly, not just the newer `scratch/libremetaverse_src` checkout). The gap was entirely
+GridSession's own status-signal plumbing. Fix: new `GridSession.GetCapabilityMapAsync` calls
+`_client.HttpCapsClient.GetAsync` directly (same client, same one request — no added traffic)
+instead of the three LMV wrappers, so the real `HttpStatusCode` reaches `error` and the cooldown
+can actually engage. `v0.20.1-alpha`, 563/563 tests unchanged. **Not yet re-verified in-world.**
+Two loose ends from the same screenshot batch, not yet resolved: a 404 `Hash mismatch:
+c0799934-...` on the bake-texture `head` channel (a locally-cached bake id that may be stale
+relative to the server's current record — plausibly downstream of this very rate-limiting, if the
+`AvatarAppearance` update carrying the corrected id got lost in the same storm), and a UUID
+(`70d4f143-...`) the user mentioned in chat ("firestorm fragt die UUID garnicht ab") that does not
+appear in any local `godot.log` or in any of the three screenshots actually shared this thread —
+worth asking the user to confirm which capture that id came from before chasing it further.
+[Spec](file:///E:/Git/SLNG/docs/specs/BUG-NET-07-environment-503-cooldown-unreachable.md).
+
+**`BUG-NET-08`, found seconds after reporting `BUG-NET-07` — the actual "every second" cause.**
+User re-tested immediately: **"OK die 503 kommt immernoch im sekundentakt."** `BUG-NET-07` was a
+real fix but structurally could not explain that cadence — `RepollEnvironmentLoopAsync` throttles
+to one fetch per 2.5s no matter what. Traced further: `GridSession.OnEventQueueRunning` (hung off
+LibreMetaverse's `NetworkManager.EventQueueRunning`) calls the FULL `FetchRegionEnvironmentAsync()`
+— legacy Windlight cap included — with zero throttling, on the assumption (stated in its own doc
+comment) that the event fires once per region. It does not: `EventQueueClient.ConnectedResponseHandler`
+invokes its `OnConnected` callback after EVERY successful `EventQueueGet` poll, not just the first,
+despite that method's own source comment claiming "the event queue is starting up for the first
+time" — no first-time gate exists anywhere in `EventQueueClient.cs`. On SL, `EventQueueGet`
+resolves roughly once a second under normal traffic, so this call site was re-triggering a full
+environment capture — including the 503-prone legacy fetch — about once a second, completely
+bypassing the OTHER call site's throttle. This, not the dead-cooldown bug, was the dominant spam
+source the whole time; `BUG-NET-07` was necessary but not sufficient. Fix: a new
+`_environmentCapturedForSim` field guards the handler to fire once per live `Simulator` instance
+(`ReferenceEquals`, not the region handle — so a genuine reconnect to a previously-visited region
+still captures fresh; LMV hands out a new `Simulator` object per connection, the same lifecycle
+`BUG-NET-04` already depends on). Live environment changes remain covered by the separate,
+already-throttled `RegionInfo`-driven repoll path. `v0.20.2-alpha`, 563/563 tests unchanged.
+**Not yet re-verified in-world — this should be the one that actually stops the pattern the user
+is watching live.** [Spec](file:///E:/Git/SLNG/docs/specs/BUG-NET-08-eventqueuerunning-fires-every-poll.md).
+
+**`BUG-NET-09` — the follow-up question, "was passiert wenn jemand das WL auf der sim wechselt".**
+Split the answer in two and verified both against the real reference viewer's own source
+(`llenvironment.cpp`, `llviewerparcelmgr.cpp`), not from memory. A REGION-wide change: already
+works live, unaffected by anything else today — `RegionInfo` packet → `RepollEnvironment()`,
+which turns out to be EXACTLY how the real viewer wires it too (`LLRegionInfoModel`'s update
+callback → `requestRegion()`). A PARCEL-only change (only the parcel you're standing on, not the
+whole region): had no equivalent in SLNG at all, and — the actual finding, not just a missing
+feature — **cannot be made to push the way the real viewer does it.** The real viewer detects it
+from a `ParcelEnvironmentVersion` field inside an unsolicited `ParcelProperties` push;
+LibreMetaverse's `ParcelPropertiesMessage` never parses that field, and the one API shape that
+would have exposed the raw LLSD instead of a typed message exists in the pinned source only as a
+commented-out delegate — dead, unreachable. `libremetaverse` is a compiled NuGet dependency here,
+not vendored source, so there's no patching around it locally. Asked the user how to handle it
+(periodic re-check vs. accept the gap) via `AskUserQuestion`; the user dismissed that question in
+the moment ("wait for next instruction"), then a message later gave the answer directly: **"lass
+uns mal auf 30 sekunden gehen und wir gehen dann runter."** Fix: a new `PeriodicTimer` loop
+(`ParcelEnvironmentPollLoopAsync`, 30s, cancelled in `Dispose`) that does nothing but call the
+EXISTING `RepollEnvironment()` — reuses all of `BUG-NET-07`/`08`'s throttling for free (the
+`hasExt` branch of `FetchRegionEnvironmentAsync` already re-resolves and re-fetches the CURRENT
+parcel's EEP settings on every call, unconditionally; this was always true, just never triggered
+by anything except login or a `RegionInfo` packet). No new request shape, one new trigger. Also
+found in passing, while tracing why LMV's own client-side rate limiter never protected the
+environment capabilities: `CapsRateLimiter`'s name→category table (`CapsRateLimiter.cs`) has no
+entry for `EnvironmentSettings`/`ExtEnvironment` at all — they fall into the generic `Default`
+bucket (20 burst, 10/s refill), far too generous to have ever throttled the spam `BUG-NET-07`/`08`
+fixed; that table is purely client-side self-limiting and unrelated to the actual SL server
+threshold, which stays unknown (closed-source simulator) beyond the one captured data point,
+`Retry-After: 4`. `v0.20.3-alpha`, 563/563 tests unchanged. **Not yet re-verified in-world — needs
+an actual parcel-only edit made by a second party while standing on that parcel.** The 30s
+interval is explicitly a first-verification value; the user's own plan is to relax it once
+confirmed working. [Spec](file:///E:/Git/SLNG/docs/specs/BUG-NET-09-parcel-only-environment-poll.md).
+
+**"Super das geht jetzt erst mal" — then two cleanup asks: build/startup warnings, and shutdown
+errors.** Handled the warnings fully; the shutdown errors are explained but not yet fixed (see
+below).
+
+**`BUG-NET-10` — the one build warning turned out to be a real, broken feature, not noise.**
+`CS0067: MaturityPreferenceChanged is never used`. Traced it and found `FEAT-SL-02` (Maturity/Age
+preferences, shipped earlier this session) silently broken three separate ways at once, all inside
+the same `// Restored Uncommitted Methods` block — very likely a 4th casualty of the silent-restore
+incident already documented for `BUG-AVATAR-01`/`BUG-NET-04`/the TPV guards, just never caught
+until a compiler warning happened to point at one corner of it. (1) The event was declared,
+subscribed to by `MaturityPreferencesPage.cs` (whose own comment assumes it already works), but
+never actually raised. (2) `SupportsMaturityPreference` was a plain stored `false` with nothing
+anywhere ever setting it true — confirmed via `git log -S` across all history, zero hits —
+contradicting `FEAT-SL-02`'s own spec, which documents it as a LIVE capability read. (3)
+`AccountMaturityMax`/`PreferredMaturity` were never populated from the login response's
+`agent_access_max`/`agent_region_access` at all — stuck at General regardless of account or grid,
+for the whole session, always. Net result before the fix: Preferences always claimed "grid doesn't
+support this," a successful change never showed up in the UI, and the displayed ceiling never
+matched the real account — a real, working-looking feature that in fact never worked, since the
+day it shipped. Fixed all three: login-response population, `SupportsMaturityPreference` made a
+live computed property (matching the `hasExt`/`hasLegacy` pattern already used elsewhere in this
+file), event now raised on a successful change. `v0.20.4-alpha`, warnings 1→0, 563/563 tests
+unchanged. **Not yet re-verified in-world.**
+[Spec](file:///E:/Git/SLNG/docs/specs/BUG-NET-10-maturity-preference-never-worked.md).
+
+**`BUG-RENDER-04` — 474 "Vector3 cannot be normalized" warnings, traced and fixed with a measured
+probe, not a guess.** Right after the six system body-part meshes load, `godot.log` printed the
+warning 474 times. Wrote a throwaway console probe (`scratch/DecodeTest`, gitignored — already
+referenced `SLNG.Assets`) against the REAL, unmodified `AvatarBodyMeshService.Load` output before
+touching any fix code. First hypothesis (UV-degenerate triangles only) measured out to just 7
+triangles — nowhere near enough to explain 474 — so didn't stop there: re-measured position-space
+degeneracy too and found the real dominant cause, 152 triangles with genuinely zero 3D area (two or
+three coincident/collinear vertices) in LL's own `avatar_head`/`avatar_eye`/`avatar_upper_body`
+`.llm` meshes — 159 total × 3 vertices ≈ 477, matching the observed 474. `GenerateTangents()`
+divides by each triangle's UV-gradient area; either kind of degeneracy drives that toward 0/0.
+Fixed both, differently, verified against the same probe (re-checked: zero triangles still
+degenerate after the fix, in every affected part): position-degenerate triangles dropped from the
+index buffer outright (zero screen-space area, so this changes nothing visible); UV-degenerate-only
+triangles get 3 freshly duplicated vertices with one UV nudged by an invisible sub-texel amount, so
+`GenerateTangents()` has something non-degenerate to compute from, while every well-formed triangle
+keeps its original shared vertices untouched. `v0.20.4-alpha`, warnings 1→0 (0 total combined with
+`BUG-NET-10`'s fix — build now fully clean), 563/563 tests unchanged, `--selftest` uniform counts
+unchanged. **Not yet re-verified in-world.**
+[Spec](file:///E:/Git/SLNG/docs/specs/BUG-RENDER-04-avatar-mesh-tangent-warnings.md).
+
+**The shutdown errors — explained, not yet fixed.** User's second paste: `ERROR: Pages in use
+exist at exit in PagedAllocator: ...GeometryInstanceSurfaceDataCache`, `1 RID allocations of type
+MeshStorage::Mesh` and `SceneCull::Instance` leaked, `...GeometryInstanceForwardClustered` pages in
+use, a leaked instance dependency, 1 `IndexArray` + 1 `IndexBuffer` + 3 `VertexBuffer` RIDs leaked,
+3 `ObjectDB` instances leaked. Reading the type names: this is ONE `MeshInstance3D`-shaped GPU
+resource (mesh + its render-server instance + index/vertex buffers) that is never freed before the
+engine tears down — something creates a mesh/instance and either never calls `QueueFree()` on its
+owning node, or holds a reference to it (a cache dictionary, a static) that outlives the scene tree
+and prevents Godot's own cleanup from ever running. Harmless in the sense that the OS reclaims
+everything at process exit regardless — but a real leak while the app is actually running (repeated
+across relogs) would grow unbounded. **Not root-caused yet** — the engine's own error message says
+"3 ObjectDB instances were leaked at exit (run with `--verbose` for details)," which would name the
+exact object; guessing across `AvatarRenderer`'s and `GpuCache`'s several mesh/skin caches without
+that would risk a wrong fix (freeing something still legitimately in use) for what is currently a
+shutdown-only symptom. Next step: capture one `--verbose` close and grep it for the leaked type
+names above, or spawn `graphics-engineer`/`performance-engineer` on it with a live repro.
+
+**`BUG-UI-01` — login screen, before even trying the render problem.** User sent a screenshot of
+the login screen: the saved-profile dropdown showed the raw login URL
+(`purisViewer resident @ https://login.agni.lindenlab.com/cgi-bin/login.cgi`) instead of a grid
+name, and — the sharper half — the separate grid dropdown right underneath was still on "OSGrid"
+while the login URL actually loaded was Agni's. *"Das was oben ausgewählt ist sollte auch in der
+Auswahl stehen."* Both gaps were pre-existing `Boot.cs` wiring, not something this session broke:
+the profile dropdown's text was literally the `ConfigFile` section key, never reformatted; and
+loading a saved profile set the login-URL text field but never touched `GridDropdown`'s own
+selection — nothing synced the other direction. Fixed with two small helpers,
+`GetGridDisplayName` (one source of truth: reads `GridDropdown`'s own item text rather than a
+second name table, falls back to just the host for a custom grid) and `SyncGridDropdownToUri`
+(selects the matching entry or clears it) — wired into `LoadProfiles()`'s dropdown text and
+`OnProfileSelected`. Storage format untouched, so an existing `logins.cfg` still loads fine.
+`v0.20.5-alpha`, 563/563 tests unchanged. **Not yet re-verified in-world.**
+[Spec](file:///E:/Git/SLNG/docs/specs/BUG-UI-06-login-screen-profile-grid-mismatch.md).
+
+**`BUG-RENDER-05` — back to the render problem: the water/canopy cut was STILL there.** User sent
+two screenshots of the same tree (untextured canopy fine, textured canopy cleanly cut at the
+water/horizon height) plus a Firestorm material-inspector shot confirming the leaves really are
+`Alpha-Blending`, not a mask — ruling out a classification mistake and confirming this was the same
+bug `BUG-RENDER-03` already tried to fix, still happening. `BUG-RENDER-03`'s `depth_draw_opaque`
+fix was real but only addressed a depth-TEST failure; the actual dominant cause was Godot's
+SEPARATE transparent-pass SORT — water and every ordinary alpha-blended material share the default
+`RenderPriority` (0), so two overlapping transparent objects fall back to an approximate per-object
+distance heuristic, and water's plane (up to the `VoidWaterPlane`'s 16384m) has one computed
+distance that means nothing for which of its fragments a given leaf pixel is really behind. Found
+the exact precedent already in the codebase: `ObjectParticles.cs` gives particles `RenderPriority =
+1` to beat water, with a comment citing the real viewer's own dedicated water-pass split — but that
+was only ever fixed for particles, one consumer at a time. Fix: `TerrainRenderer._waterMaterial.
+RenderPriority = -1` — `RenderPriority` buckets are compared BEFORE any distance tiebreak, a hard
+guarantee, so this protects EVERY default-priority transparent object against water at once.
+`BUG-RENDER-03`'s spec got a correction note (not a silent edit) pointing here. `v0.20.6-alpha`,
+563/563 tests unchanged, no shader touched (a `Material` property). **User confirmed live:
+"passt jetzt mit dem wasser."** [Spec](file:///E:/Git/SLNG/docs/specs/BUG-RENDER-05-water-transparent-sort-priority.md).
+
+**`BUG-RENDER-06` — same tree, the next thing the user flagged: "die texturen flackern... vor
+allem wenn texturen noch laden oder wenn man sich bewegt/zoomt."** Asked a clarifying question
+first (`AskUserQuestion`) — confirmed camera-movement-triggered, not an idle/stationary flicker.
+Traced end-to-end before writing any fix: LibreMetaverse already parses glTF's `doubleSided` flag
+(`AssetMaterial.DoubleSided`), and `ObjectRenderer.cs` already had a comment describing the real
+viewer's exact exception (culling lifted only for particles and explicitly double-sided GLTF
+materials) — but `PbrMaterialData`, the neutral DTO crossing the `SLNG.Assets` boundary, never
+carried the field forward, so it was parsed and then silently dropped before any renderer ever saw
+it. No shader variant existed to route a double-sided face to either — `cull_back` is baked into
+`render_mode`, compile-time in Godot. For a mesh tree's leaf cards (near-universally authored
+double-sided — confirmed via the user's own Firestorm screenshot of the leaf material's
+`Alpha-Blending` mode), every triangle was culled like an ordinary one-sided face, so individual
+leaves popped in and out purely as a function of view angle while orbiting/zooming — the reported
+flicker. User confirmed the direction before the larger change: **"Direkt implementieren
+(Empfehlung)."** Fix: `PbrMaterialData.DoubleSided`; three new WorldPrim-only shader variants
+(`prim_opaque/scissor/blend_doublesided.gdshader`, added alongside the existing ones rather than
+modifying them — `prim_opaque.gdshader`'s own comment explicitly warns against ever making
+`cull_back` conditional there, since that was the exact 2026-08-01 "glassy shell" bug); `PrimShader
+Family.Select` gains a `doubleSided` parameter (a no-op for Avatar/Hud, already unconditionally
+cull_disabled — only WorldPrim needed new variants); `ObjectRenderer.cs`'s PBR branch swaps to the
+double-sided twin of whichever Kind the existing `alphaMode` logic already chose, via a small
+reference-equality helper (`DoubleSidedTwin`). `v0.20.7-alpha`, 563/563 tests unchanged,
+`--selftest` 29/29 (26 + the 3 new shaders, uniform counts matching their base variants). **Not yet
+re-verified in-world.** The "flicker while textures are still loading" half of the report is a
+separate, one-time placeholder→texture transition, not addressed here.
+[Spec](file:///E:/Git/SLNG/docs/specs/BUG-RENDER-06-double-sided-material-culling.md).
+
+**Re-tested live, on a DIFFERENT tree (a conifer/needle tree, not the earlier broad-leaf one):
+"flippt immernoch"** — confirmed running `v0.20.7-alpha` (the double-sided fix), so the fix itself
+built and shipped correctly; it just doesn't explain this tree's flicker. Rather than guess a
+fourth time, added one line of always-on diagnostic logging instead:
+`ObjectRenderer.cs`'s PBR branch now prints `[PbrMaterial] {id8} alphaMode=... doubleSided=...`
+once per distinct material id (same "one line per material, not per face" convention as
+`[LegacyMaterial]`). Next test's log settles it directly: if this conifer's material logs
+`doubleSided=False`, the fix's own routing is working correctly and this is a genuinely different
+tree whose content just isn't authored double-sided (or uses a legacy, non-PBR material, which
+cannot carry the flag at all) — a different root cause, not yet found. If it logs `doubleSided=True`
+and still flickers, `DoubleSidedTwin`'s routing itself has a bug. `v0.20.8-alpha`, diagnostic-only,
+no behaviour change — 563/563 tests unchanged, `--selftest` 29/29, `dotnet format` clean.
+
+**Result: zero `[PbrMaterial]` lines at all, for either tree.** User, independently, same
+conclusion: *"Ich vermute reine Texturen"* — no PBR/glTF material at all, just a plain textured
+face going through `ApplyAlphaCutout`'s `DetectAlpha()` fallback (`ObjectRenderer.cs`). That path
+has structurally NO double-sided signal to read (glTF's `doubleSided` doesn't exist for non-PBR
+content in SL's protocol at all) — `BUG-RENDER-06`'s fix could not have applied here regardless of
+correctness. Flipped `DebugLegacyMaterials` to `true` (was `false`) to settle whether these two
+trees carry a legacy Blinn-Phong material (also has no double-sided concept) or genuinely nothing —
+`v0.20.9-alpha`, still diagnostic-only. **Open question this needs before continuing:** does
+Firestorm render this SAME tree without the flicker? The already-verified reference-viewer source
+(`lldrawpoolalpha.cpp`) says culling is lifted ONLY for particles and explicitly double-sided glTF
+materials — if this content has neither, the real viewer would cull it identically, meaning this
+could be a genuine content/asset limitation (single-sided leaf cards popping in every viewer, not
+an SLNG bug) rather than something more to fix here.
+
+**Answered, and then some — paused for the day with a narrowed, still-open lead.** Firestorm:
+**stable, no flicker**, on the same content — so this IS a real SLNG-side gap, not a content
+limitation. Pure rotation with NO zoom/distance change still flickers (user-confirmed) — angle-
+dependent, not distance-dependent, which is what sent this toward culling in the first place.
+Before digging further, went back and RE-VERIFIED the foundational claim against real
+`lldrawpoolalpha.cpp` source directly (not trusted from the existing in-repo comment) — confirmed
+character-for-character: `LLGLDisable cull_face(draw->mGLTFMaterial->mDoubleSided ? GL_CULL_FACE :
+0)`, three call sites, culling lifted ONLY for an explicitly double-sided GLTF material. Since
+BOTH trees confirmed zero `[PbrMaterial]` AND zero `[LegacyMaterial]` lines (`DebugLegacyMaterials`
+flipped to `true` then back to `false` once answered — see `ObjectRenderer.cs`'s own comment there),
+they carry no material object of either kind — so SLNG's culling behavior, verified, already
+matches the real viewer's rule exactly for this content. That rules out "wrong culling rule" as the
+explanation and points somewhere else entirely. Also ruled out, with code evidence, not guesses:
+
+- **Mesh LOD switching** — `AssetService.GetMeshAsync(Guid meshId)` takes no LOD parameter at all
+  and caches one decoded `MeshData` per mesh id; `PickPrimDetailLevel`'s distance-based LOD only
+  exists for procedural `PrimShape` geometry (curved-profile prims), never uploaded mesh assets.
+- **Texture discard-level resharpening** (`GpuCache.TryUpgradeCachedTexture`, the abrupt
+  `cached.SetImage(image)` swap when `screenPixelArea` grows past its 4x-area guard) — real
+  mechanism, but requires a distance/size change to trigger at all; ruled out by the pure-rotation
+  test above.
+- **SLNG.Assets' own mesh decode dropping geometry** — `AssetService.Decode` is a faithful,
+  unmodified copy of LibreMetaverse's `FacetedMesh.TryDecodeFromAsset` output (positions/normals/
+  UVs/indices copied 1:1 per face); no dedup, no degenerate-triangle filtering anywhere in it
+  (that logic exists only in `AvatarRenderer.BuildPartMesh`, for the system avatar body mesh
+  specifically — `BUG-RENDER-04` — a completely separate code path from general world-object mesh
+  decode).
+
+**Leading remaining suspect, not yet investigated:** LibreMetaverse's own
+`FacetedMesh.TryDecodeFromAsset` possibly drops or mis-orders triangles for this content — this
+project has hit real LMV mesh-decode bugs before (the 4-influence skin-weight parser, `Face.ID`
+never populated) — worth checking with the same rigor next time. **User's call, given how much
+landed today (water, warnings, login UI, double-sided materials): pause here, pick it up in a
+future session** rather than push further tonight. Nothing to revert — `DebugLegacyMaterials` is
+back at its default `false`, all other work from today stands. `v0.20.10-alpha`.
+
+User then sent two Firestorm reference screenshots of the same conifer from two angles, as
+evidence for next time: needle-cluster shapes read consistent between the two angles, nothing
+visibly missing or popping — supports the "stable in Firestorm" answer above. No file path saved
+(inline chat images, not files on disk) — if this needs re-confirming later, ask the user to
+re-share or take fresh ones once the LibreMetaverse mesh-decode lead is actually being worked.
+
 ## 7. Also still open
 
 - **The avatar stands too low**, feet sunk into the ground. Predates this session. Concrete
@@ -341,6 +681,3 @@ in-world.** [Spec](file:///E:/Git/SLNG/docs/specs/BUG-RENDER-03-water-depth-draw
   `LLTexLayerTemplate` were settled.
 - **Inventory item names go through the legacy packet.** A name containing `:` or `—` came
   back as a hex dump of itself, truncated at the colon. Plain ASCII.
-
-
-**BUG-NET-05 / BUG-NET-06, same session:** Fixed HTTP texture fetch spam and environment polling 503 spam. The custom HTTP texture fetch in GridSession.cs lacked backoff and HTTP retries (403, 404, 503) and LibreMetaverse's fallback internally spammed Failed to fetch texture ... over HTTP: Forbidden because its UseHttpTextures was still true. Added an async 5x2sec retry loop in FetchTextureViaHttpRangeAsync, bypassed LMV's internal HTTP texture fallback, and added a 60-second backoff in RepollEnvironmentLoopAsync for ANY FetchRegionEnvironmentAsync error to stop the EnvironmentSettings GET non-success: ServiceUnavailable infinite loop.

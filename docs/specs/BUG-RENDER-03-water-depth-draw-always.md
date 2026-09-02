@@ -75,8 +75,19 @@ Nothing beyond `--selftest`'s shader-compiles-and-uniforms-match check, which th
 
 ## Still open
 
-- **Not yet re-verified in-world.** Reported once, diagnosed and fixed once (after one wrong
-  attempt); not yet confirmed the band is actually gone on Aditi.
 - **If a screen-space refraction or underwater-fog pass is ever built**, it may need water
   reliably present in the depth buffer again — revisit this render_mode choice at that point
   rather than assuming `depth_draw_opaque` is permanently correct.
+
+## ⚠️ Correction (same session, verified live)
+
+**This fix was real and necessary, but not sufficient.** Re-tested in-world (user screenshots: a
+tree canopy correct before its texture loaded, cleanly cut off at the water/horizon height once
+the real texture arrived) — the band was still there after this shipped. `depth_draw_opaque` fixed
+a real, separate depth-TEST failure mode; it did nothing for Godot's independent transparent
+draw-order SORT, which turned out to be the dominant cause: two transparent objects at the same
+default `RenderPriority` (water and every ordinary foliage/prim material) fall back to an
+approximate, per-object camera-distance heuristic that a plane the size of water (up to 16384m
+across) cannot give a meaningful single answer to. See `BUG-RENDER-05` for the actual complete fix
+(`RenderPriority = -1` on the shared water material) and the full mechanism — kept as a real,
+still-necessary piece of the fix, not reverted.

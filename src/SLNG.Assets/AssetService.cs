@@ -560,6 +560,45 @@ public class AssetService
         return lazy.Value;
     }
 
+    /// <summary>BUG-AVATAR-02: fetches and decodes an avatar BAKE texture through SL's dedicated
+    /// bake-texture host, not the generic per-face path <see cref="GetTextureAsync"/> uses --
+    /// see <see cref="GridSession.FetchBakeTextureDataAsync"/>'s own doc comment for why bakes
+    /// need an entirely different URL. Deliberately its own small method rather than a parameter
+    /// threaded through the generic fetch/cache/dedup pipeline above: bake channels are at most
+    /// ~11 per avatar per rebake, nowhere near the volume that pipeline's Lazy-dedup and
+    /// negative-cache machinery exist for, so duplicating that complexity here isn't worth the
+    /// risk of it interacting badly with the well-tested generic path.
+    ///
+    /// Falls back to <see cref="GetTextureAsync"/> when the bake-specific fetch returns nothing --
+    /// off a Linden grid that's immediate (no network cost, <c>FetchBakeTextureDataAsync</c> short-
+    /// circuits), and on a Linden grid it's a reasonable second attempt rather than giving up
+    /// outright.</summary>
+    public async Task<TextureData?> GetBakeTextureAsync(Guid textureId, int bakeChannel, float priority = 0f)
+    {
+        if (_memCache.TryGetValue(textureId, out TextureData? cached))
+        {
+            return cached;
+        }
+
+        var bakeResult = await _session.FetchBakeTextureDataAsync(textureId, bakeChannel).ConfigureAwait(false);
+        if (bakeResult.Data is { Length: > 0 } bytes)
+        {
+            var decoded = await Task.Run(() => DecodeTexture(bytes, isSculpt: false)).ConfigureAwait(false);
+            if (decoded != null)
+            {
+                if (!decoded.IsDegraded)
+                {
+                    long size = decoded.Width * decoded.Height * 4;
+                    if (size <= 0) size = 1024;
+                    _memCache.Set(textureId, decoded, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(5) });
+                }
+                return decoded;
+            }
+        }
+
+        return await GetTextureAsync(textureId, desiredDiscard: 0, priority: priority).ConfigureAwait(false);
+    }
+
     private async Task<TextureData?> FetchDecodeAndCacheTextureAsync(Guid id, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false)
     {
         try
@@ -1034,7 +1073,8 @@ public class AssetService
                 asset.RoughnessFactor,
                 emissive,
                 alphaMode,
-                asset.AlphaCutoff
+                asset.AlphaCutoff,
+                asset.DoubleSided
             );
         }
         catch (Exception ex)

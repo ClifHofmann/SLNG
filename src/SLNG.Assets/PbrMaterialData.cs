@@ -29,5 +29,11 @@ public sealed record PbrMaterialData(
     Vector3 EmissiveFactor,
     PbrAlphaMode AlphaMode = PbrAlphaMode.Opaque,
     // glTF spec default for MASK mode when the asset omits its own cutoff.
-    float AlphaCutoff = 0.5f
+    float AlphaCutoff = 0.5f,
+    // BUG-RENDER-06: glTF's own doubleSided flag (KHR core spec), mirrored from
+    // LibreMetaverse's AssetMaterial.DoubleSided. The real viewer back-face culls every prim
+    // face by default and lifts it ONLY for a material that sets this explicitly -- a face's
+    // renderer must route through the engine's cull-disabled shader variant when this is true,
+    // never as a blanket default (see PrimShaderFamily.Select's doubleSided parameter).
+    bool DoubleSided = false
 );

@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Http;
 using LibreMetaverse;
 using LibreMetaverse.Imaging;
+using LibreMetaverse.Messages.Linden;
 using LibreMetaverse.Packets;
 using LibreMetaverse.StructuredData;
 using Microsoft.Extensions.Logging;
@@ -23,6 +25,31 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     private static readonly TimeSpan ParcelLookupTimeout = TimeSpan.FromSeconds(4);
 
     private readonly GridClient _client;
+
+    /// <summary>Set from <see cref="LoginCredentials.GridLoginUri"/> at the start of every login
+    /// attempt (success or failure -- the URI is known before the handshake even starts). TPV
+    /// Policy §2.b: an SL grid must not receive an export of other creators' decoded wearable
+    /// textures, which is exactly what <see cref="DumpPreview"/>'s bake-input dumps are. Gates that
+    /// dump; also gates the SSB refusals on <see cref="BakeAvatarAsync"/>/
+    /// <see cref="CreateTestSkinAsync"/>/<see cref="RebakeAvatar"/>. Harmless anywhere else, since
+    /// OpenSim has no such restriction.
+    ///
+    /// RESTORED 2026-09-02: this field, its assignment below, the DumpPreview gate, both SSB
+    /// guards, RebakeAvatar's SSB branch, and OnSimChanged/BUG-NET-04's teleport-cleanup wiring
+    /// were all silently lost from this file between being tested (confirmed working via
+    /// godot.log evidence, ~13:48) and a later commit (~15:15) made from a partial/stale copy of
+    /// this session's changes. Re-applied from the original reasoning after the loss was found by
+    /// grepping for a comment string that no longer existed anywhere in the file.</summary>
+    private bool _isLindenGrid;
+
+    /// <summary>The Linden grid's short name ("agni", "aditi"), parsed from
+    /// <see cref="LoginCredentials.GridLoginUri"/> at the same point <see cref="_isLindenGrid"/> is
+    /// set. Null off a Linden grid. BUG-AVATAR-02: this is the piece
+    /// <see cref="FetchBakeTextureDataAsync"/> needs to build the bake-texture CDN host
+    /// (<c>bake-texture.glb.{grid}.lindenlab.com</c>) -- both known login hosts
+    /// (<c>login.agni.lindenlab.com</c> / <c>login.aditi.lindenlab.com</c>) carry the grid name as
+    /// the URI's second label, which is what this parses.</summary>
+    private string? _lindenGridShortName;
 
     /// <summary>Correlates a ParcelProperties reply with our own request. The simulator also pushes
     /// ParcelProperties unprompted on a parcel crossing, so matching on the sequence id is what
@@ -351,8 +378,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // Use the HTTP GetTexture CAP instead of the legacy UDP image transfer. UDP transfers
         // time out and hand back truncated JPEG2000 streams on busy grids (the "Tile part
         // length inconsistent" decode failures / white untextured objects); HTTP is reliable.
+        //
+        // BUG-NET-05/06 briefly set this false to stop repeated "Failed to fetch texture ...
+        // Forbidden" log spam for world-object textures -- but this flag does not gate
+        // FetchTextureDataAsync (SLNG's own world-object fetch always uses its own HTTP Range
+        // path regardless of it, see that method's own comment) and IS what
+        // GridClientBakingTextureProvider.RequestTextureAsync -- LibreMetaverse.Assets.
+        // RequestImageAsync -> RequestImageInternal -- uses to decide HTTP vs. the legacy UDP
+        // TexturePipeline for every avatar-bake texture fetch. Turning it off forced bake
+        // fetches onto exactly the unreliable UDP path this comment already warns about, while
+        // not touching the actual spam source at all. The real fix for the 403 spam is in
+        // FetchTextureViaHttpRangeAsync: a 403 is a deliberate, permanent denial, not a transient
+        // failure, and was wrongly marked retryable there -- see its own comment.
         _client.Settings.TexturePipeline.Enabled = true;
-        _client.Settings.TexturePipeline.UseHttpTextures = false;
+        _client.Settings.TexturePipeline.UseHttpTextures = true;
 
         // BUG-NET-03: connect to neighbor simulators so terrain/objects past the 256 m border
         // render ("Man kann nicht über die Sim-Grenze sehen"). LibreMetaverse 3.1.3 defaults this
@@ -390,6 +429,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Terrain.LandPatchReceived += OnLandPatchReceived;
         _client.Network.SimConnected += OnSimConnected;
         _client.Network.SimDisconnected += OnSimDisconnected;
+        // BUG-NET-04: a teleport to a DISTANT region left the old region's terrain/objects
+        // rendered indefinitely -- "nach dem Teleport sehe ich noch die sim auf der ich gerade
+        // war". See OnSimChanged's doc comment for the mechanism; wired here, next to the two
+        // events it complements.
+        _client.Network.SimChanged += OnSimChanged;
         // Environment (FEAT-ENV-01) hangs off EventQueueRunning, not SimConnected: both the
         // ExtEnvironment and EnvironmentSettings capabilities are HTTP CAPS, and at SimConnected
         // the cap seed has not necessarily been fetched yet, so CapabilityURI would report them
@@ -437,9 +481,63 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // The real viewer wires it exactly here too: llenvironment.cpp:886 subscribes to
         // LLRegionInfoModel's update callback and calls requestRegion() from it.
         _client.Network.RegisterCallback(PacketType.RegionInfo, OnRegionInfoPacket);
+
+        // BUG-NET-09: a PARCEL-only environment edit (someone changes just the parcel you're
+        // standing on, not the whole region) has no reachable push signal at all -- see this
+        // field's own doc comment for why -- so the only way to notice one is to ask again
+        // periodically. Started here, for the session's lifetime; stopped in Dispose.
+        _ = Task.Run(() => ParcelEnvironmentPollLoopAsync(_parcelEnvironmentPollCts.Token));
     }
 
     private void OnRegionInfoPacket(object? sender, PacketReceivedEventArgs e) => RepollEnvironment();
+
+    /// <summary>Cancelled in <see cref="Dispose"/>; stops <see cref="ParcelEnvironmentPollLoopAsync"/>.</summary>
+    private readonly CancellationTokenSource _parcelEnvironmentPollCts = new();
+
+    /// <summary>How often <see cref="ParcelEnvironmentPollLoopAsync"/> re-checks the current
+    /// parcel's environment (BUG-NET-09).
+    ///
+    /// A parcel-only Windlight/EEP edit by someone else has no signal SLNG can react to: the real
+    /// viewer detects it from a <c>ParcelEnvironmentVersion</c> field inside an unsolicited
+    /// <c>ParcelProperties</c> push (<c>llviewerparcelmgr.cpp</c>), but LibreMetaverse's
+    /// <c>ParcelPropertiesMessage</c> never parses that field, and its public API exposes no raw
+    /// LLSD for that message either (the delegate that would have -- see the commented-out
+    /// <c>EventQueueCallback(string, OSD, Simulator)</c> overload in <c>Caps.cs</c> -- was replaced
+    /// by a typed-only one before that field was ever added upstream). It cannot be read from
+    /// outside the pinned package. Polling is the only way left.
+    ///
+    /// Deliberately set to a short 30s for the first live verification of this fix (per the user:
+    /// "lass uns mal auf 30 sekunden gehen und wir gehen dann runter") -- once a parcel-only edit
+    /// is confirmed to actually show up within one interval, this should be relaxed to something
+    /// far less chatty (a couple of minutes) so a stationary session isn't asking a capability the
+    /// vast majority of ticks find unchanged. This constant is the one place to change that.</summary>
+    private static readonly TimeSpan ParcelEnvironmentPollInterval = TimeSpan.FromSeconds(30);
+
+    /// <summary>Re-checks the current parcel's environment every <see cref="ParcelEnvironmentPollInterval"/>
+    /// (BUG-NET-09). Deliberately reuses <see cref="RepollEnvironment"/> rather than fetching
+    /// anything itself: that method already single-flights, respects <see cref="RepollMinInterval"/>,
+    /// re-resolves the agent's current parcel and its EEP settings on every call (the
+    /// <c>hasExt</c> branch of <see cref="FetchRegionEnvironmentAsync"/> does this unconditionally,
+    /// not just at login), skips the legacy Windlight fetch, and publishes nothing unless the
+    /// result actually changed. A tick when nothing changed costs exactly the same one HTTP GET a
+    /// RegionInfo-triggered repoll would have cost anyway -- this adds a second trigger source, not
+    /// a second request shape.</summary>
+    private async Task ParcelEnvironmentPollLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(ParcelEnvironmentPollInterval);
+            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (_client.Network.CurrentSim == null) continue;
+                RepollEnvironment();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown path -- Dispose cancels _parcelEnvironmentPollCts.
+        }
+    }
 
     /// <summary>Shortest gap between two environment re-polls.
     ///
@@ -689,12 +787,64 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return $"{ns}{ew} ({dx:+0;-0;0},{dy:+0;-0;0})";
     }
 
+    /// <summary>BUG-NET-04: fires whenever <c>Network.CurrentSim</c> changes -- both on a normal
+    /// walking border-crossing AND on a teleport, which <see cref="OnSimConnected"/> alone cannot
+    /// tell apart (it only knows "a sim connected", not "we left one behind"). The existing
+    /// cleanup path -- the grid sends <c>DisableSimulator</c> for a region we've left, which
+    /// <see cref="OnSimDisconnected"/> turns into <c>World.RemoveRegion</c> -- works for a border
+    /// crossing (the old region genuinely becomes/stays a live BUG-NET-03 neighbor circuit, and
+    /// the grid decides when to drop it). It does **not** reliably work for a teleport to a
+    /// distant region: measured live, "nach dem Teleport sehe ich noch die sim auf der ich gerade
+    /// war" -- the old region's terrain and objects stayed rendered, un-recentered, because
+    /// nothing forced the cleanup client-side and the originating sim's own `DisableSimulator`
+    /// either never arrived or arrived too late to matter for what the user was already seeing.
+    ///
+    /// Fix: if the PREVIOUS sim is now more than one region-grid step (256 m) away from the NEW
+    /// current sim -- i.e. it cannot possibly be a legitimate BUG-NET-03 neighbor of where we are
+    /// now -- remove it from the world immediately instead of waiting for the server. A same-grid
+    /// walking crossing (dx/dy always ≤ 1) is left entirely alone: that is BUG-NET-03's existing,
+    /// working path, and this must not race or duplicate it.</summary>
+    private void OnSimChanged(object? sender, LibreMetaverse.SimChangedEventArgs e)
+    {
+        var oldSim = e.PreviousSimulator;
+        var newSim = _client.Network.CurrentSim;
+        if (oldSim == null || newSim == null || oldSim.Handle == newSim.Handle) return;
+
+        var (dx, dy) = RegionGridOffset(oldSim.Handle, newSim.Handle);
+        if (Math.Abs(dx) <= 1 && Math.Abs(dy) <= 1) return; // still a plausible neighbor -- leave to DisableSimulator
+
+        Console.WriteLine($"[Teleport] left {oldSim.Name} ({oldSim.Handle}) {dx:+0;-0;0},{dy:+0;-0;0} region-steps away -- removing eagerly, not waiting for DisableSimulator");
+        RegionDisconnectedReceived?.Invoke(this, new RegionDisconnectedEvent(oldSim.Handle));
+    }
+
+    /// <summary>Guards <see cref="OnEventQueueRunning"/>'s environment capture against firing more
+    /// than once per <c>Simulator</c> instance -- see that method's doc comment for why this exists
+    /// (BUG-NET-08).</summary>
+    private Simulator? _environmentCapturedForSim;
+
     /// <summary>Captures the region's environment once its capabilities are live (FEAT-ENV-01
     /// Phase A). Fire-and-forget on purpose: nothing in the login path waits on the environment,
-    /// and a sim that never answers must not stall the connection.</summary>
+    /// and a sim that never answers must not stall the connection.
+    ///
+    /// "Once" used to be an assumption, not a guarantee, and it was wrong (BUG-NET-08). This
+    /// method's own name comes from LibreMetaverse's event -- <c>EventQueueRunning</c> -- which
+    /// reads like a one-time "the long-poll is up" signal. It is not: LMV's
+    /// <c>EventQueueClient.ConnectedResponseHandler</c> calls its <c>OnConnected</c> callback (the
+    /// thing that raises this event) on EVERY successful <c>EventQueueGet</c> response, not just
+    /// the first -- its own source comment ("the event queue is starting up for the first time")
+    /// is simply wrong; there is no first-time gate in the code. On SL, `EventQueueGet` polls
+    /// resolve roughly once a second under normal traffic, so without the guard below this handler
+    /// -- and the full <see cref="FetchRegionEnvironmentAsync"/> call inside it, including the
+    /// legacy Windlight fetch -- ran about once a second for the entire session, unthrottled by
+    /// <see cref="RepollEnvironmentLoopAsync"/>'s cooldown (a completely different call site). This
+    /// is what was still producing a sustained "503 cap invocation rate exceeded" burst on Agni
+    /// even after <c>BUG-NET-07</c> made that cooldown reachable -- BUG-NET-07 fixed a real dead
+    /// branch, but this was the dominant source of the traffic the whole time.</summary>
     private void OnEventQueueRunning(object? sender, LibreMetaverse.EventQueueRunningEventArgs e)
     {
         if (e.Simulator != _client.Network.CurrentSim) return;
+        if (ReferenceEquals(e.Simulator, _environmentCapturedForSim)) return;
+        _environmentCapturedForSim = e.Simulator;
 
         // FEAT-AVATAR-01: report whether system-wearable edits are safe here. Logged once per
         // region, at EventQueueRunning rather than SimConnected because the UpdateAvatarAppearance
@@ -794,6 +944,42 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
+    /// <summary>Gates the one-time diagnostic log of the resolved legacy EnvironmentSettings
+    /// capability URI -- see its use in <see cref="FetchRegionEnvironmentAsync"/>.</summary>
+    private bool _legacyEnvironmentCapLogged;
+
+    /// <summary>Fetches one capability URI's LLSD directly through <c>HttpCapsClient</c>, bypassing
+    /// LibreMetaverse's <c>EnvironmentManager.GetRegionEnvironmentAsync</c> /
+    /// <c>GetLegacyEnvironmentAsync</c> / <c>GetParcelEnvironmentAsync</c> wrappers (BUG-NET-07).
+    ///
+    /// Those three all do the same thing on a non-2xx response: <c>Logger.Warn(...)</c> and return
+    /// <c>null</c>. The actual <see cref="HttpStatusCode"/> is discarded inside the wrapper --
+    /// nothing distinguishes "capability returned 503" from "capability returned nothing" once it
+    /// gets back here. That silently broke the one thing that was supposed to stop repeated
+    /// requests from re-triggering the sim's own rate limiter:
+    /// <see cref="RepollEnvironmentLoopAsync"/>'s <c>capture?.Error?.Contains("ServiceUnavailable")</c>
+    /// check, which can only ever see what <see cref="FetchRegionEnvironmentAsync"/> put in
+    /// <c>error</c> -- and a swallowed 503 never puts anything there. Confirmed live on Agni: HTTP
+    /// Toolkit showed a sustained burst of "503 cap invocation rate exceeded" responses to the same
+    /// <c>EnvironmentSettings</c> cap URI, one every ~<see cref="RepollMinInterval"/>, forever --
+    /// the 60-second cooldown existed in source but could never fire.
+    ///
+    /// Doing the GET ourselves costs nothing extra (same <c>HttpCapsClient</c>, same one request)
+    /// and gives <see cref="FetchRegionEnvironmentAsync"/> the status code it needs to make that
+    /// cooldown reachable.</summary>
+    private async Task<(OSDMap? Map, HttpStatusCode? Status)> GetCapabilityMapAsync(
+        Uri capUri, CancellationToken cancellationToken)
+    {
+        var http = _client.HttpCapsClient;
+        if (http == null) return (null, null);
+
+        var (response, data) = await http.GetAsync(capUri, cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode) return (null, response.StatusCode);
+        if (data == null) return (null, response.StatusCode);
+
+        return (OSDParser.Deserialize(data) as OSDMap, response.StatusCode);
+    }
+
     private async Task<(RegionEnvironmentCapture? Capture, RegionEnvironmentEvent? Environment)>
         FetchRegionEnvironmentAsync(
             bool includeLegacyAlongsideExt = true, CancellationToken cancellationToken = default)
@@ -802,7 +988,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (sim == null) return (null, null);
 
         bool hasExt = sim.Caps?.CapabilityURI("ExtEnvironment") != null;
-        bool hasLegacy = sim.Caps?.CapabilityURI("EnvironmentSettings") != null;
+        var legacyCapUri = sim.Caps?.CapabilityURI("EnvironmentSettings");
+        bool hasLegacy = legacyCapUri != null;
+
+        // Diagnostic only, once per process: the sim hands this capability out as a per-region,
+        // per-session URI (not a fixed host like the bake-texture CDN), so there is no way to
+        // give a static address to check in an HTTP proxy -- print the actual resolved one the
+        // first time it's seen, so a live capture can be filtered to exactly this request instead
+        // of guessed at from the repeated "GET non-success: ServiceUnavailable" warning alone.
+        if (hasLegacy && !_legacyEnvironmentCapLogged)
+        {
+            _legacyEnvironmentCapLogged = true;
+            Console.Error.WriteLine($"[Environment] legacy EnvironmentSettings capability resolved to: {legacyCapUri}");
+        }
 
         string? extLlsd = null;
         string? legacyLlsd = null;
@@ -822,7 +1020,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             if (hasExt)
             {
-                var ext = await _client.Environment.GetRegionEnvironmentAsync(cancellationToken).ConfigureAwait(false);
+                var extCap = sim.Caps!.CapabilityURI("ExtEnvironment")!;
+                var (extMap, extStatus) = await GetCapabilityMapAsync(extCap, cancellationToken).ConfigureAwait(false);
+                ExtEnvironmentMessage? ext = null;
+                if (extMap != null)
+                {
+                    ext = new ExtEnvironmentMessage();
+                    ext.Deserialize(extMap);
+                }
+                else if (extStatus.HasValue)
+                {
+                    error += $"[ExtEnv HTTP {extStatus}] ";
+                }
                 if (ext != null && !ext.Success)
                 {
                     error += $"[ExtEnv Failed: {ext.Message}] ";
@@ -857,14 +1066,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 parcelId = await ResolveAgentParcelIdAsync(sim, cancellationToken).ConfigureAwait(false);
                 if (parcelId >= 0)
                 {
-                    var parcelEnv = await _client.Environment
-                        .GetParcelEnvironmentAsync(parcelId, cancellationToken).ConfigureAwait(false);
-                    if (parcelEnv?.Environment is { DayCycle: not null } pdata)
+                    var parcelCap = new Uri($"{sim.Caps!.CapabilityURI("ExtEnvironment")}?parcel_id={parcelId}");
+                    var (parcelMap, parcelStatus) = await GetCapabilityMapAsync(parcelCap, cancellationToken).ConfigureAwait(false);
+                    if (parcelMap != null)
                     {
-                        parcelSettings = pdata.DayCycle;
-                        parcelLlsd = OSDParser.SerializeLLSDNotationFormatted(pdata.DayCycle);
-                        parcelDayLength = pdata.DayLength;
-                        parcelDayOffset = pdata.DayOffset;
+                        var parcelEnv = new ExtEnvironmentMessage();
+                        parcelEnv.Deserialize(parcelMap);
+                        if (parcelEnv.Environment is { DayCycle: not null } pdata)
+                        {
+                            parcelSettings = pdata.DayCycle;
+                            parcelLlsd = OSDParser.SerializeLLSDNotationFormatted(pdata.DayCycle);
+                            parcelDayLength = pdata.DayLength;
+                            parcelDayOffset = pdata.DayOffset;
+                        }
+                    }
+                    else if (parcelStatus.HasValue)
+                    {
+                        error += $"[ExtEnv Parcel HTTP {parcelStatus}] ";
                     }
                 }
             }
@@ -874,11 +1092,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // still always asks, because there it is not a diagnostic but the only source there is.
             if (hasLegacy && (includeLegacyAlongsideExt || !hasExt))
             {
-                var legacy = await _client.Environment.GetLegacyEnvironmentAsync(cancellationToken).ConfigureAwait(false);
-                if (legacy?.Settings != null)
+                var (legacyMap, legacyStatus) = await GetCapabilityMapAsync(legacyCapUri!, cancellationToken).ConfigureAwait(false);
+                if (legacyMap != null)
                 {
-                    legacySettings = legacy.Settings;
-                    legacyLlsd = OSDParser.SerializeLLSDNotationFormatted(legacy.Settings);
+                    var legacy = new LegacyEnvironmentMessage();
+                    legacy.Deserialize(legacyMap);
+                    if (legacy.Settings != null)
+                    {
+                        legacySettings = legacy.Settings;
+                        legacyLlsd = OSDParser.SerializeLLSDNotationFormatted(legacy.Settings);
+                    }
+                }
+                else if (legacyStatus.HasValue)
+                {
+                    error += $"[Legacy HTTP {legacyStatus}] ";
                 }
             }
         }
@@ -2506,10 +2733,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     /// <summary>Writes a bake input or result out as a PNG so it can be looked at. Everything about
     /// this task that was decided from numbers alone turned out to be decidable only from the
-    /// picture.</summary>
+    /// picture.
+    ///
+    /// Refuses on a Linden grid (TPV Policy §2.b). The "in_" / "ref_" dumps are DECODED wearable
+    /// textures worn by whoever is currently baking -- other creators' skins, tattoos, clothing
+    /// layers -- written to disk as plain PNGs. That is an export SL's own viewer has no
+    /// equivalent of, and the policy requires verifying the SL creator name matches the viewer
+    /// user's own before any such export, "including content that may be set to 'full
+    /// permissions.'" No such check exists here, so the safe answer on SL is not to write the
+    /// file at all; OpenSim carries no such restriction, and this is the only environment where
+    /// SLNG_BAKE_VERBOSE has ever been used to chase a bake defect.</summary>
     private void DumpPreview(string name, ManagedImage? image)
     {
         if (image?.Red == null || _bakeEncoder == null) return;
+        if (_isLindenGrid)
+        {
+            Console.Error.WriteLine($"[Bake]   preview '{name}' skipped -- disabled on a Linden grid (TPV Policy §2.b)");
+            return;
+        }
 
         try
         {
@@ -2534,12 +2775,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// part of any automatic path. It does not wear anything: the new skin appears in Body Parts and
     /// is put on like any other, which keeps the thing being tested (wearing a skin and rebaking)
     /// the thing the tester actually does.</para>
+    ///
+    /// <para>Refused on a Linden grid: three texture uploads and one inventory-item creation are
+    /// real L$ upload fees on Agni, spent on a diagnostic tool this task built specifically for
+    /// the OpenSim (XBakes) bake path -- see <see cref="BakeAvatarAsync"/>'s own SSB guard, which
+    /// this mirrors. Nothing here is needed to test SL: a real skin already answers the same
+    /// question there.</para>
     /// </summary>
     /// <returns>A short status line for the chat.</returns>
     public async Task<string> CreateTestSkinAsync(CancellationToken ct = default)
     {
         if (!_client.Network.Connected) return "nicht verbunden";
         if (_bakeEncoder == null) return "kein Bake-Encoder verfügbar";
+        if (_isLindenGrid)
+        {
+            Console.Error.WriteLine("[TestSkin] skipped: refused on a Linden grid -- costs real upload fees for a diagnostic OpenSim-only tool");
+            return "Auf Second Life gesperrt — das Testmuster ist ein OpenSim-Diagnosewerkzeug und würde echte Upload-Gebühren kosten.";
+        }
 
         try
         {
@@ -2752,12 +3004,33 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
+    /// <summary>FEAT-AVATAR-01's manual bake path: "Avatar neu backen" and "Testmuster backen".
+    /// Composites locally, uploads the result as textures, and sends a bake-carrying
+    /// <c>AgentSetAppearance</c> -- the OpenSim (XBakes) path, needed only because that server does
+    /// not composite for the client.
+    ///
+    /// <b>Refuses on a region with real Second Life server-side baking</b> (see
+    /// <see cref="RegionHasServerSideBaking"/>). SL composites bakes itself from an
+    /// <c>UpdateAvatarAppearance</c> cap POST of <c>{ cof_version }</c> -- no visual params, no
+    /// shape, no uploaded textures. Running this path there anyway would upload textures the
+    /// server already has no use for and hand-send a raw <c>AgentSetAppearance</c> alongside SL's
+    /// own pipeline: an unrequested protocol departure (TPV Policy §1.a) and the most likely way to
+    /// leave the avatar looking wrong to everyone else in the room. The wearable-edit path already
+    /// makes this distinction correctly (<c>WearWearableAsync</c>'s SSB branch); this is the same
+    /// rule applied to the two menu commands that skip that path entirely.</summary>
     public async Task<string> BakeAvatarAsync(bool testPattern = false, CancellationToken ct = default)
     {
         if (!_client.Network.Connected)
         {
             Console.Error.WriteLine("[Bake] skipped: not connected");
             return "nicht verbunden";
+        }
+
+        if (RegionHasServerSideBaking())
+        {
+            Console.Error.WriteLine("[Bake] skipped: this region bakes server-side (Second Life) -- " +
+                "the client-side composite path is for OpenSim (XBakes) only");
+            return "Dieses Grid backt serverseitig — der lokale Bake ist nicht nötig und wird übersprungen.";
         }
 
         // The bake pipeline is proven, so its running commentary is noise on every wardrobe
@@ -3145,11 +3418,34 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
+    /// <summary>"Avatar neu backen" -- forces a fresh appearance composite. FEAT-SL-01 audit
+    /// finding: this was a COMPLETE NO-OP on every grid including SL, because the 2026-08-31 hard
+    /// stop below refuses unconditionally. That stop is correct for OpenSim / legacy baking --
+    /// <c>RequestSetAppearance</c> is NOT gated by <c>SendAppearance = false</c> on that path, so
+    /// calling it sends whatever <c>MakeAppearancePacket</c> produces, which was the scrambled/
+    /// all-zero send that broke this avatar repeatedly (see the stop's own comment). It is WRONG
+    /// for a server-side-baking region: there, <c>RequestSetAppearance</c> never reaches
+    /// <c>MakeAppearancePacket</c> at all -- verified against the pinned package's own branch
+    /// (<c>AppearanceManager.RequestSetAppearanceAsync</c>: <c>useClientSideBaking = false</c> on
+    /// SSB skips straight to <c>UpdateAvatarAppearanceAsync</c>, a <c>{ cof_version }</c> capability
+    /// POST, no visual params, no textures) -- none of the Aug-31 concerns apply, and refusing it
+    /// left "Avatar neu backen" silently doing nothing while the chat message claimed a bake had
+    /// happened. On SL this is also the only way SLNG could ever ask the sim to re-push a self
+    /// avatar's <c>AvatarAppearance</c> outside of an actual wearable edit -- e.g. after a login
+    /// whose initial appearance never arrived or was dropped.</summary>
     public void RebakeAvatar()
     {
         if (!_client.Network.Connected)
         {
             Console.Error.WriteLine("[Appearance] rebake skipped: not connected");
+            return;
+        }
+
+        if (RegionHasServerSideBaking())
+        {
+            Console.Error.WriteLine("[Appearance] rebake requested on a server-side-baking region -- " +
+                "requesting a fresh composite via RequestSetAppearance(forceRebake: true)");
+            _ = RequestServerSideRebakeAsync();
             return;
         }
 
@@ -3200,6 +3496,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // needs to hear about, and reporting it as a discarded change was simply wrong.
         Console.Error.WriteLine("[Appearance] LibreMetaverse's own send stays disabled; SLNG bakes and sends its own");
         return;
+    }
+
+    /// <summary>The SSB half of <see cref="RebakeAvatar"/>. <c>forceRebake: true</c> zeroes
+    /// LibreMetaverse's cached bake-slot ids first (see <c>RequestSetAppearanceAsync</c>'s own
+    /// source), so this always asks the server for a genuinely fresh composite rather than a
+    /// possibly-cached no-op.</summary>
+    private async Task RequestServerSideRebakeAsync()
+    {
+        try
+        {
+            await _client.Appearance.RequestSetAppearance(forceRebake: true).ConfigureAwait(false);
+            Console.Error.WriteLine("[Appearance] RequestSetAppearance(forceRebake: true) sent -- " +
+                "watch for a fresh AvatarAppearance from the sim");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Appearance] server-side rebake failed: {ex.Message}");
+        }
     }
 
     // Both blockers are now handled, each by a guard that refuses to send rather than guessing:
@@ -3982,6 +4296,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         ArgumentNullException.ThrowIfNull(credentials);
 
+        // Known before the handshake even starts -- see _isLindenGrid's doc comment. Set
+        // regardless of outcome: a failed attempt still needs the dump gate armed for whatever
+        // bake diagnostics run before the next successful login.
+        _isLindenGrid = IsLindenLabUri(credentials.GridLoginUri);
+        _lindenGridShortName = ParseLindenGridShortName(credentials.GridLoginUri);
+
         // Relays LibreMetaverse's own login handshake stages (ConnectingToLogin, ReadingResponse,
         // Redirecting, ConnectingToSim, Success/Failed) out through the neutral LoginProgress event
         // -- real server-driven progress, not a simulated/time-based fake (see FEAT-UI-08). Fires on
@@ -4028,6 +4348,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
             if (response.Success)
             {
+                // FEAT-SL-02: the login response is the ONE place AccountMaturityMax and the
+                // initial PreferredMaturity are ever populated -- without this, both stayed
+                // permanently at their General/false-support defaults for the whole session,
+                // regardless of what the account or grid actually allow (found chasing an unused-
+                // event compiler warning; see MaturityPreferenceChanged below and
+                // SupportsMaturityPreference's doc comment for the other two pieces of this same
+                // gap). `agent_access_max` is the account's verified ceiling; `agent_region_access`
+                // is the currently active pick -- both 2-letter codes ("PG"/"M"/"A"), OpenSim sends
+                // empty strings for both, which MaturityAccess.FromShortString already treats as
+                // General.
+                AccountMaturityMax = MaturityAccess.FromShortString(response.AgentAccessMax);
+                PreferredMaturity = MaturityAccess.FromShortString(response.AgentRegionAccess);
+
                 // FEAT-AVATAR-01: ask the simulator for the worn wearable set. LibreMetaverse would
                 // do this itself at login, but only under Settings.Agent.SendAppearance, which is
                 // off -- so without this AppearanceManager.Wearables stays empty for the whole
@@ -5993,6 +6326,35 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         public bool IsReliable;
     }
 
+    /// <summary>BUG-AVATAR-02: fetches an avatar BAKE texture. Every single bake channel was
+    /// coming back <c>HTTP 403</c> ("AccessDenied", a raw S3 error body) through the normal asset
+    /// path (<see cref="FetchTextureDataAsync"/>) -- confirmed by capturing the same texture id
+    /// fetched successfully by Firestorm: it used a completely different host and URL shape,
+    /// <c>http://bake-texture.glb.{grid}.lindenlab.com/texture/{agent}/{slot}/{textureId}</c>, not
+    /// the generic <c>GetTexture</c>/<c>ViewerAsset</c> CAP's <c>?texture_id=</c> query. That host
+    /// is real, documented reference-viewer infrastructure -- <c>llappcorehttp.h</c> lists
+    /// <c>bake-texture</c> as its own HTTP connection-pool destination, distinct from the general
+    /// asset <c>cdn</c> -- not something a capability hands out; the reference viewer constructs it
+    /// itself from the grid name, the agent id, and the bake slot name (see
+    /// <see cref="BakeChannelNames"/> for where the eleven slot-name strings come from).
+    ///
+    /// Only meaningful on a Linden grid (<see cref="_lindenGridShortName"/> is null everywhere
+    /// else -- OpenSim has no such host); returns a failed result immediately otherwise so the
+    /// caller can fall back to the normal path without paying for a fetch that cannot succeed.
+    /// Always a full fetch (no Range/desiredDiscard) -- the reference viewer does the same for
+    /// baked textures, to reduce interim blurring while the bake streams in.</summary>
+    public async Task<TextureFetchResult> FetchBakeTextureDataAsync(Guid textureId, int bakeChannel, CancellationToken ct = default)
+    {
+        if (_lindenGridShortName == null) return new TextureFetchResult { Data = null, IsReliable = false };
+
+        var slot = SLNG.Core.BakeChannelNames.NameFor(bakeChannel);
+        if (slot == null) return new TextureFetchResult { Data = null, IsReliable = false };
+
+        var url = new Uri($"http://bake-texture.glb.{_lindenGridShortName}.lindenlab.com/texture/{_client.Self.AgentID}/{slot}/{textureId}");
+        var bytes = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard: 0, capUri: null, maxRetries: 2, fetchUrl: url).ConfigureAwait(false);
+        return new TextureFetchResult { Data = bytes, IsReliable = bytes != null };
+    }
+
     public async Task<TextureFetchResult> FetchTextureDataAsync(Guid textureId, int desiredDiscard = 0, bool skipHttp = false)
     {
         // FEAT-PERF-02 Phase 2: prefer our own HTTP GetTexture Range fetch over the UDP path
@@ -6122,13 +6484,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return null;
     }
 
-    private async Task<byte[]?> FetchTextureViaHttpRangeAsync(Guid textureId, int desiredDiscard, Uri capUri, int maxRetries = 0)
+    /// <summary><paramref name="fetchUrl"/>, when given, is used verbatim instead of the usual
+    /// <c>{capUri}?texture_id={id}</c> shape -- BUG-AVATAR-02's bake-texture fetch needs a
+    /// completely different URL (<c>/texture/&lt;agent&gt;/&lt;slot&gt;/&lt;id&gt;</c>, no query
+    /// string, always a full fetch) but the same validation and retry logic below, which is why
+    /// this exists as an extra parameter here rather than a copy of the whole method.</summary>
+    private async Task<byte[]?> FetchTextureViaHttpRangeAsync(Guid textureId, int desiredDiscard, Uri? capUri, int maxRetries = 0, Uri? fetchUrl = null)
     {
         for (int attempt = 0; attempt <= maxRetries; attempt++)
         {
             try
             {
-                var url = new Uri($"{capUri}?texture_id={textureId}");
+                var url = fetchUrl ?? new Uri($"{capUri}?texture_id={textureId}");
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 if (desiredDiscard > 0)
                 {
@@ -6145,9 +6512,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     response = await _textureHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
                     if (!response.IsSuccessStatusCode)
                     {
-                        bool retryable = response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable 
-                                      || response.StatusCode == System.Net.HttpStatusCode.NotFound 
-                                      || response.StatusCode == System.Net.HttpStatusCode.Forbidden;
+                        // Forbidden is deliberately NOT retryable, unlike ServiceUnavailable and
+                        // NotFound. A 403 is a permission decision the server already made -- no
+                        // amount of retrying changes it, and retrying it anyway (5 attempts, 2s
+                        // apart) is exactly what turned one denied texture into repeated "Failed
+                        // to fetch texture ... Forbidden" log spam and real, wasted load against
+                        // the sim. 503/404 stay retryable: a 503 can be genuinely transient, and a
+                        // 404 can be an asset that was just created and has not propagated yet.
+                        bool retryable = response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable
+                                      || response.StatusCode == System.Net.HttpStatusCode.NotFound;
                         if (attempt < maxRetries && retryable)
                         {
                             // Will retry. Release semaphore and delay.
@@ -6173,74 +6546,74 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 {
                     if (bytes.Length == 0) return FetchFailed(textureId, "empty body");
 
-            // The body must actually BE a JPEG2000 codestream. Measured on OSGrid 2026-08-02: of
-            // 14 textures that rendered white, four came back as 1-3 byte bodies -- three of them
-            // the literal bytes 9E E9 65, one a single 00 -- with a success status and a matching
-            // Content-Length. Those were handed on as image data, failed both decoders, and the
-            // surface stayed blank.
-            //
-            // The damage was not the failed decode, it was that HTTP "succeeded": the caller only
-            // falls through to the UDP path when this method returns null, so a garbage body meant
-            // UDP was never tried at all and three retries just re-fetched the same rubbish. A raw
-            // J2C starts with SOC (FF 4F); a JP2-wrapped one starts with the 12-byte JP2 signature
-            // box. Anything else is not a texture, whatever the status line claimed.
-            bool isJ2c = bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F;
-            bool isJp2 = bytes.Length >= 12 && bytes[4] == 0x6A && bytes[5] == 0x50
-                         && bytes[6] == 0x20 && bytes[7] == 0x20;
-            if (!isJ2c && !isJp2)
-                return FetchFailed(textureId, $"not a JPEG2000 stream ({bytes.Length} bytes, " +
-                    $"head {string.Join("", bytes.Take(Math.Min(4, bytes.Length)).Select(b => b.ToString("X2")))})");
+                    // The body must actually BE a JPEG2000 codestream. Measured on OSGrid 2026-08-02: of
+                    // 14 textures that rendered white, four came back as 1-3 byte bodies -- three of them
+                    // the literal bytes 9E E9 65, one a single 00 -- with a success status and a matching
+                    // Content-Length. Those were handed on as image data, failed both decoders, and the
+                    // surface stayed blank.
+                    //
+                    // The damage was not the failed decode, it was that HTTP "succeeded": the caller only
+                    // falls through to the UDP path when this method returns null, so a garbage body meant
+                    // UDP was never tried at all and three retries just re-fetched the same rubbish. A raw
+                    // J2C starts with SOC (FF 4F); a JP2-wrapped one starts with the 12-byte JP2 signature
+                    // box. Anything else is not a texture, whatever the status line claimed.
+                    bool isJ2c = bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F;
+                    bool isJp2 = bytes.Length >= 12 && bytes[4] == 0x6A && bytes[5] == 0x50
+                                 && bytes[6] == 0x20 && bytes[7] == 0x20;
+                    if (!isJ2c && !isJp2)
+                        return FetchFailed(textureId, $"not a JPEG2000 stream ({bytes.Length} bytes, " +
+                            $"head {string.Join("", bytes.Take(Math.Min(4, bytes.Length)).Select(b => b.ToString("X2")))})");
 
-            // OpenSim's embedded HTTP server has been observed (empirically, right after a
-            // teleport/region-crossing burst of many simultaneous texture GETs) to close the
-            // connection early and return fewer bytes than its own declared Content-Length --
-            // with a 200/206 success status and no exception from HttpClient, since an early
-            // clean connection close is indistinguishable from "body complete" once the socket
-            // just stops sending. Handing that short body to the J2K decoder is exactly the
-            // "Codestream truncated" case this method exists to avoid (see the doc comment
-            // above) even though we never sent a Range header ourselves. Treat a short read as a
-            // failed fetch so the caller falls back to the UDP path in the SAME attempt, instead
-            // of silently decoding (and, for Magick.NET, likely failing on) partial data.
-            if (declaredLength.HasValue && bytes.Length < declaredLength.Value)
-                return FetchFailed(textureId, $"short read {bytes.Length}/{declaredLength.Value}");
+                    // OpenSim's embedded HTTP server has been observed (empirically, right after a
+                    // teleport/region-crossing burst of many simultaneous texture GETs) to close the
+                    // connection early and return fewer bytes than its own declared Content-Length --
+                    // with a 200/206 success status and no exception from HttpClient, since an early
+                    // clean connection close is indistinguishable from "body complete" once the socket
+                    // just stops sending. Handing that short body to the J2K decoder is exactly the
+                    // "Codestream truncated" case this method exists to avoid (see the doc comment
+                    // above) even though we never sent a Range header ourselves. Treat a short read as a
+                    // failed fetch so the caller falls back to the UDP path in the SAME attempt, instead
+                    // of silently decoding (and, for Magick.NET, likely failing on) partial data.
+                    if (declaredLength.HasValue && bytes.Length < declaredLength.Value)
+                        return FetchFailed(textureId, $"short read {bytes.Length}/{declaredLength.Value}");
 
-            // The transport-level checks above can only catch a truncation the TRANSPORT knows
-            // about. A body that is short but whose Content-Length agrees with it -- the sim
-            // serving a partial asset and honestly declaring the partial size -- passes both, and
-            // then decodes "degraded": gap-filled pixels. For an ordinary texture that is a
-            // cosmetic problem; for a SCULPT MAP the pixels ARE the vertex positions, so the
-            // renderer (correctly) refuses the result and substitutes a placeholder solid, which
-            // is how a rock ends up on screen as a smooth flat disc.
-            //
-            // Content-Length only catches truncation when the server actually sends that
-            // header -- OpenSim's embedded HTTP server can respond chunked (no Content-Length)
-            // for texture bodies, which would let a short chunked read straight through the
-            // check above. A complete J2C codestream (SOC marker 0xFF4F at the start, verified
-            // by AssetService.DecodeTexture) always ends with an EOC marker (0xFFD9) -- that's
-            // true regardless of transport, so it catches the chunked-encoding gap. Only applies
-            // to a full (desiredDiscard 0) fetch: an intentional Range request never contains
-            // the EOC by design.
-            if (desiredDiscard == 0 && bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F
-                && (bytes[^2] != 0xFF || bytes[^1] != 0xD9))
-            {
-                // A missing EOC used to REJECT the response outright. That threw away perfectly
-                // usable data: JPEG2000 is progressive and SL assets are routinely stored without
-                // a terminating EOC, so the real viewer decodes such streams on purpose. Measured
-                // 2026-08-02 on OSGrid: 14 textures in a single view failed here, every one of
-                // them having already passed the Content-Length check -- i.e. the body was
-                // complete, just not EOC-terminated -- and the objects using them rendered white
-                // while Firestorm drew them fine.
-                //
-                // Kept as a WARNING, not a failure: the check was added to catch chunked-encoding
-                // truncation that Content-Length cannot see, and that concern is real. It is just
-                // not decidable from the EOC alone. Hand the bytes to the tolerant decoder
-                // instead; AssetService already detects a degraded decode and retries, which
-                // distinguishes "genuinely truncated" from "simply not EOC-terminated" by the one
-                // thing that actually settles it -- whether it decodes.
-                // if (_fetchFailureLogged.TryAdd(textureId, 0))
-                //     Console.Error.WriteLine($"[TextureFetch] {textureId}: no EOC marker " +
-                //         $"({bytes.Length} bytes, tail {bytes[^2]:X2}{bytes[^1]:X2}) — decoding anyway");
-            }
+                    // The transport-level checks above can only catch a truncation the TRANSPORT knows
+                    // about. A body that is short but whose Content-Length agrees with it -- the sim
+                    // serving a partial asset and honestly declaring the partial size -- passes both, and
+                    // then decodes "degraded": gap-filled pixels. For an ordinary texture that is a
+                    // cosmetic problem; for a SCULPT MAP the pixels ARE the vertex positions, so the
+                    // renderer (correctly) refuses the result and substitutes a placeholder solid, which
+                    // is how a rock ends up on screen as a smooth flat disc.
+                    //
+                    // Content-Length only catches truncation when the server actually sends that
+                    // header -- OpenSim's embedded HTTP server can respond chunked (no Content-Length)
+                    // for texture bodies, which would let a short chunked read straight through the
+                    // check above. A complete J2C codestream (SOC marker 0xFF4F at the start, verified
+                    // by AssetService.DecodeTexture) always ends with an EOC marker (0xFFD9) -- that's
+                    // true regardless of transport, so it catches the chunked-encoding gap. Only applies
+                    // to a full (desiredDiscard 0) fetch: an intentional Range request never contains
+                    // the EOC by design.
+                    if (desiredDiscard == 0 && bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F
+                        && (bytes[^2] != 0xFF || bytes[^1] != 0xD9))
+                    {
+                        // A missing EOC used to REJECT the response outright. That threw away perfectly
+                        // usable data: JPEG2000 is progressive and SL assets are routinely stored without
+                        // a terminating EOC, so the real viewer decodes such streams on purpose. Measured
+                        // 2026-08-02 on OSGrid: 14 textures in a single view failed here, every one of
+                        // them having already passed the Content-Length check -- i.e. the body was
+                        // complete, just not EOC-terminated -- and the objects using them rendered white
+                        // while Firestorm drew them fine.
+                        //
+                        // Kept as a WARNING, not a failure: the check was added to catch chunked-encoding
+                        // truncation that Content-Length cannot see, and that concern is real. It is just
+                        // not decidable from the EOC alone. Hand the bytes to the tolerant decoder
+                        // instead; AssetService already detects a degraded decode and retries, which
+                        // distinguishes "genuinely truncated" from "simply not EOC-terminated" by the one
+                        // thing that actually settles it -- whether it decodes.
+                        // if (_fetchFailureLogged.TryAdd(textureId, 0))
+                        //     Console.Error.WriteLine($"[TextureFetch] {textureId}: no EOC marker " +
+                        //         $"({bytes.Length} bytes, tail {bytes[^2]:X2}{bytes[^1]:X2}) — decoding anyway");
+                    }
 
                     return bytes;
                 }
@@ -6278,6 +6651,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     public void Dispose()
     {
+        _parcelEnvironmentPollCts.Cancel();
+        _parcelEnvironmentPollCts.Dispose();
         _client.Self.ChatFromSimulator -= OnChatFromSimulator;
         _client.Objects.ObjectUpdate -= OnObjectUpdate;
         _client.Objects.TerseObjectUpdate -= OnTerseObjectUpdate;
@@ -6295,6 +6670,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Terrain.LandPatchReceived -= OnLandPatchReceived;
         _client.Network.SimConnected -= OnSimConnected;
         _client.Network.SimDisconnected -= OnSimDisconnected;
+        _client.Network.SimChanged -= OnSimChanged;
         _client.Appearance.AppearanceSet -= OnAppearanceSet;
         _client.Friends.FriendOnline -= OnFriendOnline;
         _client.Friends.FriendOffline -= OnFriendOffline;
@@ -6313,21 +6689,50 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     // Restored Uncommitted Methods
+    /// <summary>The account's verified maturity ceiling (<c>agent_access_max</c> from the login
+    /// response) -- the highest <see cref="PreferredMaturity"/> can ever be set to, regardless of
+    /// what the UI offers. Stays General until a successful login populates it (see
+    /// <see cref="LoginAsync"/>).</summary>
     public SLNG.Core.MaturityLevel AccountMaturityMax { get; private set; } = SLNG.Core.MaturityLevel.General;
+
+    /// <summary>The account's currently active maturity pick. Seeded from the login response's
+    /// <c>agent_region_access</c>, then kept current by <see cref="SetPreferredMaturityAsync"/>
+    /// echoing back whatever the <c>UpdateAgentInformation</c> capability actually accepted (which
+    /// may be clamped below the requested level).</summary>
     public SLNG.Core.MaturityLevel PreferredMaturity { get; private set; } = SLNG.Core.MaturityLevel.General;
+
+    /// <summary>Raised after a successful <see cref="SetPreferredMaturityAsync"/> call, once
+    /// <see cref="PreferredMaturity"/> has already been updated to the server's actual (possibly
+    /// clamped) answer. BUG-NET-10: this was declared and subscribed to
+    /// (<c>MaturityPreferencesPage</c>) but never invoked -- caught by the compiler's
+    /// "event is never used" (CS0067) warning, which was the only surviving trace of the gap.
+    /// <see cref="SupportsMaturityPreference"/> and the login-response population above it were the
+    /// other two pieces missing from the same spot; all three look like the same casualty this
+    /// session already found and re-applied elsewhere in this file (see the process-failure note in
+    /// <c>HANDOVER.md</c>) -- just not caught until this warning pointed at it.</summary>
     public event EventHandler<SLNG.Core.MaturityLevel>? MaturityPreferenceChanged;
-    public bool SupportsMaturityPreference { get; private set; } = false;
+
+    /// <summary>Whether the CURRENT region offers the <c>UpdateAgentInformation</c> capability.
+    /// Computed live from the capability list, not cached: a stored flag here would go stale on
+    /// every region crossing (a capability present on one region is not guaranteed on the next),
+    /// and FEAT-SL-02's own spec already documents this as a live capability read, not a value set
+    /// once at login. BUG-NET-10: this had been turned into a plain <c>{ get; private set; } =
+    /// false</c> auto-property with nothing ever assigning it -- permanently false regardless of
+    /// grid, contradicting the spec it was written against.</summary>
+    public bool SupportsMaturityPreference =>
+        _client.Network.CurrentSim?.Caps?.CapabilityURI("UpdateAgentInformation") != null;
 
     public async Task<(bool success, SLNG.Core.MaturityLevel actual, string error)> SetPreferredMaturityAsync(SLNG.Core.MaturityLevel level)
     {
         if (!IsConnected) return (false, SLNG.Core.MaturityLevel.General, "Not connected");
         var uri = _client.Network.CurrentSim?.Caps?.CapabilityURI("UpdateAgentInformation");
         if (uri == null) return (false, SLNG.Core.MaturityLevel.General, "Capability not available");
-        
+
         try
         {
             var req = new LibreMetaverse.StructuredData.OSDMap();
-            req["access_prefs"] = new LibreMetaverse.StructuredData.OSDMap {
+            req["access_prefs"] = new LibreMetaverse.StructuredData.OSDMap
+            {
                 ["max"] = SLNG.Net.MaturityAccess.ToShortString(level)
             };
             var (res, data) = await _client.HttpCapsClient.PostAsync(uri, LibreMetaverse.StructuredData.OSDFormat.Xml, req, System.Threading.CancellationToken.None);
@@ -6340,6 +6745,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     if (prefs != null && prefs.ContainsKey("max"))
                     {
                         PreferredMaturity = SLNG.Net.MaturityAccess.FromShortString(prefs["max"].AsString());
+                        MaturityPreferenceChanged?.Invoke(this, PreferredMaturity);
                         return (true, PreferredMaturity, "");
                     }
                 }
@@ -6386,6 +6792,35 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         catch
         {
             return false;
+        }
+    }
+
+    /// <summary>Parses "agni" or "aditi" out of a Linden login URI
+    /// (<c>login.agni.lindenlab.com</c> / <c>login.aditi.lindenlab.com</c>) -- the grid short name
+    /// baked into the <c>bake-texture.glb.{grid}.lindenlab.com</c> host
+    /// <see cref="FetchBakeTextureDataAsync"/> builds. Null for anything that doesn't match this
+    /// exact two-label pattern (OpenSim, or a Linden host shaped some other way).</summary>
+    internal static string? ParseLindenGridShortName(string? uri)
+    {
+        if (string.IsNullOrEmpty(uri)) return null;
+        try
+        {
+            var host = new Uri(uri).Host;
+            var labels = host.Split('.');
+            // "login" . "<grid>" . "lindenlab" . "com" -- exactly four labels, the second one is
+            // the grid name. Anything else (a bare "lindenlab.com", a different subdomain shape)
+            // is deliberately NOT guessed at.
+            if (labels.Length == 4 && labels[0] == "login"
+                && string.Equals(labels[2], "lindenlab", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(labels[3], "com", StringComparison.OrdinalIgnoreCase))
+            {
+                return labels[1].ToLowerInvariant();
+            }
+            return null;
+        }
+        catch
+        {
+            return null;
         }
     }
 }

@@ -203,7 +203,8 @@ public class GpuCache
         int initialRefCount = 0,
         float screenPixelArea = 0f,
         float priority = 0f,
-        bool rejectDegraded = false)
+        bool rejectDegraded = false,
+        int? bakeChannel = null)
     {
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
 
@@ -233,7 +234,7 @@ public class GpuCache
         if (assetService == null) return Task.FromResult<ImageTexture?>(null);
 
         var lazy = _inflightTextureUploads.GetOrAdd(textureId, id => new Lazy<Task<ImageTexture?>>(
-            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, screenPixelArea, priority, rejectDegraded),
+            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, screenPixelArea, priority, rejectDegraded, bakeChannel),
             LazyThreadSafetyMode.ExecutionAndPublication));
         return lazy.Value;
     }
@@ -331,14 +332,22 @@ public class GpuCache
     }
 
     private async Task<ImageTexture?> FetchAndUploadTextureAsync(
-        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, float screenPixelArea, float priority, bool rejectDegraded)
+        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, float screenPixelArea, float priority, bool rejectDegraded, int? bakeChannel = null)
     {
         try
         {
             // desiredDiscard: 0 here, deliberately -- always fetch/decode the complete asset.
             // See this method's/GetOrUploadTextureAsync's doc comments for why network-side
             // truncation is disabled; the downsample below is purely local/post-decode.
-            var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded).ConfigureAwait(false);
+            //
+            // BUG-AVATAR-02: a bake channel goes through GetBakeTextureAsync, SL's dedicated
+            // bake-texture host -- the generic per-face path (GetTextureAsync) got a flat HTTP 403
+            // AccessDenied for every single bake channel, confirmed against a real Firestorm
+            // capture of the same texture id succeeding from a different host entirely. See
+            // GridSession.FetchBakeTextureDataAsync's doc comment for the full story.
+            var textureData = bakeChannel.HasValue
+                ? await assetService.GetBakeTextureAsync(textureId, bakeChannel.Value, priority).ConfigureAwait(false)
+                : await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded).ConfigureAwait(false);
             if (textureData == null) return null;
 
             // FATAL BUG, live on Aditi: this used to be Godot.Callable.From(() => {...}).CallDeferred()
