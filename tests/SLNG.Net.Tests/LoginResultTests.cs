@@ -40,7 +40,10 @@ public class LoginResultTests
             GridLoginUri = LoginCredentials.OpenSimLocalLoginUri,
         };
 
-        Assert.Equal("SLNG", c.Channel);
+        // TPV Policy §5.b: the channel must not carry any part of a Linden Lab trademark,
+        // including "SL" -- "SLNG" (the codebase's internal name) fails on the letter.
+        Assert.Equal("Puris", c.Channel);
+        Assert.DoesNotContain("SL", c.Channel, System.StringComparison.OrdinalIgnoreCase);
         Assert.False(string.IsNullOrWhiteSpace(c.Version));
     }
 }

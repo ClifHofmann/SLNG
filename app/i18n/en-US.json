@@ -6,7 +6,9 @@
       "first_name": "First Name",
       "last_name": "Last Name",
       "password": "Password",
-      "save_login": "Save Login"
+      "save_login": "Save Login",
+      "grid_sl": "Second Life (Agni)",
+      "grid_sl_beta": "Second Life Beta (Aditi)"
     },
     "menu": {
       "app": "App",
@@ -41,7 +43,8 @@
       "environment": "Environment (Windlight)...",
       "world_map": "World Map...",
       "minimap": "Minimap",
-      "rebake_avatar": "Rebake avatar (Ctrl+Alt+R)"
+      "rebake_avatar": "Rebake avatar (Ctrl+Alt+R)",
+      "about": "About Puris Viewer..."
     },
     "hud": {
       "stand_up": "Stand Up"
@@ -237,7 +240,45 @@
       "post_fx_hint": "F2 toggles all post-processing effects at once.",
       "tab_licenses": "Licences",
       "licenses_heading": "Third-party notices and attribution",
-      "licenses_missing": "The third-party notice file is missing from this build. This is a licensing problem, not a display one — please report it."
+      "licenses_missing": "The third-party notice file is missing from this build. This is a licensing problem, not a display one — please report it.",
+      "tab_maturity": "Age Settings",
+      "maturity_heading": "Content Rating",
+      "maturity_blurb": "Choose what maturity rating of regions and content Second Life shows you. This has no effect on OpenSim.",
+      "maturity_general": "General",
+      "maturity_moderate": "Moderate",
+      "maturity_adult": "Adult",
+      "maturity_unsupported": "This grid does not support a content-rating preference (OpenSim has no equivalent of Second Life's General/Moderate/Adult system).",
+      "maturity_account_max": "Your account is verified up to: {0}",
+      "maturity_set_to": "Content rating set to {0}.",
+      "maturity_set_failed": "Could not change content rating: {0}"
+    },
+    "about": {
+      "title": "About Puris Viewer",
+      "channel": "Login channel {0}, version {1} — this is exactly what the grid is told.",
+      "blurb": "Puris Viewer is a third-party viewer for Second Life and OpenSimulator, built on Godot 4 for the renderer and LibreMetaverse for the grid protocol.",
+      "disclaimer": "Not affiliated with, endorsed, or supported by Linden Lab. Second Life is a trademark of Linden Research, Inc.",
+      "open_project": "Project page",
+      "copy": "Copy details",
+      "close": "Close",
+      "detail_version": "Version: {0}",
+      "detail_channel": "Channel: {0}",
+      "detail_engine": "Godot: {0}",
+      "detail_renderer": "Renderer: {0}",
+      "detail_platform": "Platform: {0}",
+      "detail_gpu": "Graphics: {0}"
+    },
+    "tos": {
+      "title": "Terms of Service",
+      "title_critical": "Important message",
+      "heading": "This grid requires you to accept its Terms of Service before you can log in. Please read them; logging in continues only if you accept.",
+      "heading_critical": "This grid has a message you must read before you can log in.",
+      "no_message": "The grid sent no text with this request. Read the agreement at the link below before accepting.",
+      "open_in_browser": "Read the full text in your browser ({0})",
+      "agree": "I have read and accept these Terms of Service.",
+      "agree_critical": "I have read this message.",
+      "continue": "Accept and log in",
+      "cancel": "Cancel login",
+      "declined": "Login cancelled — the grid's terms were not accepted."
     }
   }
 }

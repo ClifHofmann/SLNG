@@ -1,5 +1,21 @@
 shader_type spatial;
-render_mode blend_mix, depth_draw_always, cull_back, specular_schlick_ggx;
+// depth_draw_opaque, NOT depth_draw_always. Every other shader in this family (prim_opaque,
+// prim_blend, prim_scissor and all their _avatar/_hud variants) uses depth_draw_opaque -- water
+// was the one outlier, with no comment ever explaining why, and no other code depending on it
+// (the "declared but unused until the refraction pass exists" screen-space uniforms above don't
+// read the depth buffer yet). Reported live on Aditi as "the water plane overwrites textures" at
+// every tree crossing the waterline; user follow-up ruled out SL system trees -- these are MESH
+// trees with alpha-blended leaf textures. depth_draw_always forces water to write depth
+// UNCONDITIONALLY regardless of Godot's transparent-queue sort order, which is only an
+// approximate (AABB-distance) ordering between separate transparent objects, not a guaranteed
+// per-pixel one. Wherever a large alpha-blended mesh (a tree canopy) happened to render in the
+// wrong order relative to the water plane, water's forced depth write could incorrectly fail the
+// depth test for leaf fragments that were actually meant to blend, not be occluded -- exactly a
+// band where the canopy appeared to be "cut out" by the water. depth_draw_opaque only writes
+// depth where water is genuinely opaque-looking, matching how every other blended surface in this
+// project already coexists with the others. Revisit if a screen-space refraction/underwater-fog
+// pass is ever built and needs water reliably present in the depth buffer.
+render_mode blend_mix, depth_draw_opaque, cull_back, specular_schlick_ggx;
 
 #include "res://materials/slng_atmospherics.gdshaderinc"
 

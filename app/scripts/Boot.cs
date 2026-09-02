@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using SLNG.Core;
 using SLNG.Core.Components;
 using SLNG.Net;
@@ -85,6 +85,14 @@ public partial class Boot : Control
     private double _hudAccum;
     
     private SLNG.App.UI.TopMenu _topMenu = null!;
+
+    /// <summary>FEAT-SL-01: always-present layer for windows that must work before there is a
+    /// session -- the Terms-of-Service gate and About. See where it is created in _Ready.</summary>
+    private CanvasLayer _dialogLayer = null!;
+
+    /// <summary>The one About window, created on first open and hidden rather than freed so it
+    /// keeps its position (PersistId "about_window").</summary>
+    private SLNG.App.UI.AboutWindow? _aboutWindow;
     // Created lazily on first use -- see the Developer menu wiring below. Dev tooling only,
     // costs nothing until someone actually takes a measurement.
     private RenderBaselineSampler? _renderBaselineSampler;
@@ -92,6 +100,7 @@ public partial class Boot : Control
     private SLNG.App.UI.GraphicsSettings _graphicsSettings = new();
     private SLNG.App.UI.QualityPreferencesPage? _qualityPage;
     private SLNG.App.UI.DesignPreferencesPage? _designPage;
+    private SLNG.App.UI.MaturityPreferencesPage? _maturityPage;
 
     /// <summary>Threshold for the [AgentGap] log. Below the 0.8 s extrapolation cutoff, so a gap
     /// shows up in the log slightly before it becomes visible as a stalled avatar.</summary>
@@ -147,7 +156,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.19.3-alpha";
+    public const string AppVersion = "v0.20.0-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -225,11 +234,19 @@ public partial class Boot : Control
         _firstInput = GetNode<LineEdit>("%FirstInput");
         _lastInput = GetNode<LineEdit>("%LastInput");
 
-        // Populate Grid Dropdown
+        // Populate Grid Dropdown. FEAT-SL-01 adds the two Linden grids: Aditi (the BETA grid) is
+        // listed FIRST of the two on purpose, because it is the one to test on -- it is a periodic
+        // copy of the main grid, so nothing done there can damage a real account or real content.
+        // Aditi has its OWN password: whatever the account's password was at copy time, not
+        // necessarily today's Agni password.
         _gridDropdown.AddItem("OSGrid");
         _gridDropdown.SetItemMetadata(0, "http://hg.osgrid.org/");
         _gridDropdown.AddItem("Localhost");
         _gridDropdown.SetItemMetadata(1, "http://127.0.0.1:9000/");
+        _gridDropdown.AddItem(SLNG.App.UI.L10n.Tr("ui.login.grid_sl_beta"));
+        _gridDropdown.SetItemMetadata(2, LoginCredentials.SecondLifeBetaLoginUri);
+        _gridDropdown.AddItem(SLNG.App.UI.L10n.Tr("ui.login.grid_sl"));
+        _gridDropdown.SetItemMetadata(3, LoginCredentials.SecondLifeLoginUri);
         
         _gridDropdown.ItemSelected += (index) => 
         {
@@ -262,6 +279,27 @@ public partial class Boot : Control
         var loadingVersionText = GetNodeOrNull<Label>("%LoadingVersionText");
         if (loadingVersionText != null) loadingVersionText.Text = AppVersion;
 
+        // FEAT-SL-01: a CanvasLayer that is up from the first frame and never hidden, unlike
+        // HudLayer (created hidden, shown only after a successful login). The two windows that
+        // must be reachable BEFORE there is a session live here: the Terms-of-Service gate, which
+        // by definition appears while a login is being refused, and About, which the TPV Policy
+        // wants reachable, not buried behind a successful connection. Above TopMenu's layer 100.
+        _dialogLayer = new CanvasLayer { Name = "DialogLayer", Layer = 110 };
+        AddChild(_dialogLayer);
+
+        // The login screen's own way in to About (§1.g) -- the menu bar only exists in-world.
+        var aboutLink = new Button
+        {
+            Text = SLNG.App.UI.L10n.Tr("ui.about.title"),
+            Flat = true,
+            SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter,
+        };
+        aboutLink.AddThemeFontSizeOverride("font_size", 12);
+        aboutLink.Pressed += ShowAboutWindow;
+        loginVersionText?.GetParent()?.AddChild(aboutLink);
+        if (loginVersionText != null)
+            loginVersionText.GetParent().MoveChild(aboutLink, loginVersionText.GetIndex() + 1);
+
         _loginButton.Pressed += OnLoginPressed;
         _profileDropdown.ItemSelected += OnProfileSelected;
         GetTree().Root.SizeChanged += OnWindowSizeChanged;
@@ -292,6 +330,43 @@ public partial class Boot : Control
         {
             Callable.From(() => SelfTest.Run(GetTree())).CallDeferred();
         }
+    }
+
+    /// <summary>Opens (or re-raises) the About window — TPV Policy §1.g. Reachable from the login
+    /// screen and from App -> About, so it does not depend on being connected.</summary>
+    private void ShowAboutWindow()
+    {
+        if (_aboutWindow == null || !IsInstanceValid(_aboutWindow))
+        {
+            _aboutWindow = new SLNG.App.UI.AboutWindow();
+            _dialogLayer.AddChild(_aboutWindow);
+        }
+
+        _aboutWindow.Visible = true;
+        _aboutWindow.MoveToFront();
+    }
+
+    /// <summary>Shows the grid's Terms of Service (or its critical message) and resolves to the
+    /// user's answer — TPV Policy §1.f. Awaited by the login flow, which only retries with
+    /// <c>agree_to_tos</c> / <c>read_critical</c> set once this returns true.
+    ///
+    /// The loading screen comes down for the duration, mirroring the reference viewer's
+    /// <c>gViewerWindow->setShowProgress(false)</c> before it raises the same dialog: the login is
+    /// not progressing, it is waiting on a decision.</summary>
+    private System.Threading.Tasks.Task<bool> ShowTermsGateAsync(string gridLoginUri, string message, bool critical)
+    {
+        var tcs = new System.Threading.Tasks.TaskCompletionSource<bool>();
+
+        GetNode<Control>("%LoadingScreenBlur").Visible = false;
+        GetNode<Control>("%LoadingScreen").Visible = false;
+        IsLoadingScreenVisible = false;
+
+        var window = new SLNG.App.UI.TermsOfServiceWindow();
+        _dialogLayer.AddChild(window);
+        window.Answered += accepted => tcs.TrySetResult(accepted);
+        window.Initialize(gridLoginUri, message, critical);
+
+        return tcs.Task;
     }
 
     private void ReassertWindowTitleOnce()
@@ -369,12 +444,19 @@ public partial class Boot : Control
 
 
         _topMenu.OnOpenPreferences = () => {
-            // Re-read on open: F2 and F3/F4 change these settings from outside the dialog, so
-            // controls built once at startup would otherwise show stale values.
+            // Re-read on open: F2 and F3/F4 change quality/design settings from outside the
+            // dialog, so controls built once at startup would otherwise show stale values.
+            // MaturityPreferencesPage has a different reason for the same fix -- see its own
+            // Refresh() doc comment: SupportsMaturityPreference can read false right after login,
+            // before the region's capability seed has actually resolved, and nothing was asking
+            // it again once that settled. Measured live on Aditi.
             _qualityPage?.Refresh();
             _designPage?.Refresh();
+            _maturityPage?.Refresh();
             _preferencesWindow.Visible = true;
         };
+
+        _topMenu.OnOpenAbout = ShowAboutWindow;
 
         _topMenu.OnOpenEnvironment = () => _environmentWindow?.Toggle();
         _topMenu.OnOpenWorldMap = () => _worldMapWindow?.Toggle();
@@ -713,6 +795,14 @@ public partial class Boot : Control
         var networkPage = new SLNG.App.UI.NetworkPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);
         networkPage.Initialize(ProjectSettings.GlobalizePath("user://cache/assets"));
+
+        // "Age settings" -- Second Life's content-rating preference (General/Moderate/Adult).
+        // Rebound to the live session per login in BindSession, once a session exists to read
+        // GridSession.AccountMaturityMax/PreferredMaturity from -- see _maturityPage's own class
+        // doc and the OnLoginPressed call site below.
+        _maturityPage = new SLNG.App.UI.MaturityPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_maturity"), _maturityPage);
+        _maturityPage.Initialize();
 
         // Not optional: the Second Life viewer artwork we ship is CC BY-SA 3.0, which requires the
         // attribution notice to reach the user. See app/THIRD-PARTY-NOTICES.md.
@@ -1632,6 +1722,7 @@ public partial class Boot : Control
         _objectRenderer?.Initialize(_world, _assetService, _gpuCache);
         _avatarRenderer?.Initialize(_world, _assetService, _gpuCache, _session);
         _inventoryPanel?.Initialize(_session);
+        _maturityPage?.BindSession(_session);
         _chatWindow.BindSession(_session);
         // MVP2-3: needs the session (map/radar protocol calls), the world (own-avatar position
         // for the marker/heading), and the asset plumbing (map tile textures) -- all three only
@@ -1733,6 +1824,36 @@ public partial class Boot : Control
         CompleteLoadingStep(0);
 
         var result = await _session.LoginAsync(creds);
+
+        // FEAT-SL-01 / TPV Policy §1.f: a grid may refuse the login with reason "tos" (accept the
+        // Terms of Service first) or "critical" (read this message first). Both are answerable, and
+        // the ONLY legitimate answer is the user's own -- LibreMetaverse's LoginParams defaults
+        // agree_to_tos and read_critical to true, which would accept on their behalf, so
+        // LoginCredentials defaults both to false and they are set here and nowhere else.
+        //
+        // Loop rather than a single retry because a grid can demand both in turn: accept the ToS,
+        // and the next attempt comes back asking for the critical message. The reference viewer's
+        // handleTOSResponse -> reconnect() has the same shape.
+        while (result.RequiresTermsAcceptance || result.RequiresCriticalAcknowledgement)
+        {
+            bool critical = result.RequiresCriticalAcknowledgement;
+            bool accepted = await ShowTermsGateAsync(creds.GridLoginUri, result.Message ?? "", critical);
+            if (!accepted)
+            {
+                result = LoginResult.Fail("tos-declined", SLNG.App.UI.L10n.Tr("ui.tos.declined"));
+                break;
+            }
+
+            creds = critical ? creds with { ReadCritical = true } : creds with { AgreeToTos = true };
+
+            // Put the loading screen back for the retry -- ShowTermsGateAsync took it down.
+            GetNode<Control>("%LoadingScreenBlur").Visible = true;
+            GetNode<Control>("%LoadingScreen").Visible = true;
+            IsLoadingScreenVisible = true;
+
+            LogMessage($"Accepted, retrying login to {creds.GridLoginUri}...");
+            result = await _session.LoginAsync(creds);
+        }
 
         if (result.Success)
         {

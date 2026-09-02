@@ -6,7 +6,9 @@
       "first_name": "Vorname",
       "last_name": "Nachname",
       "password": "Passwort",
-      "save_login": "Login speichern"
+      "save_login": "Login speichern",
+      "grid_sl": "Second Life (Agni)",
+      "grid_sl_beta": "Second Life Beta (Aditi)"
     },
     "menu": {
       "app": "App",
@@ -41,7 +43,8 @@
       "environment": "Umgebung (Windlight)...",
       "world_map": "Weltkarte...",
       "minimap": "Minikarte",
-      "rebake_avatar": "Avatar neu backen (Strg+Alt+R)"
+      "rebake_avatar": "Avatar neu backen (Strg+Alt+R)",
+      "about": "Über Puris Viewer..."
     },
     "hud": {
       "stand_up": "Aufstehen"
@@ -237,7 +240,45 @@
       "post_fx_hint": "Die F2-Taste schaltet alle Nachbearbeitungseffekte auf einmal um.",
       "tab_licenses": "Lizenzen",
       "licenses_heading": "Hinweise und Namensnennung zu Fremdmaterial",
-      "licenses_missing": "Die Datei mit den Fremdmaterial-Hinweisen fehlt in diesem Build. Das ist ein Lizenzproblem, kein Anzeigeproblem — bitte melden."
+      "licenses_missing": "Die Datei mit den Fremdmaterial-Hinweisen fehlt in diesem Build. Das ist ein Lizenzproblem, kein Anzeigeproblem — bitte melden.",
+      "tab_maturity": "Altersfreigabe",
+      "maturity_heading": "Inhaltseinstufung",
+      "maturity_blurb": "Wähle, welche Alterseinstufung von Regionen und Inhalten dir Second Life zeigt. Auf OpenSim hat das keine Wirkung.",
+      "maturity_general": "Allgemein",
+      "maturity_moderate": "Moderat",
+      "maturity_adult": "Adult",
+      "maturity_unsupported": "Dieses Grid unterstützt keine Inhaltseinstufung (OpenSim kennt Second Lifes Allgemein/Moderat/Adult-System nicht).",
+      "maturity_account_max": "Dein Konto ist verifiziert bis: {0}",
+      "maturity_set_to": "Inhaltseinstufung auf {0} gesetzt.",
+      "maturity_set_failed": "Inhaltseinstufung konnte nicht geändert werden: {0}"
+    },
+    "about": {
+      "title": "Über Puris Viewer",
+      "channel": "Login-Kanal {0}, Version {1} — genau das wird dem Grid gemeldet.",
+      "blurb": "Puris Viewer ist ein Third-Party-Viewer für Second Life und OpenSimulator, mit Godot 4 als Renderer und LibreMetaverse als Grid-Protokoll.",
+      "disclaimer": "Nicht mit Linden Lab verbunden, von Linden Lab weder unterstützt noch freigegeben. Second Life ist eine Marke von Linden Research, Inc.",
+      "open_project": "Projektseite",
+      "copy": "Details kopieren",
+      "close": "Schließen",
+      "detail_version": "Version: {0}",
+      "detail_channel": "Kanal: {0}",
+      "detail_engine": "Godot: {0}",
+      "detail_renderer": "Renderer: {0}",
+      "detail_platform": "Plattform: {0}",
+      "detail_gpu": "Grafik: {0}"
+    },
+    "tos": {
+      "title": "Nutzungsbedingungen",
+      "title_critical": "Wichtige Mitteilung",
+      "heading": "Dieses Grid verlangt, dass du seine Nutzungsbedingungen akzeptierst, bevor du dich einloggen kannst. Bitte lies sie; der Login wird nur fortgesetzt, wenn du zustimmst.",
+      "heading_critical": "Dieses Grid hat eine Mitteilung, die du vor dem Login lesen musst.",
+      "no_message": "Das Grid hat keinen Text mitgeschickt. Lies die Vereinbarung über den Link unten, bevor du zustimmst.",
+      "open_in_browser": "Vollständigen Text im Browser lesen ({0})",
+      "agree": "Ich habe diese Nutzungsbedingungen gelesen und akzeptiere sie.",
+      "agree_critical": "Ich habe diese Mitteilung gelesen.",
+      "continue": "Akzeptieren und einloggen",
+      "cancel": "Login abbrechen",
+      "declined": "Login abgebrochen — die Bedingungen des Grids wurden nicht akzeptiert."
     }
   }
 }

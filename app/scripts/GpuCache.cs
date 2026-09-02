@@ -341,8 +341,17 @@ public class GpuCache
             var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded).ConfigureAwait(false);
             if (textureData == null) return null;
 
+            // FATAL BUG, live on Aditi: this used to be Godot.Callable.From(() => {...}).CallDeferred()
+            // -- a delegate-backed Callable's deferred dispatch is main-thread-only in Godot .NET
+            // (see Boot.cs:70's comment on the exact same trap), and FetchAndUploadTextureAsync
+            // is reached from asset-decode worker threads via GetOrUploadTextureAsync, not the
+            // main thread. Crashed the whole process with a fatal
+            // System.AccessViolationException inside godotsharp_callable_call_deferred. The fix
+            // already existed two methods above (TryUpgradeCachedTexture's sharpen path) --
+            // MainThreadWorkQueue, built for exactly this -- and this call site was simply never
+            // migrated to it.
             var tcs = new TaskCompletionSource<ImageTexture?>();
-            Godot.Callable.From(() =>
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
                 // Re-check: a differently-triggered Put for this id (shouldn't normally happen
                 // given the single-flight dict above, but costs nothing to guard) may have
@@ -408,7 +417,7 @@ public class GpuCache
                 }
 
                 tcs.SetResult(tex);
-            }).CallDeferred();
+            }, label: "texture.upload");
 
             return await tcs.Task.ConfigureAwait(false);
         }

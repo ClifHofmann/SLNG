@@ -1506,6 +1506,39 @@ public partial class ObjectRenderer : Node3D
             }
         }
 
+        // Reported live on Aditi: every tree on the sim rendered as a hazy, semi-transparent
+        // grey plane -- looking enough like the water plane that it was first reported as "the
+        // water is overwriting textures", sim-wide, unrelated to actual proximity to water.
+        //
+        // Root cause: PrimMeshService gives Tree/NewTree/Grass pcodes a bare crossed-planes
+        // placeholder mesh (real branch/blade geometry needs a species table the real viewer
+        // bundles and this project does not parse yet), but nothing downstream knew that -- this
+        // method went on to treat it exactly like a normal prim face and fetch prim.TextureId as
+        // if it were a real per-face texture asset. For these pcodes it is NOT: a tree's visible
+        // texture comes from its species (the object's own TextureEntry is not what the real
+        // viewer draws), so that id resolves to nothing meaningful. The resulting unresolved,
+        // untextured face -- through the same atmospheric-fog blending every prim shader applies
+        // -- rendered as a flat, fog-tinted, translucent-looking plane: visually indistinguishable
+        // from water at a glance, and identical on every tree because every tree hits this same
+        // unresolved path.
+        //
+        // Fix, scoped: render foliage OPAQUE with a plain placeholder tint instead of chasing a
+        // meaningless texture id. This stops the water-like artifact outright. It does not yet
+        // show the tree's real species texture -- that needs trees.xml's species table parsed and
+        // wired through, a separate, larger task (see BUG-RENDER-02's "Still open").
+        if (SLNG.Core.PrimPCode.IsFoliage(prim.Shape.PCode))
+        {
+            var foliageMaterial = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
+            foliageMaterial.SetShaderParameter(PrimShaderFamily.AlbedoColor, new Godot.Color(0.26f, 0.43f, 0.20f));
+            foliageMaterial.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, false);
+            ApplyOnMainThread(state, () =>
+            {
+                state.MeshInstance.MaterialOverride = foliageMaterial;
+                state.TexAnimNeedsReapply = false;
+            }, new List<Guid>());
+            return;
+        }
+
         var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint,
             prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation, prim.TexGen, prim.Fullbright);
 
@@ -1774,7 +1807,7 @@ public partial class ObjectRenderer : Node3D
                         0.5f - 0.5f * nScale.Y - lm.NormalOffset.Y);
 
                     var normalTex = await GetOrCreateGpuTextureAsync(lm.NormalMap, screenPixelArea, priority);
-                    Godot.Callable.From(() =>
+                    MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                     {
                         // Same eviction guard as the diffuse path: the GpuCache can free this
                         // between the fetch completing and this callback running on the main
@@ -1791,7 +1824,7 @@ public partial class ObjectRenderer : Node3D
                         material.SetShaderParameter(PrimShaderFamily.NormalUvOffset, nOffset);
                         material.SetShaderParameter(PrimShaderFamily.NormalUvRotation, lm.NormalRotation);
                         material.SetShaderParameter(PrimShaderFamily.HasNormalUv, true);
-                    }).CallDeferred();
+                    }, label: "prim.normal_map");
                 }
 
                 if (lm.SpecularMap != Guid.Empty)
@@ -1809,7 +1842,7 @@ public partial class ObjectRenderer : Node3D
                     var tint = new Godot.Vector3(lm.SpecularColor.X, lm.SpecularColor.Y, lm.SpecularColor.Z);
 
                     var specTex = await GetOrCreateGpuTextureAsync(lm.SpecularMap, screenPixelArea, priority);
-                    Godot.Callable.From(() =>
+                    MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                     {
                         if (!IsInstanceValid(specTex))
                         {
@@ -1824,7 +1857,7 @@ public partial class ObjectRenderer : Node3D
                         material.SetShaderParameter(PrimShaderFamily.SpecularUvScale, sScale);
                         material.SetShaderParameter(PrimShaderFamily.SpecularUvOffset, sOffset);
                         material.SetShaderParameter(PrimShaderFamily.SpecularUvRotation, lm.SpecularRotation);
-                    }).CallDeferred();
+                    }, label: "prim.specular_map");
                 }
             }
         }
@@ -1866,7 +1899,7 @@ public partial class ObjectRenderer : Node3D
                 {
                     used.Add(pbr.BaseColorTextureId);
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId, screenPixelArea, priority).ContinueWith(t =>
-                        Godot.Callable.From(() =>
+                        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                         {
                             if (IsInstanceValid(t.Result))
                             {
@@ -1874,13 +1907,13 @@ public partial class ObjectRenderer : Node3D
                                 material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
                             }
                             else GD.PrintErr($"[FaceTex] object PBR baseColor {pbr.BaseColorTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
-                        }).CallDeferred()));
+                        }, label: "prim.pbr_basecolor")));
                 }
                 if (pbr.NormalTextureId != Guid.Empty)
                 {
                     used.Add(pbr.NormalTextureId);
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId, screenPixelArea, priority).ContinueWith(t =>
-                        Godot.Callable.From(() =>
+                        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                         {
                             if (IsInstanceValid(t.Result))
                             {
@@ -1888,13 +1921,13 @@ public partial class ObjectRenderer : Node3D
                                 material.SetShaderParameter(PrimShaderFamily.HasNormalTexture, true);
                             }
                             else GD.PrintErr($"[FaceTex] object PBR normal {pbr.NormalTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
-                        }).CallDeferred()));
+                        }, label: "prim.pbr_normal")));
                 }
                 if (pbr.MetallicRoughnessTextureId != Guid.Empty)
                 {
                     used.Add(pbr.MetallicRoughnessTextureId);
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId, screenPixelArea, priority).ContinueWith(t =>
-                        Godot.Callable.From(() =>
+                        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                         {
                             if (IsInstanceValid(t.Result))
                             {
@@ -1918,13 +1951,13 @@ public partial class ObjectRenderer : Node3D
                                     Logger.Info($"[FaceTex] ORM map now sampled (StandardMaterial3D ignored it): {pbr.MetallicRoughnessTextureId}");
                             }
                             else GD.PrintErr($"[FaceTex] object PBR metallicRoughness {pbr.MetallicRoughnessTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
-                        }).CallDeferred()));
+                        }, label: "prim.pbr_metallic_roughness")));
                 }
                 if (pbr.EmissiveTextureId != Guid.Empty)
                 {
                     used.Add(pbr.EmissiveTextureId);
                     tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId, screenPixelArea, priority).ContinueWith(t =>
-                        Godot.Callable.From(() =>
+                        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                         {
                             if (IsInstanceValid(t.Result))
                             {
@@ -1932,7 +1965,7 @@ public partial class ObjectRenderer : Node3D
                                 material.SetShaderParameter(PrimShaderFamily.HasEmissionTexture, true);
                             }
                             else GD.PrintErr($"[FaceTex] object PBR emissive {pbr.EmissiveTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
-                        }).CallDeferred()));
+                        }, label: "prim.pbr_emissive")));
                 }
                 // No await Task.WhenAll(tasks) here! Let the textures populate asynchronously so the mesh renders immediately.
             }
@@ -1945,7 +1978,7 @@ public partial class ObjectRenderer : Node3D
                 var tex = t.Result;
                 if (tex != null)
                 {
-                    Godot.Callable.From(() =>
+                    MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                     {
                         // The texture can legitimately be evicted+disposed by the GpuCache between
                         // this continuation being scheduled and actually running on the main thread
@@ -1961,7 +1994,7 @@ public partial class ObjectRenderer : Node3D
                         // DetectAlpha() pixel guess second-guess it.
                         if (!legacyAlphaModeResolved)
                             ApplyAlphaCutout(material, tex, tintIsTranslucent);
-                    }).CallDeferred();
+                    }, label: "prim.legacy_default_face");
                 }
                 else
                 {

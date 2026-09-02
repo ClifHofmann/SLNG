@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using System;
 
 namespace SLNG.App.UI
@@ -14,6 +14,8 @@ namespace SLNG.App.UI
         public Action? OnToggleStats;
         public Action? OnMeasureRenderBaseline;
         public Action? OnOpenPreferences;
+        /// <summary>FEAT-SL-01: opens the About window the TPV Policy §1.g requires.</summary>
+        public Action? OnOpenAbout;
         public Action? OnCreateLandmark;
         public Action? OnOpenEnvironment;
         // MVP2-3: reachable from World -> World Map / Minimap, not just the bottom toolbar.
@@ -72,6 +74,7 @@ namespace SLNG.App.UI
             var appMenu = new PopupMenu();
             appMenu.Name = L10n.Tr("ui.menu.app");
             appMenu.AddItem(L10n.Tr("ui.menu.preferences"), 2);
+            appMenu.AddItem(L10n.Tr("ui.menu.about"), 3);
             appMenu.AddSeparator();
             appMenu.AddItem(L10n.Tr("ui.menu.disconnect"), 0);
             appMenu.AddItem(L10n.Tr("ui.menu.exit"), 1);
@@ -79,6 +82,7 @@ namespace SLNG.App.UI
                 if (id == 0) OnDisconnect?.Invoke();
                 if (id == 1) OnExit?.Invoke();
                 if (id == 2) OnOpenPreferences?.Invoke();
+                if (id == 3) OnOpenAbout?.Invoke();
             };
             menuBar.AddChild(appMenu);
 

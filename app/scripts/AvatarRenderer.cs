@@ -919,7 +919,7 @@ public partial class AvatarRenderer : Node3D
             _ => Array.Empty<string>()   // 19 (SkirtBaked): no skirt part is loaded
         };
 
-        Godot.Callable.From(() => {
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => {
             if (visual.Root == null || !IsInstanceValid(visual.Root)) return;
 
             var targets = partsForBake != null
@@ -978,7 +978,7 @@ public partial class AvatarRenderer : Node3D
                 // alpha_to_coverage is baked into the scissor variant's render_mode. MSAA 4x is on
                 // project-wide (app/project.godot) specifically so this edge resolves smoothly.
             }
-        }).CallDeferred();
+        }, label: "avatar.bake");
     }
 
     private void UpdateAttachment(string entityIdStr)
@@ -1229,7 +1229,7 @@ public partial class AvatarRenderer : Node3D
         // statically to one bone (which collapses it into a blob).
         if (meshData.Skin != null && skeleton != null)
         {
-            Godot.Callable.From(() =>
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
                 if (!IsInstanceValid(skeleton)) return;
                 // The mesh may be rigged to shifted joint positions (mesh bodies/heads).
@@ -1252,11 +1252,11 @@ public partial class AvatarRenderer : Node3D
                 mi.Skeleton = mi.GetPathTo(skeleton);
                 RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices, faces, defaultFace, meshId);
                 _ = ApplyFaceMaterialsAsync(mi, faceIndices, faces, defaultFace, avatarVisual, meshId);
-            }).CallDeferred();
+            }, label: "avatar.rig");
             return;
         }
 
-        Godot.Callable.From(() =>
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (!IsInstanceValid(attachParent)) return;
 
@@ -1302,7 +1302,7 @@ public partial class AvatarRenderer : Node3D
             attachParent.AddChild(mi);
             RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices.ToArray(), faces, defaultFace, meshId);
             _ = ApplyFaceMaterialsAsync(mi, faceIndices.ToArray(), faces, defaultFace, avatarVisual, meshId);
-        }).CallDeferred();
+        }, label: "avatar.attach");
     }
 
     /// <summary>Applies one material per mesh surface, picking each surface's SL face texture
@@ -1325,11 +1325,11 @@ public partial class AvatarRenderer : Node3D
 
             var material = await BuildFaceMaterialAsync(ft, avatarVisual, meshId, faceIndex).ConfigureAwait(false);
             int s = surf;
-            Godot.Callable.From(() =>
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
                 if (IsInstanceValid(mi) && s < ((ArrayMesh)mi.Mesh).GetSurfaceCount())
                     mi.SetSurfaceOverrideMaterial(s, material);
-            }).CallDeferred();
+            }, label: "avatar.face_material");
         }
     }
 
@@ -2014,7 +2014,7 @@ public partial class AvatarRenderer : Node3D
             return;
         }
 
-        Godot.Callable.From(() =>
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (!IsInstanceValid(hudNode)) return;
             foreach (var child in hudNode.GetChildren()) child.QueueFree();
@@ -2038,7 +2038,7 @@ public partial class AvatarRenderer : Node3D
             var shape = new CollisionShape3D { Shape = arrayMesh.CreateTrimeshShape() };
             body.AddChild(shape);
             hudNode.AddChild(body);
-        }).CallDeferred();
+        }, label: "avatar.hud_mesh");
     }
 
     /// <summary>Static (unskinned, unlit) ArrayMesh for HUD content, prim scale baked into the
@@ -2102,11 +2102,11 @@ public partial class AvatarRenderer : Node3D
             var material = await BuildFaceMaterialAsync(ft, faceIndex: faceIndex, surface: PrimShaderFamily.Surface.Hud)
                 .ConfigureAwait(false);
             int s = surf;
-            Godot.Callable.From(() =>
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
                 if (IsInstanceValid(mi) && s < ((ArrayMesh)mi.Mesh).GetSurfaceCount())
                     mi.SetSurfaceOverrideMaterial(s, material);
-            }).CallDeferred();
+            }, label: "avatar.hud_material");
         }
     }
 
@@ -3304,10 +3304,10 @@ void fragment() {
         // Logger.Debug($"[AvatarRenderer] Starting {loaded.Count}/{animIds.Count} animation(s)");
 
         // Apply on main thread via CallDeferred
-        Godot.Callable.From(() => {
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => {
             if (visual.Root == null || !IsInstanceValid(visual.Root)) return;
             visual.AnimPlayer.SetActiveAnimations(loaded);
-        }).CallDeferred();
+        }, label: "avatar.animations");
     }
 
 }

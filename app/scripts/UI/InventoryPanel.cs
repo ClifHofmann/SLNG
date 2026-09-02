@@ -130,11 +130,16 @@ public partial class InventoryPanel : SLNGWindow
         statusMargin.AddChild(_status);
         _inventoryView.AddChild(statusMargin);
 
+        // TPV Policy §2.b: exporting content requires verifying, per component, that the SL
+        // creator name matches the viewer user's own name -- "full permissions" does not exempt
+        // it ("This must be done for all content in Second Life, including content that may be
+        // set to 'full permissions.'"). id 3 used to be an "Export (Full Perm)" entry gated on
+        // copy/modify/transfer alone, which is exactly the excluded shortcut; it had no handler
+        // in OnContextMenuIdPressed (a dead menu item), so removing it changes no behaviour.
         _contextMenu = new PopupMenu();
         _contextMenu.AddItem("Wear / Attach", 0);
         _contextMenu.AddItem("Copy", 1);
         _contextMenu.AddItem("Edit", 2);
-        _contextMenu.AddItem("Export (Full Perm)", 3);
         _contextMenu.AddItem("Delete", 4);
         _contextMenu.AddItem("Teleport", 5);
         _contextMenu.AddItem("Detach", 6);
@@ -921,7 +926,6 @@ public partial class InventoryPanel : SLNGWindow
                 {
                     bool canCopy = bool.Parse(parts[1]);
                     bool canModify = bool.Parse(parts[2]);
-                    bool canTransfer = bool.Parse(parts[3]);
                     int assetType = int.Parse(parts[4]);
                     bool isLink = bool.Parse(parts[6]);
                     // Links (e.g. Current Outfit entries) always carry AssetId == Guid.Empty --
@@ -958,7 +962,6 @@ public partial class InventoryPanel : SLNGWindow
                     _contextMenu.SetItemDisabled(0, isWorn); // Wear / Attach
                     _contextMenu.SetItemDisabled(1, !canCopy); // Copy
                     _contextMenu.SetItemDisabled(2, !canModify); // Edit
-                    _contextMenu.SetItemDisabled(3, !(canCopy && canModify && canTransfer)); // Export
                     _contextMenu.SetItemDisabled(4, false); // Delete
                     _contextMenu.SetItemDisabled(5, !isLandmark); // Teleport
                     _contextMenu.SetItemDisabled(6, !isWorn); // Detach

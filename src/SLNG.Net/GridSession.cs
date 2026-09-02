@@ -352,7 +352,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // time out and hand back truncated JPEG2000 streams on busy grids (the "Tile part
         // length inconsistent" decode failures / white untextured objects); HTTP is reliable.
         _client.Settings.TexturePipeline.Enabled = true;
-        _client.Settings.TexturePipeline.UseHttpTextures = true;
+        _client.Settings.TexturePipeline.UseHttpTextures = false;
 
         // BUG-NET-03: connect to neighbor simulators so terrain/objects past the 256 m border
         // render ("Man kann nicht über die Sim-Grenze sehen"). LibreMetaverse 3.1.3 defaults this
@@ -523,7 +523,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     // it to add, so a live re-poll skips it -- a third of the requests, gone.
                     var (capture, environment) = await FetchRegionEnvironmentAsync(
                         includeLegacyAlongsideExt: false).ConfigureAwait(false);
-                    if (capture == null) continue;
+                    if (capture == null || !string.IsNullOrEmpty(capture.Error))
+                    {
+                        if (capture?.Error?.Contains("ServiceUnavailable") == true)
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+                        }
+                        continue;
+                    }
 
                     string fingerprint = FingerprintAndRememberParcel(capture);
                     if (fingerprint == _lastEnvironmentFingerprint) continue;
@@ -5965,6 +5972,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     private static readonly HttpClient _textureHttpClient = new();
+    private static readonly System.Threading.SemaphoreSlim _textureFetchSemaphore = new System.Threading.SemaphoreSlim(8, 8);
 
     /// <summary>
     /// Fetches the raw bytes of a texture asset (JPEG2000) from the simulator. Returns null
@@ -5999,12 +6007,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // whole asset, so it can't do this at all, which is why this method builds the HTTP
         // request itself instead of calling into LibreMetaverse's HTTP path.
         var capUri = skipHttp ? null : _client.Network.CurrentSim?.Caps?.GetTextureCapURI();
-        if (capUri != null)
+        var viewerAssetCap = skipHttp ? null : _client.Network.CurrentSim?.Caps?.CapabilityURI("ViewerAsset");
+        var getTextureCap = skipHttp ? null : _client.Network.CurrentSim?.Caps?.CapabilityURI("GetTexture");
+
+        if (viewerAssetCap != null)
         {
-            var httpResult = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard, capUri).ConfigureAwait(false);
+            var httpResult = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard, viewerAssetCap).ConfigureAwait(false);
             if (httpResult != null) return new TextureFetchResult { Data = httpResult, IsReliable = true };
-            // Falls through to the UDP path below on any HTTP failure (network error,
-            // non-success status) -- never a hard failure just because HTTP didn't pan out.
+        }
+
+        if (getTextureCap != null && getTextureCap != viewerAssetCap)
+        {
+            var httpResult = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard, getTextureCap, maxRetries: 5).ConfigureAwait(false);
+            if (httpResult != null) return new TextureFetchResult { Data = httpResult, IsReliable = true };
         }
 
         var tcs = new TaskCompletionSource<byte[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -6107,24 +6122,56 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return null;
     }
 
-    private async Task<byte[]?> FetchTextureViaHttpRangeAsync(Guid textureId, int desiredDiscard, Uri capUri)
+    private async Task<byte[]?> FetchTextureViaHttpRangeAsync(Guid textureId, int desiredDiscard, Uri capUri, int maxRetries = 0)
     {
-        try
+        for (int attempt = 0; attempt <= maxRetries; attempt++)
         {
-            var url = new Uri($"{capUri}?texture_id={textureId}");
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            if (desiredDiscard > 0)
+            try
             {
-                int byteLimit = J2kByteSizeEstimator.CalcDataSizeJ2C(0, 0, desiredDiscard);
-                request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, byteLimit - 1);
-            }
+                var url = new Uri($"{capUri}?texture_id={textureId}");
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                if (desiredDiscard > 0)
+                {
+                    int byteLimit = J2kByteSizeEstimator.CalcDataSizeJ2C(0, 0, desiredDiscard);
+                    request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, byteLimit - 1);
+                }
 
-            using var response = await _textureHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode) return FetchFailed(textureId, $"HTTP {(int)response.StatusCode}");
+                HttpResponseMessage? response = null;
+                byte[]? bytes = null;
+                long? declaredLength = null;
+                await _textureFetchSemaphore.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    response = await _textureHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        bool retryable = response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable 
+                                      || response.StatusCode == System.Net.HttpStatusCode.NotFound 
+                                      || response.StatusCode == System.Net.HttpStatusCode.Forbidden;
+                        if (attempt < maxRetries && retryable)
+                        {
+                            // Will retry. Release semaphore and delay.
+                        }
+                        else
+                        {
+                            return FetchFailed(textureId, $"HTTP {(int)response.StatusCode}");
+                        }
+                    }
+                    else
+                    {
+                        declaredLength = response.Content.Headers.ContentLength;
+                        bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    response?.Dispose();
+                    _textureFetchSemaphore.Release();
+                }
 
-            long? declaredLength = response.Content.Headers.ContentLength;
-            var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-            if (bytes.Length == 0) return FetchFailed(textureId, "empty body");
+                if (bytes != null)
+                {
+                    if (bytes.Length == 0) return FetchFailed(textureId, "empty body");
 
             // The body must actually BE a JPEG2000 codestream. Measured on OSGrid 2026-08-02: of
             // 14 textures that rendered white, four came back as 1-3 byte bodies -- three of them
@@ -6195,13 +6242,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 //         $"({bytes.Length} bytes, tail {bytes[^2]:X2}{bytes[^1]:X2}) — decoding anyway");
             }
 
-            return bytes;
+                    return bytes;
+                }
+            }
+            catch (Exception ex)
+            {
+                if (attempt == maxRetries) return FetchFailed(textureId, $"Exception: {ex.Message}");
+            }
+            if (attempt < maxRetries) await Task.Delay(2000).ConfigureAwait(false);
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[GridSession] HTTP range texture fetch failed for {textureId}: {ex.Message}");
-            return null;
-        }
+        return null;
     }
 
     /// <summary>
@@ -6260,5 +6310,82 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Grid.GridRegion -= OnGridRegion;
         _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
         Logout();
+    }
+
+    // Restored Uncommitted Methods
+    public SLNG.Core.MaturityLevel AccountMaturityMax { get; private set; } = SLNG.Core.MaturityLevel.General;
+    public SLNG.Core.MaturityLevel PreferredMaturity { get; private set; } = SLNG.Core.MaturityLevel.General;
+    public event EventHandler<SLNG.Core.MaturityLevel>? MaturityPreferenceChanged;
+    public bool SupportsMaturityPreference { get; private set; } = false;
+
+    public async Task<(bool success, SLNG.Core.MaturityLevel actual, string error)> SetPreferredMaturityAsync(SLNG.Core.MaturityLevel level)
+    {
+        if (!IsConnected) return (false, SLNG.Core.MaturityLevel.General, "Not connected");
+        var uri = _client.Network.CurrentSim?.Caps?.CapabilityURI("UpdateAgentInformation");
+        if (uri == null) return (false, SLNG.Core.MaturityLevel.General, "Capability not available");
+        
+        try
+        {
+            var req = new LibreMetaverse.StructuredData.OSDMap();
+            req["access_prefs"] = new LibreMetaverse.StructuredData.OSDMap {
+                ["max"] = SLNG.Net.MaturityAccess.ToShortString(level)
+            };
+            var (res, data) = await _client.HttpCapsClient.PostAsync(uri, LibreMetaverse.StructuredData.OSDFormat.Xml, req, System.Threading.CancellationToken.None);
+            if (res.IsSuccessStatusCode && data != null)
+            {
+                var body = LibreMetaverse.StructuredData.OSDParser.Deserialize(data) as LibreMetaverse.StructuredData.OSDMap;
+                if (body != null && body.ContainsKey("access_prefs"))
+                {
+                    var prefs = body["access_prefs"] as LibreMetaverse.StructuredData.OSDMap;
+                    if (prefs != null && prefs.ContainsKey("max"))
+                    {
+                        PreferredMaturity = SLNG.Net.MaturityAccess.FromShortString(prefs["max"].AsString());
+                        return (true, PreferredMaturity, "");
+                    }
+                }
+            }
+            return (false, PreferredMaturity, $"HTTP {(int)res.StatusCode}");
+        }
+        catch (Exception ex)
+        {
+            return (false, PreferredMaturity, ex.Message);
+        }
+    }
+
+    public static (long dx, long dy) RegionGridOffset(ulong target, ulong from)
+    {
+        uint tx = (uint)(target >> 32);
+        uint ty = (uint)target;
+        uint fx = (uint)(from >> 32);
+        uint fy = (uint)from;
+
+        long dx = ((long)tx - (long)fx) / 256;
+        long dy = ((long)ty - (long)fy) / 256;
+        return (dx, dy);
+    }
+
+    public static LibreMetaverse.LoginParams BuildLoginParams(LibreMetaverse.GridClient client, LoginCredentials creds)
+    {
+        var login = client.Network.DefaultLoginParams(
+            creds.FirstName, creds.LastName, creds.Password, creds.Channel, creds.Version);
+        login.URI = creds.GridLoginUri?.ToString() ?? "";
+        login.AgreeToTos = creds.AgreeToTos;
+        login.ReadCritical = creds.ReadCritical;
+        login.Start = string.IsNullOrEmpty(creds.StartLocation) ? "last" : creds.StartLocation;
+        return login;
+    }
+
+    public static bool IsLindenLabUri(string? uri)
+    {
+        if (string.IsNullOrEmpty(uri)) return false;
+        try
+        {
+            var u = new Uri(uri);
+            return u.Host.EndsWith("lindenlab.com") || u.Host.EndsWith("secondlife.com");
+        }
+        catch
+        {
+            return false;
+        }
     }
 }
