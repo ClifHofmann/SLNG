@@ -6234,6 +6234,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var sim = _client.Network.CurrentSim;
         if (sim == null || materialIds.Count == 0) return Array.Empty<LegacyMaterialData>();
 
+        // BUG-RENDER-06 follow-up: leaf faces on Agni carry a real legacy-material id
+        // (seen in [FaceParams] as mat=...) but the whole material never resolved, so every such
+        // face fell back to DetectAlpha() and landed in the sorted transparent pass -> flicker.
+        // This says which link in the chain is broken: no RenderMaterials cap on this region at
+        // all, vs. the cap present but the fetch coming back with fewer (or zero) materials than
+        // asked for. One line per fetch call (already batched/debounced upstream in AssetService).
+        var capUri = sim.Caps?.CapabilityURI("RenderMaterials");
         var result = new List<LegacyMaterialData>(materialIds.Count);
         var batch = new List<LibreMetaverse.UUID>(MaterialsPerRequest);
 
@@ -6248,25 +6255,79 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (batch.Count > 0)
             await FetchOneBatchAsync(sim, batch, result, cancellationToken).ConfigureAwait(false);
 
+        Console.Error.WriteLine($"[LegacyMat] requested {materialIds.Count} -> resolved {result.Count} " +
+            $"(RenderMaterials cap {(capUri == null ? "MISSING on this region" : "present")})");
+
         return result;
     }
 
     /// <summary>MATERIALS_GET_MAX_ENTRIES (llmaterialmgr.cpp:58). The sim rejects more.</summary>
     private const int MaterialsPerRequest = 50;
 
+    /// <summary>BUG-RENDER-06 follow-up: LibreMetaverse 3.1.3's <c>ObjectManager.RequestMaterialsAsync</c>
+    /// builds the RenderMaterials query by <c>array.Add(uuid)</c>, which serialises each id as an
+    /// LLSD <c>uuid</c> element. The real viewer sends each id as an LLSD <b>binary(16)</b>:
+    /// <c>llmaterialmgr.cpp</c> <c>processGetQueue</c> does <c>materialsData.append((*itMaterial).asLLSD())</c>,
+    /// and <c>LLMaterialID::asLLSD()</c> is a 16-byte <c>LLSD::Binary</c> (llmaterialid.cpp). The sim
+    /// unzips the request and reads each entry with <c>.asBinary()</c>, which yields nothing for a
+    /// <c>uuid</c>-typed element -- so LMV's request matches zero materials and the cap returns an
+    /// empty result with no error. Every Blinn-Phong-materialled face on SL then fell back to
+    /// <c>Image.DetectAlpha()</c>, and a soft-alpha foliage texture guessed as BLEND lands in the
+    /// sorted transparent pass -> the leaf-canopy flicker report. We build and POST the query
+    /// ourselves so the ids go out as binary; the response shape is unchanged, so LMV's own
+    /// <c>LegacyMaterial(OSDMap)</c> still parses each returned entry.</summary>
+    internal static OSDMap BuildRenderMaterialsQuery(IEnumerable<LibreMetaverse.UUID> ids)
+    {
+        var array = new OSDArray();
+        foreach (var id in ids) array.Add(OSD.FromBinary(id.GetBytes()));
+        return new OSDMap { ["Zipped"] = OSD.FromBinary(Helpers.ZCompressOSD(array)) };
+    }
+
     private async Task FetchOneBatchAsync(
         LibreMetaverse.Simulator sim, List<LibreMetaverse.UUID> ids,
         List<LegacyMaterialData> into, CancellationToken cancellationToken)
     {
+        var uri = sim.Caps?.CapabilityURI("RenderMaterials");
+        if (uri == null) return;
+
         try
         {
-            var materials = await _client.Objects.RequestMaterialsAsync(sim, ids, cancellationToken)
-                .ConfigureAwait(false);
-            foreach (var m in materials) into.Add(ToLegacyMaterialData(m));
+            var request = BuildRenderMaterialsQuery(ids);
+            var (res, data) = await _client.HttpCapsClient
+                .PostAsync(uri, OSDFormat.Xml, request, cancellationToken).ConfigureAwait(false);
+
+            int status = (int)(res?.StatusCode ?? 0);
+            if (data == null || data.Length == 0)
+            {
+                Console.Error.WriteLine($"[LegacyMat] POST {status}: empty body for {ids.Count} ids");
+                return;
+            }
+
+            if (OSDParser.Deserialize(data) is not OSDMap top || !top.ContainsKey("Zipped"))
+            {
+                Console.Error.WriteLine($"[LegacyMat] POST {status}: no Zipped field; body starts: " +
+                    System.Text.Encoding.UTF8.GetString(data, 0, Math.Min(data.Length, 200)));
+                return;
+            }
+
+            if (Helpers.ZDecompressOSD(top["Zipped"].AsBinary()) is not OSDArray mats)
+            {
+                Console.Error.WriteLine($"[LegacyMat] POST {status}: unzipped payload is not an array");
+                return;
+            }
+
+            int before = into.Count;
+            foreach (var entry in mats)
+            {
+                if (entry is not OSDMap em) continue;
+                try { into.Add(ToLegacyMaterialData(new LibreMetaverse.Materials.LegacyMaterial(em))); }
+                catch (Exception ex) { Console.Error.WriteLine($"[LegacyMat] entry parse failed: {ex.Message}"); }
+            }
+            Console.Error.WriteLine($"[LegacyMat] POST {status}: {ids.Count} ids -> {into.Count - before} materials");
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[Materials] request for {ids.Count} legacy materials failed: {ex.Message}");
+            Console.Error.WriteLine($"[LegacyMat] request for {ids.Count} legacy materials failed: {ex.Message}");
         }
     }
 

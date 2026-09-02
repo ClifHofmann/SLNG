@@ -139,6 +139,35 @@ public partial class ObjectRenderer : Node3D
     /// as [LegacyMaterial]'s "one line per distinct material, not per face."</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _pbrMaterialsSeen = new();
 
+    /// <summary>BUG-RENDER-06 follow-up: one line per distinct world-prim albedo texture, reporting
+    /// the full transparency decision for the face(s) using it -- which signal chose the alpha
+    /// mode (a legacy material's <c>DiffuseAlphaMode</c>, a glTF material's <c>alphaMode</c>, a
+    /// translucent per-face tint, or <c>DetectAlpha()</c>'s pixel guess), and the shader
+    /// <c>Kind</c> it landed on. A face that flickers under PURE camera rotation is almost always
+    /// an alpha surface that ended up in the sorted transparent pass (<c>prim_blend</c> writes
+    /// ALPHA without ALPHA_SCISSOR_THRESHOLD, so Godot depth-sorts it per-object against every
+    /// other transparent surface -- unstable as the view angle changes) when it should have been
+    /// alpha-tested (<c>prim_scissor</c> keeps it in the opaque, depth-writing pass; no sort, no
+    /// flicker). This line says which one a given texture got, so the report can be settled
+    /// against a specific id instead of a guess. Always on; deduped per texture id.</summary>
+    // Keyed by "id:decision", not just id -- if the SAME texture is later rebuilt with a DIFFERENT
+    // verdict (e.g. Scissor one build, Blend the next), that second line is exactly the evidence a
+    // flicker hunt needs, so it must not be deduped away.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _faceAlphaLogged = new();
+
+    private static string PrimShaderKindName(Shader? s) =>
+        ReferenceEquals(s, PrimShaderFamily.Blend) ? "Blend"
+        : ReferenceEquals(s, PrimShaderFamily.Scissor) ? "Scissor"
+        : ReferenceEquals(s, PrimShaderFamily.Opaque) ? "Opaque"
+        : "other";
+
+    private void LogFaceAlpha(Guid texId, string decision)
+    {
+        if (texId == Guid.Empty) return;
+        if (_faceAlphaLogged.TryAdd($"{texId:N}:{decision}", 0))
+            GD.Print($"[FaceAlpha] {texId.ToString()[..8]} {decision}");
+    }
+
     private readonly HashSet<Guid> _sculptFallbacksLogged = new();
     private readonly HashSet<Guid> _meshLoadFailuresLogged = new();
     // Keyed by SHAPE, not by object: a failing prim shape is usually a whole build's worth of
@@ -538,6 +567,11 @@ public partial class ObjectRenderer : Node3D
         // meant to be see-through and we are drawing it solid (alpha well below 1). Neither is
         // decidable from a screenshot, and the per-face dump below that would show it is
         // Info-level, i.e. invisible without --diag.
+        // Per face: texture id, per-face colour alpha, and BOTH material ids. The material ids are
+        // the point of this line for a "leaves flicker" report -- if a face the SL build floater
+        // shows as Blinn-Phong (Alpha-Masking) logs mat=none here, the legacy material never
+        // reached the client and the face fell back to DetectAlpha()'s pixel guess (which puts a
+        // soft-alpha foliage texture in the sorted transparent pass -> angle-dependent flicker).
         var faceSummary = new System.Text.StringBuilder();
         if (prim.Faces is { Length: > 0 })
         {
@@ -546,12 +580,16 @@ public partial class ObjectRenderer : Node3D
                 var f = prim.Faces[i];
                 faceSummary.Append(i == 0 ? "" : " ")
                            .Append($"[{i}]{(f.TextureId == Guid.Empty ? "none" : f.TextureId.ToString()[..8])}");
+                if (f.LegacyMaterialId != Guid.Empty) faceSummary.Append($" mat={f.LegacyMaterialId.ToString()[..8]}");
+                if (f.RenderMaterialId != Guid.Empty) faceSummary.Append($" pbr={f.RenderMaterialId.ToString()[..8]}");
                 if (f.Color.W < 0.995f) faceSummary.Append($" a={f.Color.W:0.##}");
             }
         }
         else
         {
             faceSummary.Append($"all={(prim.TextureId == Guid.Empty ? "none" : prim.TextureId.ToString()[..8])}");
+            if (prim.LegacyMaterialId != Guid.Empty) faceSummary.Append($" mat={prim.LegacyMaterialId.ToString()[..8]}");
+            if (prim.RenderMaterialId != Guid.Empty) faceSummary.Append($" pbr={prim.RenderMaterialId.ToString()[..8]}");
             if (prim.ColorTint.W < 0.995f) faceSummary.Append($" a={prim.ColorTint.W:0.##}");
         }
         GD.Print($"[FaceParams]   faces: {faceSummary}");
@@ -1809,6 +1847,10 @@ public partial class ObjectRenderer : Node3D
                         break;
                 }
 
+                LogFaceAlpha(ft.TextureId, legacyAlphaModeResolved
+                    ? $"legacyMat={lm.Id.ToString()[..8]} mode={lm.DiffuseAlphaMode} cutoff={lm.AlphaMaskCutoff} tintA={colorTint.A:0.###} -> {PrimShaderKindName(material.Shader)}"
+                    : $"legacyMat={lm.Id.ToString()[..8]} mode=Default (defers to DetectAlpha) tintA={colorTint.A:0.###}");
+
                 if (lm.NormalMap != Guid.Empty)
                 {
                     used.Add(lm.NormalMap);
@@ -1926,6 +1968,9 @@ public partial class ObjectRenderer : Node3D
                     material.Shader = DoubleSidedTwin(material.Shader);
                 }
 
+                LogFaceAlpha(ft.TextureId != Guid.Empty ? ft.TextureId : pbr.BaseColorTextureId,
+                    $"pbrMat={ft.RenderMaterialId.ToString()[..8]} mode={pbr.AlphaMode} cutoff={pbr.AlphaCutoff:0.###} doubleSided={pbr.DoubleSided} tintA={colorTint.A:0.###} -> {PrimShaderKindName(material.Shader)}{(pbr.DoubleSided ? " (2-sided twin)" : "")}");
+
                 var tasks = new List<System.Threading.Tasks.Task>();
                 if (pbr.BaseColorTextureId != Guid.Empty)
                 {
@@ -2025,7 +2070,7 @@ public partial class ObjectRenderer : Node3D
                         // DEFAULT) has already decided this face's transparency — don't let the
                         // DetectAlpha() pixel guess second-guess it.
                         if (!legacyAlphaModeResolved)
-                            ApplyAlphaCutout(material, tex, tintIsTranslucent);
+                            ApplyAlphaCutout(material, tex, tintIsTranslucent, ft.TextureId);
                     }, label: "prim.legacy_default_face");
                 }
                 else
@@ -2074,7 +2119,7 @@ public partial class ObjectRenderer : Node3D
     /// It is exactly the old <c>material.Transparency == Alpha</c> test — in this (non-PBR)
     /// path the per-face color tint is the only thing that can have selected the blend variant
     /// before now.</summary>
-    private static void ApplyAlphaCutout(ShaderMaterial material, ImageTexture tex, bool tintIsTranslucent)
+    private void ApplyAlphaCutout(ShaderMaterial material, ImageTexture tex, bool tintIsTranslucent, Guid texId = default)
     {
         var img = tex.GetImage();
         if (img == null) return;
@@ -2087,6 +2132,7 @@ public partial class ObjectRenderer : Node3D
         // case returns here.
         if (alphaMode == Image.AlphaMode.None && !tintIsTranslucent)
         {
+            LogFaceAlpha(texId, $"noMat detectAlpha=None img={img.GetWidth()}x{img.GetHeight()} -> Opaque (kept)");
             return;
         }
 
@@ -2114,6 +2160,10 @@ public partial class ObjectRenderer : Node3D
         // exactly like opaque ones (lldrawpoolalpha.cpp only lifts culling for particles and
         // explicitly-double-sided GLTF materials), so an alpha face is not a reason to render
         // an object's interior surfaces.
+
+        LogFaceAlpha(texId, $"noMat detectAlpha={alphaMode} img={img.GetWidth()}x{img.GetHeight()} " +
+            $"tintTranslucent={tintIsTranslucent} -> {PrimShaderKindName(material.Shader)}" +
+            (ReferenceEquals(material.Shader, PrimShaderFamily.Blend) ? " (SORTED transparent pass)" : ""));
     }
 
     // FEAT-PERF-02: thin wrapper -- the real fetch/decode/Image/mipmap/upload work (and its

@@ -35,6 +35,42 @@ still built from the parsed grid name, not read from the login response's `agent
 
 ---
 
+# 2026-09-02 (cont.) — BUG-RENDER-06: the conifer canopy flicker, actual root cause
+
+`v0.20.15-alpha`, on `main`. sln + `app/` build clean, **570 tests** (Core 195, Assets 79, Net 296),
+`dotnet format` clean, shader globals 27, `--selftest` 29/29.
+
+The double-sided-material fix (`v0.20.7`) was real but not why the reported tree flickered. New
+diagnostics settled it live on Agni:
+
+- `[FaceAlpha]` (always on) — one line per world-prim face: which signal chose the alpha mode
+  (legacy material / glTF material / tint / `DetectAlpha()` guess) and the shader Kind.
+- `[FaceParams]` faces line now prints `mat=<id>` / `pbr=<id>` per face.
+- `[LegacyMat]` on the RenderMaterials fetch: `requested N -> resolved M (cap present/MISSING)`.
+
+The tree's 45 leaf faces all carry legacy material `6ad7601a`, but **every `[LegacyMat]` line was
+`resolved 0`, cap present, no error** — region-wide, not one Blinn-Phong material resolved. The leaf
+diffuse then went `DetectAlpha()=Blend` → `prim_blend` → the sorted transparent pass, whose
+per-object centroid sort flips as the camera orbits → flicker. Firestorm uses the real material
+(Alpha-Masking) → opaque/tested pass → stable.
+
+**Root cause:** LibreMetaverse 3.1.3's `RequestMaterialsAsync` serialises each id in the
+RenderMaterials query as an LLSD `uuid` element. The real viewer sends **binary(16)**
+(`llmaterialmgr.cpp` `processGetQueue` → `LLMaterialID::asLLSD()`). SL's sim reads the entries with
+`.asBinary()` → nothing for a `uuid` → zero matches, empty result, no error. Worked on OpenSim
+(lenient) the whole time.
+
+**Fix:** `GridSession.BuildRenderMaterialsQuery` builds the zipped query itself with
+`OSD.FromBinary(id.GetBytes())` per id and POSTs directly via `HttpCapsClient` (same pattern as
+`BUG-NET-07`). Response shape unchanged — LMV's `LegacyMaterial(OSDMap)` still parses each entry.
+`RenderMaterialsQueryTests` (3) pin binary(16), not `uuid`. **Confirmed in-world 2026-09-02** —
+user, orbiting the same conifer: *"yay es blinkt nicht mehr!!!"*. Spec:
+`docs/specs/BUG-RENDER-06-double-sided-material-culling.md` (new section at the bottom). Latent
+follow-up noted there: material-free soft-alpha faces still land in the sorted transparent pass, so
+a purely textured (no-material) overlapping-alpha object could still sort-flicker.
+
+---
+
 # Six ways to bake nothing, and the test that could not see any of them
 
 **State:** `v0.19.3-alpha`, **on `main`**, 2026-09-01. Solution and `app/` both build clean,
