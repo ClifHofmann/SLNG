@@ -269,7 +269,19 @@ public sealed class WorldSimulation : IDisposable
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim == null)
         {
-            prim = new PrimitiveComponent(e.Scale, e.ProfileCurve, e.IsMesh, e.MeshId, e.TextureId, e.RenderMaterialId, e.ColorTint, e.RepeatU, e.RepeatV, e.OffsetU, e.OffsetV, e.TextureRotation, e.Shape, e.IsSculpt, e.SculptId, e.SculptType, e.Faces, e.TexGen, e.Particles, e.Fullbright);
+            // BUG-RENDER-07: legacyMaterialId was missing from this constructor call entirely (the
+            // constructor itself had no parameter for it) -- every object's LegacyMaterialId stayed
+            // Guid.Empty from the moment it was first created, only ever picking up the real value
+            // if/when a LATER update happened to touch the same entity again (the `else` branch
+            // below, which DOES set prim.LegacyMaterialId). A static object that loads once and is
+            // never incidentally re-updated keeps a legacy Blinn-Phong material (alpha mask cutoff,
+            // normal/specular maps) invisible to the renderer forever, silently falling back to
+            // ApplyAlphaCutout's DetectAlpha() pixel guess and a hardcoded 0.5 threshold instead of
+            // the creator's real declared material -- found chasing a tree-canopy flicker report
+            // where Firestorm's own material inspector showed a real Blinn-Phong material
+            // (Alpha-Masking, cutoff 100, a normal map) that never once appeared in this app's own
+            // [LegacyMaterial] diagnostic log for that exact object.
+            prim = new PrimitiveComponent(e.Scale, e.ProfileCurve, e.IsMesh, e.MeshId, e.TextureId, e.RenderMaterialId, e.ColorTint, e.RepeatU, e.RepeatV, e.OffsetU, e.OffsetV, e.TextureRotation, e.Shape, e.IsSculpt, e.SculptId, e.SculptType, e.Faces, e.TexGen, e.Particles, e.Fullbright, e.LegacyMaterialId);
             entity.SetComponent(prim);
         }
         else

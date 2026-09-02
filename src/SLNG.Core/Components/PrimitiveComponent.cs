@@ -128,7 +128,7 @@ public class PrimitiveComponent : IComponent
     /// updates for a confirmation that the defaults are real.</summary>
     public bool HasPhysicsProperties { get; set; }
 
-    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, float repeatU = 1.0f, float repeatV = 1.0f, float offsetU = 0.0f, float offsetV = 0.0f, float rotation = 0.0f, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0, FaceTexture[]? faces = null, byte texGen = FaceTexture.TexGenDefault, ParticleSystemData? particles = null, bool fullbright = false)
+    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, float repeatU = 1.0f, float repeatV = 1.0f, float offsetU = 0.0f, float offsetV = 0.0f, float rotation = 0.0f, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0, FaceTexture[]? faces = null, byte texGen = FaceTexture.TexGenDefault, ParticleSystemData? particles = null, bool fullbright = false, Guid legacyMaterialId = default)
     {
         Scale = scale;
         ProfileCurve = profileCurve;
@@ -136,6 +136,7 @@ public class PrimitiveComponent : IComponent
         MeshId = meshId;
         TextureId = textureId;
         RenderMaterialId = renderMaterialId;
+        LegacyMaterialId = legacyMaterialId;
         ColorTint = colorTint;
         RepeatU = repeatU;
         RepeatV = repeatV;

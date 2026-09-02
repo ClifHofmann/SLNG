@@ -647,6 +647,33 @@ visibly missing or popping — supports the "stable in Firestorm" answer above. 
 (inline chat images, not files on disk) — if this needs re-confirming later, ask the user to
 re-share or take fresh ones once the LibreMetaverse mesh-decode lead is actually being worked.
 
+**User then said "mach mal einen commit und merge zum aktuellen stand das hat ja nix mehr mit dem
+readyness zu tun"** — committed everything from BUG-NET-07 through BUG-UI-06 (ten fixes) in one
+commit, fast-forward merged `feature/FEAT-SL-01-second-life-readiness` into `main` (clean, no
+merge commit needed — main had nothing the feature branch didn't already have plus one prior
+commit). Not pushed to `origin/main` yet — asked the user first. Work continues directly on `main`
+from here per the user's own framing (no longer scoped to FEAT-SL-01).
+
+**`BUG-RENDER-07` — a real, separate, structural bug found while chasing BUG-RENDER-06's
+flicker.** User sent a Firestorm Texture-tab screenshot of the SAME conifer: a genuine
+**Blinn-Phong** material (Alpha-Masking, cutoff 100, a normal map) — directly contradicting the
+app's own `[LegacyMaterial]` log, which had shown zero lines for that object across every test.
+Traced it: `PrimitiveComponent`'s constructor never had a `legacyMaterialId` parameter at all — an
+object's FIRST load (`WorldSimulation.ApplyObjectUpdate`'s "new entity" branch) built the component
+with no way to receive the incoming event's legacy material id, so it stayed `Guid.Empty` forever;
+only a SECOND OR LATER update to the same entity ever set it correctly (a separate, already-correct
+line in the `else` branch). A static object loaded once and never incidentally re-sent by the sim
+afterward silently lost its whole legacy material — real alpha cutoff, normal map, specular map —
+for the entire session, falling back to a pixel-content alpha guess with a hardcoded 0.5 threshold.
+Fix: added the missing constructor parameter, wired through at the one call site, audited every
+other field in that branch against the constructor (nothing else was missing). `v0.20.11-alpha`,
+563/563 tests unchanged. **Not yet re-verified in-world**, and — important to not overclaim —
+**this probably does NOT fix BUG-RENDER-06's flicker by itself**: legacy materials have no
+double-sided concept either, per the same reference-viewer rule already verified for
+BUG-RENDER-06. Still a real, independently-worth-shipping bug — likely affects any legacy-
+materialed object anywhere in the world that loads once and sits still.
+[Spec](file:///E:/Git/SLNG/docs/specs/BUG-RENDER-07-legacy-material-id-lost-on-create.md).
+
 ## 7. Also still open
 
 - **The avatar stands too low**, feet sunk into the ground. Predates this session. Concrete
