@@ -15,6 +15,11 @@ public partial class AvatarRenderer : Node3D
     {
         public Node3D Root { get; }
         public Skeleton3D? Skeleton { get; set; }
+        // BUG-AVATAR-02 follow-up: the id of the avatar this visual belongs to. Part of the SL
+        // bake-texture CDN URL path (LLVOAvatar::getImageURL uses getID() -- the DISPLAYED avatar,
+        // not the viewer), so every BoM/system-bake fetch has to carry it or other people's mesh
+        // bodies 403 and render untextured. Set from AvatarComponent.AgentId in CreateVisual/UpdateVisual.
+        public Guid AgentId { get; set; }
         public Dictionary<string, MeshInstance3D> Parts { get; } = new();
         // Base (un-morphed) body-part data, keyed by part name. Kept so the body meshes can be
         // re-morphed and rebuilt whenever the avatar's shape (VisualParams) changes.
@@ -290,7 +295,7 @@ public partial class AvatarRenderer : Node3D
         if (entity == null || entity.GetComponent<AvatarComponent>() == null) return;
 
         var avatar = entity.GetComponent<AvatarComponent>()!;
-        var visual = new AvatarVisual();
+        var visual = new AvatarVisual { AgentId = avatar.AgentId };
 
         // Add a collision capsule so raycasts can identify the avatar
         var staticBody = new Godot.StaticBody3D 
@@ -482,6 +487,9 @@ public partial class AvatarRenderer : Node3D
         if (entity == null || entity.GetComponent<AvatarComponent>() == null) return;
 
         var avatar = entity.GetComponent<AvatarComponent>()!;
+        // Keep AgentId current -- CreateVisual sets it too, but AvatarComponent can be added before
+        // its AgentId is populated; the bake-texture CDN URL depends on this being right.
+        if (visual.AgentId == Guid.Empty) visual.AgentId = avatar.AgentId;
 
         if (visual.NameTag is Godot.PanelContainer panel)
         {
@@ -895,8 +903,10 @@ public partial class AvatarRenderer : Node3D
         // until AvatarRenderer gets proper AddRef/ReleaseRef bookkeeping like ObjectRenderer's.
         // bakeChannel: bakeIndex -- BUG-AVATAR-02: a bake texture needs SL's dedicated
         // bake-texture host, not the generic per-face fetch every other texture uses. See
-        // GridSession.FetchBakeTextureDataAsync's doc comment for why.
-        var godotTexture = await _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true, bakeChannel: bakeIndex);
+        // GridSession.FetchBakeTextureDataAsync's doc comment for why. bakeAgentId: this visual's
+        // own avatar -- the CDN URL keys on the WEARING avatar, so a remote avatar's system bake
+        // 403s if we send our own id (BUG-AVATAR-02 follow-up, found live on Agni 2026-09-02).
+        var godotTexture = await _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true, bakeChannel: bakeIndex, bakeAgentId: visual.AgentId);
 
         if (godotTexture == null)
         {
@@ -1496,8 +1506,11 @@ public partial class AvatarRenderer : Node3D
         // BUG-AVATAR-02: a BoM face's texId IS a bake channel's texture (resolved just above from
         // the magic id) -- fetch it through SL's dedicated bake-texture host, same as the system
         // mesh path (LoadAndApplyTextureAsync). See GridSession.FetchBakeTextureDataAsync's doc
-        // comment for why the generic per-face path 403s every one of these.
-        var built = await _gpuCache.GetOrUploadTextureAsync(texId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: rejectDegraded, bakeChannel: wasBom ? bomIndex : null).ConfigureAwait(false);
+        // comment for why the generic per-face path 403s every one of these. bakeAgentId is the
+        // avatar wearing the mesh (avatarVisual) -- the CDN URL path keys on it, so an id other
+        // than the wearer's 403s (BUG-AVATAR-02 follow-up: every other mesh body was untextured
+        // because we always sent our own id, found live on Agni 2026-09-02).
+        var built = await _gpuCache.GetOrUploadTextureAsync(texId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: rejectDegraded, bakeChannel: wasBom ? bomIndex : null, bakeAgentId: wasBom && avatarVisual != null ? avatarVisual.AgentId : default).ConfigureAwait(false);
         if (built == null)
         {
             // Not silent: an untextured face renders as flat AlbedoColor (usually white), which

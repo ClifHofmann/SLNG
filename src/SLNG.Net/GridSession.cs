@@ -6342,18 +6342,36 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// else -- OpenSim has no such host); returns a failed result immediately otherwise so the
     /// caller can fall back to the normal path without paying for a fetch that cannot succeed.
     /// Always a full fetch (no Range/desiredDiscard) -- the reference viewer does the same for
-    /// baked textures, to reduce interim blurring while the bake streams in.</summary>
-    public async Task<TextureFetchResult> FetchBakeTextureDataAsync(Guid textureId, int bakeChannel, CancellationToken ct = default)
+    /// baked textures, to reduce interim blurring while the bake streams in.
+    ///
+    /// <paramref name="agentId"/> is the id of the avatar WEARING this bake, and it is part of the
+    /// URL path -- the reference viewer builds it from <c>LLVOAvatar::getID()</c>
+    /// (<c>llvoavatar.cpp</c> <c>getImageURL</c>: <c>url = ... + "texture/" + getID().asString() +
+    /// "/" + mDefaultImageName + "/" + uuid.asString()</c>), which is the DISPLAYED avatar, not the
+    /// viewing agent. Passing our own id for someone else's bake gets a flat 403 from the CDN and
+    /// then a second 403 from the generic fallback, leaving every other mesh-body avatar untextured
+    /// (found live on Agni 2026-09-02: only the local avatar's own bakes ever resolved). Empty
+    /// falls back to our own id so a caller that only ever deals with the local avatar can omit
+    /// it.</summary>
+    public async Task<TextureFetchResult> FetchBakeTextureDataAsync(Guid textureId, int bakeChannel, Guid agentId = default, CancellationToken ct = default)
     {
         if (_lindenGridShortName == null) return new TextureFetchResult { Data = null, IsReliable = false };
 
         var slot = SLNG.Core.BakeChannelNames.NameFor(bakeChannel);
         if (slot == null) return new TextureFetchResult { Data = null, IsReliable = false };
 
-        var url = new Uri($"http://bake-texture.glb.{_lindenGridShortName}.lindenlab.com/texture/{_client.Self.AgentID}/{slot}/{textureId}");
+        var owner = agentId == Guid.Empty ? _client.Self.AgentID.Guid : agentId;
+        var url = BuildBakeTextureUrl(_lindenGridShortName, owner, slot, textureId);
         var bytes = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard: 0, capUri: null, maxRetries: 2, fetchUrl: url).ConfigureAwait(false);
         return new TextureFetchResult { Data = bytes, IsReliable = bytes != null };
     }
+
+    /// <summary>Builds the dedicated bake-texture CDN URL -- pulled out as a pure function so a
+    /// test can pin the shape (and specifically that the OWNING avatar's id, not the viewer's,
+    /// lands in the path). Mirrors <c>LLVOAvatar::getImageURL</c>; see
+    /// <see cref="FetchBakeTextureDataAsync"/>.</summary>
+    internal static Uri BuildBakeTextureUrl(string gridShortName, Guid agentId, string slot, Guid textureId) =>
+        new($"http://bake-texture.glb.{gridShortName}.lindenlab.com/texture/{agentId}/{slot}/{textureId}");
 
     public async Task<TextureFetchResult> FetchTextureDataAsync(Guid textureId, int desiredDiscard = 0, bool skipHttp = false)
     {

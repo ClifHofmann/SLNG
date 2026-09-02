@@ -44,8 +44,9 @@ on OpenSim (where this whole distinction doesn't exist) until now, on a real Lin
 
 ## Acceptance Criteria
 
-- [x] `GridSession.FetchBakeTextureDataAsync(Guid textureId, int bakeChannel, ...)` builds and
-      fetches `http://bake-texture.glb.{grid}.lindenlab.com/texture/{agentId}/{slot}/{textureId}`.
+- [x] `GridSession.FetchBakeTextureDataAsync(Guid textureId, int bakeChannel, Guid agentId, ...)`
+      builds and fetches `http://bake-texture.glb.{grid}.lindenlab.com/texture/{agentId}/{slot}/{textureId}`,
+      where `agentId` is the avatar **wearing** the bake (v0.20.12-alpha — was hardcoded to self).
 - [x] The eleven bake-channel slot names are read from the reference viewer's own source table,
       not inferred from the one name ("eyes") actually observed.
 - [x] Wired into both places a bake channel's texture is actually fetched for rendering: the
@@ -61,12 +62,13 @@ on OpenSim (where this whole distinction doesn't exist) until now, on a real Lin
 | File | Change |
 |---|---|
 | `src/SLNG.Core/BakeChannelNames.cs` | new — the 11-entry channel→slot-name table |
-| `src/SLNG.Net/GridSession.cs` | `_lindenGridShortName` field + `ParseLindenGridShortName`; `FetchBakeTextureDataAsync`; `FetchTextureViaHttpRangeAsync` gained an optional `fetchUrl` override so the bake fetch can reuse its validation/retry logic without a `{cap}?texture_id=` shape |
-| `src/SLNG.Assets/AssetService.cs` | `GetBakeTextureAsync(Guid textureId, int bakeChannel, ...)` — a small, separate method (not threaded through the generic fetch/cache/dedup pipeline; see its own doc comment for why) |
-| `app/scripts/GpuCache.cs` | `GetOrUploadTextureAsync`/`FetchAndUploadTextureAsync` gained an optional `bakeChannel` parameter |
-| `app/scripts/AvatarRenderer.cs` | Both bake-texture call sites now pass their known channel index |
+| `src/SLNG.Net/GridSession.cs` | `_lindenGridShortName` field + `ParseLindenGridShortName`; `FetchBakeTextureDataAsync` (+ `Guid agentId` param, v0.20.12); `BuildBakeTextureUrl` pure helper (v0.20.12); `FetchTextureViaHttpRangeAsync` gained an optional `fetchUrl` override so the bake fetch can reuse its validation/retry logic without a `{cap}?texture_id=` shape |
+| `src/SLNG.Assets/AssetService.cs` | `GetBakeTextureAsync(Guid textureId, int bakeChannel, float priority, Guid bakeAgentId)` — a small, separate method (not threaded through the generic fetch/cache/dedup pipeline; see its own doc comment for why) |
+| `app/scripts/GpuCache.cs` | `GetOrUploadTextureAsync`/`FetchAndUploadTextureAsync` gained optional `bakeChannel` + `bakeAgentId` parameters |
+| `app/scripts/AvatarRenderer.cs` | `AvatarVisual.AgentId` (set from `AvatarComponent.AgentId`); both bake-texture call sites now pass their channel index **and** the wearing avatar's id |
 | `tests/SLNG.Core.Tests/BakeChannelNamesTests.cs` | new — 11 tests |
 | `tests/SLNG.Net.Tests/LindenGridShortNameTests.cs` | new — 5 tests |
+| `tests/SLNG.Net.Tests/BakeTextureUrlTests.cs` | new (v0.20.12) — 3 tests: wearer's id (not viewer's) in the path, grid name in the host, two wearers → distinct URLs |
 
 ### Design notes
 
@@ -98,16 +100,50 @@ client and a real Linden grid, which `tests-rules` reserves local OpenSim for, a
 none of this infrastructure to test against at all. The Aditi/Agni session that found this bug is
 what will confirm the fix.
 
+## Follow-up (v0.20.12-alpha) — only the LOCAL avatar's bakes ever resolved
+
+Tried in-world on Agni 2026-09-02 (`v0.20.11-alpha`). The self avatar's own BoM head/body
+textured correctly — the dedicated-CDN path works — but the log was flooded with
+`[FaceTex] ... fetch/decode returned null` (214× `8a2f74fd`, 135× `27d8904e`, 78× `333778c6`,
+75× `2cae1bdb`, …), and **not one of those ids was a self bake channel** (`[SelfBake]` listed
+`8=784033ee 9=9965f08e 10=e1baf1d1 …`, none of which failed). Every failing id belonged to
+*another* avatar's mesh body/head.
+
+**Root cause:** `FetchBakeTextureDataAsync` hardcoded `_client.Self.AgentID` in the URL path.
+The reference viewer builds it from the DISPLAYED avatar's id, not the viewer's —
+`LLVOAvatar::getImageURL` (`indra/newview/llvoavatar.cpp`, `getImageURL`):
+
+```cpp
+url = appearance_service_url + "texture/" + getID().asString() + "/"
+      + texture_entry->mDefaultImageName + "/" + uuid.asString();
+```
+
+`getID()` is the `LLVOAvatar` instance's own id. Requesting someone else's bake at
+`…/texture/<our-id>/<slot>/<their-texture>` gets a 403 from the CDN, then a second 403 from the
+generic fallback, so **every other person wearing a Bakes-on-Mesh body rendered untextured
+(white)**, and the failed fetches retried in a loop (no negative cache on the bake path).
+
+**Fix:** thread the owning avatar's id from the render layer to the URL builder —
+`AvatarVisual.AgentId` (set from `AvatarComponent.AgentId`) →
+`AvatarRenderer.LoadAndApplyTextureAsync` / `BuildFaceMaterialAsync` →
+`GpuCache.GetOrUploadTextureAsync` (`bakeAgentId`) → `AssetService.GetBakeTextureAsync` →
+`GridSession.FetchBakeTextureDataAsync(…, Guid agentId = default, …)`, which falls back to
+`_client.Self.AgentID` when the caller passes `Guid.Empty`. URL construction pulled out into
+`GridSession.BuildBakeTextureUrl` (pure, `internal static`) with `BakeTextureUrlTests` pinning
+that the *wearing* avatar's id lands in the path. `AppVersion` → `v0.20.12-alpha`.
+**Not yet re-verified in-world.**
+
 ## Still open
 
 - **Not yet re-verified in-world.** This is the most consequential fix from today's session and
   has not yet been tried against a real avatar.
-- **The exact discovery mechanism for the `bake-texture` host is assumed, not confirmed from
-  viewer source.** The reference viewer's own URL-construction call site could not be located via
-  GitHub code search in the time available; the pattern used here (derived from the grid's login
-  host) is inferred from the two captured hostnames sharing the same `.glb.{grid}.lindenlab.com`
-  suffix, not read directly from a viewer source line that builds it. If a grid ever uses a
-  differently-shaped bake host, this will need revisiting.
+- **The `appearance_service_url` base is still constructed, not read from the login response.**
+  The real viewer takes it from `LLAppearanceMgr::getAppearanceServiceURL()` (the login
+  response's `agent_appearance_service`); SLNG builds `http://bake-texture.glb.{grid}.lindenlab.com/`
+  from the parsed grid short name. That host is demonstrably correct for self on Agni, but a
+  grid that returns a differently-shaped `agent_appearance_service` would still need the real
+  field. `LLVOAvatar::getImageURL`'s `texture/<id>/<slot>/<uuid>` path shape is now confirmed
+  from viewer source (was previously only inferred from captured hostnames).
 - **A related process failure, not a code bug**, is documented separately in `HANDOVER.md`: this
   session's earlier `BUG-AVATAR-01`, `BUG-NET-04`, and the TPV §1.a/§2.b guards were silently lost
   from the working tree between being tested and a later commit made from what turned out to be a

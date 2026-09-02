@@ -5,6 +5,36 @@
 
 ---
 
+# 2026-09-02 (cont.) — other people's mesh bodies rendered white on Agni
+
+`v0.20.12-alpha`, on `main`. Solution + `app/` build clean, **567 tests green**
+(Core 195, Assets 79, Net 293), `dotnet format` clean, shader globals 27, `--selftest` 29/29.
+
+**Symptom:** the 18:48 `client-output.log` from an Agni session was flooded with
+`[FaceTex] … fetch/decode returned null` — 214× `8a2f74fd`, 135× `27d8904e`, 78× `333778c6`,
+75× `2cae1bdb`, plus `warn: Failed to fetch texture … over HTTP: Forbidden`. **None of those
+ids were self bake channels** (`[SelfBake]` = `8=784033ee 9=9965f08e 10=e1baf1d1 …`, all fine).
+The self avatar textured correctly; every *other* mesh-body avatar was white.
+
+**Root cause:** `GridSession.FetchBakeTextureDataAsync` hardcoded `_client.Self.AgentID` in the
+bake-texture CDN URL. Confirmed against viewer source this time (`llvoavatar.cpp` `getImageURL`):
+`url = appearance_service_url + "texture/" + getID().asString() + "/" + mDefaultImageName + "/"
++ uuid.asString()` — `getID()` is the **displayed** `LLVOAvatar`, not `gAgentID`. Asking
+`…/texture/<our-id>/<slot>/<their-texture>` → 403, then the generic fallback → 403, face left
+untextured, and it retried in a loop (bake path has no negative cache).
+
+**Fix:** thread the wearing avatar's id down — `AvatarVisual.AgentId` (from
+`AvatarComponent.AgentId`) → `LoadAndApplyTextureAsync` / `BuildFaceMaterialAsync` →
+`GpuCache.GetOrUploadTextureAsync(bakeAgentId:)` → `AssetService.GetBakeTextureAsync` →
+`FetchBakeTextureDataAsync(…, Guid agentId = default, …)` (empty → falls back to self). URL
+construction extracted to `GridSession.BuildBakeTextureUrl` (pure, `internal static`);
+`BakeTextureUrlTests` (3) pin that the wearer's id, not the viewer's, is in the path.
+[Spec](file:///E:/Git/SLNG/docs/specs/BUG-AVATAR-02-bake-texture-403.md) has a "Follow-up" section.
+**Not yet re-verified in-world.** Open on the same spec: the `appearance_service_url` base is
+still built from the parsed grid name, not read from the login response's `agent_appearance_service`.
+
+---
+
 # Six ways to bake nothing, and the test that could not see any of them
 
 **State:** `v0.19.3-alpha`, **on `main`**, 2026-09-01. Solution and `app/` both build clean,

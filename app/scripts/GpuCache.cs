@@ -204,7 +204,8 @@ public class GpuCache
         float screenPixelArea = 0f,
         float priority = 0f,
         bool rejectDegraded = false,
-        int? bakeChannel = null)
+        int? bakeChannel = null,
+        Guid bakeAgentId = default)
     {
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
 
@@ -234,7 +235,7 @@ public class GpuCache
         if (assetService == null) return Task.FromResult<ImageTexture?>(null);
 
         var lazy = _inflightTextureUploads.GetOrAdd(textureId, id => new Lazy<Task<ImageTexture?>>(
-            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, screenPixelArea, priority, rejectDegraded, bakeChannel),
+            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, screenPixelArea, priority, rejectDegraded, bakeChannel, bakeAgentId),
             LazyThreadSafetyMode.ExecutionAndPublication));
         return lazy.Value;
     }
@@ -332,7 +333,7 @@ public class GpuCache
     }
 
     private async Task<ImageTexture?> FetchAndUploadTextureAsync(
-        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, float screenPixelArea, float priority, bool rejectDegraded, int? bakeChannel = null)
+        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, float screenPixelArea, float priority, bool rejectDegraded, int? bakeChannel = null, Guid bakeAgentId = default)
     {
         try
         {
@@ -346,7 +347,7 @@ public class GpuCache
             // capture of the same texture id succeeding from a different host entirely. See
             // GridSession.FetchBakeTextureDataAsync's doc comment for the full story.
             var textureData = bakeChannel.HasValue
-                ? await assetService.GetBakeTextureAsync(textureId, bakeChannel.Value, priority).ConfigureAwait(false)
+                ? await assetService.GetBakeTextureAsync(textureId, bakeChannel.Value, priority, bakeAgentId).ConfigureAwait(false)
                 : await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded).ConfigureAwait(false);
             if (textureData == null) return null;
 

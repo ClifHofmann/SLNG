@@ -572,15 +572,19 @@ public class AssetService
     /// Falls back to <see cref="GetTextureAsync"/> when the bake-specific fetch returns nothing --
     /// off a Linden grid that's immediate (no network cost, <c>FetchBakeTextureDataAsync</c> short-
     /// circuits), and on a Linden grid it's a reasonable second attempt rather than giving up
-    /// outright.</summary>
-    public async Task<TextureData?> GetBakeTextureAsync(Guid textureId, int bakeChannel, float priority = 0f)
+    /// outright.
+    ///
+    /// <paramref name="bakeAgentId"/> is the id of the avatar wearing this bake -- it is part of
+    /// the CDN URL path and must be the DISPLAYED avatar, not the local agent (see
+    /// <see cref="GridSession.FetchBakeTextureDataAsync"/>).</summary>
+    public async Task<TextureData?> GetBakeTextureAsync(Guid textureId, int bakeChannel, float priority = 0f, Guid bakeAgentId = default)
     {
         if (_memCache.TryGetValue(textureId, out TextureData? cached))
         {
             return cached;
         }
 
-        var bakeResult = await _session.FetchBakeTextureDataAsync(textureId, bakeChannel).ConfigureAwait(false);
+        var bakeResult = await _session.FetchBakeTextureDataAsync(textureId, bakeChannel, bakeAgentId).ConfigureAwait(false);
         if (bakeResult.Data is { Length: > 0 } bytes)
         {
             var decoded = await Task.Run(() => DecodeTexture(bytes, isSculpt: false)).ConfigureAwait(false);
