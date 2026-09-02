@@ -4867,7 +4867,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         try { cacheAttachIds = _client.Appearance.GetAttachmentsByItemId().Keys.Select(k => k.Guid).ToHashSet(); }
         catch { cacheAttachIds = new HashSet<Guid>(); }
 
-        int dead = 0, trashedTarget = 0, unworn = 0;
+        int dead = 0, trashedTarget = 0, unworn = 0, duplicate = 0;
+
+        // A Current Outfit folder holds ONE link per worn item. More than one is corruption, and it
+        // is not cosmetic: a wearable linked twice is worn twice, drawn twice, and the copy without
+        // an ordering token sorts below everything that has one -- so a second copy of an opaque
+        // skin quietly reappears underneath the whole stack. Measured live 2026-09-01: 20 links for
+        // 10 wearables. The link carrying a valid ordering token is the one to keep, since that is
+        // what the layer order is built from.
+        var seenTargets = new Dictionary<LibreMetaverse.UUID, LibreMetaverse.UUID>();
         int links = 0, wearableSkipped = 0, wornSkipped = 0, uncachedSkipped = 0;
 
         bool Trash(LibreMetaverse.UUID linkKey)
@@ -4904,6 +4912,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
             var target = targetNode?.Data as LibreMetaverse.InventoryItem;
             if (target == null) { uncachedSkipped++; continue; }
+
+            if (seenTargets.TryGetValue(targetUuid, out var keptLink))
+            {
+                // Keep whichever of the two carries a usable ordering token.
+                var wearType = target is LibreMetaverse.InventoryWearable dupWearable
+                    ? (int)dupWearable.WearableType : -1;
+                bool thisTokened = wearType >= 0 && WearableLayerOrder.IsValidOrderString(link.Description, wearType);
+                bool keptTokened = wearType >= 0
+                    && store?.GetNodeOrDefault(keptLink)?.Data is LibreMetaverse.InventoryItem k
+                    && WearableLayerOrder.IsValidOrderString(k.Description, wearType);
+
+                var drop = thisTokened && !keptTokened ? keptLink : link.UUID;
+                if (drop == keptLink) seenTargets[targetUuid] = link.UUID;
+                if (Trash(drop)) duplicate++;
+                continue;
+            }
+            seenTargets[targetUuid] = link.UUID;
             if (target.AssetType != LibreMetaverse.AssetType.Object) { wearableSkipped++; continue; }
             if (wornAttachItemIds.Contains(targetUuid.Guid)) { wornSkipped++; continue; }
 
@@ -4912,7 +4937,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         Console.Error.WriteLine(
             $"[OutfitCleanup] links={links} scene-worn={wornAttachItemIds.Count} cache-worn={cacheAttachIds.Count} " +
-            $"| trashed dead={dead} target-in-trash={trashedTarget} unworn-attachment={unworn} " +
+            $"| trashed dead={dead} target-in-trash={trashedTarget} unworn-attachment={unworn} duplicate={duplicate} " +
             $"| kept worn={wornSkipped} clothing/bodypart={wearableSkipped} uncached={uncachedSkipped}");
 
         return new OutfitCleanupResult(dead, trashedTarget, unworn);
