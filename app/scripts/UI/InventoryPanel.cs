@@ -959,12 +959,17 @@ public partial class InventoryPanel : SLNGWindow
                         }
                     }
 
-                    _contextMenu.SetItemDisabled(0, isWorn); // Wear / Attach
-                    _contextMenu.SetItemDisabled(1, !canCopy); // Copy
-                    _contextMenu.SetItemDisabled(2, !canModify); // Edit
-                    _contextMenu.SetItemDisabled(4, false); // Delete
-                    _contextMenu.SetItemDisabled(5, !isLandmark); // Teleport
-                    _contextMenu.SetItemDisabled(6, !isWorn); // Detach
+                    // SetItemDisabled takes an INDEX, not an item id -- and this menu's ids
+                    // (0,1,2,4,5,6) stop matching their indices (0..5) at "Delete". Passing the id
+                    // straight through disabled the wrong rows from "Delete" on and ran off the
+                    // end for "Detach" (id 6, only 6 items) -> "Index 6 is out of bounds" and a
+                    // permanently-greyed Detach. Resolve id -> index.
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(0), isWorn); // Wear / Attach
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(1), !canCopy); // Copy
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(2), !canModify); // Edit
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(4), false); // Delete
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(5), !isLandmark); // Teleport
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(6), !isWorn); // Detach
 
                     _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
                     _contextMenu.Popup();

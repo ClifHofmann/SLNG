@@ -23,9 +23,34 @@
 `app/scripts/UI/InventoryPanel.cs` (the tabbed panel: "Inventar" / "Angezogen" / "Outfits"),
 against `GridSession`'s inventory + worn-item API.
 
+## Fixed so far
+
+### The right-click context menu crashed and permanently greyed "Detach" (`v0.20.32-alpha`)
+`OnTreeGuiInput` called `_contextMenu.SetItemDisabled(<id>, ...)` — but `SetItemDisabled` takes
+an **index**, and this menu's ids (`0,1,2,4,5,6`) stop matching their indices (`0..5`) at
+"Delete". So `SetItemDisabled(5, !isLandmark)` disabled index 5 = **"Detach"** (always, for any
+non-landmark), and `SetItemDisabled(6, ...)` ran off the end of a 6-item menu →
+`ERROR: Index p_idx = 6 is out of bounds`. Now resolves id → index via
+`_contextMenu.GetItemIndex(id)`. This is (at least part of) why "Ablegen" did nothing from the
+"Inventar" tree — the menu entry was disabled.
+
 ## Leads (not yet verified — starting points for the fix)
 
-### 2 — detach from the Worn tab (most likely a real bug)
+### 2 — detach from the Worn tab, and the refresh after ANY detach
+`InventoryPanel.cs` has ~18 `Callable.From(lambda).CallDeferred()` calls, most of them right
+after `await …Async().ConfigureAwait(false)` — i.e. dispatched from a **worker thread**, the
+`BUG-RENDER-01` anti-pattern (`[[godot-callable-from-not-threadsafe]]`; the file's own comment at
+~line 346 says "never `Callable.From(lambda)` from a bg thread" and then the code does exactly
+that everywhere). `DetachWornAsync` (Worn tab), `DetachAndRefreshAsync` and `AttachAndRefreshAsync`
+(main tree) all end this way: the detach/attach call itself runs *before* the `Callable.From`, so
+the server action may actually happen, but the post-action UI refresh + status text can crash or
+silently never dispatch — presenting as "nothing happened". Convert every such site to
+`CallDeferred(nameof(...))` on a named method (state in fields) or `MainThreadWorkQueue.Enqueue`,
+same as the `BUG-RENDER-01` pass — its own sub-task, ~18 sites. Also still verify the id passed is
+the worn-item id not a COF link id (`BUG-NET-02`), and the wearable-detach path on a
+server-side-baking region.
+
+### 2b — detach from the Worn tab (original note)
 `DetachWornAsync` (`InventoryPanel.cs`, ~line 435):
 
 ```csharp
