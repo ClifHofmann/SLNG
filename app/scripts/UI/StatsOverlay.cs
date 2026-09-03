@@ -228,17 +228,27 @@ public partial class StatsOverlay : PanelContainer
     /// afterwards instead of relying on someone catching the number on screen. Deliberately a single
     /// line with fixed keys: the useful operation on it is <c>grep "\[Perf\]"</c> across a whole
     /// session and reading down the columns.</summary>
+    /// <summary>One perf line: always into the flushed sidecar next to godot.log, and into
+    /// godot.log itself only under --diag. Shared by every caller so the two destinations cannot
+    /// drift apart.</summary>
+    internal static void EmitPerfLine(string line)
+    {
+        PerfSidecar.Write(line);
+        if (Diagnostics.Enabled) Logger.Info(line);
+    }
+
     private void EmitLogLine()
     {
         if (_frameCount == 0) return;
 
-        // Sampling continues regardless -- the panel is accurate the moment it is opened -- but a
-        // release writes none of it to the log.
-        if (!Diagnostics.Enabled) return;
-
         double hitchesPerSec = _secondsSinceLog > 0 ? _hitchesSinceLog / _secondsSinceLog : 0;
 
-        Logger.Info(
+        // Always to the perf sidecar, only to godot.log under --diag. The old rule was "--diag or
+        // nothing", and the cost of that was concrete: not one session log in this project's
+        // history ever contained a [Perf] line, so every "why is the frame rate low" round had to
+        // start by asking for a re-run with a flag. draws / tris / processMs are exactly the three
+        // numbers that separate GPU-bound from main-thread-bound, and they were never there.
+        EmitPerfLine(
             $"[Perf] fps={_lastFps:F0} low1%={_lastLowFps:F0} " +
             $"meanMs={_lastMean:F1} medMs={_lastMedian:F1} p99Ms={_lastP99:F1} " +
             $"worstMs={_worstSinceLog:F0} hitches={_hitchesSinceLog} ({hitchesPerSec:F1}/s) " +
@@ -259,7 +269,7 @@ public partial class StatsOverlay : PanelContainer
         {
             var parts = phases.OrderByDescending(kv => kv.Value)
                               .Select(kv => $"{kv.Key}={kv.Value / _secondsSinceLog:F1}");
-            Logger.Info($"[PhaseCost] ms per second of wall clock: {string.Join(" ", parts)}");
+            EmitPerfLine($"[PhaseCost] ms per second of wall clock: {string.Join(" ", parts)}");
         }
 
         _worstSinceLog = 0;

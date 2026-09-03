@@ -249,8 +249,9 @@ public static class MainThreadWorkQueue
 
         foreach (var (label, c) in _costs.OrderByDescending(kv => kv.Value.TotalMs))
         {
-            Logger.Info($"[WorkCost] {label,-18} n={c.Count,-6} totalMs={c.TotalMs,8:F1} " +
-                        $"avgMs={c.TotalMs / Math.Max(c.Count, 1),6:F2} maxMs={c.MaxMs,7:F1}");
+            UI.StatsOverlay.EmitPerfLine(
+                $"[WorkCost] {label,-18} n={c.Count,-6} totalMs={c.TotalMs,8:F1} " +
+                $"avgMs={c.TotalMs / Math.Max(c.Count, 1),6:F2} maxMs={c.MaxMs,7:F1}");
         }
         _costs.Clear();
     }

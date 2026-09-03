@@ -110,11 +110,26 @@ public static class ConsoleToGodotLog
 /// </summary>
 internal static class PerfSidecar
 {
-    private static readonly string[] _prefixes = { "[TexPipe]", "[GpuCache]" };
+    private static readonly string[] _prefixes =
+    {
+        "[TexPipe]", "[GpuCache]",
+        // Frame data. These used to be gated behind --diag, on the reasoning that a line every 5 s
+        // would bury godot.log -- and the result was that in the entire project history NOT ONE
+        // session log contained a single [Perf] line, so "why is the frame rate low" could only ever
+        // be answered by asking the user to re-run with a flag they had no reason to know about.
+        // The sidecar is a separate file that nothing else writes to, so the objection does not
+        // apply here: it costs one flushed line per 5 s and it means the next ordinary session
+        // already has the answer in it.
+        "[Perf]", "[WorkCost]", "[PhaseCost]",
+    };
 
     private static StreamWriter? _writer;
     private static bool _failed;
     private static readonly object _gate = new();
+
+    /// <summary>Writes a line that is already known to belong in the sidecar, skipping the prefix
+    /// test. For callers inside the app assembly that log through Godot rather than Console.</summary>
+    internal static void Write(string line) => WriteCore(line);
 
     internal static void MaybeWrite(string line)
     {
@@ -124,7 +139,11 @@ internal static class PerfSidecar
             if (line.StartsWith(p, StringComparison.Ordinal)) { wanted = true; break; }
         }
         if (!wanted) return;
+        WriteCore(line);
+    }
 
+    private static void WriteCore(string line)
+    {
         lock (_gate)
         {
             if (_failed) return;
