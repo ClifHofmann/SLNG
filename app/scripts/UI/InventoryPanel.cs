@@ -61,6 +61,12 @@ public partial class InventoryPanel : SLNGWindow
     private LineEdit _outfitNameEdit = null!;
     private Button _outfitSaveBtn = null!;
     private PopupMenu _outfitsMenu = null!;
+    // FEAT-INV-05: the rows INSIDE an expanded outfit need their own verbs. The outfit menu's
+    // entries all act on a whole folder, so pointing it at an item row would run "delete outfit"
+    // against an item id.
+    private PopupMenu _outfitItemMenu = null!;
+    private Guid _outfitItemMenuFolderId;
+    private Guid _outfitItemMenuItemId;
     private readonly HashSet<Guid> _loadedOutfitFolders = new();
     private Guid? _renamingOutfitId;
 
@@ -263,6 +269,13 @@ public partial class InventoryPanel : SLNGWindow
         _outfitsMenu.AddItem("Outfit löschen", 5);
         _outfitsMenu.IdPressed += OnOutfitsMenuPressed;
 
+        _outfitItemMenu = new PopupMenu();
+        _outfitItemMenu.AddItem("Anziehen", 0);
+        _outfitItemMenu.AddItem("Ausziehen", 1);
+        _outfitItemMenu.AddSeparator();
+        _outfitItemMenu.AddItem("Aus diesem Outfit entfernen", 2);
+        _outfitItemMenu.IdPressed += OnOutfitItemMenuPressed;
+
         _outfitsTree = new Tree
         {
             SizeFlagsVertical = SizeFlags.ExpandFill,
@@ -271,6 +284,7 @@ public partial class InventoryPanel : SLNGWindow
             AllowRmbSelect = true
         };
         _outfitsTree.AddChild(_outfitsMenu);
+        _outfitsTree.AddChild(_outfitItemMenu);
         _outfitsTree.ItemActivated += OnOutfitActivated;
         _outfitsTree.ItemCollapsed += OnOutfitItemCollapsed;
         _outfitsTree.GuiInput += OnOutfitsGuiInput;
@@ -684,8 +698,13 @@ public partial class InventoryPanel : SLNGWindow
                 if (string.IsNullOrEmpty(it.Name)) anyPending = true;
                 // A saved outfit item that you're also wearing right now is gold, like the Angezogen tab.
                 c.SetText(0, $"{icon} {name}");
-                c.SetMetadata(0, ""); // child rows are display-only
-                c.SetSelectable(0, false);
+                // FEAT-INV-05: these rows used to be display-only (empty metadata, not
+                // selectable), which is precisely why right-clicking one did nothing --
+                // OnOutfitsGuiInput parses the metadata as a folder id and bailed out. The
+                // "item:" prefix is what keeps the two row kinds apart: a folder row's metadata
+                // is a bare Guid, so neither handler can ever be handed the other's id.
+                c.SetMetadata(0, $"{OutfitItemMetaPrefix}{it.ItemId}");
+                c.SetSelectable(0, true);
                 if (it.Live) c.SetCustomColor(0, new Color(1.0f, 0.88f, 0.4f));
             }
 
@@ -758,15 +777,122 @@ public partial class InventoryPanel : SLNGWindow
             row.Collapsed = !row.Collapsed;
     }
 
+    /// <summary>Marks an outfit-CONTENT row's metadata. A folder row's metadata is a bare Guid, so
+    /// the prefix is what stops the whole-outfit menu from ever being handed an item id (and vice
+    /// versa) — the failure mode FEAT-INV-05 was filed for.</summary>
+    private const string OutfitItemMetaPrefix = "item:";
+
+    private static bool TryParseOutfitItemRow(TreeItem row, out Guid itemId)
+    {
+        itemId = Guid.Empty;
+        string meta = row.GetMetadata(0).AsString();
+        return meta.StartsWith(OutfitItemMetaPrefix, StringComparison.Ordinal)
+            && Guid.TryParse(meta[OutfitItemMetaPrefix.Length..], out itemId);
+    }
+
     private void OnOutfitsGuiInput(InputEvent @event)
     {
         if (@event is not InputEventMouseButton mb || !mb.Pressed || mb.ButtonIndex != MouseButton.Right) return;
         var row = _outfitsTree.GetItemAtPosition(mb.Position);
-        if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out _)) return;
+        if (row == null) return;
         if (_renamingOutfitId is not null) CancelRenameOutfit();
+
+        // An item inside an expanded outfit gets the per-item menu; the outfit folder itself keeps
+        // the whole-outfit one.
+        if (TryParseOutfitItemRow(row, out var itemId))
+        {
+            var parent = row.GetParent();
+            if (parent == null || !Guid.TryParse(parent.GetMetadata(0).AsString(), out var owningFolderId)) return;
+            _outfitItemMenuFolderId = owningFolderId;
+            _outfitItemMenuItemId = itemId;
+            row.Select(0);
+            _outfitItemMenu.Position = (Vector2I)GetGlobalMousePosition();
+            _outfitItemMenu.Popup();
+            return;
+        }
+
+        if (!Guid.TryParse(row.GetMetadata(0).AsString(), out _)) return;
         row.Select(0);
         _outfitsMenu.Position = (Vector2I)GetGlobalMousePosition();
         _outfitsMenu.Popup();
+    }
+
+    /// <summary>FEAT-INV-05. The ids are captured when the menu opens, not read back from the
+    /// selection here: a refresh between the right-click and the click on an entry would otherwise
+    /// run the action against whatever row happened to be selected by then.</summary>
+    private void OnOutfitItemMenuPressed(long id)
+    {
+        var folderId = _outfitItemMenuFolderId;
+        var itemId = _outfitItemMenuItemId;
+        if (itemId == Guid.Empty || _session == null) return;
+
+        switch (id)
+        {
+            case 0: _ = OutfitItemActionAsync(folderId, itemId, OutfitItemAction.Wear); break;
+            case 1: _ = OutfitItemActionAsync(folderId, itemId, OutfitItemAction.TakeOff); break;
+            case 2: _ = OutfitItemActionAsync(folderId, itemId, OutfitItemAction.RemoveFromOutfit); break;
+        }
+    }
+
+    private enum OutfitItemAction { Wear, TakeOff, RemoveFromOutfit }
+
+    private async System.Threading.Tasks.Task OutfitItemActionAsync(Guid folderId, Guid itemId, OutfitItemAction action)
+    {
+        if (_session == null) return;
+
+        string status;
+        try
+        {
+            switch (action)
+            {
+                case OutfitItemAction.Wear:
+                    // AttachItemAsync already routes a Clothing/Bodypart item to the wearable path
+                    // (see its ClassifyItem branch), so one call covers both kinds.
+                    await _session.AttachItemAsync(itemId).ConfigureAwait(false);
+                    status = "Angezogen.";
+                    break;
+
+                case OutfitItemAction.TakeOff:
+                    var r = await _session.DetachItemAsync(itemId).ConfigureAwait(false);
+                    status = r.WearableRemoved ? "Kleidungsstück entfernt — Server backt neu…"
+                        : r.WasAttached ? "Abgelegt."
+                        : "War nicht angezogen.";
+                    break;
+
+                default:
+                    int n = await _session.RemoveItemFromOutfitFolderAsync(folderId, itemId).ConfigureAwait(false);
+                    status = n > 0
+                        ? "Aus diesem Outfit entfernt."
+                        : "Nichts entfernt — kein Link auf dieses Item in diesem Outfit (siehe Log).";
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[Outfits] item action {action} on {itemId} failed: {ex.Message}");
+            status = $"Fehler: {ex.Message}";
+        }
+
+        RunOnMainThread(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            _outfitsStatus.Text = status;
+
+            // Reload just this outfit's contents so the gold "getragen" marker and the membership
+            // are both current, and refresh the Worn tab for the wear/take-off cases.
+            var row = FindOutfitRow(folderId);
+            if (row != null && !row.Collapsed) _ = LoadOutfitContentsAsync(row, folderId);
+            if (action != OutfitItemAction.RemoveFromOutfit) RefreshWornIfVisible();
+        });
+    }
+
+    private TreeItem? FindOutfitRow(Guid folderId)
+    {
+        if (!IsInstanceValid(_outfitsTree)) return null;
+        for (var r = _outfitsTree.GetRoot()?.GetFirstChild(); r != null; r = r.GetNext())
+            if (Guid.TryParse(r.GetMetadata(0).AsString(), out var id) && id == folderId)
+                return r;
+        return null;
     }
 
     private void OnOutfitsMenuPressed(long id)

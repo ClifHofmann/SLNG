@@ -5,7 +5,7 @@
 
 ---
 
-# 2026-09-03 (later) — `v0.20.51` → `v0.20.59`
+# 2026-09-03 (later) — `v0.20.51` → `v0.20.60`
 
 **`v0.20.50`'s log was unusable.** `godot.log`'s body came back as 437 kB of NUL bytes (the
 engine's buffered log loses everything unflushed when a session doesn't end cleanly), so the
@@ -251,6 +251,21 @@ and the server said no*: only a clean fetch licenses the verdict (cancelled/time
 returns `null` and nothing is treated as missing), and a target never asked for is skipped exactly
 as before.
 
+### `v0.20.60` -- FEAT-INV-05: per-item actions in the Outfits tab
+
+Reported: *"im outfitreiter hab ich kein Kontextmenü für die items"* (the whole-outfit menu --
+rename etc. -- worked). One line explained it: outfit-content rows were built with
+`SetMetadata(0, "")` and `SetSelectable(0, false)`, and `OnOutfitsGuiInput` bails out when the
+metadata does not parse as a folder Guid -- so the handler ran and returned before reaching a menu.
+
+Content rows now carry `item:{itemId}` and are selectable, and a second `_outfitItemMenu` offers
+Anziehen / Ausziehen / Aus diesem Outfit entfernen. The prefix keeps the two row kinds apart so
+neither menu can be handed the other's id. New
+`GridSession.RemoveItemFromOutfitFolderAsync(folderId, itemId)` deletes that item's link(s) in that
+outfit only -- never the inventory item, never another outfit's link, never the Current-Outfit link
+-- via `RemoveItemsAsync`, and refuses outright to delete a match that is a real item rather than a
+link. 7 tests on the extracted pure selector.
+
 ### What to check in the next live session
 
 1. The shins under two alpha layers: still a jagged translucent patchwork, or solid skin with a
@@ -278,6 +293,10 @@ as before.
 9. `[OutfitCleanup] link targets: … distinct uncached target(s) … still missing …` -- wenn dort
    `missing-target=N` in der Löschzeile auftaucht, sind die toten Links endlich weg. Danach sollte
    `uncached=` deutlich kleiner sein.
+10. Outfits-Reiter: Rechtsklick auf ein Item **in** einem aufgeklappten Outfit → Anziehen /
+    Ausziehen / Aus diesem Outfit entfernen. Rechtsklick auf das Outfit selbst muss unverändert
+    das alte Menü zeigen. „Aus diesem Outfit entfernen" muss einen Relog überleben und darf das
+    Item selbst nicht anfassen.
 
 ---
 

@@ -6117,6 +6117,65 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return result;
     }
 
+    /// <summary>
+    /// FEAT-INV-05: removes one item from ONE saved outfit — the "Aus diesem Outfit entfernen"
+    /// action. Deletes the <b>link</b> to <paramref name="itemId"/> inside
+    /// <paramref name="outfitFolderId"/> and nothing else: not the inventory item, not the same
+    /// item's link in any other outfit, and not its Current-Outfit link (taking a thing off is
+    /// <see cref="DetachItemAsync"/>, a different verb the menu offers separately).
+    ///
+    /// <para><b>Only links are ever deleted.</b> An outfit folder normally holds nothing else, but
+    /// if a real item has been dropped into one, deleting it would destroy inventory over a menu
+    /// entry that promises to edit an outfit — so a non-link match is refused and reported instead.
+    /// </para>
+    ///
+    /// <para><c>RemoveItemsAsync</c>, not <c>MoveItem → Trash</c>: a move 400s on SL and the entry
+    /// simply reappears on the next refetch (BUG-INV-01 / v0.20.33 switched the Current-Outfit
+    /// cleanup off that same path for the same reason). Returns how many links were removed.</para>
+    /// </summary>
+    /// <summary>The decision half of <see cref="RemoveItemFromOutfitFolderAsync"/>, pure so it can
+    /// be tested without a grid: which of a folder's entries are LINKS to <paramref name="itemId"/>
+    /// (all of them — a duplicate link left behind looks like the action failed), and how many
+    /// matches were real items rather than links, which the caller must refuse to delete.</summary>
+    internal static (List<Guid> LinkIds, int NonLinkMatches) SelectOutfitLinksToRemove(
+        IEnumerable<InventoryEntry> children, Guid itemId)
+    {
+        var linkIds = new List<Guid>();
+        int nonLinkMatches = 0;
+        if (itemId == Guid.Empty) return (linkIds, 0);
+
+        foreach (var e in children)
+        {
+            if (e.IsFolder) continue;
+            var target = e.IsLink && e.LinkTargetId != Guid.Empty ? e.LinkTargetId : e.Id;
+            if (target != itemId) continue;
+
+            if (e.IsLink) linkIds.Add(e.Id);
+            else nonLinkMatches++;
+        }
+        return (linkIds, nonLinkMatches);
+    }
+
+    public async Task<int> RemoveItemFromOutfitFolderAsync(Guid outfitFolderId, Guid itemId, CancellationToken ct = default)
+    {
+        if (outfitFolderId == Guid.Empty || itemId == Guid.Empty) return 0;
+
+        var children = await FetchInventoryChildrenAsync(outfitFolderId, ct).ConfigureAwait(false);
+        var (linkGuids, nonLinkMatches) = SelectOutfitLinksToRemove(children, itemId);
+        var linkIds = linkGuids.Select(g => new LibreMetaverse.UUID(g)).ToList();
+
+        if (nonLinkMatches > 0)
+            Console.Error.WriteLine(
+                $"[Outfits] {itemId} sits in outfit {outfitFolderId} as a REAL item, not a link — " +
+                "refusing to delete it; move it out by hand if that is what you want");
+
+        if (linkIds.Count == 0) return 0;
+
+        await _client.Inventory.RemoveItemsAsync(linkIds, ct).ConfigureAwait(false);
+        Console.Error.WriteLine($"[Outfits] removed {linkIds.Count} link(s) to {itemId} from outfit {outfitFolderId}");
+        return linkIds.Count;
+    }
+
     /// <summary>Wears the <b>attachment</b> part of a saved outfit — every link in
     /// <paramref name="outfitFolderId"/> whose target is an <c>AssetType.Object</c>. Wearables
     /// (Clothing/Bodypart) are skipped: applying those is a rebake and waits on FEAT-AVATAR-01
