@@ -5185,7 +5185,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// item. Links are trashed, not purged -- recoverable. FEAT-INV-03.</summary>
     public OutfitCleanupResult CleanUpCurrentOutfit()
     {
-        if (TrashFolderId is not { } trashId) return new OutfitCleanupResult(0, 0, 0);
+        // Proxy for "inventory skeleton is loaded" -- if the Trash folder isn't known yet, the
+        // Current Outfit folder almost certainly isn't either.
+        if (TrashFolderId is null) return new OutfitCleanupResult(0, 0, 0);
 
         var store = _client.Inventory.Store;
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
@@ -5195,8 +5197,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             Console.Error.WriteLine("[OutfitCleanup] no Current Outfit folder in the store — nothing to do");
             return new OutfitCleanupResult(0, 0, 0);
         }
-
-        var trashUuid = new LibreMetaverse.UUID(trashId);
 
         // "Worn right now" from the SCENE, not LibreMetaverse's GetAttachmentsByItemId() cache --
         // that cache lags a detach, which is exactly the "I took it all off but the outfit still
@@ -5217,17 +5217,22 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // what the layer order is built from.
         var seenTargets = new Dictionary<LibreMetaverse.UUID, LibreMetaverse.UUID>();
         int links = 0, wearableSkipped = 0, wornSkipped = 0, uncachedSkipped = 0;
+        var toRemove = new List<LibreMetaverse.UUID>();
 
+        // DELETE the COF link, don't move it to Trash. A COF link has no asset -- deleting one
+        // only drops the outfit entry, the linked item is untouched -- and MoveInventoryItem on a
+        // Current-Outfit link does NOT stick on SL/OpenSim: the link reappears on the next COF
+        // refetch (user-reported: "beim aufräumen verschwinden die kurz, tauchen aber wieder auf").
+        // RemoveItemsAsync is what the reference viewer uses for COF link removal
+        // (llappearancemgr.cpp removeCOFItemLinks -> remove_inventory_item); LibreMetaverse routes
+        // it through the AIS capability on SL (durable) and a RemoveInventoryObjects packet on
+        // OpenSim, either a real delete rather than a move the COF handler reverts.
         bool Trash(LibreMetaverse.UUID linkKey)
         {
             if (linkKey == LibreMetaverse.UUID.Zero) return false;
-            try
-            {
-                _client.Inventory.MoveItem(linkKey, trashUuid);
-                cofNode!.Nodes.Remove(linkKey);
-                return true;
-            }
-            catch { return false; }
+            toRemove.Add(linkKey);
+            cofNode!.Nodes.Remove(linkKey);
+            return true;
         }
 
         foreach (var childNode in cofNode.Nodes.Values.ToList())
@@ -5275,9 +5280,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (Trash(link.UUID)) unworn++;
         }
 
+        if (toRemove.Count > 0)
+        {
+            try { _ = _client.Inventory.RemoveItemsAsync(toRemove, System.Threading.CancellationToken.None); }
+            catch (Exception ex) { Console.Error.WriteLine($"[OutfitCleanup] RemoveItemsAsync threw: {ex.Message}"); }
+        }
+
         Console.Error.WriteLine(
             $"[OutfitCleanup] links={links} scene-worn={wornAttachItemIds.Count} cache-worn={cacheAttachIds.Count} " +
-            $"| trashed dead={dead} target-in-trash={trashedTarget} unworn-attachment={unworn} duplicate={duplicate} " +
+            $"| deleted dead={dead} target-in-trash={trashedTarget} unworn-attachment={unworn} duplicate={duplicate} " +
+            $"(via RemoveItems, AIS={_client.AisClient?.IsAvailable}) " +
             $"| kept worn={wornSkipped} clothing/bodypart={wearableSkipped} uncached={uncachedSkipped}");
 
         return new OutfitCleanupResult(dead, trashedTarget, unworn);

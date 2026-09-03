@@ -25,6 +25,23 @@ against `GridSession`'s inventory + worn-item API.
 
 ## Fixed so far
 
+### "Outfit aufräumen" — trashed COF links reappeared (`v0.20.33-alpha`)
+User: the Heol Star bracelet/earrings show as worn "(nicht aktiv)" but are **not on the avatar**;
+`Outfit aufräumen` removes them, they *"kurz verschwinden, tauchen aber wieder auf"*.
+`[OutfitCleanup] … unworn-attachment=2 …` proved the cleanup found and (thought it) removed them.
+Root cause: `CleanUpCurrentOutfit`'s `Trash()` did `MoveItem(link → Trash)` + a local
+`cofNode.Nodes.Remove` — but `MoveInventoryItem` on a Current-Outfit link does not stick on
+SL/OpenSim; the link comes back on the next COF refetch. A COF link has no asset, so deleting one
+only drops the outfit entry (the linked item is untouched), and delete is what the reference
+viewer does (`llappearancemgr.cpp` `removeCOFItemLinks` → `remove_inventory_item`). Changed to
+collect the link ids and call `_client.Inventory.RemoveItemsAsync(...)` — LibreMetaverse routes
+that through the AIS capability on SL (durable) and a `RemoveInventoryObjects` packet on OpenSim,
+a real delete either way. `[OutfitCleanup]` log now reports `via RemoveItems, AIS=<bool>`.
+**Not yet re-verified in-world** — if they STILL reappear after this, something is *re-adding*
+them (server-side COF, an `AppearanceManager` re-sync, or a current-Outfit re-apply), a separate
+investigation. `RemoveOutfitLinksForItems` (the detach path) still uses `MoveItem` — apply the
+same change there if the detach-doesn't-persist symptom survives.
+
 ### The right-click context menu crashed and permanently greyed "Detach" (`v0.20.32-alpha`)
 `OnTreeGuiInput` called `_contextMenu.SetItemDisabled(<id>, ...)` — but `SetItemDisabled` takes
 an **index**, and this menu's ids (`0,1,2,4,5,6`) stop matching their indices (`0..5`) at
