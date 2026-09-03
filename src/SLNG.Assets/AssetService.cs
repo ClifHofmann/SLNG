@@ -46,17 +46,21 @@ public class AssetService
     // decode time tells whether a cache hit is even cheap.
     private int _texPipeReq, _texPipeCacheHit, _texPipeHttp;
     private long _texPipeCacheDecodeTicks;
+    private readonly ConcurrentDictionary<Guid, byte> _texPipeDistinct = new();
 
-    private void MaybeDumpTexPipe()
+    private void MaybeDumpTexPipe(Guid id)
     {
+        _texPipeDistinct.TryAdd(id, 0);
         int n = _texPipeReq;
         if (n % 200 != 0) return;
         int hit = _texPipeCacheHit, http = _texPipeHttp;
         double avgMs = hit > 0
             ? (double)_texPipeCacheDecodeTicks / hit / System.Diagnostics.Stopwatch.Frequency * 1000.0
             : 0;
-        Console.Error.WriteLine($"[TexPipe] req={n} diskCacheHit={hit} (avg {avgMs:0}ms J2K decode) " +
-            $"httpFetch={http} inflight={_inflightTextures.Count}");
+        // distinct << req  => the same textures are being re-decoded (a cache upstream isn't
+        // sticking); distinct ~ req => the scene genuinely has that many textures.
+        Console.Error.WriteLine($"[TexPipe] req={n} distinct={_texPipeDistinct.Count} diskCacheHit={hit} " +
+            $"(avg {avgMs:0}ms J2K decode) httpFetch={http} inflight={_inflightTextures.Count}");
     }
 
     // Ids already reported by [TextureGiveUp]. The texture path has several distinct ways to end
@@ -702,7 +706,7 @@ public class AssetService
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false)
     {
         System.Threading.Interlocked.Increment(ref _texPipeReq);
-        MaybeDumpTexPipe();
+        MaybeDumpTexPipe(textureId);
 
         // FEAT-PERF-02 Phase 2: the disk cache only ever holds complete (discard 0) assets --
         // both reading and writing are gated on desiredDiscard == 0 below. A partial/low-discard

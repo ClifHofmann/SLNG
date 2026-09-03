@@ -219,8 +219,9 @@ public class GpuCache
         // cached upload is safe for everyone; only re-fetch when this id's cached upload is
         // recorded as coming from a degraded decode.
         var cached = Get(textureId) as ImageTexture;
-        if (cached != null && rejectDegraded && _uploadFromDegraded.ContainsKey(textureId))
-            cached = null;
+        bool bypassedDegraded = cached != null && rejectDegraded && _uploadFromDegraded.ContainsKey(textureId);
+        if (bypassedDegraded) cached = null;
+        MaybeDumpGpuCacheStats(cached != null, bypassedDegraded);
         if (cached != null)
         {
             // A texture first seen small/distant was uploaded downsampled. Walking up to it used
@@ -255,6 +256,24 @@ public class GpuCache
     /// AssetService; a clean cached upload is reusable by everyone. Cleared when the entry is
     /// evicted or re-uploaded clean.</summary>
     private readonly ConcurrentDictionary<Guid, byte> _uploadFromDegraded = new();
+
+    // Diagnostic (2026-09-03): is the GPU texture cache actually serving repeat requests?
+    // [TexPipe] req kept climbing into the thousands for a static scene even after the
+    // rejectDegraded-bypass fix; this says whether GetOrUploadTextureAsync hits its own _cache.
+    private int _gpuGet, _gpuGetHit, _gpuGetBypassDegraded;
+
+    private void MaybeDumpGpuCacheStats(bool hit, bool bypassedDegraded)
+    {
+        int n = System.Threading.Interlocked.Increment(ref _gpuGet);
+        if (hit) System.Threading.Interlocked.Increment(ref _gpuGetHit);
+        if (bypassedDegraded) System.Threading.Interlocked.Increment(ref _gpuGetBypassDegraded);
+        if (n % 200 != 0) return;
+        int entries, degraded; long sizeMb;
+        lock (_cache) { entries = _cache.Count; sizeMb = _currentSize >> 20; }
+        degraded = _uploadFromDegraded.Count;
+        Console.Error.WriteLine($"[GpuCache] get={n} hit={_gpuGetHit} bypassDegraded={_gpuGetBypassDegraded} " +
+            $"entries={entries} sizeMB={sizeMb}/{_maxSize >> 20} degradedIds={degraded}");
+    }
 
     /// <summary>Fire-and-forget in-place sharpening of an already-cached texture, when the object
     /// requesting it now covers enough of the screen to deserve a lower discard level. Re-decodes
