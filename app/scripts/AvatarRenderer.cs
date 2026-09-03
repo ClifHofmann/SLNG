@@ -1330,6 +1330,34 @@ public partial class AvatarRenderer : Node3D
         if (mi.Mesh is not ArrayMesh am) return;
         int surfaceCount = am.GetSurfaceCount();
 
+        // Prefetch every distinct material this mesh's faces reference, up front, in ONE go.
+        // BuildFaceMaterialAsync awaits GetLegacyMaterialAsync / GetMaterialAsync per face, and
+        // the face loop below awaits each face in turn -- so on a mesh with many differently-
+        // materialled faces the requests arrive >100 ms apart and the 100 ms batch window in
+        // AssetService can't coalesce them: ~one single-id RenderMaterials cap POST per face.
+        // For two nearby avatars that was ~200 tiny POSTs, saturating the caps rate limiter
+        // ("Caps rate limiter queue full") and stalling texture fetches queued behind it (live
+        // 2026-09-03). Firing all the ids together lets AssetService send them as one batch, and
+        // every per-face await below is then a cache hit.
+        if (_assetService != null && faces != null)
+        {
+            var legacyIds = new System.Collections.Generic.HashSet<Guid>();
+            var pbrIds = new System.Collections.Generic.HashSet<Guid>();
+            foreach (var f in faces)
+            {
+                if (f.LegacyMaterialId != Guid.Empty) legacyIds.Add(f.LegacyMaterialId);
+                if (f.RenderMaterialId != Guid.Empty) pbrIds.Add(f.RenderMaterialId);
+            }
+            if (legacyIds.Count + pbrIds.Count > 0)
+            {
+                var pre = new System.Collections.Generic.List<System.Threading.Tasks.Task>(legacyIds.Count + pbrIds.Count);
+                foreach (var id in legacyIds) pre.Add(_assetService.GetLegacyMaterialAsync(id));
+                foreach (var id in pbrIds) pre.Add(_assetService.GetMaterialAsync(id));
+                try { await System.Threading.Tasks.Task.WhenAll(pre).ConfigureAwait(false); }
+                catch { /* a per-id failure is handled again in BuildFaceMaterialAsync */ }
+            }
+        }
+
         for (int surf = 0; surf < surfaceCount; surf++)
         {
             int faceIndex = surf < faceIndices.Length ? faceIndices[surf] : 0;

@@ -5,6 +5,37 @@
 
 ---
 
+# 2026-09-03 — BUG-NET-11: per-face material POSTs flood the caps limiter (`v0.20.45`)
+
+User: *"Texturen kommen extrem langsam, sollten alle im Cache liegen"* + half-loaded avatars,
+*"Transparenzen komplett falsch an den anderen Avataren"* (blocky untextured hair).
+
+`AvatarRenderer.ApplyFaceMaterialsAsync` builds faces one at a time; each `BuildFaceMaterialAsync`
+awaits `GetLegacyMaterialAsync`. On a many-materialled mesh those requests arrive **>100 ms
+apart** (each waits on the previous face's texture fetch), so `AssetService`'s 100 ms batch
+window coalesces nothing → **one single-id `RenderMaterials` cap POST per face**
+(`[LegacyMat] POST 200: 1 ids` ×41 + dozens more in one session, ~200 POSTs for two nearby
+avatars) → `warn: Caps rate limiter queue full` → texture fetches queue behind it and crawl.
+Hidden before `BUG-RENDER-06` (materials always resolved to nothing → `_recentMaterialMisses`
+deflected each id for 2 min).
+
+**Fix `v0.20.45`:** `ApplyFaceMaterialsAsync` prefetches every distinct legacy + PBR material id
+its faces reference **up front** — one tight loop firing all `GetLegacyMaterialAsync` /
+`GetMaterialAsync`, then `Task.WhenAll`. They land in `_pendingMaterialIds` together → one batch
+`FetchLegacyMaterialsAsync` per mesh; the per-face awaits below are cache hits.
+
+**Also this session:**
+- `v0.20.41` BUG-RENDER-09: BoM alpha mask → `Kind.Blend` (kills the venetian-blind banding).
+- `v0.20.42` → `v0.20.44` BUG-RENDER-10: an untextured avatar face was Opaque (blocky) → now
+  **invisible** (albedo α 0) until its texture loads.
+- `v0.20.43`: the `[TextureFetch] … 403` log line now includes the host + path (to answer "is
+  `dda710d4` a wrong-URL case like the bakes?" — need to see it next session).
+
+**Verify:** `[LegacyMat] POST` lines carry many ids each (not `1 ids`), no `Caps rate limiter
+queue full`, textures stream normally; and the `403` host line for `dda710d4`.
+
+---
+
 # 2026-09-03 — BUG-RENDER-10: a 403-denied texture re-fetched forever (`v0.20.40`)
 
 User: *"Textur-blinkt-Bug bei dem Haar von einem Avatar auf der SIM."* A remote avatar's hair
