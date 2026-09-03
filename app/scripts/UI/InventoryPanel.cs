@@ -366,7 +366,55 @@ public partial class InventoryPanel : SLNGWindow
 
     private void RefreshWornIfVisible()
     {
-        if (IsInstanceValid(this) && _wornView is { Visible: true }) RefreshWorn();
+        if (!IsInstanceValid(this)) return;
+        if (_wornView is { Visible: true }) RefreshWorn();
+        // The main tree's worn markers go stale on every wear/detach too, and they are cheap to
+        // re-apply in place -- no fetch, just a metadata read per row. Not gated on which tab is
+        // visible, so switching back to "Inventar" never shows a stale marker.
+        RefreshWornMarkers();
+    }
+
+    /// <summary>Work queued from a background thread, drained on the main thread by
+    /// <see cref="DrainUiWork"/>.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiWork = new();
+
+    /// <summary>
+    /// Runs <paramref name="work"/> on the Godot main thread, safely from ANY thread.
+    ///
+    /// <para>Every async method in this panel awaits with <c>ConfigureAwait(false)</c>, and Godot's
+    /// main thread has no <see cref="System.Threading.SynchronizationContext"/> — so everything
+    /// after an <c>await</c> here runs on a worker thread and must be marshalled back before it
+    /// touches a Tree or a Label. The obvious way to do that,
+    /// <c>Callable.From(lambda).CallDeferred()</c>, is the one way that does NOT work: a
+    /// delegate-backed Callable's deferred dispatch is main-thread-only in Godot .NET, so from a
+    /// worker it either crashes the process with a fatal <c>AccessViolationException</c> inside
+    /// <c>godotsharp_callable_call_deferred</c> or silently never runs. Both have already happened
+    /// in this project — the crash in <c>GpuCache</c> (BUG-RENDER-01), the silent no-op right here,
+    /// which is why "Ablegen" looked dead for a whole live session (v0.20.34).</para>
+    ///
+    /// <para>Fourteen call sites in this file still had that pattern. Rather than give each one its
+    /// own field-plus-callback pair (the shape <see cref="FinishDetachWorn"/> and
+    /// <see cref="FinishTreeItemAction"/> use), they all queue here: <c>CallDeferred</c> BY METHOD
+    /// NAME is a StringName dispatch with no delegate marshalling, which is the documented-safe
+    /// form from a worker thread, and the queue keeps the closures each site already had. FIFO, so
+    /// ordering between two updates is preserved.</para>
+    /// </summary>
+    private void RunOnMainThread(Action work)
+    {
+        if (!IsInstanceValid(this)) return;
+        _uiWork.Enqueue(work);
+        CallDeferred(nameof(DrainUiWork));
+    }
+
+    private void DrainUiWork()
+    {
+        while (_uiWork.TryDequeue(out var work))
+        {
+            // One failed UI update must not swallow the rest of the queue -- a panel that stops
+            // refreshing silently is exactly the failure mode this method exists to end.
+            try { work(); }
+            catch (Exception ex) { GD.PrintErr($"[Inventory] deferred UI work threw: {ex.Message}"); }
+        }
     }
 
     private static readonly (SLNG.Core.WornCategory Cat, string Label)[] WornGroups =
@@ -527,7 +575,7 @@ public partial class InventoryPanel : SLNGWindow
         try { outfits = await _session!.GetSavedOutfitsAsync().ConfigureAwait(false); }
         catch (Exception ex) { err = ex.Message; }
 
-        Callable.From(() =>
+        RunOnMainThread(() =>
         {
             if (!IsInstanceValid(_outfitsTree)) return;
             _outfitsTree.Clear();
@@ -554,7 +602,7 @@ public partial class InventoryPanel : SLNGWindow
                 placeholder.SetText(0, "…");
                 placeholder.SetSelectable(0, false);
             }
-        }).CallDeferred();
+        });
     }
 
     private static string StripOutfitPrefix(string s)
@@ -578,7 +626,7 @@ public partial class InventoryPanel : SLNGWindow
         try { items = await _session!.GetOutfitContentsAsync(folderId).ConfigureAwait(false); }
         catch (Exception ex) { GD.PrintErr($"[Outfits] contents fetch failed: {ex.Message}"); }
 
-        Callable.From(() =>
+        RunOnMainThread(() =>
         {
             if (!IsInstanceValid(_outfitsTree) || !IsInstanceValid(row)) return;
 
@@ -620,7 +668,7 @@ public partial class InventoryPanel : SLNGWindow
                         _ = LoadOutfitContentsAsync(row, folderId, isRetry: true);
                 };
             }
-        }).CallDeferred();
+        });
     }
 
     private void OnSaveOutfitPressed()
@@ -660,14 +708,14 @@ public partial class InventoryPanel : SLNGWindow
         try { id = await _session!.SaveCurrentOutfitAsync(name).ConfigureAwait(false); }
         catch (Exception ex) { err = ex.Message; }
 
-        Callable.From(() =>
+        RunOnMainThread(() =>
         {
             if (!IsInstanceValid(this)) return;
             if (err != null) _outfitsStatus.Text = $"Fehler: {err}";
             else if (id is null) _outfitsStatus.Text = "Kein #Outfits-Ordner auf diesem Grid.";
             else { _outfitsStatus.Text = $"„{name}“ gespeichert."; _outfitNameEdit.Text = ""; }
             RefreshOutfits();
-        }).CallDeferred();
+        });
     }
 
     // Double-click just folds/unfolds the outfit to look inside. Wearing is right-click only, so
@@ -729,18 +777,18 @@ public partial class InventoryPanel : SLNGWindow
 
     private async System.Threading.Tasks.Task RemoveOutfitFromWornAsync(Guid folderId)
     {
-        Callable.From(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = "Entferne…"; }).CallDeferred();
+        RunOnMainThread(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = "Entferne…"; });
         int n = 0;
         string? err = null;
         try { n = await _session!.RemoveOutfitFromWornAsync(folderId).ConfigureAwait(false); }
         catch (Exception ex) { err = ex.Message; }
-        Callable.From(() =>
+        RunOnMainThread(() =>
         {
             if (!IsInstanceValid(this)) return;
             _outfitsStatus.Text = err != null ? $"Fehler: {err}"
                 : n == 0 ? "Nichts davon getragen."
                          : $"{n} Teil(e) abgelegt — Kleidung wird nach einem Rebake sichtbar.";
-        }).CallDeferred();
+        });
     }
 
     private void DeleteOutfitAsync(Guid folderId)
@@ -754,21 +802,21 @@ public partial class InventoryPanel : SLNGWindow
 
     private async System.Threading.Tasks.Task ReplaceWornWithOutfitAsync(Guid folderId)
     {
-        Callable.From(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = "Tausche Anhänge…"; }).CallDeferred();
+        RunOnMainThread(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = "Tausche Anhänge…"; });
 
         (int Detached, int Attached) r = (0, 0);
         string? err = null;
         try { r = await _session!.ReplaceWornWithOutfitAttachmentsAsync(folderId).ConfigureAwait(false); }
         catch (Exception ex) { err = ex.Message; }
 
-        Callable.From(() =>
+        RunOnMainThread(() =>
         {
             if (!IsInstanceValid(this)) return;
             _outfitsStatus.Text = err != null
                 ? $"Fehler: {err}"
                 : $"{r.Detached} abgelegt, {r.Attached} angezogen. Kleidung & Körper unverändert (Phase 2).";
             if (err == null) RefreshOutfits(); // the ✅ "getragen" marker moved
-        }).CallDeferred();
+        });
     }
 
     private async System.Threading.Tasks.Task WearOutfitAsync(Guid folderId)
@@ -778,7 +826,7 @@ public partial class InventoryPanel : SLNGWindow
         try { n = await _session!.WearOutfitAttachmentsAsync(folderId).ConfigureAwait(false); }
         catch (Exception ex) { err = ex.Message; }
 
-        Callable.From(() =>
+        RunOnMainThread(() =>
         {
             if (!IsInstanceValid(this)) return;
             _outfitsStatus.Text = err != null
@@ -786,13 +834,13 @@ public partial class InventoryPanel : SLNGWindow
                 : n == 0
                     ? "Keine Anhänge in diesem Outfit."
                     : $"{n} Anhang/Anhänge angezogen. Kleidung & Körper folgen mit FEAT-AVATAR-01 Phase 2.";
-        }).CallDeferred();
+        });
     }
 
     // "hinzufügen" (replace=false) or "ersetzen" (replace=true) on an existing outfit folder.
     private async System.Threading.Tasks.Task ModifyOutfitAsync(Guid folderId, bool replace)
     {
-        Callable.From(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = replace ? "Ersetze…" : "Füge hinzu…"; }).CallDeferred();
+        RunOnMainThread(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = replace ? "Ersetze…" : "Füge hinzu…"; });
 
         int n = 0;
         string? err = null;
@@ -804,7 +852,7 @@ public partial class InventoryPanel : SLNGWindow
         }
         catch (Exception ex) { err = ex.Message; }
 
-        Callable.From(() =>
+        RunOnMainThread(() =>
         {
             if (!IsInstanceValid(this)) return;
             _outfitsStatus.Text = err != null
@@ -821,7 +869,7 @@ public partial class InventoryPanel : SLNGWindow
                 _loadedOutfitFolders.Remove(folderId);
                 if (!row.Collapsed) _ = LoadOutfitContentsAsync(row, folderId);
             }
-        }).CallDeferred();
+        });
     }
 
     private void PopulateRoots()
@@ -926,6 +974,96 @@ public partial class InventoryPanel : SLNGWindow
             item.Collapsed = false;
 
         return isVisible;
+    }
+
+    /// <summary>Leading glyph on a worn row. A colour alone was the whole marker before, and the
+    /// live report was that you still cannot tell what you are wearing -- gold-on-dark is subtle,
+    /// it competes with every other tint in the tree, and it is invisible to a colour-blind reader.
+    /// A glyph in the text is unambiguous at a glance and survives any theme.</summary>
+    private const string WornPrefix = "✔ ";
+
+    private static readonly Color WornColor = new(1.0f, 0.88f, 0.4f);
+
+    /// <summary>Matches the two suffixes <see cref="ApplyWornMarker"/> itself writes, so a re-apply
+    /// strips exactly what a previous one added and nothing else. Safe to do by pattern because
+    /// this text is ours, not the item's name.</summary>
+    private static readonly System.Text.RegularExpressions.Regex WornSuffixRx =
+        new(@"\s\(getragen(?: an [^)]*)?\)$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>Adds or removes the worn decoration on one already-built item row, from the row's
+    /// own metadata. Idempotent: it strips whatever it added last time first, so it can be called
+    /// again on the same row every time the worn set changes.</summary>
+    private void ApplyWornMarker(TreeItem row, System.Collections.Generic.Dictionary<Guid, string> wornMap)
+    {
+        if (!IsInstanceValid(row)) return;
+
+        string meta = row.GetMetadata(0).AsString();
+        if (!meta.Contains(',')) return; // folder row -- folders are never "worn"
+        var parts = meta.Split(',');
+        if (!Guid.TryParse(parts[0], out var id)) return;
+
+        bool isWorn = wornMap.TryGetValue(id, out var loc);
+        if (!isWorn && parts.Length >= 8 && Guid.TryParse(parts[7], out var linkTarget) && linkTarget != Guid.Empty)
+            isWorn = wornMap.TryGetValue(linkTarget, out loc);
+
+        string text = row.GetText(0);
+        if (text.StartsWith(WornPrefix, StringComparison.Ordinal)) text = text[WornPrefix.Length..];
+        text = WornSuffixRx.Replace(text, "");
+
+        if (isWorn)
+        {
+            if (!string.IsNullOrEmpty(loc) && loc != "getragen")
+            {
+                text += $" (getragen an {loc})";
+            }
+            else if (_session?.CurrentOutfitFolderId is { } cofId && !RowIsInFolder(row, cofId))
+            {
+                // Inside the Current Outfit folder every row is worn by definition, so the suffix
+                // there would be noise on every line.
+                text += " (getragen)";
+            }
+            text = WornPrefix + text;
+            row.SetCustomColor(0, WornColor);
+        }
+        else
+        {
+            row.ClearCustomColor(0);
+        }
+
+        row.SetText(0, text);
+    }
+
+    private static bool RowIsInFolder(TreeItem row, Guid folderId)
+    {
+        var parent = row.GetParent();
+        if (parent == null || !IsInstanceValid(parent)) return false;
+        return Guid.TryParse(parent.GetMetadata(0).AsString(), out var pid) && pid == folderId;
+    }
+
+    /// <summary>Re-applies the worn decoration across every already-populated row in the main tree.
+    ///
+    /// <para>Without this the "Inventar" tab's markers were only ever correct at the moment a
+    /// folder was fetched: wearing or removing something updated the "Angezogen" tab and, at most,
+    /// re-fetched the Current Outfit folder -- the row for the actual item, sitting in whatever
+    /// folder it really lives in, kept whatever marker it was built with. Walking the tree costs a
+    /// metadata read per visible row and no network at all, so it can simply run on every worn-set
+    /// change.</para></summary>
+    private void RefreshWornMarkers()
+    {
+        if (!IsInstanceValid(_tree) || _session == null) return;
+        var root = _tree.GetRoot();
+        if (root == null) return;
+        var wornMap = _session.GetWornItemsMap();
+        RefreshWornMarkers(root, wornMap);
+    }
+
+    private void RefreshWornMarkers(TreeItem item, System.Collections.Generic.Dictionary<Guid, string> wornMap)
+    {
+        for (var child = item.GetFirstChild(); child != null; child = child.GetNext())
+        {
+            ApplyWornMarker(child, wornMap);
+            RefreshWornMarkers(child, wornMap);
+        }
     }
 
     private void UpdateBusyStatus()
@@ -1239,17 +1377,17 @@ public partial class InventoryPanel : SLNGWindow
         if (assetId == Guid.Empty)
         {
             GD.PrintErr("[Teleport] asset id still empty after re-resolve -- refusing to teleport");
-            Callable.From(() =>
+            RunOnMainThread(() =>
             {
                 if (IsInstanceValid(this))
                     _status.Text = "Landmark not ready yet — try again in a moment.";
-            }).CallDeferred();
+            });
             return;
         }
 
         var result = await _session!.TeleportToLandmarkAsync(assetId).ConfigureAwait(false);
         GD.Print($"[Teleport] result success={result.Success} message='{result.Message}'");
-        Callable.From(() =>
+        RunOnMainThread(() =>
         {
             if (!IsInstanceValid(this)) return;
             _status.Text = result.Success
@@ -1261,7 +1399,23 @@ public partial class InventoryPanel : SLNGWindow
             {
                 GetViewport().GuiReleaseFocus();
             }
-        }).CallDeferred();
+        });
+    }
+
+    /// <summary>Per-folder progress. The placeholder child a folder is created with says "…",
+    /// which means "not fetched yet" -- it looks identical whether a fetch is running, has not
+    /// started, or silently failed, and that ambiguity is the "loads slowly with no indication
+    /// anything is happening" half of the live report. Swapped for a live state here and set to an
+    /// error on failure below; <see cref="Populate"/> clears the placeholder outright, so success
+    /// needs no cleanup.</summary>
+    private static void SetFolderPlaceholder(TreeItem folderRow, string text)
+    {
+        if (!IsInstanceValid(folderRow)) return;
+        var placeholder = folderRow.GetFirstChild();
+        // Only ever touch a lone placeholder row -- never a folder whose real contents are showing.
+        if (placeholder == null || !IsInstanceValid(placeholder) || placeholder.GetNext() != null) return;
+        if (!placeholder.GetMetadata(0).AsString().Equals(string.Empty, StringComparison.Ordinal)) return;
+        placeholder.SetText(0, text);
     }
 
     private void LoadFolder(TreeItem item, Guid folderId, bool force = false, Guid? knownItemId = null, Guid? knownAssetId = null)
@@ -1269,6 +1423,7 @@ public partial class InventoryPanel : SLNGWindow
         if (_session == null || (!_loadedFolders.Add(folderId) && !force)) return;
         _pendingFetches++;
         UpdateBusyStatus();
+        SetFolderPlaceholder(item, "⏳ lädt…");
         _ = FetchAsync(item, folderId, knownItemId, knownAssetId);
     }
 
@@ -1277,17 +1432,21 @@ public partial class InventoryPanel : SLNGWindow
         try
         {
             var children = await _session!.FetchInventoryChildrenAsync(folderId).ConfigureAwait(false);
-            Callable.From(() => Populate(item, children, knownItemId, knownAssetId)).CallDeferred();
+            RunOnMainThread(() => Populate(item, children, knownItemId, knownAssetId));
         }
         catch (Exception ex)
         {
             GD.PrintErr($"[Inventory] fetch {folderId} failed: {ex.Message}");
-            Callable.From(() =>
+            RunOnMainThread(() =>
             {
                 _pendingFetches = Math.Max(0, _pendingFetches - 1);
                 _loadedFolders.Remove(folderId); // allow a retry on the next expand
                 _status.Text = "Fetch failed — collapse and expand to retry.";
-            }).CallDeferred();
+                // Say it on the folder itself as well: the shared status line is one row for the
+                // whole panel and the next successful fetch overwrites it immediately.
+                SetFolderPlaceholder(item, "⚠ Fehler — nochmal aufklappen");
+                UpdateBusyStatus();
+            });
         }
     }
 
@@ -1335,25 +1494,12 @@ public partial class InventoryPanel : SLNGWindow
             text = InventoryIcons.ForAssetType(assetType) + " " + text;
             text += entry.GetPermissionSuffix();
 
-            bool isWorn = wornMap.TryGetValue(entry.Id, out var loc) || (entry.IsLink && wornMap.TryGetValue(entry.LinkTargetId, out loc));
-
-            if (isWorn)
-            {
-                if (!string.IsNullOrEmpty(loc) && loc != "getragen")
-                {
-                    text += $" (getragen an {loc})";
-                }
-                else if (_session?.CurrentOutfitFolderId is { } cofId && entry.ParentId != cofId)
-                {
-                    text += " (getragen)";
-                }
-
-                // Highlight worn items with a warm gold color so they stand out like Firestorm
-                row.SetCustomColor(0, new Color(1.0f, 0.88f, 0.4f));
-            }
-
-            row.SetText(0, text);
+            // Metadata BEFORE text: ApplyWornMarker reads the row's own id and link target from
+            // it, so the same code decorates a row at build time and re-decorates it later when
+            // the worn set changes -- one implementation, no drift between the two.
             row.SetMetadata(0, $"{entry.Id},{entry.CanCopy},{entry.CanModify},{entry.CanTransfer},{assetType},{assetId},{entry.IsLink},{entry.LinkTargetId}");
+            row.SetText(0, text);
+            ApplyWornMarker(row, wornMap);
         }
 
         if (children.Count == 0)

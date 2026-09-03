@@ -5,7 +5,7 @@
 
 ---
 
-# 2026-09-03 (later) — `v0.20.51` → `v0.20.56`
+# 2026-09-03 (later) — `v0.20.51` → `v0.20.57`
 
 **`v0.20.50`'s log was unusable.** `godot.log`'s body came back as 437 kB of NUL bytes (the
 engine's buffered log loses everything unflushed when a session doesn't end cleanly), so the
@@ -198,6 +198,24 @@ reduced=6523 reduceRetry=0`, **avg decode 31 ms, down from ~107 ms**. And the UD
 marked gone for the session; whatever Firestorm shows there, it is not coming from either transport
 we have.
 
+### `v0.20.57` — BUG-INV-01's last three pieces
+
+- **All 14 remaining `Callable.From(lambda).CallDeferred()` sites were on worker threads.** Every
+  async method in `InventoryPanel.cs` awaits with `ConfigureAwait(false)` and Godot's main thread
+  has no `SynchronizationContext`, so every one of them ran the pattern that crashed `GpuCache`
+  (fatal `AccessViolationException`) and silently no-op'd "Ablegen" in this very file (`v0.20.34`).
+  They covered every Outfits-tab action, the landmark teleport, and the main tree's folder fetch.
+  Replaced by one `RunOnMainThread(Action)` helper — `ConcurrentQueue` + `CallDeferred(nameof(
+  DrainUiWork))`, which is a StringName dispatch with no delegate marshalling and therefore the
+  documented-safe form. FIFO, per-item try/catch.
+- **Worn marker**: `✔ ` glyph on top of the gold colour (colour alone was subtle and useless to a
+  colour-blind reader), and `ApplyWornMarker` is now one idempotent function shared by the build
+  path and by `RefreshWornMarkers`, which walks the tree on every `WornItemsChanged`. Before, a
+  marker was only correct at the moment its folder was fetched.
+- **Per-folder load indicator**: the `…` placeholder becomes `⏳ lädt…` while a fetch is in flight
+  and `⚠ Fehler — nochmal aufklappen` on failure. `SetFolderPlaceholder` only touches a lone child
+  with empty metadata, so it can never overwrite real contents.
+
 ### What to check in the next live session
 
 1. The shins under two alpha layers: still a jagged translucent patchwork, or solid skin with a
@@ -214,6 +232,11 @@ we have.
 6. `[SelfBake]`: should now print on every login. If it says `NO BAKE AT ALL`, watch for
    `[Appearance] the sim has not sent our own bake ids -- nudging a server re-composite` ~25 s
    later and whether a `[SelfBake]` line with real ids follows it.
+7. Inventar: `✔` auf getragenen Zeilen, und dass er sich beim An-/Ausziehen **sofort** mitändert
+   (auch in dem Ordner, in dem das Item wirklich liegt — nicht nur im Current Outfit). Beim
+   Aufklappen eines Ordners `⏳ lädt…` statt `…`. Und die Outfits-Tab-Aktionen (Anziehen /
+   Ersetzen / Hinzufügen / Entfernen / Speichern / Umbenennen) müssen alle noch tun, was sie
+   sollen — die liefen bis eben alle über das kaputte Marshalling.
 
 ---
 

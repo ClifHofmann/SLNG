@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-INV-01`
 - **Track:** `ui` / `net`
-- **Status:** `⏸️ Pending`
+- **Status:** `🧪 Review` — all four symptoms addressed; the `v0.20.57` three need a live check.
 - **Priority:** **Medium** — one functional break (detach from the Worn tab does nothing),
   two UX gaps.
 - **Owner:** `claude`
@@ -179,3 +179,60 @@ it with a spinner.
   items in folders that were never expanded by hand, without the user having to open anything.
 - Tests where there is a test surface (`GridSession` detach/worn-map logic in `SLNG.Net.Tests`);
   the Godot UI wiring itself has none.
+
+## `v0.20.57-alpha` — the three remaining pieces
+
+### 1. Fourteen `Callable.From(lambda).CallDeferred()` sites, every one on a worker thread
+
+Every async method in this panel awaits with `ConfigureAwait(false)`, and Godot's main thread has
+no `SynchronizationContext` — so **all fourteen** remaining sites were running the anti-pattern from
+a background thread. That is not a style point: a delegate-backed `Callable`'s deferred dispatch is
+main-thread-only in Godot .NET, so from a worker it either crashes the process with a fatal
+`AccessViolationException` inside `godotsharp_callable_call_deferred` or silently never runs. Both
+have already happened in this project — the crash in `GpuCache`, and the silent no-op **in this
+file**, which is why "Ablegen" looked dead for a whole live session (`v0.20.34`). The remaining
+fourteen covered every Outfits-tab action (wear / replace / add / remove / save / rename), the
+landmark teleport, and the main tree's folder fetch.
+
+Rather than give each one a field-plus-callback pair (the `FinishDetachWorn` /
+`FinishTreeItemAction` shape), they all go through one helper:
+
+```csharp
+private void RunOnMainThread(Action work)
+{
+    if (!IsInstanceValid(this)) return;
+    _uiWork.Enqueue(work);
+    CallDeferred(nameof(DrainUiWork));   // by METHOD NAME -- safe from any thread
+}
+```
+
+`CallDeferred` by method name is a StringName dispatch with no delegate marshalling, which is the
+documented-safe form; the `ConcurrentQueue` keeps the closures each site already had, FIFO, so
+ordering between two updates is preserved. `DrainUiWork` catches per item, so one failed UI update
+cannot swallow the rest of the queue.
+
+### 2. Worn marker in the "Inventar" tree
+
+Was a warm gold `SetCustomColor` and nothing else — subtle against every other tint in the tree,
+and invisible to a colour-blind reader. Now a `✔ ` glyph prefix as well, and, more importantly, it
+**stays correct**: `ApplyWornMarker` is one idempotent function (it strips what it added last time
+before re-adding), used both when a row is built and by `RefreshWornMarkers`, which walks the tree
+on every `WornItemsChanged`. Before, a marker was only ever right at the moment its folder was
+fetched — wearing something updated the "Angezogen" tab and at most re-fetched the Current Outfit
+folder, while the row for the actual item, in whatever folder it really lives in, kept its stale
+marker. The walk is a metadata read per row and no network, so it can simply always run.
+
+Row metadata is now set **before** the text so the build path can call `ApplyWornMarker` too —
+one implementation, no drift between "decorated at build" and "decorated on refresh".
+
+### 3. Per-folder load indicator
+
+A folder row is created with a `"…"` placeholder child, which means "not fetched yet" and looks
+identical whether a fetch is running, has not started, or failed — the ambiguity behind *"lädt
+langsam und man sieht nicht, dass etwas passiert"*. `LoadFolder` now sets it to `⏳ lädt…` and the
+failure path to `⚠ Fehler — nochmal aufklappen`. `SetFolderPlaceholder` only ever touches a **lone**
+child with empty metadata, so it can never overwrite a folder's real contents. Success needs no
+cleanup — `Populate` clears the placeholder outright.
+
+**Not yet verified in-world.**
+
