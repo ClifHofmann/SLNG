@@ -283,3 +283,42 @@ The button now disables itself while the fetch runs and reports through the same
 
 **Not yet verified in-world.** Expect `[OutfitCleanup] resolved N/10 previously-uncached COF link
 target(s)` followed by a real cleanup line instead of the deferral.
+
+## `v0.20.59-alpha` -- ten COF links pointing at one item that no longer exists
+
+The `v0.20.58` cleanup ran for the first time and did remove the two `(nicht aktiv)` attachments:
+
+```
+[OutfitCleanup] resolved 0/1 previously-uncached COF link target(s)
+[OutfitCleanup] links=28 scene-worn=7 cache-worn=6 | deleted dead=0 target-in-trash=0
+                unworn-attachment=2 duplicate=0 (via RemoveItems, AIS=True)
+                | kept worn=6 clothing/bodypart=10 uncached=10
+```
+
+But two numbers in that line do not add up on first reading, and the discrepancy is the next bug:
+**`uncached=10` links against exactly ONE distinct unresolved target.** The cleanup counts uncached
+*per link*, the fetch deduplicates *per target* -- so this COF carries ten links that all point at
+the same item, and the server did not return it (`resolved 0/1`). That item is gone.
+
+Those ten were skipped, every run, forever: the `uncached` branch exists to be conservative about
+an item in a folder nobody fetched, and it cannot tell that case apart from a genuinely deleted
+one. So a third of this COF was untouchable dead weight -- a large part of why cleanup felt like it
+did nothing even once it started running.
+
+### Fix
+
+`ResolveCofLinkTargetsAsync` now **returns the targets it asked for and did not get**, and the
+cleanup deletes their links as `missing-target`. The distinction that makes this safe is between
+*we never asked* and *we asked and the server said no*:
+
+- Only a **clean** fetch licenses the verdict. Cancelled, timed out or throwing returns `null`, and
+  then nothing is treated as missing -- the old conservative skip stands.
+- A target that is simply absent from LibreMetaverse's store, without having been asked for, is
+  still skipped exactly as before.
+
+The log line gained the numbers that make this readable rather than a puzzle:
+`link targets: N link(s), M distinct uncached target(s), resolved R, still missing S,
+fetchCompleted=…` plus `missing-target=` in the deletion breakdown.
+
+**Not yet verified in-world.**
+

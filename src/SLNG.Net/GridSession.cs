@@ -5382,32 +5382,39 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// </summary>
     public async Task<OutfitCleanupResult> CleanUpCurrentOutfitAsync(CancellationToken ct = default)
     {
-        try { await ResolveCofLinkTargetsAsync(ct).ConfigureAwait(false); }
+        HashSet<Guid>? confirmedMissing = null;
+        try { confirmedMissing = await ResolveCofLinkTargetsAsync(ct).ConfigureAwait(false); }
         catch (Exception ex) { Console.Error.WriteLine($"[OutfitCleanup] link-target fetch failed: {ex.Message}"); }
-        return CleanUpCurrentOutfit(targetsResolved: true);
+        return CleanUpCurrentOutfit(targetsResolved: true, confirmedMissing);
     }
 
-    private async Task ResolveCofLinkTargetsAsync(CancellationToken ct)
+    /// <returns>Targets we explicitly asked the server for that did NOT come back, i.e. items the
+    /// server does not have. <c>null</c> when the fetch itself failed or was cut short -- then we
+    /// know nothing, and the caller must not treat any link as dead.</returns>
+    private async Task<HashSet<Guid>?> ResolveCofLinkTargetsAsync(CancellationToken ct)
     {
         var store = _client.Inventory.Store;
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
         var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
-        if (cofNode == null || store == null) return;
+        if (cofNode == null || store == null) return null;
 
+        int linkCount = 0;
         var missing = new Dictionary<LibreMetaverse.UUID, LibreMetaverse.UUID>();
         foreach (var n in cofNode.Nodes.Values)
         {
             if (n.Data is not LibreMetaverse.InventoryItem li || !li.IsLink()) continue;
+            linkCount++;
             var t = li.ResolvedItemID != LibreMetaverse.UUID.Zero ? li.ResolvedItemID : li.AssetUUID;
             if (t == LibreMetaverse.UUID.Zero) continue;
             if (store.GetNodeOrDefault(t)?.Data is LibreMetaverse.InventoryItem) continue;
             missing[t] = _client.Self.AgentID;
         }
-        if (missing.Count == 0) return;
+        if (missing.Count == 0) return new HashSet<Guid>();
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(15));
 
+        bool fetchCompleted = true;
         try
         {
             await _client.Inventory.RequestFetchInventoryAsync(missing, timeout.Token, items =>
@@ -5422,7 +5429,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 }
             }).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { fetchCompleted = false; }
+        catch (Exception ex)
+        {
+            fetchCompleted = false;
+            Console.Error.WriteLine($"[OutfitCleanup] COF link-target fetch threw: {ex.Message}");
+        }
 
         // Then WAIT FOR THE STORE, rather than trusting the call above to have finished the job.
         // Whether that method returns once the reply is in, or merely once the request is sent, is
@@ -5437,13 +5449,33 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             resolved = missing.Keys.Count(t => store.GetNodeOrDefault(t)?.Data is LibreMetaverse.InventoryItem);
             if (resolved == missing.Count) break;
             try { await Task.Delay(200, timeout.Token).ConfigureAwait(false); }
-            catch (OperationCanceledException) { break; }
+            catch (OperationCanceledException) { fetchCompleted = false; break; }
         }
 
-        Console.Error.WriteLine($"[OutfitCleanup] resolved {resolved}/{missing.Count} previously-uncached COF link target(s)");
+        var stillMissing = missing.Keys
+            .Where(t => store.GetNodeOrDefault(t)?.Data is not LibreMetaverse.InventoryItem)
+            .Select(t => t.Guid)
+            .ToHashSet();
+
+        // Link count AND distinct-target count, because they diverge in a way that matters: a live
+        // session showed uncached=10 links against exactly ONE unresolved target -- ten Current
+        // Outfit links all pointing at the same vanished item. The per-link number on its own reads
+        // like ten separate problems.
+        Console.Error.WriteLine(
+            $"[OutfitCleanup] link targets: {linkCount} link(s), {missing.Count} distinct uncached target(s), " +
+            $"resolved {resolved}, still missing {stillMissing.Count}, fetchCompleted={fetchCompleted}");
+
+        // Only a CLEAN fetch licenses "the server does not have this". A cancelled or throwing one
+        // tells us nothing, and the caller must not delete anything on the strength of it.
+        return fetchCompleted ? stillMissing : null;
     }
 
-    public OutfitCleanupResult CleanUpCurrentOutfit(bool targetsResolved = false)
+    /// <param name="confirmedMissingTargets">Link targets the server was explicitly asked for and
+    /// did not return -- so the item is gone and its Current-Outfit links are dead weight that the
+    /// <c>uncached</c> skip below would otherwise preserve forever. <c>null</c> means "we did not
+    /// ask, or the asking failed", and then nothing here is treated as missing.</param>
+    public OutfitCleanupResult CleanUpCurrentOutfit(bool targetsResolved = false,
+        HashSet<Guid>? confirmedMissingTargets = null)
     {
         // Proxy for "inventory skeleton is loaded" -- if the Trash folder isn't known yet, the
         // Current Outfit folder almost certainly isn't either.
@@ -5499,7 +5531,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             return new OutfitCleanupResult(0, 0, 0, Deferred: true);
         }
 
-        int dead = 0, trashedTarget = 0, unworn = 0, duplicate = 0;
+        int dead = 0, trashedTarget = 0, unworn = 0, duplicate = 0, missingTarget = 0;
 
         // A Current Outfit folder holds ONE link per worn item. More than one is corruption, and it
         // is not cosmetic: a wearable linked twice is worn twice, drawn twice, and the copy without
@@ -5548,7 +5580,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
 
             var target = targetNode?.Data as LibreMetaverse.InventoryItem;
-            if (target == null) { uncachedSkipped++; continue; }
+            if (target == null)
+            {
+                // "Not in the store" on its own is evidence of nothing -- LibreMetaverse's store
+                // only holds folders somebody fetched, so this is the normal state for an item in a
+                // folder the user never opened, and skipping is right. Once the server has been
+                // asked for this exact id and did not return it, though, the item is GONE and the
+                // link is dead weight the skip would preserve forever. Measured live: 10 such links
+                // in one COF, all pointing at a single vanished item, every one of them skipped --
+                // which is a large part of why "Outfit aufraeumen" looked like it did nothing.
+                if (confirmedMissingTargets != null && confirmedMissingTargets.Contains(targetUuid.Guid))
+                {
+                    if (Trash(link.UUID)) missingTarget++;
+                    continue;
+                }
+                uncachedSkipped++;
+                continue;
+            }
 
             if (seenTargets.TryGetValue(targetUuid, out var keptLink))
             {
@@ -5581,10 +5629,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         Console.Error.WriteLine(
             $"[OutfitCleanup] links={links} scene-worn={wornAttachItemIds.Count} cache-worn={cacheAttachIds.Count} " +
             $"| deleted dead={dead} target-in-trash={trashedTarget} unworn-attachment={unworn} duplicate={duplicate} " +
+            $"missing-target={missingTarget} " +
             $"(via RemoveItems, AIS={_client.AisClient?.IsAvailable}) " +
             $"| kept worn={wornSkipped} clothing/bodypart={wearableSkipped} uncached={uncachedSkipped}");
 
-        return new OutfitCleanupResult(dead, trashedTarget, unworn);
+        return new OutfitCleanupResult(dead + missingTarget, trashedTarget, unworn);
     }
 
     /// <summary>

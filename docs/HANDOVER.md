@@ -5,7 +5,7 @@
 
 ---
 
-# 2026-09-03 (later) — `v0.20.51` → `v0.20.58`
+# 2026-09-03 (later) — `v0.20.51` → `v0.20.59`
 
 **`v0.20.50`'s log was unusable.** `godot.log`'s body came back as 437 kB of NUL bytes (the
 engine's buffered log loses everything unflushed when a session doesn't end cleanly), so the
@@ -233,6 +233,24 @@ unresolved is skipped individually as before, so the relaxed gate cannot delete 
 understand -- and `sceneReady`, the half that actually caused the v0.20.36 grey-avatar regression,
 is untouched.
 
+### `v0.20.59` -- ten COF links pointing at one vanished item
+
+`v0.20.58`'s cleanup ran for the first time and removed the two `(nicht aktiv)` attachments
+(`unworn-attachment=2`, `AIS=True`). The same log line carries the next problem though:
+`uncached=10` links against exactly **one** distinct unresolved target -- the cleanup counts
+uncached per link, the fetch deduplicates per target. Ten Current-Outfit links all point at the
+same item, and the server did not return it (`resolved 0/1`). It is gone.
+
+Those ten were skipped every run, forever: the `uncached` branch is deliberately conservative about
+an item in a folder nobody fetched, and could not tell that apart from a deleted one. A third of
+this COF was untouchable dead weight.
+
+`ResolveCofLinkTargetsAsync` now returns the targets it asked for and did not get, and the cleanup
+deletes their links as `missing-target`. The safe distinction is *we never asked* versus *we asked
+and the server said no*: only a clean fetch licenses the verdict (cancelled/timed out/throwing
+returns `null` and nothing is treated as missing), and a target never asked for is skipped exactly
+as before.
+
 ### What to check in the next live session
 
 1. The shins under two alpha layers: still a jagged translucent patchwork, or solid skin with a
@@ -257,6 +275,9 @@ is untouched.
 8. „Outfit aufräumen": sollte jetzt `[OutfitCleanup] resolved N/10 previously-uncached COF link
    target(s)` loggen und danach wirklich aufräumen statt zu deferren. Die beiden `(nicht aktiv)`
    Anhänge sollten verschwinden.
+9. `[OutfitCleanup] link targets: … distinct uncached target(s) … still missing …` -- wenn dort
+   `missing-target=N` in der Löschzeile auftaucht, sind die toten Links endlich weg. Danach sollte
+   `uncached=` deutlich kleiner sein.
 
 ---
 
