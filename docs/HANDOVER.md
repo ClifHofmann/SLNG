@@ -5,40 +5,40 @@
 
 ---
 
-# 2026-09-03 — BUG-AVATAR-03: alpha-layer swap needs a manual rebake (and races cof_version)
+# 2026-09-03 — BUG-AVATAR-03: rebake drops worn attachments; auto-rebake reverted
 
-**`v0.20.37`** — user: *"Wechsel von Alphas … noch nicht sauber"* → *"auch nach Rebake wird das
-Alpha nicht angewendet"* → *"jetzt ging es aber erst nach manuellem Rebake"*. Agni/*Millenium*.
+**`v0.20.38`** reverts **`v0.20.37`** (`df99875`) in full.
 
-Two causes:
-1. `WearWearableAsync` / `RemoveWearableAsync` recorded the COF change (AIS link delete+create,
-   `AgentIsNowWearing`) but fired **no rebake** — logged "becomes visible after a rebake" and
-   left it to the user's Ctrl+Alt+R.
-2. `RequestServerSideRebakeAsync` → `RequestSetAppearance(forceRebake:true)` POSTs `{cof_version}`;
-   fired right after the AIS edits it races a stale `cof_version` → the sim composites the
-   **previous** outfit. Intermittent — a later retry catches the bumped version. Agni cap
-   rate-limiting (`Caps rate limiter queue full`, `FetchInventory2` `TaskCanceledException` spam)
-   widened the window.
+User, mid alpha-layer fiddling on Agni: *"mir fehlen jetzt schon das 2. mal Items nach dem
+Relog — die Haare sind nicht mehr angezogen und die Schuhe auch nicht"* → *"die Schuhe sind im
+Nachhinein aufgetaucht, die Haare nicht."*
 
-`[Appearance] correction suppressed: appearance writing is disabled` in that log is **unrelated**
-— the FEAT-AVATAR-01 param-order correction, deliberately off with `SendAppearance=false`, carries
-no wearable/alpha data.
+**Cause (B):** `RebakeAvatar` → `RequestServerSideRebakeAsync` →
+`_client.Appearance.RequestSetAppearance(forceRebake: true)` reconciles the worn set from a fresh
+COF fetch inside the call (`RezMultipleAttachmentsFromInv` in every rebake's log). With
+`SendAppearance = false` LMV's attachment/wearable cache is empty, so it rebuilds purely from that
+fetch — and on rate-limited Agni (`Caps rate limiter queue full`, `FetchInventory2` `A task was
+canceled` ×6) a COF link whose target doesn't resolve in the window is dropped. Log evidence: COF
+item count 43 → 39 → 41 across rebakes, `cof_version` bumping each time.
 
-**Fix:**
-- `ScheduleRebakeAfterWearableEdit()` — cancel-any-pending, 1.8 s debounce (coalesces a swap's
-  remove+wear into one rebake, lets AIS settle), then SSB-only `RequestServerSideRebakeAsync()`.
-  Called from both `WearWearableAsync` and `RemoveWearableAsync`. Non-SSB untouched.
-- `RequestServerSideRebakeAsync` now `FetchInventoryChildrenAsync(cofUuid)` **before** the cap
-  POST, so `cof_version` reflects the edit — also hardens the manual Ctrl+Alt+R path.
-- `_wearableRebakeCts` disposed in `Dispose()`.
+**Why revert `v0.20.37`:** it auto-fired that exact call after *every* wearable edit (was: only
+on the user's Ctrl+Alt+R) and added a COF fetch right before it — i.e. it ran the
+attachment-dropping path far more often and raised the rate-limit pressure that triggers the drop.
+Net: it made the data loss worse. `git revert df99875`, AppVersion → `v0.20.38-alpha`.
 
-Build + 570 tests + selftest 29/29. **Not yet re-verified in-world** — needs: swap an alpha, do
-nothing, body updates in a few seconds; check for a fresh `[SelfBake] channels …` after the
-`[Appearance] wearable edit settled — auto-rebake` line.
+**State now:** `v0.20.36` behaviour. Problem A is back (a wearable/alpha edit needs a manual
+rebake to show). Problem B is no longer amplified but the manual Ctrl+Alt+R path is unchanged and
+still risky on a busy grid.
 
-Watch: the `FetchInventory2` `TaskCanceledException` spam (6× before logout) — likely just
-shutdown teardown, but the inventory search crawl (`v0.20.35`, `MaxSearchFolderLoads=800`) could
-pile onto a rate-limited grid; lower the cap if it recurs.
+**Tell the user:** to see a wearable change, **relog** rather than Ctrl+Alt+R — the sim
+re-composites on its own from the `cof_version` bump. Don't spam the rebake button.
+
+**Real fix (BUG-AVATAR-03 spec, not built):** POST `{ cof_version }` to the
+`UpdateAvatarAppearance` cap **directly** via `HttpCapsClient.PostAsync` (same bypass the
+RenderMaterials query and `FetchOneBatchAsync` already use) — a pure nudge that never touches the
+worn set. Then the auto-rebake can safely come back on top of it.
+
+Build + 570 tests + selftest 29/29.
 
 ---
 

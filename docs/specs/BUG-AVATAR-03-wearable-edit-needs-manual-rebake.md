@@ -1,63 +1,68 @@
-# [BUG-AVATAR-03] A system-wearable edit (esp. swapping an alpha layer) isn't visible without a manual rebake — and sometimes not even then
+# [BUG-AVATAR-03] Wearable/alpha edit not visible without a rebake — and the rebake drops worn attachments
 
 - **Feature ID:** `BUG-AVATAR-03`
 - **Track:** `net`
-- **Status:** `🧪 Review`
+- **Status:** `🚧 In Progress` — first fix attempt reverted (made it worse); real cause identified.
 - **Owner:** `claude`
-- **Depends on:** `FEAT-AVATAR-01` (system-wearable wear/remove on SSB), `BUG-AVATAR-01`
-  (`RebakeAvatar` → `RequestServerSideRebakeAsync` on SSB)
-- **Reported:** live, Agni / region *Millenium*, 2026-09-03. *"Ich kämpfe grad wieder mit dem
-  Wechsel von Alphas, das ist noch nicht sauber."* → *"Auch nach Rebake wird das Alpha nicht
-  angewendet."* → *"Jetzt ging es aber erst nach manuellem Rebake."*
+- **Depends on:** `FEAT-AVATAR-01`, `BUG-AVATAR-01` (`RebakeAvatar` → `RequestServerSideRebakeAsync`)
+- **Reported:** live, Agni / *Millenium*, 2026-09-03. *"Wechsel von Alphas … noch nicht sauber"* →
+  *"auch nach Rebake wird das Alpha nicht angewendet"* → *"jetzt ging es aber erst nach manuellem
+  Rebake"* → ***"mir fehlen jetzt schon das 2. mal Items nach dem Relog — die Haare sind nicht
+  mehr angezogen und die Schuhe auch nicht"*** → *"die Schuhe sind im Nachhinein aufgetaucht, die
+  Haare nicht."*
 
-## Symptom
+## Two problems, and they pull in opposite directions
 
-Swapping one alpha-layer wearable for another (`RemoveWearableAsync(old)` + `WearWearableAsync(new)`)
-records the change server-side (COF link delete + create via AIS, `AgentIsNowWearing` UDP) but the
-avatar's body does not update. Pressing **Ctrl+Alt+R** usually fixes it after a delay; sometimes
-even that doesn't apply the new alpha and it takes a second try.
+### A — a wearable edit isn't visible until a rebake
+`WearWearableAsync` / `RemoveWearableAsync` record the COF change (AIS link delete/create,
+`AgentIsNowWearing`) and log *"becomes visible after a rebake"*, leaving the rebake to the user's
+**Ctrl+Alt+R**. Swapping an alpha layer looks like it did nothing.
 
-## Why
+### B — the rebake (`RequestSetAppearance`) drops worn attachments  ← the serious one
+`RebakeAvatar` → `RequestServerSideRebakeAsync` → `_client.Appearance.RequestSetAppearance(forceRebake: true)`.
+On SSB that is meant to be a `{ cof_version }` POST to `UpdateAvatarAppearance`, but LibreMetaverse
+also **reconciles the worn set from the COF** inside that call (`RezMultipleAttachmentsFromInv` is
+in every rebake's log). With `SendAppearance = false` LMV's wearable/attachment cache is **empty**,
+so it rebuilds the set purely from a fresh COF fetch — and on Agni that fetch is rate-limited
+(`Caps rate limiter queue full`, repeated `Failed getting data from FetchInventory2 … A task was
+canceled`). A COF link whose target does not resolve in that window is treated as stale, and the
+reconcile **drops it**. Observed: COF item count moving 43 → 39 → 41 across rebakes, `cof_version`
+bumping each time, and worn attachments (hair, shoes) gone after the next relog — shoes came back
+on a later server re-sync, the hair link did not.
 
-1. **Nothing triggered a rebake.** `WearWearableAsync` / `RemoveWearableAsync` ended with a log
-   line literally saying *"becomes visible after a rebake"* — and left that rebake to the user.
-   On a server-side-baking region (SL) the sim will re-composite on its own eventually, but not
-   promptly, so the edit "did nothing" until Ctrl+Alt+R.
-2. **The rebake raced `cof_version`.** `RebakeAvatar` → `RequestServerSideRebakeAsync` →
-   `_client.Appearance.RequestSetAppearance(forceRebake: true)`, which POSTs `{ cof_version }` to
-   the `UpdateAvatarAppearance` cap. Fired right after the AIS COF edits, LibreMetaverse's stored
-   `cof_version` can still be the pre-edit value, so the server composites the **previous** outfit
-   — "rebaked, nothing changed". A second manual rebake a while later picked up the new version,
-   which is the intermittent "sometimes works, sometimes not".
-3. Agni was rate-limiting this session's cap traffic hard (`Caps rate limiter queue full …`,
-   repeated `FetchInventory2` `TaskCanceledException`), which widens the window in (2).
+## What was tried and reverted
 
-`[Appearance] correction suppressed: appearance writing is disabled` in the same log is **not**
-this bug — that's the FEAT-AVATAR-01 param-order correction, deliberately suppressed while
-`SendAppearance` is off, and it carries no alpha/wearable data.
+**`v0.20.37` (reverted in `v0.20.38`):** auto-fired the rebake after every wearable edit
+(`ScheduleRebakeAfterWearableEdit`, 1.8 s debounce) and had `RequestServerSideRebakeAsync` fetch
+the COF first to beat a `cof_version` race. This **made B worse** — it ran the attachment-dropping
+`RequestSetAppearance` after *every* alpha edit instead of only when the user chose to, and the
+extra COF fetch added to the rate-limit pressure that causes the drop. Full revert of `df99875`.
 
-## Fix (`v0.20.37-alpha`)
+## Current state (`v0.20.38`)
 
-- **Auto-rebake after a wearable edit, debounced.** `WearWearableAsync` / `RemoveWearableAsync`
-  call new `ScheduleRebakeAfterWearableEdit()` — cancels any pending, waits **1.8 s** (so a swap's
-  remove+wear, or several layers, coalesce into one rebake and the AIS writes settle), then, on an
-  SSB region only, runs `RequestServerSideRebakeAsync()`. Non-SSB is untouched (the client-side
-  bake already runs through `OnAppearanceSet` / `SendCorrectedAppearance`).
-- **Re-read the COF before every SSB rebake.** `RequestServerSideRebakeAsync` now
-  `FetchInventoryChildrenAsync(cofUuid)` first, so LibreMetaverse's store — and the `cof_version`
-  it POSTs — reflects the edit. This also hardens the manual Ctrl+Alt+R path.
-- `_wearableRebakeCts` cancelled/disposed in `Dispose()`.
+Back to `v0.20.36` behaviour: a wearable edit does **not** auto-rebake; Ctrl+Alt+R still calls
+`RequestSetAppearance` unchanged. Problem A is back (need a manual rebake), problem B is at least
+no longer amplified. **Interim guidance for the user: prefer a relog over Ctrl+Alt+R to see a
+wearable change — the sim re-composites on its own from the `cof_version` bump — and do not spam
+the rebake, each call is a chance to lose an attachment on a busy grid.**
 
-## Still open / to verify in-world
+## Real fix — direction, not yet built
 
-- **Not yet re-verified in-world.** Confirm: swap an alpha, do nothing → body updates within a
-  few seconds; and that the "even a manual rebake didn't apply it" case is gone (COF re-read
-  should close it).
-- If it still intermittently fails after this, the next suspect is the sim genuinely not acting on
-  `RequestSetAppearance` under cap rate-limiting, or SLNG not re-processing the fresh
-  `AvatarAppearance` — capture a `--diag` log and check for a new `[SelfBake] channels …` line
-  (new bake ids) after the auto-rebake message.
-- Alpha layers **stack** in SL; SLNG matches that (`WearableRules.ReplacesSameType` is false for
-  Clothing/Alpha), so "switching" means the user must also take the old one off. Not a bug, but a
-  candidate for a future "replace alpha" convenience.
-- Tune the 1.8 s debounce against how long AIS actually takes to bump `cof_version` on a busy sim.
+Stop routing the SSB rebake through LibreMetaverse's `RequestSetAppearance` at all. SLNG should
+POST `{ cof_version }` to the `UpdateAvatarAppearance` capability **directly**
+(`HttpCapsClient.PostAsync`, the same way `FetchOneBatchAsync` / the RenderMaterials query already
+bypass LMV) — a pure nudge that never touches the worn set. Needs: the cap URL from
+`CurrentSim.Caps.CapabilityURI("UpdateAvatarAppearance")`, and the current `cof_version` (the COF
+folder's `Version` in the store, or track the value from the sim's `Requesting bake for COF
+version N` path). Then the auto-rebake from `v0.20.37` becomes safe to reinstate on top of it.
+
+Also worth pinning: does LMV's reconcile drop the COF **link** server-side (durable) or only its
+own local view? The relog persistence says at least the hair link did not come back — treat it as
+durable until proven otherwise.
+
+## Acceptance
+
+- A wearable/alpha edit becomes visible without a manual rebake **and** without ever changing the
+  worn attachment set.
+- N rebakes in a row (manual or auto) never remove a worn attachment, on a rate-limited grid.
+- Test coverage for the direct `UpdateAvatarAppearance` POST shape where there's a surface.

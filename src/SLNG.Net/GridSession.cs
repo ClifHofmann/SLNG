@@ -3506,17 +3506,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         try
         {
-            // Refresh the COF first so LibreMetaverse's store -- and the cof_version it POSTs to
-            // the UpdateAvatarAppearance cap -- reflects any wearable edit that just happened. A
-            // rebake fired on a stale cof_version composites the PREVIOUS outfit, which is exactly
-            // the "switched the alpha, rebaked, nothing changed" report (live, Agni 2026-09-03).
-            var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
-            if (cofUuid != LibreMetaverse.UUID.Zero)
-            {
-                try { await FetchInventoryChildrenAsync(cofUuid.Guid).ConfigureAwait(false); }
-                catch (Exception ex) { Console.Error.WriteLine($"[Appearance] COF refresh before rebake failed: {ex.Message}"); }
-            }
-
             await _client.Appearance.RequestSetAppearance(forceRebake: true).ConfigureAwait(false);
             Console.Error.WriteLine("[Appearance] RequestSetAppearance(forceRebake: true) sent -- " +
                 "watch for a fresh AvatarAppearance from the sim");
@@ -3525,42 +3514,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             Console.Error.WriteLine($"[Appearance] server-side rebake failed: {ex.Message}");
         }
-    }
-
-    private System.Threading.CancellationTokenSource? _wearableRebakeCts;
-
-    /// <summary>Second Life only shows a system-wearable edit (wear / take off / swap an alpha
-    /// layer) once the avatar re-bakes. SLNG used to leave that to the user pressing Ctrl+Alt+R;
-    /// this fires the same rebake automatically, debounced so a swap (a take-off + a wear, or
-    /// several layers at once) coalesces into ONE rebake ~1.8 s after the last edit settles. The
-    /// delay also lets the AIS COF writes bump <c>cof_version</c> before the sim composites, and
-    /// <see cref="RequestServerSideRebakeAsync"/> re-reads the COF first for the same reason.</summary>
-    private void ScheduleRebakeAfterWearableEdit()
-    {
-        _wearableRebakeCts?.Cancel();
-        var cts = _wearableRebakeCts = new System.Threading.CancellationTokenSource();
-        var token = cts.Token;
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await Task.Delay(TimeSpan.FromMilliseconds(1800), token).ConfigureAwait(false);
-                if (token.IsCancellationRequested || !_client.Network.Connected) return;
-
-                // SSB only: RequestServerSideRebakeAsync (COF re-read + forceRebake cap POST) is
-                // the whole mechanism. On a non-SSB region the client-side bake runs through
-                // OnAppearanceSet / SendCorrectedAppearance already; nothing to trigger here.
-                if (!RegionHasServerSideBaking())
-                {
-                    Console.Error.WriteLine("[Appearance] wearable edit settled — non-SSB region, no auto-rebake");
-                    return;
-                }
-                Console.Error.WriteLine("[Appearance] wearable edit settled — auto-rebake");
-                await RequestServerSideRebakeAsync().ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex) { Console.Error.WriteLine($"[Appearance] auto-rebake failed: {ex.Message}"); }
-        });
     }
 
     // Both blockers are now handled, each by a guard that refuses to send rather than guessing:
@@ -3693,9 +3646,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             SendAgentIsNowWearing(CollectWornWearablesFromCof(extra: (wearable.UUID, type)));
 
             Console.Error.WriteLine($"[Appearance] wore \"{wearable.Name}\" ({wearable.AssetType}) " +
-                "-- recorded server-side; auto-rebake scheduled");
+                "-- recorded server-side; becomes visible after a rebake");
             WornItemsChanged?.Invoke(this, EventArgs.Empty);
-            ScheduleRebakeAfterWearableEdit();
         }
         catch (Exception ex)
         {
@@ -3797,9 +3749,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         SendAgentIsNowWearing(CollectWornWearablesFromCof(excludeItem: wearable.UUID));
         Console.Error.WriteLine($"[Appearance] removed \"{wearable.Name}\" ({wearable.AssetType}) " +
-            $"-- {removed} outfit link(s) removed, recorded server-side; auto-rebake scheduled");
+            $"-- {removed} outfit link(s) removed, recorded server-side; becomes visible after a rebake");
         WornItemsChanged?.Invoke(this, EventArgs.Empty);
-        ScheduleRebakeAfterWearableEdit();
 
         return new DetachResult(false, removed, WearableRemoved: true);
     }
@@ -6829,7 +6780,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         _parcelEnvironmentPollCts.Cancel();
         _parcelEnvironmentPollCts.Dispose();
-        try { _wearableRebakeCts?.Cancel(); _wearableRebakeCts?.Dispose(); } catch { }
         _client.Self.ChatFromSimulator -= OnChatFromSimulator;
         _client.Objects.ObjectUpdate -= OnObjectUpdate;
         _client.Objects.TerseObjectUpdate -= OnTerseObjectUpdate;
