@@ -47,6 +47,21 @@ Net: one 403, then the texture is dead for the session — no LMV pipeline churn
 cycle, and the face settles to a stable untextured state instead of blinking. A restart clears
 the sets (in case a 403 was somehow transient).
 
+## Follow-up (`v0.20.42-alpha`) — an untextured hair face rendered inside-out
+
+User, after `v0.20.40`: *"bei den Haaren kann man jetzt 'falsch' durchschauen, als ob innen und
+außen vertauscht ist."* Making the denial permanent exposed a pre-existing gap: a hair face
+whose texture never loads has no per-pixel alpha to cut it into strands, and if it was heading
+for `Kind.Blend` only because of a soft per-face **tint**, it renders as a translucent
+DOUBLE-SIDED card (the Avatar surface shader is `cull_disabled`) with no depth write — overlapping
+cards then sort against each other unpredictably (the "inside/outside swapped" look). Before
+`v0.20.40` the texture flickered in often enough to mask it; now it's permanent.
+
+Fix in `BuildFaceMaterialAsync`'s `built == null` branch: if `kind == Blend` purely from a tint
+with `tint.A > 0.02` (and not a HUD), fall back to `Kind.Opaque` — a solid flat-colour shape is
+far less broken than a see-through ghost. A genuinely-hidden face (`tint.A ≈ 0`, a common way to
+hide a mesh face) is left alone.
+
 ## Still open / verify
 
 - **Not re-verified in-world.** Confirm the hair face stops flickering and the

@@ -25,6 +25,14 @@ untextured state. Restart clears it. 575 tests / format / shaders / selftest cle
 **Verify:** hair face stops flickering, one `[TextureGiveUp] … sim denied it` per denied id then
 silence (no more `Forbidden` bursts).
 
+**Follow-up `v0.20.41` (BUG-RENDER-09):** BoM alpha-layer mask → `Kind.Blend` instead of the
+banding `Scissor`, scoped to `wasBom && ClassifyAlpha==Scissor`.
+
+**Follow-up `v0.20.42` (BUG-RENDER-10):** user then reported the hair "innen und außen
+vertauscht" — an untextured face heading for `Kind.Blend` only via a soft tint renders as a
+translucent double-sided card (Avatar surface `cull_disabled`), no depth write → cards sort
+wrong. `built == null` branch now falls `Blend`-from-tint back to `Opaque` when `tint.A > 0.02`.
+
 ---
 
 # 2026-09-03 — BUG-AVATAR-03 real fix: direct `{cof_version}` cap POST (`v0.20.39`)

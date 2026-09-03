@@ -1519,6 +1519,19 @@ public partial class AvatarRenderer : Node3D
             GD.PrintErr($"[FaceTex] texture {texId} fetch/decode returned null — face renders untextured" +
                 (rejectDegraded ? " (degraded decodes refused for this surface)" : ""));
             LogHudFace(surface, meshId, faceIndex, ft, tint, $"NULL from fetch/decode (tex {texId})");
+
+            // With no texture there is no per-pixel alpha to cut the face into shape. If it was
+            // only heading for Blend because of a soft per-face TINT (common on hair), that leaves
+            // a translucent DOUBLE-SIDED card (the Avatar surface shader is cull_disabled) with no
+            // depth write, so overlapping cards sort against each other unpredictably — "you can
+            // see through the hair wrong, inside and outside swapped" (live 2026-09-03, after a
+            // hair texture went permanently 403 / BUG-RENDER-10). A solid opaque flat-colour shape
+            // is far less broken. Keep a genuinely-hidden face (tint alpha ~0 — some worn meshes
+            // zero a face's tint to hide it) and HUD faces untouched.
+            if (kind == PrimShaderFamily.Kind.Blend && tint.A > 0.02f
+                && surface != PrimShaderFamily.Surface.Hud)
+                kind = PrimShaderFamily.Kind.Opaque;
+
             return FinishFaceMaterial(material, kind, scissorThreshold, surface);
         }
 
