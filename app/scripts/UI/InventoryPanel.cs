@@ -432,6 +432,10 @@ public partial class InventoryPanel : SLNGWindow
         if (id == 0) _ = DetachWornAsync(itemId);
     }
 
+    /// <summary>Status text computed off-thread by <see cref="DetachWornAsync"/>, consumed by
+    /// <see cref="FinishDetachWorn"/> on the main thread.</summary>
+    private string _wornActionStatus = "";
+
     private async System.Threading.Tasks.Task DetachWornAsync(Guid itemId)
     {
         if (_session == null) return;
@@ -439,19 +443,27 @@ public partial class InventoryPanel : SLNGWindow
 
         var result = await _session.DetachItemAsync(itemId).ConfigureAwait(false);
 
-        Callable.From(() =>
-        {
-            if (!IsInstanceValid(this)) return;
-            _wornStatus.Text = result.WearableRemoved
-                ? "Wearable entfernt — Server bäckt neu…"
-                : result.WasAttached
-                    ? "Abgelegt."
-                    : result.StaleLinksRemoved > 0
-                        ? $"War nicht getragen — {result.StaleLinksRemoved} veraltete(n) Outfit-Link entfernt."
-                        : "War nicht getragen.";
-            RefreshWorn();
-            if (_session.CurrentOutfitFolderId is { } cofId) RefreshFolder(cofId);
-        }).CallDeferred();
+        _wornActionStatus = result.WearableRemoved
+            ? "Wearable entfernt — Server bäckt neu…"
+            : result.WasAttached
+                ? "Abgelegt."
+                : result.StaleLinksRemoved > 0
+                    ? $"War nicht getragen — {result.StaleLinksRemoved} veraltete(n) Outfit-Link entfernt."
+                    : "War nicht getragen.";
+
+        // The Godot main thread has no SynchronizationContext, so this continuation is on a
+        // worker thread. Marshal back with CallDeferred by METHOD NAME -- Callable.From(lambda)
+        // .CallDeferred() from a worker thread is the BUG-RENDER-01 anti-pattern (can crash or
+        // silently never dispatch, which is exactly why "Ablegen" appeared to do nothing).
+        CallDeferred(nameof(FinishDetachWorn));
+    }
+
+    private void FinishDetachWorn()
+    {
+        if (!IsInstanceValid(this) || _session == null) return;
+        _wornStatus.Text = _wornActionStatus;
+        RefreshWorn();
+        if (_session.CurrentOutfitFolderId is { } cofId) RefreshFolder(cofId);
     }
 
     // FEAT-INV-03: prune the Current Outfit. Synchronous — reads the LibreMetaverse inventory
@@ -1090,26 +1102,9 @@ public partial class InventoryPanel : SLNGWindow
 
         await _session.AttachItemAsync(itemId).ConfigureAwait(false);
 
-        Callable.From(() =>
-        {
-            if (!IsInstanceValid(this)) return;
-            _status.Text = "Attached.";
-            if (_session.CurrentOutfitFolderId is { } cofId)
-            {
-                RefreshFolder(cofId);
-            }
-            var selectedItem = _tree.GetSelected();
-            var parentItem = selectedItem?.GetParent();
-            if (parentItem != null)
-            {
-                var parentMetaStr = parentItem.GetMetadata(0).AsString();
-                var parentIdStr = parentMetaStr.Contains(',') ? parentMetaStr.Split(',')[0] : parentMetaStr;
-                if (Guid.TryParse(parentIdStr, out var parentId))
-                {
-                    RefreshFolder(parentId);
-                }
-            }
-        }).CallDeferred();
+        _treeActionStatus = "Attached.";
+        // Worker thread -- marshal by method name (BUG-RENDER-01), not Callable.From(lambda).
+        CallDeferred(nameof(FinishTreeItemAction));
     }
 
     private async System.Threading.Tasks.Task DetachAndRefreshAsync(Guid itemId, string[] parts)
@@ -1130,7 +1125,7 @@ public partial class InventoryPanel : SLNGWindow
         // "Detached." unconditionally was the misleading part of the original report: for an item
         // that only had a stale Current-Outfit link the detach packet is a server-side no-op, so
         // the row stayed exactly as it was under a success message. Say which of the two happened.
-        string status = result.WearableRemoved
+        _treeActionStatus = result.WearableRemoved
             ? "Wearable removed — server re-baking…"
             : result.WasAttached
                 ? "Detached."
@@ -1138,26 +1133,27 @@ public partial class InventoryPanel : SLNGWindow
                     ? $"Was not attached — removed {result.StaleLinksRemoved} stale outfit link(s)."
                     : "Was not attached, and no outfit link found.";
 
-        Callable.From(() =>
+        // Worker thread here (no SynchronizationContext on Godot's main thread) -- marshal by
+        // method name, never Callable.From(lambda).CallDeferred() (BUG-RENDER-01).
+        CallDeferred(nameof(FinishTreeItemAction));
+    }
+
+    /// <summary>Status text for the main-tree Wear/Detach actions, set off-thread and consumed by
+    /// <see cref="FinishTreeItemAction"/>.</summary>
+    private string _treeActionStatus = "";
+
+    private void FinishTreeItemAction()
+    {
+        if (!IsInstanceValid(this) || _session == null) return;
+        _status.Text = _treeActionStatus;
+        if (_session.CurrentOutfitFolderId is { } cofId) RefreshFolder(cofId);
+        var parentItem = _tree.GetSelected()?.GetParent();
+        if (parentItem != null)
         {
-            if (!IsInstanceValid(this)) return;
-            _status.Text = status;
-            if (_session.CurrentOutfitFolderId is { } cofId)
-            {
-                RefreshFolder(cofId);
-            }
-            var selectedItem = _tree.GetSelected();
-            var parentItem = selectedItem?.GetParent();
-            if (parentItem != null)
-            {
-                var parentMetaStr = parentItem.GetMetadata(0).AsString();
-                var parentIdStr = parentMetaStr.Contains(',') ? parentMetaStr.Split(',')[0] : parentMetaStr;
-                if (Guid.TryParse(parentIdStr, out var parentId))
-                {
-                    RefreshFolder(parentId);
-                }
-            }
-        }).CallDeferred();
+            var parentMetaStr = parentItem.GetMetadata(0).AsString();
+            var parentIdStr = parentMetaStr.Contains(',') ? parentMetaStr.Split(',')[0] : parentMetaStr;
+            if (Guid.TryParse(parentIdStr, out var parentId)) RefreshFolder(parentId);
+        }
     }
 
     /// <summary>Teleports to a landmark's asset id. If that id is still <see cref="Guid.Empty"/>

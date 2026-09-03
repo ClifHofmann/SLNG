@@ -25,6 +25,18 @@ against `GridSession`'s inventory + worn-item API.
 
 ## Fixed so far
 
+### "Ablegen" in the Worn tab (and Wear/Detach in the main tree) did nothing (`v0.20.34-alpha`)
+`DetachWornAsync`, `DetachAndRefreshAsync`, `AttachAndRefreshAsync` all did
+`await …Async().ConfigureAwait(false)` and then `Callable.From(lambda).CallDeferred()` from the
+resulting **worker thread** — Godot's main thread has no `SynchronizationContext`
+(`UserProfileWindow.cs:898`, `WorldMapWindow.cs:23`), so this is the `BUG-RENDER-01` anti-pattern:
+`Callable.From(lambda).CallDeferred()` off the main thread can crash or **silently never
+dispatch**. The detach/attach packet itself is sent *before* that line, so the server action may
+have been happening all along — but the status text and the list/tree refresh never ran, so it
+"did nothing" from the user's side. Converted all three to `CallDeferred(nameof(Finish…))` on a
+named method (status computed off-thread into a field), matching `RefreshWornIfVisible`'s existing
+safe pattern in the same file. **Not yet re-verified in-world** on a genuinely-worn attachment.
+
 ### "Outfit aufräumen" — trashed COF links reappeared (`v0.20.33-alpha`)
 User: the Heol Star bracelet/earrings show as worn "(nicht aktiv)" but are **not on the avatar**;
 `Outfit aufräumen` removes them, they *"kurz verschwinden, tauchen aber wieder auf"*.
