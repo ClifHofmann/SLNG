@@ -81,11 +81,75 @@ public static class ConsoleToGodotLog
                 string text = _line.ToString();
                 _line.Clear();
 
+                PerfSidecar.MaybeWrite(text);
+
                 // GD.PrintErr is what lands in godot.log as an error entry; stderr from the
                 // libraries is where the failure diagnostics live, so keep the distinction.
                 if (_isError) GD.PrintErr(text);
                 else GD.Print(text);
             }
+        }
+    }
+}
+
+/// <summary>
+/// Mirrors the handful of PERFORMANCE diagnostic lines into their own always-flushed file next to
+/// <c>godot.log</c>.
+///
+/// <para>Why this exists: godot.log is buffered by the engine, and a session that ends by anything
+/// other than a clean shutdown loses whatever had not reached disk. On Windows that shows up as a
+/// log whose body is one enormous run of NUL bytes with only the pre-login and post-logout lines
+/// intact -- which is exactly what happened to the v0.20.50 session whose <c>[TexPipe]</c> /
+/// <c>[GpuCache]</c> counters were the whole point of shipping that build (2026-09-03). Losing a
+/// live measurement costs a full round-trip through the user, so the two lines that answer "where
+/// is the texture pipeline actually spending its time" are written straight through instead.</para>
+///
+/// <para>Deliberately an allowlist of exact prefixes, not a tee of everything: these are periodic
+/// summary lines (one per 200 requests), a few dozen per session, so an unbuffered write per line
+/// costs nothing. Do not add per-object or per-frame tags here.</para>
+/// </summary>
+internal static class PerfSidecar
+{
+    private static readonly string[] _prefixes = { "[TexPipe]", "[GpuCache]" };
+
+    private static StreamWriter? _writer;
+    private static bool _failed;
+    private static readonly object _gate = new();
+
+    internal static void MaybeWrite(string line)
+    {
+        bool wanted = false;
+        foreach (var p in _prefixes)
+        {
+            if (line.StartsWith(p, StringComparison.Ordinal)) { wanted = true; break; }
+        }
+        if (!wanted) return;
+
+        lock (_gate)
+        {
+            if (_failed) return;
+            if (_writer == null)
+            {
+                try
+                {
+                    string dir = ProjectSettings.GlobalizePath("user://logs");
+                    Directory.CreateDirectory(dir);
+                    // Truncate: one file per session, so reading it never means working out which
+                    // half belongs to the run being investigated.
+                    _writer = new StreamWriter(
+                        new FileStream(Path.Combine(dir, "slng-perf.log"), FileMode.Create,
+                                       System.IO.FileAccess.Write, FileShare.ReadWrite))
+                    { AutoFlush = true };
+                }
+                catch
+                {
+                    _failed = true;
+                    return;
+                }
+            }
+
+            try { _writer.WriteLine($"{DateTime.Now:HH:mm:ss} {line}"); }
+            catch { _failed = true; }
         }
     }
 }

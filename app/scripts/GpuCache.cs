@@ -262,17 +262,49 @@ public class GpuCache
     // rejectDegraded-bypass fix; this says whether GetOrUploadTextureAsync hits its own _cache.
     private int _gpuGet, _gpuGetHit, _gpuGetBypassDegraded;
 
+    // Time-gated, NOT every-N-gets. The first version dumped every 200 gets on the assumption that
+    // a session makes a few thousand; a live v0.20.52 session made **7.2 million** (ObjectRenderer
+    // re-offers every used texture id of every culled object at 4 Hz), so it wrote 45 061 of the
+    // log's 49 273 lines and buried everything else. One line every 10 s is enough to watch a
+    // trend and cannot swamp the log however hot the call site turns out to be.
+    private static readonly System.Diagnostics.Stopwatch _gpuStatsClock = System.Diagnostics.Stopwatch.StartNew();
+    private long _gpuStatsNextMs;
+    private const long GpuStatsIntervalMs = 10_000;
+
     private void MaybeDumpGpuCacheStats(bool hit, bool bypassedDegraded)
     {
         int n = System.Threading.Interlocked.Increment(ref _gpuGet);
         if (hit) System.Threading.Interlocked.Increment(ref _gpuGetHit);
         if (bypassedDegraded) System.Threading.Interlocked.Increment(ref _gpuGetBypassDegraded);
-        if (n % 200 != 0) return;
-        int entries, degraded; long sizeMb;
-        lock (_cache) { entries = _cache.Count; sizeMb = _currentSize >> 20; }
+
+        long now = _gpuStatsClock.ElapsedMilliseconds;
+        long due = System.Threading.Interlocked.Read(ref _gpuStatsNextMs);
+        if (now < due) return;
+        // Claim the slot so a burst of concurrent gets emits one line, not one per thread.
+        if (System.Threading.Interlocked.CompareExchange(ref _gpuStatsNextMs, now + GpuStatsIntervalMs, due) != due) return;
+        int entries, degraded, pinned; long sizeMb, pinnedMb;
+        lock (_cache)
+        {
+            entries = _cache.Count;
+            sizeMb = _currentSize >> 20;
+            // pinned = entries EvictIfNeeded can never reclaim (RefCount > 0). AvatarRenderer has
+            // no AddRef/ReleaseRef bookkeeping and Puts every avatar face texture with
+            // initialRefCount: 1 at FULL resolution, so this number is the whole question: if
+            // pinnedMB approaches the budget, the cache has no room left for object textures, they
+            // are evicted the moment they land, and ObjectRenderer's 4 Hz texture re-offer
+            // re-decodes them forever -- which is what [TexPipe] req=8800 on a static scene looks
+            // like. See docs/specs/BUG-NET-11-*.md.
+            pinned = 0; long pinnedBytes = 0;
+            foreach (var e in _cache.Values)
+            {
+                if (e.RefCount > 0) { pinned++; pinnedBytes += e.Size; }
+            }
+            pinnedMb = pinnedBytes >> 20;
+        }
         degraded = _uploadFromDegraded.Count;
         Console.Error.WriteLine($"[GpuCache] get={n} hit={_gpuGetHit} bypassDegraded={_gpuGetBypassDegraded} " +
-            $"entries={entries} sizeMB={sizeMb}/{_maxSize >> 20} degradedIds={degraded}");
+            $"entries={entries} sizeMB={sizeMb}/{_maxSize >> 20} pinned={pinned} pinnedMB={pinnedMb} " +
+            $"degradedIds={degraded} mainQueue={MainThreadWorkQueue.Depth}");
     }
 
     /// <summary>Fire-and-forget in-place sharpening of an already-cached texture, when the object
@@ -309,36 +341,40 @@ public class GpuCache
                 var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority).ConfigureAwait(false);
                 if (textureData == null) return;
 
+                // BUG-NET-11: same split as FetchAndUploadTextureAsync -- the image build happens
+                // here on the worker, the queued main-thread item does nothing but hand the
+                // finished pixels to the live ImageTexture.
+                var prepared = await PrepareImageAsync(textureId, textureData, generateMipmaps, screenPixelArea)
+                    .ConfigureAwait(false);
+                if (prepared.Image == null) return;
+
                 MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine, () =>
                 {
-                    if (!GodotObject.IsInstanceValid(cached)) return;
-                    
+                    var image = prepared.Image;
+                    if (!GodotObject.IsInstanceValid(cached))
+                    {
+                        image.Dispose();
+                        return;
+                    }
+
                     try
                     {
-                        var image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-                        image?.FixAlphaEdges();
-                        if (image == null) return;
-        
-                        int discard = ComputeDiscardLevel(image.GetWidth(), image.GetHeight(), screenPixelArea);
-                        if (discard > 0)
-                        {
-                            int targetW = Math.Max(8, image.GetWidth() >> discard);
-                            int targetH = Math.Max(8, image.GetHeight() >> discard);
-                            if (targetW < image.GetWidth() || targetH < image.GetHeight())
-                                image.Resize(targetW, targetH, Image.Interpolation.Lanczos);
-                        }
-                        if (generateMipmaps) image.GenerateMipmaps();
-        
                         int finalW = image.GetWidth(), finalH = image.GetHeight();
                         cached.SetImage(image);
-                        image.Dispose();
-                        
-                        if (discard <= 0) _uploadedForPixelArea.TryRemove(textureId, out _);
-                        Logger.Info($"[GpuSharpen] {textureId.ToString()[..8]} now discard={discard} uploaded={finalW}x{finalH}");
+
+                        // UploadedForPixelArea is 0 exactly when the re-decode came out at full
+                        // resolution, i.e. there is nothing left to sharpen -- drop the entry so
+                        // this texture stops being an upgrade candidate for the rest of the session.
+                        if (prepared.UploadedForPixelArea <= 0f) _uploadedForPixelArea.TryRemove(textureId, out _);
+                        Logger.Info($"[GpuSharpen] {textureId.ToString()[..8]} now uploaded={finalW}x{finalH}");
                     }
                     catch (Exception ex)
                     {
                         GD.PrintErr($"[GpuCache] texture {textureId} sharpen failed: {ex.Message}");
+                    }
+                    finally
+                    {
+                        image.Dispose();
                     }
                 }, label: "texture.sharpen");
             }
@@ -359,6 +395,84 @@ public class GpuCache
         double texels = (double)width * height;
         int discard = (int)Math.Floor(Math.Log(texels / Math.Max(screenPixelArea, 1f)) / Math.Log(4.0));
         return Math.Clamp(discard, 0, SLNG.Net.J2kByteSizeEstimator.MaxDiscardLevel);
+    }
+
+    /// <summary>The CPU half of a texture upload: decode-buffer to <see cref="Image"/>, alpha-edge
+    /// fix, optional LOD downsample, mipmaps. Everything here is pure pixel work on a
+    /// <see cref="Image"/>'s own byte array with no RenderingServer involvement, so it belongs on a
+    /// worker thread -- see the call site for what leaving it on the main thread cost.</summary>
+    private readonly record struct PreparedImage(Image? Image, float UploadedForPixelArea);
+
+    /// <summary>Bounds the concurrent CPU image work the same way AssetService bounds J2K decode.
+    /// An unbounded <c>Task.Run</c> per texture is what made the decode path's measured "91 ms"
+    /// mostly thread-pool queueing rather than real work (BUG-NET-11, v0.20.48); do not repeat it
+    /// one stage later. Two cores left for the Godot main thread + GC.</summary>
+    private static readonly SemaphoreSlim _imagePrepGate =
+        new(Math.Max(2, System.Environment.ProcessorCount - 2));
+
+    private static async Task<PreparedImage> PrepareImageAsync(
+        Guid textureId, SLNG.Assets.TextureData textureData, bool generateMipmaps, float screenPixelArea)
+    {
+        // Task.Run unconditionally, even though FetchAndUploadTextureAsync is normally already on a
+        // worker: GetTextureAsync returns a COMPLETED task on an AssetService memory-cache hit, so
+        // the await above resumes inline on whatever thread called GetOrUploadTextureAsync -- and
+        // ObjectRenderer calls it straight from _Process's cull sweep. Without this hop that case
+        // would run the whole image build on the main thread with no budget at all, which is worse
+        // than the queued version it replaces.
+        await _imagePrepGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            return await Task.Run(() =>
+            {
+                Image? image = null;
+                float uploadedFor = 0f;
+                try
+                {
+                    image = Image.CreateFromData(textureData.Width, textureData.Height, false,
+                        Image.Format.Rgba8, textureData.Rgba);
+                    image?.FixAlphaEdges();
+
+                    if (image != null && screenPixelArea > 0f)
+                    {
+                        int discard = ComputeDiscardLevel(image.GetWidth(), image.GetHeight(), screenPixelArea);
+                        // Behind --diag. It is one line per texture, which on a real region means
+                        // a couple of thousand -- fine when it went to a terminal nobody was
+                        // reading, but it now reaches godot.log (see ConsoleToGodotLog) and there
+                        // it buries the handful of lines that say why something is broken. This is
+                        // per-object asset logging, exactly what Diagnostics exists to gate.
+                        if (Diagnostics.Enabled && _uploadSizeLogged.TryAdd(textureId, 0))
+                            Console.Error.WriteLine($"[GpuUpload] {textureId} source={image.GetWidth()}x{image.GetHeight()} " +
+                                $"screenPixelArea={screenPixelArea:F0} -> discard={discard} " +
+                                $"uploaded={(discard > 0 ? $"{Math.Max(8, image.GetWidth() >> discard)}x{Math.Max(8, image.GetHeight() >> discard)}" : "full")}");
+
+                        if (discard > 0)
+                        {
+                            int targetW = Math.Max(8, image.GetWidth() >> discard);
+                            int targetH = Math.Max(8, image.GetHeight() >> discard);
+                            if (targetW < image.GetWidth() || targetH < image.GetHeight())
+                            {
+                                image.Resize(targetW, targetH, Image.Interpolation.Lanczos);
+                            }
+                            uploadedFor = screenPixelArea;
+                        }
+                    }
+
+                    if (generateMipmaps && image != null) image.GenerateMipmaps();
+                }
+                catch (Exception ex)
+                {
+                    GD.PrintErr($"[GpuUpload] Failed to process texture {textureId}: {ex.Message}");
+                    image?.Dispose();
+                    image = null;
+                    uploadedFor = 0f;
+                }
+                return new PreparedImage(image, uploadedFor);
+            }).ConfigureAwait(false);
+        }
+        finally
+        {
+            _imagePrepGate.Release();
+        }
     }
 
     private async Task<ImageTexture?> FetchAndUploadTextureAsync(
@@ -396,58 +510,62 @@ public class GpuCache
             // already existed two methods above (TryUpgradeCachedTexture's sharpen path) --
             // MainThreadWorkQueue, built for exactly this -- and this call site was simply never
             // migrated to it.
+            // BUG-NET-11: everything except the actual GPU upload runs HERE, on the worker
+            // thread, not inside the main-thread work item below. Image.CreateFromData +
+            // FixAlphaEdges + Resize + GenerateMipmaps are pure CPU work on a PackedByteArray --
+            // Godot's Image is one of the data types explicitly safe to build off-thread -- but
+            // they were all inside the queued item, which made ONE texture cost ~10-30 ms of main
+            // thread for a 1024x1024. MainThreadWorkQueue's budget is 3 ms/frame and it always
+            // runs at least one item per lane per frame, so an item that big means exactly ONE
+            // texture upload per frame: at 30-60 fps a scene with ~8800 texture requests (measured
+            // live 2026-09-03, [TexPipe] req=8800) takes 2.5-5 minutes to finish appearing no
+            // matter how fast the decode is. That is the "textures come in extremely slowly even
+            // though they're all cached" report -- the queue, not the decoder, was the serialising
+            // stage. Leaving only ImageTexture.CreateFromImage + Put on the main thread cuts the
+            // per-item cost to a fraction of a millisecond, so the same 3 ms budget now drains
+            // many uploads per frame. It is also what AGENTS.md's non-negotiable #2 asks for.
+            var prepared = await PrepareImageAsync(textureId, textureData, generateMipmaps, screenPixelArea)
+                .ConfigureAwait(false);
+
+            // FATAL BUG, live on Aditi: this used to be Godot.Callable.From(() => {...}).CallDeferred()
+            // -- a delegate-backed Callable's deferred dispatch is main-thread-only in Godot .NET
+            // (see Boot.cs:70's comment on the exact same trap), and FetchAndUploadTextureAsync
+            // is reached from asset-decode worker threads via GetOrUploadTextureAsync, not the
+            // main thread. Crashed the whole process with a fatal
+            // System.AccessViolationException inside godotsharp_callable_call_deferred. The fix
+            // already existed two methods above (TryUpgradeCachedTexture's sharpen path) --
+            // MainThreadWorkQueue, built for exactly this -- and this call site was simply never
+            // migrated to it.
             var tcs = new TaskCompletionSource<ImageTexture?>();
             MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
+                var image = prepared.Image;
+
                 // Re-check: a differently-triggered Put for this id (shouldn't normally happen
                 // given the single-flight dict above, but costs nothing to guard) may have
                 // already landed between the await above and this deferred callback running.
                 var raced = Get(textureId) as ImageTexture;
                 if (raced != null)
                 {
+                    image?.Dispose();
                     tcs.SetResult(raced);
                     return;
                 }
 
-                Image? image = null;
                 ImageTexture? tex = null;
                 try
                 {
-                    image = Image.CreateFromData(textureData.Width, textureData.Height, false, Image.Format.Rgba8, textureData.Rgba);
-                    image?.FixAlphaEdges();
-                    
-                    if (image != null && screenPixelArea > 0f)
-                    {
-                        int discard = ComputeDiscardLevel(image.GetWidth(), image.GetHeight(), screenPixelArea);
-                        // Behind --diag. It is one line per texture, which on a real region means
-                        // a couple of thousand -- fine when it went to a terminal nobody was
-                        // reading, but it now reaches godot.log (see ConsoleToGodotLog) and there
-                        // it buries the handful of lines that say why something is broken. This is
-                        // per-object asset logging, exactly what Diagnostics exists to gate.
-                        if (Diagnostics.Enabled && _uploadSizeLogged.TryAdd(textureId, 0))
-                            Console.Error.WriteLine($"[GpuUpload] {textureId} source={image.GetWidth()}x{image.GetHeight()} " +
-                                $"screenPixelArea={screenPixelArea:F0} -> discard={discard} " +
-                                $"uploaded={(discard > 0 ? $"{Math.Max(8, image.GetWidth() >> discard)}x{Math.Max(8, image.GetHeight() >> discard)}" : "full")}");
-        
-                        if (discard > 0)
-                        {
-                            int targetW = Math.Max(8, image.GetWidth() >> discard);
-                            int targetH = Math.Max(8, image.GetHeight() >> discard);
-                            if (targetW < image.GetWidth() || targetH < image.GetHeight())
-                            {
-                                image.Resize(targetW, targetH, Image.Interpolation.Lanczos);
-                            }
-                            _uploadedForPixelArea[textureId] = screenPixelArea;
-                        }
-                    }
-        
-                    if (generateMipmaps && image != null) image.GenerateMipmaps();
-                    
                     if (image != null)
                     {
                         tex = ImageTexture.CreateFromImage(image);
                         if (tex != null)
                         {
+                            // Only recorded once the upload actually exists, so a raced/failed
+                            // build can never leave TryUpgradeCachedTexture thinking a texture
+                            // was uploaded downsampled when nothing was uploaded at all.
+                            if (prepared.UploadedForPixelArea > 0f)
+                                _uploadedForPixelArea[textureId] = prepared.UploadedForPixelArea;
+
                             long size = (long)tex.GetWidth() * tex.GetHeight() * 4;
                             Put(textureId, tex, size, initialRefCount);
                         }
@@ -455,7 +573,7 @@ public class GpuCache
                 }
                 catch (Exception ex)
                 {
-                    GD.PrintErr($"[GpuUpload] Failed to process texture {textureId}: {ex.Message}");
+                    GD.PrintErr($"[GpuUpload] Failed to upload texture {textureId}: {ex.Message}");
                 }
                 finally
                 {

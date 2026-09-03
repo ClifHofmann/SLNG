@@ -27,7 +27,7 @@ public partial class MainThreadWorkPump : Node
     {
         using (MainThreadPhase.Enter("workqueue"))
         {
-            MainThreadWorkQueue.Pump(RenderConfig.MainThreadWorkBudgetMs);
+            MainThreadWorkQueue.Pump(RenderConfig.MainThreadWorkBudgetFor(MainThreadWorkQueue.Depth));
         }
     }
 }

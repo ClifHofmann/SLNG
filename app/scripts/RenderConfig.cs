@@ -36,6 +36,39 @@ public static class RenderConfig
     public static double MainThreadWorkBudgetMs = 3.0;
 
     /// <summary>
+    /// Ceiling for the adaptive budget below. A deep backlog is the user staring at a half-built
+    /// scene, and at that point a few dropped frames buy back minutes of waiting -- but the cap
+    /// keeps even the worst case inside a 16.7 ms frame with room for one over-long item.
+    /// </summary>
+    public static double MainThreadWorkBudgetMaxMs = 9.0;
+
+    /// <summary>Queue depth at which the budget starts rising above
+    /// <see cref="MainThreadWorkBudgetMs"/>, and the depth at which it reaches
+    /// <see cref="MainThreadWorkBudgetMaxMs"/>.</summary>
+    public static int MainThreadWorkBacklogSoft = 200;
+    public static int MainThreadWorkBacklogHard = 2000;
+
+    /// <summary>
+    /// BUG-NET-11: the budget is a steady-state figure, and it was being applied to a transient
+    /// that is not steady state at all. Arriving in a dense region queues thousands of visual
+    /// builds and texture uploads at once; at a flat 3 ms/frame that backlog drains at roughly the
+    /// frame rate, so a scene with ~8800 texture requests (measured live, 2026-09-03) takes
+    /// minutes to finish appearing however fast the decode is. Spending up to
+    /// <see cref="MainThreadWorkBudgetMaxMs"/> while the backlog is deep converts that latency
+    /// into a brief, bounded frame-rate cost and then returns to 3 ms the moment the queue drains
+    /// -- an idle or steady scene never sees a different budget from before.
+    /// </summary>
+    public static double MainThreadWorkBudgetFor(int queueDepth)
+    {
+        if (queueDepth <= MainThreadWorkBacklogSoft) return MainThreadWorkBudgetMs;
+        if (queueDepth >= MainThreadWorkBacklogHard) return MainThreadWorkBudgetMaxMs;
+
+        double t = (double)(queueDepth - MainThreadWorkBacklogSoft)
+                 / (MainThreadWorkBacklogHard - MainThreadWorkBacklogSoft);
+        return MainThreadWorkBudgetMs + t * (MainThreadWorkBudgetMaxMs - MainThreadWorkBudgetMs);
+    }
+
+    /// <summary>
     /// Radius within which an object's collision shape must exist IMMEDIATELY rather than being
     /// built in the background.
     ///
