@@ -5,6 +5,29 @@
 
 ---
 
+# 2026-09-03 — BUG-RENDER-09 filed: BoM alpha edge renders as a ragged sawtooth
+
+User, after the auto-rebake revert, on Agni: *"1. wurde das Alpha bei beiden Bodys nicht entfernt
+obwohl ich es abgenommen habe … 2. sieht die Haut über dem Alpha komisch zerrissen aus"* +
+screenshots of a mesh foot with a torn edge.
+
+- **Symptom 1** (alpha still there) = `BUG-AVATAR-03`. `[SelfBake] 10=5d9f302c` unchanged across
+  the last few sessions; a boots/cutoffs alpha layer is almost certainly still worn server-side
+  after all the on/off toggling under the buggy v0.20.37 client. SLNG's wearable-remove path is
+  the unreliable piece — **tell the user to sort the worn alphas in Firestorm and let FS rebake**,
+  then relog SLNG.
+- **Symptom 2** (torn edge) = new bug, **`BUG-RENDER-09`** (filed, not started).
+  `AvatarRenderer.BuildFaceMaterialAsync` → `ClassifyAlpha` classes a BoM skin bake with a soft
+  alpha-layer mask as "hard cutout" → `Kind.Scissor @ 0.25` → sawtooth on the gradient. Real
+  viewer blends it. Not a one-liner (Blend = no depth-write on a body face; Hash stippled hair
+  historically). Spec has the options + calls for a live A/B, scoped to `wasBom` skin faces only.
+  `docs/specs/BUG-RENDER-09-bom-alpha-edge-hard-scissor.md`.
+
+No code change this pass — the alpha-rendering path is scarred and several fixes already went
+sideways this session; BUG-RENDER-09 needs a careful A/B, not a rushed edit.
+
+---
+
 # 2026-09-03 — BUG-AVATAR-03: rebake drops worn attachments; auto-rebake reverted
 
 **`v0.20.38`** reverts **`v0.20.37`** (`df99875`) in full.
