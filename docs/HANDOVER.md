@@ -5,6 +5,28 @@
 
 ---
 
+# 2026-09-02 — BUG-INV-01 progressing + FEAT-INV-05 filed
+
+**BUG-INV-01 fixes shipped & confirmed** (*"Funktioniert recht gut und schnell jetzt"*):
+- `v0.20.32` context-menu id→index (Detach was greyed / `Index 6 out of bounds` crash).
+- `v0.20.33` `CleanUpCurrentOutfit`: `MoveItem(link → Trash)` **400s on SL** (user log:
+  `Move item … to <Trash>: Bad Request (400)`) — a COF link cannot be *moved* to Trash. Switched
+  to `RemoveItemsAsync()` (AIS `DELETE` on SL, `RemoveInventoryObjects` packet on OpenSim), the
+  same operation the reference viewer uses.
+- `v0.20.34` `DetachWornAsync` / `DetachAndRefreshAsync` / `AttachAndRefreshAsync` were
+  `Callable.From(lambda).CallDeferred()` from a worker thread (`BUG-RENDER-01` anti-pattern) —
+  detach packet went out but the refresh silently never ran, so "Ablegen" looked dead. Now
+  `CallDeferred(nameof(Finish…))`.
+Still open in BUG-INV-01: the visible worn marker in the "Inventar" tree, and a load spinner;
+plus the ~15 other `Callable.From(lambda).CallDeferred()` sites in `InventoryPanel.cs` (mostly the
+outfit methods).
+
+**FEAT-INV-05 filed (not started):** per-item actions in the Outfits view (Anziehen / Ausziehen /
+Aus diesem Outfit entfernen when right-clicking an item inside an expanded outfit).
+`docs/specs/FEAT-INV-05-outfit-item-actions.md`.
+
+---
+
 # 2026-09-02 — BUG-INV-01 filed (not started)
 
 User reported three inventory problems in one go; filed as `BUG-INV-01` (Medium),
