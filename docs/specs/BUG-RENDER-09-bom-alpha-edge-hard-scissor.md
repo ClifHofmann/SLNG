@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-09`
 - **Track:** `render`
-- **Status:** `🧪 Review` — fix landed `v0.20.41-alpha` (option 1a, scoped).
+- **Status:** `⏸️ Pending` — option 1a (`v0.20.41`) **reverted `v0.20.46`**, it broke BoM heads.
 - **Owner:** `claude`
 - **Depends on:** `FEAT-RENDER-01` (shader family), `FEAT-AVATAR-01` / `BUG-AVATAR-02` (BoM bake resolve)
 - **Reported:** live, Agni, 2026-09-03, with two screenshots of a mesh-body foot: the skin ends
@@ -73,16 +73,20 @@ if (wasBom && kind == PrimShaderFamily.Kind.Scissor)
     kind = PrimShaderFamily.Kind.Blend;
 ```
 
-Option **1a**, scoped as tight as it goes: a **BoM** face only, and only when `ClassifyAlpha`
-already returned `Scissor` (graded alpha present) — an `Opaque` verdict is never overridden, and
-hair / clothing / non-BoM faces don't reach this line's condition, so the historical Blend
-regressions (invisible clothing, speckled hair) cannot recur. The system-bake path
-(`LoadAndApplyTextureAsync` ~989) is left on `Scissor @ 0.5` — its own comment parks that as
-"last visually confirmed correct" and a Blend attempt there once made the system body reappear.
+Option **1a**, scoped to `wasBom && ClassifyAlpha == Scissor`.
 
-**Not re-verified in-world.** Check: the foot's alpha edge fades smoothly with no banding and no
-sawtooth; no new see-through on the mesh body from any angle (front/back, crossing limbs,
-seated).
+**REVERTED `v0.20.46-alpha`.** The scope was not tight enough: a BoM **head/body** bake carries a
+soft neck-blend alpha, so `ClassifyAlpha` returns `Scissor` for those faces too → they flipped to
+`Blend` → the head mesh rendered in the transparent queue (`cull_disabled`, no depth write) and
+its own overlapping faces sorted against each other = **blocky see-through chunks across the
+face** (live, *"sieht richtig kaputt aus, das sah schon besser aus"*). Exactly the regression
+class the `ClassifyAlpha` history warns about. `Blend` is off the table for any BoM face.
+
+**Next attempt should be option 1c** — a dedicated `prim_hash_avatar` variant (`ALPHA_HASH_SCALE`
+in `render_mode`): dithered but depth-correct and no hard edge, so it can't cause the sort
+failure, and the stipple that ruined hair is far less visible on a large low-contrast skin
+surface. New shader + `check_shader_globals` + selftest. Or option 1b (drop the Scissor threshold
+to ~0.04) as a cheaper interim — keeps depth-write, pushes the banded edge to where alpha ≈ 4 %.
 
 ## Acceptance
 

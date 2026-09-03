@@ -25,7 +25,11 @@ its faces reference **up front** — one tight loop firing all `GetLegacyMateria
 `FetchLegacyMaterialsAsync` per mesh; the per-face awaits below are cache hits.
 
 **Also this session:**
-- `v0.20.41` BUG-RENDER-09: BoM alpha mask → `Kind.Blend` (kills the venetian-blind banding).
+- `v0.20.41` BUG-RENDER-09: BoM alpha mask → `Kind.Blend` — **reverted `v0.20.46`**: it also
+  caught BoM head/body faces (soft neck-blend alpha → `Scissor` verdict) → `Blend` on
+  `cull_disabled`/no-depth-write → blocky see-through chunks across the face (*"sieht richtig
+  kaputt aus"*). `Blend` is off the table for BoM; next attempt is a `prim_hash_avatar` variant
+  or a much lower Scissor threshold. Foot banding is back for now.
 - `v0.20.42` → `v0.20.44` BUG-RENDER-10: an untextured avatar face was Opaque (blocky) → now
   **invisible** (albedo α 0) until its texture loads.
 - `v0.20.43`: the `[TextureFetch] … 403` log line now includes the host + path (to answer "is
