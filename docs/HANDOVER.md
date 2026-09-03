@@ -5,6 +5,152 @@
 
 ---
 
+# 2026-09-03 (later) — `v0.20.51` → `v0.20.54`
+
+**`v0.20.50`'s log was unusable.** `godot.log`'s body came back as 437 kB of NUL bytes (the
+engine's buffered log loses everything unflushed when a session doesn't end cleanly), so the
+`[TexPipe] distinct=` / `[GpuCache]` counters that build was shipped to take are gone. This round
+was settled from the `v0.20.49` log, the code, and an offline decode benchmark instead.
+
+### `v0.20.51` — BUG-NET-11: the serialising stage is the MAIN-THREAD QUEUE, not the decoder
+
+- The "~200 distinct textures" assumption was **wrong**: `[FaceAlpha]` alone names **2861 distinct
+  texture ids** in the v0.20.49 session, and the disk cache holds 20 708 `.j2c` (4.5 GB). So
+  `req=8800` is a ~3× repeat factor over a genuinely large scene, not 13× over a tiny one.
+- **The real cost:** `MainThreadWorkQueue` runs a **3 ms/frame** budget and always runs at least
+  one item per lane per frame. Every texture upload was ONE queued item doing
+  `Image.CreateFromData` + `FixAlphaEdges` + `Resize` + `GenerateMipmaps` + `CreateFromImage`
+  (10–30 ms for a 1024²) — so the lane drained **exactly one texture per frame**. 8800 ÷ 30–60 fps
+  = 2.5–5 minutes, independent of decode speed. That is the reported wait, and it explains
+  `[TexPipe] inflight` spiking to 765–1000+ (decodes finishing and piling up behind the queue).
+- Fixes: `GpuCache.PrepareImageAsync` moves everything but `ImageTexture.CreateFromImage` onto a
+  worker (bounded by a `ProcessorCount-2` semaphore; the `Task.Run` is unconditional because an
+  AssetService memory-cache hit returns a completed task and `ObjectRenderer` calls in from
+  `_Process`). Same split for the sharpen path. Plus an **adaptive budget**
+  (`RenderConfig.MainThreadWorkBudgetFor`): 3 ms while the queue is ≤200 deep, ramping to 9 ms at
+  2000 — steady state unchanged.
+- `[GpuCache]` now also reports **`pinned=` / `pinnedMB=` / `mainQueue=`**. This is the one open
+  question: `AvatarRenderer` `Put`s every avatar face texture with `initialRefCount: 1` (never
+  released — it has no `AddRef`/`ReleaseRef` bookkeeping) **and passes no `screenPixelArea`, so
+  they upload at FULL resolution**. If `pinnedMB` nears the 1536 MB budget, `EvictIfNeeded` has
+  nothing left to reclaim, object textures are evicted the moment they land, and ObjectRenderer's
+  4 Hz texture re-offer re-decodes them forever — the ~3× repeat factor. **Next log decides it.**
+- **`PerfSidecar`** (`ConsoleToGodotLog.cs`): `[TexPipe]` + `[GpuCache]` are mirrored to
+  `user://logs/slng-perf.log` with `AutoFlush`, so an unclean exit can't erase the measurement
+  again. Read that file, not godot.log, for these two.
+- Offline benchmark, 40 real cached `.j2c`, Magick.NET Q8 14.15.0, single-threaded: full decode
+  **47.6 ms** (not the 90 ms `[TexPipe]` showed — the rest was queueing). And ImageMagick's
+  `jp2:reduce-factor` divides each dimension by **4^N, not 2^N** (r1 → 13.1 ms at ¼ size, r2 →
+  3.8 ms at 1/16). Reduce-level decode is the next structural lever: SLNG always decodes full-res
+  and only *then* downsamples, paying 47.6 ms to produce a 64×64 upload.
+
+### `v0.20.52` — BUG-RENDER-09: `prim_hash_avatar`, option 1c
+
+New `PrimShaderFamily.Kind.Hash` + `app/materials/prim/prim_hash.gdshader` and
+`prim_hash_avatar.gdshader` — `prim_scissor`'s body with `ALPHA_SCISSOR_THRESHOLD` swapped for
+`ALPHA_HASH_SCALE`, `depth_draw_opaque` kept, `alpha_to_coverage` deliberately dropped. Routing is
+the same scope as the reverted v0.20.41 (`wasBom && ClassifyAlpha == Scissor`) but to a
+depth-WRITING variant, so the head-sort regression that killed `Blend` is structurally
+unreachable. Hair / clothing / non-BoM and the system-bake path are untouched. Selftest is now
+**32/32** (was 29/29 — two new shaders + one variant-pair check).
+
+### Live result of `v0.20.51`/`.52` (user, 2026-09-03 17:42 session)
+
+**Textures: fixed, and the numbers now say so.** `[TexPipe] req=6400 distinct=4422` — a repeat
+factor of **1.45×**, down from ~3×, on a scene that genuinely has ~4400 distinct textures.
+`diskCacheHit=6381/6400`. `[GpuCache] hit=7 075 438 / get=7 232 200` = **97.8 %**.
+`mainQueue` started at 563–704 during the load burst (adaptive budget doing its job) and settled at
+178. User: *"das rendern scheint schneller zu gehen"*.
+
+**The pin question is answered, and the answer is "everything".** `entries=6415 pinned=6415
+pinnedMB=2156 sizeMB=2156/1536` — **100 % of the cache is un-evictable and it is 40 % over
+budget.** Not only AvatarRenderer's `initialRefCount: 1`: ObjectRenderer's own AddRef/ReleaseRef
+keeps a texture pinned for as long as an object in the scene uses it, which on a scene this size is
+all of them. So the 1536 MB budget is simply not enforceable at full-resolution uploads — it is not
+a leak, the scene really does want 2.1 GB of texture. The fix for that is **reduce-level decode**
+(smaller uploads, 16× less VRAM and 4–12× less decode), not more eviction. Filed, not started.
+
+**The console log exploded — that was my own diagnostic.** `[GpuCache]` fired every 200 gets, and a
+session makes **7.2 million** gets (ObjectRenderer re-offers every used texture id of every culled
+object at 4 Hz), so it wrote **45 061 of the log's 49 273 lines**. `v0.20.53` gates it to one line
+per 10 s. Worth remembering separately: 7.2 M `lock`-ed dictionary + LRU-splice operations per
+session is itself real main-thread cost that nobody has looked at.
+
+**Alpha: `Kind.Hash` tried and REJECTED.** Screenshot of the legs shows large axis-aligned
+**rectangular patches** of skin dropping out. Godot's hashed alpha is Wyman & McGuire's algorithm —
+the threshold is `hash(floor(pix_scale * position))` with `pix_scale = 1/(alpha_hash_scale × max
+screen-space position derivative)`, so close up on a large surface whole *blocks* of object space
+share one threshold. Coarse patchwork, not a dither. Tuning the scale only trades block size for
+skin speckle. `Kind.Hash` and both shaders are kept but **nothing routes to them** — do not
+re-point BoM faces at it.
+
+### `v0.20.53` — BUG-RENDER-09 option 1b, and the reason the first two attempts were misconceived
+
+Both 1a (`Blend`) and 1c (`Hash`) assumed a wide soft gradient that needs fading. `ClassifyAlpha`
+says there isn't one: a face only reaches `Scissor` when `fracMid <= 0.06` **and**
+`fracClear <= 0.5` — predominantly opaque with a *thin* AA border; anything genuinely graded
+already goes to `Blend`. So the defect is only **where the binary cut falls**. `v0.20.53` keeps the
+`Kind`, the shader, the depth write and the sort behaviour and moves the cut from 0.25 to
+`BomAlphaScissorThreshold = 0.04` — the ragged contour lands where the mask is already ~96 %
+transparent instead of in near-opaque skin.
+
+### `v0.20.54` — the alpha problem is a SORT failure, and the user was right that the hair is the same bug
+
+`v0.20.53`'s threshold change (0.25 → 0.04) made **no visible difference** — new screenshot of the
+same shins, same jagged translucent patches. That is itself the finding: those faces never reach
+the `Scissor` branch at all.
+
+`ClassifyAlpha` sends a face to **`Blend`** when `fracMid > 0.06` **or `fracClear > 0.5`**. A
+lower-body BoM bake with **two** alpha-layer wearables worn (the user's session: *"Super High
+Cutoffs Alpha Layer"* + *"Camden Boots Alpha Layer"*) has most of its texture cleared → over the
+50 % line → `Blend`. And every `prim_blend_*` variant is `depth_draw_opaque`, which for a
+transparent material means **no depth write** — on `cull_disabled` avatar geometry the front and
+back of the same shin, and two alpha layers over the same skin, then have no defined order. That
+is the hard-edged translucent patchwork in the screenshots, and it is exactly what the user
+described: *"Probleme mit mehreren alpha layern"*. One alpha layer stays under 50 % clear and
+classifies as `Scissor` (which does write depth, so it looks fine); two push it over.
+
+- **Fix:** `depth_prepass_alpha` on `prim_blend_avatar.gdshader`. Godot runs a depth prepass for
+  the near-opaque part of the surface (cut at alpha 0.99), so solid skin / strand cores establish
+  depth like an opaque face while soft edges still blend. Standard remedy for hair and foliage,
+  and the same thing StandardMaterial3D's opaque-prepass depth mode does. It cannot reintroduce the
+  `v0.20.41` regression: that was `Scissor` faces *losing* depth write, this only gives depth write
+  back to faces that had none.
+- **New diagnostic `[AvatarAlpha]`** — one deduplicated line per texture per verdict:
+  `[AvatarAlpha] <id> bom=<ch> minA=.. fracMid=.. fracClear=.. -> Blend`. Two rounds of
+  BUG-RENDER-09 were spent guessing which branch a face took. Now it says so.
+- The `v0.20.53` `BomAlphaScissorThreshold = 0.04` is **kept** — it is still correct for the BoM
+  faces that genuinely do classify as `Scissor`, it just was not the faces in the screenshot.
+
+### `v0.20.54` — BUG-RENDER-10: Firestorm shows `dda710d4`, so "no transport will get it" was wrong
+
+User confirmed Firestorm renders that hair correctly. So the asset exists and is servable; the
+generic `ViewerAsset` cap simply refuses it (`403 from asset-cdn.glb.agni.lindenlab.com/`).
+`v0.20.40` had reasoned that a 403 is a permission decision no transport can beat and skipped the
+UDP fallback too — that half is now disproven.
+
+`FetchTextureDataAsync` now splits the one set in two: `_httpDeniedTextures` (403'd on HTTP — skip
+the caps forever, they will not change their mind) and `_permanentlyDeniedTextures` (403 on HTTP
+**and** nothing over UDP — the only state that returns `Gone`). So a CDN-refused texture costs one
+UDP attempt through LibreMetaverse's legacy image transfer, the same fallback the reference viewer
+uses, and the anti-flicker property is kept because HTTP is never retried and the permanent set
+short-circuits everything after the first failed UDP round. Logs
+`HTTP 403 but UDP delivered N bytes -- the asset exists, the CDN just would not serve it` when it
+works.
+
+### What to check in the next live session
+
+1. The shins under two alpha layers: still a jagged translucent patchwork, or solid skin with a
+   clean edge? And are BoM **heads** and **hair** still correct (hair is the other big consumer of
+   `prim_blend_avatar`, so `depth_prepass_alpha` touches it too).
+2. Does that remote avatar's hair (`dda710d4`) now appear? Look for
+   `[TextureFetch] … UDP delivered N bytes`.
+3. `[AvatarAlpha]` in the log — confirms which branch the shin faces actually take. If they say
+   `-> Blend` with a high `fracClear`, the diagnosis above is right.
+4. Is the console log back to a normal size?
+
+---
+
 # 2026-09-03 — long live-testing arc on Agni (v0.20.33 → v0.20.50)
 
 One continuous session. **Working tree clean, HEAD `da928ad`, all pushed to `origin/main`.**

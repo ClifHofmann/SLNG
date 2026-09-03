@@ -72,3 +72,27 @@ hide a mesh face) is left alone.
   flickering.
 - Why the sim 403s `dda710d4` at all (no-transfer texture on the hair? an asset that outlived its
   permission?) is not investigated here — SLNG can't fetch it either way.
+
+## `v0.20.54` — "no transport will get the bytes" was wrong
+
+`v0.20.40` skipped the UDP fallback on a 403 as well as the HTTP retries, reasoning that a
+permission decision beats every transport. **The user disproved it: Firestorm renders `dda710d4`
+correctly** (confirmed 2026-09-03). The asset exists and is servable — the generic `ViewerAsset`
+cap simply refuses to serve it to us (`403 from asset-cdn.glb.agni.lindenlab.com/`, the generic
+CDN, not a bake-style URL).
+
+`FetchTextureDataAsync` now keeps two sets instead of one:
+
+- `_httpDeniedTextures` — 403'd on HTTP. The caps are never asked again this session (that
+  unwinnable retry loop was the original flicker), but the request still falls through to UDP.
+- `_permanentlyDeniedTextures` — 403 on HTTP **and** nothing over UDP. Only this state sets
+  `TextureFetchResult.Gone`, and it short-circuits every later request for the id.
+
+So a CDN-refused texture costs exactly one UDP attempt through LibreMetaverse's legacy image
+transfer — the same fallback the reference viewer uses — and the anti-flicker property survives,
+because HTTP is never retried and one failed UDP round ends it for the session. Success logs
+`HTTP 403 but UDP delivered N bytes -- the asset exists, the CDN just would not serve it`.
+
+Open question if UDP *also* comes back empty: what Firestorm does differently on the HTTP request
+itself (headers, a different cap, or a per-asset signed URL) — that would need the HTTP capture.
+
