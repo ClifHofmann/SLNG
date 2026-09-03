@@ -5,6 +5,24 @@
 
 ---
 
+# 2026-09-03 — acceptance-testing round: search OK, walk-anim lag filed
+
+User ran the post-fix test list.
+- **Inventory search (`v0.20.35`)** → *"geht"*. ✅ confirmed in-world.
+- **BUG-AVATAR-03** → user fixed the stuck alpha in Firestorm, relogged SLNG, avatar renders
+  clean. Confirms symptom 1 was the stale bake; `BUG-RENDER-09` (ragged edge) only bites while a
+  mask is legitimately present.
+- **Walking** → *"Animation zum Laufen kommt nicht / zu spät wenn es laggt."* → filed
+  **`FEAT-ANIM-01`**: the self avatar has no local locomotion prediction, it waits for the sim to
+  echo `AvatarAnimation` (+ a first-time `GetAnimationAsync` fetch). Reference viewer plays the
+  compiled-in gait locally. `docs/specs/FEAT-ANIM-01-self-locomotion-prediction.md`.
+
+Two build candidates now queued, user to pick: the real `BUG-AVATAR-03` fix (direct
+`{cof_version}` POST to `UpdateAvatarAppearance`, so SLNG-side outfit editing stops eating
+attachments) or `FEAT-ANIM-01`.
+
+---
+
 # 2026-09-03 — BUG-RENDER-09 filed: BoM alpha edge renders as a ragged sawtooth
 
 User, after the auto-rebake revert, on Agni: *"1. wurde das Alpha bei beiden Bodys nicht entfernt
