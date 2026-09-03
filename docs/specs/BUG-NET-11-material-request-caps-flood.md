@@ -34,6 +34,26 @@ front, before the per-face loop** — one tight loop firing all `GetLegacyMateri
 **one** `FetchLegacyMaterialsAsync` call per mesh (`RenderMaterials` sends up to 50 ids/POST).
 Every per-face `await` in the loop is then a cache hit.
 
+## `[TexPipe]` result (`v0.20.47`) + decode fix (`v0.20.48`)
+
+Live session with the new diagnostic: `req=1600 diskCacheHit=1598 httpFetch=1`, **zero
+`Caps rate limiter queue full`**, `[LegacyMat] POST` lines now multi-id. So the material-POST
+flood is fixed and the disk cache IS serving ~99.9 % of a familiar scene. The remaining slowness
+is the **J2K decode**: `[TexPipe]` reported avg "91 ms" per cached texture because the cache-hit
+path was a bare `Task.Run(DecodeTexture)` — ~1600 decodes dumped on the thread pool at once, so
+that number is mostly pool-queue wait.
+
+`v0.20.48`: `_textureDecodeThrottle` (`PriorityGate(ProcessorCount - 2)`) around the cache-hit
+decode — bounded to the CPU, `priority`-ordered so on-camera textures finish first. The `[TexPipe]`
+avg is now measured after the throttle = true decode time. If it stays ~90 ms, Magick.NET's
+OpenJPEG is the bottleneck and the next lever is a **reduce-level decode** (decode fewer wavelet
+resolution levels for the first display, upgrade the near ones on demand — the reference viewer's
+`parameters.cp_reduce`).
+
+The 403 on `33192a49` is `from asset-cdn.glb.agni.lindenlab.com/` — the **generic** asset CDN,
+not a bake-style different URL: a real permission denial / non-persisted asset, nothing to route
+differently.
+
 ## Still open / verify
 
 - **Not re-verified in-world.** Confirm `[LegacyMat] POST` lines now carry many ids each (not
