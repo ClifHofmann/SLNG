@@ -851,6 +851,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // capability is only resolvable after the caps handshake completes.
         LogAppearanceEditReadiness();
 
+        // Same reason as above -- the UpdateAvatarAppearance cap the watchdog nudges through is
+        // only resolvable once the caps handshake is done. Armed once per session, not per region.
+        ArmSelfBakeWatchdog();
+
         _ = Task.Run(async () =>
         {
             try
@@ -1997,7 +2001,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // diagnostic compares LibreMetaverse's (possibly empty) Textures[] against, and the
         // fallback any future send must use rather than writing empty bake ids.
         if (e.AvatarID == _client.Self.AgentID && textures.Count > 0)
+        {
             _lastSelfRelayBakes = new Dictionary<int, Guid>(textures);
+            _selfAppearanceWithBakesSeen = true;
+        }
 
         // AvatarAppearanceEventArgs doesn't expose the packet's AppearanceHover field (see
         // AvatarAppearanceEvent's doc comment for why it matters), but LibreMetaverse's own
@@ -3585,6 +3592,64 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
         }
         Console.Error.WriteLine($"[Appearance] server appearance update: gave up after 3 cof_version retries (last {cofVersion})");
+    }
+
+    /// <summary>Set once the simulator has told us our OWN baked-texture ids. Watched by
+    /// <see cref="ArmSelfBakeWatchdog"/>.</summary>
+    private volatile bool _selfAppearanceWithBakesSeen;
+
+    private int _selfBakeWatchdogArmed;
+
+    /// <summary>
+    /// One-shot safety net for "the avatar logged in with no bake at all".
+    ///
+    /// <para>The simulator does not reliably send the local agent its own <c>AvatarAppearance</c>
+    /// after login. When it doesn't, every bake channel stays <c>Guid.Empty</c>, and the result is
+    /// not a subtle one: the system hair mesh renders as its full uncut helmet, the head renders
+    /// blank, and worn alpha layers do not cut the system body (live, Agni 2026-09-03 --
+    /// *"das backen des avatars geht nicht mehr"*). Other avatars in the same scene bake normally,
+    /// because their appearance arrives with their ObjectUpdate; only our own is missing.</para>
+    ///
+    /// <para>The remedy is the one the reference viewer already uses on every login,
+    /// <c>LLAppearanceMgr::serverAppearanceUpdateCoro</c>: POST <c>{ cof_version }</c> to the
+    /// <c>UpdateAvatarAppearance</c> cap and let the sim composite from its own copy of the COF.
+    /// <see cref="SendServerAppearanceUpdateAsync"/> is that POST and nothing else -- explicitly
+    /// NOT <c>RequestSetAppearance</c>, which reconciles the worn set from a COF fetch inside
+    /// itself and drops worn attachments on a rate-limited grid (BUG-AVATAR-03).</para>
+    ///
+    /// <para>Two attempts, then it stops. The first waits 25 s, long enough for the COF to reach
+    /// LibreMetaverse's store -- the POST refuses to send with an unknown <c>cof_version</c>, so
+    /// firing earlier would just waste the attempt. Armed once per session; a fresh login is a
+    /// fresh process.</para>
+    /// </summary>
+    private void ArmSelfBakeWatchdog()
+    {
+        if (System.Threading.Interlocked.Exchange(ref _selfBakeWatchdogArmed, 1) != 0) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                foreach (int delaySeconds in new[] { 25, 30 })
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds)).ConfigureAwait(false);
+                    if (!_client.Network.Connected) return;
+                    if (_selfAppearanceWithBakesSeen) return;
+                    // OpenSim's client-side bake path is a different mechanism entirely and this
+                    // cap does not exist there.
+                    if (!RegionHasServerSideBaking()) return;
+
+                    Console.Error.WriteLine(
+                        "[Appearance] the sim has not sent our own bake ids -- nudging a server re-composite " +
+                        "(until it arrives the system hair renders as an uncut helmet and the head blank)");
+                    await SendServerAppearanceUpdateAsync().ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[Appearance] self-bake watchdog failed: {ex.Message}");
+            }
+        });
     }
 
     private System.Threading.CancellationTokenSource? _wearableRebakeCts;

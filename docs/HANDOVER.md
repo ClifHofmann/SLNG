@@ -5,7 +5,7 @@
 
 ---
 
-# 2026-09-03 (later) — `v0.20.51` → `v0.20.55`
+# 2026-09-03 (later) — `v0.20.51` → `v0.20.56`
 
 **`v0.20.50`'s log was unusable.** `godot.log`'s body came back as 437 kB of NUL bytes (the
 engine's buffered log loses everything unflushed when a session doesn't end cleanly), so the
@@ -157,6 +157,47 @@ the cache averages ~336 KB/entry. The 2156 MB / 100 %-pinned GPU cache is still 
 textures still upload full-resolution on purpose. `[TexPipe]` now reports `reduced=` /
 `reduceRetry=`.
 
+### `v0.20.56` — "das Backen geht nicht mehr": the sim sent no self appearance, and nothing said so
+
+User screenshot: blank white head, an orange uncut **system-hair helmet**, toes through the boots.
+That last one is the giveaway — it is the documented "alpha forced to 255, system hair renders its
+full uncut card" state, i.e. **no bake at all**, not a bad bake.
+
+**It is not a regression from the texture work.** Read from the logs, comparing the good v0.20.54
+session (18:27) with the bad v0.20.55 one:
+
+| | good (18:27) | bad (v0.20.55) |
+|---|---|---|
+| `[VisualParams] seeded 253 params from self AvatarAppearance relay` | present | **absent** |
+| distinct bake ids resolved | 11 | 6 |
+| our own ids (`784033ee` ch8, `7f78129e` ch9, `a4f66bf1` ch10, `1e70f9f4` ch11, `14b37fca` ch42) | present | **all absent** |
+| other avatars' bakes | fine | fine |
+
+So the simulator never sent the local agent its own `AvatarAppearance`; every one of our channels
+stayed `Guid.Empty`. Bake ids come from that packet, nothing in the decode/upload path can remove
+them, and other avatars in the same scene baked normally. `SelfBake=0` also happened on a
+**v0.20.53** session (17:55), before any of this round's asset work — it is intermittent, not
+version-linked.
+
+Two fixes, both about never losing another round to this:
+
+1. **`[SelfBake]` could not report the state that matters.** It was gated on `anyBakeChanged`, which
+   only turns true for a NON-empty id — so "every channel empty" printed nothing at all. Now it logs
+   on any signature change, with `-- NO BAKE AT ALL` and what to do about it.
+2. **`GridSession.ArmSelfBakeWatchdog`** — one-shot per session, armed at `EventQueueRunning` (when
+   the caps handshake is done). If no self `AvatarAppearance` carrying bake ids has arrived 25 s
+   after login, it POSTs `{ cof_version }` to `UpdateAvatarAppearance` — the same thing the
+   reference viewer does on every login (`LLAppearanceMgr::serverAppearanceUpdateCoro`) — and once
+   more 30 s later if still nothing. Explicitly the pure cap POST, **not** `RequestSetAppearance`,
+   which drops worn attachments on a rate-limited grid (BUG-AVATAR-03). Two attempts, then it stops.
+   SSB regions only; the POST already refuses to send with an unknown `cof_version`.
+
+Also confirmed this session: **reduce-level decode works** — `[TexPipe] req=8000 distinct=4410
+reduced=6523 reduceRetry=0`, **avg decode 31 ms, down from ~107 ms**. And the UDP fallback for
+`dda710d4` ran and came back empty (`pipeline reported Timeout`), so that texture is now correctly
+marked gone for the session; whatever Firestorm shows there, it is not coming from either transport
+we have.
+
 ### What to check in the next live session
 
 1. The shins under two alpha layers: still a jagged translucent patchwork, or solid skin with a
@@ -167,11 +208,12 @@ textures still upload full-resolution on purpose. `[TexPipe]` now reports `reduc
 3. `[AvatarAlpha]` in the log — confirms which branch the shin faces actually take. If they say
    `-> Blend` with a high `fracClear`, the diagnosis above is right.
 4. Is the console log back to a normal size?
-5. `[TexPipe]`: `reduced=` should be a large fraction of `req` on a scene with distant objects, the
-   avg decode ms should drop well below the previous ~107, and `reduceRetry=` should stay near 0
-   (a non-zero one means reduced decodes are coming back degraded and paying for a second, full
-   decode). Watch for anything that looks blurrier than it should when you walk up to it — that
-   would mean `TryUpgradeCachedTexture` is not firing.
+5. `[TexPipe]` reduce-level decode: **already confirmed** (`reduced=6523/8000`, `reduceRetry=0`,
+   31 ms avg). Only remaining question is visual: anything blurrier than it should be when you walk
+   up to it would mean `TryUpgradeCachedTexture` is not firing.
+6. `[SelfBake]`: should now print on every login. If it says `NO BAKE AT ALL`, watch for
+   `[Appearance] the sim has not sent our own bake ids -- nudging a server re-composite` ~25 s
+   later and whether a `[SelfBake]` line with real ids follows it.
 
 ---
 

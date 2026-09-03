@@ -703,14 +703,27 @@ public partial class AvatarRenderer : Node3D
             // FEAT-AVATAR-01: dump the self avatar's bake channels whenever they change, so a live
             // test can see whether the head bake (channel 8 = head+eyelashes) actually arrived and
             // is a real id vs an EMPTY placeholder. Deduplicated so it isn't per-frame spam.
-            if (anyBakeChanged && avatar.IsLocalAgent)
+            // Deliberately NOT gated on anyBakeChanged. anyBakeChanged only turns true for a
+            // NON-empty id, so an avatar whose every channel is Guid.Empty -- the sim never sent us
+            // our own AvatarAppearance -- printed nothing at all. That is the single most important
+            // state this diagnostic exists to report, and it was the one it could not reach: the
+            // avatar renders with an uncut system-hair helmet and a blank head while the log stays
+            // silent (live, Agni 2026-09-03). The signature compare below is what keeps it from
+            // being per-frame spam, so running it every update costs one string build on a dozen
+            // entries and nothing else.
+            if (avatar.IsLocalAgent)
             {
                 string line = string.Join("  ", avatar.BakedTextures.OrderBy(k => k.Key)
                     .Select(k => $"{k.Key}={(k.Value == Guid.Empty ? "EMPTY" : k.Value.ToString("N")[..8])}"));
                 if (line != _lastSelfBakeSig)
                 {
                     _lastSelfBakeSig = line;
-                    GD.Print("[SelfBake] channels  " + line);
+                    bool none = avatar.BakedTextures.Count == 0 || avatar.BakedTextures.Values.All(v => v == Guid.Empty);
+                    GD.Print("[SelfBake] channels  " + (line.Length == 0 ? "(none)" : line) +
+                        (none ? "  -- NO BAKE AT ALL: the sim has not sent our own appearance. " +
+                                "System hair renders as an uncut helmet and the head blank until it does; " +
+                                "GridSession nudges a re-composite automatically, Ctrl+Alt+R forces one."
+                              : ""));
                 }
             }
 
