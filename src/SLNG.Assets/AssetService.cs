@@ -691,6 +691,14 @@ public class AssetService
     private static readonly PriorityGate _textureFetchThrottle = new PriorityGate(32);
     private static readonly PriorityGate _sculptFetchThrottle = new PriorityGate(4);
 
+    // The disk-cache hit path was a BARE Task.Run per texture -- measured 2026-09-03: a familiar
+    // scene is ~99.9% cache hits, but ~1600 J2K decodes fired at the thread pool at once
+    // ([TexPipe] avg "91 ms" is mostly pool-queue wait, not decode). Bound them to the CPU so
+    // decodes run at full speed without oversubscription, and honour `priority` so the textures
+    // the camera is pointed at finish first. Leave 2 cores for the Godot main thread + GC.
+    private static readonly PriorityGate _textureDecodeThrottle =
+        new PriorityGate(Math.Max(2, Environment.ProcessorCount - 2));
+
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false)
     {
         System.Threading.Interlocked.Increment(ref _texPipeReq);
@@ -709,8 +717,11 @@ public class AssetService
             try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
             if (cached != null && cached.Length > 0)
             {
+                TextureData? decodedFromCache;
+                await _textureDecodeThrottle.WaitAsync(priority).ConfigureAwait(false);
                 var _texSw = System.Diagnostics.Stopwatch.StartNew();
-                var decodedFromCache = await Task.Run(() => DecodeTexture(cached, isSculpt)).ConfigureAwait(false);
+                try { decodedFromCache = await Task.Run(() => DecodeTexture(cached, isSculpt)).ConfigureAwait(false); }
+                finally { _textureDecodeThrottle.Release(); }
                 System.Threading.Interlocked.Add(ref _texPipeCacheDecodeTicks, _texSw.ElapsedTicks);
 
                 // The cache is only ever WRITTEN for a clean decode, so a degraded result here
