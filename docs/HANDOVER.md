@@ -5,261 +5,111 @@
 
 ---
 
-# 2026-09-03 — BUG-NET-11: slow textures = 3 stacked causes (`v0.20.45` / `.48` / `.49`)
+# 2026-09-03 — long live-testing arc on Agni (v0.20.33 → v0.20.50)
 
-User: *"warte hier grade über 5 Minuten dass die Texturen auftauchen"*, *"wie kann Firestorm so
-viel schneller rendern"* — on a familiar, fully-cached scene.
+One continuous session. **Working tree clean, HEAD `da928ad`, all pushed to `origin/main`.**
+Earlier per-fix sections for this day were consolidated into this one; the specs, `docs/ROADMAP.md`
+rows and git history keep the detail.
 
-`[TexPipe]` diagnostic (`v0.20.47`) made it measurable: `req` climbing **past 2600** for a
-2-avatar scene, `diskCacheHit` ~99.9 %, **zero `Caps rate limiter`**. So the cache is used and
-the caps flood is fixed — the problem is **~2600 J2K decodes for ~200 distinct textures**, each
-decoded ~13×.
+## Shipped & confirmed in-world
 
-Three causes, three fixes:
-1. **`v0.20.45`** — `ApplyFaceMaterialsAsync` fired one single-id `RenderMaterials` cap POST per
-   face → caps limiter full. Now prefetches all a mesh's material ids in one batch.
-2. **`v0.20.48`** — the disk-cache-hit decode was a bare `Task.Run` per texture → ~2600 decodes
-   dumped on the thread pool. Now `_textureDecodeThrottle` (`PriorityGate(ProcessorCount-2)`),
-   `priority`-ordered. `[TexPipe]` avg stayed ~90 ms after this → a single OpenJPEG decode is
-   genuinely ~90 ms (not the main issue).
-3. **`v0.20.49` — the real one.** `GpuCache.GetOrUploadTextureAsync` did
-   `cached = rejectDegraded ? null : Get(id)` → **every avatar face texture bypassed the GPU
-   cache** and re-decoded from disk on every material rebuild (avatar faces rebuild constantly).
-   Now GpuCache tracks per-id whether the cached upload was *degraded* (`_uploadFromDegraded`); a
-   `rejectDegraded` caller re-fetches only those, a clean cached `ImageTexture` is reused by all.
-   Should collapse `[TexPipe] req` to ~one per distinct texture.
+- **BUG-INV-01 inventory search** (`v0.20.35`) — search now crawls the subtree (`ContinueSearchCrawl`
+  one level per `Populate`), `FilterTree` gained `ancestorMatched` so a name-matched folder opens
+  with contents. User: *"geht"*.
+- **BUG-INV-01 detach / cleanup** (`v0.20.32`–`.34`) — context-menu id→index crash; COF-link
+  removal switched from `MoveItem → Trash` (400s on SL) to `RemoveItemsAsync`; refresh marshalled
+  off the `Callable.From(lambda)` anti-pattern. User: *"funktioniert recht gut und schnell"*.
 
-**Firestorm:** KDU (SIMD J2K, ~10–20× OpenJPEG) + a **decoded**-texture cache (skips J2K on a
-hit). SLNG's re-decode bug was the bulk of the gap; a decoded/BC7 disk cache is the next step.
+## Shipped, NOT re-verified in-world
 
-**Verify `v0.20.49`:** `[TexPipe] req` should NOT climb into the thousands for a static scene;
-`diskCacheHit` grows once then stops; textures appear in seconds.
+- **BUG-INV-01 `CleanUpCurrentOutfit` safety gate** (`v0.20.36`) — `v0.20.33`'s durable delete
+  stripped the avatar bake when run on a still-loading COF. Now gated on `storeReady` (every
+  link's target resolved) + `sceneReady` (≥1 scene attachment); else `OutfitCleanupResult.Deferred`.
+- **BUG-AVATAR-03 SSB rebake** (`v0.20.37` reverted → `v0.20.39` real fix). `RequestSetAppearance`
+  reconciles the worn set from a COF fetch and drops worn attachments on a rate-limited grid
+  (user lost hair+shoes twice). Now `SendServerAppearanceUpdateAsync` POSTs `{ "cof_version": N }`
+  straight to the `UpdateAvatarAppearance` cap (mirrors `LLAppearanceMgr::serverAppearanceUpdateCoro`),
+  a pure nudge; `Ctrl+Alt+R` and the reinstated debounced auto-rebake both use it. Log from a
+  later session shows `[Appearance] server appearance update accepted (cof_version=31, HTTP 200)`
+  → fresh `[SelfBake]`, so the nudge itself works.
+- **BUG-RENDER-10 403-denied texture** (`v0.20.40`) — `TextureFetchResult.Gone` on a 403/401 from
+  the generic cap (bake path excluded); no LMV UDP-pipeline fallback; session-permanent
+  `AssetService._goneTextures`. `v0.20.43` logs the failing host+path (`33192a49` / `dda710d4`
+  both `403 from asset-cdn.glb.agni.lindenlab.com/` — the generic CDN, NOT a bake-style URL).
+- **BUG-RENDER-10 untextured avatar face** (`v0.20.42` Opaque → `v0.20.44` **invisible**). A face
+  referencing a real texture that won't load: `Blend`-from-tint = translucent double-sided card
+  that sorts wrong ("hair inside-out"); Opaque = blocky patch. Now renders invisible (albedo α 0)
+  until the texture arrives.
+- **BUG-NET-11 material-request caps flood** (`v0.20.45`) — `ApplyFaceMaterialsAsync` fired one
+  single-id `RenderMaterials` cap POST per face → `Caps rate limiter queue full`. Now prefetches
+  every distinct legacy+PBR material id its faces reference in one batch. Confirmed via
+  `[TexPipe]`: zero rate-limiting after, `[LegacyMat] POST` lines now multi-id.
+- **BUG-NET-11 decode throttle** (`v0.20.48`) — the disk-cache-hit decode was a bare `Task.Run`
+  per texture; now `_textureDecodeThrottle` (`PriorityGate(ProcessorCount-2)`), priority-ordered.
+- **BUG-NET-11 GPU-cache reuse** (`v0.20.49`) — `GetOrUploadTextureAsync` did
+  `cached = rejectDegraded ? null : Get(id)`, so every avatar face bypassed the GPU cache. Now
+  only a **degraded** cached upload is bypassed (`_uploadFromDegraded`, set from
+  `textureData.IsDegraded`). **Did NOT fully fix it** — see below.
 
----
+## Reverted this session (do not re-apply without the noted change)
 
-# 2026-09-03 — BUG-NET-11: per-face material POSTs flood the caps limiter (`v0.20.45`)
+- **BUG-AVATAR-03 auto-rebake `v0.20.37`** (`git revert df99875`) — auto-fired `RequestSetAppearance`
+  after every wearable edit → worsened the attachment loss. The `v0.20.39` cap-POST path is the
+  safe replacement and the auto-rebake is back on top of that.
+- **BUG-RENDER-09 BoM `Scissor → Blend` `v0.20.41`** (reverted `v0.20.46`) — also caught BoM
+  head/body faces (their bake has a soft neck-blend alpha → `Scissor` verdict) → `Blend` on
+  `cull_disabled`/no-depth-write → blocky see-through chunks across the face. **`Blend` is off the
+  table for any BoM face.**
 
-User: *"Texturen kommen extrem langsam, sollten alle im Cache liegen"* + half-loaded avatars,
-*"Transparenzen komplett falsch an den anderen Avataren"* (blocky untextured hair).
+## OPEN — the three the user is still hitting (all bigger pieces, no quick fix)
 
-`AvatarRenderer.ApplyFaceMaterialsAsync` builds faces one at a time; each `BuildFaceMaterialAsync`
-awaits `GetLegacyMaterialAsync`. On a many-materialled mesh those requests arrive **>100 ms
-apart** (each waits on the previous face's texture fetch), so `AssetService`'s 100 ms batch
-window coalesces nothing → **one single-id `RenderMaterials` cap POST per face**
-(`[LegacyMat] POST 200: 1 ids` ×41 + dozens more in one session, ~200 POSTs for two nearby
-avatars) → `warn: Caps rate limiter queue full` → texture fetches queue behind it and crawl.
-Hidden before `BUG-RENDER-06` (materials always resolved to nothing → `_recentMaterialMisses`
-deflected each id for 2 min).
+### 1. Textures still slow — `[TexPipe] req` climbs past 8600 for a static scene
 
-**Fix `v0.20.45`:** `ApplyFaceMaterialsAsync` prefetches every distinct legacy + PBR material id
-its faces reference **up front** — one tight loop firing all `GetLegacyMaterialAsync` /
-`GetMaterialAsync`, then `Task.WhenAll`. They land in `_pendingMaterialIds` together → one batch
-`FetchLegacyMaterialsAsync` per mesh; the per-face awaits below are cache hits.
+`v0.20.49` did **not** stop the re-decode loop. `[TexPipe]` (v0.20.47) shows `req` climbing into
+the thousands with `diskCacheHit ≈ req` (~99.9 %) and `inflight` spiking to 1000+ then draining —
+i.e. the same ~200 textures decoded ~13× each. `v0.20.50` adds `[TexPipe] distinct=N` and a
+`[GpuCache] get/hit/bypassDegraded/entries/sizeMB/degradedIds` line every 200 gets — **the next
+`v0.20.50` session log will show whether `GetOrUploadTextureAsync` is hitting its own `_cache`
+and why not.** Leads to check: `AvatarRenderer` has **no `AddRef`/`ReleaseRef` bookkeeping**
+(comment at `AvatarRenderer.cs:893`) — it relies on `initialRefCount: 1` pinning; if the pin
+isn't holding (or `_pendingRefDelta` folds a stray `ReleaseRef` to 0 on `Put`), avatar textures
+evict and re-decode. `AssetService._memCache` is only 256 MB (`Size = W·H·4`, ~60×1024²) so it
+thrashes and gives no RAM rescue either.
 
-**Also this session:**
-- `v0.20.41` BUG-RENDER-09: BoM alpha mask → `Kind.Blend` — **reverted `v0.20.46`**: it also
-  caught BoM head/body faces (soft neck-blend alpha → `Scissor` verdict) → `Blend` on
-  `cull_disabled`/no-depth-write → blocky see-through chunks across the face (*"sieht richtig
-  kaputt aus"*). `Blend` is off the table for BoM; next attempt is a `prim_hash_avatar` variant
-  or a much lower Scissor threshold. Foot banding is back for now.
-- `v0.20.42` → `v0.20.44` BUG-RENDER-10: an untextured avatar face was Opaque (blocky) → now
-  **invisible** (albedo α 0) until its texture loads.
-- `v0.20.43`: the `[TextureFetch] … 403` log line now includes the host + path (to answer "is
-  `dda710d4` a wrong-URL case like the bakes?" — need to see it next session).
+Structural regardless of the loop: SLNG re-decodes J2K (~86–99 ms each, OpenJPEG via Magick.NET,
+measured post-throttle so that's the real cost). Firestorm uses **KDU** (SIMD, ~10–20×) **plus a
+decoded-texture cache** (stores the decoded/transcoded result, skips J2K on a hit). Next
+structural steps: (a) a **decoded / BC7 disk cache** keyed by texture id, or (b) **reduce-level
+decode** (decode fewer wavelet levels for the first display, sharpen on demand — `cp_reduce`).
 
-**Verify:** `[LegacyMat] POST` lines carry many ids each (not `1 ids`), no `Caps rate limiter
-queue full`, textures stream normally; and the `403` host line for `dda710d4`.
+### 2. Other avatar's hair — `dda710d4` genuine 403
 
----
+`403 from asset-cdn.glb.agni.lindenlab.com/` — the generic CDN, confirmed. Not a wrong-URL case
+like BUG-AVATAR-02's bakes. Either a dead / non-persisted (local-only) texture, or a real
+permission block. `v0.20.44` renders it invisible. **Need one data point: does Firestorm show
+that exact hair correctly?** Yes → HTTP-capture SLNG vs FS for `dda710d4`. No → nothing to fix.
 
-# 2026-09-03 — BUG-RENDER-10: a 403-denied texture re-fetched forever (`v0.20.40`)
+### 3. Self avatar alpha — "2 alpha layers overlapping" render wrong
 
-User: *"Textur-blinkt-Bug bei dem Haar von einem Avatar auf der SIM."* A remote avatar's hair
-face carries `dda710d4`, which the sim's `GetTexture`/`ViewerAsset` cap answers **403** for.
-SLNG's HTTP path treats 403 as non-retryable — but `FetchTextureDataAsync` then falls back to
-LibreMetaverse's UDP `TexturePipeline`, which re-tries HTTP, hits the same 403, and spams
-`[PurisViewer Resident] Failed to fetch texture … Forbidden`. `AssetService`'s 45 s negative
-cache expires and the constantly-rebuilt (terse-updated) face re-pays the whole cost → dozens of
-bursts per session + a flickering face.
+Same root as BUG-RENDER-09's banding: two alpha-blended avatar surfaces overlapping have no
+reliable depth order in Godot's transparent queue (no depth write). `Scissor` bands a soft
+gradient; `Blend` broke heads (reverted). The answer is a **`prim_hash_avatar` shader variant**
+(alpha-hash + depth write): dithered but depth-correct, no hard edge, no sort failure. New shader
++ `check_shader_globals` + selftest + a live A/B. Filed in `docs/specs/BUG-RENDER-09-*.md`.
 
-**Fix:** `TextureFetchResult.Gone`, set on a 403/401 from the **generic** cap only
-(`fetchUrl == null` — the bake path is excluded, BUG-AVATAR-02 bakes 403 by design and fall back).
-`FetchTextureDataAsync` returns `Gone` **without** touching the LMV pipeline.
-`AssetService._goneTextures` is a session-permanent negative cache — one 403, then the id is dead
-for the session (`[TextureGiveUp] … sim denied it (403/401)`), face settles to a stable
-untextured state. Restart clears it. 575 tests / format / shaders / selftest clean.
+## Filed, not started
 
-**Verify:** hair face stops flickering, one `[TextureGiveUp] … sim denied it` per denied id then
-silence (no more `Forbidden` bursts).
+- **FEAT-ANIM-01** — self-avatar locomotion prediction (walk anim lags the server echo under
+  load; `AvatarController` should drive the built-in gait locally).
+- **FEAT-INV-05** — per-item actions in the Outfits view.
+- **BUG-INV-01 remaining** — visible worn marker in the main tree, per-folder load spinner, the
+  ~15 other `Callable.From(lambda)` sites in `InventoryPanel.cs`.
 
-**Follow-up `v0.20.41` (BUG-RENDER-09):** BoM alpha-layer mask → `Kind.Blend` instead of the
-banding `Scissor`, scoped to `wasBom && ClassifyAlpha==Scissor`.
+## Diagnostics currently in the build (remove once their questions are answered)
 
-**Follow-up `v0.20.42` (BUG-RENDER-10):** user then reported the hair "innen und außen
-vertauscht" — an untextured face heading for `Kind.Blend` only via a soft tint renders as a
-translucent double-sided card (Avatar surface `cull_disabled`), no depth write → cards sort
-wrong. `built == null` branch now falls `Blend`-from-tint back to `Opaque` when `tint.A > 0.02`.
-
----
-
-# 2026-09-03 — BUG-AVATAR-03 real fix: direct `{cof_version}` cap POST (`v0.20.39`)
-
-The SSB rebake no longer goes through LibreMetaverse's `RequestSetAppearance` (which reconciles
-the worn set and drops attachments on a rate-limited grid). New
-`GridSession.SendServerAppearanceUpdateAsync` POSTs `{ "cof_version": N }` straight to the
-`UpdateAvatarAppearance` cap via `HttpCapsClient.PostAsync`, mirroring
-`LLAppearanceMgr::serverAppearanceUpdateCoro` (`postData["cof_version"] = cofVersion`; retry on
-`{ success:false, expected:M }`, ≤3×, 500 ms). Pure nudge — the sim composites from its own COF,
-touches nothing local.
-
-- `GetCofVersion()` = COF folder's `InventoryFolder.Version` from LMV's store (AIS updates it in
-  place → no re-fetch). `-1` → skip.
-- `RequestServerSideRebakeAsync()` (Ctrl+Alt+R path) now delegates to it.
-- Auto-rebake reinstated on the **safe** path: `ScheduleRebakeAfterWearableEdit()` (1.8 s
-  debounce, SSB-only) from `WearWearableAsync` / `RemoveWearableAsync`.
-- `BuildServerAppearanceUpdate(int)` `internal static`; `ServerAppearanceUpdateTests` (5).
-- 575 tests green, format/shaders/selftest clean.
-
-**Verify in-world:** swap an alpha, do nothing → `[Appearance] wearable edit settled -- nudging a
-server re-composite` → `server appearance update accepted` → fresh `[SelfBake]`; and **no worn
-attachment vanishes across a relog**. If the sim replies `expected M`, the retry should pick it
-up (watch for the "server expected N -- retrying" line).
-
----
-
-# 2026-09-03 — acceptance-testing round: search OK, walk-anim lag filed
-
-User ran the post-fix test list.
-- **Inventory search (`v0.20.35`)** → *"geht"*. ✅ confirmed in-world.
-- **BUG-AVATAR-03** → user fixed the stuck alpha in Firestorm, relogged SLNG, avatar renders
-  clean. Confirms symptom 1 was the stale bake; `BUG-RENDER-09` (ragged edge) only bites while a
-  mask is legitimately present.
-- **Walking** → *"Animation zum Laufen kommt nicht / zu spät wenn es laggt."* → filed
-  **`FEAT-ANIM-01`**: the self avatar has no local locomotion prediction, it waits for the sim to
-  echo `AvatarAnimation` (+ a first-time `GetAnimationAsync` fetch). Reference viewer plays the
-  compiled-in gait locally. `docs/specs/FEAT-ANIM-01-self-locomotion-prediction.md`.
-
-Two build candidates now queued, user to pick: the real `BUG-AVATAR-03` fix (direct
-`{cof_version}` POST to `UpdateAvatarAppearance`, so SLNG-side outfit editing stops eating
-attachments) or `FEAT-ANIM-01`.
-
----
-
-# 2026-09-03 — BUG-RENDER-09 filed: BoM alpha edge renders as a ragged sawtooth
-
-User, after the auto-rebake revert, on Agni: *"1. wurde das Alpha bei beiden Bodys nicht entfernt
-obwohl ich es abgenommen habe … 2. sieht die Haut über dem Alpha komisch zerrissen aus"* +
-screenshots of a mesh foot with a torn edge.
-
-- **Symptom 1** (alpha still there) = `BUG-AVATAR-03`. `[SelfBake] 10=5d9f302c` unchanged across
-  the last few sessions; a boots/cutoffs alpha layer is almost certainly still worn server-side
-  after all the on/off toggling under the buggy v0.20.37 client. SLNG's wearable-remove path is
-  the unreliable piece — **tell the user to sort the worn alphas in Firestorm and let FS rebake**,
-  then relog SLNG.
-- **Symptom 2** (torn edge) = new bug, **`BUG-RENDER-09`** (filed, not started).
-  `AvatarRenderer.BuildFaceMaterialAsync` → `ClassifyAlpha` classes a BoM skin bake with a soft
-  alpha-layer mask as "hard cutout" → `Kind.Scissor @ 0.25` → sawtooth on the gradient. Real
-  viewer blends it. Not a one-liner (Blend = no depth-write on a body face; Hash stippled hair
-  historically). Spec has the options + calls for a live A/B, scoped to `wasBom` skin faces only.
-  `docs/specs/BUG-RENDER-09-bom-alpha-edge-hard-scissor.md`.
-
-No code change this pass — the alpha-rendering path is scarred and several fixes already went
-sideways this session; BUG-RENDER-09 needs a careful A/B, not a rushed edit.
-
----
-
-# 2026-09-03 — BUG-AVATAR-03: rebake drops worn attachments; auto-rebake reverted
-
-**`v0.20.38`** reverts **`v0.20.37`** (`df99875`) in full.
-
-User, mid alpha-layer fiddling on Agni: *"mir fehlen jetzt schon das 2. mal Items nach dem
-Relog — die Haare sind nicht mehr angezogen und die Schuhe auch nicht"* → *"die Schuhe sind im
-Nachhinein aufgetaucht, die Haare nicht."*
-
-**Cause (B):** `RebakeAvatar` → `RequestServerSideRebakeAsync` →
-`_client.Appearance.RequestSetAppearance(forceRebake: true)` reconciles the worn set from a fresh
-COF fetch inside the call (`RezMultipleAttachmentsFromInv` in every rebake's log). With
-`SendAppearance = false` LMV's attachment/wearable cache is empty, so it rebuilds purely from that
-fetch — and on rate-limited Agni (`Caps rate limiter queue full`, `FetchInventory2` `A task was
-canceled` ×6) a COF link whose target doesn't resolve in the window is dropped. Log evidence: COF
-item count 43 → 39 → 41 across rebakes, `cof_version` bumping each time.
-
-**Why revert `v0.20.37`:** it auto-fired that exact call after *every* wearable edit (was: only
-on the user's Ctrl+Alt+R) and added a COF fetch right before it — i.e. it ran the
-attachment-dropping path far more often and raised the rate-limit pressure that triggers the drop.
-Net: it made the data loss worse. `git revert df99875`, AppVersion → `v0.20.38-alpha`.
-
-**State now:** `v0.20.36` behaviour. Problem A is back (a wearable/alpha edit needs a manual
-rebake to show). Problem B is no longer amplified but the manual Ctrl+Alt+R path is unchanged and
-still risky on a busy grid.
-
-**Tell the user:** to see a wearable change, **relog** rather than Ctrl+Alt+R — the sim
-re-composites on its own from the `cof_version` bump. Don't spam the rebake button.
-
-**Real fix (BUG-AVATAR-03 spec, not built):** POST `{ cof_version }` to the
-`UpdateAvatarAppearance` cap **directly** via `HttpCapsClient.PostAsync` (same bypass the
-RenderMaterials query and `FetchOneBatchAsync` already use) — a pure nudge that never touches the
-worn set. Then the auto-rebake can safely come back on top of it.
-
-Build + 570 tests + selftest 29/29.
-
----
-
-# 2026-09-03 — BUG-INV-01: `v0.20.33`'s durable COF delete stripped the avatar bake
-
-**`v0.20.36`** — user: *"Irgendwas ist kaputt gegangen"* + screenshot of a grey (unbaked) self
-avatar on Agni. Traced from the rotated session logs
-(`%APPDATA%/Godot/app_userdata/Puris Viewer/logs/`):
-
-| Session | Version | `[SelfBake]` | `[OutfitCleanup]` |
-|---|---|---|---|
-| 09:50–12:13 | v0.20.30→34 | ✅ `8=784033ee 9=9965f08e 10=e1baf1d1 11=1e70f9f4 …` every time | — |
-| **12:13** | v0.20.34 | ✅ (still) | `deleted … unworn-attachment=2 … (via RemoveItems, AIS=True)` + `uncached=2`, region rate-limited |
-| **12:26** | v0.20.35 | ❌ **absent** — every BoM face `UNRESOLVED` | — |
-
-**Root cause:** `375e037` (`v0.20.33`) turned `CleanUpCurrentOutfit`'s link removal from
-`MoveItem → Trash` (HTTP 400 on SL = silent no-op) into a real `RemoveItemsAsync` AIS delete.
-At 12:13 the COF was still streaming (`uncached=2`, `Caps rate limiter queue full`), so 2 links
-were misread as removable, the AIS delete stuck, and the forced server re-composite came back
-empty. Not the search commit (`v0.20.35`, InventoryPanel-only).
-
-**Fix (`v0.20.36`):**
-- `CleanUpCurrentOutfit` — **safety gate**: acts only when `storeReady` (every non-Zero-target
-  link resolved in the store, `linkUnresolved == 0`) **and** `sceneReady` (≥1 attachment visible
-  in the scene). Otherwise returns `OutfitCleanupResult { Deferred = true }`; panel shows
-  *"Inventar/Szene lädt noch — bitte gleich nochmal versuchen."* The 12:13 state would now defer.
-- `DetachItemAsync` stale-link cleanup + `RemoveOutfitLinksForItems` — `MoveItem → Trash`
-  (400 on SL, so "Ablegen" never persisted) → `RemoveItemsAsync`. These act on an explicit
-  user-chosen item, so no gate.
-- `OutfitCleanupResult` gained `bool Deferred`.
-
-**Recover a broken avatar:** `Ctrl+Alt+R` (SSB rebake), or relog + wait, or re-wear the outfit
-in Firestorm. Inventory items were never touched — only COF *links*.
-
-Build + 570 tests + selftest 29/29 green.
-
----
-
-# 2026-09-03 — BUG-INV-01: inventory search now crawls the tree
-
-**`v0.20.35`** — user: *"die suche im inventar macht mir noch sorgen. Wenn ich nach DOUX suche
-finde ich den ordner wenn ich den ordner manuell öffne gehts dann."* Root cause: the search
-filtered only folders that were **already expanded**. `EnsureFoldersLoadedForSearch` walked the
-tree once and fetched one level of not-yet-loaded folders, but the async `Populate` that lands a
-folder's children never re-triggered the walk, so the crawl stopped at the first unexpanded
-level — and a folder whose *name* matched still rendered empty because its children didn't match
-the query. Fix in `InventoryPanel.cs`:
-- While a query ≥ `MinSearchCrawlChars` (2) is active, each `Populate` calls
-  `ContinueSearchCrawl(item)` → fetches that folder's subfolders (`TryCrawlFolderRow`), one level
-  per `Populate`, so the crawl follows the tree down as it materialises. Bounded by
-  `MaxSearchFolderLoads` (800); `_searchLoadsIssued` resets when the box is cleared.
-- `FilterTree` gained an `ancestorMatched` param — a folder whose own name matches now reveals
-  its **entire** subtree (searching "DOUX" → the DOUX folder opens with its contents visible).
-- `_pendingFetches` counter → "Suche läuft… (N Ordner)" / "Lädt… (N Ordner)" status (a single
-  fetch used to set the status and any single `Populate` cleared it, so concurrent fetches
-  cleared it early). Partial credit toward symptom 3's progress gap.
-Godot-`TreeItem`-bound → no unit-test surface. Build + 570 tests + selftest 29/29 green.
-**Not yet re-verified in-world.**
+- `[TexPipe]` (v0.20.47/.50) — texture pipeline: req / distinct / diskCacheHit / decode ms / http / inflight.
+- `[GpuCache]` (v0.20.50) — get / hit / bypassDegraded / entries / sizeMB / degradedIds.
+- `[TextureFetch] … 403 from <host><path>` (v0.20.43).
 
 ---
 
