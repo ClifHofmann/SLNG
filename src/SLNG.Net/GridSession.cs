@@ -4990,26 +4990,25 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     // FEAT-INV-03: this now runs for a real attachment too. It used to be gated on
                     // !wasAttached, trusting the sim to drop the link as part of the detach -- but
                     // OpenSim does not do that reliably, so the link survived and the item was
-                    // re-worn on the next login. The race the old comment worried about ("detach
-                    // then failed") is a non-issue here: wasAttached means LibreMetaverse had it in
-                    // live attachments, so the detach we just sent almost certainly took, and even
-                    // if not, the link is in Trash (recoverable), not purged.
+                    // re-worn on the next login.
                     //
-                    // Moved to Trash rather than purged. The link is not the item -- the real
-                    // object stays where it lives in inventory -- but an outfit is still user data
-                    // and Trash keeps a mistake recoverable, unlike RemoveItemsAsync.
-                    if (staleKeys.Count > 0 && TrashFolderId is { } trashId)
+                    // DELETE, not move-to-Trash. MoveInventoryItem on a Current-Outfit link gets
+                    // HTTP 400 from AIS on SL ("Move item … to <Trash>: Bad Request") -- the COF
+                    // handler rejects the move -- so the link never left and the item stayed worn
+                    // across logins ("Ablegen geht nicht persistent", live 2026-09-03). staleKeys
+                    // are the links for the one item the user explicitly chose to take off, so a
+                    // durable delete is well-targeted; the linked inventory item is untouched.
+                    var toDelete = staleKeys.Where(k => k != LibreMetaverse.UUID.Zero).ToList();
+                    if (toDelete.Count > 0)
                     {
-                        var trashUuid = new LibreMetaverse.UUID(trashId);
-                        foreach (var k in staleKeys)
+                        try
                         {
-                            if (k == LibreMetaverse.UUID.Zero) continue;
-                            try
-                            {
-                                _client.Inventory.MoveItem(k, trashUuid);
-                                staleLinksRemoved++;
-                            }
-                            catch { }
+                            _ = _client.Inventory.RemoveItemsAsync(toDelete, System.Threading.CancellationToken.None);
+                            staleLinksRemoved = toDelete.Count;
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine($"[Detach] RemoveItemsAsync threw: {ex.Message}");
                         }
                     }
 
@@ -5123,19 +5122,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return map;
     }
 
-    /// <summary>Moves every Current-Outfit link that points at one of <paramref name="itemIds"/>
-    /// (or whose own id is in the set) to Trash and drops it from the local store. Returns how
-    /// many were moved. Edits the outfit only -- the linked items stay in inventory. FEAT-INV-03.</summary>
+    /// <summary>Deletes every Current-Outfit link that points at one of <paramref name="itemIds"/>
+    /// (or whose own id is in the set) and drops it from the local store. Returns how many were
+    /// removed. Edits the outfit only -- the linked items stay in inventory. FEAT-INV-03.
+    ///
+    /// DELETE, not move-to-Trash: <c>MoveInventoryItem</c> on a Current-Outfit link gets HTTP 400
+    /// from AIS on SL (the COF handler rejects the move), so the link never actually left and the
+    /// item came back worn on the next login. The caller passes explicit ids of attachments it
+    /// just detached, so a durable delete is well-targeted here (unlike the heuristic scan in
+    /// <see cref="CleanUpCurrentOutfit"/>, which is load-gated for that reason).</summary>
     private int RemoveOutfitLinksForItems(ICollection<Guid> itemIds)
     {
-        if (itemIds.Count == 0 || TrashFolderId is not { } trashId) return 0;
+        if (itemIds.Count == 0 || TrashFolderId is null) return 0;
 
         var store = _client.Inventory.Store;
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
         var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
         if (cofNode == null) return 0;
 
-        var trashUuid = new LibreMetaverse.UUID(trashId);
         var want = new HashSet<Guid>(itemIds);
         var linkKeys = new List<LibreMetaverse.UUID>();
         foreach (var childNode in cofNode.Nodes.Values)
@@ -5144,23 +5148,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             var target = link.IsLink()
                 ? (link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID)
                 : link.UUID;
-            if (want.Contains(link.UUID.Guid) || want.Contains(target.Guid))
+            if (link.UUID != LibreMetaverse.UUID.Zero
+                && (want.Contains(link.UUID.Guid) || want.Contains(target.Guid)))
                 linkKeys.Add(link.UUID);
         }
 
-        int moved = 0;
-        foreach (var k in linkKeys)
+        foreach (var k in linkKeys) cofNode.Nodes.Remove(k);
+        if (linkKeys.Count > 0)
         {
-            if (k == LibreMetaverse.UUID.Zero) continue;
-            try
-            {
-                _client.Inventory.MoveItem(k, trashUuid);
-                cofNode.Nodes.Remove(k);
-                moved++;
-            }
-            catch { }
+            try { _ = _client.Inventory.RemoveItemsAsync(linkKeys, System.Threading.CancellationToken.None); }
+            catch (Exception ex) { Console.Error.WriteLine($"[Detach] RemoveItemsAsync threw: {ex.Message}"); }
         }
-        return moved;
+        return linkKeys.Count;
     }
 
     /// <summary>Walks up from <paramref name="node"/> to see if any ancestor folder is the Trash
@@ -5178,16 +5177,22 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return false;
     }
 
-    /// <summary>Tidies the Current Outfit Folder: moves to Trash (a) links that resolve to
-    /// nothing, (b) links whose target item is already in Trash, and (c) links to
-    /// <c>AssetType.Object</c> items that are not currently attached. Never touches a
-    /// Clothing/Bodypart link (removing one needs a rebake -- FEAT-AVATAR-01) or a currently-worn
-    /// item. Links are trashed, not purged -- recoverable. FEAT-INV-03.</summary>
+    /// <summary>Tidies the Current Outfit Folder: deletes (a) links that resolve to nothing,
+    /// (b) links whose target item is already in Trash, (c) duplicate links to the same target,
+    /// and (d) links to <c>AssetType.Object</c> items that are not currently attached. Never
+    /// touches a Clothing/Bodypart link (removing one needs a rebake -- FEAT-AVATAR-01) or a
+    /// currently-worn item. A COF link has no asset, so a delete only drops the outfit entry.
+    ///
+    /// Refuses to do anything while the inventory store or the scene is still loading (see the
+    /// safety gate): a COF-link delete is a durable AIS delete on SL and any COF change forces a
+    /// server re-composite, so acting on a half-loaded folder -- where an unresolved target reads
+    /// as "dead" and an attachment not yet in the scene reads as "unworn" -- once deleted two real
+    /// links and left the avatar with no bake (live regression 2026-09-03). FEAT-INV-03.</summary>
     public OutfitCleanupResult CleanUpCurrentOutfit()
     {
         // Proxy for "inventory skeleton is loaded" -- if the Trash folder isn't known yet, the
         // Current Outfit folder almost certainly isn't either.
-        if (TrashFolderId is null) return new OutfitCleanupResult(0, 0, 0);
+        if (TrashFolderId is null) return new OutfitCleanupResult(0, 0, 0, Deferred: true);
 
         var store = _client.Inventory.Store;
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
@@ -5195,7 +5200,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (cofNode == null)
         {
             Console.Error.WriteLine("[OutfitCleanup] no Current Outfit folder in the store — nothing to do");
-            return new OutfitCleanupResult(0, 0, 0);
+            return new OutfitCleanupResult(0, 0, 0, Deferred: true);
         }
 
         // "Worn right now" from the SCENE, not LibreMetaverse's GetAttachmentsByItemId() cache --
@@ -5206,6 +5211,37 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         HashSet<Guid> cacheAttachIds;
         try { cacheAttachIds = _client.Appearance.GetAttachmentsByItemId().Keys.Select(k => k.Guid).ToHashSet(); }
         catch { cacheAttachIds = new HashSet<Guid>(); }
+
+        // SAFETY GATE — live regression 2026-09-03 (v0.20.34: "Outfit aufräumen" deleted two links
+        // and the avatar came back grey on the next login). Since v0.20.33 a removal here is a
+        // durable AIS delete on SL, and *any* COF change makes the server re-composite the avatar.
+        // While the store is still streaming, a link whose target node hasn't arrived is
+        // indistinguishable from a genuinely dead one; while the region prims are still arriving,
+        // an attachment reads as "unworn". Only touch the COF once BOTH are demonstrably in.
+        int linkTotal = 0, linkUnresolved = 0;
+        foreach (var n in cofNode.Nodes.Values)
+        {
+            if (n.Data is not LibreMetaverse.InventoryItem li || !li.IsLink()) continue;
+            linkTotal++;
+            var t = li.ResolvedItemID != LibreMetaverse.UUID.Zero ? li.ResolvedItemID : li.AssetUUID;
+            // t == Zero is a genuinely targetless ("dead") link regardless of load state; only a
+            // link WITH a target whose node is missing from the store means "still loading".
+            if (t != LibreMetaverse.UUID.Zero &&
+                store?.GetNodeOrDefault(t)?.Data is not LibreMetaverse.InventoryItem)
+                linkUnresolved++;
+        }
+
+        // You are always wearing at least a body — zero scene attachments means the region prims
+        // haven't arrived, so "not in the scene" can't yet be read as "not worn".
+        bool sceneReady = wornAttachItemIds.Count > 0;
+        bool storeReady = linkTotal > 0 && linkUnresolved == 0;
+        if (!storeReady || !sceneReady)
+        {
+            Console.Error.WriteLine(
+                $"[OutfitCleanup] deferred — still loading (links={linkTotal} unresolved={linkUnresolved} " +
+                $"scene-worn-attachments={wornAttachItemIds.Count}); nothing removed, retry in a moment");
+            return new OutfitCleanupResult(0, 0, 0, Deferred: true);
+        }
 
         int dead = 0, trashedTarget = 0, unworn = 0, duplicate = 0;
 

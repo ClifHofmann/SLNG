@@ -481,13 +481,19 @@ public partial class InventoryPanel : SLNGWindow
     }
 
     // FEAT-INV-03: prune the Current Outfit. Synchronous — reads the LibreMetaverse inventory
-    // store and sends MoveItem packets, no blocking I/O. Everything moves links to Trash, never
-    // real items, and never a Clothing/Bodypart link or a worn item.
+    // store and fires the delete, no blocking I/O. Only ever deletes COF *links*, never a real
+    // item, and never a Clothing/Bodypart link or a worn item. Refuses (Deferred) while the
+    // inventory store or the scene is still loading — see CleanUpCurrentOutfit's safety gate.
     private void OnWornCleanupPressed()
     {
         if (_session == null) return;
 
         var r = _session.CleanUpCurrentOutfit();
+        if (r.Deferred)
+        {
+            _wornStatus.Text = "Inventar/Szene lädt noch — bitte gleich nochmal versuchen.";
+            return;
+        }
         if (r.Total == 0)
         {
             _wornStatus.Text = "Outfit ist sauber — nichts zu entfernen.";
@@ -498,7 +504,7 @@ public partial class InventoryPanel : SLNGWindow
         int dead = r.DeadLinks + r.TrashedTargetLinks;
         if (dead > 0) parts.Add($"{dead} tote(r) Link(s)");
         if (r.UnwornAttachmentLinks > 0) parts.Add($"{r.UnwornAttachmentLinks} nicht getragene(r) Anhang/Anhänge");
-        _wornStatus.Text = $"{string.Join(" + ", parts)} → Papierkorb.";
+        _wornStatus.Text = $"{string.Join(" + ", parts)} aus dem Outfit entfernt.";
 
         RefreshWorn();
         if (_session.CurrentOutfitFolderId is { } cofId) RefreshFolder(cofId);

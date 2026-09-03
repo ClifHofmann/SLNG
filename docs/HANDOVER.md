@@ -5,6 +5,41 @@
 
 ---
 
+# 2026-09-03 — BUG-INV-01: `v0.20.33`'s durable COF delete stripped the avatar bake
+
+**`v0.20.36`** — user: *"Irgendwas ist kaputt gegangen"* + screenshot of a grey (unbaked) self
+avatar on Agni. Traced from the rotated session logs
+(`%APPDATA%/Godot/app_userdata/Puris Viewer/logs/`):
+
+| Session | Version | `[SelfBake]` | `[OutfitCleanup]` |
+|---|---|---|---|
+| 09:50–12:13 | v0.20.30→34 | ✅ `8=784033ee 9=9965f08e 10=e1baf1d1 11=1e70f9f4 …` every time | — |
+| **12:13** | v0.20.34 | ✅ (still) | `deleted … unworn-attachment=2 … (via RemoveItems, AIS=True)` + `uncached=2`, region rate-limited |
+| **12:26** | v0.20.35 | ❌ **absent** — every BoM face `UNRESOLVED` | — |
+
+**Root cause:** `375e037` (`v0.20.33`) turned `CleanUpCurrentOutfit`'s link removal from
+`MoveItem → Trash` (HTTP 400 on SL = silent no-op) into a real `RemoveItemsAsync` AIS delete.
+At 12:13 the COF was still streaming (`uncached=2`, `Caps rate limiter queue full`), so 2 links
+were misread as removable, the AIS delete stuck, and the forced server re-composite came back
+empty. Not the search commit (`v0.20.35`, InventoryPanel-only).
+
+**Fix (`v0.20.36`):**
+- `CleanUpCurrentOutfit` — **safety gate**: acts only when `storeReady` (every non-Zero-target
+  link resolved in the store, `linkUnresolved == 0`) **and** `sceneReady` (≥1 attachment visible
+  in the scene). Otherwise returns `OutfitCleanupResult { Deferred = true }`; panel shows
+  *"Inventar/Szene lädt noch — bitte gleich nochmal versuchen."* The 12:13 state would now defer.
+- `DetachItemAsync` stale-link cleanup + `RemoveOutfitLinksForItems` — `MoveItem → Trash`
+  (400 on SL, so "Ablegen" never persisted) → `RemoveItemsAsync`. These act on an explicit
+  user-chosen item, so no gate.
+- `OutfitCleanupResult` gained `bool Deferred`.
+
+**Recover a broken avatar:** `Ctrl+Alt+R` (SSB rebake), or relog + wait, or re-wear the outfit
+in Firestorm. Inventory items were never touched — only COF *links*.
+
+Build + 570 tests + selftest 29/29 green.
+
+---
+
 # 2026-09-03 — BUG-INV-01: inventory search now crawls the tree
 
 **`v0.20.35`** — user: *"die suche im inventar macht mir noch sorgen. Wenn ich nach DOUX suche

@@ -208,9 +208,11 @@ public class GridSessionTests
 
     // FEAT-INV-03: outfit cleanup. With no connection there is no Current Outfit folder and no
     // Trash, so it must return an all-zero result rather than throw — same "no-op gracefully while
-    // disconnected" contract as every other GridSession path.
+    // disconnected" contract as every other GridSession path. It also reports Deferred: the store
+    // isn't loaded, which is exactly the state the safety gate refuses to act in (BUG-INV-01
+    // follow-up — acting on a half-loaded COF once left the avatar with no bake).
     [Fact]
-    public void CleanUpCurrentOutfit_without_connection_returns_zero()
+    public void CleanUpCurrentOutfit_without_connection_returns_zero_and_deferred()
     {
         using var session = new GridSession();
         var r = session.CleanUpCurrentOutfit();
@@ -218,6 +220,7 @@ public class GridSessionTests
         Assert.Equal(0, r.DeadLinks);
         Assert.Equal(0, r.TrashedTargetLinks);
         Assert.Equal(0, r.UnwornAttachmentLinks);
+        Assert.True(r.Deferred);
     }
 
     [Fact]

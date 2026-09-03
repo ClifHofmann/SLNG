@@ -29,6 +29,36 @@ against `GridSession`'s inventory + worn-item API.
 
 ## Fixed so far
 
+### `v0.20.33`'s durable COF-link delete stripped the avatar's bake — safety gate added (`v0.20.36-alpha`)
+**Live regression, 2026-09-03.** `v0.20.33` changed `CleanUpCurrentOutfit` from `MoveItem → Trash`
+(which HTTP-400s on SL, so it was a no-op) to a real `RemoveItemsAsync` AIS delete. Session logs:
+self bake `8=784033ee 9=9965f08e 10=e1baf1d1 11=1e70f9f4 …` resolved cleanly every session
+09:50–12:13; at 12:13 (v0.20.34) the user clicked **Outfit aufräumen** →
+`[OutfitCleanup] deleted … unworn-attachment=2 … (via RemoveItems, AIS=True)`; the very next
+session (12:26) had **no `[SelfBake]` line at all** and every BoM face `UNRESOLVED` — grey avatar.
+The 12:13 log also showed `uncached=2` (two COF links whose target nodes weren't in the store)
+and a rate-limited region (`Caps rate limiter queue full`): the COF was still loading, so links
+read as "dead"/"unworn" that weren't, the AIS delete made it stick, and the forced server
+re-composite came back empty.
+
+**Fix:** `CleanUpCurrentOutfit` now refuses to touch the COF unless **both** the store and the
+scene are demonstrably loaded — `storeReady` = every link with a non-Zero target has that target
+node in the store (`linkUnresolved == 0`), `sceneReady` = at least one attachment visible in the
+scene (you always wear a body). Otherwise it returns `OutfitCleanupResult { Deferred = true }`
+and the panel shows *"Inventar/Szene lädt noch — bitte gleich nochmal versuchen."* The 12:13
+state (`uncached=2` → `linkUnresolved ≥ 2`) would now defer. `dead` / `target-in-trash` /
+`duplicate` / `unworn-attachment` categories are unchanged **once the gate passes**.
+
+Same trip, the two other COF-link removers that still did `MoveItem → Trash` (→ 400 on SL, so
+detach never persisted — "Ablegen geht nicht persistent", `warn: Move item … Bad Request` spam
+in the 12:13 log) were switched to `RemoveItemsAsync`: `DetachItemAsync`'s stale-link cleanup and
+`RemoveOutfitLinksForItems` (the Detach-All path). Both act on an **explicit** item the user
+chose to take off, so a durable delete is well-targeted there — no gate needed.
+
+**Recovery for an already-broken avatar:** `Ctrl+Alt+R` (SLNG rebake → `RequestSetAppearance(forceRebake: true)`
+on SSB), or relog + wait, or re-wear the outfit in Firestorm. The inventory items were never
+touched — only COF *links*.
+
 ### Search now crawls the subtree instead of filtering only what's loaded (`v0.20.35-alpha`)
 `OnSearchTextChanged` → `EnsureFoldersLoadedForSearch` walked the tree **once** and kicked off a
 fetch only for folder rows that already existed as `TreeItem`s — one level deep. The async

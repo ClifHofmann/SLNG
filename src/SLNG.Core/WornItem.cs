@@ -47,12 +47,17 @@ public sealed record WornItem(
 public sealed record OutfitEntry(Guid FolderId, string Name, bool IsCurrent = false);
 
 /// <summary>Outcome of <c>SLNG.Net.GridSession.CleanUpCurrentOutfit</c> (FEAT-INV-03) — how many
-/// Current-Outfit links were moved to Trash, by reason. All are recoverable from Trash.</summary>
+/// Current-Outfit links were deleted, by reason. A COF link has no asset, so deleting one only
+/// drops the outfit entry; the linked inventory item is untouched.</summary>
 /// <param name="DeadLinks">Links that resolved to no target at all.</param>
 /// <param name="TrashedTargetLinks">Links whose target item was itself already in Trash.</param>
 /// <param name="UnwornAttachmentLinks">Links to attachment/object items that were not attached.</param>
-public sealed record OutfitCleanupResult(int DeadLinks, int TrashedTargetLinks, int UnwornAttachmentLinks)
+/// <param name="Deferred">Nothing was touched because the inventory store or the scene was still
+/// loading — acting on a half-loaded COF once deleted two real links and left the avatar with no
+/// bake (live regression 2026-09-03). The caller should tell the user to retry in a moment.</param>
+public sealed record OutfitCleanupResult(
+    int DeadLinks, int TrashedTargetLinks, int UnwornAttachmentLinks, bool Deferred = false)
 {
-    /// <summary>Total links moved to Trash.</summary>
+    /// <summary>Total links deleted.</summary>
     public int Total => DeadLinks + TrashedTargetLinks + UnwornAttachmentLinks;
 }
