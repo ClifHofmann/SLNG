@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-09`
 - **Track:** `render`
-- **Status:** `⏸️ Pending`
+- **Status:** `🧪 Review` — fix landed `v0.20.41-alpha` (option 1a, scoped).
 - **Owner:** `claude`
 - **Depends on:** `FEAT-RENDER-01` (shader family), `FEAT-AVATAR-01` / `BUG-AVATAR-02` (BoM bake resolve)
 - **Reported:** live, Agni, 2026-09-03, with two screenshots of a mesh-body foot: the skin ends
@@ -63,6 +63,26 @@ habe"* — the mask is still in the bake at all. That is `BUG-AVATAR-03` (the we
 rebake path is unreliable on rate-limited SSB); the alpha should not be there, and once it's
 genuinely gone the ragged edge goes with it. `BUG-RENDER-09` is only about how a *legitimately
 present* alpha-layer mask should render — smoothly, for when the user actually wants one.
+
+## Fix (`v0.20.41-alpha`)
+
+`BuildFaceMaterialAsync`, right after `ClassifyAlpha`:
+
+```csharp
+if (wasBom && kind == PrimShaderFamily.Kind.Scissor)
+    kind = PrimShaderFamily.Kind.Blend;
+```
+
+Option **1a**, scoped as tight as it goes: a **BoM** face only, and only when `ClassifyAlpha`
+already returned `Scissor` (graded alpha present) — an `Opaque` verdict is never overridden, and
+hair / clothing / non-BoM faces don't reach this line's condition, so the historical Blend
+regressions (invisible clothing, speckled hair) cannot recur. The system-bake path
+(`LoadAndApplyTextureAsync` ~989) is left on `Scissor @ 0.5` — its own comment parks that as
+"last visually confirmed correct" and a Blend attempt there once made the system body reappear.
+
+**Not re-verified in-world.** Check: the foot's alpha edge fades smoothly with no banding and no
+sawtooth; no new see-through on the mesh body from any angle (front/back, crossing limbs,
+seated).
 
 ## Acceptance
 

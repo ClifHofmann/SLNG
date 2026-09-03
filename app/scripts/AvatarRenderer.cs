@@ -1531,7 +1531,21 @@ public partial class AvatarRenderer : Node3D
         material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
 
         if (!hasExplicitAlpha)
+        {
             (kind, scissorThreshold) = ClassifyAlpha(kind, built);
+
+            // BUG-RENDER-09: a Bakes-on-Mesh channel's bake carries the worn alpha-layer wearable
+            // as a SOFT gradient (server-composited to hide the mesh body for a shoe). ClassifyAlpha
+            // reads a mostly-opaque skin texture as "hard cutout" and routes it to Kind.Scissor,
+            // whose alpha_to_coverage steps that gradient into venetian-blind bands across the foot
+            // (live 2026-09-03, screenshot). The real viewer blends a BoM alpha mask
+            // (LLDrawPoolAvatar) -- do the same here. Scoped tight: only a BoM face, and only when
+            // ClassifyAlpha already found graded alpha (never override its Opaque verdict), so hair
+            // / clothing / non-BoM faces are untouched and the historical Blend regressions
+            // (invisible clothing, speckled hair) can't recur.
+            if (wasBom && kind == PrimShaderFamily.Kind.Scissor)
+                kind = PrimShaderFamily.Kind.Blend;
+        }
 
         return FinishFaceMaterial(material, kind, scissorThreshold, surface);
     }
