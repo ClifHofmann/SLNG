@@ -5,6 +5,43 @@
 
 ---
 
+# 2026-09-03 — BUG-AVATAR-03: alpha-layer swap needs a manual rebake (and races cof_version)
+
+**`v0.20.37`** — user: *"Wechsel von Alphas … noch nicht sauber"* → *"auch nach Rebake wird das
+Alpha nicht angewendet"* → *"jetzt ging es aber erst nach manuellem Rebake"*. Agni/*Millenium*.
+
+Two causes:
+1. `WearWearableAsync` / `RemoveWearableAsync` recorded the COF change (AIS link delete+create,
+   `AgentIsNowWearing`) but fired **no rebake** — logged "becomes visible after a rebake" and
+   left it to the user's Ctrl+Alt+R.
+2. `RequestServerSideRebakeAsync` → `RequestSetAppearance(forceRebake:true)` POSTs `{cof_version}`;
+   fired right after the AIS edits it races a stale `cof_version` → the sim composites the
+   **previous** outfit. Intermittent — a later retry catches the bumped version. Agni cap
+   rate-limiting (`Caps rate limiter queue full`, `FetchInventory2` `TaskCanceledException` spam)
+   widened the window.
+
+`[Appearance] correction suppressed: appearance writing is disabled` in that log is **unrelated**
+— the FEAT-AVATAR-01 param-order correction, deliberately off with `SendAppearance=false`, carries
+no wearable/alpha data.
+
+**Fix:**
+- `ScheduleRebakeAfterWearableEdit()` — cancel-any-pending, 1.8 s debounce (coalesces a swap's
+  remove+wear into one rebake, lets AIS settle), then SSB-only `RequestServerSideRebakeAsync()`.
+  Called from both `WearWearableAsync` and `RemoveWearableAsync`. Non-SSB untouched.
+- `RequestServerSideRebakeAsync` now `FetchInventoryChildrenAsync(cofUuid)` **before** the cap
+  POST, so `cof_version` reflects the edit — also hardens the manual Ctrl+Alt+R path.
+- `_wearableRebakeCts` disposed in `Dispose()`.
+
+Build + 570 tests + selftest 29/29. **Not yet re-verified in-world** — needs: swap an alpha, do
+nothing, body updates in a few seconds; check for a fresh `[SelfBake] channels …` after the
+`[Appearance] wearable edit settled — auto-rebake` line.
+
+Watch: the `FetchInventory2` `TaskCanceledException` spam (6× before logout) — likely just
+shutdown teardown, but the inventory search crawl (`v0.20.35`, `MaxSearchFolderLoads=800`) could
+pile onto a rate-limited grid; lower the cap if it recurs.
+
+---
+
 # 2026-09-03 — BUG-INV-01: `v0.20.33`'s durable COF delete stripped the avatar bake
 
 **`v0.20.36`** — user: *"Irgendwas ist kaputt gegangen"* + screenshot of a grey (unbaked) self
