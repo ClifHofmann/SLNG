@@ -394,6 +394,27 @@ public class GpuCache
     // Textures already reported by [GpuUpload].
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _uploadSizeLogged = new();
 
+    /// <summary>Each texture's <see cref="Image.AlphaMode"/>, computed ON THE WORKER THREAD while
+    /// the decoded image is already in hand.
+    ///
+    /// <para>It exists because asking for it later is ruinously expensive: <c>ImageTexture.GetImage()</c>
+    /// pulls the whole texture back from VRAM and <c>DetectAlpha()</c> then scans every pixel, and
+    /// <c>ObjectRenderer.ApplyAlphaCutout</c> was doing exactly that on the MAIN thread, once per
+    /// textured face. Measured live 2026-09-03: <c>[WorkCost] prim.legacy_default_face n=430
+    /// totalMs=2035.6 avgMs=4.73</c> over a 5 s window -- <b>41 % of all wall clock</b>, the single
+    /// largest cost in the client, and roughly 50x what the texture uploads it was competing with
+    /// cost (37.5 ms). Computed here it is free: the pixels are already decoded, on a worker, and
+    /// the answer never changes for a given texture id.</para>
+    ///
+    /// <para>Deliberately NOT cleared on eviction. It is one enum per texture id, and a texture that
+    /// comes back is the same texture.</para></summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, Image.AlphaMode> _alphaModes = new();
+
+    /// <summary>The alpha mode of an already-uploaded texture, without touching the GPU.
+    /// False when this id has not been uploaded through this cache yet.</summary>
+    public static bool TryGetAlphaMode(Guid textureId, out Image.AlphaMode mode)
+        => _alphaModes.TryGetValue(textureId, out mode);
+
     // One implementation, shared with AssetService's pre-decode reduce-level choice: two copies of
     // this arithmetic that disagreed would decode a texture small and then treat it as full
     // resolution (permanently blurry), or the reverse.
@@ -471,6 +492,11 @@ public class GpuCache
                             uploadedFor = screenPixelArea;
                         }
                     }
+
+                    // Before mipmaps, so the scan covers the base level only -- the mips are
+                    // derived from it and add nothing but work. See _alphaModes for why this is
+                    // computed here and not where it is used.
+                    if (image != null) _alphaModes[textureId] = image.DetectAlpha();
 
                     if (generateMipmaps && image != null) image.GenerateMipmaps();
                 }

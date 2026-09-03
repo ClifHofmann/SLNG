@@ -2119,12 +2119,39 @@ public partial class ObjectRenderer : Node3D
     /// It is exactly the old <c>material.Transparency == Alpha</c> test — in this (non-PBR)
     /// path the per-face color tint is the only thing that can have selected the blend variant
     /// before now.</summary>
+    /// <summary>Ids whose alpha mode had to be read back from the GPU. One line each, because the
+    /// fallback is 4.7 ms of main thread and is meant never to happen.</summary>
+    private static readonly System.Collections.Generic.HashSet<Guid> _alphaReadbackLogged = new();
+
     private void ApplyAlphaCutout(ShaderMaterial material, ImageTexture tex, bool tintIsTranslucent, Guid texId = default)
     {
-        var img = tex.GetImage();
-        if (img == null) return;
-
-        var alphaMode = img.DetectAlpha();
+        // GpuCache computed this on a worker thread while the decoded pixels were already in hand.
+        // The old code called tex.GetImage() here instead -- a full VRAM readback -- and then
+        // DetectAlpha()'s per-pixel scan, on the MAIN thread, once per textured face. Live
+        // measurement, 2026-09-03: [WorkCost] prim.legacy_default_face n=430 totalMs=2035.6
+        // avgMs=4.73 over 5 s, i.e. 41% of all wall clock and the single biggest cost in the
+        // client -- against 37.5 ms for every texture upload in the same window. Nothing about the
+        // answer needed the GPU; it was already known before the upload.
+        Image.AlphaMode alphaMode;
+        int imgW = 0, imgH = 0;
+        if (GpuCache.TryGetAlphaMode(texId, out var cachedMode))
+        {
+            alphaMode = cachedMode;
+        }
+        else
+        {
+            // Only reachable for a texture that did not come through GpuCache's upload path.
+            var img = tex.GetImage();
+            if (img == null) return;
+            alphaMode = img.DetectAlpha();
+            imgW = img.GetWidth(); imgH = img.GetHeight();
+            lock (_alphaReadbackLogged)
+            {
+                if (_alphaReadbackLogged.Add(texId))
+                    GD.PrintErr($"[FaceAlpha] {texId.ToString()[..8]} alpha mode read back from the GPU " +
+                                "-- not uploaded through GpuCache, so the worker-thread value is missing");
+            }
+        }
 
         // Fully opaque texture: leave the material exactly as-is (opaque, back-face culled).
         // A translucent per-face color tint is a SEPARATE SL signal that BuildFaceMaterialAsync
@@ -2132,7 +2159,7 @@ public partial class ObjectRenderer : Node3D
         // case returns here.
         if (alphaMode == Image.AlphaMode.None && !tintIsTranslucent)
         {
-            LogFaceAlpha(texId, $"noMat detectAlpha=None img={img.GetWidth()}x{img.GetHeight()} -> Opaque (kept)");
+            LogFaceAlpha(texId, $"noMat detectAlpha=None img={imgW}x{imgH} -> Opaque (kept)");
             return;
         }
 
@@ -2161,7 +2188,7 @@ public partial class ObjectRenderer : Node3D
         // explicitly-double-sided GLTF materials), so an alpha face is not a reason to render
         // an object's interior surfaces.
 
-        LogFaceAlpha(texId, $"noMat detectAlpha={alphaMode} img={img.GetWidth()}x{img.GetHeight()} " +
+        LogFaceAlpha(texId, $"noMat detectAlpha={alphaMode} img={imgW}x{imgH} " +
             $"tintTranslucent={tintIsTranslucent} -> {PrimShaderKindName(material.Shader)}" +
             (ReferenceEquals(material.Shader, PrimShaderFamily.Blend) ? " (SORTED transparent pass)" : ""));
     }
