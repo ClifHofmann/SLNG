@@ -10,7 +10,17 @@
 //
 // Keep the body in lockstep with prim_blend.gdshader.
 shader_type spatial;
-render_mode blend_mix, depth_draw_opaque, cull_disabled, diffuse_burley, specular_schlick_ggx;
+// BUG-RENDER-09: depth_prepass_alpha. A blended face writes NO depth, and an avatar face is
+// cull_disabled with many overlapping layers -- so the front and back of the same leg, or two
+// worn alpha layers over the same skin, have no defined order and resolve into hard-edged
+// translucent patches (live screenshots of a shin under two alpha-layer wearables, 2026-09-03).
+// depth_prepass_alpha adds a depth prepass for the near-opaque part of the surface (Godot cuts
+// the prepass at alpha 0.99), so the solid skin/strand-core establishes depth exactly like an
+// opaque face while the soft edge still blends. This is the standard remedy for hair and foliage
+// and the same thing StandardMaterial3D's opaque-prepass depth mode does; it does NOT reintroduce
+// the v0.20.41 regression, because that was Scissor faces LOSING depth write, and this only adds
+// depth write back to faces that already had none.
+render_mode blend_mix, depth_draw_opaque, depth_prepass_alpha, cull_disabled, diffuse_burley, specular_schlick_ggx;
 
 #include "res://materials/prim/prim_common.gdshaderinc"
 

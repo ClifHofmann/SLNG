@@ -1577,16 +1577,39 @@ public partial class AvatarRenderer : Node3D
         material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
 
         if (!hasExplicitAlpha)
-            (kind, scissorThreshold) = ClassifyAlpha(kind, built);
+            (kind, scissorThreshold) = ClassifyAlpha(kind, built, texId, wasBom ? bomIndex : -1);
 
-        // BUG-RENDER-09 (routing a BoM Scissor face to Blend to smooth the alpha-layer gradient)
-        // was REVERTED in v0.20.46: it also caught BoM HEAD/BODY faces whose bake carries a soft
-        // neck-blend alpha -> ClassifyAlpha == Scissor -> Blend -> the head mesh rendered in the
-        // transparent queue (cull_disabled, no depth write) and its own overlapping faces sorted
-        // against each other = blocky see-through chunks across the face (live, "sieht richtig
-        // kaputt aus"). Exactly the regression class the ClassifyAlpha history warns about. The
-        // venetian-blind banding on the foot alpha stays for now; the real fix is a dithered,
-        // depth-writing prim_hash_avatar variant, not Blend -- see the BUG-RENDER-09 spec.
+        // BUG-RENDER-09. A Bakes-on-Mesh bake carries the wearer's alpha-layer wearable as a SOFT
+        // gradient, and ClassifyAlpha lands such a face on Scissor -- a binary test, which turns
+        // the fade into the reported sawtooth ("die Haut über dem Alpha sieht komisch zerrissen
+        // aus"), and leaves two overlapping alpha layers with no way to fade into each other.
+        //
+        // The obvious fix, Kind.Blend, was tried in v0.20.41 and REVERTED in v0.20.46: it also
+        // caught BoM HEAD/BODY faces (their bake carries a soft neck-blend alpha, so they classify
+        // as Scissor too), and an avatar face is cull_disabled, so dropping depth write let the
+        // head's own overlapping faces sort against each other = blocky see-through chunks across
+        // the face ("sieht richtig kaputt aus"). Blend is off the table for any BoM face.
+        //
+        // Kind.Hash was tried next (v0.20.52) and is ALSO wrong -- live screenshot, legs: large
+        // axis-aligned rectangular patches of skin dropping out. Godot's hashed alpha is Wyman &
+        // McGuire's algorithm: the per-pixel threshold is hash(floor(pix_scale * position)), and
+        // pix_scale = 1/(alpha_hash_scale * max screen-space derivative of position). Close up on
+        // a large surface that derivative is big, so pix_scale is small and whole BLOCKS of
+        // object space share one threshold -- a coarse patchwork, not a fine dither. Tuning
+        // alpha_hash_scale only trades block size for per-pixel speckle on skin. Kind.Hash and its
+        // two shaders are kept (they are correct, and a dither is right for some content) but
+        // nothing routes to them; do not re-point BoM faces at it.
+        //
+        // What the measurement actually says: a face only reaches Scissor from ClassifyAlpha when
+        // fracMid <= 6% and fracClear <= 50% -- i.e. predominantly opaque with a THIN anti-aliased
+        // border. There is no wide gradient to dither. The defect is purely WHERE the binary cut
+        // falls: at 0.25 it lands in the middle of that border, so the ragged contour sits in
+        // visible, near-opaque skin. Moving it down to BomAlphaScissorThreshold puts the same
+        // ragged contour where the mask is already ~96% transparent -- nothing left there to look
+        // torn -- while keeping the depth write, the shader, and the sort behaviour exactly as
+        // they are. alpha_to_coverage (prim_scissor_avatar) still antialiases the remaining edge.
+        if (wasBom && kind == PrimShaderFamily.Kind.Scissor)
+            scissorThreshold = BomAlphaScissorThreshold;
 
         return FinishFaceMaterial(material, kind, scissorThreshold, surface);
     }
@@ -1652,6 +1675,16 @@ public partial class AvatarRenderer : Node3D
     {
         material.Shader = PrimShaderFamily.Select(kind, surface);
         if (kind == PrimShaderFamily.Kind.Scissor)
+            material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, scissorThreshold);
+        // BUG-RENDER-09: Kind.Hash carries no threshold -- the dither's probability IS the pixel's
+        // alpha. 1.0 is Godot's own default noise scale; it only tunes grain, never the cutoff.
+        // Set explicitly rather than relying on the uniform default, because a material reaching
+        // Hash may have been built for another Kind first and shader parameters survive the swap.
+        else if (kind == PrimShaderFamily.Kind.Hash)
+            material.SetShaderParameter(PrimShaderFamily.AlphaHashScale, 1.0f);
+        // A Hud face asking for Hash falls back to the Scissor variant (see PrimShaderFamily.Select),
+        // which then needs its threshold set or it keeps whatever the uniform default is.
+        if (kind == PrimShaderFamily.Kind.Hash && surface == PrimShaderFamily.Surface.Hud)
             material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, scissorThreshold);
         return material;
     }
@@ -1725,6 +1758,15 @@ public partial class AvatarRenderer : Node3D
     /// lot of detail in the 0.2–0.4 alpha range, and a 0.5 cutoff visibly thins them out.</summary>
     private const float HardCutoutScissorThreshold = 0.25f;
 
+    /// <summary>BUG-RENDER-09. The cut point for a Bakes-on-Mesh face, whose alpha is the wearer's
+    /// alpha-layer wearable composited server-side. 0.25 puts the binary contour inside the mask's
+    /// soft border, where the skin is still nearly opaque, so the contour reads as a torn/sawtooth
+    /// edge (and as venetian-blind banding once alpha_to_coverage steps it). 0.04 puts the same
+    /// contour where the mask is already ~96% transparent: the visible silhouette then follows the
+    /// mask's own painted shape instead of a threshold crossing. Deliberately not 0 -- a genuinely
+    /// clear texel must still be discarded, or the face renders as its full uncut card.</summary>
+    private const float BomAlphaScissorThreshold = 0.04f;
+
     /// <summary>Fraction of fully-transparent texels above which a texture is treated as a cutout
     /// SHEET (hair cards, lace, foliage) rather than a solid surface with a trimmed edge, and so
     /// gets real alpha blending. Measured: the hair in the 2026-07-25 investigation is 97% clear;
@@ -1741,7 +1783,30 @@ public partial class AvatarRenderer : Node3D
     /// variant's render_mode, which is where it always effectively lived: it was set on every
     /// scissor face and on no other.
     /// </summary>
-    private static (PrimShaderFamily.Kind Kind, float Threshold) ClassifyAlpha(PrimShaderFamily.Kind current, ImageTexture tex)
+    /// <summary>Ids already reported by [AvatarAlpha], keyed by id+verdict so a face that later
+    /// classifies differently (its bake changed) still gets a line.</summary>
+    private static readonly System.Collections.Generic.HashSet<string> _avatarAlphaLogged = new();
+
+    private static (PrimShaderFamily.Kind Kind, float Threshold) LogAlphaVerdict(
+        Guid texId, int bomChannel, int min, float fracMid, float fracClear,
+        PrimShaderFamily.Kind kind, float threshold)
+    {
+        // Unconditional (not behind --diag) and deduplicated: two rounds of BUG-RENDER-09 were
+        // spent guessing which branch an avatar face took, because nothing said so. A handful of
+        // lines per session -- the same trade [BomFace] and [HudFace] already make.
+        string key = $"{texId:N}:{kind}";
+        lock (_avatarAlphaLogged)
+        {
+            if (!_avatarAlphaLogged.Add(key)) return (kind, threshold);
+        }
+        GD.Print($"[AvatarAlpha] {texId.ToString()[..8]} bom={(bomChannel >= 0 ? bomChannel.ToString() : "-")} " +
+                 $"minA={min} fracMid={fracMid:0.###} fracClear={fracClear:0.###} -> {kind}" +
+                 (kind == PrimShaderFamily.Kind.Scissor ? $" @{threshold:0.##}" : ""));
+        return (kind, threshold);
+    }
+
+    private static (PrimShaderFamily.Kind Kind, float Threshold) ClassifyAlpha(
+        PrimShaderFamily.Kind current, ImageTexture tex, Guid texId = default, int bomChannel = -1)
     {
         // A face already routed to blending -- by a translucent per-face tint -- is not
         // reconsidered from pixel content. Same guard as the old `Transparency == Alpha` return.
@@ -1750,6 +1815,7 @@ public partial class AvatarRenderer : Node3D
         var img = tex.GetImage();
         if (img == null)
             return (PrimShaderFamily.Kind.Scissor, HardCutoutScissorThreshold);
+
 
         var data = img.GetData();
         int w = img.GetWidth(), h = img.GetHeight();
@@ -1768,7 +1834,7 @@ public partial class AvatarRenderer : Node3D
         float fracClear = pixelCount > 0 ? (float)clearCount / pixelCount : 0f;
 
         if (min == 255)
-            return (PrimShaderFamily.Kind.Opaque, 0f);
+            return LogAlphaVerdict(texId, bomChannel, min, fracMid, fracClear, PrimShaderFamily.Kind.Opaque, 0f);
 
         // fracMid alone is not enough to recognise content that NEEDS blending. Hair measures
         // only ~1.2% mid-alpha (97% fully clear, 2% fully opaque) and so reads as "hard cutout" —
@@ -1782,9 +1848,10 @@ public partial class AvatarRenderer : Node3D
         // latter — which is also where the historical cross-layer occlusion regression came from,
         // so the risky path stays limited to assets that visibly need it.
         if (fracMid > GradedAlphaThreshold || fracClear > MostlyClearThreshold)
-            return (PrimShaderFamily.Kind.Blend, 0f);
+            return LogAlphaVerdict(texId, bomChannel, min, fracMid, fracClear, PrimShaderFamily.Kind.Blend, 0f);
 
-        return (PrimShaderFamily.Kind.Scissor, HardCutoutScissorThreshold);
+        return LogAlphaVerdict(texId, bomChannel, min, fracMid, fracClear,
+            PrimShaderFamily.Kind.Scissor, HardCutoutScissorThreshold);
     }
 
     /// <summary>Registers a worn mesh's Bakes-on-Mesh usage on its avatar, then recomputes which

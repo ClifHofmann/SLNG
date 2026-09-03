@@ -41,6 +41,9 @@ public static class PrimShaderFamily
     private const string OpaquePath = "res://materials/prim/prim_opaque.gdshader";
     private const string ScissorPath = "res://materials/prim/prim_scissor.gdshader";
     private const string BlendPath = "res://materials/prim/prim_blend.gdshader";
+    // BUG-RENDER-09: hashed alpha -- prim_scissor's depth behaviour with prim_blend's smooth
+    // gradient. See prim_hash.gdshader for why the avatar needed a fourth Kind.
+    private const string HashPath = "res://materials/prim/prim_hash.gdshader";
 
     // BUG-RENDER-06: the real viewer back-face culls WorldPrim faces by default, EXCEPT a face
     // whose GLTF material explicitly declares mDoubleSided (lldrawpool.cpp:839, :856) --
@@ -57,6 +60,7 @@ public static class PrimShaderFamily
     private const string OpaqueAvatarPath = "res://materials/prim/prim_opaque_avatar.gdshader";
     private const string ScissorAvatarPath = "res://materials/prim/prim_scissor_avatar.gdshader";
     private const string BlendAvatarPath = "res://materials/prim/prim_blend_avatar.gdshader";
+    private const string HashAvatarPath = "res://materials/prim/prim_hash_avatar.gdshader";
 
     private const string OpaqueHudPath = "res://materials/prim/prim_opaque_hud.gdshader";
     private const string ScissorHudPath = "res://materials/prim/prim_scissor_hud.gdshader";
@@ -70,6 +74,7 @@ public static class PrimShaderFamily
     private static readonly Lazy<Shader> _opaque = MakeLazy(OpaquePath);
     private static readonly Lazy<Shader> _scissor = MakeLazy(ScissorPath);
     private static readonly Lazy<Shader> _blend = MakeLazy(BlendPath);
+    private static readonly Lazy<Shader> _hash = MakeLazy(HashPath);
 
     private static readonly Lazy<Shader> _opaqueDoubleSided = MakeLazy(OpaqueDoubleSidedPath);
     private static readonly Lazy<Shader> _scissorDoubleSided = MakeLazy(ScissorDoubleSidedPath);
@@ -78,6 +83,7 @@ public static class PrimShaderFamily
     private static readonly Lazy<Shader> _opaqueAvatar = MakeLazy(OpaqueAvatarPath);
     private static readonly Lazy<Shader> _scissorAvatar = MakeLazy(ScissorAvatarPath);
     private static readonly Lazy<Shader> _blendAvatar = MakeLazy(BlendAvatarPath);
+    private static readonly Lazy<Shader> _hashAvatar = MakeLazy(HashAvatarPath);
 
     private static readonly Lazy<Shader> _opaqueHud = MakeLazy(OpaqueHudPath);
     private static readonly Lazy<Shader> _scissorHud = MakeLazy(ScissorHudPath);
@@ -99,6 +105,11 @@ public static class PrimShaderFamily
     /// <c>TransparencyEnum.Alpha</c>.</summary>
     public static Shader Blend => _blend.Value;
 
+    /// <summary>Stochastic (hashed) alpha cutout. Writes depth exactly like <see cref="Scissor"/>,
+    /// so it cannot sort wrong, but resolves a soft alpha gradient as a dither instead of a hard
+    /// step. Pair it with <see cref="AlphaHashScale"/>.</summary>
+    public static Shader Hash => _hash.Value;
+
     /// <summary>The transparency treatment of a face, i.e. which compile-time variant it needs.
     /// Named after the <c>StandardMaterial3D.TransparencyEnum</c> values it replaces so the
     /// migration reads one-to-one.</summary>
@@ -110,6 +121,9 @@ public static class PrimShaderFamily
         Scissor,
         /// <summary>True alpha blending.</summary>
         Blend,
+        /// <summary>Stochastic cutout; stays in the opaque pass via ALPHA_HASH_SCALE and keeps
+        /// depth write, unlike <see cref="Blend"/>. BUG-RENDER-09.</summary>
+        Hash,
     }
 
     /// <summary>
@@ -151,17 +165,22 @@ public static class PrimShaderFamily
         {
             Kind.Scissor => _scissorAvatar.Value,
             Kind.Blend => _blendAvatar.Value,
+            Kind.Hash => _hashAvatar.Value,
             _ => _opaqueAvatar.Value,
         },
+        // No _hud/_doublesided hash twin: Kind.Hash exists for BUG-RENDER-09's avatar bake faces
+        // and nothing else routes to it yet. A HUD is unshaded overlay art where a dither would
+        // just look like noise, so it falls back to Scissor -- the behaviour it had before this
+        // Kind existed -- rather than silently picking up a variant nobody has looked at.
         Surface.Hud => kind switch
         {
-            Kind.Scissor => _scissorHud.Value,
+            Kind.Scissor or Kind.Hash => _scissorHud.Value,
             Kind.Blend => _blendHud.Value,
             _ => _opaqueHud.Value,
         },
         _ when doubleSided => kind switch
         {
-            Kind.Scissor => _scissorDoubleSided.Value,
+            Kind.Scissor or Kind.Hash => _scissorDoubleSided.Value,
             Kind.Blend => _blendDoubleSided.Value,
             _ => _opaqueDoubleSided.Value,
         },
@@ -169,6 +188,7 @@ public static class PrimShaderFamily
         {
             Kind.Scissor => _scissor.Value,
             Kind.Blend => _blend.Value,
+            Kind.Hash => _hash.Value,
             _ => _opaque.Value,
         },
     };
@@ -179,9 +199,11 @@ public static class PrimShaderFamily
         _ = Opaque;
         _ = Scissor;
         _ = Blend;
+        _ = Hash;
         _ = _opaqueAvatar.Value;
         _ = _scissorAvatar.Value;
         _ = _blendAvatar.Value;
+        _ = _hashAvatar.Value;
         _ = _opaqueHud.Value;
         _ = _scissorHud.Value;
         _ = _blendHud.Value;
@@ -260,4 +282,8 @@ public static class PrimShaderFamily
 
     /// <summary>Only meaningful on <see cref="Scissor"/>.</summary>
     public static readonly StringName AlphaScissorThreshold = "alpha_scissor_threshold";
+
+    /// <summary>Only meaningful on <see cref="Hash"/>. 1.0 is Godot's own default noise scale;
+    /// the value only tunes the dither's grain, it does not decide the cutoff.</summary>
+    public static readonly StringName AlphaHashScale = "alpha_hash_scale";
 }
