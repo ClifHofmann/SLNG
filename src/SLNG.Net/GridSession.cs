@@ -6789,7 +6789,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                                 (response.StatusCode == System.Net.HttpStatusCode.Forbidden
                                  || response.StatusCode == System.Net.HttpStatusCode.Unauthorized))
                                 _permanentlyDeniedTextures.TryAdd(textureId, 0);
-                            return FetchFailed(textureId, $"HTTP {(int)response.StatusCode}");
+                            // Host in the message: a 403 could be the wrong URL class (see
+                            // BUG-AVATAR-02 -- bakes needed bake-texture.glb..., not the generic
+                            // asset CDN) or a genuine permission denial / non-persisted local
+                            // texture. The host is the first thing that tells those apart.
+                            return FetchFailed(textureId, $"HTTP {(int)response.StatusCode} from {url.Host}{url.AbsolutePath}");
                         }
                     }
                     else
