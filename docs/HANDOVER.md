@@ -5,6 +5,20 @@
 
 ---
 
+# 2026-09-02 — BUG-INV-01 filed (not started)
+
+User reported three inventory problems in one go; filed as `BUG-INV-01` (Medium),
+`docs/specs/BUG-INV-01-inventory-worn-state-and-load-ux.md`, ROADMAP row added. No code yet.
+1. "Inventar" tab has no visible worn marker (the main tree *does* gild worn rows via
+   `GetWornItemsMap()` but faintly and only for already-expanded folders).
+2. "Angezogen" tab "Ablegen" does nothing — prime suspect: `DetachWornAsync` in
+   `InventoryPanel.cs` does `await …DetachItemAsync().ConfigureAwait(false)` then
+   `Callable.From(lambda).CallDeferred()` on the resulting worker thread — the `BUG-RENDER-01`
+   anti-pattern (`[[godot-callable-from-not-threadsafe]]`).
+3. Inventory loads slowly with no spinner / progress anywhere.
+
+---
+
 # 2026-09-02 (cont.) — BUG-RENDER-08: particle system pass (3 fixes shipped, 2 low-pri gaps)
 
 `v0.20.31-alpha`, on `main`. `app/` build clean (0 warnings), `--selftest` 29/29. Only `app/`
