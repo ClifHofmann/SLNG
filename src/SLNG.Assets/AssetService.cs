@@ -40,6 +40,25 @@ public class AssetService
     // dictionary needs a real single-execution guarantee under a concurrent first-touch race.
     private readonly ConcurrentDictionary<Guid, Lazy<Task<TextureData?>>> _inflightTextures = new();
 
+    // Diagnostic (2026-09-03, "why are textures slow, they should be cached"): where the texture
+    // pipeline actually spends its work. Dumped every 200 requests as [TexPipe]. diskCacheHit vs
+    // httpFetch tells "familiar scene should pop" from "genuinely new textures"; the avg J2K
+    // decode time tells whether a cache hit is even cheap.
+    private int _texPipeReq, _texPipeCacheHit, _texPipeHttp;
+    private long _texPipeCacheDecodeTicks;
+
+    private void MaybeDumpTexPipe()
+    {
+        int n = _texPipeReq;
+        if (n % 200 != 0) return;
+        int hit = _texPipeCacheHit, http = _texPipeHttp;
+        double avgMs = hit > 0
+            ? (double)_texPipeCacheDecodeTicks / hit / System.Diagnostics.Stopwatch.Frequency * 1000.0
+            : 0;
+        Console.Error.WriteLine($"[TexPipe] req={n} diskCacheHit={hit} (avg {avgMs:0}ms J2K decode) " +
+            $"httpFetch={http} inflight={_inflightTextures.Count}");
+    }
+
     // Ids already reported by [TextureGiveUp]. The texture path has several distinct ways to end
     // in null -- exhausted attempts, a degraded sculpt map by design, and the negative-failure
     // cache short-circuiting before anything is even tried -- and all of them reached the renderer
@@ -674,6 +693,9 @@ public class AssetService
 
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false)
     {
+        System.Threading.Interlocked.Increment(ref _texPipeReq);
+        MaybeDumpTexPipe();
+
         // FEAT-PERF-02 Phase 2: the disk cache only ever holds complete (discard 0) assets --
         // both reading and writing are gated on desiredDiscard == 0 below. A partial/low-discard
         // fetch is intentionally truncated (see GridSession.FetchTextureDataAsync), not the
@@ -687,7 +709,9 @@ public class AssetService
             try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
             if (cached != null && cached.Length > 0)
             {
+                var _texSw = System.Diagnostics.Stopwatch.StartNew();
                 var decodedFromCache = await Task.Run(() => DecodeTexture(cached, isSculpt)).ConfigureAwait(false);
+                System.Threading.Interlocked.Add(ref _texPipeCacheDecodeTicks, _texSw.ElapsedTicks);
 
                 // The cache is only ever WRITTEN for a clean decode, so a degraded result here
                 // means the same bytes now decode worse than when they were stored -- which is
@@ -717,6 +741,7 @@ public class AssetService
                 }
                 else if (decodedFromCache != null)
                 {
+                    System.Threading.Interlocked.Increment(ref _texPipeCacheHit);
                     return decodedFromCache;
                 }
                 else
@@ -725,6 +750,10 @@ public class AssetService
                 }
             }
         }
+
+        // Reached here = the disk cache did not serve it (no file, or a bad entry). Count it as an
+        // HTTP-bound request regardless of whether the retry loop below eventually succeeds.
+        System.Threading.Interlocked.Increment(ref _texPipeHttp);
 
         var throttle = isSculpt ? _sculptFetchThrottle : _textureFetchThrottle;
 
