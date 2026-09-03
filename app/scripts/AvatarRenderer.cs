@@ -1520,17 +1520,22 @@ public partial class AvatarRenderer : Node3D
                 (rejectDegraded ? " (degraded decodes refused for this surface)" : ""));
             LogHudFace(surface, meshId, faceIndex, ft, tint, $"NULL from fetch/decode (tex {texId})");
 
-            // With no texture there is no per-pixel alpha to cut the face into shape. If it was
-            // only heading for Blend because of a soft per-face TINT (common on hair), that leaves
-            // a translucent DOUBLE-SIDED card (the Avatar surface shader is cull_disabled) with no
-            // depth write, so overlapping cards sort against each other unpredictably — "you can
-            // see through the hair wrong, inside and outside swapped" (live 2026-09-03, after a
-            // hair texture went permanently 403 / BUG-RENDER-10). A solid opaque flat-colour shape
-            // is far less broken. Keep a genuinely-hidden face (tint alpha ~0 — some worn meshes
-            // zero a face's tint to hide it) and HUD faces untouched.
-            if (kind == PrimShaderFamily.Kind.Blend && tint.A > 0.02f
-                && surface != PrimShaderFamily.Surface.Hud)
-                kind = PrimShaderFamily.Kind.Opaque;
+            // This face references a REAL texture id (texId != Empty above) that hasn't loaded --
+            // still fetching, or permanently 403 (BUG-RENDER-10). Neither of the obvious fallbacks
+            // is acceptable on an avatar mesh: a Blend-from-tint face is a translucent DOUBLE-SIDED
+            // card (the Avatar surface shader is cull_disabled) that sorts wrong against its
+            // neighbours ("hair inside-out"), and forcing Opaque (tried v0.20.42) turns every
+            // slow-loading hair/clothing card into a blocky solid patch across other avatars.
+            // Render it INVISIBLE instead: when the texture arrives, ApplyFaceMaterialsAsync
+            // re-runs and the face appears correctly; for a permanently-denied texture a missing
+            // strand beats a block or a ghost. HUD faces keep their own path (a soft button beats
+            // an invisible one -- see rejectDegraded comment above).
+            if (surface != PrimShaderFamily.Surface.Hud)
+            {
+                material.SetShaderParameter(PrimShaderFamily.AlbedoColor, new Godot.Color(1f, 1f, 1f, 0f));
+                material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, false);
+                return FinishFaceMaterial(material, PrimShaderFamily.Kind.Blend, scissorThreshold, surface);
+            }
 
             return FinishFaceMaterial(material, kind, scissorThreshold, surface);
         }
