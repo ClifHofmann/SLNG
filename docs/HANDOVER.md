@@ -5,6 +5,38 @@
 
 ---
 
+# 2026-09-03 — BUG-NET-11: slow textures = 3 stacked causes (`v0.20.45` / `.48` / `.49`)
+
+User: *"warte hier grade über 5 Minuten dass die Texturen auftauchen"*, *"wie kann Firestorm so
+viel schneller rendern"* — on a familiar, fully-cached scene.
+
+`[TexPipe]` diagnostic (`v0.20.47`) made it measurable: `req` climbing **past 2600** for a
+2-avatar scene, `diskCacheHit` ~99.9 %, **zero `Caps rate limiter`**. So the cache is used and
+the caps flood is fixed — the problem is **~2600 J2K decodes for ~200 distinct textures**, each
+decoded ~13×.
+
+Three causes, three fixes:
+1. **`v0.20.45`** — `ApplyFaceMaterialsAsync` fired one single-id `RenderMaterials` cap POST per
+   face → caps limiter full. Now prefetches all a mesh's material ids in one batch.
+2. **`v0.20.48`** — the disk-cache-hit decode was a bare `Task.Run` per texture → ~2600 decodes
+   dumped on the thread pool. Now `_textureDecodeThrottle` (`PriorityGate(ProcessorCount-2)`),
+   `priority`-ordered. `[TexPipe]` avg stayed ~90 ms after this → a single OpenJPEG decode is
+   genuinely ~90 ms (not the main issue).
+3. **`v0.20.49` — the real one.** `GpuCache.GetOrUploadTextureAsync` did
+   `cached = rejectDegraded ? null : Get(id)` → **every avatar face texture bypassed the GPU
+   cache** and re-decoded from disk on every material rebuild (avatar faces rebuild constantly).
+   Now GpuCache tracks per-id whether the cached upload was *degraded* (`_uploadFromDegraded`); a
+   `rejectDegraded` caller re-fetches only those, a clean cached `ImageTexture` is reused by all.
+   Should collapse `[TexPipe] req` to ~one per distinct texture.
+
+**Firestorm:** KDU (SIMD J2K, ~10–20× OpenJPEG) + a **decoded**-texture cache (skips J2K on a
+hit). SLNG's re-decode bug was the bulk of the gap; a decoded/BC7 disk cache is the next step.
+
+**Verify `v0.20.49`:** `[TexPipe] req` should NOT climb into the thousands for a static scene;
+`diskCacheHit` grows once then stops; textures appear in seconds.
+
+---
+
 # 2026-09-03 — BUG-NET-11: per-face material POSTs flood the caps limiter (`v0.20.45`)
 
 User: *"Texturen kommen extrem langsam, sollten alle im Cache liegen"* + half-loaded avatars,

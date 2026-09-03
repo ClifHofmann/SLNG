@@ -44,11 +44,24 @@ path was a bare `Task.Run(DecodeTexture)` — ~1600 decodes dumped on the thread
 that number is mostly pool-queue wait.
 
 `v0.20.48`: `_textureDecodeThrottle` (`PriorityGate(ProcessorCount - 2)`) around the cache-hit
-decode — bounded to the CPU, `priority`-ordered so on-camera textures finish first. The `[TexPipe]`
-avg is now measured after the throttle = true decode time. If it stays ~90 ms, Magick.NET's
-OpenJPEG is the bottleneck and the next lever is a **reduce-level decode** (decode fewer wavelet
-resolution levels for the first display, upgrade the near ones on demand — the reference viewer's
-`parameters.cp_reduce`).
+decode — bounded to the CPU, `priority`-ordered. `[TexPipe]` avg stayed ~86–99 ms *after* the
+throttle → a single OpenJPEG decode really is ~90 ms; not the main problem though —
+
+**`v0.20.49` — the actual cause: repeat decodes.** Next session `[TexPipe] req` climbed past
+**2600** for a scene of maybe ~200 distinct textures — each decoded ~13× from disk.
+`GpuCache.GetOrUploadTextureAsync` did `var cached = rejectDegraded ? null : Get(id)`, so **every
+avatar face texture (`rejectDegraded: true`) bypassed the GPU cache** and re-fetched through
+`AssetService`; avatar faces rebuild constantly (`[BomFace] registered` ~660×/session), and
+`AssetService._memCache` (256 MB, `Size = W·H·4`) only holds ~60 × 1024² so it thrashes too.
+Fix: GpuCache tracks per-id whether the cached `ImageTexture` came from a **degraded** decode
+(`_uploadFromDegraded`); a `rejectDegraded` caller re-fetches only those, a clean cached upload is
+reused by everyone. `initialRefCount: 1` on avatar textures keeps them un-evicted. This should
+collapse `[TexPipe] req` to ~one per distinct texture.
+
+**Why Firestorm is faster:** KDU (commercial SIMD J2K, ~10–20× OpenJPEG) + a **decoded**-texture
+cache (stores the decoded/transcoded result, not the `.j2c`, so a hit skips J2K entirely). SLNG's
+re-decode bug above is the bulk of the gap; a decoded/BC7 disk cache is the next structural step
+if `[TexPipe]` after `v0.20.49` shows first-time decodes still dominate.
 
 The 403 on `33192a49` is `from asset-cdn.glb.agni.lindenlab.com/` — the **generic** asset CDN,
 not a bake-style different URL: a real permission denial / non-persisted asset, nothing to route
