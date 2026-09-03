@@ -1288,7 +1288,7 @@ public partial class ObjectRenderer : Node3D
             {
                 if (state.ParticlesNode == null)
                 {
-                    state.ParticlesNode = new ObjectParticles { Name = "Particles" };
+                    state.ParticlesNode = new ObjectParticles { Name = "Particles", EmitterEntityId = state.EntityId };
                     state.MeshInstance.AddChild(state.ParticlesNode);
                 }
                 if (_assetService != null && _gpuCache != null)

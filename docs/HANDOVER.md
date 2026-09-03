@@ -5,6 +5,50 @@
 
 ---
 
+# 2026-09-02 (cont.) — BUG-RENDER-08: particle system pass (3 fixes shipped, 2 low-pri gaps)
+
+`v0.20.31-alpha`, on `main`. `app/` build clean (0 warnings), `--selftest` 29/29. Only `app/`
+changed (`ObjectParticles.cs` net ~290 lines, `ObjectRenderer.cs` one line, `Boot.cs` version).
+
+Long live session on Agni vs Firestorm, orange lantern flame + a blue-flame prim running the
+static **"SLS Particle Script 0.3" by Ama Omega** (user pasted the full script — that's what
+proved the remaining issues are SLNG-side, not script jitter).
+
+**Fixed & confirmed in-world:**
+1. *"zu breit"* on a square-ish particle — `ScaleCurveZ` was `BuildScaleCurve(1f,1f)` while X/Y
+   held the ~0.06 m sizes; `BillboardKeepScale` multiplies MODELVIEW by
+   `diag(len col0, len col1, len col2)`, and col2=1 vs ~0.06 is a ~16:1 anisotropy → horizontal
+   stretch. `ScaleCurveZ` now tracks X. → *"die flamme sieht jetzt gut aus."*
+2. *"an/aus"* strobe — `Restart()` (pool wipe) on every re-send + `_sourceAge` only re-armed on a
+   structural change, so a ~10 Hz re-send with a short `PSYS_SRC_MAX_AGE` expired between sends.
+   `Restart()` now first-Apply-only (viewer keeps emitted particles alive, only the source is
+   rebuilt — `LLViewerObject::setParticleSource`); `_sourceAge` re-armed every Apply.
+3. *"in FS one morph ≈ 1 s, in SLNG 5 loops"* — `Apply` re-assigned `CpuParticles3D.Amount` (+
+   `Lifetime`/`Preprocess`/`ConfigureEmission`) every re-send; assigning `Amount` in Godot
+   rebuilds the buffer and deactivates every live particle. Pool-shaping props now set **only on a
+   structural change**; scale/colour re-send re-points persistent curves/gradient in place. →
+   *"es morpht jetzt langsam."*
+
+Also: `FixedFps = 0` (default 30 batches emission+death into 30 steps/s), gentle τ≈1.2 s
+shared-endpoint ease, always-on `[Particles]` diagnostic (`obj=`, scale/flags/accel/srcMaxAge/
+curve values, `albedo resolved WxH`).
+
+**Still open, LOW priority** (decorative, no crash/data/correctness impact — see the spec):
+- (A) blue-flame (`4a548641`, non-square `endSize <.5,1.0>`) still renders wider than FS. Split
+  curves log the right values, texture is ~square, node scale unity — and **swapping X/Y in the
+  scale curves had zero visible effect**, so the width isn't from the curves. Unresolved
+  `CpuParticles3D` + `BILLBOARD_PARTICLES` + `keep_scale` interaction; needs RenderDoc / live
+  Godot inspection. Also check particle-quad UV V-flip and the `PSYS_SRC_OMEGA` node-spin path.
+- (B) no per-particle X/Y morph — architectural: one shared scale curve, no per-particle birth
+  snapshot. The current shared ease approximates it pool-wide only.
+- (C) real fix for A+B (and `PSYS_PART_FOLLOW_VELOCITY`): a dedicated particle path —
+  `GpuParticles3D`+process shader or a hand-managed `MultiMesh` pool. Scoped task, not a tweak.
+
+`docs/specs/BUG-RENDER-08-particle-fidelity.md`. **`BUG-AVATAR-02` (424ea1a) and `BUG-RENDER-06`
+(41824b3) are already committed + pushed to `origin/main`.**
+
+---
+
 # 2026-09-02 (cont.) — other people's mesh bodies rendered white on Agni
 
 `v0.20.12-alpha`, on `main`. Solution + `app/` build clean, **567 tests green**

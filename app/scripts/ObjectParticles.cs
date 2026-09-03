@@ -49,6 +49,10 @@ public partial class ObjectParticles : CpuParticles3D
     /// round blob; a hard-edged quad reads as a bug, so this is a radial alpha falloff.</summary>
     private static Texture2D? _defaultTexture;
 
+    /// <summary>The owning entity's id, for the diagnostic line only — set by
+    /// <c>ObjectRenderer</c> so a "which emitter is object X" report is answerable from the log.</summary>
+    public Guid EmitterEntityId { get; set; }
+
     private ParticleSystemData? _data;
     private Guid _textureId;
 
@@ -61,6 +65,36 @@ public partial class ObjectParticles : CpuParticles3D
     /// <summary>Seconds since this system was (re)configured, against
     /// <see cref="ParticleSystemData.SourceMaxAge"/>.</summary>
     private double _sourceAge;
+
+    /// <summary>Exponentially-smoothed PART_END_SCALE / PART_END_COLOR. A flame script re-sends the
+    /// whole system ~10x/sec with a randomised end scale/colour; the viewer's per-particle
+    /// interpolation naturally averages that out (each live particle keeps interpolating along the
+    /// end value that was current at ITS birth), which is what reads as a soft "morph". Godot's
+    /// CpuParticles3D scale/colour curves are shared across the whole pool with no per-particle
+    /// birth snapshot, so applying each new end value verbatim snaps every live particle at once --
+    /// and because the random end scale frequently has a near-zero Y while X stays ~0.1, the whole
+    /// emitter collapses to a flat horizontal streak on those frames. Smoothing the end value here
+    /// approximates the viewer's averaging: the shared curve drifts instead of snapping.</summary>
+    private System.Numerics.Vector2 _smoothEndScale;
+    private System.Numerics.Vector4 _smoothEndColor;
+    private System.Numerics.Vector2 _targetEndScale;
+    private System.Numerics.Vector4 _targetEndColor;
+    private bool _smoothSeeded;
+    private bool _interpScale;
+    private bool _interpColor;
+
+    /// <summary>Time constant for easing the shared curve endpoint toward the latest end value the
+    /// script sent. ~1.2 s ≈ the viewer's own morph pace. X and Y are eased independently, so the
+    /// (independently jittering) raw X/Y feed through as an independent slow wander -- the flame
+    /// gets a bit narrower, then a bit wider, gently, instead of holding one frozen aspect.</summary>
+    private const float EndParamEaseTau = 1.2f;
+
+    /// <summary>Persistent scale curves / colour ramp, re-pointed in place instead of reallocated.
+    /// Created on the first Apply.</summary>
+    private Curve? _curveX;
+    private Curve? _curveY;
+    private Curve? _curveZ;
+    private Gradient? _colorRamp;
 
     /// <summary>SL's <c>PSYS_SRC_ACCEL</c> in Godot world axes. Applied as-is when particles live
     /// in world space, rotated into the emitter's frame when they follow the source.</summary>
@@ -86,9 +120,59 @@ public partial class ObjectParticles : CpuParticles3D
             return;
         }
 
+        // A flame/spark script commonly re-sends the WHOLE particle system every ObjectUpdate with
+        // just a jittered PSYS_PART_END_SCALE or _END_COLOR (an "organic flicker" trick -- seen live
+        // ~10x/sec). Restart() clears and refills the entire pool, which strobes the emitter dark
+        // for a frame or two on every one of those, so it is now gated on a change that actually
+        // needs a fresh pool: lifetime, particle count, pattern, emission geometry, or the flag
+        // word. A pure scale/colour tweak just re-points the curves in place, the way the viewer
+        // re-parameterises without dropping live particles.
+        ParticleSystemData? prev = _data;
+        bool structuralChange = prev is null
+            || prev.PartMaxAge != data.PartMaxAge
+            || prev.SteadyStateParticleCount(MaxPoolSize) != data.SteadyStateParticleCount(MaxPoolSize)
+            || prev.Pattern != data.Pattern
+            || prev.PartDataFlags != data.PartDataFlags
+            || prev.SourceFlags != data.SourceFlags
+            || prev.BurstRadius != data.BurstRadius
+            || prev.BurstSpeedMin != data.BurstSpeedMin
+            || prev.BurstSpeedMax != data.BurstSpeedMax
+            || prev.InnerAngle != data.InnerAngle
+            || prev.OuterAngle != data.OuterAngle
+            || prev.BurstPartCount != data.BurstPartCount
+            || prev.BurstRate != data.BurstRate;
+
         _data = data;
+        // Reset the source age on EVERY re-send, not just a structural change. The viewer deletes
+        // the old particle source and builds a fresh one (age 0) every time a particle block
+        // arrives (llviewerobject.cpp LLViewerObject::setParticleSource -> deleteParticleSource +
+        // createPSS) while leaving the already-emitted particles alive. A flame script that
+        // re-sends ~10x/sec with a short PSYS_SRC_MAX_AGE was therefore expiring here between
+        // re-sends -- _Process flips Emitting off on age, the next Apply flips it back on -- which
+        // is the "an/aus" strobe. Re-arming every Apply keeps it emitting continuously while the
+        // script is active, and it still stops correctly once the script stops re-sending.
         _sourceAge = 0.0;
-        _omegaRotation = Quaternion.Identity;
+        if (structuralChange)
+        {
+            _omegaRotation = Quaternion.Identity;
+        }
+
+        // PART_END_SCALE / _END_COLOR handling. A flicker script re-randomises these every server
+        // frame; the viewer stays smooth because each particle captures the value current at ITS
+        // birth and interpolates along that for its whole life. Godot's scale/colour curves are
+        // SHARED across the pool, so re-pointing them to each incoming value pulses every live
+        // particle in lockstep. Instead: Apply only records the raw target, and _Process eases the
+        // shared endpoint toward it over EndParamEaseTau. X and Y ease independently so the flame's
+        // aspect gently wanders (narrower / wider) the way the viewer's does, just pool-wide rather
+        // than per-particle.
+        _targetEndScale = new System.Numerics.Vector2(data.PartEndScaleX, data.PartEndScaleY);
+        _targetEndColor = data.PartEndColor;
+        if (structuralChange || !_smoothSeeded)
+        {
+            _smoothEndScale = _targetEndScale;
+            _smoothEndColor = _targetEndColor;
+            _smoothSeeded = true;
+        }
 
         EnsureResources();
 
@@ -114,21 +198,41 @@ public partial class ObjectParticles : CpuParticles3D
         bool interpolateScale = partFlags.HasFlag(SlParticleDataFlags.InterpScale);
         bool emissive = partFlags.HasFlag(SlParticleDataFlags.Emissive);
         bool followSource = partFlags.HasFlag(SlParticleDataFlags.FollowSrc);
+        // PSYS_PART_FOLLOW_VELOCITY (llvopartgroup.cpp:518-547): the particle's quad ALWAYS faces
+        // the camera; the flag only ROLLS that camera-facing quad in screen space so its local +Y
+        // points along the screen-space projection of the velocity. It is NOT an align-to-velocity
+        // that can turn the quad edge-on. Godot's CpuParticles3D.AlignYToVelocity does exactly that
+        // wrong thing (quad goes edge-on, invisible from the side, and it also discards the
+        // per-particle scale), so it is deliberately NOT used here -- a faithful implementation
+        // needs a custom billboard shader that reads the velocity and applies the screen-space
+        // roll. Tracked as a follow-up; for now these render as an un-rolled camera-facing quad,
+        // same as every other particle.
+        bool followVelocity = partFlags.HasFlag(SlParticleDataFlags.FollowVelocity);
 
-        Lifetime = data.PartMaxAge;
-        Amount = data.SteadyStateParticleCount(MaxPoolSize);
-        OneShot = false;
-        LocalCoords = followSource;
-        // An emitter usually predates our arrival in the region, so a system that ramps up from
-        // empty is wrong twice over -- it is visible, and it is visible exactly when an object
-        // streams into view. Capped because Godot preprocesses on the main thread in 1/30 s
-        // steps: a full 30 s lifetime across a 2048 particle pool is 1.8M updates in one frame.
-        Preprocess = Math.Min(data.PartMaxAge, MaxPreprocessSeconds);
+        // ONLY the pool-shaping properties on a structural change. Assigning CpuParticles3D.Amount
+        // (and, in Godot, several of its siblings) rebuilds the particle buffer and deactivates
+        // every live particle -- doing that on every one of a flicker script's ~10-45 re-sends per
+        // second wipes and re-seeds the whole flame that many times a second, which is the "in
+        // Firestorm one morph takes ~1 s, in SLNG it has already looped 5 times" report. A pure
+        // scale/colour re-send only needs the curves re-pointed (done below, unconditionally --
+        // Godot samples those live, no reset).
+        if (structuralChange)
+        {
+            Lifetime = data.PartMaxAge;
+            Amount = data.SteadyStateParticleCount(MaxPoolSize);
+            OneShot = false;
+            LocalCoords = followSource;
+            // An emitter usually predates our arrival in the region, so a system that ramps up
+            // from empty is wrong twice over -- it is visible, and it is visible exactly when an
+            // object streams into view. Capped because Godot preprocesses on the main thread in
+            // 1/30 s steps: 30 s over a 2048 pool is 1.8M updates in one frame.
+            Preprocess = Math.Min(data.PartMaxAge, MaxPreprocessSeconds);
+            ConfigureEmission(data, followSource);
+            ConfigureMaterial(emissive);
+        }
 
-        ConfigureEmission(data, followSource);
-        ConfigureColor(data, interpolateColor);
-        ConfigureScale(data, interpolateScale);
-        ConfigureMaterial(emissive);
+        ConfigureColor(data, interpolateColor, _smoothEndColor);
+        ConfigureScale(data, interpolateScale, _smoothEndScale);
 
         // Region axes (X east, Y north, Z up) -> Godot (X east, Y up, Z south).
         _worldAcceleration = new Vector3(
@@ -146,19 +250,56 @@ public partial class ObjectParticles : CpuParticles3D
         SyncToParent();
 
         Emitting = true;
-        Restart();
-
-        if (Diagnostics.Enabled)
+        // Restart() clears and refills the whole pool -- only ever do it on the FIRST apply, for
+        // the initial Preprocess pre-warm. The viewer keeps every already-emitted particle alive
+        // across a re-send (only the source is rebuilt), which is what makes a flicker script read
+        // as one continuous, overlapping, morphing flame instead of an on/off strobe. Even a
+        // genuine structural change (pattern, count, lifetime) is applied live by Godot here --
+        // Amount/Lifetime/emission all update without a restart -- so there is no case left that
+        // needs the pool wiped.
+        if (prev is null)
         {
-            GD.Print($"[Particles] {data.Pattern} pool={Amount} life={Lifetime:0.##}s "
+            Restart();
+        }
+
+        // Always on, deduped per distinct config: a "horizontally smeared" or "wrong size"
+        // emitter report needs the parsed START/END scale (X vs Y), the PART_FLAGS (FollowVelocity
+        // / DataBlend / DataGlow are all unimplemented and could each cause it), and the node's
+        // ACTUAL world scale after SyncToParent's counter-scale -- if that isn't ~(1,1,1) the
+        // per-particle metre size is being multiplied by a residual, which BillboardKeepScale then
+        // stretches. Same "one line per distinct config, not per frame" convention as [FaceAlpha].
+        // Sig deliberately excludes PART_END_SCALE/COLOR -- those jitter every packet on a flicker
+        // script and would turn this into per-frame spam; the structural state is what's worth one
+        // line. The raw (un-smoothed) end scale still prints in the message for the first one.
+        string sig = $"{data.Pattern}:{data.PartStartScaleX:0.###}x{data.PartStartScaleY:0.###}"
+            + $":{data.PartMaxAge:0.##}:{Amount}:{data.PartDataFlags}:{data.SourceFlags}";
+        if (_loggedSig != sig)
+        {
+            _loggedSig = sig;
+            Vector3 ws = IsInsideTree() ? GlobalTransform.Basis.Scale : Vector3.One;
+            float cx0 = ScaleCurveX?.Sample(0f) ?? -1f, cx1 = ScaleCurveX?.Sample(1f) ?? -1f;
+            float cy0 = ScaleCurveY?.Sample(0f) ?? -1f, cy1 = ScaleCurveY?.Sample(1f) ?? -1f;
+            GD.Print($"[Particles] obj={EmitterEntityId:N} {data.Pattern} pool={Amount} life={Lifetime:0.##}s "
+                + $"srcMaxAge={data.SourceMaxAge:0.##} srcStartAge={data.SourceStartAge:0.##} "
                 + $"burst={data.BurstPartCount}/{data.BurstRate:0.###}s "
                 + $"speed={data.BurstSpeedMin:0.##}-{data.BurstSpeedMax:0.##} radius={data.BurstRadius:0.##} "
-                + $"scale={data.PartStartScaleX:0.##}x{data.PartStartScaleY:0.##}"
-                + $"->{data.PartEndScaleX:0.##}x{data.PartEndScaleY:0.##} "
-                + $"flags={data.PartDataFlags} src={data.SourceFlags} "
+                + $"accel=({data.PartAcceleration.X:0.##},{data.PartAcceleration.Y:0.##},{data.PartAcceleration.Z:0.##}) "
+                + $"startScale={data.PartStartScaleX:0.###}x{data.PartStartScaleY:0.###} "
+                + $"endScale={data.PartEndScaleX:0.###}x{data.PartEndScaleY:0.###} "
+                + $"partFlags={data.PartDataFlags} srcFlags={data.SourceFlags} "
+                + $"localCoords={LocalCoords} nodeWorldScale=({ws.X:0.###},{ws.Y:0.###},{ws.Z:0.###}) "
+                + $"quad={_quad?.Size} amt={ScaleAmountMin}-{ScaleAmountMax} split={SplitScale} "
+                + $"curveX[{cx0:0.###}->{cx1:0.###}] curveY[{cy0:0.###}->{cy1:0.###}] "
+                + $"startColor=({data.PartStartColor.X:0.##},{data.PartStartColor.Y:0.##},{data.PartStartColor.Z:0.##},a{data.PartStartColor.W:0.##}) "
+                + $"endColor=({data.PartEndColor.X:0.##},{data.PartEndColor.Y:0.##},{data.PartEndColor.Z:0.##},a{data.PartEndColor.W:0.##}) "
+                + $"bbMode={_drawMaterial?.BillboardMode} keepScale={_drawMaterial?.BillboardKeepScale} "
                 + $"tex={(data.TextureId == Guid.Empty ? "default" : data.TextureId.ToString())}");
         }
     }
+
+    /// <summary>Last config signature logged by <see cref="Apply"/>, so an emitter whose script
+    /// re-sends the same system every ObjectUpdate prints once, not per frame.</summary>
+    private string _loggedSig = "";
 
     public override void _Process(double delta)
     {
@@ -176,6 +317,8 @@ public partial class ObjectParticles : CpuParticles3D
         }
         _sourceAge += delta;
 
+        EaseEndParams((float)delta);
+
         if (_omegaSpeed > 0f && !LocalCoords)
         {
             // PSYS_SRC_OMEGA spins the emission frame, not the particles already in flight
@@ -190,6 +333,54 @@ public partial class ObjectParticles : CpuParticles3D
         {
             SyncToParent();
         }
+    }
+
+    /// <summary>Eases the shared curve/gradient endpoint toward the latest script value over
+    /// <see cref="EndParamEaseTau"/> and re-points the (persistent, live-sampled) curves in place.
+    /// Frame-rate independent. Cheap enough per frame -- no allocation, and this only touches
+    /// point values, never Amount/Lifetime/emission (those reset the pool; see Apply).</summary>
+    private void EaseEndParams(float delta)
+    {
+        if (!_smoothSeeded || delta <= 0f)
+        {
+            return;
+        }
+
+        float k = 1f - Mathf.Exp(-delta / EndParamEaseTau);
+        var newScale = System.Numerics.Vector2.Lerp(_smoothEndScale, _targetEndScale, k);
+        var newColor = System.Numerics.Vector4.Lerp(_smoothEndColor, _targetEndColor, k);
+
+        if ((newScale - _smoothEndScale).LengthSquared() > 1e-8f)
+        {
+            _smoothEndScale = newScale;
+            if (_interpScale && _curveX is not null)
+            {
+                SetCurveEnd(_curveX, _smoothEndScale.X);
+                SetCurveEnd(_curveY, _smoothEndScale.Y);
+                SetCurveEnd(_curveZ, _smoothEndScale.X);
+            }
+        }
+        if ((newColor - _smoothEndColor).LengthSquared() > 1e-8f)
+        {
+            _smoothEndColor = newColor;
+            if (_interpColor && _colorRamp is { } ramp && ramp.GetPointCount() == 2)
+            {
+                ramp.SetColor(1, new Color(newColor.X, newColor.Y, newColor.Z, newColor.W).SrgbToLinear());
+            }
+        }
+    }
+
+    private static void SetCurveEnd(Curve? c, float end)
+    {
+        if (c is null || c.PointCount != 2)
+        {
+            return;
+        }
+        if (c.MaxValue < end)
+        {
+            c.MaxValue = Mathf.Max(1f, end);
+        }
+        c.SetPointValue(1, end);
     }
 
     /// <summary>
@@ -261,8 +452,18 @@ public partial class ObjectParticles : CpuParticles3D
         Mesh = _quad;
 
         CastShadow = ShadowCastingSetting.Off;
-        // Overlapping translucent quads need back-to-front order or they punch holes in each other.
+        // Overlapping translucent quads need back-to-front order or they punch holes in each other;
+        // for a genuinely spread emitter that has to be per-particle camera distance.
         DrawOrder = DrawOrderEnum.ViewDepth;
+
+        // FixedFps 0, not Godot's default 30. At 30 the whole simulation -- emission AND death --
+        // batches into 30 discrete steps per second: a 200-particle/s emitter spawns ~7 at once
+        // every 33 ms and they die 7 at a time a lifetime later, so the particle DENSITY pulses at
+        // 30 Hz, which reads as fast flicker on an emissive alpha cloud. The viewer emits in the
+        // script's own sub-frame bursts (2 every 10 ms here), i.e. far finer-grained. 0 runs the
+        // sim at the render frame rate -- still batched, but per-frame, which is much finer.
+        FixedFps = 0;
+
         Emitting = false;
     }
 
@@ -380,8 +581,9 @@ public partial class ObjectParticles : CpuParticles3D
         return new Vector3(v.X * c - v.Y * s, v.X * s + v.Y * c, v.Z);
     }
 
-    private void ConfigureColor(ParticleSystemData data, bool interpolateColor)
+    private void ConfigureColor(ParticleSystemData data, bool interpolateColor, System.Numerics.Vector4 smoothedEndColor)
     {
+        _interpColor = interpolateColor;
         // SL particle colours are display-referred sRGB, and Godot's particle colour reaches the
         // shader as a raw vertex colour multiplied into an already-linear albedo. Handing it the
         // sRGB triple unconverted makes every mid-tone too bright: PSYS_PART_START_COLOR
@@ -399,49 +601,78 @@ public partial class ObjectParticles : CpuParticles3D
             data.PartStartColor.X, data.PartStartColor.Y, data.PartStartColor.Z, data.PartStartColor.W)
             .SrgbToLinear();
         Color end = interpolateColor
-            ? new Color(data.PartEndColor.X, data.PartEndColor.Y, data.PartEndColor.Z, data.PartEndColor.W)
+            ? new Color(smoothedEndColor.X, smoothedEndColor.Y, smoothedEndColor.Z, smoothedEndColor.W)
                 .SrgbToLinear()
             : start;
 
-        ColorRamp = new Gradient
+        if (_colorRamp is null || _colorRamp.GetPointCount() != 2)
         {
-            Offsets = new[] { 0f, 1f },
-            Colors = new[] { start, end },
-        };
+            _colorRamp = new Gradient { Offsets = new[] { 0f, 1f }, Colors = new[] { start, end } };
+            ColorRamp = _colorRamp;
+        }
+        else
+        {
+            _colorRamp.SetColor(0, start);
+            _colorRamp.SetColor(1, end);
+        }
         Color = Colors.White;
     }
 
-    private void ConfigureScale(ParticleSystemData data, bool interpolateScale)
+    private void ConfigureScale(ParticleSystemData data, bool interpolateScale, System.Numerics.Vector2 smoothedEndScale)
     {
-        float endX = interpolateScale ? data.PartEndScaleX : data.PartStartScaleX;
-        float endY = interpolateScale ? data.PartEndScaleY : data.PartStartScaleY;
+        _interpScale = interpolateScale;
+        float endW = interpolateScale ? smoothedEndScale.X : data.PartStartScaleX;  // SL width
+        float endH = interpolateScale ? smoothedEndScale.Y : data.PartStartScaleY;  // SL height
 
-        // Godot's final size is ScaleAmount * ScaleCurve. Putting the metre sizes in the curves
-        // and leaving the amount at 1 is what lets X and Y differ -- SL particles are rectangles,
-        // not squares -- and it is the only path that needs SplitScale.
-        ScaleAmountMin = 1f;
-        ScaleAmountMax = 1f;
-        SplitScale = true;
-        ScaleCurveX = BuildScaleCurve(data.PartStartScaleX, endX);
-        ScaleCurveY = BuildScaleCurve(data.PartStartScaleY, endY);
-        ScaleCurveZ = BuildScaleCurve(1f, 1f);
+        if (ScaleAmountMin != 1f || ScaleAmountMax != 1f)
+        {
+            ScaleAmountMin = 1f;
+            ScaleAmountMax = 1f;
+        }
+        if (!SplitScale)
+        {
+            SplitScale = true;
+        }
+
+        // SL scale is <width, height, _>: X -> ScaleCurveX, Y -> ScaleCurveY. Z tracks X so a
+        // flat quad's zero-extent third axis is never a lone outlier against the other two.
+        // NOTE: a blue-flame test (SLS 0.3 script, endSize <.5, 1.0>) still renders visibly wider
+        // than Firestorm even though these curves log the right values -- an unresolved
+        // CpuParticles3D + BILLBOARD_PARTICLES interaction, tracked separately; swapping X/Y here
+        // was tried and had no visible effect, so the width is not coming from the split curves.
+        _curveX = SetScaleCurve(_curveX, data.PartStartScaleX, endW);
+        _curveY = SetScaleCurve(_curveY, data.PartStartScaleY, endH);
+        _curveZ = SetScaleCurve(_curveZ, data.PartStartScaleX, endW);
+        // Bind the curve resources once; after that SetScaleCurve mutates them in place and Godot
+        // re-samples without a reset. Re-assigning the property every call risks a rebuild.
+        if (ScaleCurveX != _curveX)
+        {
+            ScaleCurveX = _curveX;
+            ScaleCurveY = _curveY;
+            ScaleCurveZ = _curveZ;
+        }
     }
 
-    /// <summary>
-    /// A two-point curve from birth to death size. <see cref="Curve.MaxValue"/> has to be widened
-    /// first: Godot's default range is 0..1, and it clamps the points as they are added -- which
-    /// silently caps every particle larger than one metre.
-    /// </summary>
-    private static Curve BuildScaleCurve(float start, float end)
+    /// <summary>Two-point 0..1 curve, created once then re-pointed. <see cref="Curve.MaxValue"/>
+    /// must be widened past 1 first or Godot silently clamps a &gt;1 m particle down as the point
+    /// is added.</summary>
+    private static Curve SetScaleCurve(Curve? c, float start, float end)
     {
-        var curve = new Curve
+        float max = Mathf.Max(1f, Mathf.Max(start, end));
+        if (c is null || c.PointCount != 2)
         {
-            MinValue = 0f,
-            MaxValue = Mathf.Max(1f, Mathf.Max(start, end)),
-        };
-        curve.AddPoint(new Vector2(0f, start));
-        curve.AddPoint(new Vector2(1f, end));
-        return curve;
+            c = new Curve { MinValue = 0f, MaxValue = max };
+            c.AddPoint(new Vector2(0f, start));
+            c.AddPoint(new Vector2(1f, end));
+            return c;
+        }
+        if (c.MaxValue < max)
+        {
+            c.MaxValue = max;
+        }
+        c.SetPointValue(0, start);
+        c.SetPointValue(1, end);
+        return c;
     }
 
     private void ConfigureMaterial(bool emissive)
@@ -498,6 +729,13 @@ public partial class ObjectParticles : CpuParticles3D
             return;
         }
         _drawMaterial.AlbedoTexture = texture;
+
+        // The particle textures reported as "stretched wide" all decode to a square PNG when read
+        // straight from the cache -- so if the ImageTexture that actually reaches the material is
+        // NOT square (a decode/resize/stride bug in the fetch path), that is the whole thing. One
+        // line per emitter, so this is not per-frame spam.
+        GD.Print($"[Particles] obj={EmitterEntityId:N} albedo resolved {texture.GetWidth()}x{texture.GetHeight()} "
+            + $"(tex {resolved.ToString("N")[..8]})");
     }
 
     private static Texture2D DefaultTexture()
