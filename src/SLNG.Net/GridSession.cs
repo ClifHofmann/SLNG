@@ -6609,6 +6609,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (_permanentlyDeniedTextures.ContainsKey(textureId))
             return new TextureFetchResult { Data = null, IsReliable = true, Gone = true };
 
+        // Already 403'd on HTTP this session: skip the caps entirely (a permission decision will
+        // not have changed) but still go down to the UDP pipeline below -- see _httpDeniedTextures.
+        bool httpDenied = _httpDeniedTextures.ContainsKey(textureId);
+        skipHttp = skipHttp || httpDenied;
+
         var capUri = skipHttp ? null : _client.Network.CurrentSim?.Caps?.GetTextureCapURI();
         var viewerAssetCap = skipHttp ? null : _client.Network.CurrentSim?.Caps?.CapabilityURI("ViewerAsset");
         var getTextureCap = skipHttp ? null : _client.Network.CurrentSim?.Caps?.CapabilityURI("GetTexture");
@@ -6625,10 +6630,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (httpResult != null) return new TextureFetchResult { Data = httpResult, IsReliable = true };
         }
 
-        // A cap attempt just above may have marked this 403/401 -- don't hand a permission denial
-        // to the UDP pipeline.
-        if (_permanentlyDeniedTextures.ContainsKey(textureId))
-            return new TextureFetchResult { Data = null, IsReliable = true, Gone = true };
+        // A cap attempt just above may have marked this 403/401. That is NOT the end of the road:
+        // Firestorm shows textures the generic cap refuses us, so the UDP pipeline below gets one
+        // attempt. It is only recorded as genuinely gone if that comes back empty too.
+        bool deniedByCaps = httpDenied || _httpDeniedTextures.ContainsKey(textureId);
+
+        // Every "UDP produced nothing" exit goes through this. When the caps already refused the
+        // id, that combination -- 403 on HTTP AND empty over UDP -- is the only evidence strong
+        // enough to call a texture genuinely gone and stop asking for the rest of the session.
+        // Without the caps denial an empty UDP result is just a normal transient failure and
+        // AssetService's own 45 s negative cache handles it.
+        TextureFetchResult UdpGaveNothing(byte[]? data)
+        {
+            if (data is { Length: > 0 }) return new TextureFetchResult { Data = data, IsReliable = false };
+            if (deniedByCaps && _permanentlyDeniedTextures.TryAdd(textureId, 0))
+                Console.Error.WriteLine($"[TextureFetch] {textureId}: 403 on HTTP and nothing over UDP -- giving up for this session");
+            return new TextureFetchResult { Data = null, IsReliable = deniedByCaps, Gone = deniedByCaps };
+        }
 
         var tcs = new TaskCompletionSource<byte[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -6636,11 +6654,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             var pipeline = typeof(AssetManager).GetField("Texture", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(_client.Assets);
             if (pipeline == null)
-                return new TextureFetchResult { Data = UdpFailed(textureId, "AssetManager.Texture field not found (reflection)"), IsReliable = false };
+                return UdpGaveNothing(UdpFailed(textureId, "AssetManager.Texture field not found (reflection)"));
             {
                 var reqMethod = pipeline.GetType().GetMethod("RequestTexture", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
                 if (reqMethod == null)
-                    return new TextureFetchResult { Data = UdpFailed(textureId, "TexturePipeline.RequestTexture not found (reflection)"), IsReliable = false };
+                    return UdpGaveNothing(UdpFailed(textureId, "TexturePipeline.RequestTexture not found (reflection)"));
                 {
                     var callbackType = reqMethod.GetParameters()[5].ParameterType;
                     Action<TextureRequestState, LibreMetaverse.Assets.AssetTexture> action = (state, assetTexture) =>
@@ -6672,12 +6690,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     // and name it instead.
                     var udpTimeout = Task.Delay(TimeSpan.FromSeconds(20));
                     if (await Task.WhenAny(tcs.Task, udpTimeout).ConfigureAwait(false) != tcs.Task)
-                        return new TextureFetchResult { Data = UdpFailed(textureId, "TexturePipeline never called back within 20s"), IsReliable = false };
+                        return UdpGaveNothing(UdpFailed(textureId, "TexturePipeline never called back within 20s"));
 
                     var udpBytes = await tcs.Task.ConfigureAwait(false);
                     if (udpBytes is { Length: > 0 })
-                        // Console.Error.WriteLine($"[TextureFetch] {textureId}: UDP delivered {udpBytes.Length} bytes");
+                    {
+                        if (deniedByCaps)
+                            Console.Error.WriteLine($"[TextureFetch] {textureId}: HTTP 403 but UDP delivered {udpBytes.Length} bytes -- the asset exists, the CDN just would not serve it");
                         return new TextureFetchResult { Data = udpBytes, IsReliable = false };
+                    }
                 }
             }
         }
@@ -6695,7 +6716,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 fallbackTcs.TrySetResult(data is { Length: > 0 } ? data : null);
             });
 
-        return new TextureFetchResult { Data = await fallbackTcs.Task, IsReliable = false };
+        return UdpGaveNothing(await fallbackTcs.Task);
     }
 
     /// <summary>
@@ -6716,12 +6737,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _udpFailureLogged = new();
 
-    // Texture ids the sim's own GetTexture/ViewerAsset cap answered 403/401 for -- a permission
-    // decision, not a transient error, so no transport will get the bytes. Falling back to
-    // LibreMetaverse's UDP/HTTP pipeline for these just moves an unwinnable retry into LMV's own
-    // logger ("[PurisViewer Resident] Failed to fetch texture ... Forbidden", measured recurring
-    // all session on one remote avatar's hair -> a flickering face). NOT populated for the bake
-    // path (fetchUrl != null): BUG-AVATAR-02's bake 403 has a real fallback to the generic cap.
+    // Texture ids the sim's own GetTexture/ViewerAsset cap answered 403/401 for. A permission
+    // decision does not change within a session, so HTTP is never retried for these -- that
+    // unwinnable retry loop was the flickering remote-avatar hair face (2026-09-03).
+    // NOT populated for the bake path (fetchUrl != null): BUG-AVATAR-02's bake 403 has a real
+    // fallback to the generic cap.
+    //
+    // v0.20.40 also skipped the UDP fallback for these, on the reasoning that "no transport will
+    // get the bytes". That reasoning was wrong, and the user disproved it: Firestorm displays the
+    // very texture SLNG gives up on (dda710d4, a remote avatar's hair, confirmed 2026-09-03). The
+    // asset EXISTS and is servable -- the CDN just will not serve it over the generic cap. So an
+    // HTTP 403 now costs exactly ONE UDP attempt through LibreMetaverse's legacy image transfer,
+    // the same transport the reference viewer falls back to; only if that also comes back empty is
+    // the id recorded as genuinely gone.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _httpDeniedTextures = new();
+
+    /// <summary>Ids that 403'd on HTTP **and** produced nothing over UDP. Session-permanent, and
+    /// the only set that makes <see cref="TextureFetchResult.Gone"/> true -- an id in
+    /// <see cref="_httpDeniedTextures"/> alone is still worth one UDP attempt per request.</summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _permanentlyDeniedTextures = new();
 
     private static byte[]? UdpFailed(Guid textureId, string reason)
@@ -6788,7 +6821,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                             if (fetchUrl == null &&
                                 (response.StatusCode == System.Net.HttpStatusCode.Forbidden
                                  || response.StatusCode == System.Net.HttpStatusCode.Unauthorized))
-                                _permanentlyDeniedTextures.TryAdd(textureId, 0);
+                                _httpDeniedTextures.TryAdd(textureId, 0);
                             // Host in the message: a 403 could be the wrong URL class (see
                             // BUG-AVATAR-02 -- bakes needed bake-texture.glb..., not the generic
                             // asset CDN) or a genuine permission denial / non-persisted local
