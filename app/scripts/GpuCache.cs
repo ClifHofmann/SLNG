@@ -210,13 +210,17 @@ public class GpuCache
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
 
         // A rejectDegraded caller (the avatar) must not be handed an upload that some OTHER
-        // caller produced from a gap-filled decode. This early return is a third cache layer on
-        // top of AssetService's memory and disk caches, and it bypasses AssetService entirely --
-        // which is why the avatar showed speckle noise while the logs recorded no degraded decode
-        // and no rejectDegraded give-up for it at all: the bytes were never re-examined, only the
-        // finished upload was reused. Route such callers through AssetService, where the contract
-        // is actually enforced.
-        var cached = rejectDegraded ? null : Get(textureId) as ImageTexture;
+        // caller produced from a gap-filled decode -- but only a DEGRADED upload is a problem.
+        // The old blanket `rejectDegraded ? null` made every avatar face bypass this GPU cache
+        // entirely and re-decode its texture from disk on every material rebuild (terse updates /
+        // animation changes rebuild avatar faces constantly): ~90 ms J2K decode x thousands of
+        // repeat requests = a multi-minute wait for a familiar, fully-cached scene (live,
+        // 2026-09-03, [TexPipe] req climbing past 2600 with ~99.9% disk-cache hits). A CLEAN
+        // cached upload is safe for everyone; only re-fetch when this id's cached upload is
+        // recorded as coming from a degraded decode.
+        var cached = Get(textureId) as ImageTexture;
+        if (cached != null && rejectDegraded && _uploadFromDegraded.ContainsKey(textureId))
+            cached = null;
         if (cached != null)
         {
             // A texture first seen small/distant was uploaded downsampled. Walking up to it used
@@ -245,6 +249,12 @@ public class GpuCache
     /// for textures that were actually downsampled -- one uploaded at full resolution can never
     /// be improved, so it is never a candidate.</summary>
     private readonly ConcurrentDictionary<Guid, float> _uploadedForPixelArea = new();
+
+    /// <summary>Texture ids whose currently-cached <see cref="ImageTexture"/> was built from a
+    /// gap-filled (degraded) decode. A <c>rejectDegraded</c> caller re-fetches these through
+    /// AssetService; a clean cached upload is reusable by everyone. Cleared when the entry is
+    /// evicted or re-uploaded clean.</summary>
+    private readonly ConcurrentDictionary<Guid, byte> _uploadFromDegraded = new();
 
     /// <summary>Fire-and-forget in-place sharpening of an already-cached texture, when the object
     /// requesting it now covers enough of the screen to deserve a lower discard level. Re-decodes
@@ -351,6 +361,13 @@ public class GpuCache
                 : await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded).ConfigureAwait(false);
             if (textureData == null) return null;
 
+            // Record whether this upload came from a gap-filled decode, so a later rejectDegraded
+            // caller knows to re-fetch it (and a clean one is reusable by all). A rejectDegraded
+            // caller can never land here with IsDegraded == true (AssetService returns null), so
+            // this only ever MARKS from a lenient caller and CLEARS when a clean decode replaces it.
+            if (textureData.IsDegraded) _uploadFromDegraded[textureId] = 0;
+            else _uploadFromDegraded.TryRemove(textureId, out _);
+
             // FATAL BUG, live on Aditi: this used to be Godot.Callable.From(() => {...}).CallDeferred()
             // -- a delegate-backed Callable's deferred dispatch is main-thread-only in Godot .NET
             // (see Boot.cs:70's comment on the exact same trap), and FetchAndUploadTextureAsync
@@ -451,6 +468,7 @@ public class GpuCache
             {
                 _lruList.Remove(node);
                 _cache.Remove(entry.Id);
+                _uploadFromDegraded.TryRemove(entry.Id, out _);
                 _currentSize -= entry.Size;
                 // Explicitly dispose the C# wrapper so its finalizer won't run later (e.g. after RenderingServer is gone)
                 if (GodotObject.IsInstanceValid(entry.Res))
