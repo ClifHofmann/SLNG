@@ -338,7 +338,11 @@ public class GpuCache
         {
             try
             {
-                var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority).ConfigureAwait(false);
+                // Pass the NEW (larger) screenPixelArea, not 0: this is a re-decode for a closer
+                // view, and the decoder should still skip the levels even that closer view cannot
+                // show. Sharpening a distant texture by one step should not cost a full 47.6 ms
+                // decode when 13.1 ms buys everything the screen can display.
+                var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, screenPixelArea: screenPixelArea).ConfigureAwait(false);
                 if (textureData == null) return;
 
                 // BUG-NET-11: same split as FetchAndUploadTextureAsync -- the image build happens
@@ -390,12 +394,11 @@ public class GpuCache
     // Textures already reported by [GpuUpload].
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _uploadSizeLogged = new();
 
+    // One implementation, shared with AssetService's pre-decode reduce-level choice: two copies of
+    // this arithmetic that disagreed would decode a texture small and then treat it as full
+    // resolution (permanently blurry), or the reverse.
     private static int ComputeDiscardLevel(int width, int height, float screenPixelArea)
-    {
-        double texels = (double)width * height;
-        int discard = (int)Math.Floor(Math.Log(texels / Math.Max(screenPixelArea, 1f)) / Math.Log(4.0));
-        return Math.Clamp(discard, 0, SLNG.Net.J2kByteSizeEstimator.MaxDiscardLevel);
-    }
+        => SLNG.Assets.TextureLod.DiscardLevelFor(width, height, screenPixelArea);
 
     /// <summary>The CPU half of a texture upload: decode-buffer to <see cref="Image"/>, alpha-edge
     /// fix, optional LOD downsample, mipmaps. Everything here is pure pixel work on a
@@ -432,8 +435,19 @@ public class GpuCache
                         Image.Format.Rgba8, textureData.Rgba);
                     image?.FixAlphaEdges();
 
+                    // The decoder may already have reduced this (SourceWidth > Width). Such an
+                    // upload is NOT full resolution and must stay eligible for sharpening, even
+                    // when the leftover local discard below works out to 0 -- otherwise a texture
+                    // first seen from far away is decoded small and then treated as if it were the
+                    // whole asset, i.e. permanently blurry.
+                    if (textureData.SourceWidth > textureData.Width || textureData.SourceHeight > textureData.Height)
+                        uploadedFor = screenPixelArea;
+
                     if (image != null && screenPixelArea > 0f)
                     {
+                        // Computed on the ALREADY-REDUCED image, so it yields exactly the discard
+                        // levels the decoder did not cover (the formula drops by 2 per reduce
+                        // factor, which is the same 4x-per-level relationship).
                         int discard = ComputeDiscardLevel(image.GetWidth(), image.GetHeight(), screenPixelArea);
                         // Behind --diag. It is one line per texture, which on a real region means
                         // a couple of thousand -- fine when it went to a terminal nobody was
@@ -441,7 +455,8 @@ public class GpuCache
                         // it buries the handful of lines that say why something is broken. This is
                         // per-object asset logging, exactly what Diagnostics exists to gate.
                         if (Diagnostics.Enabled && _uploadSizeLogged.TryAdd(textureId, 0))
-                            Console.Error.WriteLine($"[GpuUpload] {textureId} source={image.GetWidth()}x{image.GetHeight()} " +
+                            Console.Error.WriteLine($"[GpuUpload] {textureId} asset={textureData.SourceWidth}x{textureData.SourceHeight} " +
+                                $"decoded={image.GetWidth()}x{image.GetHeight()} " +
                                 $"screenPixelArea={screenPixelArea:F0} -> discard={discard} " +
                                 $"uploaded={(discard > 0 ? $"{Math.Max(8, image.GetWidth() >> discard)}x{Math.Max(8, image.GetHeight() >> discard)}" : "full")}");
 
@@ -491,7 +506,14 @@ public class GpuCache
             // GridSession.FetchBakeTextureDataAsync's doc comment for the full story.
             var textureData = bakeChannel.HasValue
                 ? await assetService.GetBakeTextureAsync(textureId, bakeChannel.Value, priority, bakeAgentId).ConfigureAwait(false)
-                : await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded).ConfigureAwait(false);
+                // screenPixelArea is now passed THROUGH to the decoder (BUG-NET-11): it skips the
+                // wavelet levels this object cannot show, which is 47.6 ms -> 13.1 ms at quarter
+                // size and 3.8 ms at a sixteenth on real assets. desiredDiscard stays 0 -- that
+                // parameter is the disabled NETWORK-side truncation, a different mechanism that
+                // fails because Magick will not read a codestream that ends early; a reduce level
+                // is a decoder option on the complete bytes. The local downsample below still runs
+                // on whatever is left over, because one reduce factor covers two discard levels.
+                : await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded, screenPixelArea: screenPixelArea).ConfigureAwait(false);
             if (textureData == null) return null;
 
             // Record whether this upload came from a gap-filled decode, so a later rejectDegraded

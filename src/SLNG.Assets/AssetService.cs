@@ -45,6 +45,7 @@ public class AssetService
     // httpFetch tells "familiar scene should pop" from "genuinely new textures"; the avg J2K
     // decode time tells whether a cache hit is even cheap.
     private int _texPipeReq, _texPipeCacheHit, _texPipeHttp;
+    private int _texPipeReduced, _texPipeReduceRetry;
     private long _texPipeCacheDecodeTicks;
     private readonly ConcurrentDictionary<Guid, byte> _texPipeDistinct = new();
 
@@ -60,7 +61,8 @@ public class AssetService
         // distinct << req  => the same textures are being re-decoded (a cache upstream isn't
         // sticking); distinct ~ req => the scene genuinely has that many textures.
         Console.Error.WriteLine($"[TexPipe] req={n} distinct={_texPipeDistinct.Count} diskCacheHit={hit} " +
-            $"(avg {avgMs:0}ms J2K decode) httpFetch={http} inflight={_inflightTextures.Count}");
+            $"(avg {avgMs:0}ms J2K decode) httpFetch={http} reduced={_texPipeReduced} " +
+            $"reduceRetry={_texPipeReduceRetry} inflight={_inflightTextures.Count}");
     }
 
     // Ids already reported by [TextureGiveUp]. The texture path has several distinct ways to end
@@ -553,8 +555,20 @@ public class AssetService
     /// -- the "visibly wrong beats blank" trade-off the regular path makes was calibrated on
     /// Magick's much gentler degradation and does not hold here. Sculpt maps refuse for the same
     /// reason (a degraded map is a shard of geometry), which is why isSculpt already implies it.</param>
-    public Task<TextureData?> GetTextureAsync(Guid textureId, int desiredDiscard = 0, bool isSculpt = false, float priority = 0f, bool rejectDegraded = false)
+    /// <param name="screenPixelArea">How many screen pixels the object using this texture covers,
+    /// or 0 for "unknown -- decode it fully". Non-zero lets the JPEG-2000 decoder skip wavelet
+    /// levels the screen cannot show (<see cref="TextureLod"/>): measured on 40 real cached assets,
+    /// a full decode is 47.6 ms against 13.1 ms at quarter size and 3.8 ms at a sixteenth, and that
+    /// decode was the largest remaining cost in a scene load (BUG-NET-11). Only ever a REDUCTION --
+    /// the caller still receives at least as many pixels as it asked to display, and
+    /// <c>TextureData.SourceWidth/Height</c> say what the full asset would have been so a closer
+    /// look can re-decode it sharper.</param>
+    public Task<TextureData?> GetTextureAsync(Guid textureId, int desiredDiscard = 0, bool isSculpt = false, float priority = 0f, bool rejectDegraded = false, float screenPixelArea = 0f)
     {
+        // Only FULL decodes are memoized (see FetchDecodeAndCacheTextureAsync), so a hit is always
+        // the best available version -- handing it to a caller that asked for a reduced one is
+        // strictly better than what it asked for, and it lets a near object's decode serve every
+        // distant one afterwards.
         if (_memCache.TryGetValue(textureId, out TextureData? cached))
         {
             return Task.FromResult(cached);
@@ -593,8 +607,15 @@ public class AssetService
         // key no matter how many callers hit .Value concurrently -- the property that matters
         // when many objects/faces reference the same never-before-seen texture at once (e.g. a
         // region populating on first login).
+        // Sculpt maps are vertex coordinates, never pixels -- a reduced decode would silently drop
+        // vertices, so they are always decoded whole (mirrors effectiveDiscard above).
+        float effectiveArea = isSculpt ? 0f : screenPixelArea;
+
+        // Keyed by id only, not (id, level): GpuCache already single-flights per texture id, so two
+        // levels racing here is not a normal case, and if it happens both results are valid images
+        // -- the renderer records the upload as reduced and TryUpgradeCachedTexture sharpens it.
         var lazy = _inflightTextures.GetOrAdd(textureId, id => new Lazy<Task<TextureData?>>(
-            () => FetchDecodeAndCacheTextureAsync(id, effectiveDiscard, isSculpt, priority, rejectDegraded), LazyThreadSafetyMode.ExecutionAndPublication));
+            () => FetchDecodeAndCacheTextureAsync(id, effectiveDiscard, isSculpt, priority, rejectDegraded, effectiveArea), LazyThreadSafetyMode.ExecutionAndPublication));
         return lazy.Value;
     }
 
@@ -641,11 +662,11 @@ public class AssetService
         return await GetTextureAsync(textureId, desiredDiscard: 0, priority: priority).ConfigureAwait(false);
     }
 
-    private async Task<TextureData?> FetchDecodeAndCacheTextureAsync(Guid id, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false)
+    private async Task<TextureData?> FetchDecodeAndCacheTextureAsync(Guid id, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false, float screenPixelArea = 0f)
     {
         try
         {
-            var result = await FetchAndDecodeTextureAsync(id, desiredDiscard, isSculpt, priority, rejectDegraded).ConfigureAwait(false);
+            var result = await FetchAndDecodeTextureAsync(id, desiredDiscard, isSculpt, priority, rejectDegraded, screenPixelArea).ConfigureAwait(false);
             // Mirror the disk cache's own guard (see FetchAndDecodeTextureAsync) -- a degraded
             // result can still be returned (better than nothing on the last retry attempt), but
             // must never be memoized. Caching it here would pin the bad decode in memory for a
@@ -655,7 +676,12 @@ public class AssetService
             // to retry. Only a full app restart (a fresh, empty _memCache) let a later fetch
             // attempt succeed, which is why this looked like it needed a full relaunch to fix
             // rather than just logging back in.
-            if (result != null && !result.IsDegraded)
+            // Only a FULL decode is memoized. A reduced one is specific to how big the object was
+            // on screen at that moment, and caching it would hand a blurry image to the next caller
+            // -- including TryUpgradeCachedTexture, whose whole job is to fetch the sharp version.
+            // Re-decoding a reduced texture costs 3.8-13 ms, so there is little to cache anyway.
+            bool full = result != null && result.SourceWidth > 0 && result.Width >= result.SourceWidth;
+            if (result != null && !result.IsDegraded && full)
             {
                 long size = result.Width * result.Height * 4;
                 if (size <= 0) size = 1024;
@@ -703,7 +729,17 @@ public class AssetService
     private static readonly PriorityGate _textureDecodeThrottle =
         new PriorityGate(Math.Max(2, Environment.ProcessorCount - 2));
 
-    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false)
+    /// <summary>Picks a decoder reduce level from the codestream's own declared size, without
+    /// decoding it. 0 (decode everything) whenever the caller gave no LOD hint, the asset is a
+    /// sculpt map, or the header cannot be read -- "decode it whole" is always the safe answer.</summary>
+    private static int ReduceFactorFromHeader(byte[] bytes, bool isSculpt, float screenPixelArea)
+    {
+        if (isSculpt || screenPixelArea <= 0f) return 0;
+        if (!TryReadJ2kSize(bytes, out int w, out int h, out _)) return 0;
+        return TextureLod.ReduceFactorFor(TextureLod.DiscardLevelFor(w, h, screenPixelArea));
+    }
+
+    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false, float screenPixelArea = 0f)
     {
         System.Threading.Interlocked.Increment(ref _texPipeReq);
         MaybeDumpTexPipe(textureId);
@@ -721,10 +757,31 @@ public class AssetService
             try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
             if (cached != null && cached.Length > 0)
             {
+                // BUG-NET-11: ask the decoder for only the wavelet levels this object can show.
+                // The reduce factor comes from the codestream's OWN declared size (SIZ), read here
+                // without decoding, because the right level depends on the asset's resolution and
+                // only the header knows it before the work is done.
+                int reduce = ReduceFactorFromHeader(cached, isSculpt, screenPixelArea);
+
                 TextureData? decodedFromCache;
                 await _textureDecodeThrottle.WaitAsync(priority).ConfigureAwait(false);
                 var _texSw = System.Diagnostics.Stopwatch.StartNew();
-                try { decodedFromCache = await Task.Run(() => DecodeTexture(cached, isSculpt)).ConfigureAwait(false); }
+                try
+                {
+                    decodedFromCache = await Task.Run(() => DecodeTexture(cached, isSculpt, reduce)).ConfigureAwait(false);
+                    // Only a FULL decode's verdict is trusted. A reduced decode reporting degraded
+                    // could be the reduce path itself misbehaving, and believing it would delete a
+                    // perfectly good cache file below -- so confirm at full resolution first.
+                    if (reduce > 0 && (decodedFromCache == null || decodedFromCache.IsDegraded))
+                    {
+                        System.Threading.Interlocked.Increment(ref _texPipeReduceRetry);
+                        decodedFromCache = await Task.Run(() => DecodeTexture(cached, isSculpt)).ConfigureAwait(false);
+                    }
+                    else if (reduce > 0)
+                    {
+                        System.Threading.Interlocked.Increment(ref _texPipeReduced);
+                    }
+                }
                 finally { _textureDecodeThrottle.Release(); }
                 System.Threading.Interlocked.Add(ref _texPipeCacheDecodeTicks, _texSw.ElapsedTicks);
 
@@ -817,7 +874,19 @@ public class AssetService
 
             if (bytes is { Length: > 0 })
             {
-                var result = await Task.Run(() => DecodeTexture(bytes, isSculpt)).ConfigureAwait(false);
+                int httpReduce = ReduceFactorFromHeader(bytes, isSculpt, screenPixelArea);
+                var result = await Task.Run(() => DecodeTexture(bytes, isSculpt, httpReduce)).ConfigureAwait(false);
+                if (httpReduce > 0 && (result == null || result.IsDegraded))
+                {
+                    // Same rule as the cache path: never let a reduced decode be the reason we call
+                    // an asset broken, retry it whole and judge that.
+                    System.Threading.Interlocked.Increment(ref _texPipeReduceRetry);
+                    result = await Task.Run(() => DecodeTexture(bytes, isSculpt)).ConfigureAwait(false);
+                }
+                else if (httpReduce > 0)
+                {
+                    System.Threading.Interlocked.Increment(ref _texPipeReduced);
+                }
 
                 // Both decoders (Magick.NET and the CoreJ2K fallback) refused these bytes, yet the
                 // real viewer draws the same assets, so the bytes themselves are the evidence and
@@ -1248,8 +1317,52 @@ public class AssetService
     /// reconstruction. It is smaller than the asset's nominal size, which the caller handles the
     /// same way it handles any texture that arrives at a lower detail level.</summary>
 
-    internal static TextureData? DecodeTexture(byte[] bytes, bool isSculpt = false)
+    /// <summary>Reads the codestream's own declared dimensions from its SIZ marker (ITU-T T.800
+    /// Table A-4) without decoding anything. Used both to size a reduce-level decode before paying
+    /// for it and to tell a truncated decode from a deliberately reduced one.</summary>
+    internal static bool TryReadJ2kSize(byte[] bytes, out int width, out int height, out int components)
     {
+        width = height = 0; components = -1;
+
+        // Deliberately NOT gated on the raw-codestream signature (FF 4F). SL and OpenSim serve raw
+        // codestreams -- see [[sl-textures-are-raw-codestreams]] -- but Magick.NET's own
+        // MagickFormat.J2c encoder emits a JP2-BOXED file (starts 00 00 00 0C 6A 50 20 20), which is
+        // what the tests encode with, and the SIZ marker sits inside the contiguous codestream box
+        // either way. Scanning for it covers both.
+        //
+        // The scan is bounded and structurally validated rather than taking the first FF 51 it
+        // sees: Lsiz must equal 38 + 3*Csiz (ITU-T T.800 Table A-4), which entropy-coded data
+        // essentially never satisfies by accident, and a real SIZ is always within the first few
+        // dozen bytes of the codestream.
+        int limit = System.Math.Min(bytes.Length - 40, 4096);
+        for (int i = 0; i < limit; i++)
+        {
+            if (bytes[i] != 0xFF || bytes[i + 1] != 0x51) continue; // SIZ marker
+
+            int lsiz = (bytes[i + 2] << 8) | bytes[i + 3];
+            // Csiz follows Rsiz/Xsiz/Ysiz/XOsiz/YOsiz/XTsiz/YTsiz/XTOsiz/YTOsiz.
+            int csiz = (bytes[i + 38] << 8) | bytes[i + 39];
+            if (csiz <= 0 || csiz > 16384 || lsiz != 38 + 3 * csiz) continue;
+
+            int w = (bytes[i + 6] << 24) | (bytes[i + 7] << 16) | (bytes[i + 8] << 8) | bytes[i + 9];
+            int h = (bytes[i + 10] << 24) | (bytes[i + 11] << 16) | (bytes[i + 12] << 8) | bytes[i + 13];
+            if (w <= 0 || h <= 0) continue;
+
+            width = w; height = h; components = csiz;
+            return true;
+        }
+        return false;
+    }
+
+    /// <param name="reduceFactor">JPEG-2000 decoder reduce level -- see <see cref="TextureLod"/>.
+    /// 0 decodes the full image. This is a DECODER option on a complete codestream (OpenJPEG's
+    /// cp_reduce, reached through Magick's <c>jp2:reduce-factor</c> define); it is unrelated to the
+    /// disabled network-side truncation, which fails because Magick will not read a codestream that
+    /// ends early. Ignored for sculpt maps, whose samples are vertex coordinates -- decoding those
+    /// at a lower resolution would silently drop vertices.</param>
+    internal static TextureData? DecodeTexture(byte[] bytes, bool isSculpt = false, int reduceFactor = 0)
+    {
+        if (isSculpt) reduceFactor = 0;
         try
         {
             // Magick.NET wraps OpenJPEG. On a genuinely truncated/corrupt J2C bitstream (dropped
@@ -1277,6 +1390,12 @@ public class AssetService
             if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F)
             {
                 settings.Format = ImageMagick.MagickFormat.J2c;
+            }
+            if (reduceFactor > 0)
+            {
+                // The define is registered under "jp2" for both the JP2 and raw-J2C coders -- they
+                // are the same reader in ImageMagick.
+                settings.SetDefine(ImageMagick.MagickFormat.Jp2, "reduce-factor", reduceFactor.ToString());
             }
             using var image = new ImageMagick.MagickImage(bytes, settings);
             image.Warning += (s, e) => { /* Suppress Magick.NET console spam */ };
@@ -1336,36 +1455,33 @@ public class AssetService
             // already assumed sculpts WERE covered here) never fired for sculpts at all.
             int trueWidth = -1, trueHeight = -1;
 
-            if (settings.Format == ImageMagick.MagickFormat.J2c)
+            // One SIZ reader for the whole class (see TryReadJ2kSize) -- this used to be a second,
+            // subtly different copy of the same loop, gated on the raw-codestream signature.
+            if (TryReadJ2kSize(bytes, out int sizW, out int sizH, out int sizC))
             {
-                for (int i = 0; i < bytes.Length - 13; i++)
-                {
-                    if (bytes[i] == 0xFF && bytes[i + 1] == 0x51) // SIZ marker
-                    {
-                        trueWidth = (bytes[i + 6] << 24) | (bytes[i + 7] << 16) | (bytes[i + 8] << 8) | bytes[i + 9];
-                        trueHeight = (bytes[i + 10] << 24) | (bytes[i + 11] << 16) | (bytes[i + 12] << 8) | bytes[i + 13];
-                        // Csiz (component count) follows XOsiz/YOsiz/XTsiz/YTsiz/XTOsiz/YTOsiz
-                        // (24 more bytes) per the SIZ marker layout (ITU-T T.800 Table A-4).
-                        // Read it so a decode that kept the right WIDTH/HEIGHT but silently
-                        // dropped the alpha plane (e.g. a byte-limited progressive fetch whose
-                        // alpha tile-part never arrived) is also caught below -- the
-                        // width*height check above only catches SPATIAL truncation, not a
-                        // missing component. An avatar bake decoded this way forces alpha=255
-                        // for every pixel further down (ch<4 branch), which defeats the bake's
-                        // alpha-cutout shaping entirely (e.g. system hair renders as its full,
-                        // uncut card silhouette instead of styled strands). Not meaningful for
-                        // sculpts (RGB-only, no alpha plane), but harmless to compute either way.
-                        if (i + 39 < bytes.Length)
-                            trueComponents = (bytes[i + 38] << 8) | bytes[i + 39];
-                        break;
-                    }
-                }
+                trueWidth = sizW;
+                trueHeight = sizH;
+                // Read so a decode that kept the right WIDTH/HEIGHT but silently dropped the alpha
+                // plane (e.g. a byte-limited progressive fetch whose alpha tile-part never arrived)
+                // is caught below -- the width*height check only catches SPATIAL truncation, not a
+                // missing component. An avatar bake decoded that way forces alpha=255 for every
+                // pixel further down (ch<4 branch), which defeats the bake's alpha-cutout shaping
+                // entirely (e.g. system hair renders as its full, uncut card silhouette instead of
+                // styled strands). Not meaningful for sculpts (RGB-only), but harmless to compute.
+                trueComponents = sizC;
             }
 
-            if (trueWidth > 0 && trueHeight > 0 && (width * height < trueWidth * trueHeight))
+            // A reduce-level decode is SUPPOSED to come out smaller, so the truncation check has to
+            // compare against the size the reduce factor asks for, not the codestream's full size --
+            // otherwise every reduced decode reports as a truncated thumbnail, and (worse) the disk
+            // cache path deletes the perfectly good .j2c that produced it.
+            int expectedWidth = TextureLod.ReducedDimension(trueWidth, reduceFactor);
+            int expectedHeight = TextureLod.ReducedDimension(trueHeight, reduceFactor);
+            if (trueWidth > 0 && trueHeight > 0 && (width * height < expectedWidth * expectedHeight))
             {
                 // Accept the thumbnail but mark as degraded so it isn't cached
-                Console.WriteLine($"[AssetService] Magick decoded thumbnail {width}x{height}, expected {trueWidth}x{trueHeight}. Marked as degraded.");
+                Console.WriteLine($"[AssetService] Magick decoded thumbnail {width}x{height}, expected {expectedWidth}x{expectedHeight}" +
+                    (reduceFactor > 0 ? $" (reduce={reduceFactor} of {trueWidth}x{trueHeight})" : "") + ". Marked as degraded.");
                 isDegraded = true;
             }
 
@@ -1403,7 +1519,11 @@ public class AssetService
                     throw new Exception("Magick.NET decode invalid channels");
             }
 
-            return new TextureData(width, height, rgba, isDegraded);
+            // SourceWidth/Height carry the codestream's own size, so the renderer can tell a
+            // deliberately reduced decode (still worth sharpening later) from one already at full
+            // resolution (never is). Falls back to the decoded size for a non-J2C image.
+            return new TextureData(width, height, rgba, isDegraded,
+                trueWidth > 0 ? trueWidth : width, trueHeight > 0 ? trueHeight : height);
         }
         catch (Exception magickEx)
         {
@@ -1485,7 +1605,9 @@ public class AssetService
 
                             // We intentionally use System.Diagnostics.Trace.Listeners to suppress CoreJ2K's internal Trace logs?
                             // Actually, just returning the exact array fixes the "sim looks weird" bug (skewed/failed textures).
-                            return new TextureData(width, height, exactRgba, true); // Mark as degraded so we know it used the fallback
+                            // CoreJ2K always decodes full resolution -- it is the fallback for
+                            // bytes Magick refused, and no reduce factor was applied here.
+                            return new TextureData(width, height, exactRgba, true, width, height); // degraded: used the fallback
                         }
                     }
                 }

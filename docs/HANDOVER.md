@@ -5,7 +5,7 @@
 
 ---
 
-# 2026-09-03 (later) — `v0.20.51` → `v0.20.54`
+# 2026-09-03 (later) — `v0.20.51` → `v0.20.55`
 
 **`v0.20.50`'s log was unusable.** `godot.log`'s body came back as 437 kB of NUL bytes (the
 engine's buffered log loses everything unflushed when a session doesn't end cleanly), so the
@@ -138,6 +138,25 @@ short-circuits everything after the first failed UDP round. Logs
 `HTTP 403 but UDP delivered N bytes -- the asset exists, the CDN just would not serve it` when it
 works.
 
+### `v0.20.55` — reduce-level decode (BUG-NET-11's last structural lever)
+
+The decoder now gets `screenPixelArea` and skips the wavelet levels the screen cannot show, instead
+of decoding everything at full resolution and downsampling afterwards. Measured on 40 real cached
+assets: 47.6 ms full, 13.1 ms at quarter size, 3.8 ms at a sixteenth.
+
+`TextureLod` (new, engine-agnostic) is the single copy of the arithmetic — `AssetService` picks the
+reduce level from the SIZ header before decoding, `GpuCache` applies the leftover discard after.
+`TextureData.SourceWidth/Height` keep a reduced upload eligible for sharpening. Only full decodes
+are memoized. Sculpts are never reduced. The degraded check now expects the reduced size, which
+mattered: without it every reduced decode would have read as truncated and the disk-cache path
+would have deleted the `.j2c` that produced it.
+
+**Honest scope:** this saves decode CPU and transient RAM (16 KB instead of 4 MB per 1024² at
+reduce 2), **not VRAM** — object uploads were already downsampled by `screenPixelArea`, which is why
+the cache averages ~336 KB/entry. The 2156 MB / 100 %-pinned GPU cache is still open, and avatar
+textures still upload full-resolution on purpose. `[TexPipe]` now reports `reduced=` /
+`reduceRetry=`.
+
 ### What to check in the next live session
 
 1. The shins under two alpha layers: still a jagged translucent patchwork, or solid skin with a
@@ -148,6 +167,11 @@ works.
 3. `[AvatarAlpha]` in the log — confirms which branch the shin faces actually take. If they say
    `-> Blend` with a high `fracClear`, the diagnosis above is right.
 4. Is the console log back to a normal size?
+5. `[TexPipe]`: `reduced=` should be a large fraction of `req` on a scene with distant objects, the
+   avg decode ms should drop well below the previous ~107, and `reduceRetry=` should stay near 0
+   (a non-zero one means reduced decodes are coming back degraded and paying for a second, full
+   decode). Watch for anything that looks blurrier than it should when you walk up to it — that
+   would mean `TryUpgradeCachedTexture` is not firing.
 
 ---
 

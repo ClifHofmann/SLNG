@@ -152,6 +152,57 @@ texture id of every culled object at 4 Hz), so the line wrote **45 061 of the se
 49 273 lines**. Now gated to one line per 10 s. Separately worth noting: 7.2 M `lock`-ed dictionary
 lookups + LRU splices per session is real main-thread cost nobody has profiled.
 
+## `v0.20.55` — reduce-level decode
+
+SLNG decoded every texture at full resolution and *then* downsampled it locally for distant
+objects: 47.6 ms of OpenJPEG to produce a 64x64 upload it could have decoded in 3.8 ms. The
+decoder now gets told how big the object is on screen and skips the wavelet levels the screen
+cannot show.
+
+- **`TextureLod`** (new, `SLNG.Assets`) holds the one copy of the arithmetic, because both ends
+  need the same answer: `AssetService` picks a reduce level *before* decoding, the renderer applies
+  whatever discard is left *after*. Two copies that disagreed would decode a texture small and then
+  treat it as full resolution — permanently blurry — or the reverse.
+- **`AssetService.ReduceFactorFromHeader`** reads the codestream's declared size from its SIZ
+  marker without decoding (`TryReadJ2kSize`), because the right level depends on the asset's own
+  resolution and only the header knows it before the work is done.
+- **`GpuCache`** passes `screenPixelArea` through to `GetTextureAsync`, then computes the remaining
+  discard on the already-reduced image — the same formula drops by exactly 2 per reduce factor, so
+  the existing local resize covers the leftover odd level with no change.
+- **`TextureData.SourceWidth/Height`** carry the full asset size, so a reduced upload stays
+  eligible for `TryUpgradeCachedTexture` even when the leftover local discard works out to 0.
+  Without it a texture first seen from far away would be decoded small and then treated as the
+  whole asset, i.e. blurry for the session.
+- **Only FULL decodes are memoized.** A reduced one is specific to how big the object was at that
+  moment; caching it would hand a blurry image to the next caller, including the sharpen path whose
+  whole job is to fetch the sharp version. Re-decoding a reduced texture costs 3.8–13 ms, so there
+  is little to cache. A memory-cache hit is therefore always the best available version, and one
+  near object's full decode serves every distant caller afterwards.
+- **Sculpt maps are never reduced** — their samples are vertex coordinates, so a lower resolution
+  silently drops vertices. Forced to 0 in `DecodeTexture` itself, not just at the call site.
+- **A reduced decode must not read as a truncated one.** The degraded check compares the decoded
+  size against `TextureLod.ReducedDimension(...)` rather than the raw SIZ size, and if a reduced
+  decode *does* come back degraded it is re-decoded whole and that verdict used instead. Getting
+  this wrong would have deleted the disk cache one entry at a time (the cache path deletes any
+  `.j2c` that decodes degraded) while rendering everything through the CoreJ2K fallback.
+
+**What it does and does not buy.** It saves decode CPU and the transient full-size RGBA buffer
+(16 KB instead of 4 MB for a 1024² at reduce 2, across thousands of decodes). It does **not**
+reduce VRAM: object uploads were already downsampled by `screenPixelArea` before this change, which
+is why the cache averages ~336 KB per entry. The 2156 MB / 100 %-pinned cache is a separate
+problem — avatar textures still upload at full resolution (`screenPixelArea: 0`), deliberately.
+
+`[TexPipe]` gained `reduced=` and `reduceRetry=` so the next session shows how often the reduce
+path is taken and whether it ever has to fall back to a full decode.
+
+Tests: `ReduceLevelDecodeTests` pins the 4^N mapping against a self-encoded codestream (a
+Magick.NET upgrade that changed it would otherwise silently halve every texture's resolution), that
+a reduced decode is not flagged degraded, that `SourceWidth` survives, that sculpts ignore the
+factor, and the LOD arithmetic itself. Note the fixture encodes a **JP2-boxed** file — Magick's own
+`MagickFormat.J2c` writer emits boxes, unlike the raw codestreams SL serves — which is why
+`TryReadJ2kSize` scans for the SIZ marker and validates `Lsiz == 38 + 3*Csiz` instead of requiring
+the `FF 4F` signature.
+
 ## Still open / verify
 
 - **Not re-verified in-world.** Confirm `[LegacyMat] POST` lines now carry many ids each (not
