@@ -5,6 +5,31 @@
 
 ---
 
+# 2026-09-03 — BUG-AVATAR-03 real fix: direct `{cof_version}` cap POST (`v0.20.39`)
+
+The SSB rebake no longer goes through LibreMetaverse's `RequestSetAppearance` (which reconciles
+the worn set and drops attachments on a rate-limited grid). New
+`GridSession.SendServerAppearanceUpdateAsync` POSTs `{ "cof_version": N }` straight to the
+`UpdateAvatarAppearance` cap via `HttpCapsClient.PostAsync`, mirroring
+`LLAppearanceMgr::serverAppearanceUpdateCoro` (`postData["cof_version"] = cofVersion`; retry on
+`{ success:false, expected:M }`, ≤3×, 500 ms). Pure nudge — the sim composites from its own COF,
+touches nothing local.
+
+- `GetCofVersion()` = COF folder's `InventoryFolder.Version` from LMV's store (AIS updates it in
+  place → no re-fetch). `-1` → skip.
+- `RequestServerSideRebakeAsync()` (Ctrl+Alt+R path) now delegates to it.
+- Auto-rebake reinstated on the **safe** path: `ScheduleRebakeAfterWearableEdit()` (1.8 s
+  debounce, SSB-only) from `WearWearableAsync` / `RemoveWearableAsync`.
+- `BuildServerAppearanceUpdate(int)` `internal static`; `ServerAppearanceUpdateTests` (5).
+- 575 tests green, format/shaders/selftest clean.
+
+**Verify in-world:** swap an alpha, do nothing → `[Appearance] wearable edit settled -- nudging a
+server re-composite` → `server appearance update accepted` → fresh `[SelfBake]`; and **no worn
+attachment vanishes across a relog**. If the sim replies `expected M`, the retry should pick it
+up (watch for the "server expected N -- retrying" line).
+
+---
+
 # 2026-09-03 — acceptance-testing round: search OK, walk-anim lag filed
 
 User ran the post-fix test list.

@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-AVATAR-03`
 - **Track:** `net`
-- **Status:** `🚧 In Progress` — first fix attempt reverted (made it worse); real cause identified.
+- **Status:** `🧪 Review` — real fix landed `v0.20.39` (first attempt `v0.20.37` reverted first).
 - **Owner:** `claude`
 - **Depends on:** `FEAT-AVATAR-01`, `BUG-AVATAR-01` (`RebakeAvatar` → `RequestServerSideRebakeAsync`)
 - **Reported:** live, Agni / *Millenium*, 2026-09-03. *"Wechsel von Alphas … noch nicht sauber"* →
@@ -46,19 +46,32 @@ no longer amplified. **Interim guidance for the user: prefer a relog over Ctrl+A
 wearable change — the sim re-composites on its own from the `cof_version` bump — and do not spam
 the rebake, each call is a chance to lose an attachment on a busy grid.**
 
-## Real fix — direction, not yet built
+## Real fix (`v0.20.39-alpha`)
 
-Stop routing the SSB rebake through LibreMetaverse's `RequestSetAppearance` at all. SLNG should
-POST `{ cof_version }` to the `UpdateAvatarAppearance` capability **directly**
-(`HttpCapsClient.PostAsync`, the same way `FetchOneBatchAsync` / the RenderMaterials query already
-bypass LMV) — a pure nudge that never touches the worn set. Needs: the cap URL from
-`CurrentSim.Caps.CapabilityURI("UpdateAvatarAppearance")`, and the current `cof_version` (the COF
-folder's `Version` in the store, or track the value from the sim's `Requesting bake for COF
-version N` path). Then the auto-rebake from `v0.20.37` becomes safe to reinstate on top of it.
+The SSB rebake no longer goes through LibreMetaverse's `RequestSetAppearance`. New
+`GridSession.SendServerAppearanceUpdateAsync` POSTs `{ "cof_version": N }` to the region's
+`UpdateAvatarAppearance` cap directly via `HttpCapsClient.PostAsync` (the same bypass
+`FetchOneBatchAsync` / the RenderMaterials query use), mirroring
+`LLAppearanceMgr::serverAppearanceUpdateCoro` (`scratch/slviewer/indra/newview/llappearancemgr.cpp`
+— `postData["cof_version"] = cofVersion`, retry on `{ success:false, expected:M }` up to 3×, 500 ms
+apart). It is a **pure nudge**: the sim composites from its own copy of the COF and pushes a fresh
+`AvatarAppearance` back — it never reconciles or touches the local worn set, so the
+attachment-drop can't happen.
 
-Also worth pinning: does LMV's reconcile drop the COF **link** server-side (durable) or only its
-own local view? The relog persistence says at least the hair link did not come back — treat it as
-durable until proven otherwise.
+- `cof_version` = the COF folder's `InventoryFolder.Version` from LMV's store (`GetCofVersion`).
+  AIS write-backs update it in place, so it tracks a wearable edit without a re-fetch. `-1`
+  (`VERSION_UNKNOWN`) → skip the nudge.
+- `RequestServerSideRebakeAsync()` (what `RebakeAvatar` / Ctrl+Alt+R calls on SSB) now delegates
+  to `SendServerAppearanceUpdateAsync`.
+- The auto-rebake is back — `ScheduleRebakeAfterWearableEdit()` (1.8 s debounce, SSB-only) from
+  `WearWearableAsync` / `RemoveWearableAsync` — but it calls the **safe** nudge, not the reverted
+  `RequestSetAppearance` path.
+- `BuildServerAppearanceUpdate(int)` is `internal static`; `ServerAppearanceUpdateTests` (5) pin
+  the body shape and LLSD-XML round-trip.
+
+**Not yet re-verified in-world.** Check: swap an alpha, do nothing → `[Appearance] wearable edit
+settled -- nudging a server re-composite` then `server appearance update accepted`, then a fresh
+`[SelfBake]` line — and no worn attachment goes missing across a relog.
 
 ## Acceptance
 

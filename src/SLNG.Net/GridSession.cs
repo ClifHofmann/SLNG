@@ -3444,7 +3444,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (RegionHasServerSideBaking())
         {
             Console.Error.WriteLine("[Appearance] rebake requested on a server-side-baking region -- " +
-                "requesting a fresh composite via RequestSetAppearance(forceRebake: true)");
+                "nudging the region to re-composite (UpdateAvatarAppearance cap)");
             _ = RequestServerSideRebakeAsync();
             return;
         }
@@ -3498,22 +3498,121 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return;
     }
 
-    /// <summary>The SSB half of <see cref="RebakeAvatar"/>. <c>forceRebake: true</c> zeroes
-    /// LibreMetaverse's cached bake-slot ids first (see <c>RequestSetAppearanceAsync</c>'s own
-    /// source), so this always asks the server for a genuinely fresh composite rather than a
-    /// possibly-cached no-op.</summary>
-    private async Task RequestServerSideRebakeAsync()
+    /// <summary>The SSB half of <see cref="RebakeAvatar"/>. Nudges the region to re-composite the
+    /// avatar by POSTing <c>{ "cof_version": N }</c> to the <c>UpdateAvatarAppearance</c> cap --
+    /// exactly what <c>LLAppearanceMgr::serverAppearanceUpdateCoro</c> does (<c>llappearancemgr.cpp</c>).
+    ///
+    /// <para>Deliberately NOT <c>AppearanceManager.RequestSetAppearance</c>: with
+    /// <c>SendAppearance</c> off, LibreMetaverse's cache is empty, so that call rebuilds the worn
+    /// set from a fresh COF fetch inside itself (<c>RezMultipleAttachmentsFromInv</c>) and, on a
+    /// rate-limited grid, silently drops a worn attachment link whose target doesn't resolve in the
+    /// window -- live on Agni 2026-09-03, worn hair/shoes gone after a rebake (BUG-AVATAR-03). The
+    /// cap POST here is a pure nudge: the sim composites from its OWN copy of the COF at
+    /// <c>cof_version</c> and pushes a fresh <c>AvatarAppearance</c> back, touching nothing local.</para></summary>
+    private Task RequestServerSideRebakeAsync() => SendServerAppearanceUpdateAsync();
+
+    /// <summary>Builds the <c>UpdateAvatarAppearance</c> POST body -- pure + internal so a test can
+    /// pin the shape (<c>{ "cof_version": &lt;int&gt; }</c>, mirroring the reference viewer's
+    /// <c>postData["cof_version"] = cofVersion</c>).</summary>
+    internal static OSDMap BuildServerAppearanceUpdate(int cofVersion) =>
+        new() { ["cof_version"] = OSD.FromInteger(cofVersion) };
+
+    /// <summary>Current Outfit Folder version from LibreMetaverse's local store -- the value the
+    /// SSB cap POST is keyed on. -1 (<c>InventoryFolder.VERSION_UNKNOWN</c>) when the COF folder
+    /// isn't in the store yet. AIS write-backs (CreateLink / RemoveItem) update this in place, so
+    /// it tracks a wearable edit without needing a re-fetch.</summary>
+    private int GetCofVersion()
     {
-        try
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        if (cofUuid == LibreMetaverse.UUID.Zero) return -1;
+        return (_client.Inventory.Store?.GetNodeOrDefault(cofUuid)?.Data
+            as LibreMetaverse.InventoryFolder)?.Version ?? -1;
+    }
+
+    /// <summary>POSTs <c>{ cof_version }</c> to the region's <c>UpdateAvatarAppearance</c> cap and,
+    /// on a version-mismatch reply (<c>{ success:false, expected:M }</c>), retries with the
+    /// server's expected version (up to 3x, 500 ms apart) -- the reference viewer's
+    /// <c>serverAppearanceUpdateCoro</c> retry loop, minus the UDP texture re-request.</summary>
+    private async Task SendServerAppearanceUpdateAsync(CancellationToken ct = default)
+    {
+        var uri = _client.Network.CurrentSim?.Caps?.CapabilityURI("UpdateAvatarAppearance");
+        if (uri == null)
         {
-            await _client.Appearance.RequestSetAppearance(forceRebake: true).ConfigureAwait(false);
-            Console.Error.WriteLine("[Appearance] RequestSetAppearance(forceRebake: true) sent -- " +
-                "watch for a fresh AvatarAppearance from the sim");
+            Console.Error.WriteLine("[Appearance] no UpdateAvatarAppearance cap on this region -- cannot nudge a rebake");
+            return;
         }
-        catch (Exception ex)
+
+        int cofVersion = GetCofVersion();
+        if (cofVersion < 0)
         {
-            Console.Error.WriteLine($"[Appearance] server-side rebake failed: {ex.Message}");
+            Console.Error.WriteLine("[Appearance] COF version unknown -- skipping the rebake nudge");
+            return;
         }
+
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                var (res, data) = await _client.HttpCapsClient
+                    .PostAsync(uri, OSDFormat.Xml, BuildServerAppearanceUpdate(cofVersion), ct).ConfigureAwait(false);
+                int status = (int)(res?.StatusCode ?? 0);
+                var reply = data is { Length: > 0 } ? OSDParser.Deserialize(data) as OSDMap : null;
+
+                if (reply != null && reply["success"].AsBoolean())
+                {
+                    Console.Error.WriteLine($"[Appearance] server appearance update accepted (cof_version={cofVersion}, HTTP {status})");
+                    return;
+                }
+
+                int expected = reply != null && reply.ContainsKey("expected") ? reply["expected"].AsInteger() : -1;
+                if (expected > cofVersion)
+                {
+                    Console.Error.WriteLine($"[Appearance] server appearance update: sent cof_version={cofVersion}, server expected {expected} -- retrying");
+                    cofVersion = expected;
+                    await Task.Delay(500, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                string err = reply != null && reply.ContainsKey("error") ? reply["error"].AsString() : $"HTTP {status}";
+                Console.Error.WriteLine($"[Appearance] server appearance update rejected (cof_version={cofVersion}): {err}");
+                return;
+            }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[Appearance] server appearance update failed: {ex.Message}");
+                return;
+            }
+        }
+        Console.Error.WriteLine($"[Appearance] server appearance update: gave up after 3 cof_version retries (last {cofVersion})");
+    }
+
+    private System.Threading.CancellationTokenSource? _wearableRebakeCts;
+
+    /// <summary>Second Life only shows a system-wearable edit (wear / take off / swap an alpha
+    /// layer) once the avatar re-composites. Fires that nudge automatically, debounced so a swap
+    /// (a take-off + a wear, or several layers) coalesces into ONE POST ~1.8 s after the last edit
+    /// settles -- long enough for the AIS COF write-backs to bump <c>cof_version</c> in the local
+    /// store. SSB only, and the nudge is the pure cap POST (<see cref="SendServerAppearanceUpdateAsync"/>),
+    /// NOT the attachment-dropping <c>RequestSetAppearance</c> path (BUG-AVATAR-03).</summary>
+    private void ScheduleRebakeAfterWearableEdit()
+    {
+        _wearableRebakeCts?.Cancel();
+        var cts = _wearableRebakeCts = new System.Threading.CancellationTokenSource();
+        var token = cts.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(1800), token).ConfigureAwait(false);
+                if (token.IsCancellationRequested || !_client.Network.Connected) return;
+                if (!RegionHasServerSideBaking()) return;
+                Console.Error.WriteLine("[Appearance] wearable edit settled -- nudging a server re-composite");
+                await SendServerAppearanceUpdateAsync(token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Console.Error.WriteLine($"[Appearance] auto rebake nudge failed: {ex.Message}"); }
+        });
     }
 
     // Both blockers are now handled, each by a guard that refuses to send rather than guessing:
@@ -3646,8 +3745,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             SendAgentIsNowWearing(CollectWornWearablesFromCof(extra: (wearable.UUID, type)));
 
             Console.Error.WriteLine($"[Appearance] wore \"{wearable.Name}\" ({wearable.AssetType}) " +
-                "-- recorded server-side; becomes visible after a rebake");
+                "-- recorded server-side; auto re-composite scheduled");
             WornItemsChanged?.Invoke(this, EventArgs.Empty);
+            ScheduleRebakeAfterWearableEdit();
         }
         catch (Exception ex)
         {
@@ -3749,8 +3849,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         SendAgentIsNowWearing(CollectWornWearablesFromCof(excludeItem: wearable.UUID));
         Console.Error.WriteLine($"[Appearance] removed \"{wearable.Name}\" ({wearable.AssetType}) " +
-            $"-- {removed} outfit link(s) removed, recorded server-side; becomes visible after a rebake");
+            $"-- {removed} outfit link(s) removed, recorded server-side; auto re-composite scheduled");
         WornItemsChanged?.Invoke(this, EventArgs.Empty);
+        ScheduleRebakeAfterWearableEdit();
 
         return new DetachResult(false, removed, WearableRemoved: true);
     }
@@ -6780,6 +6881,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         _parcelEnvironmentPollCts.Cancel();
         _parcelEnvironmentPollCts.Dispose();
+        try { _wearableRebakeCts?.Cancel(); _wearableRebakeCts?.Dispose(); } catch { }
         _client.Self.ChatFromSimulator -= OnChatFromSimulator;
         _client.Objects.ObjectUpdate -= OnObjectUpdate;
         _client.Objects.TerseObjectUpdate -= OnTerseObjectUpdate;
