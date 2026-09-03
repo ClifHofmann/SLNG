@@ -8,9 +8,11 @@ namespace SLNG.App.UI;
 
 /// <summary>
 /// Read-only inventory browser (v1), toggled with Ctrl+I (see Boot._Input). Lazily fetches ONE
-/// folder per expansion via <see cref="GridSession.FetchInventoryChildrenAsync"/> — never
-/// recurses the tree: an inventory can hold tens of thousands of items, and per-folder CAPS
-/// fetches on expand are how real viewers populate the tree too. Fetches complete on worker
+/// folder per expansion via <see cref="GridSession.FetchInventoryChildrenAsync"/>. Normal
+/// browsing never recurses — an inventory can hold tens of thousands of items, and per-folder
+/// CAPS fetches on expand are how real viewers populate the tree too — but an active search
+/// crawls the subtree depth-first (bounded by <c>MaxSearchFolderLoads</c>) so the filter can
+/// match folders and items the user never expanded by hand. Fetches complete on worker
 /// threads; every Tree mutation is marshalled back to the main thread (CallDeferred), per the
 /// project threading rule. Wearing/attaching/moving items is not implemented yet — browsing only.
 /// </summary>
@@ -29,6 +31,18 @@ public partial class InventoryPanel : SLNGWindow
     private bool _rootsPopulated;
     private PopupMenu _contextMenu = null!;
     private LineEdit _searchBox = null!;
+    // While a search is active the tree is fetched depth-first so the filter can see folders
+    // the user never expanded (otherwise "search only finds what's already loaded"). One extra
+    // level is fetched per Populate, so the crawl follows the tree down as it materialises.
+    // MinSearchCrawlChars stops a single keystroke from crawling everything; MaxSearchFolderLoads
+    // caps a very large inventory; _searchLoadsIssued resets when the query is cleared.
+    private const int MinSearchCrawlChars = 2;
+    private const int MaxSearchFolderLoads = 800;
+    private int _searchLoadsIssued;
+    // Outstanding FetchInventoryChildrenAsync calls — drives the "Lädt… / Suche läuft…" status
+    // (a single fetch used to set it and any single Populate used to clear it, so a burst of
+    // concurrent fetches cleared the indicator while others were still running).
+    private int _pendingFetches;
 
     // FEAT-UI-16 / FEAT-INV-04: "Inventar" / "Angezogen" / "Outfits" tabs.
     private TabBar _tabs = null!;
@@ -837,50 +851,91 @@ public partial class InventoryPanel : SLNGWindow
         var root = _tree.GetRoot();
         if (root == null) return;
         string query = newText.Trim().ToLowerInvariant();
-        if (!string.IsNullOrEmpty(query))
+
+        if (query.Length == 0)
         {
-            EnsureFoldersLoadedForSearch(root);
+            _searchLoadsIssued = 0;
         }
-        FilterTree(root, query);
+        else if (query.Length >= MinSearchCrawlChars)
+        {
+            // Seed the crawl from every folder currently in the tree; each resulting Populate
+            // chains one level deeper (ContinueSearchCrawl) until the whole subtree is fetched.
+            SeedSearchCrawl(root);
+        }
+
+        FilterTree(root, query, ancestorMatched: false);
+        UpdateBusyStatus();
     }
 
-    private void EnsureFoldersLoadedForSearch(TreeItem item)
+    /// <summary>Kicks off a fetch for every not-yet-loaded folder row reachable in the tree
+    /// right now. Deeper levels are picked up by <see cref="ContinueSearchCrawl"/> from each
+    /// folder's Populate, so the crawl follows the tree down as it materialises.</summary>
+    private void SeedSearchCrawl(TreeItem item)
     {
-        var metaStr = item.GetMetadata(0).AsString();
-        var idStr = metaStr.Contains(',') ? metaStr.Split(',')[0] : metaStr;
-
-        if (!metaStr.Contains(',') && Guid.TryParse(idStr, out var folderId))
-        {
-            if (!_loadedFolders.Contains(folderId))
-            {
-                LoadFolder(item, folderId);
-            }
-        }
-
+        TryCrawlFolderRow(item);
         foreach (var child in item.GetChildren())
-        {
-            EnsureFoldersLoadedForSearch(child);
-        }
+            SeedSearchCrawl(child);
     }
 
-    private bool FilterTree(TreeItem item, string query)
+    /// <summary>After a folder's contents land during an active search, fetch its subfolders too
+    /// — one level per Populate is what makes the crawl recurse without ever blocking.</summary>
+    private void ContinueSearchCrawl(TreeItem parent)
     {
+        foreach (var child in parent.GetChildren())
+            TryCrawlFolderRow(child);
+    }
+
+    private void TryCrawlFolderRow(TreeItem item)
+    {
+        var meta = item.GetMetadata(0).AsString();
+        // Folder rows store a bare guid; item rows a comma-joined string; placeholder / "(empty)" none.
+        if (meta.Length == 0 || meta.Contains(',') || !Guid.TryParse(meta, out var folderId)) return;
+        if (_loadedFolders.Contains(folderId)) return;
+        if (_searchLoadsIssued >= MaxSearchFolderLoads)
+        {
+            _status.Text = "Suche: sehr großes Inventar — nicht alle Ordner geladen, Rest bitte manuell öffnen.";
+            return;
+        }
+        _searchLoadsIssued++;
+        LoadFolder(item, folderId);
+    }
+
+    private bool FilterTree(TreeItem item, string query, bool ancestorMatched = false)
+    {
+        bool selfMatch = string.IsNullOrEmpty(query)
+            || item.GetText(0).ToLowerInvariant().Contains(query);
+        // A folder whose own name matches reveals its whole subtree — searching "DOUX" and
+        // finding the "DOUX" folder should show what's inside it, not an empty folder.
+        bool subtreeMatched = ancestorMatched || selfMatch;
+
         bool anyChildVisible = false;
         var children = item.GetChildren();
         foreach (var child in children)
-        {
-            bool childVisible = FilterTree(child, query);
-            anyChildVisible |= childVisible;
-        }
+            anyChildVisible |= FilterTree(child, query, subtreeMatched);
 
-        bool match = string.IsNullOrEmpty(query) || item.GetText(0).ToLowerInvariant().Contains(query);
-        bool isVisible = match || anyChildVisible;
+        bool isVisible = selfMatch || anyChildVisible || ancestorMatched;
         item.Visible = isVisible;
-        
-        if (anyChildVisible && !string.IsNullOrEmpty(query))
+
+        if (!string.IsNullOrEmpty(query) && (anyChildVisible || (selfMatch && children.Count > 0)))
             item.Collapsed = false;
 
         return isVisible;
+    }
+
+    private void UpdateBusyStatus()
+    {
+        if (!IsInstanceValid(_status)) return;
+        if (_pendingFetches > 0)
+        {
+            bool searching = _searchBox != null && !string.IsNullOrEmpty(_searchBox.Text);
+            _status.Text = searching
+                ? $"Suche läuft… ({_pendingFetches} Ordner werden geladen)"
+                : (_pendingFetches == 1 ? "Lädt…" : $"Lädt… ({_pendingFetches} Ordner)");
+        }
+        else
+        {
+            _status.Text = "";
+        }
     }
 
     /// <summary>Adds a folder row with a "…" placeholder child, so the expander arrow shows
@@ -1206,7 +1261,8 @@ public partial class InventoryPanel : SLNGWindow
     private void LoadFolder(TreeItem item, Guid folderId, bool force = false, Guid? knownItemId = null, Guid? knownAssetId = null)
     {
         if (_session == null || (!_loadedFolders.Add(folderId) && !force)) return;
-        _status.Text = "Loading…";
+        _pendingFetches++;
+        UpdateBusyStatus();
         _ = FetchAsync(item, folderId, knownItemId, knownAssetId);
     }
 
@@ -1222,6 +1278,7 @@ public partial class InventoryPanel : SLNGWindow
             GD.PrintErr($"[Inventory] fetch {folderId} failed: {ex.Message}");
             Callable.From(() =>
             {
+                _pendingFetches = Math.Max(0, _pendingFetches - 1);
                 _loadedFolders.Remove(folderId); // allow a retry on the next expand
                 _status.Text = "Fetch failed — collapse and expand to retry.";
             }).CallDeferred();
@@ -1230,6 +1287,7 @@ public partial class InventoryPanel : SLNGWindow
 
     private void Populate(TreeItem item, IReadOnlyList<SLNG.Core.InventoryEntry> children, Guid? knownItemId = null, Guid? knownAssetId = null)
     {
+        _pendingFetches = Math.Max(0, _pendingFetches - 1);
         if (!IsInstanceValid(_tree) || !IsInstanceValid(this)) return;
 
         // Drop the "…" placeholder (and anything else stale under this folder).
@@ -1301,13 +1359,16 @@ public partial class InventoryPanel : SLNGWindow
 
         if (_searchBox != null && !string.IsNullOrEmpty(_searchBox.Text))
         {
+            var query = _searchBox.Text.Trim().ToLowerInvariant();
             var root = _tree.GetRoot();
             if (root != null)
-            {
-                FilterTree(root, _searchBox.Text.Trim().ToLowerInvariant());
-            }
+                FilterTree(root, query, ancestorMatched: false);
+
+            // Keep the crawl going one level deeper now that this folder's children exist.
+            if (query.Length >= MinSearchCrawlChars)
+                ContinueSearchCrawl(item);
         }
 
-        _status.Text = "";
+        UpdateBusyStatus();
     }
 }

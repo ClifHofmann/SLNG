@@ -17,6 +17,10 @@
 2. **In the "Angezogen" (Worn) tab, "Ablegen" does nothing.** Item stays worn, no error.
 3. **The inventory loads very slowly, and there is no indication that a fetch is still in
    progress** — no spinner, no "loading…", folders / names just appear late.
+4. **Search only finds folders that were already expanded by hand.** Typing "DOUX" finds the
+   `DOUX` *folder* (it happened to be loaded) but shows nothing inside it; you have to open it
+   manually for its contents to appear. Nested folders you never touched are invisible to the
+   search entirely.
 
 ## Where it lives
 
@@ -24,6 +28,21 @@
 against `GridSession`'s inventory + worn-item API.
 
 ## Fixed so far
+
+### Search now crawls the subtree instead of filtering only what's loaded (`v0.20.35-alpha`)
+`OnSearchTextChanged` → `EnsureFoldersLoadedForSearch` walked the tree **once** and kicked off a
+fetch only for folder rows that already existed as `TreeItem`s — one level deep. The async
+`Populate` that lands a folder's children never re-triggered the walk, so the crawl stopped
+dead at the first not-yet-expanded level. `FilterTree` then only ever saw hand-expanded folders,
+and a folder whose *name* matched still showed empty (its children were `Visible = false` because
+they didn't match). Now: while a query ≥ `MinSearchCrawlChars` (2) is active, each `Populate`
+calls `ContinueSearchCrawl(item)` to fetch that folder's subfolders — one level per `Populate`,
+so the crawl follows the tree down as it materialises, bounded by `MaxSearchFolderLoads` (800)
+and re-filtering after every folder lands (progressive reveal). `FilterTree` gained an
+`ancestorMatched` flag so a name-matched folder reveals its **whole** subtree. A `_pendingFetches`
+counter drives a real "Suche läuft… (N Ordner)" / "Lädt… (N Ordner)" status (symptom 3's progress
+gap for the search path). Godot-`TreeItem`-bound, no unit-test surface. **Not yet re-verified
+in-world.**
 
 ### "Ablegen" in the Worn tab (and Wear/Detach in the main tree) did nothing (`v0.20.34-alpha`)
 `DetachWornAsync`, `DetachAndRefreshAsync`, `AttachAndRefreshAsync` all did
@@ -126,5 +145,7 @@ it with a spinner.
   the list refreshes, and it does not rely on `Callable.From(...).CallDeferred()` from a worker
   thread.
 - A visible loading state while inventory is still being fetched (per-folder and initial).
+- Typing a name in the search box finds matching folders **and their contents**, and matching
+  items in folders that were never expanded by hand, without the user having to open anything.
 - Tests where there is a test surface (`GridSession` detach/worn-map logic in `SLNG.Net.Tests`);
   the Godot UI wiring itself has none.

@@ -5,6 +5,29 @@
 
 ---
 
+# 2026-09-03 — BUG-INV-01: inventory search now crawls the tree
+
+**`v0.20.35`** — user: *"die suche im inventar macht mir noch sorgen. Wenn ich nach DOUX suche
+finde ich den ordner wenn ich den ordner manuell öffne gehts dann."* Root cause: the search
+filtered only folders that were **already expanded**. `EnsureFoldersLoadedForSearch` walked the
+tree once and fetched one level of not-yet-loaded folders, but the async `Populate` that lands a
+folder's children never re-triggered the walk, so the crawl stopped at the first unexpanded
+level — and a folder whose *name* matched still rendered empty because its children didn't match
+the query. Fix in `InventoryPanel.cs`:
+- While a query ≥ `MinSearchCrawlChars` (2) is active, each `Populate` calls
+  `ContinueSearchCrawl(item)` → fetches that folder's subfolders (`TryCrawlFolderRow`), one level
+  per `Populate`, so the crawl follows the tree down as it materialises. Bounded by
+  `MaxSearchFolderLoads` (800); `_searchLoadsIssued` resets when the box is cleared.
+- `FilterTree` gained an `ancestorMatched` param — a folder whose own name matches now reveals
+  its **entire** subtree (searching "DOUX" → the DOUX folder opens with its contents visible).
+- `_pendingFetches` counter → "Suche läuft… (N Ordner)" / "Lädt… (N Ordner)" status (a single
+  fetch used to set the status and any single `Populate` cleared it, so concurrent fetches
+  cleared it early). Partial credit toward symptom 3's progress gap.
+Godot-`TreeItem`-bound → no unit-test surface. Build + 570 tests + selftest 29/29 green.
+**Not yet re-verified in-world.**
+
+---
+
 # 2026-09-02 — BUG-INV-01 progressing + FEAT-INV-05 filed
 
 **BUG-INV-01 fixes shipped & confirmed** (*"Funktioniert recht gut und schnell jetzt"*):
@@ -17,9 +40,9 @@
   `Callable.From(lambda).CallDeferred()` from a worker thread (`BUG-RENDER-01` anti-pattern) —
   detach packet went out but the refresh silently never ran, so "Ablegen" looked dead. Now
   `CallDeferred(nameof(Finish…))`.
-Still open in BUG-INV-01: the visible worn marker in the "Inventar" tree, and a load spinner;
-plus the ~15 other `Callable.From(lambda).CallDeferred()` sites in `InventoryPanel.cs` (mostly the
-outfit methods).
+Still open in BUG-INV-01: the visible worn marker in the "Inventar" tree, and a per-folder load
+spinner; plus the ~15 other `Callable.From(lambda).CallDeferred()` sites in `InventoryPanel.cs`
+(mostly the outfit methods). Search crawl fixed in `v0.20.35` (see 2026-09-03 section above).
 
 **FEAT-INV-05 filed (not started):** per-item actions in the Outfits view (Anziehen / Ausziehen /
 Aus diesem Outfit entfernen when right-clicking an item inside an expanded outfit).
