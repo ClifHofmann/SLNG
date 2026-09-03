@@ -28,6 +28,13 @@ public class AssetService
     // GetTextureAsync's doc comment for why this exists.
     private readonly MemoryCache _recentTextureFailures = new(new MemoryCacheOptions());
 
+    // Texture ids the sim answered 403/401 for (TextureFetchResult.Gone). Unlike
+    // _recentTextureFailures (45 s, for a maybe-transient failure) this is a permission decision
+    // that will not change this session -- keep it for the whole session so a face that references
+    // a denied texture stops re-requesting it every 45 s (which flickers, and spams
+    // LibreMetaverse's own texture logger). A restart clears it.
+    private readonly ConcurrentDictionary<Guid, byte> _goneTextures = new();
+
     private readonly ConcurrentDictionary<Guid, Task<MeshData?>> _inflightMeshes = new();
     // Lazy<Task<T>>, not a bare Task<T> -- see GetTextureAsync's comment for why this specific
     // dictionary needs a real single-execution guarantee under a concurrent first-touch race.
@@ -545,6 +552,14 @@ public class AssetService
             return Task.FromResult<TextureData?>(null);
         }
 
+        // Session-permanent: the sim denied this texture (403/401). Retrying it -- or its LMV UDP
+        // fallback -- cannot change a permission decision, and doing so every 45 s made a remote
+        // avatar's hair face flicker (2026-09-03).
+        if (_goneTextures.ContainsKey(textureId))
+        {
+            return Task.FromResult<TextureData?>(null);
+        }
+
         int effectiveDiscard = isSculpt ? 0 : desiredDiscard;
 
         // Lazy<Task<T>> (ExecutionAndPublication), not a bare ConcurrentDictionary.GetOrAdd
@@ -737,6 +752,14 @@ public class AssetService
                     var fetchResult = await fetchTask.ConfigureAwait(false);
                     bytes = fetchResult.Data;
                     isReliable = fetchResult.IsReliable;
+                    if (fetchResult.Gone)
+                    {
+                        // Permission denial -- stop now, and remember it for the session so no
+                        // later caller re-runs the fetch (or its LMV pipeline fallback).
+                        if (_goneTextures.TryAdd(textureId, 0))
+                            Console.Error.WriteLine($"[TextureGiveUp] {textureId}: sim denied it (403/401) -- not retrying this session");
+                        return null;
+                    }
                 }
                 else
                 {

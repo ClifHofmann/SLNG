@@ -5,6 +5,28 @@
 
 ---
 
+# 2026-09-03 — BUG-RENDER-10: a 403-denied texture re-fetched forever (`v0.20.40`)
+
+User: *"Textur-blinkt-Bug bei dem Haar von einem Avatar auf der SIM."* A remote avatar's hair
+face carries `dda710d4`, which the sim's `GetTexture`/`ViewerAsset` cap answers **403** for.
+SLNG's HTTP path treats 403 as non-retryable — but `FetchTextureDataAsync` then falls back to
+LibreMetaverse's UDP `TexturePipeline`, which re-tries HTTP, hits the same 403, and spams
+`[PurisViewer Resident] Failed to fetch texture … Forbidden`. `AssetService`'s 45 s negative
+cache expires and the constantly-rebuilt (terse-updated) face re-pays the whole cost → dozens of
+bursts per session + a flickering face.
+
+**Fix:** `TextureFetchResult.Gone`, set on a 403/401 from the **generic** cap only
+(`fetchUrl == null` — the bake path is excluded, BUG-AVATAR-02 bakes 403 by design and fall back).
+`FetchTextureDataAsync` returns `Gone` **without** touching the LMV pipeline.
+`AssetService._goneTextures` is a session-permanent negative cache — one 403, then the id is dead
+for the session (`[TextureGiveUp] … sim denied it (403/401)`), face settles to a stable
+untextured state. Restart clears it. 575 tests / format / shaders / selftest clean.
+
+**Verify:** hair face stops flickering, one `[TextureGiveUp] … sim denied it` per denied id then
+silence (no more `Forbidden` bursts).
+
+---
+
 # 2026-09-03 — BUG-AVATAR-03 real fix: direct `{cof_version}` cap POST (`v0.20.39`)
 
 The SSB rebake no longer goes through LibreMetaverse's `RequestSetAppearance` (which reconciles

@@ -6534,6 +6534,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         public byte[]? Data;
         public bool IsReliable;
+        /// <summary>The sim's own GetTexture/ViewerAsset cap answered 403/401 -- a permission
+        /// decision, not a transient error. No transport will get these bytes; the caller should
+        /// stop retrying rather than fall this back onto LibreMetaverse's UDP pipeline (which just
+        /// re-hits the same wall and spams "Failed to fetch texture ... Forbidden"). Only the
+        /// generic per-face path sets this -- the bake path (BUG-AVATAR-02) has a real fallback.</summary>
+        public bool Gone;
     }
 
     /// <summary>BUG-AVATAR-02: fetches an avatar BAKE texture. Every single bake channel was
@@ -6596,6 +6602,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // HttpRequestTexture) ignores discardLevel/priority entirely and always downloads the
         // whole asset, so it can't do this at all, which is why this method builds the HTTP
         // request itself instead of calling into LibreMetaverse's HTTP path.
+        // Already proven permanently denied (403/401) by the generic cap earlier this session --
+        // don't re-run the HTTP attempts and, crucially, don't fall through to LibreMetaverse's
+        // UDP pipeline, which re-hits the same wall and spams its own logger (a remote avatar's
+        // hair face flickering all session, 2026-09-03). A relog / restart clears the set.
+        if (_permanentlyDeniedTextures.ContainsKey(textureId))
+            return new TextureFetchResult { Data = null, IsReliable = true, Gone = true };
+
         var capUri = skipHttp ? null : _client.Network.CurrentSim?.Caps?.GetTextureCapURI();
         var viewerAssetCap = skipHttp ? null : _client.Network.CurrentSim?.Caps?.CapabilityURI("ViewerAsset");
         var getTextureCap = skipHttp ? null : _client.Network.CurrentSim?.Caps?.CapabilityURI("GetTexture");
@@ -6611,6 +6624,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             var httpResult = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard, getTextureCap, maxRetries: 5).ConfigureAwait(false);
             if (httpResult != null) return new TextureFetchResult { Data = httpResult, IsReliable = true };
         }
+
+        // A cap attempt just above may have marked this 403/401 -- don't hand a permission denial
+        // to the UDP pipeline.
+        if (_permanentlyDeniedTextures.ContainsKey(textureId))
+            return new TextureFetchResult { Data = null, IsReliable = true, Gone = true };
 
         var tcs = new TaskCompletionSource<byte[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -6698,6 +6716,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _udpFailureLogged = new();
 
+    // Texture ids the sim's own GetTexture/ViewerAsset cap answered 403/401 for -- a permission
+    // decision, not a transient error, so no transport will get the bytes. Falling back to
+    // LibreMetaverse's UDP/HTTP pipeline for these just moves an unwinnable retry into LMV's own
+    // logger ("[PurisViewer Resident] Failed to fetch texture ... Forbidden", measured recurring
+    // all session on one remote avatar's hair -> a flickering face). NOT populated for the bake
+    // path (fetchUrl != null): BUG-AVATAR-02's bake 403 has a real fallback to the generic cap.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _permanentlyDeniedTextures = new();
+
     private static byte[]? UdpFailed(Guid textureId, string reason)
     {
         if (_udpFailureLogged.TryAdd(textureId, 0))
@@ -6755,6 +6781,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                         }
                         else
                         {
+                            // A 403/401 from the generic cap is permanent -- remember it so the
+                            // caller skips the UDP fallback (see _permanentlyDeniedTextures). The
+                            // bake path (fetchUrl != null) is excluded: it 403s by design and then
+                            // legitimately falls back to the generic cap (BUG-AVATAR-02).
+                            if (fetchUrl == null &&
+                                (response.StatusCode == System.Net.HttpStatusCode.Forbidden
+                                 || response.StatusCode == System.Net.HttpStatusCode.Unauthorized))
+                                _permanentlyDeniedTextures.TryAdd(textureId, 0);
                             return FetchFailed(textureId, $"HTTP {(int)response.StatusCode}");
                         }
                     }
