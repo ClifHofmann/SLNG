@@ -5,7 +5,7 @@
 
 ---
 
-# 2026-09-03 (later) — `v0.20.51` → `v0.20.57`
+# 2026-09-03 (later) — `v0.20.51` → `v0.20.58`
 
 **`v0.20.50`'s log was unusable.** `godot.log`'s body came back as 437 kB of NUL bytes (the
 engine's buffered log loses everything unflushed when a session doesn't end cleanly), so the
@@ -216,6 +216,23 @@ we have.
   and `⚠ Fehler — nochmal aufklappen` on failure. `SetFolderPlaceholder` only touches a lone child
   with empty metadata, so it can never overwrite real contents.
 
+### `v0.20.58` -- "Outfit aufraeumen" was a permanent no-op
+
+Two attachments showed as worn-but-`(nicht aktiv)` and cleanup would not remove them. The log:
+`[OutfitCleanup] deferred - still loading (links=28 unresolved=10 ...)` on a fully-loaded session.
+
+`storeReady` required `linkUnresolved == 0`, which **cannot be satisfied by waiting** --
+LibreMetaverse's store only holds folders somebody fetched, so a COF link into a never-opened
+folder never resolves. The button deferred every time, forever. (And a COF link carries the target
+item's NAME, which is how the Worn tab could list items whose targets the cleanup could not judge.)
+
+`CleanUpCurrentOutfitAsync` now fetches the missing targets first (`RequestFetchInventoryAsync` +
+`Inventory.UpdateNodeFor`), then **polls the store** for up to 5 s rather than trusting that call's
+completion semantics, then runs the existing cleanup with `targetsResolved: true`. Anything still
+unresolved is skipped individually as before, so the relaxed gate cannot delete a link we failed to
+understand -- and `sceneReady`, the half that actually caused the v0.20.36 grey-avatar regression,
+is untouched.
+
 ### What to check in the next live session
 
 1. The shins under two alpha layers: still a jagged translucent patchwork, or solid skin with a
@@ -237,6 +254,9 @@ we have.
    Aufklappen eines Ordners `⏳ lädt…` statt `…`. Und die Outfits-Tab-Aktionen (Anziehen /
    Ersetzen / Hinzufügen / Entfernen / Speichern / Umbenennen) müssen alle noch tun, was sie
    sollen — die liefen bis eben alle über das kaputte Marshalling.
+8. „Outfit aufräumen": sollte jetzt `[OutfitCleanup] resolved N/10 previously-uncached COF link
+   target(s)` loggen und danach wirklich aufräumen statt zu deferren. Die beiden `(nicht aktiv)`
+   Anhänge sollten verschwinden.
 
 ---
 

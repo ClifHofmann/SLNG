@@ -535,27 +535,58 @@ public partial class InventoryPanel : SLNGWindow
     private void OnWornCleanupPressed()
     {
         if (_session == null) return;
+        // No longer synchronous: the session first asks the server for any Current-Outfit link
+        // target it does not have, because without them the cleanup's own load gate can never be
+        // satisfied and the button was a permanent no-op (see CleanUpCurrentOutfitAsync).
+        _wornCleanupBtn.Disabled = true;
+        _wornStatus.Text = "Prüfe Outfit-Links…";
+        _ = CleanUpOutfitAsync();
+    }
 
-        var r = _session.CleanUpCurrentOutfit();
-        if (r.Deferred)
+    private async System.Threading.Tasks.Task CleanUpOutfitAsync()
+    {
+        SLNG.Core.OutfitCleanupResult r;
+        try
         {
-            _wornStatus.Text = "Inventar/Szene lädt noch — bitte gleich nochmal versuchen.";
+            r = await _session!.CleanUpCurrentOutfitAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[Inventory] outfit cleanup failed: {ex.Message}");
+            RunOnMainThread(() =>
+            {
+                if (!IsInstanceValid(this)) return;
+                _wornCleanupBtn.Disabled = false;
+                _wornStatus.Text = "Aufräumen fehlgeschlagen — siehe Log.";
+            });
             return;
         }
-        if (r.Total == 0)
+
+        RunOnMainThread(() =>
         {
-            _wornStatus.Text = "Outfit ist sauber — nichts zu entfernen.";
-            return;
-        }
+            if (!IsInstanceValid(this) || _session == null) return;
+            _wornCleanupBtn.Disabled = false;
 
-        var parts = new System.Collections.Generic.List<string>();
-        int dead = r.DeadLinks + r.TrashedTargetLinks;
-        if (dead > 0) parts.Add($"{dead} tote(r) Link(s)");
-        if (r.UnwornAttachmentLinks > 0) parts.Add($"{r.UnwornAttachmentLinks} nicht getragene(r) Anhang/Anhänge");
-        _wornStatus.Text = $"{string.Join(" + ", parts)} aus dem Outfit entfernt.";
+            if (r.Deferred)
+            {
+                _wornStatus.Text = "Szene lädt noch — bitte gleich nochmal versuchen.";
+                return;
+            }
+            if (r.Total == 0)
+            {
+                _wornStatus.Text = "Outfit ist sauber — nichts zu entfernen.";
+                return;
+            }
 
-        RefreshWorn();
-        if (_session.CurrentOutfitFolderId is { } cofId) RefreshFolder(cofId);
+            var parts = new System.Collections.Generic.List<string>();
+            int dead = r.DeadLinks + r.TrashedTargetLinks;
+            if (dead > 0) parts.Add($"{dead} tote(r) Link(s)");
+            if (r.UnwornAttachmentLinks > 0) parts.Add($"{r.UnwornAttachmentLinks} nicht getragene(r) Anhang/Anhänge");
+            _wornStatus.Text = $"{string.Join(" + ", parts)} aus dem Outfit entfernt.";
+
+            RefreshWorn();
+            if (_session.CurrentOutfitFolderId is { } cofId) RefreshFolder(cofId);
+        });
     }
 
     // ---- FEAT-INV-04: Outfits tab -------------------------------------------------------

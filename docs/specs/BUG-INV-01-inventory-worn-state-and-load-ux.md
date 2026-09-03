@@ -236,3 +236,50 @@ cleanup — `Populate` clears the placeholder outright.
 
 **Not yet verified in-world.**
 
+## `v0.20.58-alpha` -- "Outfit aufraeumen" had become a permanent no-op
+
+**Live, Agni 2026-09-03.** Two attachments (`.Heol Star Bracelet Gold`, `.Heol Star Earrings
+Gold`) showed in the Worn tab as `(nicht aktiv)`; *"bereinigen hilft auch nicht und ich kann sie
+anlegen wenn ich will"*. The log says why -- on a fully-loaded session:
+
+```
+[OutfitCleanup] deferred - still loading (links=28 unresolved=10 scene-worn-attachments=7)
+```
+
+`storeReady` required `linkUnresolved == 0`, and **that condition is unsatisfiable by waiting**:
+LibreMetaverse's inventory store only ever holds folders somebody fetched, so a COF link pointing
+at an item in a folder the user never opened never resolves, ever. The gate (`v0.20.36`) was
+written to mean "the COF is still streaming, come back in a moment" -- but for these links there is
+no moment to come back to. The button deferred every single time.
+
+That also explains why the two items could be listed at all while cleanup could not judge them:
+**a COF link carries the target item's name**, so the Worn tab renders it fine without the target
+ever being in the store. And even past the gate, the cleanup loop would have skipped them as
+`uncachedSkipped`.
+
+### Fix: ask the server, instead of waiting for something that will not happen
+
+`CleanUpCurrentOutfitAsync` (new) resolves the missing targets first, then runs the existing
+synchronous cleanup with `targetsResolved: true`:
+
+- `ResolveCofLinkTargetsAsync` collects every COF link target missing from the store and fetches
+  them with `InventoryManager.RequestFetchInventoryAsync(items, ct, callback)`, writing what comes
+  back into the store via `Inventory.UpdateNodeFor` (LMV's own reply handler uses the same call).
+- It then **polls the store** for up to 5 s rather than trusting that call to have finished the
+  job. Whether it returns once the reply is in or merely once the request is sent is an
+  implementation detail of the pinned LMV build, and LMV's own reply handler is a second writer;
+  polling what the cleanup actually reads makes the outcome independent of both.
+- `storeReady` becomes `linkUnresolved == 0 || targetsResolved`.
+
+**Why relaxing that gate is safe.** Anything still unresolved after the fetch is skipped
+individually by the cleanup loop (`uncachedSkipped`) -- never deleted -- so the relaxation cannot
+delete a link SLNG failed to understand. And the half of the gate that actually caused the
+`v0.20.36` regression is untouched: `sceneReady` still stops an attachment that has not rezzed yet
+from reading as "not worn", and that is the path the incident's own log line
+(`unworn-attachment=2`) came from.
+
+The button now disables itself while the fetch runs and reports through the same
+`RunOnMainThread` marshalling as everything else in the panel.
+
+**Not yet verified in-world.** Expect `[OutfitCleanup] resolved N/10 previously-uncached COF link
+target(s)` followed by a real cleanup line instead of the deferral.

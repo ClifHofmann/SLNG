@@ -5354,7 +5354,96 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// server re-composite, so acting on a half-loaded folder -- where an unresolved target reads
     /// as "dead" and an attachment not yet in the scene reads as "unworn" -- once deleted two real
     /// links and left the avatar with no bake (live regression 2026-09-03). FEAT-INV-03.</summary>
-    public OutfitCleanupResult CleanUpCurrentOutfit()
+    /// <param name="targetsResolved">Set by <see cref="CleanUpCurrentOutfitAsync"/> after it has
+    /// explicitly asked the server for every COF link target missing from the store. Without it the
+    /// store-ready half of the gate below is <b>unsatisfiable by waiting</b>: LibreMetaverse's store
+    /// only ever holds folders somebody fetched, so a link pointing into a folder the user never
+    /// opened never resolves, no matter how long you wait. Live, Agni 2026-09-03:
+    /// <c>[OutfitCleanup] deferred — still loading (links=28 unresolved=10 …)</c> on a fully-loaded
+    /// session — "Outfit aufräumen" had become a permanent no-op ("bereinigen hilft auch nicht").
+    /// Any link still unresolved after that fetch is skipped individually further down
+    /// (<c>uncachedSkipped</c>), never deleted, so relaxing the gate cannot delete a link we failed
+    /// to understand. The half that actually caused the v0.20.36 regression -- <c>sceneReady</c>,
+    /// which stops an attachment that has not rezzed yet from reading as "not worn" -- is
+    /// untouched, and that is the path the incident's own log line
+    /// (<c>unworn-attachment=2</c>) came from.</param>
+    /// <summary>Resolves every Current-Outfit link target that is missing from LibreMetaverse's
+    /// inventory store, then runs <see cref="CleanUpCurrentOutfit"/>.
+    ///
+    /// <para>The fetch is the point. A COF link carries the target item's NAME, so the Worn tab can
+    /// list an item perfectly well without its target ever being in the store -- which is why two
+    /// attachments could show as worn-but-inactive while the cleanup that should have removed them
+    /// skipped them as "uncached" and, worse, refused to run at all because its store-ready gate
+    /// counted them as "still loading". Asking the server for them turns both into a decision that
+    /// can actually be made.</para>
+    ///
+    /// <para>Anything the server does not return stays unresolved and is skipped by the cleanup
+    /// loop, exactly as before -- this only removes the case where SLNG had simply never asked.</para>
+    /// </summary>
+    public async Task<OutfitCleanupResult> CleanUpCurrentOutfitAsync(CancellationToken ct = default)
+    {
+        try { await ResolveCofLinkTargetsAsync(ct).ConfigureAwait(false); }
+        catch (Exception ex) { Console.Error.WriteLine($"[OutfitCleanup] link-target fetch failed: {ex.Message}"); }
+        return CleanUpCurrentOutfit(targetsResolved: true);
+    }
+
+    private async Task ResolveCofLinkTargetsAsync(CancellationToken ct)
+    {
+        var store = _client.Inventory.Store;
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
+        if (cofNode == null || store == null) return;
+
+        var missing = new Dictionary<LibreMetaverse.UUID, LibreMetaverse.UUID>();
+        foreach (var n in cofNode.Nodes.Values)
+        {
+            if (n.Data is not LibreMetaverse.InventoryItem li || !li.IsLink()) continue;
+            var t = li.ResolvedItemID != LibreMetaverse.UUID.Zero ? li.ResolvedItemID : li.AssetUUID;
+            if (t == LibreMetaverse.UUID.Zero) continue;
+            if (store.GetNodeOrDefault(t)?.Data is LibreMetaverse.InventoryItem) continue;
+            missing[t] = _client.Self.AgentID;
+        }
+        if (missing.Count == 0) return;
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+
+        try
+        {
+            await _client.Inventory.RequestFetchInventoryAsync(missing, timeout.Token, items =>
+            {
+                if (items == null) return;
+                foreach (var item in items)
+                {
+                    if (item == null) continue;
+                    // UpdateNodeFor is LibreMetaverse's own way of putting a fetched item into the
+                    // store -- its fetch reply handler uses it too.
+                    try { store.UpdateNodeFor(item); } catch { }
+                }
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
+
+        // Then WAIT FOR THE STORE, rather than trusting the call above to have finished the job.
+        // Whether that method returns once the reply is in, or merely once the request is sent, is
+        // an implementation detail of the pinned LibreMetaverse build -- and the callback is not
+        // the only writer either, since LMV's own reply handler also fills the store. Polling what
+        // the cleanup actually reads makes the outcome independent of both. Short poll, hard cap:
+        // a target the server will not return must not hold the button hostage, and one that stays
+        // missing is skipped by the cleanup loop anyway.
+        int resolved = 0;
+        for (int i = 0; i < 25; i++)
+        {
+            resolved = missing.Keys.Count(t => store.GetNodeOrDefault(t)?.Data is LibreMetaverse.InventoryItem);
+            if (resolved == missing.Count) break;
+            try { await Task.Delay(200, timeout.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) { break; }
+        }
+
+        Console.Error.WriteLine($"[OutfitCleanup] resolved {resolved}/{missing.Count} previously-uncached COF link target(s)");
+    }
+
+    public OutfitCleanupResult CleanUpCurrentOutfit(bool targetsResolved = false)
     {
         // Proxy for "inventory skeleton is loaded" -- if the Trash folder isn't known yet, the
         // Current Outfit folder almost certainly isn't either.
@@ -5400,12 +5489,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // You are always wearing at least a body — zero scene attachments means the region prims
         // haven't arrived, so "not in the scene" can't yet be read as "not worn".
         bool sceneReady = wornAttachItemIds.Count > 0;
-        bool storeReady = linkTotal > 0 && linkUnresolved == 0;
+        bool storeReady = linkTotal > 0 && (linkUnresolved == 0 || targetsResolved);
         if (!storeReady || !sceneReady)
         {
             Console.Error.WriteLine(
                 $"[OutfitCleanup] deferred — still loading (links={linkTotal} unresolved={linkUnresolved} " +
-                $"scene-worn-attachments={wornAttachItemIds.Count}); nothing removed, retry in a moment");
+                $"scene-worn-attachments={wornAttachItemIds.Count} targetsResolved={targetsResolved}); " +
+                "nothing removed, retry in a moment");
             return new OutfitCleanupResult(0, 0, 0, Deferred: true);
         }
 
