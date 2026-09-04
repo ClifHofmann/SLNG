@@ -72,6 +72,72 @@ Two properties of `calcAtmosphericVars`
 Both uniforms (`slng_blue_density`, `slng_max_y`) were already registered and already written by
 `EnvironmentDriver` — nothing new had to be plumbed.
 
+## Correction to `v0.20.64`, and what the horizon actually needs
+
+Live report: *"im FS sorgt die density schon dafuer, dass Himmel und Meer am Horizont fast
+verschmelzen"* — and with `v0.20.64` they still do not.
+
+Reading the viewer's **composite** rather than only its extinction shows why, and also shows that
+`v0.20.64`'s component-wise mix is not the step toward the viewer it was described as.
+`atmosphericsF.glsl:35-41`:
+
+```glsl
+vec3 atmosFragLighting(vec3 light, vec3 additive, vec3 atten)
+{
+    light *= atten.r;                        // scalar -- the RED channel only
+    additive = srgb_to_linear(additive*2.0);
+    additive *= sky_hdr_scale;
+    light += additive;                       // ADD, not mix
+    return light;
+}
+```
+
+So the real structure is **`color * atten.r + additive`**. Two consequences:
+
+- The blue of distance does **not** come from per-channel extinction. It comes from `additive`,
+  which is built from `blue_horizon * blue_weight` and `haze_horizon * haze_weight`. `v0.20.64`
+  put the colour in the wrong term. It is not a regression — mixing toward `haze_color` is still a
+  closer approximation than the scalar version before it — but it is a different model, not the
+  viewer's, and the commit message overstated it.
+- **Nothing merges sky and horizon without `additive`.** Extinction alone can only ever darken or
+  wash geometry toward a fixed colour; the horizon merge is the in-scattered light *matching what
+  the sky shader is drawing behind it*. `sky.gdshader` already implements the full model, which is
+  precisely why the two do not meet.
+
+### Everything needed is already registered
+
+All 27 global uniforms exist in `project.godot` and are written by `EnvironmentDriver`, including
+every input the `additive` term takes: `slng_blue_horizon`, `slng_haze_horizon`,
+`slng_sunlight_color`, `slng_moonlight_color`, `slng_ambient`, `slng_cloud_shadow`, `slng_glow`,
+`slng_sun_direction`, `slng_sun_moon_glow_factor`. **No new plumbing is required** — this is a
+shader-only change.
+
+### Two traps to know before starting
+
+1. **Coordinate spaces do not match.** `slng_sun_direction` is written in Godot **world** space
+   (`EnvironmentDriver.cs:501` converts SL Z-up to Godot Y-up), while `slng_apply_atmospherics`
+   receives a **view**-space position. The viewer's `haze_glow` is `dot(rel_pos_norm, lightnorm)` —
+   dotting those two directly is silently wrong, and wrong in a way that looks like "the glow is in
+   the wrong place" rather than like an error. Three ways out, none free:
+   - pass a world-space position into the seam (a new varying in every prim variant, plus terrain
+     and water);
+   - set an additional `slng_sun_direction_view` global once per frame from the app, since the
+     camera basis is known there and the existing globals are only written when the environment
+     changes;
+   - transform inside the seam — **not possible**: Godot built-ins such as `INV_VIEW_MATRIX` are
+     only in scope in `fragment()` itself, not in a function called from it, so it would have to be
+     passed as a parameter anyway.
+2. **`sky_hdr_scale` must not be copied blindly.** SLNG's skies are display-referred and never
+   tonemapped (see the project memory on legacy skies); the viewer's `srgb_to_linear(additive*2.0)
+   * sky_hdr_scale` belongs to its HDR pipeline. Port the term, decide the transfer separately.
+
+### Acceptance for the in-scatter step
+
+- Sky and distant water/terrain visibly meet at the horizon rather than showing a seam.
+- The haze brightens toward the sun and does so from the correct direction at several camera
+  headings (the space trap above).
+- No change in look at close range, where `atten` is ~1 and `additive` ~0.
+
 ## Still open: in-scatter
 
 The remaining gap is the interesting one. The viewer computes **two** terms and composites

@@ -684,6 +684,19 @@ public partial class AvatarRenderer : Node3D
         }
 
         // 3. Texture streaming / Bakes-on-Mesh
+        // v0.20.56 taught [SelfBake] to report "every channel is empty". It still could not report
+        // the state one step worse than that -- BakedTextures being NULL outright -- because the
+        // whole block is gated on it being non-null, so the local agent's most broken appearance
+        // state printed nothing at all. Live 2026-09-04: blank head, uncut system hair, and not one
+        // [SelfBake] line in the log.
+        if (avatar.IsLocalAgent && avatar.BakedTextures == null && _lastSelfBakeSig != "(null)")
+        {
+            _lastSelfBakeSig = "(null)";
+            GD.Print("[SelfBake] channels  (null) -- no AvatarAppearance has ever been applied to " +
+                     "this avatar. The head renders blank and the system hair as an uncut helmet " +
+                     "until one arrives; GridSession recovers the ids from our own ObjectUpdate.");
+        }
+
         if (avatar.BakedTextures != null && _assetService != null)
         {
             bool anyBakeChanged = false;

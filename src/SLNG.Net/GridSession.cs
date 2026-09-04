@@ -3622,6 +3622,71 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// firing earlier would just waste the attempt. Armed once per session; a fresh login is a
     /// fresh process.</para>
     /// </summary>
+    /// <summary>
+    /// Reads the local agent's bake ids out of its own <c>ObjectUpdate</c> TextureEntry, for when
+    /// the simulator never sent us an <c>AvatarAppearance</c>.
+    ///
+    /// <para>Why this is needed at all: <c>AvatarComponent.BakedTextures</c> has exactly ONE source,
+    /// the <c>AvatarAppearance</c> packet (<c>WorldSimulation.ApplyAvatarAppearance</c>). Miss that
+    /// packet and there is no second chance — the head renders blank and the system hair as an uncut
+    /// helmet until the next login. But the bake ids are also carried in the avatar's TextureEntry,
+    /// which LibreMetaverse parses out of the ordinary ObjectUpdate into
+    /// <c>Avatar.Textures.FaceTextures</c>, in the same per-slot layout
+    /// <see cref="OnAvatarAppearance"/> already reads. So the information is usually sitting right
+    /// there, unused.</para>
+    ///
+    /// <para>This is the better first move than the cap nudge, and the reference viewer says why.
+    /// <c>LLAppearanceMgr::serverAppearanceUpdateCoro</c> (llappearancemgr.cpp:3899-3925) refuses to
+    /// send at all when <c>cofVersion &lt;= mLastUpdateReceivedCOFVersion</c>: <b>the server will not
+    /// re-composite for a COF version it has already served.</b> Measured live 2026-09-04 — the
+    /// watchdog POSTed twice, the region answered <c>HTTP 200</c> both times for
+    /// <c>cof_version=40</c>, and no appearance ever came back. A successful POST is not a bake.
+    /// </para>
+    ///
+    /// <para>Publishes with an EMPTY visual-param array on purpose: <c>ApplyAvatarAppearance</c>
+    /// treats that as "this event carries no shape" and keeps the shape it already has, which is
+    /// exactly right here — this event knows about textures and nothing else. The hover offset is
+    /// read from the same cached Avatar so it is not silently reset to zero.</para>
+    /// </summary>
+    private bool TryPublishSelfBakesFromScene()
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null) return false;
+
+        LibreMetaverse.Avatar? me = null;
+        foreach (var kv in sim.ObjectsAvatars)
+        {
+            if (kv.Value != null && kv.Value.ID == _client.Self.AgentID) { me = kv.Value; break; }
+        }
+
+        var faces = me?.Textures?.FaceTextures;
+        if (faces == null) return false;
+
+        var textures = new Dictionary<int, Guid>();
+        for (int i = 0; i < faces.Length; i++)
+        {
+            var face = faces[i];
+            if (face != null && face.TextureID != LibreMetaverse.UUID.Zero)
+                textures[i] = face.TextureID.Guid;
+        }
+        if (textures.Count == 0) return false;
+
+        _lastSelfRelayBakes = new Dictionary<int, Guid>(textures);
+        _selfAppearanceWithBakesSeen = true;
+
+        Console.Error.WriteLine(
+            $"[Appearance] recovered {textures.Count} bake id(s) from our own ObjectUpdate TextureEntry " +
+            "-- the sim never sent an AvatarAppearance for us");
+
+        AvatarAppearanceReceived?.Invoke(this, new AvatarAppearanceEvent(
+            sim.Handle,
+            _client.Self.AgentID.Guid,
+            Array.Empty<byte>(),
+            textures,
+            _lastSelfHoverOffsetZ));
+        return true;
+    }
+
     private void ArmSelfBakeWatchdog()
     {
         if (System.Threading.Interlocked.Exchange(ref _selfBakeWatchdogArmed, 1) != 0) return;
@@ -3635,6 +3700,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     await Task.Delay(TimeSpan.FromSeconds(delaySeconds)).ConfigureAwait(false);
                     if (!_client.Network.Connected) return;
                     if (_selfAppearanceWithBakesSeen) return;
+
+                    // Look before asking. The ids are usually already in our own ObjectUpdate, and
+                    // the cap POST cannot help when the server has already served this COF version
+                    // (see TryPublishSelfBakesFromScene for the viewer's own check and the live
+                    // measurement of a POST that was accepted and changed nothing).
+                    if (TryPublishSelfBakesFromScene()) return;
+
                     // OpenSim's client-side bake path is a different mechanism entirely and this
                     // cap does not exist there.
                     if (!RegionHasServerSideBaking()) return;
