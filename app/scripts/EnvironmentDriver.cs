@@ -423,6 +423,10 @@ public sealed class EnvironmentDriver
     /// per frame.</summary>
     private string _lastAtmosSig = "";
 
+    /// <summary>The glow factor last pushed to the shaders, so [SkyAtmos] reports the value the
+    /// haze is actually scaled by rather than recomputing it and risking a different answer.</summary>
+    private float _lastSunMoonGlowFactor = 1f;
+
     /// <summary>
     /// Reports the numbers the haze is actually computed from, and what they work out to at real
     /// distances.
@@ -461,6 +465,48 @@ public sealed class EnvironmentDriver
             $"hazeHorizon={SafeFloat(sky.HazeHorizon):0.####} cloudShadow={SafeFloat(sky.CloudShadow):0.###} " +
             $"| atten.r@176m={MathF.Exp(-perMetre * 176f):0.###} @1km={MathF.Exp(-perMetre * 1000f):0.###} " +
             $"@4km={MathF.Exp(-perMetre * 4000f):0.###}");
+
+        // The inputs to the IN-SCATTER, and what they work out to. Logged because the extinction
+        // half above was never the open question: for this region haze_weight is 0.96, so what a
+        // distant pixel ends up being is almost entirely `additive`, and none of its terms were
+        // visible anywhere. "The lighthouse is darker than Firestorm's" is a claim about this
+        // number, and until it is printed there is nothing to compare against a reference pixel.
+        var blueHorizon = ToColorFast(sky.BlueHorizon);
+        var ambient = ToColorFast(sky.AmbientColor);
+        var sunlight = ToColorFast(sky.SunlightColor);
+        var glow = ToColorFast(sky.Glow);
+        float glowFactor = SafeFloat(_lastSunMoonGlowFactor, 1f);
+        float hazeHorizon = SafeFloat(sky.HazeHorizon);
+        float cloudShadow = SafeFloat(sky.CloudShadow);
+
+        float combinedHazeG = MathF.Max(blue.G + hazeDensity, 1e-6f);
+        float combinedHazeB = MathF.Max(blue.B + hazeDensity, 1e-6f);
+        float blueWeightR = blue.R / combinedHazeR;
+        float hazeWeightR = hazeDensity / combinedHazeR;
+
+        // haze_glow at its floor (looking away from the sun) and near the sun, the two ends of the
+        // range the shader spans -- see slng_atmospherics.gdshaderinc.
+        float glowFloor = 0.25f * glowFactor;
+        float glowNearSun = (MathF.Pow(MathF.Max(0.001f, 1f - 0.98f) * glow.R, glow.B) + 0.25f) * glowFactor;
+
+        float Additive(float bh, float bw, float hw, float amb, float sun, float hazeGlow)
+        {
+            float tmpAmbient = amb + (1f - amb) * cloudShadow * 0.5f;
+            float cs = sun * (1f - cloudShadow);
+            return bh * bw * (cs + tmpAmbient) + hazeHorizon * hw * (cs * hazeGlow + tmpAmbient);
+        }
+
+        float addFloorR = Additive(blueHorizon.R, blueWeightR, hazeWeightR, ambient.R, sunlight.R, glowFloor);
+        float addSunR = Additive(blueHorizon.R, blueWeightR, hazeWeightR, ambient.R, sunlight.R, glowNearSun);
+
+        Console.Error.WriteLine(
+            $"[SkyAtmos] blueHorizon=({blueHorizon.R:0.###},{blueHorizon.G:0.###},{blueHorizon.B:0.###}) " +
+            $"ambient=({ambient.R:0.###},{ambient.G:0.###},{ambient.B:0.###}) " +
+            $"sunlight=({sunlight.R:0.###},{sunlight.G:0.###},{sunlight.B:0.###}) " +
+            $"glow=({glow.R:0.###},{glow.G:0.####},{glow.B:0.###}) glowFactor={glowFactor:0.###} " +
+            $"| blueWeight={blueWeightR:0.###} hazeWeight={hazeWeightR:0.###} " +
+            $"| additive.r away-from-sun={addFloorR:0.###} near-sun={addSunR:0.###} " +
+            $"(x2 -> {MathF.Min(1f, addFloorR * 2f):0.###} / {MathF.Min(1f, addSunR * 2f):0.###} before srgb_to_linear)");
     }
 
     private void UpdateGlobalShaderParameters(SkySettings sky, SkyLighting lighting, System.Numerics.Vector3 sunDirectionSl)
@@ -487,6 +533,7 @@ public sealed class EnvironmentDriver
             : moonIsUp ? SafeFloat(sky.MoonBrightness) * 0.25f
             : 0.0f;
         RenderingServer.GlobalShaderParameterSet("slng_sun_moon_glow_factor", glowFactor);
+        _lastSunMoonGlowFactor = glowFactor;
 
         // The sky/cloud shaders take the RAW settings, not SkyLighting's output. The viewer binds
         // SG_SKY's sunlight_color to psky->getSunlightColor() and moonlight_color to
