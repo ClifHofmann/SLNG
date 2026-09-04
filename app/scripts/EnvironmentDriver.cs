@@ -419,8 +419,54 @@ public sealed class EnvironmentDriver
         return c <= 0.04045f ? c / 12.92f : MathF.Pow((c + 0.055f) / 1.055f, 2.4f);
     }
 
+    /// <summary>Last reported atmosphere signature, so [SkyAtmos] prints on change rather than
+    /// per frame.</summary>
+    private string _lastAtmosSig = "";
+
+    /// <summary>
+    /// Reports the numbers the haze is actually computed from, and what they work out to at real
+    /// distances.
+    ///
+    /// <para>This exists because three consecutive attempts at FEAT-RENDER-08 changed the haze
+    /// formula and none of them changed the picture, which is itself evidence: a term that is
+    /// multiplied by something near zero looks identical no matter how it is written. Working the
+    /// arithmetic by hand from a captured region (density_multiplier 0.00018, distance_multiplier
+    /// 0.8, haze_density 0.7) gives <c>atten = 0.976</c> at 176 m — under 3 % haze across
+    /// everything at that draw distance — while another capture (Lbsa Plaza) carried
+    /// <c>1e-07 / 1e-04 / 0</c>, which is no haze at all to eleven decimal places.</para>
+    ///
+    /// <para>So the open question is not the formula, it is whether these values arrive correct.
+    /// The <c>atten@</c> figures below are the same exponential the shader runs, printed at
+    /// distances that matter, so the log answers "is there any haze to see" directly instead of
+    /// inviting a fourth guess.</para>
+    /// </summary>
+    private void ReportAtmosphere(SkySettings sky)
+    {
+        float hazeDensity = SafeFloat(sky.HazeDensity);
+        float densityMul = SafeFloat(sky.DensityMultiplier);
+        float distanceMul = SafeFloat(sky.DistanceMultiplier);
+        var blue = ToColorFast(sky.BlueDensity);
+
+        // Red channel, matching the shader's `color * atten.r` composite.
+        float combinedHazeR = MathF.Max(blue.R + hazeDensity, 1e-6f);
+        float perMetre = combinedHazeR * densityMul * distanceMul;
+
+        string sig = $"{hazeDensity:0.####}|{densityMul:0.#######}|{distanceMul:0.####}|{blue.R:0.###}|{SafeFloat(sky.MaxY):0.#}";
+        if (sig == _lastAtmosSig) return;
+        _lastAtmosSig = sig;
+
+        Console.Error.WriteLine(
+            $"[SkyAtmos] hazeDensity={hazeDensity:0.####} densityMul={densityMul:0.#######} " +
+            $"distanceMul={distanceMul:0.####} blueDensity.r={blue.R:0.###} maxY={SafeFloat(sky.MaxY):0.#} " +
+            $"hazeHorizon={SafeFloat(sky.HazeHorizon):0.####} cloudShadow={SafeFloat(sky.CloudShadow):0.###} " +
+            $"| atten.r@176m={MathF.Exp(-perMetre * 176f):0.###} @1km={MathF.Exp(-perMetre * 1000f):0.###} " +
+            $"@4km={MathF.Exp(-perMetre * 4000f):0.###}");
+    }
+
     private void UpdateGlobalShaderParameters(SkySettings sky, SkyLighting lighting, System.Numerics.Vector3 sunDirectionSl)
     {
+        ReportAtmosphere(sky);
+
         RenderingServer.GlobalShaderParameterSet("slng_ambient", ToColorFast(sky.AmbientColor));
         RenderingServer.GlobalShaderParameterSet("slng_blue_density", ToColorFast(sky.BlueDensity));
         RenderingServer.GlobalShaderParameterSet("slng_blue_horizon", ToColorFast(sky.BlueHorizon));

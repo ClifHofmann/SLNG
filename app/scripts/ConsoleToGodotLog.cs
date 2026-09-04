@@ -121,6 +121,8 @@ internal static class PerfSidecar
         // apply here: it costs one flushed line per 5 s and it means the next ordinary session
         // already has the answer in it.
         "[Perf]", "[WorkCost]", "[PhaseCost]",
+        // FEAT-RENDER-08: the atmosphere inputs and what they attenuate to. One line per change.
+        "[SkyAtmos]",
     };
 
     private static StreamWriter? _writer;
