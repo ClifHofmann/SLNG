@@ -9,7 +9,7 @@
 
 `v0.20.57` → `v0.20.79-alpha` (the perf work below starts at `v0.20.51`, already pushed
 through `v0.20.56`), **plus uncommitted Antigravity work at `v0.20.80` — see the UPDATE
-immediately below**. 19 commits, **nothing pushed** (`origin/main` is at `7575a01`). Every commit is verified (both builds, 604 tests, `dotnet
+immediately below**. 20 commits, **nothing pushed** (`origin/main` is at `bf8584b`). Every commit is verified (both builds, 604 tests, `dotnet
 format`, `check_shader_globals`, selftest 32/32) and **almost nothing is verified in-world** —
 read the "Open" section before assuming any of it works.
 
@@ -188,7 +188,7 @@ not being honoured.
    UPDATE at the top). This is why the waves are missing.
 2. **Decide what to do with Antigravity's uncommitted work.** It is unverified and unattributed in
    git; commit it under its own message the way `a911215` handled Gemini's, or ask.
-3. **Push.** 19 commits, `origin/main` is at `7575a01`.
+3. **Push.** 20 commits, `origin/main` is at `bf8584b`.
 4. **Sky horizon gradient** — largely addressed per the user; `MeasureSkyGradientR` now exists to
    check it numerically rather than by eye.
 4. **FEAT-PERF-04** (spec written, `9435e58`): the GPU cache sits at 2349 MB against a 1536 MB
