@@ -57,7 +57,14 @@ global uniform float slng_sun_moon_glow_factor;
 global uniform vec4 slng_glow;
 global uniform vec3 slng_sun_direction_view;
 
-vec3 slng_apply_atmospherics(vec3 color, vec3 view_position) {
+// out_additive is the IN-SCATTERED light, handed back separately so the caller can route it into
+// EMISSION rather than ALBEDO. That distinction is the viewer's, not a Godot detail:
+// atmosFragLighting does `light += additive` on the FINISHED, already-lit pixel. Folding it into
+// albedo instead makes Godot multiply the haze by the scene lighting -- so at dusk, when the sun is
+// dim, the haze is dimmed with it and distance goes dark instead of bright. Water shows this worst,
+// because at range its albedo is nearly all in-scatter and it has no other bright term to hide it:
+// live, 2026-09-04, the sea stayed a flat brown out to the horizon while the sky above it glowed.
+vec3 slng_apply_atmospherics(vec3 color, vec3 view_position, out vec3 out_additive) {
     vec3 rel_pos = view_position;
 
     // (TERRAIN) limit altitude -- viewer atmosphericsFuncs.glsl:57. Guarded on max_y > 0 as the
@@ -136,5 +143,9 @@ vec3 slng_apply_atmospherics(vec3 color, vec3 view_position) {
     //
     // sky_hdr_scale is still omitted -- that one really is the viewer's HDR exposure, and it is
     // 1.0 outside it.
-    return color * atten.r + slng_srgb_to_linear(clamp(additive * 2.0, vec3(0.0), vec3(1.0)));
+    out_additive = slng_srgb_to_linear(clamp(additive * 2.0, vec3(0.0), vec3(1.0)));
+
+    // Extinction only. The caller adds out_additive through EMISSION so the lighting cannot scale
+    // it -- see this function's own doc comment.
+    return color * atten.r;
 }

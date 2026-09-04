@@ -72,7 +72,10 @@ void fragment() {
     vec3 t3 = texture(detail3, detail_uv).rgb;
 
     vec3 blended = sl_terrain_blend(t0, t1, t2, t3, v_composition, v_ramp_v);
-    ALBEDO = slng_apply_atmospherics(blended, v_view_position);
+    vec3 atmos_additive;
+    ALBEDO = slng_apply_atmospherics(blended, v_view_position, atmos_additive);
+    // Post-lighting, so the haze is not scaled by a low sun -- see the seam's doc comment.
+    EMISSION = atmos_additive;
     ROUGHNESS = 0.9;
     METALLIC = 0.0;
 }

@@ -234,7 +234,8 @@ float slng_shade(vec2 uv, vec3 view_position,
         albedo *= texture(albedo_texture, uv);
     }
 
-    out_albedo = slng_apply_atmospherics(albedo.rgb, view_position);
+    vec3 atmos_additive;
+    out_albedo = slng_apply_atmospherics(albedo.rgb, view_position, atmos_additive);
 
     out_metallic = metallic_factor;
     out_roughness = roughness_factor;
@@ -296,7 +297,7 @@ float slng_shade(vec2 uv, vec3 view_position,
         out_normal_depth = normal_scale;
     }
 
-    out_emission = vec3(0.0);
+    out_emission = atmos_additive;
     if (emission_enabled) {
         // MULTIPLIES factor by texture, which is what glTF specifies for
         // emissiveFactor * emissiveTexture -- and what SLNG's only source of emission data
@@ -305,7 +306,7 @@ float slng_shade(vec2 uv, vec3 view_position,
         if (has_emission_texture) {
             emission *= texture(emission_texture, uv).rgb;
         }
-        out_emission = emission;
+        out_emission = emission + atmos_additive;
     }
 
     // SL fullbright: the face is lit by nothing. Route the (already atmospherics-applied) albedo

@@ -89,7 +89,12 @@ void vertex() {
 
 void fragment() {
     // Deep water color (FogColor)
-    ALBEDO = slng_apply_atmospherics(albedo.rgb, v_view_position);
+    vec3 atmos_additive;
+    ALBEDO = slng_apply_atmospherics(albedo.rgb, v_view_position, atmos_additive);
+    // Water needs this more than anything else in the frame: METALLIC is 0 and nothing here writes
+    // EMISSION, so a distant water pixel was ALBEDO x diffuse lighting and nothing else -- which at
+    // dusk multiplied the haze away and left the sea flat brown to the horizon while the sky glowed.
+    EMISSION = atmos_additive;
 
     // waterF.glsl: perceptualRoughness = blurMultiplier, and lldrawpoolwater.cpp:254 feeds that
     // uniform max(0, BlurMultiplier) * 2 -- so the doubling is the viewer's, not ours.
