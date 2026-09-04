@@ -665,8 +665,10 @@ void sky() {
     // and the whole point of this band is to be the same colour as the water meeting it.
     vec3 seam_light_atten = (slng_blue_density.rgb + vec3(slng_haze_density * 0.25))
                           * (slng_density_multiplier * slng_max_y);
-    float seam_above_horizon = 1.0 / max(1e-6, sun_dir_godot.y);
-    vec3 seam_sunlight = slng_sunlight_color.rgb * exp(-seam_light_atten * seam_above_horizon);
+    // Same active-body switch as the seam -- light_dir/light_color are already the sun-or-moon
+    // pair chosen above, so the divisor is a real positive elevation at night too.
+    float seam_above_horizon = 1.0 / max(1e-6, light_dir.y);
+    vec3 seam_sunlight = light_color * exp(-seam_light_atten * seam_above_horizon);
     vec3 seam_cs = seam_sunlight * (1.0 - slng_cloud_shadow);
     vec3 ground_haze = (slng_blue_horizon.rgb * blue_weight) * (seam_cs + tmpAmbient)
                      + (vec3(slng_haze_horizon) * haze_weight) * (seam_cs * haze_glow_sky + tmpAmbient);

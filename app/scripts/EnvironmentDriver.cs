@@ -499,6 +499,19 @@ public sealed class EnvironmentDriver
         float addFloorR = Additive(blueHorizon.R, blueWeightR, hazeWeightR, ambient.R, sunlight.R, glowFloor);
         float addSunR = Additive(blueHorizon.R, blueWeightR, hazeWeightR, ambient.R, sunlight.R, glowNearSun);
 
+        // The sunlight attenuation and the elevation it divides by. Logged because the divisor is
+        // 1/max(1e-6, elevation) and therefore violent near the horizon -- the difference between
+        // "warm haze" and "no warm haze at all" is a couple of hundredths of a unit vector, and
+        // that is not something to judge from a screenshot.
+        var sunDirGodot = LastSunDirectionGodot;
+        float lightY = sunDirGodot.Y >= 0f ? sunDirGodot.Y : MathF.Max(0f, -sunDirGodot.Y);
+        float lightAttenR = (blue.R + hazeDensity * 0.25f) * (densityMul * SafeFloat(sky.MaxY));
+        float sunAtten = MathF.Exp(-lightAttenR / MathF.Max(1e-6f, lightY));
+
+        Console.Error.WriteLine(
+            $"[SkyAtmos] sunUp={(sunDirGodot.Y >= 0f ? "yes" : "no")} activeLight.y={lightY:0.####} " +
+            $"lightAtten.r={lightAttenR:0.####} -> sunlight scaled by {sunAtten:0.####}");
+
         Console.Error.WriteLine(
             $"[SkyAtmos] blueHorizon=({blueHorizon.R:0.###},{blueHorizon.G:0.###},{blueHorizon.B:0.###}) " +
             $"ambient=({ambient.R:0.###},{ambient.G:0.###},{ambient.B:0.###}) " +

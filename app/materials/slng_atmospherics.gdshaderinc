@@ -57,6 +57,8 @@ global uniform float slng_sun_moon_glow_factor;
 global uniform vec4 slng_glow;
 global uniform vec3 slng_sun_direction_view;
 global uniform vec3 slng_sun_direction;
+global uniform vec3 slng_moon_direction;
+global uniform vec4 slng_moonlight_color;
 
 // out_additive is the IN-SCATTERED light, handed back separately so the caller can route it into
 // EMISSION rather than ALBEDO. That distinction is the viewer's, not a Godot detail:
@@ -124,11 +126,29 @@ vec3 slng_apply_atmospherics(vec3 color, vec3 view_position, out vec3 out_additi
     // like, and two values cannot fake.
     //
     // The factor is the LIGHT's elevation only, not the view direction (that variant belongs to
-    // skyV); slng_sun_direction is the world-space sun, so its .y is that elevation directly.
+    // skyV). And it must be the ACTIVE body's elevation, which is the part v0.20.75 got wrong.
+    //
+    // 1/max(1e-6, y) is savagely sensitive near the horizon -- computed for this region
+    // (light_atten.r 0.0895): y=0.2 leaves 64% of the sunlight, y=0.05 leaves 17%, y=0.02 leaves
+    // 1%, and once the sun is BELOW the horizon max() pins the divisor at 1e-6, the factor becomes
+    // a million, and the term is annihilated outright. Feeding it the sun unconditionally therefore
+    // deletes the entire warm half of the haze at exactly the time of day it matters, leaving only
+    // the (bluish) ambient -- which is the cool dark mauve SLNG showed against Firestorm's warm
+    // pink in the labelled A/B, 2026-09-04.
+    //
+    // The viewer does not do that: lightnorm is the sun OR the moon (sun_up_factor), so the
+    // elevation in this divisor is always a real, positive one. sky.gdshader already switches the
+    // same way on line ~190; this seam did not, and that inconsistency was mine.
     vec3 light_atten = (slng_blue_density.rgb + vec3(slng_haze_density * 0.25))
                      * (slng_density_multiplier * slng_max_y);
-    float above_horizon = 1.0 / max(1e-6, slng_sun_direction.y);
-    vec3 sunlight = slng_sunlight_color.rgb * exp(-light_atten * above_horizon);
+
+    bool sun_is_up = slng_sun_direction.y >= 0.0;
+    vec3 light_dir = sun_is_up ? slng_sun_direction : slng_moon_direction;
+    // skyV.glsl:82 -- the moon reuses the sun's colour with a "magic 0.7 to match legacy color".
+    vec3 light_color = sun_is_up ? slng_sunlight_color.rgb : slng_moonlight_color.rgb * 0.7;
+
+    float above_horizon = 1.0 / max(1e-6, light_dir.y);
+    vec3 sunlight = light_color * exp(-light_atten * above_horizon);
 
     vec3 cs = sunlight * (1.0 - slng_cloud_shadow);
 
