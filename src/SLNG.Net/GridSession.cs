@@ -6060,13 +6060,30 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 : LibreMetaverse.InventoryType.Object;
             try
             {
-                await _client.Inventory.CreateLinkAsync(
+                // CreateLinkAsync does NOT throw on an AIS rejection (e.g. "Create inventory in
+                // <folder>: Bad Request") -- InventoryAISClient swallows it and resolves to a
+                // null InventoryItem. Counting every call as `added` regardless of this return
+                // value reported a link as saved when AIS had silently refused it, so the outfit
+                // came back short after a relog with no error anywhere in the UI (v0.20.96).
+                var created = await _client.Inventory.CreateLinkAsync(
                     folder, new LibreMetaverse.UUID(w.ItemId), linkName, string.Empty,
                     invType, LibreMetaverse.UUID.Zero, ct).ConfigureAwait(false);
-                added++;
+                if (created != null)
+                {
+                    added++;
+                }
+                else
+                {
+                    Console.Error.WriteLine(
+                        $"[Outfits] link create for {w.ItemId} ('{linkName}') into {folder} came back empty -- " +
+                        "see the preceding 'Create inventory' warning for the AIS reason");
+                }
             }
             catch (OperationCanceledException) { throw; }
-            catch { /* best-effort per link */ }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[Outfits] CreateLinkAsync threw for {w.ItemId} ('{linkName}'): {ex.Message}");
+            }
         }
         return added;
     }
@@ -6110,13 +6127,44 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return await LinkWornIntoAsync(new LibreMetaverse.UUID(outfitFolderId), worn, already, ct).ConfigureAwait(false);
     }
 
+    /// <summary>The decision half of <see cref="ReplaceOutfitWithCurrentAsync"/>: every entry in an
+    /// outfit folder that is a <b>link</b> (those are deleted so the folder can be re-linked from
+    /// scratch), plus the ids of entries that are real items rather than links — those are left
+    /// alone, because deleting one would destroy inventory over an "edit this outfit" action (same
+    /// rule as <see cref="SelectOutfitLinksToRemove"/>). Folders are ignored. Pure so it can be
+    /// tested without a grid.</summary>
+    internal static (List<Guid> LinkIds, List<Guid> NonLinkItemIds) SelectOutfitLinksToClear(
+        IEnumerable<InventoryEntry> children)
+    {
+        var linkIds = new List<Guid>();
+        var nonLinkItemIds = new List<Guid>();
+        foreach (var e in children)
+        {
+            if (e.IsFolder) continue;
+            if (e.IsLink) linkIds.Add(e.Id);
+            else nonLinkItemIds.Add(e.Id);
+        }
+        return (linkIds, nonLinkItemIds);
+    }
+
     /// <summary>Replaces an existing outfit folder's contents with the current worn set: every
-    /// existing link is moved to Trash, then the whole worn set is linked in fresh. Returns how
-    /// many links the outfit now has. FEAT-INV-04.</summary>
+    /// existing <b>link</b> is deleted, then the whole worn set is linked in fresh. Returns how
+    /// many links the outfit now has. FEAT-INV-04.
+    ///
+    /// <para><c>RemoveItemsAsync</c> (AIS <c>DELETE</c>), not <c>MoveItem → Trash</c>: moving an
+    /// outfit link to Trash HTTP-400s on SL and silently leaves the link in place, so every
+    /// "replace" stacked a fresh set on top of the old one and the outfit grew a duplicate set
+    /// each time (<c>warn: Move item … Bad Request</c> spam in the log). Same fix, and same reason,
+    /// as BUG-INV-01 / <c>v0.20.33</c> for the Current-Outfit cleanups. A real item dropped into
+    /// the outfit folder is reported and left untouched -- and, <c>v0.20.95</c>, its id is passed
+    /// as <c>skip</c> to the re-link pass: linking a worn item that is <i>already sitting in this
+    /// same folder as a real item</i> is a second AIS 400 (<c>warn: Create inventory in … Bad
+    /// Request</c>) that silently dropped that item from the outfit on relog -- the one case
+    /// <see cref="SaveCurrentOutfitAsync"/> / <see cref="AddCurrentToOutfitAsync"/> already guard
+    /// against via <see cref="GetOutfitTargetIdsAsync"/> and this method did not.</para></summary>
     public async Task<int> ReplaceOutfitWithCurrentAsync(Guid outfitFolderId, CancellationToken ct = default)
     {
-        if (outfitFolderId == Guid.Empty || TrashFolderId is not { } trashId) return 0;
-        var trashUuid = new LibreMetaverse.UUID(trashId);
+        if (outfitFolderId == Guid.Empty) return 0;
         var folderUuid = new LibreMetaverse.UUID(outfitFolderId);
 
         var worn = await GetWornItemsWithNamesAsync(ct).ConfigureAwait(false);
@@ -6126,20 +6174,22 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         catch (OperationCanceledException) { throw; }
         catch { existing = Array.Empty<InventoryEntry>(); }
 
-        var folderNode = _client.Inventory.Store?.GetNodeOrDefault(folderUuid);
-        foreach (var e in existing)
+        var (linkGuids, nonLinkItemIds) = SelectOutfitLinksToClear(existing);
+        if (nonLinkItemIds.Count > 0)
+            Console.Error.WriteLine(
+                $"[Outfits] outfit {outfitFolderId} holds {nonLinkItemIds.Count} real item(s), not links — " +
+                "leaving them in place; replace only rewrites the outfit's links");
+
+        if (linkGuids.Count > 0)
         {
-            if (e.IsFolder) continue;
-            ct.ThrowIfCancellationRequested();
-            try
-            {
-                _client.Inventory.MoveItem(new LibreMetaverse.UUID(e.Id), trashUuid);
-                folderNode?.Nodes.Remove(new LibreMetaverse.UUID(e.Id));
-            }
-            catch { }
+            var linkIds = linkGuids.Select(g => new LibreMetaverse.UUID(g)).ToList();
+            try { await _client.Inventory.RemoveItemsAsync(linkIds, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { Console.Error.WriteLine($"[Outfits] RemoveItemsAsync threw: {ex.Message}"); }
         }
 
-        return await LinkWornIntoAsync(folderUuid, worn, new HashSet<Guid>(), ct).ConfigureAwait(false);
+        var skip = new HashSet<Guid>(nonLinkItemIds);
+        return await LinkWornIntoAsync(folderUuid, worn, skip, ct).ConfigureAwait(false);
     }
 
     /// <summary>The contents of a saved outfit folder as resolved <see cref="WornItem"/>s — each
@@ -6337,12 +6387,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             await FetchInventoryChildrenAsync(cofUuid.Guid, ct).ConfigureAwait(false);
             var cofNode = _client.Inventory.Store?.GetNodeOrDefault(cofUuid);
-            if (cofNode != null && TrashFolderId is { } trashId && trashId != Guid.Empty)
+            if (cofNode != null)
             {
-                var trashUuid = new LibreMetaverse.UUID(trashId);
-                foreach (var n in cofNode.Nodes.Values.ToList())
-                    if (n.Data is LibreMetaverse.InventoryItem it && it.AssetType == LibreMetaverse.AssetType.LinkFolder)
-                        try { _client.Inventory.MoveItem(it.UUID, trashUuid); cofNode.Nodes.Remove(it.UUID); } catch { }
+                // DELETE, not MoveItem → Trash: moving a COF link 400s on AIS (SL) and the link
+                // stays put -- same reason BUG-INV-01 switched the other COF cleanups off that path.
+                var oldFolderLinks = cofNode.Nodes.Values.ToList()
+                    .Where(n => n.Data is LibreMetaverse.InventoryItem it
+                                && it.AssetType == LibreMetaverse.AssetType.LinkFolder)
+                    .Select(n => n.Data.UUID)
+                    .ToList();
+                if (oldFolderLinks.Count > 0)
+                    await _client.Inventory.RemoveItemsAsync(oldFolderLinks, ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) { throw; }
