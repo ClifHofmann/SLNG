@@ -29,15 +29,11 @@
 // bottom. That is a transfer function, not an exposure knob, and getting it wrong is invisible to
 // any amount of density tuning.
 //
-// STILL MISSING: the directional part of haze_glow (atmosphericsFuncs.glsl:88-106), which brightens
-// the haze toward the sun and is what gives an SL sunset its glow. It needs the angle between the
-// view ray and the sun, and those two are in different coordinate spaces here -- slng_sun_direction
-// is Godot WORLD space (EnvironmentDriver.cs:501) while view_position is VIEW space, and Godot
-// built-ins like VIEW_MATRIX are only in scope inside fragment() itself, not in a function it
-// calls. Fixing that needs either a per-frame view-space sun global or a signature change through
-// every shader; see the FEAT-RENDER-08 spec. Until then haze_glow sits at the viewer's own
-// non-directional floor (the "minimum anti-solar illumination" constant), so the haze is the right
-// COLOUR everywhere but does not yet brighten toward the sun.
+// The directional haze glow IS implemented, and it had to be: it is not a sunset refinement but the
+// dominant term wherever haze_density is high (measured live: haze_weight 0.96, so the in-scatter is
+// almost entirely the haze branch). It needs the angle between the view ray and the sun in one
+// coordinate space; AvatarController publishes slng_sun_direction_view per frame for exactly that,
+// because Godot's VIEW_MATRIX is only in scope inside fragment() and not in a function it calls.
 
 // The viewer's srgbF.glsl transfer, under an slng_ prefix because terrain.gdshader includes both
 // this file and sl_terrain_composition.gdshaderinc, which defines its own sl_srgb_to_linear.
@@ -58,6 +54,8 @@ global uniform vec4 slng_sunlight_color;
 global uniform vec4 slng_ambient;
 global uniform float slng_cloud_shadow;
 global uniform float slng_sun_moon_glow_factor;
+global uniform vec4 slng_glow;
+global uniform vec3 slng_sun_direction_view;
 
 vec3 slng_apply_atmospherics(vec3 color, vec3 view_position) {
     vec3 rel_pos = view_position;
@@ -80,11 +78,32 @@ vec3 slng_apply_atmospherics(vec3 color, vec3 view_position) {
     float density_dist = rel_pos_len * slng_density_multiplier;
     vec3 atten = exp(-combined_haze * density_dist * slng_distance_multiplier);
 
-    // --- in-scatter (viewer lines 104-128) ------------------------------------------------------
-    // haze_glow's directional term is not available here (see the header). The viewer adds a
-    // constant 0.25 "minimum anti-solar illumination" on top of the directional part; that floor is
-    // what remains, scaled by the same glow factor the viewer applies.
-    float haze_glow = 0.25 * slng_sun_moon_glow_factor;
+    // --- haze glow (viewer lines 88-106) --------------------------------------------------------
+    // Pinning this at its 0.25 floor, as the first version of this file did, is not a small
+    // simplification -- for a region with a high haze_density it deletes the dominant term. Live,
+    // 2026-09-04: haze_density 4 against blue_density.r 0.16 gives haze_weight 0.96, so the additive
+    // is almost entirely the haze branch, and with the branch pinned low `color * atten.r + additive`
+    // collapses to a dark smear. That is why the lighthouse came out far darker than Firestorm's and
+    // the sea went brown: extinction was removing 72 % of the colour at 176 m and nothing was being
+    // added back.
+    //
+    // rel_pos_norm points from the eye toward the fragment; slng_sun_direction_view is the sun in
+    // the SAME space, published per frame by AvatarController (see its doc comment for why the
+    // transform cannot happen in a shader function).
+    vec3 rel_pos_norm = normalize(rel_pos);
+    float haze_glow = dot(rel_pos_norm, slng_sun_direction_view);
+    haze_glow *= max(0.0, dot(slng_sun_direction_view, rel_pos_norm));
+    haze_glow = 1.0 - haze_glow;
+    // A minimum angle: a smaller value allows a tighter, brighter hotspot.
+    haze_glow = max(haze_glow, 0.001);
+    haze_glow *= slng_glow.x;
+    // glow.z is negative, so this is a sort of 1/angle falloff.
+    haze_glow = clamp(pow(haze_glow, slng_glow.z), -100000.0, 100000.0);
+    // "minimum anti-solar illumination" -- the floor that used to be the whole term.
+    haze_glow += 0.25;
+    haze_glow *= slng_sun_moon_glow_factor;
+
+    // --- in-scatter (viewer lines 108-128) ------------------------------------------------------
 
     vec3 amb_color   = slng_ambient.rgb;
     vec3 tmp_ambient = amb_color + (vec3(1.0) - amb_color) * slng_cloud_shadow * 0.5;

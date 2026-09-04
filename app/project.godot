@@ -105,6 +105,10 @@ slng_star_brightness={
 "type": "float",
 "value": 250.0
 }
+slng_sun_direction_view={
+"type": "vector3",
+"value": Vector3(0, 1, 0)
+}
 slng_sun_direction={
 "type": "vec3",
 "value": Vector3(0, 1, 0)

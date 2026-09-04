@@ -535,8 +535,40 @@ public partial class AvatarController : Camera3D
         // motion events during an entire Alt+LMB hold, then one big backlog jump on release).
     }
 
+    /// <summary>
+    /// Publishes the sun direction in VIEW space for the atmospherics seam, once per frame.
+    ///
+    /// <para><c>slng_sun_direction</c> is written by EnvironmentDriver in Godot WORLD space, but
+    /// <c>slng_apply_atmospherics</c> only ever sees a view-space position, and its haze glow is the
+    /// angle between the two. Dotting a world vector with a view-space one is silently wrong -- it
+    /// looks like the glow sitting in the wrong place, not like an error. The transform cannot be
+    /// done in the shader either: Godot built-ins such as VIEW_MATRIX are only in scope inside
+    /// <c>fragment()</c> itself, not in a function it calls, so a shader-side fix would mean
+    /// threading the matrix through every variant's signature.</para>
+    ///
+    /// <para>Doing it here instead costs one basis multiply and one global write per frame, and
+    /// this node IS the world camera, so the basis is already to hand. The world value is read back
+    /// from the global rather than duplicated, so EnvironmentDriver stays the single writer of the
+    /// sun direction and the two cannot drift.</para>
+    /// </summary>
+    private void PublishViewSpaceSunDirection()
+    {
+        var world = RenderingServer.GlobalShaderParameterGet("slng_sun_direction");
+        if (world.VariantType != Variant.Type.Vector3) return;
+
+        var dir = world.AsVector3();
+        if (dir.LengthSquared() < 0.000001f) return;
+
+        // Camera basis maps view -> world, so its inverse maps world -> view. Orthonormal, so the
+        // transpose would do; Inverse() is clearer and this runs once a frame.
+        var viewDir = GlobalTransform.Basis.Inverse() * dir.Normalized();
+        RenderingServer.GlobalShaderParameterSet("slng_sun_direction_view", viewDir.Normalized());
+    }
+
     public override void _Process(double delta)
     {
+        PublishViewSpaceSunDirection();
+
         using var _phase = MainThreadPhase.Enter("avatar-control");
 
         if (_world == null || _session == null) return;
