@@ -661,13 +661,12 @@ public sealed class EnvironmentDriver
     /// specifically, so it is retired rather than mapped.</summary>
     private void ApplyFog(Godot.Environment env, SkySettings sky, SkyLighting lighting)
     {
-        // SL's atmospheric scattering is heavily dependent on depth/altitude, which Godot's
-        // standard fog cannot replicate well. We disable the native fog here so it doesn't
-        // completely wash out the custom sky shader with a flat gray wall.
+        // Godot's built-in standard and volumetric fogs conflict with our procedural sky
+        // and transparent water shaders, creating sharp horizons or failing to render.
+        // Windlight / EEP atmospheric scattering is applied per-fragment in Phase 5 via
+        // slng_atmospherics.gdshaderinc instead.
         env.FogEnabled = false;
         env.VolumetricFogEnabled = false;
-        float density = sky.DensityMultiplier * sky.DistanceMultiplier * 60f;
-        env.FogDensity = Mathf.Clamp(density, 0.0005f, 0.02f);
     }
 
     private void ApplyWater(ShaderMaterial? waterMaterial, WaterSettings water)

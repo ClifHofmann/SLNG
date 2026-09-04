@@ -163,6 +163,8 @@ public partial class ObjectRenderer : Node3D
 
     private void LogFaceAlpha(Guid texId, string decision)
     {
+        if (!Diagnostics.Enabled) return;
+        
         if (texId == Guid.Empty) return;
         if (_faceAlphaLogged.TryAdd($"{texId:N}:{decision}", 0))
             GD.Print($"[FaceAlpha] {texId.ToString()[..8]} {decision}");
