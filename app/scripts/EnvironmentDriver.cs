@@ -509,10 +509,21 @@ public sealed class EnvironmentDriver
         float blueWeightR = blue.R / combinedHazeR;
         float hazeWeightR = hazeDensity / combinedHazeR;
 
-        // haze_glow at its floor (looking away from the sun) and near the sun, the two ends of the
-        // range the shader spans -- see slng_atmospherics.gdshaderinc.
-        float glowFloor = 0.25f * glowFactor;
-        float glowNearSun = (MathF.Pow(MathF.Max(0.001f, 1f - 0.98f) * glow.R, glow.B) + 0.25f) * glowFactor;
+        // haze_glow at both ends of the range the shader actually spans. This used to report the
+        // 0.25 FLOOR as the away-from-sun value, which is not what the shader computes and
+        // understated the in-scatter by about 7x for this region (floor 0.25 against a real 1.87).
+        // The floor is added to the directional term, not substituted for it -- reporting it alone
+        // made the haze look far too weak to explain what was on screen, which is the opposite of
+        // what a diagnostic is for.
+        //
+        // Mirrors slng_atmospherics.gdshaderinc exactly: for a view direction at angle d to the
+        // sun, haze_glow = pow(max(0.001, 1 - d*d) * glow.x, glow.z) + 0.25, all times the glow
+        // factor. d=0 is perpendicular to the sun, d->1 is looking straight at it.
+        float HazeGlow(float d)
+            => (MathF.Pow(MathF.Max(0.001f, 1f - d * d) * glow.R, glow.B) + 0.25f) * glowFactor;
+
+        float glowFloor = HazeGlow(0f);
+        float glowNearSun = HazeGlow(0.98f);
 
         float Additive(float bh, float bw, float hw, float amb, float sun, float hazeGlow)
         {
@@ -547,6 +558,7 @@ public sealed class EnvironmentDriver
             $"sunlight=({sunlight.R:0.###},{sunlight.G:0.###},{sunlight.B:0.###}) " +
             $"glow=({glow.R:0.###},{glow.G:0.####},{glow.B:0.###}) glowFactor={glowFactor:0.###} " +
             $"| blueWeight={blueWeightR:0.###} hazeWeight={hazeWeightR:0.###} " +
+            $"| hazeGlow away={glowFloor:0.##} near={glowNearSun:0.##} " +
             $"| additive.r away-from-sun={addFloorR:0.###} near-sun={addSunR:0.###} " +
             $"(x2 -> {MathF.Min(1f, addFloorR * 2f):0.###} / {MathF.Min(1f, addSunR * 2f):0.###} before srgb_to_linear)");
     }
