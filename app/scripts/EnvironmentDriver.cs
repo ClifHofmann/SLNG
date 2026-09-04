@@ -529,12 +529,16 @@ public sealed class EnvironmentDriver
         // "warm haze" and "no warm haze at all" is a couple of hundredths of a unit vector, and
         // that is not something to judge from a screenshot.
         var sunDirGodot = LastSunDirectionGodot;
+        var slSun = CalculatedSunDirection;
         float lightY = sunDirGodot.Y >= 0f ? sunDirGodot.Y : MathF.Max(0f, -sunDirGodot.Y);
         float lightAttenR = (blue.R + hazeDensity * 0.25f) * (densityMul * SafeFloat(sky.MaxY));
         float sunAtten = MathF.Exp(-lightAttenR / MathF.Max(1e-6f, lightY));
 
         Console.Error.WriteLine(
-            $"[SkyAtmos] sunUp={(sunDirGodot.Y >= 0f ? "yes" : "no")} activeLight.y={lightY:0.####} " +
+            $"[SkyAtmos] slSun=({slSun.X:0.###},{slSun.Y:0.###},{slSun.Z:0.###}) " +
+            $"godotSun=({sunDirGodot.X:0.###},{sunDirGodot.Y:0.###},{sunDirGodot.Z:0.###}) " +
+            $"elevation={MathF.Asin(Math.Clamp(sunDirGodot.Y, -1f, 1f)) * 180f / MathF.PI:0.##}deg " +
+            $"sunUp={(sunDirGodot.Y >= 0f ? "yes" : "no")} activeLight.y={lightY:0.####} " +
             $"lightAtten.r={lightAttenR:0.####} -> sunlight scaled by {sunAtten:0.####}");
 
         Console.Error.WriteLine(
@@ -554,8 +558,6 @@ public sealed class EnvironmentDriver
 
     private void UpdateGlobalShaderParameters(SkySettings sky, SkyLighting lighting, System.Numerics.Vector3 sunDirectionSl)
     {
-        ReportAtmosphere(sky);
-
         RenderingServer.GlobalShaderParameterSet("slng_ambient", ToColorFast(sky.AmbientColor));
         RenderingServer.GlobalShaderParameterSet("slng_blue_density", ToColorFast(sky.BlueDensity));
         RenderingServer.GlobalShaderParameterSet("slng_blue_horizon", ToColorFast(sky.BlueHorizon));
@@ -645,6 +647,14 @@ public sealed class EnvironmentDriver
         // blocks in one session, next to 186 149 shader warnings, from exactly that mistake.
         // EnvironmentDriver stays the single writer either way.
         LastSunDirectionGodot = toSun;
+
+        // Reported HERE, not at the top of this method. It used to run first and read
+        // LastSunDirectionGodot ninety lines before that field was assigned, so it printed the
+        // PREVIOUS call's sun -- which is how it came to claim activeLight.y=0 exactly, a value
+        // clean enough that it nearly justified a change to the shader. A diagnostic that reads
+        // its subject before the subject is written is worse than no diagnostic: it is a wrong
+        // answer wearing a measurement's clothes.
+        ReportAtmosphere(sky);
         
         // Use the region's actual moon rotation if usable, otherwise opposite the sun
         var moonDirSl = System.Numerics.Vector3.Transform(System.Numerics.Vector3.UnitX, sky.MoonRotation);
