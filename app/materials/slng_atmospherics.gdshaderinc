@@ -25,6 +25,10 @@
 // (blue_density is largest in blue), so this washes middle distance out far less than a per-channel
 // mix does.
 //
+// The additive is converted from sRGB to linear before it is added -- see the composite at the
+// bottom. That is a transfer function, not an exposure knob, and getting it wrong is invisible to
+// any amount of density tuning.
+//
 // STILL MISSING: the directional part of haze_glow (atmosphericsFuncs.glsl:88-106), which brightens
 // the haze toward the sun and is what gives an SL sunset its glow. It needs the angle between the
 // view ray and the sun, and those two are in different coordinate spaces here -- slng_sun_direction
@@ -34,6 +38,14 @@
 // every shader; see the FEAT-RENDER-08 spec. Until then haze_glow sits at the viewer's own
 // non-directional floor (the "minimum anti-solar illumination" constant), so the haze is the right
 // COLOUR everywhere but does not yet brighten toward the sun.
+
+// The viewer's srgbF.glsl transfer, under an slng_ prefix because terrain.gdshader includes both
+// this file and sl_terrain_composition.gdshaderinc, which defines its own sl_srgb_to_linear.
+vec3 slng_srgb_to_linear(vec3 cs) {
+    vec3 low_range  = cs / vec3(12.92);
+    vec3 high_range = pow((cs + vec3(0.055)) / vec3(1.055), vec3(2.4));
+    return mix(high_range, low_range, lessThanEqual(cs, vec3(0.04045)));
+}
 
 global uniform vec4 slng_blue_density;
 global uniform vec4 slng_blue_horizon;
@@ -85,7 +97,25 @@ vec3 slng_apply_atmospherics(vec3 color, vec3 view_position) {
     additive *= (vec3(1.0) - atten);
     additive = min(additive, vec3(10.0));
 
-    // Composite. Deliberately WITHOUT the viewer's srgb_to_linear(additive*2.0) * sky_hdr_scale:
-    // that belongs to its HDR pipeline, and SLNG's skies are display-referred and never tonemapped.
-    return color * atten.r + additive;
+    // Composite -- viewer atmosphericsF.glsl:37-40, transfer included.
+    //
+    // v0.20.66 dropped the srgb_to_linear(additive*2.0) as "HDR pipeline we do not have". That was
+    // wrong, and not by a little: it is a TRANSFER FUNCTION, not an exposure control, and this
+    // shader was the only thing around here not applying it.
+    //
+    //   * ALBEDO here is LINEAR -- albedo_texture is declared `: source_color`, so Godot converts
+    //     sRGB to linear on sample (prim_common.gdshaderinc:13).
+    //   * the sky next to it is LINEAR -- sky.gdshader:645 ends on srgb_to_linear(sky_color).
+    //   * `additive` is built from Windlight colours (blue_horizon, sunlight_color, ambient),
+    //     which arrive from the EEP LLSD display-referred, i.e. sRGB.
+    //
+    // Adding sRGB values to a linear frame put the haze on a different curve from the sky it is
+    // supposed to blend into -- which is exactly why a horizon cannot be made to match by tuning
+    // density, and why the far distance stayed too dark to merge. The curve also cuts both ways in
+    // the right directions: it dims a small additive (less wash at middle distance, where the
+    // lighthouse was) and lifts a large one (more haze far out, where sea meets sky).
+    //
+    // sky_hdr_scale is still omitted -- that one really is the viewer's HDR exposure, and it is
+    // 1.0 outside it.
+    return color * atten.r + slng_srgb_to_linear(clamp(additive * 2.0, vec3(0.0), vec3(1.0)));
 }
