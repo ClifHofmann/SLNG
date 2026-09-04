@@ -621,9 +621,31 @@ void sky() {
     
     // Smooth transition for the lower hemisphere instead of a hard cut,
     // so that water reflections (radiance map) capture a natural gradient and the sun!
+    // FEAT-RENDER-08. This narrow band just under the eye line is not decoration -- it is the gap
+    // the void water plane leaves behind, and getting its colour right is what closes the horizon.
+    //
+    // The water plane is 16384 m wide (TerrainRenderer.VoidWaterSize) but the world camera's Far is
+    // never assigned, so it sits at Godot's Camera3D default of 4000 m and the plane is CLIPPED
+    // there. A flat plane's horizon is the eye-level line, reached asymptotically, so the clipped
+    // edge lands slightly below it -- at 30 m eye height and a 4 km clip, about 0.43 degrees -- and
+    // through that sliver you see the sky. Whatever colour it has meets fully-hazed water at a hard
+    // edge, which is precisely the seam the Firestorm A/B kept showing (2026-09-04) and which no
+    // amount of density tuning could remove, because the water is not there to be tuned.
+    //
+    // So the band has to BE what water converges to at infinite distance. That value is the
+    // atmospheric in-scatter, and this shader already computes it as `sky_below` -- the same
+    // blue_horizon/haze_horizon expression slng_atmospherics.gdshaderinc converges to, in the same
+    // "x2, pre-srgb_to_linear" space `additive` is built in on line 249. slng_haze_color * 0.85 was
+    // a cruder stand-in that could not match it by construction.
+    //
+    // Blended fully rather than at half strength: the band is ~6 degrees of EYEDIR.y, the sliver
+    // that is actually visible is a fraction of a degree of it, and anything less than full leaves
+    // a residue of the wrong colour exactly where the two surfaces meet. Raising the camera's Far
+    // to 16 km would also close the gap and was rejected on cost -- it stretches the depth range
+    // over everything in the frame for one sliver of horizon.
     float ground_blend = smoothstep(0.0, -0.1, EYEDIR.y);
-    vec3 ground_color = slng_haze_color.rgb * 0.85;
-    sky_color = mix(sky_color, ground_color, ground_blend * 0.5); // Only dim it slightly for natural reflections
+    vec3 ground_color = clamp(sky_below * 2.0, vec3(0.0), vec3(5.0));
+    sky_color = mix(sky_color, ground_color, ground_blend);
     
     // The viewer's sky is DISPLAY-REFERRED, not scene-linear, and that mismatch -- not the haze
     // maths -- is what made our sky a pale wash.
