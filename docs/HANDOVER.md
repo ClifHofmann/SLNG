@@ -8,10 +8,63 @@
 # 2026-09-04 — FEAT-RENDER-08 atmospherics + inventory + perf. 18 commits, NOT pushed.
 
 `v0.20.57` → `v0.20.79-alpha` (the perf work below starts at `v0.20.51`, already pushed
-through `v0.20.56`). Working tree clean, everything committed, **nothing pushed**
-(`origin/main` is at `7575a01`). Every commit is verified (both builds, 604 tests, `dotnet
+through `v0.20.56`), **plus uncommitted Antigravity work at `v0.20.80` — see the UPDATE
+immediately below**. 19 commits, **nothing pushed** (`origin/main` is at `7575a01`). Every commit is verified (both builds, 604 tests, `dotnet
 format`, `check_shader_globals`, selftest 32/32) and **almost nothing is verified in-world** —
 read the "Open" section before assuming any of it works.
+
+## UPDATE — Antigravity took over FEAT-RENDER-08 after this was written
+
+**Working tree is NOT clean any more.** `v0.20.80-alpha`, uncommitted changes from Antigravity in
+`app/materials/water.gdshader`, `app/scripts/EnvironmentDriver.cs` and `app/scripts/Boot.cs`, plus
+an untracked `.opencode/`. THREE agents have now edited this one working tree; AGENTS.md's
+one-agent-per-worktree rule is not being honoured and work has already been swept into the wrong
+commits twice.
+
+**Colours now roughly match Firestorm** (user's verdict), so the "sky horizon too dark" item below
+is largely addressed. Antigravity also added a `MeasureSkyGradientR` diagnostic to
+`EnvironmentDriver` that evaluates `sky.gdshader`'s `sky_col` / `sky_haze` blend at several
+elevations — which is the measurement the previous handover asked for.
+
+### The waves are missing, and the cause is already written down in the code
+
+`water.gdshader` was restructured to route the reflection through Godot's metallic workflow:
+
+```glsl
+ALBEDO   = attenuated_fresnel;   // df2_x, attenuated by atten.r
+METALLIC = 1.0;
+EMISSION = base_color * (1.0 - df2_x) + atmos_additive;
+```
+
+and in doing so **the `ROUGHNESS` assignment was deleted**. Antigravity's own comment says what
+that costs:
+
+> *"since ROUGHNESS is defaulting to 1.0 (because we deleted it!), the waves will still be mostly
+> invisible, exactly recreating the visual appearance of .80 that the user requested."*
+
+Godot defaults `ROUGHNESS` to **1.0** — fully rough, so the environment reflection is diffuse and
+there is nothing sharp for the wave normals to modulate. `grep ROUGHNESS app/materials/water.gdshader`
+returns only that comment.
+
+The line that was removed was already correct and viewer-derived:
+
+```glsl
+ROUGHNESS = clamp(slng_water_blur_multiplier * 2.0, 0.0, 1.0);
+```
+
+`waterF.glsl` sets `perceptualRoughness = blurMultiplier`, and `lldrawpoolwater.cpp:254` feeds that
+uniform `max(0, BlurMultiplier) * 2` — the doubling is the viewer's. Real regions carry a *tiny*
+blur multiplier (a captured EEP frame had `blur_multiplier = 0.008`), so the correct roughness is
+about **0.016** — almost mirror-sharp, which is exactly why SL water shows crisp ripples.
+
+So restoring that one line is the fix, and it is now more important than before, not less: with
+`METALLIC = 1.0` the surface is *entirely* environment reflection, so roughness is the only thing
+deciding whether the waves are visible at all.
+
+**Do not restore it blind, though** — check it against the new metallic path, because `METALLIC = 1`
+plus a near-zero roughness is a mirror, and SL water is not a mirror at every angle. The fresnel
+term (`slng_water_fresnel_offset` / `_scale`) is now doing the angle shaping that `METALLIC = 0`
+used to leave to Godot's Schlick curve.
 
 ## Read this first: how this session went wrong, four times
 
@@ -131,10 +184,13 @@ not being honoured.
 
 ## Open, in the order I would take them
 
-1. **Push.** 18 commits, `origin/main` is at `7575a01`.
-2. **Sky horizon gradient** — measure `sky.gdshader`'s below-horizon blend before changing it.
-3. **Water reflection path** — `METALLIC`/fresnel in `water.gdshader`. Get a target RGB by
-   sampling a saved Firestorm screenshot rather than judging by eye; four rounds were lost to eye.
+1. **Restore `ROUGHNESS` in `water.gdshader`** — one line, cause already established (see the
+   UPDATE at the top). This is why the waves are missing.
+2. **Decide what to do with Antigravity's uncommitted work.** It is unverified and unattributed in
+   git; commit it under its own message the way `a911215` handled Gemini's, or ask.
+3. **Push.** 19 commits, `origin/main` is at `7575a01`.
+4. **Sky horizon gradient** — largely addressed per the user; `MeasureSkyGradientR` now exists to
+   check it numerically rather than by eye.
 4. **FEAT-PERF-04** (spec written, `9435e58`): the GPU cache sits at 2349 MB against a 1536 MB
    budget with **100 % of entries un-evictable** — not a leak, the scene genuinely needs it, so
    enforcement has to act on upload resolution, not eviction.
