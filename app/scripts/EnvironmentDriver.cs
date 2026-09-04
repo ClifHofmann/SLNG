@@ -561,6 +561,45 @@ public sealed class EnvironmentDriver
             $"| hazeGlow away={glowFloor:0.##} near={glowNearSun:0.##} " +
             $"| additive.r away-from-sun={addFloorR:0.###} near-sun={addSunR:0.###} " +
             $"(x2 -> {MathF.Min(1f, addFloorR * 2f):0.###} / {MathF.Min(1f, addSunR * 2f):0.###} before srgb_to_linear)");
+
+        // Measure sky.gdshader's sky_col blending (sky_haze) at multiple elevations
+        float MeasureSkyGradientR(float elevationDeg)
+        {
+            float ey = MathF.Sin(elevationDeg * MathF.PI / 180f);
+            float viewY = MathF.Max(0.001f, ey);
+            float relPosLen = SafeFloat(sky.MaxY) / viewY;
+            float densityDist = relPosLen * densityMul;
+            float t = MathF.Exp(-combinedHazeR * densityDist); // transmittance
+            
+            float lightYRaw = slSun.Z; // FIXED: slSun in SL space, Z is up (matches Godot sun_dir.y)
+            float offAxisView = 1f / MathF.Max(1e-6f, MathF.Max(0f, ey) + lightYRaw);
+            float slAtten = MathF.Exp(-lightAttenR * offAxisView);
+            
+            float cs = sunlight.R * slAtten * MathF.Max(0f, 1f - cloudShadow);
+            float skyAmbBelow = ambient.R + MathF.Max(0f, 1f - ambient.R) * cloudShadow * 0.5f;
+            
+            float skyCol = (blueHorizon.R * blueWeightR) * (sunlight.R * slAtten + ambient.R)
+                         + (hazeHorizon * hazeWeightR) * (sunlight.R * slAtten * glowFloor + ambient.R); // away-from-sun
+            skyCol *= 1f - t;
+            
+            float skyBelow = (blueHorizon.R * blueWeightR) * (cs + skyAmbBelow)
+                           + (hazeHorizon * hazeWeightR) * (cs * glowFloor + skyAmbBelow);
+            
+            float skyHaze1 = MathF.Sqrt(t);
+            float skyHaze2 = MathF.Sqrt(skyHaze1); // second sqrt in shader
+            float blend = 1f - skyHaze2;
+            
+            float result = skyCol + (skyBelow - skyCol) * blend;
+            return result;
+        }
+
+        Console.Error.WriteLine(
+            $"[SkyAtmos] sky.gdshader R-channel away-from-sun gradient: " +
+            $"at 0.1deg={MeasureSkyGradientR(0.1f):0.###} " +
+            $"at 1.0deg={MeasureSkyGradientR(1.0f):0.###} " +
+            $"at 5.0deg={MeasureSkyGradientR(5.0f):0.###} " +
+            $"at 20deg={MeasureSkyGradientR(20.0f):0.###} " +
+            $"at 90deg={MeasureSkyGradientR(90.0f):0.###}");
     }
 
     /// <summary>The sun direction in Godot world space, as last pushed to
