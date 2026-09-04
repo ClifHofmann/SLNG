@@ -51,6 +51,7 @@ tools/Probe/
 .claude/settings.local.json
 .gemini/settings.local.json
 .aider*
+.opencode/
 
 # OS
 .DS_Store
