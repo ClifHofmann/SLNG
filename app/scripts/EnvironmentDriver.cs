@@ -106,6 +106,11 @@ public sealed class EnvironmentDriver
     /// <see cref="FetchTextureOnce"/>.</summary>
     private sealed class TextureSlot
     {
+        /// <summary>Set once the texture has actually been applied / skipped, so [EnvTex] reports
+        /// each slot's outcome exactly once instead of on every retry tick.</summary>
+        public bool AppliedLogged;
+        public bool SkipLogged;
+
         public Guid Current;
         public ulong RetryAfterMs;
         public bool FailureLogged;
@@ -266,8 +271,23 @@ public sealed class EnvironmentDriver
         string what,
         Action<Texture2D> apply)
     {
-        if (wantedId == Guid.Empty || wantedId == slot.Current) return;
-        if (assetService == null || gpuCache == null || !assetsReady) return;
+        // Report the early-outs, once per reason per slot. An environment texture that never
+        // arrives has no failure mode of its own -- the water simply renders without its wave
+        // normals and looks like a mirror, which is indistinguishable from "the shader is wrong".
+        // This project has already lost a round to exactly that: the driver latched texture ids at
+        // the login screen before AssetService existed, so the water normal and cloud textures
+        // never loaded and nothing said so.
+        if (wantedId == Guid.Empty)
+        {
+            if (!slot.SkipLogged) { slot.SkipLogged = true; Console.Error.WriteLine($"[EnvTex] {what}: no texture id in the environment"); }
+            return;
+        }
+        if (wantedId == slot.Current) return;
+        if (assetService == null || gpuCache == null || !assetsReady)
+        {
+            if (!slot.SkipLogged) { slot.SkipLogged = true; Console.Error.WriteLine($"[EnvTex] {what}: assets not ready yet ({wantedId}) -- will retry"); }
+            return;
+        }
 
         ulong now = Time.GetTicksMsec();
         if (now < slot.RetryAfterMs) return;
@@ -279,6 +299,11 @@ public sealed class EnvironmentDriver
             var tex = await gpuCache.GetOrUploadTextureAsync(wantedId, assetService, generateMipmaps: true).ConfigureAwait(false);
             MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine, () =>
             {
+                if (tex != null && !slot.AppliedLogged)
+                {
+                    slot.AppliedLogged = true;
+                    Console.Error.WriteLine($"[EnvTex] {what}: applied {wantedId} ({tex.GetWidth()}x{tex.GetHeight()})");
+                }
                 if (tex == null)
                 {
                     // Release the latch so the backoff above schedules another attempt instead of

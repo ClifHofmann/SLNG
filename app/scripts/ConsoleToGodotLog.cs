@@ -130,6 +130,8 @@ internal static class PerfSidecar
         // cannot reach Diagnostics (that is an app type and src/ must not depend on Godot). The
         // sidecar is how a src/-side diagnostic gets the same treatment: kept, but out of the way.
         "[LegacyMat]",
+        // Whether each environment texture (water normal, clouds, sun, moon) actually arrived.
+        "[EnvTex]",
     };
 
     private static StreamWriter? _writer;
