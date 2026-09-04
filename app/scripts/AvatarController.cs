@@ -547,16 +547,15 @@ public partial class AvatarController : Camera3D
     /// threading the matrix through every variant's signature.</para>
     ///
     /// <para>Doing it here instead costs one basis multiply and one global write per frame, and
-    /// this node IS the world camera, so the basis is already to hand. The world value is read back
-    /// from the global rather than duplicated, so EnvironmentDriver stays the single writer of the
-    /// sun direction and the two cannot drift.</para>
+    /// this node IS the world camera, so the basis is already to hand. The world value comes from
+    /// EnvironmentDriver.LastSunDirectionGodot, so that class stays the single writer of the sun
+    /// direction. It is deliberately NOT read back with GlobalShaderParameterGet: that logs a
+    /// RenderingServer error plus a full C# backtrace whenever the parameter is missing, and once
+    /// per frame that buries the log rather than reporting anything.</para>
     /// </summary>
     private void PublishViewSpaceSunDirection()
     {
-        var world = RenderingServer.GlobalShaderParameterGet("slng_sun_direction");
-        if (world.VariantType != Variant.Type.Vector3) return;
-
-        var dir = world.AsVector3();
+        var dir = EnvironmentDriver.LastSunDirectionGodot;
         if (dir.LengthSquared() < 0.000001f) return;
 
         // Camera basis maps view -> world, so its inverse maps world -> view. Orthonormal, so the

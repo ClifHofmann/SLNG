@@ -509,6 +509,11 @@ public sealed class EnvironmentDriver
             $"(x2 -> {MathF.Min(1f, addFloorR * 2f):0.###} / {MathF.Min(1f, addSunR * 2f):0.###} before srgb_to_linear)");
     }
 
+    /// <summary>The sun direction in Godot world space, as last pushed to
+    /// <c>slng_sun_direction</c>. Read by the camera to derive the view-space copy the atmospherics
+    /// seam needs.</summary>
+    public static Godot.Vector3 LastSunDirectionGodot { get; private set; } = Godot.Vector3.Up;
+
     private void UpdateGlobalShaderParameters(SkySettings sky, SkyLighting lighting, System.Numerics.Vector3 sunDirectionSl)
     {
         ReportAtmosphere(sky);
@@ -595,6 +600,13 @@ public sealed class EnvironmentDriver
         if (toSun.LengthSquared() > 0.0001f) toSun = toSun.Normalized();
         else toSun = Godot.Vector3.Up;
         RenderingServer.GlobalShaderParameterSet("slng_sun_direction", toSun);
+        // Handed to AvatarController, which needs it in VIEW space every frame. Published as a
+        // plain static rather than read back with GlobalShaderParameterGet: that call logs a
+        // RenderingServer error with a full C# backtrace whenever the parameter is not registered,
+        // and at 60 fps that is not a diagnostic, it is a denial of service on the log -- 590 such
+        // blocks in one session, next to 186 149 shader warnings, from exactly that mistake.
+        // EnvironmentDriver stays the single writer either way.
+        LastSunDirectionGodot = toSun;
         
         // Use the region's actual moon rotation if usable, otherwise opposite the sun
         var moonDirSl = System.Numerics.Vector3.Transform(System.Numerics.Vector3.UnitX, sky.MoonRotation);
