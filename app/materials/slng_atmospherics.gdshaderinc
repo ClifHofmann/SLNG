@@ -60,6 +60,54 @@ global uniform vec3 slng_sun_direction;
 global uniform vec3 slng_moon_direction;
 global uniform vec4 slng_moonlight_color;
 
+// waterF.glsl `punctual` (lines 306-323) via deferredUtil.glsl pbrPunctual, faithfully:
+//
+//   specularColor = srgb_to_linear(specular),  specular = normalize(sunColour) * (1.5 + 6*gps)
+//   (lldrawpoolwater.cpp:160-173; gps = ground_proj_sq = 1 - sun.up^2). metallic = 1, so with
+//   calcDiffuseSpecular this IS F0. For a low sun that lands near ~5 after srgb_to_linear.
+//
+//   D = GGX microfacet distribution, UNBOUNDED -- ~7700 at the peak for roughness 0.08. Capping
+//       it (pow(ndh,e) <= 1, as v0.20.87-89 did) is exactly what deleted the glitter.
+//   G = Smith geometric occlusion.  F ~ R0 near the mirror angle (VdotH ~ 1).
+//   specContrib = F * G * D / (4*NdotL*NdotV)   -- ~44000 at the peak.
+//   glint = clamp(NdotL * specContrib, 0, 10) * sunlit * atten
+//   The clamp to 10 is the bound; * sunlit (~0.5, the atmospherically-tinted sun) brings the
+//   clamped disc to ~5 -> white core, visible over a ~6deg cone per facet. The wave-normal spread
+//   scatters those cones into the fleck field. For a low sun viewed toward it, half_v ~ vertical,
+//   so the caller's flattened glint normal catches it over a broad swath -- the sunset path.
+//
+// Lives here so water.gdshader need not name slng_sun_direction_view / slng_sunlight_color /
+// slng_sun_direction (the shader-globals checker wants every raw global re-declared where used).
+vec3 slng_water_sun_glint(vec3 glint_normal_view, vec3 view_position, float perceptual_roughness, float atten_r) {
+    vec3 sun_v  = normalize(slng_sun_direction_view);
+    vec3 eye_v  = normalize(-view_position);
+    vec3 half_v = normalize(sun_v + eye_v);
+
+    float ndh = clamp(dot(glint_normal_view, half_v), 0.0, 1.0);
+    float ndl = clamp(dot(glint_normal_view, sun_v), 0.001, 1.0);
+    float ndv = clamp(abs(dot(glint_normal_view, eye_v)), 0.001, 1.0);
+
+    float a   = max(perceptual_roughness, 8.0 / 255.0);   // pbrPunctual floors it here too
+    float ar2 = (a * a) * (a * a);                        // roughnessSq = alphaRoughness^2
+
+    // microfacetDistribution (deferredUtil.glsl)
+    float f = (ndh * ar2 - ndh) * ndh + 1.0;
+    float D = ar2 / (3.14159265 * f * f);
+
+    // geometricOcclusion (Smith)
+    float gl = 2.0 * ndl / (ndl + sqrt(ar2 + (1.0 - ar2) * ndl * ndl));
+    float gv = 2.0 * ndv / (ndv + sqrt(ar2 + (1.0 - ar2) * ndv * ndv));
+    float G  = gl * gv;
+
+    vec3 sun_unit = normalize(max(slng_sunlight_color.rgb, vec3(1e-4)));
+    float gps = clamp(1.0 - slng_sun_direction.y * slng_sun_direction.y, 0.0, 1.0);
+    vec3 R0 = slng_srgb_to_linear(sun_unit * (1.5 + 6.0 * gps));   // specularColor, F ~ R0 here
+
+    vec3 spec_contrib = R0 * G * D / (4.0 * ndl * ndv);
+    // waterF.glsl:323  punctual = clamp(nl*spec, 0, 10) * sunlit_linear * shadow * atten
+    return clamp(ndl * spec_contrib, vec3(0.0), vec3(10.0)) * (sun_unit * atten_r);
+}
+
 // out_additive is the IN-SCATTERED light, handed back separately so the caller can route it into
 // EMISSION rather than ALBEDO. That distinction is the viewer's, not a Godot detail:
 // atmosFragLighting does `light += additive` on the FINISHED, already-lit pixel. Folding it into
