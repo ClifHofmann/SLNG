@@ -187,7 +187,7 @@ public partial class ObjectParticles : CpuParticles3D
             // presented exactly as an emitter that quietly rendered nothing.
             if (Diagnostics.Enabled)
             {
-                GD.Print($"[Particles] inert: partMaxAge={data.PartMaxAge:0.###}s "
+                if (Diagnostics.Enabled) GD.Print($"[Particles] inert: partMaxAge={data.PartMaxAge:0.###}s "
                     + $"burstCount={data.BurstPartCount} -- nothing to draw");
             }
             return;
@@ -279,7 +279,7 @@ public partial class ObjectParticles : CpuParticles3D
             Vector3 ws = IsInsideTree() ? GlobalTransform.Basis.Scale : Vector3.One;
             float cx0 = ScaleCurveX?.Sample(0f) ?? -1f, cx1 = ScaleCurveX?.Sample(1f) ?? -1f;
             float cy0 = ScaleCurveY?.Sample(0f) ?? -1f, cy1 = ScaleCurveY?.Sample(1f) ?? -1f;
-            GD.Print($"[Particles] obj={EmitterEntityId:N} {data.Pattern} pool={Amount} life={Lifetime:0.##}s "
+            if (Diagnostics.Enabled) GD.Print($"[Particles] obj={EmitterEntityId:N} {data.Pattern} pool={Amount} life={Lifetime:0.##}s "
                 + $"srcMaxAge={data.SourceMaxAge:0.##} srcStartAge={data.SourceStartAge:0.##} "
                 + $"burst={data.BurstPartCount}/{data.BurstRate:0.###}s "
                 + $"speed={data.BurstSpeedMin:0.##}-{data.BurstSpeedMax:0.##} radius={data.BurstRadius:0.##} "
@@ -734,7 +734,7 @@ public partial class ObjectParticles : CpuParticles3D
         // straight from the cache -- so if the ImageTexture that actually reaches the material is
         // NOT square (a decode/resize/stride bug in the fetch path), that is the whole thing. One
         // line per emitter, so this is not per-frame spam.
-        GD.Print($"[Particles] obj={EmitterEntityId:N} albedo resolved {texture.GetWidth()}x{texture.GetHeight()} "
+        if (Diagnostics.Enabled) GD.Print($"[Particles] obj={EmitterEntityId:N} albedo resolved {texture.GetWidth()}x{texture.GetHeight()} "
             + $"(tex {resolved.ToString("N")[..8]})");
     }
 

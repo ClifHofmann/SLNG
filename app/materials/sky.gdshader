@@ -657,11 +657,17 @@ void sky() {
     // away from the sun and (0.507,0.439,0.431) toward it -- cool grey-blue one way, warm the other.
     // That IS the colour distant water converges to, so the band has to be built the same way.
     //
-    // Deviation from the viewer, stated rather than hidden: calcAtmosphericVars attenuates its
-    // sunlight (`sunlight *= exp(-light_atten * above_horizon_factor)`, atmosphericsFuncs.glsl:76)
-    // and neither our seam nor this band does. Both are now on the same unattenuated footing, so
-    // they agree with each other; that is one deviation to revisit, not two halves disagreeing.
-    vec3 seam_cs = slng_sunlight_color.rgb * (1.0 - slng_cloud_shadow);
+    // The sunlight attenuation the viewer applies (atmosphericsFuncs.glsl:76) is now in BOTH this
+    // band and the seam, computed the same way from the same inputs, so there is no deviation left
+    // to reconcile between them.
+    // Identical to the seam's, including the attenuation -- see slng_atmospherics.gdshaderinc.
+    // The light-elevation form, not skyV's view-dependent one, because that is what the seam uses
+    // and the whole point of this band is to be the same colour as the water meeting it.
+    vec3 seam_light_atten = (slng_blue_density.rgb + vec3(slng_haze_density * 0.25))
+                          * (slng_density_multiplier * slng_max_y);
+    float seam_above_horizon = 1.0 / max(1e-6, sun_dir_godot.y);
+    vec3 seam_sunlight = slng_sunlight_color.rgb * exp(-seam_light_atten * seam_above_horizon);
+    vec3 seam_cs = seam_sunlight * (1.0 - slng_cloud_shadow);
     vec3 ground_haze = (slng_blue_horizon.rgb * blue_weight) * (seam_cs + tmpAmbient)
                      + (vec3(slng_haze_horizon) * haze_weight) * (seam_cs * haze_glow_sky + tmpAmbient);
     vec3 ground_color = clamp(ground_haze * 2.0, vec3(0.0), vec3(5.0));

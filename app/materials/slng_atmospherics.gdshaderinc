@@ -56,6 +56,7 @@ global uniform float slng_cloud_shadow;
 global uniform float slng_sun_moon_glow_factor;
 global uniform vec4 slng_glow;
 global uniform vec3 slng_sun_direction_view;
+global uniform vec3 slng_sun_direction;
 
 // out_additive is the IN-SCATTERED light, handed back separately so the caller can route it into
 // EMISSION rather than ALBEDO. That distinction is the viewer's, not a Godot detail:
@@ -114,7 +115,22 @@ vec3 slng_apply_atmospherics(vec3 color, vec3 view_position, out vec3 out_additi
 
     vec3 amb_color   = slng_ambient.rgb;
     vec3 tmp_ambient = amb_color + (vec3(1.0) - amb_color) * slng_cloud_shadow * 0.5;
-    vec3 cs          = slng_sunlight_color.rgb * (1.0 - slng_cloud_shadow);
+
+    // Sunlight ATTENUATED by the atmosphere it travelled through -- viewer atmosphericsFuncs.glsl
+    // lines 66 and 76. Leaving this out is what kept the haze warm where the sky beside it had
+    // already gone grey: the sky applies its own attenuation, this seam did not, so the two
+    // disagreed at exactly the place they have to meet. Reported live as "in FS the fog just lies
+    // over sky and water so you cannot see the transition" -- which is what one shared value looks
+    // like, and two values cannot fake.
+    //
+    // The factor is the LIGHT's elevation only, not the view direction (that variant belongs to
+    // skyV); slng_sun_direction is the world-space sun, so its .y is that elevation directly.
+    vec3 light_atten = (slng_blue_density.rgb + vec3(slng_haze_density * 0.25))
+                     * (slng_density_multiplier * slng_max_y);
+    float above_horizon = 1.0 / max(1e-6, slng_sun_direction.y);
+    vec3 sunlight = slng_sunlight_color.rgb * exp(-light_atten * above_horizon);
+
+    vec3 cs = sunlight * (1.0 - slng_cloud_shadow);
 
     vec3 additive = (slng_blue_horizon.rgb * blue_weight) * (cs + tmp_ambient)
                   + (vec3(slng_haze_horizon) * haze_weight) * (cs * haze_glow + tmp_ambient);

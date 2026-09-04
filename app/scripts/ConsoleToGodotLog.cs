@@ -81,7 +81,10 @@ public static class ConsoleToGodotLog
                 string text = _line.ToString();
                 _line.Clear();
 
-                PerfSidecar.MaybeWrite(text);
+                // A line that belongs to the perf sidecar has a home already. Repeating it in
+                // godot.log only crowds out the failure diagnostics that file exists for, so it
+                // goes there as well only under --diag.
+                if (PerfSidecar.MaybeWrite(text) && !Diagnostics.Enabled) return;
 
                 // GD.PrintErr is what lands in godot.log as an error entry; stderr from the
                 // libraries is where the failure diagnostics live, so keep the distinction.
@@ -123,6 +126,10 @@ internal static class PerfSidecar
         "[Perf]", "[WorkCost]", "[PhaseCost]",
         // FEAT-RENDER-08: the atmosphere inputs and what they attenuate to. One line per change.
         "[SkyAtmos]",
+        // Per-batch material resolution -- ~200 lines a session, and it lives in SLNG.Net, which
+        // cannot reach Diagnostics (that is an app type and src/ must not depend on Godot). The
+        // sidecar is how a src/-side diagnostic gets the same treatment: kept, but out of the way.
+        "[LegacyMat]",
     };
 
     private static StreamWriter? _writer;
@@ -133,15 +140,18 @@ internal static class PerfSidecar
     /// test. For callers inside the app assembly that log through Godot rather than Console.</summary>
     internal static void Write(string line) => WriteCore(line);
 
-    internal static void MaybeWrite(string line)
+    /// <returns>True when the line belonged to the sidecar, so the caller can keep it out of
+    /// godot.log.</returns>
+    internal static bool MaybeWrite(string line)
     {
         bool wanted = false;
         foreach (var p in _prefixes)
         {
             if (line.StartsWith(p, StringComparison.Ordinal)) { wanted = true; break; }
         }
-        if (!wanted) return;
+        if (!wanted) return false;
         WriteCore(line);
+        return true;
     }
 
     private static void WriteCore(string line)

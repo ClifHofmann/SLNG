@@ -1664,6 +1664,7 @@ public partial class AvatarRenderer : Node3D
     /// the same blind spot that cost two diagnostic rounds on FEAT-RENDER-06's black HUDs.</summary>
     private static void LogBomFace(Guid meshId, int faceIndex, int bakeIndex, Guid resolved)
     {
+        if (!Diagnostics.Enabled) return;
         string outcome = resolved == Guid.Empty ? "UNRESOLVED" : resolved.ToString("N")[..8];
         string key = $"{meshId:N}:{faceIndex}:{bakeIndex}:{outcome}";
         lock (_bomFaceLogged)
@@ -1687,6 +1688,7 @@ public partial class AvatarRenderer : Node3D
         }
 
         string tex = ft.TextureId == Guid.Empty ? "(none)" : ft.TextureId.ToString()[..8];
+        if (!Diagnostics.Enabled) return;
         GD.Print($"[HudFace] mesh={meshId.ToString("N")[..8]} face={faceIndex} tex={tex} " +
             $"tint=({tint.R:0.##},{tint.G:0.##},{tint.B:0.##},{tint.A:0.##}) " +
             $"fullbright={ft.Fullbright} -> {outcome}");
@@ -1825,6 +1827,7 @@ public partial class AvatarRenderer : Node3D
         {
             if (!_avatarAlphaLogged.Add(key)) return (kind, threshold);
         }
+        if (!Diagnostics.Enabled) return (kind, threshold);
         GD.Print($"[AvatarAlpha] {texId.ToString()[..8]} bom={(bomChannel >= 0 ? bomChannel.ToString() : "-")} " +
                  $"minA={min} fracMid={fracMid:0.###} fracClear={fracClear:0.###} -> {kind}" +
                  (kind == PrimShaderFamily.Kind.Scissor ? $" @{threshold:0.##}" : ""));
@@ -1911,7 +1914,7 @@ public partial class AvatarRenderer : Node3D
         lock (_bomFaceLogged) { announce = _bomFaceLogged.Add(key); }
         if (announce)
         {
-            GD.Print($"[BomFace] mesh={meshId.ToString("N")[..8]} registered " +
+            if (Diagnostics.Enabled) GD.Print($"[BomFace] mesh={meshId.ToString("N")[..8]} registered " +
                 (usesBom ? $"BoM channels [{string.Join(", ", channels)}] over {faceIndices.Length} face(s)"
                          : $"NO BoM channels over {faceIndices.Length} face(s) -- renders from its own textures"));
 
@@ -1925,7 +1928,7 @@ public partial class AvatarRenderer : Node3D
                 var ids = (faces ?? System.Array.Empty<FaceTexture>())
                     .Take(6)
                     .Select(f => f.TextureId == Guid.Empty ? "EMPTY" : f.TextureId.ToString("N")[..8]);
-                GD.Print($"[BomFace]   face ids: [{string.Join(" ", ids)}]  " +
+                if (Diagnostics.Enabled) GD.Print($"[BomFace]   face ids: [{string.Join(" ", ids)}]  " +
                     $"default={(defaultFace.TextureId == Guid.Empty ? "EMPTY" : defaultFace.TextureId.ToString("N")[..8])}" +
                     $"  facesArray={(faces == null ? "null" : faces.Length.ToString())}");
             }
