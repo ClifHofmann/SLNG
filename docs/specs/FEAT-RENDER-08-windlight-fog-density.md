@@ -162,3 +162,40 @@ already registered globals; `glow` and the sun/ambient colours would have to be 
       in-world.**
 - [ ] In-scatter / haze glow toward the sun.
 
+## Final state of this session (`v0.20.79`)
+
+The seam is a faithful port of `calcAtmosphericVars` + `atmosFragLighting`. Five deviations were
+found, each of which was the whole problem at the time:
+
+1. **Extinction was scalar.** The viewer's is a `vec3`, composited as `color * atten.r`.
+2. **Wrong transfer function.** `additive` was added as raw sRGB into a linear frame — ALBEDO is
+   `source_color` (Godot linearises on sample) and the sky ends on `srgb_to_linear`. A parameter
+   probe cannot detect this; no amount of density tuning would ever have found it.
+3. **No in-scatter at all.** Extinction alone can never make a horizon merge — the blue of
+   distance comes from `additive`, not from per-channel extinction.
+4. **`haze_glow` pinned at its 0.25 floor.** With `haze_weight` at 0.96 the in-scatter IS the
+   haze branch, so this deleted the dominant term. Needed a view-space sun direction, published
+   per frame by `AvatarController` (`VIEW_MATRIX` is only in scope inside `fragment()`).
+5. **In-scatter routed through ALBEDO.** Godot then multiplied the haze by the scene lighting, so
+   at dusk the haze dimmed with the sun. The viewer adds it to the *finished* pixel; it goes
+   through `EMISSION` now.
+
+**Measured healthy inputs** (live region, `[SkyAtmos]`): sun at 34.86°, attenuation 0.855,
+`haze_weight` 0.962, `atten.r` 0.278 at 176 m and 0.001 at 1 km. So the remaining problems are
+not in this seam.
+
+### Still open
+
+- **Sky too dark toward the horizon.** `sky.gdshader`'s own gradient (`sky_col` blending toward
+  `sky_below` via `sky_haze`, ~lines 230–250). Not measured — measure before changing.
+- **No wave structure, sea reads flat.** `[EnvTex]` proves the normal map loads (256×256). This
+  is the reflection path: `METALLIC = 0` and a weak Schlick term leave nothing for the wave
+  normals to modulate. Firestorm's ripples are visible *because* they break a strong sky
+  reflection, which is also where its warm water colour comes from.
+
+### One deviation still carried deliberately
+
+`sky_hdr_scale` is omitted (the viewer's HDR exposure, 1.0 outside it). The sunlight attenuation
+`exp(-light_atten * above_horizon_factor)` IS applied, in both the seam and the sky's ground
+band, from the active body (sun or moon) so the divisor is never a near-zero elevation.
+

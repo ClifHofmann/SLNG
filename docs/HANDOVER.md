@@ -5,6 +5,147 @@
 
 ---
 
+# 2026-09-04 — FEAT-RENDER-08 atmospherics + inventory + perf. 18 commits, NOT pushed.
+
+`v0.20.57` → `v0.20.79-alpha` (the perf work below starts at `v0.20.51`, already pushed
+through `v0.20.56`). Working tree clean, everything committed, **nothing pushed**
+(`origin/main` is at `7575a01`). Every commit is verified (both builds, 604 tests, `dotnet
+format`, `check_shader_globals`, selftest 32/32) and **almost nothing is verified in-world** —
+read the "Open" section before assuming any of it works.
+
+## Read this first: how this session went wrong, four times
+
+FEAT-RENDER-08 took fourteen commits and at least four of them were wrong turns. Every one had
+the same shape: **I changed the shader before measuring what it was computing from.** The
+corrections are all in the commit messages, but the pattern is worth carrying forward:
+
+1. Rewrote the haze formula three times while the term was multiplied by ~0.02 — the region's
+   own numbers said 1.3 % haze at the draw distance. One diagnostic line answered it, and it ran
+   during the **selftest**, with no login.
+2. Registered a global as `"vector3"` (Godot wants `"vec3"`). Godot silently ignores an
+   unrecognised type, so the global was never registered and the directional haze glow — a change
+   I had "shipped" and reasoned about for two commits — had never once executed. 186,149 shader
+   warnings in one session said so, and `check_shader_globals` said "28 registered, 0 stale"
+   throughout because it only compared names. **It compares types now.**
+3. `[SkyAtmos]` read `LastSunDirectionGodot` ninety lines before that field was assigned, so it
+   reported the *previous* call's sun. It printed `activeLight.y=0 -> sunlight scaled by 0`, a
+   number clean enough that I nearly built another shader change on it. Real value: **34.86°,
+   attenuation 0.855**.
+4. The same line reported haze_glow's 0.25 *floor* as the away-from-sun value. The floor is
+   ADDED to the directional term, not substituted for it — it understated the in-scatter about
+   sevenfold (0.25 against a real 1.87).
+
+**A diagnostic that reads its subject before the subject is written, or that reports a floor as
+a value, is worse than none: it is a wrong answer wearing a measurement's clothes.** Both were
+caught only by cross-checking against the vendored viewer source and a captured EEP quaternion.
+
+## Where FEAT-RENDER-08 actually stands
+
+The seam (`app/materials/slng_atmospherics.gdshaderinc`) is now a faithful port of the viewer's
+`calcAtmosphericVars` + `atmosFragLighting`, and **its inputs are measured healthy**:
+
+    [SkyAtmos] hazeDensity=4 densityMul=0.0002223 distanceMul=7.87 blueDensity.r=0.16 maxY=347
+               | atten.r@176m=0.278 @1km=0.001 @4km=0
+    [SkyAtmos] elevation=34.86deg activeLight.y=0.5716 -> sunlight scaled by 0.8551
+    [SkyAtmos] blueHorizon=(0.2,0.2,0.2) ambient=(0.291,0.42,0.506) sunlight=(0.911,0.618,0.529)
+               glow=(0.2,0,-0.3) | blueWeight=0.038 hazeWeight=0.962
+
+Five structural deviations from the viewer were found and fixed, in this order — each one was
+the whole problem at the time:
+
+| # | What was wrong | Commit |
+|---|---|---|
+| 1 | extinction was a scalar; the viewer's is a `vec3` and composites `color * atten.r` | `1e037a4` |
+| 2 | `additive` was added raw sRGB into a **linear** frame (ALBEDO is `source_color`, the sky ends on `srgb_to_linear`) | `e9f61d7` |
+| 3 | no in-scatter at all — extinction alone can never make a horizon merge | `761b9ea` |
+| 4 | the directional `haze_glow` was pinned at its floor; with `haze_weight` 0.96 it IS the in-scatter | `dfd8d84` |
+| 5 | `additive` went into ALBEDO, so Godot multiplied the haze by the scene lighting; the viewer adds it to the **finished** pixel | `1204c95` |
+
+Live verdict after all five: **water fades correctly, the lighthouse reads correctly.** Two
+things remain wrong, and neither is in this seam any more:
+
+- **Sky still too dark toward the horizon.** The inputs are healthy (above), so this is the sky
+  shader's own gradient — `sky_col` blending toward `sky_below` via `sky_haze` around
+  `sky.gdshader:230-250`. **Not measured yet.** Do that before touching it.
+- **No wave structure on the water, and the sea reads flat.** `[EnvTex]` proved the normal map
+  loads (`water normal: applied 822ded49… (256x256)`), so this is shading, not loading. Almost
+  certainly the reflection path: `water.gdshader` sets `METALLIC = 0` and Godot's Schlick term is
+  weak, so there is barely any reflection for the wave normals to modulate. In Firestorm the
+  ripples are visible **because** they break up a strong sky reflection — which is also where
+  FS's warm water colour comes from, not from the haze term.
+
+## Diagnostics built this session (use them, they are the point)
+
+- **`user://logs/slng-perf.log`** — always-flushed sidecar, written per line. `godot.log` is
+  buffered and loses everything on an unclean exit (one session came back as 437 kB of NULs).
+  Carries `[TexPipe]`, `[GpuCache]`, `[SkyAtmos]`, `[EnvTex]`, `[LegacyMat]`, and since
+  `2bbcac3` also `[Perf]`/`[WorkCost]`/`[PhaseCost]` — **which no longer need `--diag`.** Before
+  that, not one session log in the project's history contained a single `[Perf]` line.
+- **`[SkyAtmos]`** — every atmosphere input, the sun vector in both spaces with its elevation,
+  and what the numbers attenuate to at 176 m / 1 km / 4 km. Fires on change; also fires during
+  the headless selftest, so a question can often be answered without logging in.
+- **`[EnvTex]`** — whether each environment texture (water normal, cloud, sun, moon) actually
+  arrived, or why it did not.
+- **`check_shader_globals.py`** now validates TYPES against each shader's `global uniform`
+  declaration. `vec4` may register as `"vec4"` or `"color"`; anything Godot would not recognise
+  is an error.
+- **`--diag` gating**: `[BomFace]`, `[AvatarAlpha]`, `[HudFace]`, `[Particles]` are behind it
+  now, and sidecar lines no longer duplicate into `godot.log`. Result: **1112 lines → 32.**
+
+## The rest of the session
+
+**Performance (`v0.20.51`–`.62`, BUG-NET-11).** The "textures load extremely slowly" wall was
+never the decoder. `MainThreadWorkQueue` runs a 3 ms/frame budget and always runs ≥1 item per
+lane per frame, and each texture upload was ONE item doing `CreateFromData` + `FixAlphaEdges` +
+`Resize` + `GenerateMipmaps` + `CreateFromImage` — 10–30 ms for a 1024². One texture per frame;
+8800 requests ≈ 2.5–5 minutes regardless of decode speed. Moved everything but the GPU upload to
+a worker, added an adaptive budget (3→9 ms while backlogged), and later added **reduce-level
+decode** (`TextureLod`; note ImageMagick's `jp2:reduce-factor` divides each dimension by **4^N,
+not 2^N**). Then `[WorkCost]` found the real remaining cost: `prim.legacy_default_face` at
+**2035 ms per 5 s — 41 % of all wall clock** — because `ApplyAlphaCutout` called
+`tex.GetImage()`, a full VRAM readback, plus a per-pixel `DetectAlpha()`, on the main thread once
+per textured face. Computed on the worker instead (`bf8584b`); it dropped to **0.8 ms**.
+Live result: p99 128 ms → 16.4 ms, hitches 2–5/s → **0**, stable 64 fps.
+
+**Inventory (`v0.20.57`–`.60`, BUG-INV-01 + FEAT-INV-05).** All fourteen remaining
+`Callable.From(lambda).CallDeferred()` sites in `InventoryPanel.cs` were on worker threads (every
+await there is `ConfigureAwait(false)`) — the pattern that crashes with `AccessViolationException`
+and that had already silently no-op'd "Ablegen". Replaced with one `RunOnMainThread` helper.
+"Outfit aufräumen" turned out to be a **permanent** no-op: its gate required `linkUnresolved == 0`,
+which cannot be satisfied by waiting because LibreMetaverse's store only holds folders somebody
+fetched. It now fetches the missing targets first, and deletes links whose target the server
+confirms is gone. FEAT-INV-05 added the per-item context menu inside an outfit (the rows were
+`SetMetadata(0, "")` and not selectable, so the handler bailed before reaching a menu).
+
+**Avatar bake (`v0.20.56`, `f34e816`, BUG-AVATAR-03).** The blank-head/uncut-hair state is the sim
+not sending our own `AvatarAppearance`. A watchdog nudges `UpdateAvatarAppearance` — and the live
+log showed it **accepted twice and changed nothing**, because the viewer's own
+`serverAppearanceUpdateCoro` refuses to send when `cofVersion <= lastReceived`: the server will
+not re-composite a COF version it has already served. So `TryPublishSelfBakesFromScene` now
+harvests the ids from our own ObjectUpdate TextureEntry instead, which is where they also travel.
+
+**Gemini** worked FEAT-RENDER-08 in the same working tree concurrently. Their in-flight changes
+were committed as `a911215` with attribution, then built on. Two of their ROADMAP edits got swept
+into commits of mine (`9435e58`) — watch for that; AGENTS.md's one-agent-per-worktree rule was
+not being honoured.
+
+## Open, in the order I would take them
+
+1. **Push.** 18 commits, `origin/main` is at `7575a01`.
+2. **Sky horizon gradient** — measure `sky.gdshader`'s below-horizon blend before changing it.
+3. **Water reflection path** — `METALLIC`/fresnel in `water.gdshader`. Get a target RGB by
+   sampling a saved Firestorm screenshot rather than judging by eye; four rounds were lost to eye.
+4. **FEAT-PERF-04** (spec written, `9435e58`): the GPU cache sits at 2349 MB against a 1536 MB
+   budget with **100 % of entries un-evictable** — not a leak, the scene genuinely needs it, so
+   enforcement has to act on upload resolution, not eviction.
+5. Unverified in-world: `depth_prepass_alpha` on hair and BoM heads; the Outfits per-item
+   actions; `missing-target` outfit cleanup; the self-bake harvest (only fires when the sim drops
+   the packet).
+6. `dda710d4` (a remote avatar's hair) — 403 on HTTP, and the new UDP fallback timed out too.
+   Firestorm shows it, so it is likely coming from FS's own cache.
+
+---
+
 # 2026-09-03 (later) — `v0.20.51` → `v0.20.60`
 
 **`v0.20.50`'s log was unusable.** `godot.log`'s body came back as 437 kB of NUL bytes (the
