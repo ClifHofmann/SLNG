@@ -644,7 +644,27 @@ void sky() {
     // to 16 km would also close the gap and was rejected on cost -- it stretches the depth range
     // over everything in the frame for one sliver of horizon.
     float ground_blend = smoothstep(0.0, -0.1, EYEDIR.y);
-    vec3 ground_color = clamp(sky_below * 2.0, vec3(0.0), vec3(5.0));
+
+    // v0.20.69 used sky_below here, which was close but not the same value, and the difference was
+    // visible as a grey band sitting between warm water and warm clouds. sky_below is built from
+    // `sunlight` -- the light colour AFTER the per-view-direction attenuation on line ~206 -- while
+    // slng_atmospherics.gdshaderinc builds its in-scatter from the raw slng_sunlight_color. Near the
+    // horizon that attenuation is strong, so the sky's version lost most of the warm term and went
+    // grey while the water below it stayed pink.
+    //
+    // Measured for the live region (blue_horizon 0.2 grey, haze_weight 0.962, sunlight
+    // (0.911,0.618,0.529), cloud_shadow 0.52): the seam's in-scatter is (0.236,0.254,0.273) looking
+    // away from the sun and (0.507,0.439,0.431) toward it -- cool grey-blue one way, warm the other.
+    // That IS the colour distant water converges to, so the band has to be built the same way.
+    //
+    // Deviation from the viewer, stated rather than hidden: calcAtmosphericVars attenuates its
+    // sunlight (`sunlight *= exp(-light_atten * above_horizon_factor)`, atmosphericsFuncs.glsl:76)
+    // and neither our seam nor this band does. Both are now on the same unattenuated footing, so
+    // they agree with each other; that is one deviation to revisit, not two halves disagreeing.
+    vec3 seam_cs = slng_sunlight_color.rgb * (1.0 - slng_cloud_shadow);
+    vec3 ground_haze = (slng_blue_horizon.rgb * blue_weight) * (seam_cs + tmpAmbient)
+                     + (vec3(slng_haze_horizon) * haze_weight) * (seam_cs * haze_glow_sky + tmpAmbient);
+    vec3 ground_color = clamp(ground_haze * 2.0, vec3(0.0), vec3(5.0));
     sky_color = mix(sky_color, ground_color, ground_blend);
     
     // The viewer's sky is DISPLAY-REFERRED, not scene-linear, and that mismatch -- not the haze
