@@ -29,6 +29,34 @@ against `GridSession`'s inventory + worn-item API.
 
 ## Fixed so far
 
+### Root cause: worn attachments were never written to the Current Outfit folder (`v0.20.100-alpha`)
+**Live, 2026-09-07 (`v0.20.99`).** *"Ich hab die braunen Haare gegen blonde getauscht und Hose
+gegen Rock … jetzt eingeloggt und nun hab ich weder Rock, noch Hose noch Haare."* After every
+outfit save + relog the swapped-in pieces were gone — the symptom the 400-chasing (`v0.20.94`–
+`v0.20.99`) never actually cured, because the 400s were a side-show.
+
+`AttachItemAsync`'s object branch called `_client.Appearance.Attach(...)` and returned. That
+sends only `RezSingleAttachmentFromInv`; LibreMetaverse's `AppearanceManager.Attach` **never
+touches the COF** (its `CurrentOutfitFolder` / `CompositeCurrentOutfitPolicy` is not wired up in
+SLNG — the COF is hand-managed here). So a worn mesh attachment — DOUX hair, a mesh skirt —
+was on the avatar for the session only:
+
+- **relog:** SL's server-side bake recomposites the avatar from the COF → no link, not worn.
+- **outfit save:** every save path now slams COF links (`v0.20.97`/`v0.20.99`) → not in the COF,
+  not in the saved outfit either.
+
+`WearWearableAsync` already writes a COF link for system layers; `DetachItemAsync` already
+*removes* COF links — only the attach-an-object half was missing, so wear/relog was lossy and
+every swap dropped the new attachment.
+
+**Fix:** after `_client.Appearance.Attach`, `AttachItemAsync` now calls
+`EnsureCofLinkForItemAsync(item, InventoryType.Object)` — a `CreateLinkAsync` into the COF,
+guarded against duplicates, **no bake or appearance send** (an inventory link only, unlike the
+wearable path). `WearOutfitAttachmentsAsync` / `ReplaceWornWithOutfitAttachmentsAsync` (loops of
+`AttachItemAsync`) now persist too. `replace: true` on an attach point still leaves the
+replaced item's stale link for `CleanUpCurrentOutfit` to reap — known gap. **Not yet
+re-verified in-world** (the one that matters: swap an attachment, relog, it's still on).
+
 ### Saving a *new* outfit — slam from the COF, and mark it active (`v0.20.99-alpha`)
 **Live, 2026-09-07 (`v0.20.98`).** New outfit saved; 2 of 13 links 400'd —
 `[Outfits] link create for 45536360-… ('DOUX - Yadira Hairstyle') into dedc7279-… came back

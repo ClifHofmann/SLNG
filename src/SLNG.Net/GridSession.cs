@@ -5065,7 +5065,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// preparation fails the wear is refused with <see cref="WearableEditUnavailable"/>. Handles
     /// item IDs and links.
     /// </summary>
-    public Task AttachItemAsync(Guid itemId, byte attachPoint = 0, bool replace = false)
+    public async Task AttachItemAsync(Guid itemId, byte attachPoint = 0, bool replace = false)
     {
         var itemUuid = new LibreMetaverse.UUID(itemId);
         var store = _client.Inventory.Store;
@@ -5087,10 +5087,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (ClassifyItem(realItem is LibreMetaverse.InventoryWearable, (int)realItem.AssetType)
                 == WearableKind.Wearable)
             {
-                return WearWearableAsync(realItem, replace);
+                await WearWearableAsync(realItem, replace).ConfigureAwait(false);
+                return;
             }
 
             _client.Appearance.Attach(realItem, (LibreMetaverse.AttachmentPoint)attachPoint, replace);
+            // LibreMetaverse's Attach only sends RezSingleAttachmentFromInv — it never records the
+            // item in the Current Outfit folder. Without a COF link the attachment is on the avatar
+            // this session only: SL's server-side bake recomposites from the COF on the next relog,
+            // and every outfit-save slams COF links, so a worn-but-unlinked attachment silently
+            // vanishes on relog and is missing from any outfit saved while it was on.
+            // WearWearableAsync already writes this link for system layers.
+            await EnsureCofLinkForItemAsync(realItem, LibreMetaverse.InventoryType.Object).ConfigureAwait(false);
+            WornItemsChanged?.Invoke(this, EventArgs.Empty);
         }
         else
         {
@@ -5104,7 +5113,38 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 (LibreMetaverse.AttachmentPoint)attachPoint,
                 replace);
         }
-        return Task.CompletedTask;
+    }
+
+    /// <summary>Creates a Current-Outfit link for <paramref name="item"/> unless one already
+    /// exists. See the call in <see cref="AttachItemAsync"/> for why an attachment needs this
+    /// explicitly — no bake or appearance send is triggered, this is an inventory link only.</summary>
+    private async Task EnsureCofLinkForItemAsync(LibreMetaverse.InventoryItem item, LibreMetaverse.InventoryType invType)
+    {
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        if (cofUuid == LibreMetaverse.UUID.Zero || item.UUID == LibreMetaverse.UUID.Zero) return;
+
+        var store = _client.Inventory.Store;
+        var cofNode = store?.GetNodeOrDefault(cofUuid);
+        if (cofNode != null)
+            foreach (var child in cofNode.Nodes.Values)
+            {
+                if (child.Data is not LibreMetaverse.InventoryItem link || !link.IsLink()) continue;
+                var target = link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID;
+                if (target == item.UUID) return; // already recorded
+            }
+
+        try
+        {
+            var created = await _client.Inventory.CreateLinkAsync(
+                cofUuid, item.UUID, item.Name, string.Empty, invType, LibreMetaverse.UUID.Zero).ConfigureAwait(false);
+            Console.Error.WriteLine(created == null
+                ? $"[Appearance] COF link for '{item.Name}' ({item.UUID}) came back empty"
+                : $"[Appearance] recorded '{item.Name}' in the Current Outfit folder");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Appearance] could not COF-link '{item.Name}': {ex.Message}");
+        }
     }
 
     /// <summary>
