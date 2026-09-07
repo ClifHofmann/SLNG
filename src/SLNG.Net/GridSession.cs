@@ -5222,37 +5222,63 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return false;
     }
 
+    // Library-item-id -> the owned copy we made this session, so re-wearing the same starter
+    // item never copies twice. Cross-session dedup is the AssetUUID scan in the method below.
+    private readonly Dictionary<LibreMetaverse.UUID, LibreMetaverse.UUID> _libraryCopyCache = new();
+
     /// <summary>Copies a <c>#Library</c> item into the agent's own inventory so it can be linked
-    /// into an outfit — reusing an earlier same-name copy in the destination folder rather than
-    /// piling up duplicates. Returns the owned copy, or null if the copy failed.</summary>
+    /// into an outfit. Never makes a second copy of the same starter item: a session cache
+    /// short-circuits a re-wear, and otherwise the whole owned inventory is scanned for an
+    /// existing copy of the <b>same asset</b> (<c>AssetUUID</c>, which a copy shares with its
+    /// original). Returns the owned copy, or null if the copy failed.</summary>
     private async Task<LibreMetaverse.InventoryItem?> CopyLibraryItemForOutfitAsync(LibreMetaverse.InventoryItem libItem)
     {
         var store = _client.Inventory.Store;
+        if (store == null) return null;
 
-        // Destination: the system folder for the item's asset type, falling back to the root.
+        // 1. Already copied this session?
+        if (_libraryCopyCache.TryGetValue(libItem.UUID, out var cachedId)
+            && store.GetNodeOrDefault(cachedId)?.Data is LibreMetaverse.InventoryItem cached && !cached.IsLink())
+            return cached;
+
+        // 2. A copy from an earlier session? A copy shares the original's AssetUUID.
+        if (libItem.AssetUUID != LibreMetaverse.UUID.Zero && store.RootFolder != null)
+        {
+            var stack = new Stack<LibreMetaverse.UUID>();
+            stack.Push(store.RootFolder.UUID);
+            while (stack.Count > 0)
+            {
+                var node = store.GetNodeOrDefault(stack.Pop());
+                if (node == null) continue;
+                foreach (var child in node.Nodes.Values)
+                {
+                    switch (child.Data)
+                    {
+                        case LibreMetaverse.InventoryFolder:
+                            stack.Push(child.Data.UUID);
+                            break;
+                        case LibreMetaverse.InventoryItem c when !c.IsLink()
+                            && c.OwnerID == _client.Self.AgentID
+                            && c.AssetUUID == libItem.AssetUUID
+                            && c.AssetType == libItem.AssetType:
+                            Console.Error.WriteLine($"[Appearance] reusing existing copy of Library item '{libItem.Name}'");
+                            _libraryCopyCache[libItem.UUID] = c.UUID;
+                            return c;
+                    }
+                }
+            }
+        }
+
+        // 3. Make the copy — into the system folder for the item's asset type.
         var destType = libItem.AssetType switch
         {
             LibreMetaverse.AssetType.Bodypart => LibreMetaverse.FolderType.BodyPart,
             LibreMetaverse.AssetType.Clothing => LibreMetaverse.FolderType.Clothing,
-            LibreMetaverse.AssetType.Object => LibreMetaverse.FolderType.Object,
             _ => LibreMetaverse.FolderType.Object,
         };
         var dest = _client.Inventory.FindFolderForType(destType);
-        if (dest == LibreMetaverse.UUID.Zero) dest = store?.RootFolder?.UUID ?? LibreMetaverse.UUID.Zero;
+        if (dest == LibreMetaverse.UUID.Zero) dest = store.RootFolder?.UUID ?? LibreMetaverse.UUID.Zero;
         if (dest == LibreMetaverse.UUID.Zero) return null;
-
-        // Reuse an owned copy from a previous wear.
-        var destNode = store?.GetNodeOrDefault(dest);
-        if (destNode != null)
-            foreach (var n in destNode.Nodes.Values)
-                if (n.Data is LibreMetaverse.InventoryItem c && !c.IsLink()
-                    && c.OwnerID == _client.Self.AgentID
-                    && string.Equals(c.Name, libItem.Name, StringComparison.Ordinal)
-                    && c.AssetType == libItem.AssetType)
-                {
-                    Console.Error.WriteLine($"[Appearance] reusing existing copy of Library item '{libItem.Name}'");
-                    return c;
-                }
 
         try
         {
@@ -5261,6 +5287,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (copied is LibreMetaverse.InventoryItem ci)
             {
                 Console.Error.WriteLine($"[Appearance] copied Library item '{libItem.Name}' into your inventory ({ci.UUID})");
+                _libraryCopyCache[libItem.UUID] = ci.UUID;
                 return ci;
             }
         }
