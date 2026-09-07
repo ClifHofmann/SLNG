@@ -5665,7 +5665,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     await Task.Delay(TimeSpan.FromSeconds(i == 0 ? schedule[0] : schedule[i] - schedule[i - 1]))
                         .ConfigureAwait(false);
                     if (!_client.Network.Connected) return;
-                    if (ReattachMissingCofAttachments() == 0 && i > 0) return;
+                    if (ReattachMissingCofAttachments(dumpEveryLink: i == 1) == 0 && i > 0) return;
                 }
             }
             catch (Exception ex)
@@ -5677,8 +5677,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     /// <summary>Re-sends an attach for every Current-Outfit attachment link whose target is not in
     /// the scene and was never seen worn this session. Returns how many re-attach requests were
-    /// sent.</summary>
-    private int ReattachMissingCofAttachments()
+    /// sent. <paramref name="dumpEveryLink"/> logs one line per COF child so an item that keeps
+    /// being excluded can be diagnosed.</summary>
+    private int ReattachMissingCofAttachments(bool dumpEveryLink = false)
     {
         var store = _client.Inventory.Store;
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
@@ -5694,23 +5695,34 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var byRawUuid = new List<LibreMetaverse.UUID>();
         foreach (var childNode in cofNode.Nodes.Values)
         {
-            if (childNode.Data is not LibreMetaverse.InventoryItem link || !link.IsLink()) continue;
+            var link = childNode.Data as LibreMetaverse.InventoryItem;
+            if (link == null) { if (dumpEveryLink) Console.Error.WriteLine("[Reconcile] COF child is a folder — skip"); continue; }
+
+            var targetId = link.IsLink()
+                ? (link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID)
+                : link.UUID;
+            var target = targetId != LibreMetaverse.UUID.Zero
+                ? store?.GetNodeOrDefault(targetId)?.Data as LibreMetaverse.InventoryItem
+                : null;
+            bool inScene = worn.Contains(targetId.Guid);
+            bool seen = _attachmentsSeenWornThisSession.Contains(targetId.Guid);
+
+            if (dumpEveryLink)
+                Console.Error.WriteLine(
+                    $"[Reconcile] '{link.Name}' link={link.IsLink()} linkAT={link.AssetType} linkIT={link.InventoryType} " +
+                    $"target={targetId} inStore={(target != null)} targetAT={target?.AssetType.ToString() ?? "-"} " +
+                    $"inScene={inScene} seenThisSession={seen}");
+
             if (link.AssetType == LibreMetaverse.AssetType.LinkFolder) continue;
+            if (targetId == LibreMetaverse.UUID.Zero || inScene || seen) continue;
 
-            var targetId = link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID;
-            if (targetId == LibreMetaverse.UUID.Zero) continue;
-            if (worn.Contains(targetId.Guid) || _attachmentsSeenWornThisSession.Contains(targetId.Guid)) continue;
-
-            var target = store?.GetNodeOrDefault(targetId)?.Data as LibreMetaverse.InventoryItem;
             if (target != null)
             {
                 if (target.AssetType == LibreMetaverse.AssetType.Object) byItem.Add(target);
                 // else: wearable / gesture — no scene object to reconcile
             }
-            // Target not streamed in yet: only an attachment link carries InventoryType.Object
-            // (SLNG and the reference viewer both set it); a wearable link is Wearable. That flag
-            // survives without the target node, so use it to decide a best-effort raw attach.
-            else if (link.InventoryType == LibreMetaverse.InventoryType.Object)
+            else if (link.InventoryType == LibreMetaverse.InventoryType.Object
+                     || link.AssetType == LibreMetaverse.AssetType.Object)
             {
                 byRawUuid.Add(targetId);
             }
