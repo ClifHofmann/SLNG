@@ -29,6 +29,180 @@ against `GridSession`'s inventory + worn-item API.
 
 ## Fixed so far
 
+### Root cause: worn attachments were never written to the Current Outfit folder (`v0.20.100-alpha`)
+**Live, 2026-09-07 (`v0.20.99`).** *"Ich hab die braunen Haare gegen blonde getauscht und Hose
+gegen Rock … jetzt eingeloggt und nun hab ich weder Rock, noch Hose noch Haare."* After every
+outfit save + relog the swapped-in pieces were gone — the symptom the 400-chasing (`v0.20.94`–
+`v0.20.99`) never actually cured, because the 400s were a side-show.
+
+`AttachItemAsync`'s object branch called `_client.Appearance.Attach(...)` and returned. That
+sends only `RezSingleAttachmentFromInv`; LibreMetaverse's `AppearanceManager.Attach` **never
+touches the COF** (its `CurrentOutfitFolder` / `CompositeCurrentOutfitPolicy` is not wired up in
+SLNG — the COF is hand-managed here). So a worn mesh attachment — DOUX hair, a mesh skirt —
+was on the avatar for the session only:
+
+- **relog:** SL's server-side bake recomposites the avatar from the COF → no link, not worn.
+- **outfit save:** every save path now slams COF links (`v0.20.97`/`v0.20.99`) → not in the COF,
+  not in the saved outfit either.
+
+`WearWearableAsync` already writes a COF link for system layers; `DetachItemAsync` already
+*removes* COF links — only the attach-an-object half was missing, so wear/relog was lossy and
+every swap dropped the new attachment.
+
+**Fix:** after `_client.Appearance.Attach`, `AttachItemAsync` now calls
+`EnsureCofLinkForItemAsync(item, InventoryType.Object)` — a `CreateLinkAsync` into the COF,
+guarded against duplicates, **no bake or appearance send** (an inventory link only, unlike the
+wearable path). `WearOutfitAttachmentsAsync` / `ReplaceWornWithOutfitAttachmentsAsync` (loops of
+`AttachItemAsync`) now persist too. `replace: true` on an attach point still leaves the
+replaced item's stale link for `CleanUpCurrentOutfit` to reap — known gap.
+
+**`v0.20.101`–`v0.20.103`: it's `#Library` items.** The `v0.20.101` diagnostic dump named it —
+the two attachments that kept 400'ing the COF link (`DOUX - Yadira Hairstyle`, an `Addams`
+mesh skirt) are **SL starter-avatar items that live under the `#Library` root**:
+`owner=<Library account>`, `mine=False`, but `assetType=Object`, `isLink=False`,
+`perms=Transfer,Copy,Move`, parent a normal-looking branded folder. A Library item wears fine
+but AIS refuses to link one into your COF — you don't own it. The reference viewer copies a
+Library item into your inventory first and links the copy
+(`LLAppearanceMgr::wearItemsOnAvatar`, "item under Library root → copy first").
+
+`v0.20.103`: `EnsureCofLinkForItemAsync` now, when the target is `IsUnderLibrary`, calls
+`CopyLibraryItemForOutfitAsync` — `RequestCopyItemAsync(libId, <type folder>, name, libOwner)`,
+reusing an earlier same-name owned copy in that folder rather than piling up duplicates — and
+links the **copy**. `v0.20.101` also added the link-chain-to-base-item walk (a `linked_id` that
+is itself a link is illegal in AIS). A genuinely foreign-owned (non-Library) target still just
+logs "not added to your outfit — owned by X". The worn attachment stays the Library object this
+session; the COF now points at the copy, so the relog rebake and any outfit-save pick it up.
+**Not yet re-verified in-world.**
+
+### Saving a *new* outfit — slam from the COF, and mark it active (`v0.20.99-alpha`)
+**Live, 2026-09-07 (`v0.20.98`).** New outfit saved; 2 of 13 links 400'd —
+`[Outfits] link create for 45536360-… ('DOUX - Yadira Hairstyle') into dedc7279-… came back
+empty` + `warn: Create inventory in dedc7279-…: Bad Request`, likewise a mesh skirt. Both are
+worn **attachments**, and `SaveCurrentOutfitAsync` still built its links from
+`GetWornItemsWithNamesAsync` → `GetWornItems()`, whose scene-attachment source is the prim's
+`AttachItemID` name-value. The reference viewer never links that raw: it resolves it through
+`gInventory.getLinkedItemID()` first, and its "Save Outfit" (`LLAppearanceMgr::makeNewOutfitLinks`
+→ `onOutfitFolderCreatedAndClothingOrdered`) is `slamCategoryLinks(getCOF(), folder)` — the same
+COF-sourced slam as save-over-existing. An `AttachItemID` that is itself a COF link id
+(link-to-link, illegal) or points at an item no longer in inventory 400s a per-item link create.
+
+**Fix:** on an AISv3 grid `SaveCurrentOutfitAsync` now creates the folder, waits briefly for the
+UDP `CreateInventoryFolder` to register (client-side UUID, fire-and-forget — a 600 ms settle
+then one retry), and `SlamOutfitLinksFromCofAsync(folder)` — identical to
+`ReplaceOutfitWithCurrentAsync`. OpenSim keeps the per-item pass. **And** it then calls
+`SetCurrentOutfitLinkAsync(folder)` so saving the look you are wearing marks that outfit active
+(the COF folder-link the Outfits list reads — `makeNewOutfitLinks → createBaseOutfitLink`).
+**Not yet re-verified in-world.** Open: outfit create/delete still take several seconds to show
+in the panel (AIS write propagation + a rate-limited region + the panel's own refetch); a
+post-write local-store inject or a spinner would mask it.
+
+### Deleting a saved outfit — `Move category … Bad Request` (`v0.20.98-alpha`)
+**Live, 2026-09-07 (`v0.20.97`).** Deleting a saved outfit left it in the Outfits list;
+`warn: SLNG[0] Move category 494cda74-… to <Trash>: Bad Request (400)`. `DeleteOutfitAsync` did
+`_client.Inventory.MoveFolder(folder, Trash)` → AIS `PATCH {cap}/category/{id}` with
+`{parent_id: <Trash>}`, which SL rejects for an `#Outfits` subfolder — the same move-to-Trash
+trap already retired for items (`v0.20.33`) and COF links (`v0.20.36`), just via `MoveCategory`
+instead of `MoveItem`. **Fix:** on an AISv3 grid `DeleteOutfitAsync` now calls
+`_client.Inventory.RemoveFolderAsync` (AIS `DELETE {cap}/category/{id}` → lands in Trash,
+recoverable, linked items untouched); OpenSim keeps `MoveFolder`. Still fire-and-forget + local
+`Nodes.Remove`, so no signature change. **Not yet re-verified in-world.**
+
+### Replace an outfit the way Firestorm does — one atomic AIS slam (`v0.20.97-alpha`)
+`v0.20.94`–`v0.20.96` chased the `Create inventory in <folder>: Bad Request` pairs one guard at a
+time and still could not explain every 400. A `viewer-parity` pass against `scratch/slviewer`
+settled it: **the reference viewer never does what SLNG did.** "Save Outfit" over an existing
+folder is `LLAppearanceMgr::updateBaseOutfit → slamCategoryLinks → AISAPI::SlamFolder` —
+**one `PUT {cap}/category/{folder}/links`** whose body is a bare LLSD array of
+`{name, desc, linked_id, type=AT_LINK}` maps, built **only from the resolved Current-Outfit-Folder
+link children** (`llappearancemgr.cpp:1765`, `:2195`; `llaisapi.cpp:145`). It never deletes links
+first, never issues per-item `CreateInventory` POSTs (each of which AIS can reject on its own —
+link-to-link, an unresolved target, an item already in the folder), and never touches `MoveItem`.
+Real (non-link) items in the folder are silently ignored by the slam, so they survive untouched —
+which is why `v0.20.94`'s "leave the 16 real items alone" decision was already right.
+
+**Fix:** on any grid with AISv3 (`_client.AisClient.IsAvailable`, i.e. real SL),
+`ReplaceOutfitWithCurrentAsync` now calls `SlamOutfitLinksFromCofAsync`: refetch the COF, take
+its item-links (skip the `AT_LINK_FOLDER` marker, skip targetless links, dedup by target — pure
+`SelectCofLinkTargetsToSlam`, 4 tests), gate on **every target resolving in the store** (mirrors
+`CleanUpCurrentOutfit`'s `storeReady`; returns `-1` → UI "Inventar lädt noch — bitte gleich
+nochmal versuchen" rather than slam a half-streamed COF, the `v0.20.36` failure mode), build the
+`OSDArray`, and `AisClient.SlamFolderAsync(outfitFolder, contents, ct)`. OpenSim / AIS-less grids
+keep the legacy delete-then-relink path (`ReplaceOutfitLegacyAsync`, unchanged). `SlamFolderAsync`
+had **zero callers** in pinned LMV 3.1.3 — payload shape matched to `updateCOF`'s
+`item_contents` map (`llappearancemgr.cpp:2229-2234`), still to be confirmed against a live grid.
+**Not yet re-verified in-world.**
+
+### `LinkWornIntoAsync` reported success on a link AIS had silently refused (`v0.20.96-alpha`)
+**Live report, 2026-09-04, immediately after `v0.20.95` — same repro, same 2× `Create inventory …
+Bad Request`.** `v0.20.95`'s skip-set fix was correct but incomplete: it only stops a **redundant**
+link attempt (worn item already sitting in the folder as a real item). It does not explain why
+AIS refuses a link for an item that is *not* already there — and `LinkWornIntoAsync` was
+structurally unable to tell the two apart, because it never checked what `CreateLinkAsync`
+returned:
+
+```csharp
+await _client.Inventory.CreateLinkAsync(...);
+added++;               // ran even when AIS returned 400
+```
+
+`InventoryAISClient.CreateInventoryAsync` does not throw on an AIS rejection — it logs the `warn:
+Create inventory in …` line itself and resolves to `(false, null)`, so `CreateLinkAsync` returns a
+null `InventoryItem` rather than throwing. The `try/catch` here never sees that: it counted every
+call as "added" regardless, which is why the outfit editor showed no error and the UI status read
+success while the link never landed. **Fix:** check the return value; a null result now logs
+`[Outfits] link create for <id> ('<name>') into <folder> came back empty` and is not counted.
+
+This does not by itself explain the AIS 400 for the 2 items that are not among the folder's 16
+real items — that needs a repro with this logging in place, which will now name the failing
+item(s) instead of only the folder. **Not yet re-verified in-world; root cause of the remaining
+400s still open.**
+
+### Replace still dropped items that share the outfit folder with a real item (`v0.20.95-alpha`)
+**Live report, 2026-09-04, immediately after `v0.20.94`.** User created and saved an outfit, no
+error shown; after relog the clothing that differed from before was not worn. Log:
+
+```
+[Outfits] outfit 494cda74-… holds 16 real item(s), not links — leaving them in place; …
+warn: SLNG[0] Create inventory in 494cda74-…: Bad Request (400): Bad Request
+warn: SLNG[0] Create inventory in 494cda74-…: Bad Request (400): Bad Request
+```
+
+`v0.20.94` correctly stopped deleting the 16 real items sitting directly in that outfit folder —
+but `ReplaceOutfitWithCurrentAsync` still called `LinkWornIntoAsync(folder, worn, skip: empty
+set, ct)`. For any worn item whose id is one of those 16 real items, that tries to **create a
+link to an item inside the very folder that already holds it as a real item** — AIS rejects that
+with 400 (`Create inventory in <folder>`), so the link is never added and the item silently drops
+out of the outfit on the next login. `SaveCurrentOutfitAsync` / `AddCurrentToOutfitAsync` never
+had this bug: both already build `skip` via `GetOutfitTargetIdsAsync`, which treats a real item's
+own id as its "target" the same way a link's target counts. `ReplaceOutfitWithCurrentAsync` was
+the one outfit-write path that passed an empty skip set.
+
+Fix: `SelectOutfitLinksToClear` now returns the **ids** of the non-link entries (not just a
+count), and `ReplaceOutfitWithCurrentAsync` passes them as `skip` to `LinkWornIntoAsync`. 3 tests
+updated for the new return shape. **Not yet re-verified in-world.**
+
+### Two more `MoveItem → Trash` sites — 400-spam on an outfit switch (`v0.20.94-alpha`)
+**Live log, 2026-09-04 (`v0.20.93`).** A burst of `warn: SLNG[0] Move item <link> to <Trash>: Bad
+Request (400)` — ~11 in one go — bracketed by `[SavedOutfits]` refreshes, i.e. during an Outfits
+action. Two call sites still on the path BUG-INV-01 retired everywhere else:
+
+- **`ReplaceOutfitWithCurrentAsync`** ("Outfit speichern (= akt. Getragene)" / *replace*): looped
+  `_client.Inventory.MoveItem(link, Trash)` over every existing entry in the outfit folder, then
+  re-linked the worn set. The move 400s on SL and `MoveItem` is fire-and-forget, so the
+  `catch {}` caught nothing and the old links never left the folder server-side — while LMV's
+  local store *did* move them (plus an explicit `folderNode.Nodes.Remove`), so it looked fine
+  until the next refetch/relog, when the outfit came back with a **doubled** link set. Grows by
+  one full set per "replace".
+- **`SetCurrentOutfitLinkAsync`**: same `MoveItem(link, Trash)` for the old COF *folder*-link
+  (`AssetType.LinkFolder`) — one line of the same spam per outfit switch.
+
+Both now collect the link ids and `await _client.Inventory.RemoveItemsAsync(...)` (AIS `DELETE` on
+SL, `RemoveInventoryObjects` on OpenSim), the same durable delete as the other COF cleanups. The
+Trash-folder dependency is gone from both. `ReplaceOutfitWithCurrentAsync`'s selection is the pure
+`GridSession.SelectOutfitLinksToClear(children)` → `(LinkIds, NonLinkItems)`; a **real item**
+dropped into an outfit folder is counted and logged but never deleted (mirrors
+`SelectOutfitLinksToRemove` / FEAT-INV-05). 3 tests. **Not yet re-verified in-world.**
+
 ### `v0.20.33`'s durable COF-link delete stripped the avatar's bake — safety gate added (`v0.20.36-alpha`)
 **Live regression, 2026-09-03.** `v0.20.33` changed `CleanUpCurrentOutfit` from `MoveItem → Trash`
 (which HTTP-400s on SL, so it was a no-op) to a real `RemoveItemsAsync` AIS delete. Session logs:

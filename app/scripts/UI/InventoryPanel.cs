@@ -1015,7 +1015,8 @@ public partial class InventoryPanel : SLNGWindow
             _outfitsStatus.Text = err != null
                 ? $"Fehler: {err}"
                 : replace
-                    ? $"Outfit ersetzt — {n} Teil(e) verlinkt."
+                    ? (n < 0 ? "Inventar lädt noch — bitte gleich nochmal versuchen."
+                             : $"Outfit ersetzt — {n} Teil(e) verlinkt.")
                     : n == 0 ? "Nichts hinzuzufügen — alles schon im Outfit."
                              : $"{n} Teil(e) zum Outfit hinzugefügt.";
 
