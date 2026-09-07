@@ -5665,7 +5665,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     await Task.Delay(TimeSpan.FromSeconds(i == 0 ? schedule[0] : schedule[i] - schedule[i - 1]))
                         .ConfigureAwait(false);
                     if (!_client.Network.Connected) return;
-                    if (await ReattachMissingCofAttachmentsAsync(dumpEveryLink: i == 1).ConfigureAwait(false) == 0 && i > 0)
+                    if (await ReattachMissingCofAttachmentsAsync().ConfigureAwait(false) == 0 && i > 0)
                         return;
                 }
             }
@@ -5678,16 +5678,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     /// <summary>Re-sends an attach for every Current-Outfit attachment link whose target is not in
     /// the scene and was never seen worn this session. Returns how many re-attach requests were
-    /// sent. <paramref name="dumpEveryLink"/> logs one line per COF child so an item that keeps
-    /// being excluded can be diagnosed.</summary>
-    private async Task<int> ReattachMissingCofAttachmentsAsync(bool dumpEveryLink = false)
+    /// sent.</summary>
+    private async Task<int> ReattachMissingCofAttachmentsAsync()
     {
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
-        if (cofUuid == LibreMetaverse.UUID.Zero)
-        {
-            if (dumpEveryLink) Console.Error.WriteLine("[Reconcile] no Current Outfit folder in the store yet");
-            return 0;
-        }
+        if (cofUuid == LibreMetaverse.UUID.Zero) return 0;
 
         // The inventory is fetched lazily per folder — nothing pulls the COF on login, so it is
         // usually not in the store when this runs. Fetch it here or there is nothing to inspect.
@@ -5696,12 +5691,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         var store = _client.Inventory.Store;
         var cofNode = store?.GetNodeOrDefault(cofUuid);
-        if (cofNode == null || cofNode.Nodes.Count == 0)
-        {
-            if (dumpEveryLink)
-                Console.Error.WriteLine($"[Reconcile] COF empty (node={cofNode != null}, children={cofNode?.Nodes.Count ?? 0})");
-            return 0;
-        }
+        if (cofNode == null || cofNode.Nodes.Count == 0) return 0;
 
         // The SCENE is the only reliable "is it actually on the avatar" signal. LibreMetaverse's
         // GetAttachmentsByItemId() cache is NOT — it lags a detach and can list a COF attachment
@@ -5712,8 +5702,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var byRawUuid = new List<LibreMetaverse.UUID>();
         foreach (var childNode in cofNode.Nodes.Values)
         {
-            var link = childNode.Data as LibreMetaverse.InventoryItem;
-            if (link == null) { if (dumpEveryLink) Console.Error.WriteLine("[Reconcile] COF child is a folder — skip"); continue; }
+            if (childNode.Data is not LibreMetaverse.InventoryItem link) continue;
 
             var targetId = link.IsLink()
                 ? (link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID)
@@ -5721,17 +5710,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             var target = targetId != LibreMetaverse.UUID.Zero
                 ? store?.GetNodeOrDefault(targetId)?.Data as LibreMetaverse.InventoryItem
                 : null;
-            bool inScene = worn.Contains(targetId.Guid);
-            bool seen = _attachmentsSeenWornThisSession.Contains(targetId.Guid);
-
-            if (dumpEveryLink)
-                Console.Error.WriteLine(
-                    $"[Reconcile] '{link.Name}' link={link.IsLink()} linkAT={link.AssetType} linkIT={link.InventoryType} " +
-                    $"target={targetId} inStore={(target != null)} targetAT={target?.AssetType.ToString() ?? "-"} " +
-                    $"inScene={inScene} seenThisSession={seen}");
 
             if (link.AssetType == LibreMetaverse.AssetType.LinkFolder) continue;
-            if (targetId == LibreMetaverse.UUID.Zero || inScene || seen) continue;
+            if (targetId == LibreMetaverse.UUID.Zero
+                || worn.Contains(targetId.Guid)
+                || _attachmentsSeenWornThisSession.Contains(targetId.Guid)) continue;
 
             if (target != null)
             {
