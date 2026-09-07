@@ -29,6 +29,31 @@ against `GridSession`'s inventory + worn-item API.
 
 ## Fixed so far
 
+### Replace an outfit the way Firestorm does — one atomic AIS slam (`v0.20.97-alpha`)
+`v0.20.94`–`v0.20.96` chased the `Create inventory in <folder>: Bad Request` pairs one guard at a
+time and still could not explain every 400. A `viewer-parity` pass against `scratch/slviewer`
+settled it: **the reference viewer never does what SLNG did.** "Save Outfit" over an existing
+folder is `LLAppearanceMgr::updateBaseOutfit → slamCategoryLinks → AISAPI::SlamFolder` —
+**one `PUT {cap}/category/{folder}/links`** whose body is a bare LLSD array of
+`{name, desc, linked_id, type=AT_LINK}` maps, built **only from the resolved Current-Outfit-Folder
+link children** (`llappearancemgr.cpp:1765`, `:2195`; `llaisapi.cpp:145`). It never deletes links
+first, never issues per-item `CreateInventory` POSTs (each of which AIS can reject on its own —
+link-to-link, an unresolved target, an item already in the folder), and never touches `MoveItem`.
+Real (non-link) items in the folder are silently ignored by the slam, so they survive untouched —
+which is why `v0.20.94`'s "leave the 16 real items alone" decision was already right.
+
+**Fix:** on any grid with AISv3 (`_client.AisClient.IsAvailable`, i.e. real SL),
+`ReplaceOutfitWithCurrentAsync` now calls `SlamOutfitLinksFromCofAsync`: refetch the COF, take
+its item-links (skip the `AT_LINK_FOLDER` marker, skip targetless links, dedup by target — pure
+`SelectCofLinkTargetsToSlam`, 4 tests), gate on **every target resolving in the store** (mirrors
+`CleanUpCurrentOutfit`'s `storeReady`; returns `-1` → UI "Inventar lädt noch — bitte gleich
+nochmal versuchen" rather than slam a half-streamed COF, the `v0.20.36` failure mode), build the
+`OSDArray`, and `AisClient.SlamFolderAsync(outfitFolder, contents, ct)`. OpenSim / AIS-less grids
+keep the legacy delete-then-relink path (`ReplaceOutfitLegacyAsync`, unchanged). `SlamFolderAsync`
+had **zero callers** in pinned LMV 3.1.3 — payload shape matched to `updateCOF`'s
+`item_contents` map (`llappearancemgr.cpp:2229-2234`), still to be confirmed against a live grid.
+**Not yet re-verified in-world.**
+
 ### `LinkWornIntoAsync` reported success on a link AIS had silently refused (`v0.20.96-alpha`)
 **Live report, 2026-09-04, immediately after `v0.20.95` — same repro, same 2× `Create inventory …
 Bad Request`.** `v0.20.95`'s skip-set fix was correct but incomplete: it only stops a **redundant**

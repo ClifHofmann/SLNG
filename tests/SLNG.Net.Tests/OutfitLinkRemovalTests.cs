@@ -173,4 +173,62 @@ public class OutfitLinkRemovalTests
         static (int, int) Adapt((List<Guid> LinkIds, List<Guid> NonLinkItemIds) r) =>
             (r.LinkIds.Count, r.NonLinkItemIds.Count);
     }
+
+    // --- SelectCofLinkTargetsToSlam: the Firestorm-style "Save Outfit" pre-step (v0.20.97).
+    // Reads the Current Outfit folder and returns the link TARGETS to PUT as the saved outfit's
+    // whole link set in one atomic AIS slam, mirroring LLAppearanceMgr::slamCategoryLinks with
+    // include_folder_links = false.
+
+    private static GridSession.CofLinkRow ItemLink(Guid target) => new(IsLink: true, IsFolderLink: false, Target: target);
+    private static GridSession.CofLinkRow FolderLink(Guid target) => new(IsLink: true, IsFolderLink: true, Target: target);
+    private static GridSession.CofLinkRow RealItem() => new(IsLink: false, IsFolderLink: false, Target: Guid.Empty);
+
+    [Fact]
+    public void SlamKeepsItemLinkTargetsInOrder()
+    {
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        var c = Guid.NewGuid();
+
+        var got = GridSession.SelectCofLinkTargetsToSlam(new[] { ItemLink(a), ItemLink(b), ItemLink(c) });
+
+        Assert.Equal(new[] { a, b, c }, got);
+    }
+
+    [Fact]
+    public void SlamExcludesTheFolderLinkRealItemsAndBrokenLinks()
+    {
+        // The COF always carries one AT_LINK_FOLDER (the "which outfit am I wearing" marker) and
+        // may carry a targetless broken link; neither belongs in a saved outfit's link set, and
+        // slamCategoryLinks(include_folder_links=false) drops both.
+        var keep = Guid.NewGuid();
+
+        var got = GridSession.SelectCofLinkTargetsToSlam(new[]
+        {
+            FolderLink(Guid.NewGuid()),
+            ItemLink(keep),
+            ItemLink(Guid.Empty),   // broken link, no target
+            RealItem(),
+        });
+
+        Assert.Equal(new[] { keep }, got);
+    }
+
+    [Fact]
+    public void SlamDeduplicatesByTarget()
+    {
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+
+        var got = GridSession.SelectCofLinkTargetsToSlam(new[] { ItemLink(a), ItemLink(b), ItemLink(a) });
+
+        Assert.Equal(new[] { a, b }, got);
+    }
+
+    [Fact]
+    public void SlamOnAFolderWithNoItemLinksIsEmpty()
+    {
+        Assert.Empty(GridSession.SelectCofLinkTargetsToSlam(Array.Empty<GridSession.CofLinkRow>()));
+        Assert.Empty(GridSession.SelectCofLinkTargetsToSlam(new[] { FolderLink(Guid.NewGuid()), RealItem() }));
+    }
 }

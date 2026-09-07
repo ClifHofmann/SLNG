@@ -6147,26 +6147,139 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return (linkIds, nonLinkItemIds);
     }
 
-    /// <summary>Replaces an existing outfit folder's contents with the current worn set: every
-    /// existing <b>link</b> is deleted, then the whole worn set is linked in fresh. Returns how
-    /// many links the outfit now has. FEAT-INV-04.
+    /// <summary>One row of the Current Outfit folder, reduced to just what
+    /// <see cref="SelectCofLinkTargetsToSlam"/> needs — engine-neutral so the selection is
+    /// unit-testable without a grid.</summary>
+    internal readonly record struct CofLinkRow(bool IsLink, bool IsFolderLink, Guid Target);
+
+    /// <summary>Pure: the ordered, de-duplicated list of <b>link targets</b> to write when
+    /// slamming a saved outfit from the Current Outfit folder. Item-links only — real items,
+    /// subfolders and the COF folder-link are excluded, and a broken (targetless) link is
+    /// dropped. Mirrors <c>LLAppearanceMgr::slamCategoryLinks</c> with
+    /// <c>include_folder_links = false</c>.</summary>
+    internal static List<Guid> SelectCofLinkTargetsToSlam(IEnumerable<CofLinkRow> rows)
+    {
+        var outp = new List<Guid>();
+        var seen = new HashSet<Guid>();
+        foreach (var r in rows)
+        {
+            if (!r.IsLink || r.IsFolderLink || r.Target == Guid.Empty) continue;
+            if (!seen.Add(r.Target)) continue;
+            outp.Add(r.Target);
+        }
+        return outp;
+    }
+
+    /// <summary>Replaces an existing outfit folder's contents with what is worn right now.
+    /// FEAT-INV-04.
     ///
-    /// <para><c>RemoveItemsAsync</c> (AIS <c>DELETE</c>), not <c>MoveItem → Trash</c>: moving an
-    /// outfit link to Trash HTTP-400s on SL and silently leaves the link in place, so every
-    /// "replace" stacked a fresh set on top of the old one and the outfit grew a duplicate set
-    /// each time (<c>warn: Move item … Bad Request</c> spam in the log). Same fix, and same reason,
-    /// as BUG-INV-01 / <c>v0.20.33</c> for the Current-Outfit cleanups. A real item dropped into
-    /// the outfit folder is reported and left untouched -- and, <c>v0.20.95</c>, its id is passed
-    /// as <c>skip</c> to the re-link pass: linking a worn item that is <i>already sitting in this
-    /// same folder as a real item</i> is a second AIS 400 (<c>warn: Create inventory in … Bad
-    /// Request</c>) that silently dropped that item from the outfit on relog -- the one case
-    /// <see cref="SaveCurrentOutfitAsync"/> / <see cref="AddCurrentToOutfitAsync"/> already guard
-    /// against via <see cref="GetOutfitTargetIdsAsync"/> and this method did not.</para></summary>
+    /// <para>On any grid with AISv3 (real Second Life) this is <b>one atomic "slam"</b> that
+    /// rewrites the outfit folder's entire link set from the resolved Current-Outfit-Folder
+    /// links — exactly <c>LLAppearanceMgr::updateBaseOutfit → slamCategoryLinks →
+    /// AISAPI::SlamFolder</c> in the reference viewer. No delete pass and no per-item
+    /// <c>CreateInventory</c> POST (each of which AIS can reject on its own — link-to-link, an
+    /// unresolved target, an item already sitting in the folder — which is what produced the
+    /// <c>warn: Create inventory in … Bad Request</c> pairs that silently dropped clothing from a
+    /// saved outfit). Real (non-link) items already in the folder are left untouched because a
+    /// slam only rewrites links. Returns the number of links written, or <c>-1</c> if the COF is
+    /// not fully loaded yet (the caller shows "try again in a moment" rather than slam a
+    /// truncated outfit — the failure mode <c>v0.20.36</c> was created to prevent).</para>
+    ///
+    /// <para>OpenSim and other AIS-less grids fall through to the legacy path: delete the
+    /// folder's links (<c>RemoveItemsAsync</c>, not <c>MoveItem → Trash</c> which 400s on SL),
+    /// then re-link the worn set, skipping any worn item already present as a real item in the
+    /// folder.</para></summary>
     public async Task<int> ReplaceOutfitWithCurrentAsync(Guid outfitFolderId, CancellationToken ct = default)
     {
         if (outfitFolderId == Guid.Empty) return 0;
         var folderUuid = new LibreMetaverse.UUID(outfitFolderId);
 
+        if (_client.AisClient?.IsAvailable == true)
+        {
+            var slammed = await SlamOutfitLinksFromCofAsync(folderUuid, ct).ConfigureAwait(false);
+            return slammed ?? -1; // null == COF still loading
+        }
+
+        return await ReplaceOutfitLegacyAsync(folderUuid, outfitFolderId, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The Firestorm "Save Outfit" mechanism: take the resolved Current-Outfit-Folder
+    /// links and PUT them as <paramref name="outfitFolder"/>'s entire link set in one AIS
+    /// request (<c>AISAPI::SlamFolder</c> → <c>PUT {cap}/category/{id}/links</c>, body a bare
+    /// LLSD array of <c>{name, desc, linked_id, type}</c> maps — matched to
+    /// <c>LLAppearanceMgr::slamCategoryLinks</c>). Returns the link count, or <c>null</c> when
+    /// the COF is not fully resolved in the store yet.</summary>
+    private async Task<int?> SlamOutfitLinksFromCofAsync(LibreMetaverse.UUID outfitFolder, CancellationToken ct)
+    {
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        if (cofUuid == LibreMetaverse.UUID.Zero) return null;
+
+        // Authoritative refetch so the slam list is not a stale local snapshot.
+        try { await FetchInventoryChildrenAsync(cofUuid.Guid, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch { /* fall back to whatever the store already holds */ }
+
+        var store = _client.Inventory.Store;
+        var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
+        if (cofNode == null) return null;
+
+        var rows = cofNode.Nodes.Values.Select(n =>
+        {
+            if (n.Data is not LibreMetaverse.InventoryItem li || !li.IsLink())
+                return new CofLinkRow(false, false, Guid.Empty);
+            var t = li.ResolvedItemID != LibreMetaverse.UUID.Zero ? li.ResolvedItemID : li.AssetUUID;
+            return new CofLinkRow(true, li.AssetType == LibreMetaverse.AssetType.LinkFolder, t.Guid);
+        });
+        var targets = SelectCofLinkTargetsToSlam(rows);
+        if (targets.Count == 0)
+        {
+            Console.Error.WriteLine("[Outfits] slam aborted — no resolvable item-links in the Current Outfit folder");
+            return null;
+        }
+
+        // Readiness gate (mirrors CleanUpCurrentOutfit's storeReady): every target node must be
+        // in the store, or the list we just built could be missing links that haven't streamed in.
+        int unresolved = targets.Count(g =>
+            store?.GetNodeOrDefault(new LibreMetaverse.UUID(g))?.Data is not LibreMetaverse.InventoryItem);
+        if (unresolved > 0)
+        {
+            Console.Error.WriteLine(
+                $"[Outfits] slam deferred — COF still loading ({unresolved}/{targets.Count} link targets not in the store)");
+            return null;
+        }
+
+        var contents = new OSDArray();
+        foreach (var g in targets)
+        {
+            var target = new LibreMetaverse.UUID(g);
+            var name = (store?.GetNodeOrDefault(target)?.Data as LibreMetaverse.InventoryItem)?.Name ?? string.Empty;
+            contents.Add(new OSDMap
+            {
+                ["name"] = OSD.FromString(name),
+                ["desc"] = OSD.FromString(string.Empty),
+                ["linked_id"] = OSD.FromUUID(target),
+                ["type"] = OSD.FromInteger((int)LibreMetaverse.AssetType.Link),
+            });
+        }
+
+        bool ok = await _client.AisClient.SlamFolderAsync(outfitFolder, contents, ct).ConfigureAwait(false);
+        if (!ok)
+            throw new InvalidOperationException($"AIS rejected the outfit slam for {outfitFolder}");
+
+        // Reconcile the local store with what the server now holds.
+        try { await FetchInventoryChildrenAsync(outfitFolder.Guid, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch { }
+
+        Console.Error.WriteLine($"[Outfits] slammed {contents.Count} link(s) into outfit {outfitFolder} from the Current Outfit folder");
+        return contents.Count;
+    }
+
+    /// <summary>Pre-AISv3 replace path (OpenSim): delete the outfit folder's links, then re-link
+    /// the current worn set. See <see cref="ReplaceOutfitWithCurrentAsync"/>.</summary>
+    private async Task<int> ReplaceOutfitLegacyAsync(
+        LibreMetaverse.UUID folderUuid, Guid outfitFolderId, CancellationToken ct)
+    {
         var worn = await GetWornItemsWithNamesAsync(ct).ConfigureAwait(false);
 
         IReadOnlyList<InventoryEntry> existing;
