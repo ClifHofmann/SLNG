@@ -855,6 +855,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // only resolvable once the caps handshake is done. Armed once per session, not per region.
         ArmSelfBakeWatchdog();
 
+        // Fall back to the last cached self appearance if the sim never sends one this login.
+        ArmSelfAppearanceRestore();
+
         _ = Task.Run(async () =>
         {
             try
@@ -2026,6 +2029,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // Remembered for the local appearance refresh after our own bake, which has no incoming
         // event to read a hover height from and must not silently reset it to zero.
         if (e.AvatarID == _client.Self.AgentID) _lastSelfHoverOffsetZ = hoverOffsetZ;
+
+        // Persist a healthy self appearance so a later login that receives none can still render
+        // the real shape (ArmSelfAppearanceRestore).
+        if (e.AvatarID == _client.Self.AgentID) MaybeSaveSelfAppearanceCache();
 
         AvatarAppearanceReceived?.Invoke(this, new AvatarAppearanceEvent(
             e.Simulator.Handle,
@@ -4007,6 +4014,71 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// composited and uploaded them. FEAT-AVATAR-01 keeps them as the reference the bake diagnostic
     /// compares LibreMetaverse's own <c>Textures[]</c> against.</summary>
     private Dictionary<int, Guid> _lastSelfRelayBakes = new();
+
+    // Dedup for the on-disk self-appearance cache: the last visual-param array we wrote out.
+    private byte[]? _selfAppearanceCacheVp;
+    private int _selfAppearanceRestoreArmed;
+
+    /// <summary>Persists the last <b>healthy</b> self appearance so a later login that receives no
+    /// <c>AvatarAppearance</c> can still render the real shape (see <see cref="SelfAppearanceCache"/>
+    /// and <see cref="ArmSelfAppearanceRestore"/>). Only writes when the shape actually changed.</summary>
+    private void MaybeSaveSelfAppearanceCache()
+    {
+        var vp = _lastSelfRelayVisualParams;
+        if (!VisualParamsHealthy(vp)) return;
+        if (_selfAppearanceCacheVp != null && _selfAppearanceCacheVp.AsSpan().SequenceEqual(vp)) return;
+
+        SelfAppearanceCache.Save(_client.Self.AgentID.Guid, vp, _lastSelfRelayBakes, _lastSelfHoverOffsetZ);
+        _selfAppearanceCacheVp = (byte[])vp.Clone();
+    }
+
+    /// <summary>One-shot: if no healthy self <c>AvatarAppearance</c> has arrived a little after
+    /// login, load the last one from <see cref="SelfAppearanceCache"/> and drive the renderer with
+    /// it — the sim's own relay is missing on roughly every second Agni login and the ~253 visual
+    /// parameters have no other source. Purely local: nothing is sent, and a real relay arriving
+    /// afterwards overrides this through the same event.</summary>
+    private void ArmSelfAppearanceRestore()
+    {
+        if (System.Threading.Interlocked.Exchange(ref _selfAppearanceRestoreArmed, 1) != 0) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(12)).ConfigureAwait(false);
+                if (!_client.Network.Connected) return;
+                if (VisualParamsHealthy(_lastSelfRelayVisualParams)) return; // the sim did send one
+
+                if (!SelfAppearanceCache.TryLoad(_client.Self.AgentID.Guid, out var vp, out var bakes, out var hoverZ)
+                    || !VisualParamsHealthy(vp))
+                {
+                    Console.Error.WriteLine(
+                        "[Appearance] no self AvatarAppearance from the sim and no cached shape to fall back on " +
+                        "— the avatar keeps the default shape until a relay arrives");
+                    return;
+                }
+
+                _lastSelfRelayVisualParams = vp;
+                if (bakes.Count > 0 && _lastSelfRelayBakes.Count == 0) _lastSelfRelayBakes = bakes;
+                if (_lastSelfHoverOffsetZ == 0f) _lastSelfHoverOffsetZ = hoverZ;
+
+                Console.Error.WriteLine(
+                    $"[Appearance] restored last-known shape ({vp.Length} params) + {bakes.Count} bake id(s) from cache " +
+                    "— the sim sent no AvatarAppearance for us this login");
+
+                var sim = _client.Network.CurrentSim;
+                if (sim != null)
+                    AvatarAppearanceReceived?.Invoke(this, new AvatarAppearanceEvent(
+                        sim.Handle, _client.Self.AgentID.Guid, vp,
+                        _lastSelfRelayBakes.Count > 0 ? new Dictionary<int, Guid>(_lastSelfRelayBakes) : bakes,
+                        _lastSelfHoverOffsetZ));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[Appearance] self-appearance restore failed: {ex.Message}");
+            }
+        });
+    }
 
     private void OnAppearanceSet(object? sender, AppearanceSetEventArgs e)
     {
