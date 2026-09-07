@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-NET-08`
 - **Track:** `net`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — confirmed in-world 2026-09-07 (Agni): multi-minute soak, no sustained 503/ServiceUnavailable burst on the environment cap; env cap resolves once per sim.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness`

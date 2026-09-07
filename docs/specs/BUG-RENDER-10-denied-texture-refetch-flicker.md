@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-10`
 - **Track:** `net` / `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — confirmed from logs 2026-09-07: across three Agni sessions the texture `dda710d4` gives one HTTP 403 → one UDP NotFound → one `[TextureGiveUp]`, then silence. No ~45 s refetch burst, no `Forbidden` spam, no flicker.
 - **Owner:** `claude`
 - **Reported:** live, Agni, 2026-09-03. *"Ich hab diesen Textur-blinkt-Bug bei dem Haar von einem
   Avatar auf der SIM."*

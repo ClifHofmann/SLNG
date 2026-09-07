@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-AVATAR-04`
 - **Track:** `net` / `render`
-- **Status:** 🚧 In Progress — first fix landed (`v0.20.107`), not yet re-verified in-world.
+- **Status:** 🧪 Review — workarounds landed (`v0.20.107`–`v0.20.114`); `ArmAttachmentReconcile` confirmed in-world. In-world 2026-09-07 (Agni): inconclusive — several relogs, no "grey" login occurred, so the `SelfAppearanceCache` restore path still has not been exercised once.
 - **Owner:** `claude`
 - **Reported:** live, Agni, 2026-09-07 — screenshot of a grey-skinned, featureless avatar;
   *"bei gefühlt jedem 2. Login sieht der Avatar so aus … der Shape ist dann auch nach dem Bake

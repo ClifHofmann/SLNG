@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-SL-01`
 - **Track:** `net` / `ui`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — in-world 2026-09-07: still no ToS prompt, as expected — an account that accepted the ToS at sign-up never triggers the grid's `tos` login failure, so the gate has no trigger on the user's accounts. The load-bearing fix (removing LMV's `AgreeToTos=true` default, a live §1.f violation) is verified by reflection + tests; the gate path needs a fresh never-accepted account or a new ToS version. Quick sub-checks — About window shows channel "Puris", no "Export (Full Perm)" entry in the inventory menu, Aditi in the grid list — **all three confirmed in-world 2026-09-07 ("passt")**. Closed on that basis; the ToS-gate path stays unexercised by design.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md) — folds into `MVP6-2`
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness`

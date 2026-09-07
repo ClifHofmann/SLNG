@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-07`
 - **Track:** `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — confirmed in-world 2026-09-07: no legacy-material problems found on a fresh region entry.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `main`

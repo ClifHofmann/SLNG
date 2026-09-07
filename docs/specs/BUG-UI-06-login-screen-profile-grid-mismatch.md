@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-UI-06`
 - **Track:** `ui`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — confirmed in-world 2026-09-07: selecting a saved profile shows a readable "Name @ Gridname" and the grid dropdown follows it.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness`

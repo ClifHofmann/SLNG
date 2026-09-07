@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-NET-11`
 - **Track:** `net` / `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — confirmed in-world 2026-09-07 (Agni): cached object-rich sim + nearby avatars load quickly again, no material-request flood.
 - **Owner:** `claude`
 - **Depends on:** `BUG-RENDER-06` (which made legacy materials actually resolve — and thereby
   exposed this)

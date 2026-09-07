@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-NET-09`
 - **Track:** `net`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — confirmed in-world 2026-09-07 (Agni): a parcel-only Windlight change is picked up within one ~30 s poll interval, no relog.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness`
