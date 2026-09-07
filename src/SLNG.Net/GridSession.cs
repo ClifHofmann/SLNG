@@ -5657,11 +5657,15 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             try
             {
-                foreach (int delaySeconds in new[] { 20, 40, 75 })
+                // First check soon so a missing attachment pops in fast, not 20 s later; the
+                // later passes cover a slow COF load or a sim that is still settling.
+                int[] schedule = { 6, 12, 22, 45, 80 };
+                for (int i = 0; i < schedule.Length; i++)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds)).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromSeconds(i == 0 ? schedule[0] : schedule[i] - schedule[i - 1]))
+                        .ConfigureAwait(false);
                     if (!_client.Network.Connected) return;
-                    if (ReattachMissingCofAttachments() == 0 && delaySeconds > 20) return;
+                    if (ReattachMissingCofAttachments() == 0 && i > 0) return;
                 }
             }
             catch (Exception ex)
