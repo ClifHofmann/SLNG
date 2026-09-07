@@ -106,7 +106,7 @@ public partial class InventoryPanel : SLNGWindow
         tabsMargin.AddChild(_tabs);
         vbox.AddChild(tabsMargin);
 
-        // FEAT-INV-05: the filter bar sits directly under the tabs, in `vbox` rather than inside
+        // FEAT-INV-06: the filter bar sits directly under the tabs, in `vbox` rather than inside
         // `_inventoryView`, so it stays visible on every tab (Inventar / Angezogen / Outfits) --
         // OnSearchTextChanged / OnTabChanged route the query to whichever tab's tree is showing.
         var searchContainer = new MarginContainer();
@@ -372,7 +372,7 @@ public partial class InventoryPanel : SLNGWindow
 
         if (tab == 2) RefreshOutfits();
 
-        // Carry the shared filter over to the tab we just switched to (FEAT-INV-05). RefreshWorn
+        // Carry the shared filter over to the tab we just switched to (FEAT-INV-06). RefreshWorn
         // is synchronous so its tree is ready now; RefreshOutfits populates async and re-applies
         // the filter itself when it finishes.
         ApplyActiveFilter();
@@ -491,7 +491,7 @@ public partial class InventoryPanel : SLNGWindow
             header.Collapsed = false;
         }
 
-        // Keep the shared filter (FEAT-INV-05) applied across a rebuild -- the safety-net
+        // Keep the shared filter (FEAT-INV-06) applied across a rebuild -- the safety-net
         // _wornTimer refreshes this tree every 2.5 s while the tab is open.
         if (_tabs?.CurrentTab == 1 && FilterQuery.Length > 0)
             FilterTree(root, FilterQuery, ancestorMatched: false);
@@ -661,7 +661,7 @@ public partial class InventoryPanel : SLNGWindow
                 placeholder.SetSelectable(0, false);
             }
 
-            // Re-apply the shared filter (FEAT-INV-05) now that the rows exist.
+            // Re-apply the shared filter (FEAT-INV-06) now that the rows exist.
             if (_tabs?.CurrentTab == 2 && FilterQuery.Length > 0)
                 FilterTree(root, FilterQuery, ancestorMatched: false);
         });
@@ -1081,7 +1081,7 @@ public partial class InventoryPanel : SLNGWindow
     private string FilterQuery => _searchBox?.Text.Trim().ToLowerInvariant() ?? "";
 
     /// <summary>Applies <see cref="FilterQuery"/> to the tree of whichever tab is showing
-    /// (FEAT-INV-05). The Inventar tree additionally seeds the lazy-load crawl so a match deep in
+    /// (FEAT-INV-06). The Inventar tree additionally seeds the lazy-load crawl so a match deep in
     /// an unopened folder still surfaces; the Angezogen / Outfits trees are already fully built,
     /// so they just get the visibility pass.</summary>
     private void ApplyActiveFilter()
