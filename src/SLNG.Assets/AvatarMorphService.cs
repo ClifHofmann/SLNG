@@ -35,7 +35,9 @@ public static class AvatarMorphService
 
         foreach (var morph in part.Morphs)
         {
-            if (!weights.TryGetValue(morph.ParamId, out float w) || w == 0f) continue;
+            // A non-finite effective weight (a degenerate visual param, NaN propagated from the
+            // shape math) would turn every touched vertex into NaN — and NaN slips past `w == 0`.
+            if (!weights.TryGetValue(morph.ParamId, out float w) || w == 0f || !float.IsFinite(w)) continue;
 
             var vidx = morph.VertexIndices;
             var pdelta = morph.PositionDeltas;
@@ -49,14 +51,32 @@ public static class AvatarMorphService
             }
         }
 
+        // Belt and braces: never hand the renderer a non-finite vertex — Godot's normal/tangent
+        // generation then logs "Vector3 cannot be normalized, the elements must be finite" and
+        // the mesh collapses. Fall back to the untouched base value.
+        int reverted = 0;
+        for (int i = 0; i < positions.Length; i++)
+            if (!IsFinite(positions[i])) { positions[i] = part.Positions[i]; reverted++; }
+        if (reverted > 0)
+            System.Console.Error.WriteLine(
+                $"[AvatarMorph] {part.Name}: {reverted} vertex/vertices went non-finite under this shape " +
+                "(a degenerate visual param) — reverted to base");
+
         var normals = new Vector3[part.Normals.Length];
         for (int i = 0; i < normals.Length; i++)
         {
             var n = scaledNormals[i];
             float lenSq = n.LengthSquared();
-            normals[i] = lenSq > 1e-12f ? n / System.MathF.Sqrt(lenSq) : part.Normals[i];
+            if (lenSq > 1e-12f && float.IsFinite(lenSq))
+                normals[i] = n / System.MathF.Sqrt(lenSq);
+            else
+                normals[i] = IsFinite(part.Normals[i]) && part.Normals[i].LengthSquared() > 1e-12f
+                    ? part.Normals[i] : Vector3.UnitY;
         }
 
         return (positions, normals);
     }
+
+    private static bool IsFinite(Vector3 v) =>
+        float.IsFinite(v.X) && float.IsFinite(v.Y) && float.IsFinite(v.Z);
 }
