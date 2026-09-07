@@ -29,6 +29,17 @@ against `GridSession`'s inventory + worn-item API.
 
 ## Fixed so far
 
+### Deleting a saved outfit — `Move category … Bad Request` (`v0.20.98-alpha`)
+**Live, 2026-09-07 (`v0.20.97`).** Deleting a saved outfit left it in the Outfits list;
+`warn: SLNG[0] Move category 494cda74-… to <Trash>: Bad Request (400)`. `DeleteOutfitAsync` did
+`_client.Inventory.MoveFolder(folder, Trash)` → AIS `PATCH {cap}/category/{id}` with
+`{parent_id: <Trash>}`, which SL rejects for an `#Outfits` subfolder — the same move-to-Trash
+trap already retired for items (`v0.20.33`) and COF links (`v0.20.36`), just via `MoveCategory`
+instead of `MoveItem`. **Fix:** on an AISv3 grid `DeleteOutfitAsync` now calls
+`_client.Inventory.RemoveFolderAsync` (AIS `DELETE {cap}/category/{id}` → lands in Trash,
+recoverable, linked items untouched); OpenSim keeps `MoveFolder`. Still fire-and-forget + local
+`Nodes.Remove`, so no signature change. **Not yet re-verified in-world.**
+
 ### Replace an outfit the way Firestorm does — one atomic AIS slam (`v0.20.97-alpha`)
 `v0.20.94`–`v0.20.96` chased the `Create inventory in <folder>: Bad Request` pairs one guard at a
 time and still could not explain every 400. A `viewer-parity` pass against `scratch/slviewer`

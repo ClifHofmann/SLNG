@@ -6579,16 +6579,33 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return true;
     }
 
-    /// <summary>Moves a saved outfit folder to Trash (recoverable — the linked items stay in
-    /// inventory). FEAT-INV-04.</summary>
+    /// <summary>Deletes a saved outfit folder (recoverable — on SL an AIS category delete lands it
+    /// in Trash; the linked items stay in inventory). FEAT-INV-04.
+    ///
+    /// <para><c>RemoveFolderAsync</c> (AIS <c>DELETE {cap}/category/{id}</c> on SL, a
+    /// <c>RemoveInventoryObjects</c> packet on OpenSim), <b>not</b> <c>MoveFolder → Trash</c>:
+    /// a <c>parent_id</c> PATCH of an <c>#Outfits</c> subfolder HTTP-400s on SL
+    /// (<c>warn: Move category … Bad Request</c>) and the outfit stayed visible — the same
+    /// move-to-Trash trap BUG-INV-01 already retired for items and COF links.</para></summary>
     public bool DeleteOutfitAsync(Guid folderId)
     {
-        if (folderId == Guid.Empty || TrashFolderId is not { } trashId || trashId == Guid.Empty) return false;
-        if (_client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(folderId))?.Data is not LibreMetaverse.InventoryFolder)
+        if (folderId == Guid.Empty) return false;
+        var folderUuid = new LibreMetaverse.UUID(folderId);
+        if (_client.Inventory.Store?.GetNodeOrDefault(folderUuid)?.Data is not LibreMetaverse.InventoryFolder)
             return false;
-        _client.Inventory.MoveFolder(new LibreMetaverse.UUID(folderId), new LibreMetaverse.UUID(trashId));
-        var node = _client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(folderId));
-        if (node != null) node.Parent?.Nodes.Remove(new LibreMetaverse.UUID(folderId));
+
+        if (_client.AisClient?.IsAvailable == true)
+        {
+            _ = _client.Inventory.RemoveFolderAsync(folderUuid, System.Threading.CancellationToken.None);
+        }
+        else
+        {
+            if (TrashFolderId is not { } trashId || trashId == Guid.Empty) return false;
+            _client.Inventory.MoveFolder(folderUuid, new LibreMetaverse.UUID(trashId));
+        }
+
+        var node = _client.Inventory.Store?.GetNodeOrDefault(folderUuid);
+        if (node != null) node.Parent?.Nodes.Remove(folderUuid);
         return true;
     }
 
