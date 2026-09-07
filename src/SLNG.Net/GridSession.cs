@@ -311,6 +311,27 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
 
         _client = new GridClient();
+
+        // LibreMetaverse keeps its own on-disk asset cache (the wearable / animation / gesture /
+        // sound assets it downloads for the bake pipeline). Its directory defaults to
+        // "<Settings.ResourceDir>/cache" -- and ResourceDir was just repointed above at the folder
+        // the assembly lives in. In an installed build that folder is %ProgramFiles%\PurisViewer,
+        // which a normal-privilege process cannot write to: every SaveAssetToCache then throws
+        // UnauthorizedAccessException ("Failed saving asset to cache (Access denied)") and the
+        // cache never populates, so each session re-downloads the same wearables from the grid --
+        // needless load on a rate-limited grid. Redirect it to a per-user writable location, the
+        // same %LOCALAPPDATA%\SLNG root SelfAppearanceCache already uses.
+        try
+        {
+            _client.Settings.AssetCache.Dir = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.Create),
+                "SLNG", "lmv-asset-cache");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Net] could not redirect the LibreMetaverse asset cache: {ex.Message}");
+        }
+
         // MUST stay true. This single flag gates LibreMetaverse's entire appearance/bake
         // workflow: Simulator_OnCapabilitiesReceived (the on-login / on-region-change trigger),
         // the AgentWearablesUpdate bake trigger, and the sim's RebakeAvatarTextures request are
