@@ -5117,33 +5117,69 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     /// <summary>Creates a Current-Outfit link for <paramref name="item"/> unless one already
     /// exists. See the call in <see cref="AttachItemAsync"/> for why an attachment needs this
-    /// explicitly — no bake or appearance send is triggered, this is an inventory link only.</summary>
+    /// explicitly — no bake or appearance send is triggered, this is an inventory link only.
+    ///
+    /// <para>The link target is resolved to the <b>base</b> inventory item first: AIS rejects a
+    /// link whose <c>linked_id</c> is itself a link (link-to-link is illegal) or points at
+    /// something not in agent inventory — the <c>Create inventory in &lt;COF&gt;: Bad Request</c>
+    /// pairs BUG-INV-01 kept hitting on a couple of worn attachments.</para></summary>
     private async Task EnsureCofLinkForItemAsync(LibreMetaverse.InventoryItem item, LibreMetaverse.InventoryType invType)
     {
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
-        if (cofUuid == LibreMetaverse.UUID.Zero || item.UUID == LibreMetaverse.UUID.Zero) return;
+        if (cofUuid == LibreMetaverse.UUID.Zero) return;
 
         var store = _client.Inventory.Store;
+
+        // Walk to the real item: a link's linked_id must be a base item, never another link.
+        var target = item;
+        for (int hop = 0; hop < 4 && target.IsLink(); hop++)
+        {
+            var next = target.ResolvedItemID != LibreMetaverse.UUID.Zero ? target.ResolvedItemID : target.AssetUUID;
+            if (next == LibreMetaverse.UUID.Zero) break;
+            if (store?.GetNodeOrDefault(next)?.Data is not LibreMetaverse.InventoryItem resolved) { target = null!; break; }
+            target = resolved;
+        }
+        if (target is null || target.UUID == LibreMetaverse.UUID.Zero || target.IsLink())
+        {
+            Console.Error.WriteLine(
+                $"[Appearance] not COF-linking '{item.Name}' ({item.UUID}) — does not resolve to a real inventory item " +
+                $"(isLink={item.IsLink()} resolvedItemId={item.ResolvedItemID} assetUuid={item.AssetUUID})");
+            return;
+        }
+
         var cofNode = store?.GetNodeOrDefault(cofUuid);
         if (cofNode != null)
             foreach (var child in cofNode.Nodes.Values)
             {
                 if (child.Data is not LibreMetaverse.InventoryItem link || !link.IsLink()) continue;
-                var target = link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID;
-                if (target == item.UUID) return; // already recorded
+                var t = link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID;
+                if (t == target.UUID) return; // already recorded
             }
 
         try
         {
             var created = await _client.Inventory.CreateLinkAsync(
-                cofUuid, item.UUID, item.Name, string.Empty, invType, LibreMetaverse.UUID.Zero).ConfigureAwait(false);
-            Console.Error.WriteLine(created == null
-                ? $"[Appearance] COF link for '{item.Name}' ({item.UUID}) came back empty"
-                : $"[Appearance] recorded '{item.Name}' in the Current Outfit folder");
+                cofUuid, target.UUID, target.Name, string.Empty, invType, LibreMetaverse.UUID.Zero).ConfigureAwait(false);
+            if (created != null)
+            {
+                Console.Error.WriteLine($"[Appearance] recorded '{target.Name}' in the Current Outfit folder");
+                return;
+            }
+
+            // AIS refused it. Dump what we know about the target so the reason is nailed next time.
+            string where = "?";
+            for (var n = store?.GetNodeOrDefault(target.UUID); n != null; n = n.Parent)
+                if (n.Data is LibreMetaverse.InventoryFolder pf)
+                { where = pf.PreferredType != LibreMetaverse.FolderType.None ? pf.PreferredType.ToString() : pf.Name; break; }
+            Console.Error.WriteLine(
+                $"[Appearance] AIS refused COF link for '{target.Name}' ({target.UUID}): " +
+                $"assetType={target.AssetType} invType={target.InventoryType} isLink={target.IsLink()} " +
+                $"owner={target.OwnerID} mine={target.OwnerID == _client.Self.AgentID} " +
+                $"perms={target.Permissions.OwnerMask} parentFolder={where}");
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[Appearance] could not COF-link '{item.Name}': {ex.Message}");
+            Console.Error.WriteLine($"[Appearance] could not COF-link '{target.Name}': {ex.Message}");
         }
     }
 

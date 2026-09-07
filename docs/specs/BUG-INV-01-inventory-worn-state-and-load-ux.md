@@ -54,8 +54,16 @@ every swap dropped the new attachment.
 guarded against duplicates, **no bake or appearance send** (an inventory link only, unlike the
 wearable path). `WearOutfitAttachmentsAsync` / `ReplaceWornWithOutfitAttachmentsAsync` (loops of
 `AttachItemAsync`) now persist too. `replace: true` on an attach point still leaves the
-replaced item's stale link for `CleanUpCurrentOutfit` to reap — known gap. **Not yet
-re-verified in-world** (the one that matters: swap an attachment, relog, it's still on).
+replaced item's stale link for `CleanUpCurrentOutfit` to reap — known gap.
+
+**`v0.20.101`:** the COF link *still* 400'd for the same two attachments
+(`[Appearance] COF link for 'DOUX - Yadira Hairstyle' … came back empty`,
+`Create inventory in <COF>: Bad Request`) — so the outfit slam that reads the COF only got 13
+of the worn set, and the saved outfit was short by exactly those two. `EnsureCofLinkForItemAsync`
+now (a) walks the link chain to the **base** item before linking (a `linked_id` that is itself a
+link is illegal — the leading theory), and (b) on an AIS refusal dumps the target's
+`assetType / invType / isLink / owner / mine / perms / parentFolder` so the reason is finally
+named on the next repro. **Not yet re-verified in-world.**
 
 ### Saving a *new* outfit — slam from the COF, and mark it active (`v0.20.99-alpha`)
 **Live, 2026-09-07 (`v0.20.98`).** New outfit saved; 2 of 13 links 400'd —
