@@ -858,6 +858,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // Fall back to the last cached self appearance if the sim never sends one this login.
         ArmSelfAppearanceRestore();
 
+        // Re-request any Current-Outfit attachment the sim failed to rez on login.
+        ArmAttachmentReconcile();
+
         _ = Task.Run(async () =>
         {
             try
@@ -5627,11 +5630,93 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 var pt = p.PrimData.AttachmentPoint;
                 if (pt == LibreMetaverse.AttachmentPoint.Default) continue;
                 var aid = ExtractAttachItemId(p);
-                if (aid != Guid.Empty) map[aid] = pt;
+                if (aid != Guid.Empty) { map[aid] = pt; _attachmentsSeenWornThisSession.Add(aid); }
             }
         }
         catch { }
         return map;
+    }
+
+    // Every attachment id we have seen parented to our avatar this session. Lets the login
+    // re-attach pass (ReattachMissingCofAttachments) leave alone anything the user took off --
+    // that was seen worn first -- and only re-request items that never rezzed at all.
+    private readonly HashSet<Guid> _attachmentsSeenWornThisSession = new();
+    private int _attachmentReconcileArmed;
+
+    /// <summary>The simulator sometimes fails to rez one or two Current-Outfit attachments on
+    /// login (a COF/asset race, worse for freshly-made <c>#Library</c> copies): the item is in the
+    /// COF but never appears in-world, so the Angezogen tab shows it "(nicht aktiv)". The
+    /// reference viewer's <c>LLAttachmentsMgr</c> re-requests missing attachments; this does the
+    /// same a few times after login. Bounded, and it skips anything ever seen worn this session so
+    /// it never re-adds something the user deliberately took off.</summary>
+    private void ArmAttachmentReconcile()
+    {
+        if (System.Threading.Interlocked.Exchange(ref _attachmentReconcileArmed, 1) != 0) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                foreach (int delaySeconds in new[] { 20, 40, 75 })
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds)).ConfigureAwait(false);
+                    if (!_client.Network.Connected) return;
+                    if (ReattachMissingCofAttachments() == 0 && delaySeconds > 20) return;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[Appearance] attachment reconcile failed: {ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>Re-sends an attach for every Current-Outfit <c>Object</c> link whose target is not
+    /// currently worn (scene or LibreMetaverse's own cache) and was never seen worn this session.
+    /// Returns how many re-attach requests were sent.</summary>
+    private int ReattachMissingCofAttachments()
+    {
+        var store = _client.Inventory.Store;
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
+        if (cofNode == null) return 0;
+
+        var worn = new HashSet<Guid>(GetSceneWornAttachments().Keys);
+        try
+        {
+            foreach (var k in _client.Appearance.GetAttachmentsByItemId().Keys) worn.Add(k.Guid);
+        }
+        catch { }
+
+        var missing = new List<LibreMetaverse.InventoryItem>();
+        foreach (var childNode in cofNode.Nodes.Values)
+        {
+            if (childNode.Data is not LibreMetaverse.InventoryItem link || !link.IsLink()) continue;
+            if (link.AssetType == LibreMetaverse.AssetType.LinkFolder) continue;
+
+            var targetId = link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID;
+            if (targetId == LibreMetaverse.UUID.Zero) continue;
+            if (worn.Contains(targetId.Guid) || _attachmentsSeenWornThisSession.Contains(targetId.Guid)) continue;
+
+            if (store?.GetNodeOrDefault(targetId)?.Data is not LibreMetaverse.InventoryItem target) continue;
+            if (target.AssetType != LibreMetaverse.AssetType.Object) continue; // wearables have no scene object
+            if (target.OwnerID != LibreMetaverse.UUID.Zero && target.OwnerID != _client.Self.AgentID) continue;
+
+            missing.Add(target);
+        }
+
+        if (missing.Count == 0) return 0;
+
+        Console.Error.WriteLine(
+            $"[Appearance] {missing.Count} Current-Outfit attachment(s) the sim did not rez on login — re-attaching: " +
+            string.Join(", ", missing.Select(m => $"'{m.Name}'")));
+
+        foreach (var m in missing)
+        {
+            try { _client.Appearance.Attach(m, LibreMetaverse.AttachmentPoint.Default, replace: false); }
+            catch (Exception ex) { Console.Error.WriteLine($"[Appearance] re-attach of '{m.Name}' failed: {ex.Message}"); }
+        }
+        return missing.Count;
     }
 
     /// <summary>Deletes every Current-Outfit link that points at one of <paramref name="itemIds"/>

@@ -54,6 +54,22 @@ later overrides it through the same event, so a stale cache self-heals. Log line
 `[Appearance] restored last-known shape (N params) + M bake id(s) from cache` /
 `… no cached shape to fall back on`.
 
+## Missing Current-Outfit attachment on login (`v0.20.108-alpha`)
+
+Same session type, second symptom: the avatar comes up fine except **one** worn attachment is
+missing — boots one login, the DOUX hair the next. The Angezogen tab lists the missing item as
+**"(nicht aktiv)"** (in the COF, not in the scene), and there is no SLNG log line for it — the
+simulator simply did not rez that attachment this login. It is always one of the freshly-made
+`#Library` copies, whose newer inventory/asset records lose the login COF/asset race more often.
+
+**Fix:** `ArmAttachmentReconcile()` (armed once per session next to the other appearance
+watchdogs) runs `ReattachMissingCofAttachments()` at 20 s / 40 s / 75 s: for every COF `Object`
+link whose target is not worn (scene + LibreMetaverse's attachment cache) **and was never seen
+worn this session** (`_attachmentsSeenWornThisSession`, so it never re-adds something the user
+took off), it re-sends `Appearance.Attach(item, Default, replace: false)` — the reference
+viewer's `LLAttachmentsMgr` re-request behaviour. Stops early once a pass finds nothing.
+Not yet re-verified in-world.
+
 ## Still open
 
 - Whether the sim can be *asked* to (re)send our appearance on login rather than only cached
