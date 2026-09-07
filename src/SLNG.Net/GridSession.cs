@@ -855,6 +855,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // only resolvable once the caps handshake is done. Armed once per session, not per region.
         ArmSelfBakeWatchdog();
 
+        // Fall back to the last cached self appearance if the sim never sends one this login.
+        ArmSelfAppearanceRestore();
+
+        // Re-request any Current-Outfit attachment the sim failed to rez on login.
+        ArmAttachmentReconcile();
+
         _ = Task.Run(async () =>
         {
             try
@@ -2026,6 +2032,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // Remembered for the local appearance refresh after our own bake, which has no incoming
         // event to read a hover height from and must not silently reset it to zero.
         if (e.AvatarID == _client.Self.AgentID) _lastSelfHoverOffsetZ = hoverOffsetZ;
+
+        // Persist a healthy self appearance so a later login that receives none can still render
+        // the real shape (ArmSelfAppearanceRestore).
+        if (e.AvatarID == _client.Self.AgentID) MaybeSaveSelfAppearanceCache();
 
         AvatarAppearanceReceived?.Invoke(this, new AvatarAppearanceEvent(
             e.Simulator.Handle,
@@ -4008,6 +4018,71 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// compares LibreMetaverse's own <c>Textures[]</c> against.</summary>
     private Dictionary<int, Guid> _lastSelfRelayBakes = new();
 
+    // Dedup for the on-disk self-appearance cache: the last visual-param array we wrote out.
+    private byte[]? _selfAppearanceCacheVp;
+    private int _selfAppearanceRestoreArmed;
+
+    /// <summary>Persists the last <b>healthy</b> self appearance so a later login that receives no
+    /// <c>AvatarAppearance</c> can still render the real shape (see <see cref="SelfAppearanceCache"/>
+    /// and <see cref="ArmSelfAppearanceRestore"/>). Only writes when the shape actually changed.</summary>
+    private void MaybeSaveSelfAppearanceCache()
+    {
+        var vp = _lastSelfRelayVisualParams;
+        if (!VisualParamsHealthy(vp)) return;
+        if (_selfAppearanceCacheVp != null && _selfAppearanceCacheVp.AsSpan().SequenceEqual(vp)) return;
+
+        SelfAppearanceCache.Save(_client.Self.AgentID.Guid, vp, _lastSelfRelayBakes, _lastSelfHoverOffsetZ);
+        _selfAppearanceCacheVp = (byte[])vp.Clone();
+    }
+
+    /// <summary>One-shot: if no healthy self <c>AvatarAppearance</c> has arrived a little after
+    /// login, load the last one from <see cref="SelfAppearanceCache"/> and drive the renderer with
+    /// it — the sim's own relay is missing on roughly every second Agni login and the ~253 visual
+    /// parameters have no other source. Purely local: nothing is sent, and a real relay arriving
+    /// afterwards overrides this through the same event.</summary>
+    private void ArmSelfAppearanceRestore()
+    {
+        if (System.Threading.Interlocked.Exchange(ref _selfAppearanceRestoreArmed, 1) != 0) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(12)).ConfigureAwait(false);
+                if (!_client.Network.Connected) return;
+                if (VisualParamsHealthy(_lastSelfRelayVisualParams)) return; // the sim did send one
+
+                if (!SelfAppearanceCache.TryLoad(_client.Self.AgentID.Guid, out var vp, out var bakes, out var hoverZ)
+                    || !VisualParamsHealthy(vp))
+                {
+                    Console.Error.WriteLine(
+                        "[Appearance] no self AvatarAppearance from the sim and no cached shape to fall back on " +
+                        "— the avatar keeps the default shape until a relay arrives");
+                    return;
+                }
+
+                _lastSelfRelayVisualParams = vp;
+                if (bakes.Count > 0 && _lastSelfRelayBakes.Count == 0) _lastSelfRelayBakes = bakes;
+                if (_lastSelfHoverOffsetZ == 0f) _lastSelfHoverOffsetZ = hoverZ;
+
+                Console.Error.WriteLine(
+                    $"[Appearance] restored last-known shape ({vp.Length} params) + {bakes.Count} bake id(s) from cache " +
+                    "— the sim sent no AvatarAppearance for us this login");
+
+                var sim = _client.Network.CurrentSim;
+                if (sim != null)
+                    AvatarAppearanceReceived?.Invoke(this, new AvatarAppearanceEvent(
+                        sim.Handle, _client.Self.AgentID.Guid, vp,
+                        _lastSelfRelayBakes.Count > 0 ? new Dictionary<int, Guid>(_lastSelfRelayBakes) : bakes,
+                        _lastSelfHoverOffsetZ));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[Appearance] self-appearance restore failed: {ex.Message}");
+            }
+        });
+    }
+
     private void OnAppearanceSet(object? sender, AppearanceSetEventArgs e)
     {
         if (!e.Success) return;
@@ -5555,11 +5630,127 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 var pt = p.PrimData.AttachmentPoint;
                 if (pt == LibreMetaverse.AttachmentPoint.Default) continue;
                 var aid = ExtractAttachItemId(p);
-                if (aid != Guid.Empty) map[aid] = pt;
+                if (aid != Guid.Empty) { map[aid] = pt; _attachmentsSeenWornThisSession.Add(aid); }
             }
         }
         catch { }
         return map;
+    }
+
+    // Every attachment id we have seen parented to our avatar this session. Lets the login
+    // re-attach pass (ReattachMissingCofAttachments) leave alone anything the user took off --
+    // that was seen worn first -- and only re-request items that never rezzed at all.
+    private readonly HashSet<Guid> _attachmentsSeenWornThisSession = new();
+    private int _attachmentReconcileArmed;
+
+    /// <summary>The simulator sometimes fails to rez one or two Current-Outfit attachments on
+    /// login (a COF/asset race, worse for freshly-made <c>#Library</c> copies): the item is in the
+    /// COF but never appears in-world, so the Angezogen tab shows it "(nicht aktiv)". The
+    /// reference viewer's <c>LLAttachmentsMgr</c> re-requests missing attachments; this does the
+    /// same a few times after login. Bounded, and it skips anything ever seen worn this session so
+    /// it never re-adds something the user deliberately took off.</summary>
+    private void ArmAttachmentReconcile()
+    {
+        if (System.Threading.Interlocked.Exchange(ref _attachmentReconcileArmed, 1) != 0) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                // First check soon so a missing attachment pops in fast, not 20 s later; the
+                // later passes cover a slow COF load or a sim that is still settling.
+                int[] schedule = { 6, 12, 22, 45, 80 };
+                for (int i = 0; i < schedule.Length; i++)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(i == 0 ? schedule[0] : schedule[i] - schedule[i - 1]))
+                        .ConfigureAwait(false);
+                    if (!_client.Network.Connected) return;
+                    if (await ReattachMissingCofAttachmentsAsync().ConfigureAwait(false) == 0 && i > 0)
+                        return;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[Appearance] attachment reconcile failed: {ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>Re-sends an attach for every Current-Outfit attachment link whose target is not in
+    /// the scene and was never seen worn this session. Returns how many re-attach requests were
+    /// sent.</summary>
+    private async Task<int> ReattachMissingCofAttachmentsAsync()
+    {
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        if (cofUuid == LibreMetaverse.UUID.Zero) return 0;
+
+        // The inventory is fetched lazily per folder — nothing pulls the COF on login, so it is
+        // usually not in the store when this runs. Fetch it here or there is nothing to inspect.
+        try { await FetchInventoryChildrenAsync(cofUuid.Guid).ConfigureAwait(false); }
+        catch { }
+
+        var store = _client.Inventory.Store;
+        var cofNode = store?.GetNodeOrDefault(cofUuid);
+        if (cofNode == null || cofNode.Nodes.Count == 0) return 0;
+
+        // The SCENE is the only reliable "is it actually on the avatar" signal. LibreMetaverse's
+        // GetAttachmentsByItemId() cache is NOT — it lags a detach and can list a COF attachment
+        // as worn before it has rezzed, which is exactly how the boots kept getting skipped.
+        var worn = new HashSet<Guid>(GetSceneWornAttachments().Keys);
+
+        var byItem = new List<LibreMetaverse.InventoryItem>();
+        var byRawUuid = new List<LibreMetaverse.UUID>();
+        foreach (var childNode in cofNode.Nodes.Values)
+        {
+            if (childNode.Data is not LibreMetaverse.InventoryItem link) continue;
+
+            var targetId = link.IsLink()
+                ? (link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID)
+                : link.UUID;
+            var target = targetId != LibreMetaverse.UUID.Zero
+                ? store?.GetNodeOrDefault(targetId)?.Data as LibreMetaverse.InventoryItem
+                : null;
+
+            if (link.AssetType == LibreMetaverse.AssetType.LinkFolder) continue;
+            if (targetId == LibreMetaverse.UUID.Zero
+                || worn.Contains(targetId.Guid)
+                || _attachmentsSeenWornThisSession.Contains(targetId.Guid)) continue;
+
+            if (target != null)
+            {
+                if (target.AssetType == LibreMetaverse.AssetType.Object) byItem.Add(target);
+                // else: wearable / gesture — no scene object to reconcile
+            }
+            else if (link.InventoryType == LibreMetaverse.InventoryType.Object
+                     || link.AssetType == LibreMetaverse.AssetType.Object)
+            {
+                byRawUuid.Add(targetId);
+            }
+        }
+
+        int total = byItem.Count + byRawUuid.Count;
+        if (total == 0) return 0;
+
+        Console.Error.WriteLine(
+            $"[Appearance] {total} Current-Outfit attachment(s) the sim did not rez on login — re-attaching: " +
+            string.Join(", ", byItem.Select(m => $"'{m.Name}'").Concat(byRawUuid.Select(u => "?" + u.ToString()[..8]))));
+
+        foreach (var m in byItem)
+        {
+            try { _client.Appearance.Attach(m, LibreMetaverse.AttachmentPoint.Default, replace: false); }
+            catch (Exception ex) { Console.Error.WriteLine($"[Appearance] re-attach of '{m.Name}' failed: {ex.Message}"); }
+        }
+        foreach (var u in byRawUuid)
+        {
+            try
+            {
+                _client.Appearance.Attach(u, _client.Self.AgentID, "Attachment", string.Empty,
+                    new LibreMetaverse.Permissions { OwnerMask = LibreMetaverse.PermissionMask.All }, 0,
+                    LibreMetaverse.AttachmentPoint.Default, replace: false);
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"[Appearance] re-attach of {u} failed: {ex.Message}"); }
+        }
+        return total;
     }
 
     /// <summary>Deletes every Current-Outfit link that points at one of <paramref name="itemIds"/>
