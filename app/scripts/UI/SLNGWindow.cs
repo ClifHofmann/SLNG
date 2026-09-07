@@ -71,6 +71,9 @@ public partial class SLNGWindow : MarginContainer
 
     public MarginContainer ContentContainer => _contentContainer;
 
+    /// <summary>True while the frame is collapsed to its title bar via the "_" button.</summary>
+    public bool IsMinimized => _isMinimized;
+
     // Triggered when close is requested. By default, hides the window.
     public Action? OnCloseRequested;
 
@@ -339,13 +342,46 @@ public partial class SLNGWindow : MarginContainer
         }
         else
         {
-            _isMinimized = false;
-            CustomMinimumSize = _preMinimizeMinSize;
-            _contentContainer.Visible = true;
-            foreach (var h in _resizeHandles) h.Visible = true;
-            Size = _preMinimizeSize; // Restore the pre-minimize frame size
+            RestoreFromMinimized();
         }
     }
+
+    /// <summary>Expand the frame back to its pre-minimize size. Public so a launcher (the bottom
+    /// bar button or a quick-menu entry) can bring a minimized window back without the user
+    /// having to find the "_" button again -- no-op if the window is not currently minimized.</summary>
+    public void Unminimize()
+    {
+        if (_isMinimized) RestoreFromMinimized();
+    }
+
+    private void RestoreFromMinimized()
+    {
+        _isMinimized = false;
+        CustomMinimumSize = _preMinimizeMinSize;
+        _contentContainer.Visible = true;
+        foreach (var h in _resizeHandles) h.Visible = true;
+        Size = _preMinimizeSize; // Restore the pre-minimize frame size
+    }
+
+    /// <summary>Raise this window (and its Control ancestors) above overlapping siblings -- the
+    /// same walk the click-to-front handler does, exposed for programmatic activation from a
+    /// launcher.</summary>
+    public void BringToFront()
+    {
+        for (Node? n = this; n is Control c; n = n.GetParent())
+            c.MoveToFront();
+    }
+
+    /// <summary>Pull the window back inside the current viewport (see <see cref="ClampToViewport"/>).
+    /// Runs once now and once deferred, so a window shown this same frame has a settled
+    /// <see cref="Control.Size"/> to clamp against on the second pass.</summary>
+    public void EnsureOnScreen()
+    {
+        ClampToViewport();
+        CallDeferred(nameof(EnsureOnScreenDeferred));
+    }
+
+    private void EnsureOnScreenDeferred() => ClampToViewport();
 
     /// <summary>Second half of the minimize path, run deferred so the content container's
     /// visibility change has propagated into the layout's minimum-size calculation. Collapses the

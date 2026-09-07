@@ -83,7 +83,15 @@ public partial class Boot : Control
     private Node3D? _sunGizmo;
 
     private double _hudAccum;
-    
+
+    // Session window persistence (BUG-UI-07): the shared launcher registry, plus the state that
+    // lets _Process write "which of these are open" to preferences.cfg a couple of times a second
+    // and RestoreOpenWindows re-open the same set after the loading screen clears.
+    private System.Collections.Generic.List<SLNG.App.UI.ToolbarItemDefinition>? _toolbarItems;
+    private bool _sessionWindowsRestored;
+    private string _lastPersistedWindowSig = "";
+    private double _windowPersistAccum;
+
     private SLNG.App.UI.TopMenu _topMenu = null!;
 
     /// <summary>FEAT-SL-01: always-present layer for windows that must work before there is a
@@ -156,7 +164,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.20.117-alpha";
+    public const string AppVersion = "v0.20.118-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -397,14 +405,7 @@ public partial class Boot : Control
             if (hudLayer != null) hudLayer.Visible = !hudLayer.Visible;
         };
 
-        _topMenu.OnToggleCameraHud = () => {
-            var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
-            if (hudLayer != null)
-            {
-                var cameraHud = hudLayer.GetNodeOrNull<Control>("CameraHUD");
-                if (cameraHud != null) cameraHud.Visible = !cameraHud.Visible;
-            }
-        };
+        _topMenu.OnToggleCameraHud = () => InvokeLauncher("camera");
 
         _topMenu.OnCameraMode = (mode) => {
             // Future integration with FreeCamera/AvatarController
@@ -440,14 +441,17 @@ public partial class Boot : Control
             _qualityPage?.Refresh();
             _designPage?.Refresh();
             _maturityPage?.Refresh();
+            _preferencesWindow.Unminimize();
             _preferencesWindow.Visible = true;
+            _preferencesWindow.EnsureOnScreen();
+            _preferencesWindow.BringToFront();
         };
 
         _topMenu.OnOpenAbout = ShowAboutWindow;
 
-        _topMenu.OnOpenEnvironment = () => _environmentWindow?.Toggle();
-        _topMenu.OnOpenWorldMap = () => _worldMapWindow?.Toggle();
-        _topMenu.OnOpenMinimap = () => _minimapOverlay?.Toggle();
+        _topMenu.OnOpenEnvironment = () => InvokeLauncher("environment");
+        _topMenu.OnOpenWorldMap = () => InvokeLauncher("worldmap");
+        _topMenu.OnOpenMinimap = () => InvokeLauncher("minimap");
 
         _topMenu.OnCreateLandmark = () => {
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
@@ -734,16 +738,35 @@ public partial class Boot : Control
     /// </summary>
     private void SetupButtonBarAndPreferences(CanvasLayer hudLayer, SLNG.App.UI.CameraHUD cameraHud)
     {
+        // Every click routes through ActivateLauncher so a merely-minimized window is expanded
+        // instead of hidden (BUG-UI-07), and a freshly-shown one is pulled on-screen + raised.
+        // The second lambda ("is it active") counts a minimized window as open, which is also
+        // what the session-restore snapshot persists.
         var toolbarItems = new System.Collections.Generic.List<SLNG.App.UI.ToolbarItemDefinition>
         {
-            new("chat", "Chat", "chat", () => _chatWindow.Visible = !_chatWindow.Visible, () => _chatWindow.Visible),
-            new("camera", "Camera Controls", "photo_camera", () => cameraHud.Toggle(), () => cameraHud.Visible),
-            new("inventory", "Inventory", "inventory_2", () => _inventoryPanel?.Toggle(), () => _inventoryPanel?.Visible ?? false),
-            new("snapshot", "Snapshot", "add_a_photo", () => _snapshotWindow.Toggle(), () => _snapshotWindow.Visible),
-            new("environment", "Environment", "wb_sunny", () => _environmentWindow.Toggle(), () => _environmentWindow.Visible),
-            new("minimap", "Minimap", "radar", () => _minimapOverlay.Toggle(), () => _minimapOverlay.Visible),
-            new("worldmap", "World Map", "map", () => _worldMapWindow.Toggle(), () => _worldMapWindow.Visible),
+            new("chat", "Chat", "chat",
+                () => ActivateLauncher(_chatWindow, () => _chatWindow.Visible = !_chatWindow.Visible),
+                () => _chatWindow.Visible),
+            new("camera", "Camera Controls", "photo_camera",
+                () => ActivateLauncher(cameraHud, cameraHud.Toggle),
+                () => cameraHud.Visible),
+            new("inventory", "Inventory", "inventory_2",
+                () => { var inv = _inventoryPanel; if (inv != null) ActivateLauncher(inv, inv.Toggle); },
+                () => _inventoryPanel?.Visible ?? false),
+            new("snapshot", "Snapshot", "add_a_photo",
+                () => ActivateLauncher(_snapshotWindow, _snapshotWindow.Toggle),
+                () => _snapshotWindow.Visible),
+            new("environment", "Environment", "wb_sunny",
+                () => ActivateLauncher(_environmentWindow, _environmentWindow.Toggle),
+                () => _environmentWindow.Visible),
+            new("minimap", "Minimap", "radar",
+                () => ActivateLauncher(_minimapOverlay, _minimapOverlay.Toggle),
+                () => _minimapOverlay.Visible),
+            new("worldmap", "World Map", "map",
+                () => ActivateLauncher(_worldMapWindow, _worldMapWindow.Toggle),
+                () => _worldMapWindow.Visible),
         };
+        _toolbarItems = toolbarItems;
 
         _toolbarSettings = new SLNG.App.UI.ToolbarSettings();
         _toolbarSettings.EnsureDefaults(toolbarItems.ConvertAll(i => i.Id));
@@ -796,6 +819,80 @@ public partial class Boot : Control
         var licensesPage = new SLNG.App.UI.LicensesPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_licenses"), licensesPage);
         licensesPage.Initialize();
+    }
+
+    /// <summary>Bottom-bar / quick-menu entry point for a launcher window (BUG-UI-07). A window
+    /// that is only <em>minimized</em> is expanded back rather than hidden; a hidden window is
+    /// opened through its own <paramref name="ownToggle"/> (so its on-show refresh runs), then
+    /// pulled fully on-screen and raised; an already-open, non-minimized window toggles shut.</summary>
+    private static void ActivateLauncher(SLNG.App.UI.SLNGWindow window, System.Action ownToggle)
+    {
+        if (window.Visible && window.IsMinimized)
+        {
+            window.Unminimize();
+            window.BringToFront();
+            return;
+        }
+
+        bool wasVisible = window.Visible;
+        ownToggle();
+        if (!wasVisible && window.Visible)
+        {
+            window.EnsureOnScreen();
+            window.BringToFront();
+        }
+    }
+
+    /// <summary>Fire a launcher item by id -- used by the top ("quick") menu so its entries take
+    /// the exact same minimize-aware path as the bottom bar.</summary>
+    private void InvokeLauncher(string id) => _toolbarItems?.Find(i => i.Id == id)?.Toggle();
+
+    /// <summary>Writes the set of currently-open launcher windows to preferences.cfg. Cheap and
+    /// idempotent (skips the disk write when nothing changed), so _Process can call it on a slow
+    /// tick and still catch a window the user closed via its own "x" button.</summary>
+    private void PersistOpenWindows()
+    {
+        if (_toolbarItems == null) return;
+
+        var open = string.Join(",", _toolbarItems
+            .Where(i => i.IsActive?.Invoke() ?? false)
+            .Select(i => i.Id));
+        if (open == _lastPersistedWindowSig) return;
+        _lastPersistedWindowSig = open;
+
+        var cfg = new ConfigFile();
+        cfg.Load("user://preferences.cfg"); // preserve window_geometry / toolbar / graphics / ...
+        cfg.SetValue("session_windows", "open", open);
+        cfg.Save("user://preferences.cfg");
+    }
+
+    /// <summary>Re-opens the launcher windows that were open when the last session ended, at the
+    /// position/size each already persists on its own (BUG-UI-07). Called once the loading screen
+    /// clears, never while it is up -- so nothing pops over the start modal. On a first run (no
+    /// saved set) it falls back to the historical default of the communication window open.</summary>
+    private void RestoreOpenWindows()
+    {
+        var cfg = new ConfigFile();
+        bool haveSaved = cfg.Load("user://preferences.cfg") == Error.Ok
+                         && cfg.HasSectionKey("session_windows", "open");
+
+        if (!haveSaved)
+        {
+            _chatWindow.Visible = true;
+            _chatWindow.EnsureOnScreen();
+        }
+        else if (_toolbarItems != null)
+        {
+            var raw = (string)cfg.GetValue("session_windows", "open", "");
+            var ids = new System.Collections.Generic.HashSet<string>(
+                raw.Split(',', System.StringSplitOptions.RemoveEmptyEntries | System.StringSplitOptions.TrimEntries));
+            foreach (var item in _toolbarItems)
+                if (ids.Contains(item.Id) && !(item.IsActive?.Invoke() ?? false))
+                    item.Toggle(); // ActivateLauncher: opens via the panel's own path, clamps on-screen, raises
+        }
+
+        _sessionWindowsRestored = true;
+        PersistOpenWindows();
     }
 
     private void SetupEnvironment()
@@ -1087,6 +1184,11 @@ public partial class Boot : Control
                 GetNode<Control>("%LoadingScreen").Visible = false;
                 var bg = GetNodeOrNull<Control>("%Background");
                 if (bg != null) bg.Visible = false;
+
+                // Now that the start modal is gone, bring back the windows the last session had
+                // open (BUG-UI-07) -- doing it here, not in OnLoginPressed, is what stops the
+                // communication window appearing over the still-visible loading screen.
+                RestoreOpenWindows();
             }
         }
 
@@ -1106,6 +1208,19 @@ public partial class Boot : Control
         {
             _hudAccum = 0;
             UpdateHud();
+        }
+
+        // Snapshot which launcher windows are open, a couple of times a second, so a close via a
+        // window's own "x" button is caught too (BUG-UI-07). Suppressed while quitting/disconnecting
+        // -- QuitGracefully hides every window, and that must not overwrite the saved layout.
+        if (_sessionWindowsRestored && !_isQuitting)
+        {
+            _windowPersistAccum += delta;
+            if (_windowPersistAccum >= 0.5)
+            {
+                _windowPersistAccum = 0.0;
+                PersistOpenWindows();
+            }
         }
     }
 
@@ -1932,7 +2047,9 @@ public partial class Boot : Control
             _topMenu.Visible = true;
 
             if (hudLayer != null) hudLayer.Visible = true;
-            _chatWindow.Visible = true;
+            // The communication window (and any other window the last session left open) is
+            // restored only once the loading screen actually clears -- see RestoreOpenWindows in
+            // the _waitingForWorldLoad block -- so it never pops over the start modal (BUG-UI-07).
 
             _avatarController = new AvatarController();
             _avatarController.Name = "AvatarController";
@@ -2303,6 +2420,11 @@ public partial class Boot : Control
     {
         if (_isQuitting) return;
         _isQuitting = true;
+        // Stop the _Process open-window snapshot: this method hides every window, and on a
+        // disconnect (quitProcess == false) it also clears _isQuitting again afterwards, so
+        // without this the throttle would persist an all-closed layout (BUG-UI-07).
+        // RestoreOpenWindows re-arms it on the next login.
+        _sessionWindowsRestored = false;
 
         if (_session != null && _session.IsConnected)
         {
