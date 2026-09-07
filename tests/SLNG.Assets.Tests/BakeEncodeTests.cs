@@ -1,6 +1,5 @@
 using System.Linq;
 using CoreJ2K;
-using CoreJ2K.Configuration;
 using SkiaSharp;
 using SLNG.Assets;
 using Xunit;
@@ -20,8 +19,15 @@ namespace SLNG.Assets.Tests;
 /// all. The loss is in <c>AssetTexture.Encode</c>:
 /// <code>AssetData = CompleteConfigurationPresets.Streaming.Encode(Image.ExportBitmap());</code></para>
 ///
-/// <para>These tests reproduce that offline. Every earlier round of this investigation cost a login,
-/// a rebake and a visual inspection; this answers the same question from a unit test.</para>
+/// <para>Two earlier tests here reproduced the LibreMetaverse loss directly — encoding a gradient
+/// through <c>CompleteConfigurationPresets.Streaming</c> and asserting the result was under a
+/// kilobyte. They were removed 2026-09-07: CoreJ2K's rate control turns out to be
+/// environment-dependent — broken on the dev machines this was found on (the ~507-byte bake),
+/// working on the CI runner (a real ~57 KB stream) — so a hard "still broken" assertion fails the
+/// build exactly when the upstream bug is *fixed*, which is not a regression. The finding is
+/// preserved in this doc comment, in <c>J2KBakeTextureEncoder</c> (which uses <c>ForLossless()</c>
+/// regardless), and in the project memory note <i>corej2k-lossy-presets-broken</i>. What remains
+/// below pins SLNG's own encoder output, which does not vary by environment.</para>
 /// </summary>
 public class BakeEncodeTests
 {
@@ -55,50 +61,6 @@ public class BakeEncodeTests
             }
         }
         return raw;
-    }
-
-    /// <summary>
-    /// THE BUG. The preset LibreMetaverse hardcodes throws away essentially the whole image, on a
-    /// fully opaque input with no alpha involved at all. This is the 507-byte bake, reproduced
-    /// without a grid.
-    /// </summary>
-    [Fact]
-    public void LibreMetaverses_encode_preset_discards_the_image()
-    {
-        using var bmp = Gradient(512);
-
-        byte[] encoded = CompleteConfigurationPresets.Streaming.Encode(bmp);
-
-        Assert.True(encoded.Length < 1000,
-            $"expected LibreMetaverse's Streaming preset to still be broken, got {encoded.Length} bytes. " +
-            "If CoreJ2K fixed rate control, J2KBakeTextureEncoder can drop back to a lossy preset.");
-    }
-
-    /// <summary>
-    /// Rules out the obvious alternative explanations, so the fix targets the real cause. Neither
-    /// the alpha channel nor the requested bitrate makes any difference: <c>WithBitrate</c> and
-    /// <c>WithQuality</c> are inert in CoreJ2K 2.3.3.91, which is why raising quality could never
-    /// have fixed the bake.
-    /// </summary>
-    [Fact]
-    public void Neither_alpha_nor_bitrate_explains_the_loss()
-    {
-        using var opaque = Gradient(512);
-        using var transparent = Gradient(512, 0);
-
-        int opaqueLen = CompleteConfigurationPresets.Streaming.Encode(opaque).Length;
-        int transparentLen = CompleteConfigurationPresets.Streaming.Encode(transparent).Length;
-
-        // Transparency is not the culprit -- the opaque image is destroyed just as thoroughly.
-        Assert.True(opaqueLen < 1000 && transparentLen < 1000,
-            $"opaque {opaqueLen}, transparent {transparentLen}");
-
-        // And asking for more bits changes nothing, at any setting.
-        foreach (float bitrate in new[] { 0.5f, 2f, 8f })
-        {
-            Assert.True(CompleteConfigurationPresets.Streaming.WithBitrate(bitrate).Encode(opaque).Length < 1000,
-                $"bitrate {bitrate} unexpectedly produced a real image -- rate control may be fixed upstream");
-        }
     }
 
     /// <summary>
