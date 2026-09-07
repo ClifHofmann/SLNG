@@ -811,6 +811,19 @@ public partial class AvatarRenderer : Node3D
         }
     }
 
+    /// <summary>A single scale component, forced finite and strictly positive (min 1e-4) so a
+    /// degenerate shape param can't make a bone basis singular. See ApplyShape's use site.</summary>
+    private static float SafePositive(float v) => float.IsFinite(v) && v > 1e-4f ? v : 1e-4f;
+
+    private static bool IsFinite(System.Numerics.Vector3 v) =>
+        float.IsFinite(v.X) && float.IsFinite(v.Y) && float.IsFinite(v.Z);
+
+    private static bool IsFiniteTransform(Transform3D t)
+    {
+        var b = t.Basis;
+        return b.X.IsFinite() && b.Y.IsFinite() && b.Z.IsFinite() && t.Origin.IsFinite();
+    }
+
     /// <summary>Rebuilds every bone's Godot Rest from this avatar's shape, SL-accurately: verified
     /// against LLXformMatrix::update()/LLMatrix4::initAll (indra/llmath/xform.cpp, m4math.cpp),
     /// scale does NOT inherit down the joint chain in the real viewer — a joint's own world matrix
@@ -852,6 +865,16 @@ public partial class AvatarRenderer : Node3D
                 slScale += dist.Scale;
                 slPos += dist.Position;
             }
+
+            // A zero / negative / non-finite scale component here — an extreme shape param, a
+            // distortion that cancels the base scale, or NaN propagated from bad param math —
+            // makes the bone's rest basis singular, and ComputeSlAccurateGlobalRest().AffineInverse()
+            // in the skinning bind then yields NaN/Inf: Godot logs "Vector3 cannot be normalized,
+            // the elements must be finite" and the skinned mesh collapses. Real SL joints never
+            // have non-positive scale; clamp to a harmless epsilon.
+            slScale = new System.Numerics.Vector3(
+                SafePositive(slScale.X), SafePositive(slScale.Y), SafePositive(slScale.Z));
+            if (!IsFinite(slPos)) slPos = bone.Position;
 
             // Joint-position override from a worn rigged mesh wins over base + shape
             // distortion (viewer: LLJoint::setPosition/updatePos — active override replaces the
@@ -2649,6 +2672,17 @@ public partial class AvatarRenderer : Node3D
             // without needing to recompute anything per-pose.
             if (visual.BoneOwnScale.TryGetValue(skeleton.GetBoneName(bone), out var ownScale))
                 bind = InjectOwnScale(bind, ownScale);
+
+            // A NaN/Inf bind — a degenerate inverse-bind matrix in the mesh asset, or a singular
+            // rest — poisons every vertex weighted to this joint and Godot then warns "Vector3
+            // cannot be normalized, the elements must be finite". Fall back to the computed rest
+            // (scale-clamped in ApplyShape, so finite) rather than feed the skin palette garbage.
+            if (!IsFiniteTransform(bind))
+            {
+                GD.PushWarning($"[Avatar] non-finite skin bind for bone '{skeleton.GetBoneName(bone)}' — using computed rest");
+                bind = ComputeGlobalRestTransform(skeleton, bone).AffineInverse();
+                if (!IsFiniteTransform(bind)) bind = Transform3D.Identity;
+            }
 
             slotForJoint[j] = skin.GetBindCount();
             skin.AddBind(bone, bind);
