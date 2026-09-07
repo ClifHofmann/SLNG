@@ -29,6 +29,28 @@ against `GridSession`'s inventory + worn-item API.
 
 ## Fixed so far
 
+### Saving a *new* outfit — slam from the COF, and mark it active (`v0.20.99-alpha`)
+**Live, 2026-09-07 (`v0.20.98`).** New outfit saved; 2 of 13 links 400'd —
+`[Outfits] link create for 45536360-… ('DOUX - Yadira Hairstyle') into dedc7279-… came back
+empty` + `warn: Create inventory in dedc7279-…: Bad Request`, likewise a mesh skirt. Both are
+worn **attachments**, and `SaveCurrentOutfitAsync` still built its links from
+`GetWornItemsWithNamesAsync` → `GetWornItems()`, whose scene-attachment source is the prim's
+`AttachItemID` name-value. The reference viewer never links that raw: it resolves it through
+`gInventory.getLinkedItemID()` first, and its "Save Outfit" (`LLAppearanceMgr::makeNewOutfitLinks`
+→ `onOutfitFolderCreatedAndClothingOrdered`) is `slamCategoryLinks(getCOF(), folder)` — the same
+COF-sourced slam as save-over-existing. An `AttachItemID` that is itself a COF link id
+(link-to-link, illegal) or points at an item no longer in inventory 400s a per-item link create.
+
+**Fix:** on an AISv3 grid `SaveCurrentOutfitAsync` now creates the folder, waits briefly for the
+UDP `CreateInventoryFolder` to register (client-side UUID, fire-and-forget — a 600 ms settle
+then one retry), and `SlamOutfitLinksFromCofAsync(folder)` — identical to
+`ReplaceOutfitWithCurrentAsync`. OpenSim keeps the per-item pass. **And** it then calls
+`SetCurrentOutfitLinkAsync(folder)` so saving the look you are wearing marks that outfit active
+(the COF folder-link the Outfits list reads — `makeNewOutfitLinks → createBaseOutfitLink`).
+**Not yet re-verified in-world.** Open: outfit create/delete still take several seconds to show
+in the panel (AIS write propagation + a rate-limited region + the panel's own refetch); a
+post-write local-store inject or a spinner would mask it.
+
 ### Deleting a saved outfit — `Move category … Bad Request` (`v0.20.98-alpha`)
 **Live, 2026-09-07 (`v0.20.97`).** Deleting a saved outfit left it in the Outfits list;
 `warn: SLNG[0] Move category 494cda74-… to <Trash>: Bad Request (400)`. `DeleteOutfitAsync` did

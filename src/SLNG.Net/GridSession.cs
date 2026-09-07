@@ -6088,17 +6088,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return added;
     }
 
-    /// <summary>Saves the current outfit into a <c>#Outfits</c> subfolder — a link to every item
-    /// currently worn (body parts, wearables, attachments). Pure inventory writes, no rebake. A
-    /// same-named subfolder is reused (and only the missing links added) rather than spawning a
-    /// duplicate. Returns the folder id, or null if there's no <c>#Outfits</c> folder / the create
-    /// failed. FEAT-INV-04.</summary>
+    /// <summary>Saves what is worn right now into a <c>#Outfits</c> subfolder as inventory links.
+    /// A same-named subfolder is reused rather than spawning a duplicate. Returns the folder id,
+    /// or null if there's no <c>#Outfits</c> folder / the folder create failed. FEAT-INV-04.
+    ///
+    /// <para>On an AISv3 grid this is <c>LLAppearanceMgr::makeNewOutfitLinks</c>: create the
+    /// folder, then one atomic <c>slamCategoryLinks(getCOF(), folder)</c> — the same COF-sourced
+    /// slam as <see cref="ReplaceOutfitWithCurrentAsync"/>, so it never feeds AIS a scene
+    /// <c>AttachItemID</c> that resolves to a link or a since-gone item (the
+    /// <c>Create inventory in … Bad Request</c> pairs). OpenSim keeps the per-item link
+    /// pass.</para></summary>
     public async Task<Guid?> SaveCurrentOutfitAsync(string name, CancellationToken ct = default)
     {
         if (MyOutfitsFolderId is not { } outfitsId) return null;
         name = string.IsNullOrWhiteSpace(name) ? "Outfit" : name.Trim();
-
-        var worn = await GetWornItemsWithNamesAsync(ct).ConfigureAwait(false);
 
         // Reuse an existing same-name outfit folder rather than creating a duplicate.
         var folder = LibreMetaverse.UUID.Zero;
@@ -6108,13 +6111,51 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 if (n.Data is LibreMetaverse.InventoryFolder f
                     && string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase))
                 { folder = f.UUID; break; }
-        if (folder == LibreMetaverse.UUID.Zero)
+
+        bool freshlyCreated = folder == LibreMetaverse.UUID.Zero;
+        if (freshlyCreated)
             folder = _client.Inventory.CreateFolder(new LibreMetaverse.UUID(outfitsId), name);
         if (folder == LibreMetaverse.UUID.Zero) return null;
 
-        var already = await GetOutfitTargetIdsAsync(folder.Guid, ct).ConfigureAwait(false);
-        await LinkWornIntoAsync(folder, worn, already, ct).ConfigureAwait(false);
+        if (_client.AisClient?.IsAvailable == true)
+        {
+            // CreateFolder is a fire-and-forget UDP packet with a client-side UUID; give the
+            // server a moment to register it before the slam PUT lands, and retry once.
+            if (freshlyCreated) await SafeDelayAsync(600, ct).ConfigureAwait(false);
+            try
+            {
+                if (await SlamOutfitLinksFromCofAsync(folder, ct).ConfigureAwait(false) is null && freshlyCreated)
+                {
+                    await SafeDelayAsync(1200, ct).ConfigureAwait(false);
+                    await SlamOutfitLinksFromCofAsync(folder, ct).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[Outfits] new-outfit slam into {folder} failed: {ex.Message}");
+            }
+        }
+        else
+        {
+            var worn = await GetWornItemsWithNamesAsync(ct).ConfigureAwait(false);
+            var already = await GetOutfitTargetIdsAsync(folder.Guid, ct).ConfigureAwait(false);
+            await LinkWornIntoAsync(folder, worn, already, ct).ConfigureAwait(false);
+        }
+
+        // Saving the look you are wearing makes that outfit the active one — the COF folder-link
+        // marker the Outfits list reads (LLAppearanceMgr::makeNewOutfitLinks → createBaseOutfitLink).
+        try { await SetCurrentOutfitLinkAsync(folder.Guid, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { Console.Error.WriteLine($"[Outfits] set-active-outfit link failed: {ex.Message}"); }
+
         return folder.Guid;
+    }
+
+    private static async Task SafeDelayAsync(int ms, CancellationToken ct)
+    {
+        try { await Task.Delay(ms, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
     }
 
     /// <summary>Adds the current worn set to an existing outfit folder — links only the items that
