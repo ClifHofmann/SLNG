@@ -5693,6 +5693,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         catch { }
 
         var missing = new List<LibreMetaverse.InventoryItem>();
+        var missingRawUuids = new List<LibreMetaverse.UUID>();
         foreach (var childNode in cofNode.Nodes.Values)
         {
             if (childNode.Data is not LibreMetaverse.InventoryItem link || !link.IsLink()) continue;
@@ -5702,25 +5703,45 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             if (targetId == LibreMetaverse.UUID.Zero) continue;
             if (worn.Contains(targetId.Guid) || _attachmentsSeenWornThisSession.Contains(targetId.Guid)) continue;
 
-            if (store?.GetNodeOrDefault(targetId)?.Data is not LibreMetaverse.InventoryItem target) continue;
+            var target = store?.GetNodeOrDefault(targetId)?.Data as LibreMetaverse.InventoryItem;
+            if (target == null)
+            {
+                // Target not streamed into the store yet — a wearable link would resolve to a
+                // Bodypart/Clothing type we can't tell apart here, so only chance a raw attach
+                // when the link itself says Object.
+                if (link.AssetType == LibreMetaverse.AssetType.Object) missingRawUuids.Add(targetId);
+                continue;
+            }
+            // A worn #Library attachment (owner != self) still attaches fine — RezSingleAttachment
+            // does not care who owns it — so unlike the COF-*link* path this must NOT skip it.
             if (target.AssetType != LibreMetaverse.AssetType.Object) continue; // wearables have no scene object
-            if (target.OwnerID != LibreMetaverse.UUID.Zero && target.OwnerID != _client.Self.AgentID) continue;
 
             missing.Add(target);
         }
 
-        if (missing.Count == 0) return 0;
+        if (missing.Count == 0 && missingRawUuids.Count == 0) return 0;
 
         Console.Error.WriteLine(
-            $"[Appearance] {missing.Count} Current-Outfit attachment(s) the sim did not rez on login — re-attaching: " +
-            string.Join(", ", missing.Select(m => $"'{m.Name}'")));
+            $"[Appearance] {missing.Count + missingRawUuids.Count} Current-Outfit attachment(s) the sim did not rez on login — re-attaching: " +
+            string.Join(", ", missing.Select(m => $"'{m.Name}'").Concat(missingRawUuids.Select(u => u.ToString()))));
+
+        foreach (var u in missingRawUuids)
+        {
+            try
+            {
+                _client.Appearance.Attach(u, _client.Self.AgentID, "Attachment", string.Empty,
+                    new LibreMetaverse.Permissions { OwnerMask = LibreMetaverse.PermissionMask.All }, 0,
+                    LibreMetaverse.AttachmentPoint.Default, replace: false);
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"[Appearance] re-attach of {u} failed: {ex.Message}"); }
+        }
 
         foreach (var m in missing)
         {
             try { _client.Appearance.Attach(m, LibreMetaverse.AttachmentPoint.Default, replace: false); }
             catch (Exception ex) { Console.Error.WriteLine($"[Appearance] re-attach of '{m.Name}' failed: {ex.Message}"); }
         }
-        return missing.Count;
+        return missing.Count + missingRawUuids.Count;
     }
 
     /// <summary>Deletes every Current-Outfit link that points at one of <paramref name="itemIds"/>
