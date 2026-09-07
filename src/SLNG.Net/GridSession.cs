@@ -5147,6 +5147,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             return;
         }
 
+        // AIS will not link an item that is not in this agent's inventory — a link create for a
+        // foreign-owned item 400s ("Create inventory in <COF>: Bad Request"). Seen live for two
+        // worn attachments whose store node carried a foreign OwnerID. Still attempt the link
+        // (the store's OwnerID is not always trustworthy — the server has the last word), but say
+        // plainly what is wrong instead of dumping a scary refusal.
+        bool foreignOwner = target.OwnerID != LibreMetaverse.UUID.Zero && target.OwnerID != _client.Self.AgentID;
+
         var cofNode = store?.GetNodeOrDefault(cofUuid);
         if (cofNode != null)
             foreach (var child in cofNode.Nodes.Values)
@@ -5166,7 +5173,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 return;
             }
 
-            // AIS refused it. Dump what we know about the target so the reason is nailed next time.
+            // AIS refused it.
+            if (foreignOwner)
+            {
+                Console.Error.WriteLine(
+                    $"[Appearance] '{target.Name}' ({target.UUID}) was not added to your outfit — the grid says it is " +
+                    $"owned by {target.OwnerID}, not you, so it is not in your inventory (worn from a shared/demo source?)");
+                return;
+            }
             string where = "?";
             for (var n = store?.GetNodeOrDefault(target.UUID); n != null; n = n.Parent)
                 if (n.Data is LibreMetaverse.InventoryFolder pf)
