@@ -61,16 +61,19 @@ Grey/default-shape avatar + missing COF attachments. Memory `[[sim-no-self-appea
   re-adds something the user took off). **Confirmed in-world** — Camden Boots re-attached on the
   6 s pass.
 
-### Vector3 non-finite guards (render)
+### Vector3 non-finite guards (render) — resolved
 Recurring `WARNING: Vector3 cannot be normalized, the elements must be finite` during avatar
 load. Defensive guards added at the plausible NaN entry points — `AvatarMorphService.Apply`
 (skip non-finite morph weight; revert non-finite vertex to base + `[AvatarMorph]` log; reject
 non-finite normal length), `AvatarRenderer.ApplyShape` (clamp bone scale finite ≥ 1e-4),
 `AvatarRenderer` skin bind (validate per bone, fall back to computed rest / Identity + a
-`PushWarning`). **None of these has fired in testing — the warning still recurs**, so the real
-source is elsewhere (Godot-internal: skeleton pose, eye look-at, camera basis, or a worn-mesh
-transform). Needs a dedicated instrumentation pass (scan the whole avatar visual + skeleton +
-camera for non-finite values and log the offender) rather than more blind guards.
+`PushWarning`). **After `v0.20.116` the warning no longer appears** (user, in-world). No
+`[AvatarMorph]` / `PushWarning` line fired, so the fix was most likely the silent
+`!float.IsFinite(w)` skip in the morph loop (a NaN effective weight was poisoning vertices
+before) or the `ApplyShape` bone-scale clamp. Root NaN source (a degenerate visual param in the
+seeded 253-param set feeding `AvatarShapeService.ComputeEffectiveWeights`) not chased further
+since the symptom is gone; a dedicated instrumentation pass is still the way to pin it if it
+returns.
 
 ### Log cleanup (`v0.20.116`)
 Dropped two per-operation `Console.Error` lines that spammed during testing:
@@ -82,8 +85,8 @@ user's quiet-log preference (`[[feedback_quiet-console-log]]`).
 
 ## Open
 
-- **Vector3 normalize warning** — still there, guards didn't catch it. Dedicated diagnostic pass
-  needed (see above). Own branch.
+- **Vector3 normalize warning** — gone after `v0.20.116` (see above). Root NaN param not
+  identified; instrument if it returns.
 - **BUG-AVATAR-04 shape half** — `SelfAppearanceCache` restore path not exercised in-world yet
   (needs a login that receives no healthy relay AND has a prior cache file).
 - **Attachment pop-in** — the reconcile re-attaches at 6 s+, so a missing item visibly appears a
