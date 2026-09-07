@@ -474,7 +474,14 @@ public partial class SLNGWindow : MarginContainer
         {
             if (mouseBtn.ButtonIndex == MouseButton.Left)
             {
-                if (mouseBtn.Pressed)
+                if (mouseBtn.DoubleClick)
+                {
+                    // Double-click the title bar == pressing "_": collapse an open window,
+                    // expand a minimized one. Cancels the drag the first click's press started.
+                    _isDragging = false;
+                    ToggleMinimize();
+                }
+                else if (mouseBtn.Pressed)
                 {
                     _isDragging = true;
                     _dragOffset = mouseBtn.GlobalPosition - GlobalPosition;
