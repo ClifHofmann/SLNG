@@ -106,16 +106,15 @@ public partial class InventoryPanel : SLNGWindow
         tabsMargin.AddChild(_tabs);
         vbox.AddChild(tabsMargin);
 
-        _inventoryView = new VBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
-        _inventoryView.AddThemeConstantOverride("separation", 0);
-        vbox.AddChild(_inventoryView);
-
+        // FEAT-INV-05: the filter bar sits directly under the tabs, in `vbox` rather than inside
+        // `_inventoryView`, so it stays visible on every tab (Inventar / Angezogen / Outfits) --
+        // OnSearchTextChanged / OnTabChanged route the query to whichever tab's tree is showing.
         var searchContainer = new MarginContainer();
         searchContainer.AddThemeConstantOverride("margin_left", 12);
         searchContainer.AddThemeConstantOverride("margin_right", 12);
         searchContainer.AddThemeConstantOverride("margin_top", 12);
         searchContainer.AddThemeConstantOverride("margin_bottom", 12);
-        
+
         _searchBox = new LineEdit
         {
             PlaceholderText = "Suchen / Filtern...",
@@ -140,9 +139,13 @@ public partial class InventoryPanel : SLNGWindow
         _searchBox.AddThemeColorOverride("font_color", new Color(0.9f, 0.9f, 0.9f));
         _searchBox.AddThemeColorOverride("font_placeholder_color", new Color(0.5f, 0.5f, 0.5f));
         _searchBox.TextChanged += OnSearchTextChanged;
-        
+
         searchContainer.AddChild(_searchBox);
-        _inventoryView.AddChild(searchContainer);
+        vbox.AddChild(searchContainer);
+
+        _inventoryView = new VBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
+        _inventoryView.AddThemeConstantOverride("separation", 0);
+        vbox.AddChild(_inventoryView);
 
         _status = new Label();
         var statusMargin = new MarginContainer();
@@ -368,6 +371,11 @@ public partial class InventoryPanel : SLNGWindow
         else _wornTimer.Stop();
 
         if (tab == 2) RefreshOutfits();
+
+        // Carry the shared filter over to the tab we just switched to (FEAT-INV-05). RefreshWorn
+        // is synchronous so its tree is ready now; RefreshOutfits populates async and re-applies
+        // the filter itself when it finishes.
+        ApplyActiveFilter();
     }
 
     // WornItemsChanged fires on a LibreMetaverse network thread — hop to the main thread the
@@ -482,6 +490,11 @@ public partial class InventoryPanel : SLNGWindow
             }
             header.Collapsed = false;
         }
+
+        // Keep the shared filter (FEAT-INV-05) applied across a rebuild -- the safety-net
+        // _wornTimer refreshes this tree every 2.5 s while the tab is open.
+        if (_tabs?.CurrentTab == 1 && FilterQuery.Length > 0)
+            FilterTree(root, FilterQuery, ancestorMatched: false);
     }
 
     private void OnWornGuiInput(InputEvent @event)
@@ -647,6 +660,10 @@ public partial class InventoryPanel : SLNGWindow
                 placeholder.SetText(0, "…");
                 placeholder.SetSelectable(0, false);
             }
+
+            // Re-apply the shared filter (FEAT-INV-05) now that the rows exist.
+            if (_tabs?.CurrentTab == 2 && FilterQuery.Length > 0)
+                FilterTree(root, FilterQuery, ancestorMatched: false);
         });
     }
 
@@ -1058,25 +1075,48 @@ public partial class InventoryPanel : SLNGWindow
         // its normal place under "My Inventory" for anyone who wants the raw link list.
     }
 
-    private void OnSearchTextChanged(string newText)
+    private void OnSearchTextChanged(string newText) => ApplyActiveFilter();
+
+    /// <summary>The filter box's current query, trimmed + lower-cased ("" when blank).</summary>
+    private string FilterQuery => _searchBox?.Text.Trim().ToLowerInvariant() ?? "";
+
+    /// <summary>Applies <see cref="FilterQuery"/> to the tree of whichever tab is showing
+    /// (FEAT-INV-05). The Inventar tree additionally seeds the lazy-load crawl so a match deep in
+    /// an unopened folder still surfaces; the Angezogen / Outfits trees are already fully built,
+    /// so they just get the visibility pass.</summary>
+    private void ApplyActiveFilter()
     {
-        var root = _tree.GetRoot();
-        if (root == null) return;
-        string query = newText.Trim().ToLowerInvariant();
-
-        if (query.Length == 0)
+        string query = FilterQuery;
+        switch (_tabs?.CurrentTab ?? 0)
         {
-            _searchLoadsIssued = 0;
+            case 0:
+            {
+                var root = _tree.GetRoot();
+                if (root == null) return;
+                if (query.Length == 0)
+                    _searchLoadsIssued = 0;
+                else if (query.Length >= MinSearchCrawlChars)
+                    // Seed the crawl from every folder currently in the tree; each resulting
+                    // Populate chains one level deeper (ContinueSearchCrawl) until the whole
+                    // subtree is fetched.
+                    SeedSearchCrawl(root);
+                FilterTree(root, query, ancestorMatched: false);
+                UpdateBusyStatus();
+                break;
+            }
+            case 1:
+            {
+                var root = _wornTree.GetRoot();
+                if (root != null) FilterTree(root, query, ancestorMatched: false);
+                break;
+            }
+            case 2:
+            {
+                var root = _outfitsTree.GetRoot();
+                if (root != null) FilterTree(root, query, ancestorMatched: false);
+                break;
+            }
         }
-        else if (query.Length >= MinSearchCrawlChars)
-        {
-            // Seed the crawl from every folder currently in the tree; each resulting Populate
-            // chains one level deeper (ContinueSearchCrawl) until the whole subtree is fetched.
-            SeedSearchCrawl(root);
-        }
-
-        FilterTree(root, query, ancestorMatched: false);
-        UpdateBusyStatus();
     }
 
     /// <summary>Kicks off a fetch for every not-yet-loaded folder row reachable in the tree
