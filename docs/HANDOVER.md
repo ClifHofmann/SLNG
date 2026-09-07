@@ -5,6 +5,109 @@
 
 ---
 
+# 2026-09-07 — BUG-INV-01 (outfits on SL) + BUG-AVATAR-04 (login appearance) + Vector3 guards
+
+`v0.20.93` → `v0.20.116-alpha`. **22 commits on local `main`, NOTHING pushed** (`origin/main`
+well behind). Three feature branches were merged and deleted; `main` history has the three merge
+commits (`b092406`, `b38fabe`, `6ac05bf`) plus a log-cleanup commit on top. Every commit passes
+both builds + 611 tests + `dotnet format` + `check_shader_globals` + `--selftest` 32/32.
+
+Working tree: clean except untracked `docs/BENUTZERHANDBUCH.md` (predates this session, not mine).
+
+## What shipped — verified in-world unless noted
+
+### BUG-INV-01 — saving / replacing / deleting outfits on a real (AISv3) SL grid
+The user's whole report was "changed outfit, relogged, the swapped pieces are gone / not in the
+saved outfit". Root causes, in the order they were found:
+
+1. **`MoveItem` / `MoveCategory` → Trash 400s on SL** for outfit links, COF links and the outfit
+   folder itself. All switched to `RemoveItemsAsync` / `RemoveFolderAsync` (AIS `DELETE`).
+   Same family as `v0.20.33`/`v0.20.36`, just more call sites.
+2. **Replace / save-new / save-over now use one atomic AIS "slam"** from the resolved COF links
+   (`SlamOutfitLinksFromCofAsync` → `InventoryAISClient.SlamFolderAsync`, a bare LLSD array of
+   `{name,desc,linked_id,type}`), mirroring `LLAppearanceMgr::slamCategoryLinks`. No delete pass,
+   no per-item `CreateInventory` POSTs (each of which AIS can reject on its own). Slam confirmed
+   in-world (`[Outfits] slammed N link(s)`, no 400). `SaveCurrentOutfitAsync` also calls
+   `SetCurrentOutfitLinkAsync` so a saved look becomes the active outfit.
+3. **`AttachItemAsync` never wrote a COF link for a worn attachment** — LMV's `Attach` only sends
+   `RezSingleAttachmentFromInv`; SLNG hand-manages the COF. So worn attachments were lost on relog
+   (SL rebakes from the COF) and absent from any outfit saved while worn. Now
+   `AttachItemAsync` → `EnsureCofLinkForItemAsync`. **This was the actual root cause of the report.**
+4. **`#Library` items can't be COF-linked.** SL starter-avatar hair/skin/boots are owned by the
+   Library account; you can wear one but AIS 400s a link to it. Now copied into the user's
+   inventory first (`CopyLibraryItemForOutfitAsync`, dedup by `AssetUUID` + a session cache) and
+   the **copy** is attached and linked — like `LLAppearanceMgr::wearItemsOnAvatar`. See memory
+   `[[library-items-cant-be-cof-linked]]`.
+5. Worn-marker in the Outfits view now matches by `AssetUUID` too, not just item id (covers the
+   window where the avatar wears the Library original but the outfit links the copy).
+
+### BUG-AVATAR-04 — sim sends no self `AvatarAppearance` on ~half of Agni logins
+Grey/default-shape avatar + missing COF attachments. Memory `[[sim-no-self-appearance-on-login]]`.
+
+- **`SelfAppearanceCache`** (`src/SLNG.Net/SelfAppearanceCache.cs`,
+  `%LocalAppData%/SLNG/self-appearance/<agentId>.bin`) — persists the last *healthy* self
+  appearance (wire-order 253 visual params + bake ids + hover). `MaybeSaveSelfAppearanceCache()`
+  on every healthy relay; `ArmSelfAppearanceRestore()` restores it 12 s after a login that got
+  none, driving the renderer via an `AvatarAppearanceReceived` event. **Read-only wrt the grid** —
+  nothing is sent; a real relay later overrides it. First login on a machine has no cache. *Shape
+  side not yet confirmed in-world* (every test login so far happened to receive a healthy relay).
+- **`ArmAttachmentReconcile()` / `ReattachMissingCofAttachmentsAsync()`** — armed once per session
+  at `OnEventQueueRunning`, passes at 6/12/22/45/80 s. **Fetches the COF into the store first**
+  (SLNG's inventory is lazy per-folder and *nothing* pulls the COF on login — this was why five
+  earlier iterations were a silent no-op), then re-sends `Appearance.Attach(item, Default,
+  replace:false)` for every COF attachment link not in the **scene** (LMV's
+  `GetAttachmentsByItemId()` cache is unreliable — lags a detach AND reports items worn before
+  they rez) and not seen worn this session (`_attachmentsSeenWornThisSession`, so it never
+  re-adds something the user took off). **Confirmed in-world** — Camden Boots re-attached on the
+  6 s pass.
+
+### Vector3 non-finite guards (render)
+Recurring `WARNING: Vector3 cannot be normalized, the elements must be finite` during avatar
+load. Defensive guards added at the plausible NaN entry points — `AvatarMorphService.Apply`
+(skip non-finite morph weight; revert non-finite vertex to base + `[AvatarMorph]` log; reject
+non-finite normal length), `AvatarRenderer.ApplyShape` (clamp bone scale finite ≥ 1e-4),
+`AvatarRenderer` skin bind (validate per bone, fall back to computed rest / Identity + a
+`PushWarning`). **None of these has fired in testing — the warning still recurs**, so the real
+source is elsewhere (Godot-internal: skeleton pose, eye look-at, camera basis, or a worn-mesh
+transform). Needs a dedicated instrumentation pass (scan the whole avatar visual + skeleton +
+camera for non-finite values and log the offender) rather than more blind guards.
+
+### Log cleanup (`v0.20.116`)
+Dropped two per-operation `Console.Error` lines that spammed during testing:
+`[Appearance] recorded '…' in the Current Outfit folder` (every attach) and
+`[Appearance] reusing existing copy of Library item` (every re-wear). Kept: real errors, rare
+events (`slammed N link(s)`, `restored last-known shape`, `N … did not rez … re-attaching`,
+`copied Library item`, `[AvatarMorph] … non-finite`), and failure diagnostics. Matches the
+user's quiet-log preference (`[[feedback_quiet-console-log]]`).
+
+## Open
+
+- **Vector3 normalize warning** — still there, guards didn't catch it. Dedicated diagnostic pass
+  needed (see above). Own branch.
+- **BUG-AVATAR-04 shape half** — `SelfAppearanceCache` restore path not exercised in-world yet
+  (needs a login that receives no healthy relay AND has a prior cache file).
+- **Attachment pop-in** — the reconcile re-attaches at 6 s+, so a missing item visibly appears a
+  few seconds after login. This is inherent to the sim's COF-composition race; the reference
+  viewer (and Firestorm) do the same re-request. Fresh `#Library` copies lose the race more; it
+  should ease as those copies age server-side.
+- **`docs/BENUTZERHANDBUCH.md`** untracked — not touched this session, decide separately.
+- **Not pushed.** `main` is ~22 commits ahead of `origin/main`.
+
+## Key files touched
+
+- `src/SLNG.Net/GridSession.cs` — the outfit save/replace/delete paths, `EnsureCofLinkForItemAsync`,
+  `CopyLibraryItemForOutfitAsync`, `IsUnderLibrary`, `SlamOutfitLinksFromCofAsync`,
+  `SelectOutfitLinksToClear`, `ArmSelfAppearanceRestore` / `MaybeSaveSelfAppearanceCache`,
+  `ArmAttachmentReconcile` / `ReattachMissingCofAttachmentsAsync`, `DeleteOutfitAsync`.
+- `src/SLNG.Net/SelfAppearanceCache.cs` — new.
+- `src/SLNG.Assets/AvatarMorphService.cs` — non-finite guards.
+- `app/scripts/AvatarRenderer.cs` — `ApplyShape` scale clamp, skin-bind validation, `SafePositive`
+  / `IsFinite` / `IsFiniteTransform` helpers.
+- `docs/specs/BUG-INV-01-*.md`, `docs/specs/BUG-AVATAR-04-*.md` (new), `docs/ROADMAP.md`.
+- `tests/SLNG.Net.Tests/OutfitLinkRemovalTests.cs` — `SelectOutfitLinksToClear` tests.
+
+---
+
 # 2026-09-04 — FEAT-RENDER-08 atmospherics + inventory + perf. 18 commits, NOT pushed.
 
 `v0.20.57` → `v0.20.79-alpha` (the perf work below starts at `v0.20.51`, already pushed

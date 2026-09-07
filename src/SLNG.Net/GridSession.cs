@@ -5265,11 +5265,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             var created = await _client.Inventory.CreateLinkAsync(
                 cofUuid, target.UUID, target.Name, string.Empty, invType, LibreMetaverse.UUID.Zero).ConfigureAwait(false);
-            if (created != null)
-            {
-                Console.Error.WriteLine($"[Appearance] recorded '{target.Name}' in the Current Outfit folder");
-                return;
-            }
+            if (created != null) return;
 
             // AIS refused it.
             if (foreignOwner)
@@ -5347,7 +5343,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                             && c.OwnerID == _client.Self.AgentID
                             && c.AssetUUID == libItem.AssetUUID
                             && c.AssetType == libItem.AssetType:
-                            Console.Error.WriteLine($"[Appearance] reusing existing copy of Library item '{libItem.Name}'");
                             _libraryCopyCache[libItem.UUID] = c.UUID;
                             return c;
                     }
