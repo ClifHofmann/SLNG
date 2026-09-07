@@ -5147,11 +5147,23 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             return;
         }
 
-        // AIS will not link an item that is not in this agent's inventory — a link create for a
-        // foreign-owned item 400s ("Create inventory in <COF>: Bad Request"). Seen live for two
-        // worn attachments whose store node carried a foreign OwnerID. Still attempt the link
-        // (the store's OwnerID is not always trustworthy — the server has the last word), but say
-        // plainly what is wrong instead of dumping a scary refusal.
+        // A #Library item (SL starter-avatar hair/clothing, freebies) is owned by the Library
+        // account, not you. It wears fine, but AIS refuses to link one into your COF
+        // ("Create inventory in <COF>: Bad Request") — the reference viewer copies it into your
+        // inventory first and links the copy (LLAppearanceMgr::wearItemsOnAvatar). Do the same.
+        if (IsUnderLibrary(target.UUID))
+        {
+            var owned = await CopyLibraryItemForOutfitAsync(target).ConfigureAwait(false);
+            if (owned is null)
+            {
+                Console.Error.WriteLine(
+                    $"[Appearance] '{target.Name}' is a Library item and could not be copied into your inventory — " +
+                    "it will wear this session but cannot be saved to an outfit");
+                return;
+            }
+            target = owned;
+        }
+
         bool foreignOwner = target.OwnerID != LibreMetaverse.UUID.Zero && target.OwnerID != _client.Self.AgentID;
 
         var cofNode = store?.GetNodeOrDefault(cofUuid);
@@ -5195,6 +5207,68 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             Console.Error.WriteLine($"[Appearance] could not COF-link '{target.Name}': {ex.Message}");
         }
+    }
+
+    /// <summary>True when <paramref name="itemId"/>'s node sits anywhere under the store's
+    /// <c>#Library</c> root — a Linden-owned item that this agent can wear but not link or
+    /// modify.</summary>
+    private bool IsUnderLibrary(LibreMetaverse.UUID itemId)
+    {
+        var store = _client.Inventory.Store;
+        var libRoot = store?.LibraryFolder;
+        if (libRoot == null) return false;
+        for (var n = store!.GetNodeOrDefault(itemId); n != null; n = n.Parent)
+            if (n.Data?.UUID == libRoot.UUID) return true;
+        return false;
+    }
+
+    /// <summary>Copies a <c>#Library</c> item into the agent's own inventory so it can be linked
+    /// into an outfit — reusing an earlier same-name copy in the destination folder rather than
+    /// piling up duplicates. Returns the owned copy, or null if the copy failed.</summary>
+    private async Task<LibreMetaverse.InventoryItem?> CopyLibraryItemForOutfitAsync(LibreMetaverse.InventoryItem libItem)
+    {
+        var store = _client.Inventory.Store;
+
+        // Destination: the system folder for the item's asset type, falling back to the root.
+        var destType = libItem.AssetType switch
+        {
+            LibreMetaverse.AssetType.Bodypart => LibreMetaverse.FolderType.BodyPart,
+            LibreMetaverse.AssetType.Clothing => LibreMetaverse.FolderType.Clothing,
+            LibreMetaverse.AssetType.Object => LibreMetaverse.FolderType.Object,
+            _ => LibreMetaverse.FolderType.Object,
+        };
+        var dest = _client.Inventory.FindFolderForType(destType);
+        if (dest == LibreMetaverse.UUID.Zero) dest = store?.RootFolder?.UUID ?? LibreMetaverse.UUID.Zero;
+        if (dest == LibreMetaverse.UUID.Zero) return null;
+
+        // Reuse an owned copy from a previous wear.
+        var destNode = store?.GetNodeOrDefault(dest);
+        if (destNode != null)
+            foreach (var n in destNode.Nodes.Values)
+                if (n.Data is LibreMetaverse.InventoryItem c && !c.IsLink()
+                    && c.OwnerID == _client.Self.AgentID
+                    && string.Equals(c.Name, libItem.Name, StringComparison.Ordinal)
+                    && c.AssetType == libItem.AssetType)
+                {
+                    Console.Error.WriteLine($"[Appearance] reusing existing copy of Library item '{libItem.Name}'");
+                    return c;
+                }
+
+        try
+        {
+            var copied = await _client.Inventory.RequestCopyItemAsync(
+                libItem.UUID, dest, libItem.Name, libItem.OwnerID, CancellationToken.None).ConfigureAwait(false);
+            if (copied is LibreMetaverse.InventoryItem ci)
+            {
+                Console.Error.WriteLine($"[Appearance] copied Library item '{libItem.Name}' into your inventory ({ci.UUID})");
+                return ci;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Appearance] copy of Library item '{libItem.Name}' failed: {ex.Message}");
+        }
+        return null;
     }
 
     /// <summary>

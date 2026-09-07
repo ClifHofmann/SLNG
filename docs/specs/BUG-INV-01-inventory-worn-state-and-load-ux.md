@@ -56,14 +56,23 @@ wearable path). `WearOutfitAttachmentsAsync` / `ReplaceWornWithOutfitAttachments
 `AttachItemAsync`) now persist too. `replace: true` on an attach point still leaves the
 replaced item's stale link for `CleanUpCurrentOutfit` to reap — known gap.
 
-**`v0.20.101`:** the COF link *still* 400'd for the same two attachments
-(`[Appearance] COF link for 'DOUX - Yadira Hairstyle' … came back empty`,
-`Create inventory in <COF>: Bad Request`) — so the outfit slam that reads the COF only got 13
-of the worn set, and the saved outfit was short by exactly those two. `EnsureCofLinkForItemAsync`
-now (a) walks the link chain to the **base** item before linking (a `linked_id` that is itself a
-link is illegal — the leading theory), and (b) on an AIS refusal dumps the target's
-`assetType / invType / isLink / owner / mine / perms / parentFolder` so the reason is finally
-named on the next repro. **Not yet re-verified in-world.**
+**`v0.20.101`–`v0.20.103`: it's `#Library` items.** The `v0.20.101` diagnostic dump named it —
+the two attachments that kept 400'ing the COF link (`DOUX - Yadira Hairstyle`, an `Addams`
+mesh skirt) are **SL starter-avatar items that live under the `#Library` root**:
+`owner=<Library account>`, `mine=False`, but `assetType=Object`, `isLink=False`,
+`perms=Transfer,Copy,Move`, parent a normal-looking branded folder. A Library item wears fine
+but AIS refuses to link one into your COF — you don't own it. The reference viewer copies a
+Library item into your inventory first and links the copy
+(`LLAppearanceMgr::wearItemsOnAvatar`, "item under Library root → copy first").
+
+`v0.20.103`: `EnsureCofLinkForItemAsync` now, when the target is `IsUnderLibrary`, calls
+`CopyLibraryItemForOutfitAsync` — `RequestCopyItemAsync(libId, <type folder>, name, libOwner)`,
+reusing an earlier same-name owned copy in that folder rather than piling up duplicates — and
+links the **copy**. `v0.20.101` also added the link-chain-to-base-item walk (a `linked_id` that
+is itself a link is illegal in AIS). A genuinely foreign-owned (non-Library) target still just
+logs "not added to your outfit — owned by X". The worn attachment stays the Library object this
+session; the COF now points at the copy, so the relog rebake and any outfit-save pick it up.
+**Not yet re-verified in-world.**
 
 ### Saving a *new* outfit — slam from the COF, and mark it active (`v0.20.99-alpha`)
 **Live, 2026-09-07 (`v0.20.98`).** New outfit saved; 2 of 13 links 400'd —
