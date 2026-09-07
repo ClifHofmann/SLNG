@@ -5665,7 +5665,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     await Task.Delay(TimeSpan.FromSeconds(i == 0 ? schedule[0] : schedule[i] - schedule[i - 1]))
                         .ConfigureAwait(false);
                     if (!_client.Network.Connected) return;
-                    if (ReattachMissingCofAttachments(dumpEveryLink: i == 1) == 0 && i > 0) return;
+                    if (await ReattachMissingCofAttachmentsAsync(dumpEveryLink: i == 1).ConfigureAwait(false) == 0 && i > 0)
+                        return;
                 }
             }
             catch (Exception ex)
@@ -5679,12 +5680,28 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// the scene and was never seen worn this session. Returns how many re-attach requests were
     /// sent. <paramref name="dumpEveryLink"/> logs one line per COF child so an item that keeps
     /// being excluded can be diagnosed.</summary>
-    private int ReattachMissingCofAttachments(bool dumpEveryLink = false)
+    private async Task<int> ReattachMissingCofAttachmentsAsync(bool dumpEveryLink = false)
     {
-        var store = _client.Inventory.Store;
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
-        var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
-        if (cofNode == null) return 0;
+        if (cofUuid == LibreMetaverse.UUID.Zero)
+        {
+            if (dumpEveryLink) Console.Error.WriteLine("[Reconcile] no Current Outfit folder in the store yet");
+            return 0;
+        }
+
+        // The inventory is fetched lazily per folder — nothing pulls the COF on login, so it is
+        // usually not in the store when this runs. Fetch it here or there is nothing to inspect.
+        try { await FetchInventoryChildrenAsync(cofUuid.Guid).ConfigureAwait(false); }
+        catch { }
+
+        var store = _client.Inventory.Store;
+        var cofNode = store?.GetNodeOrDefault(cofUuid);
+        if (cofNode == null || cofNode.Nodes.Count == 0)
+        {
+            if (dumpEveryLink)
+                Console.Error.WriteLine($"[Reconcile] COF empty (node={cofNode != null}, children={cofNode?.Nodes.Count ?? 0})");
+            return 0;
+        }
 
         // The SCENE is the only reliable "is it actually on the avatar" signal. LibreMetaverse's
         // GetAttachmentsByItemId() cache is NOT — it lags a detach and can list a COF attachment
