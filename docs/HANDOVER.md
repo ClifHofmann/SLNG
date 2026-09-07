@@ -7,10 +7,14 @@
 
 # 2026-09-07 — BUG-INV-01 (outfits on SL) + BUG-AVATAR-04 (login appearance) + Vector3 guards
 
-`v0.20.93` → `v0.20.116-alpha`. **22 commits on local `main`, NOTHING pushed** (`origin/main`
-well behind). Three feature branches were merged and deleted; `main` history has the three merge
-commits (`b092406`, `b38fabe`, `6ac05bf`) plus a log-cleanup commit on top. Every commit passes
-both builds + 611 tests + `dotnet format` + `check_shader_globals` + `--selftest` 32/32.
+`v0.20.93` → `v0.20.116-alpha`. **27 commits on local `main`, NOTHING pushed** (`origin/main`
+is at `d4cc749`, FEAT-UI-21). Three feature branches were merged and deleted; `main` history has
+the three merge commits (`b092406` BUG-INV-01, `b38fabe` BUG-AVATAR-04, `6ac05bf` Vector3
+guards) plus log-cleanup + doc commits on top (HEAD `a0499a2`). Every commit passes both builds
++ 611 tests + `dotnet format` + `check_shader_globals` + `--selftest` 32/32.
+
+**Next session: pick up from here.** The three items in "Open" below are the only loose ends;
+everything else is done and (mostly) in-world verified. Push is the user's call.
 
 Working tree: clean except untracked `docs/BENUTZERHANDBUCH.md` (predates this session, not mine).
 
@@ -93,8 +97,12 @@ user's quiet-log preference (`[[feedback_quiet-console-log]]`).
   few seconds after login. This is inherent to the sim's COF-composition race; the reference
   viewer (and Firestorm) do the same re-request. Fresh `#Library` copies lose the race more; it
   should ease as those copies age server-side.
-- **`docs/BENUTZERHANDBUCH.md`** untracked — not touched this session, decide separately.
-- **Not pushed.** `main` is ~22 commits ahead of `origin/main`.
+- **`docs/BENUTZERHANDBUCH.md`** untracked — predates this session, not touched, decide separately.
+- **Not pushed.** `main` is 27 commits ahead of `origin/main` (`d4cc749`).
+- **Exit-time Godot leak warnings** (`1 Mesh RID`, `3 VertexBuffer`, `3 ObjectDB` … at exit) seen
+  in a `v0.20.116` run — shutdown cleanup order, small, almost certainly pre-existing (no baseline
+  taken). Also two `[PurisViewer Resident] Failed saving asset to cache (Access denied)` — LMV's
+  own asset cache, a file lock / perms thing, not SLNG code. Both low priority.
 
 ## Key files touched
 
