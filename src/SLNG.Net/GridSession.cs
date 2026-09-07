@@ -6556,7 +6556,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         var children = await FetchInventoryChildrenAsync(outfitFolderId, ct).ConfigureAwait(false);
         var store = _client.Inventory.Store;
-        var wornNow = new HashSet<Guid>(GetWornItems().Where(w => w.Live).Select(w => w.ItemId));
+
+        // Match the outfit's links against what is worn by id AND by underlying asset. The asset
+        // fallback covers a #Library item: the outfit links our owned COPY, but the avatar may be
+        // wearing the Library original (or a different copy) — same AssetUUID — and a plain id
+        // compare would show it as "not worn" (reported live: worn boots/hair not marked).
+        var wornNow = new HashSet<Guid>();
+        var wornAssets = new HashSet<Guid>();
+        foreach (var w in GetWornItems())
+        {
+            if (!w.Live || w.ItemId == Guid.Empty) continue;
+            wornNow.Add(w.ItemId);
+            if (store?.GetNodeOrDefault(new LibreMetaverse.UUID(w.ItemId))?.Data is LibreMetaverse.InventoryItem wi
+                && wi.AssetUUID != LibreMetaverse.UUID.Zero)
+                wornAssets.Add(wi.AssetUUID.Guid);
+        }
 
         var result = new List<WornItem>();
         var toFetch = new Dictionary<LibreMetaverse.UUID, LibreMetaverse.UUID>();
@@ -6585,7 +6599,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 : assetType == (int)LibreMetaverse.AssetType.Object ? WornCategory.Attachment
                 : WornCategory.Clothing; // unresolved link — usually a wearable; refines once fetched
 
-            result.Add(new WornItem(targetId, name, cat, null, assetType, Live: wornNow.Contains(targetId)));
+            bool live = wornNow.Contains(targetId)
+                || (target != null && target.AssetUUID != LibreMetaverse.UUID.Zero
+                    && wornAssets.Contains(target.AssetUUID.Guid));
+            result.Add(new WornItem(targetId, name, cat, null, assetType, Live: live));
         }
 
         if (toFetch.Count > 0)
