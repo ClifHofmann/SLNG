@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-02`
 - **Track:** `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — committed `v0.20.0-alpha` with 7 tests; inert-but-correct for real foliage pcodes. Closed 2026-09-07 (doc triage). The user-reported "water" symptom was a separate bug (`BUG-RENDER-03` / `BUG-RENDER-05`).
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness` (found and fixed mid-session, same branch)

@@ -2,7 +2,7 @@
 
 - **Feature ID:** `M5-2`
 - **Track:** `render` / `ui` / `net`
-- **Status:** `🚧 In Progress`
+- **Status:** `✅ Done` — selection, context menu and the tabbed inspector are merged on `main`. Closed 2026-09-07 (doc triage); 3D transform gizmos are tracked separately as `FEAT-UI-04`.
 - **Owner:** `gemini`
 - **Branch:** `feature/M5-2-object-editing`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md#L123)

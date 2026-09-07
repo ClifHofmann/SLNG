@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-AVATAR-02`
 - **Track:** `net` / `assets` / `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — confirmed in-world 2026-09-07 (Agni): self avatar's system head and hands render the real skin, no HTTP 403 on the bake channels.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness`

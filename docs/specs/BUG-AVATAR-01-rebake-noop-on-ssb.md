@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-AVATAR-01`
 - **Track:** `net`
-- **Status:** `🧪 Review`
+- **Status:** `🧪 Review` — in-world retest 2026-09-07 (Agni) still reads as broken: Ctrl+Alt+R prints `Avatar wird neu gebacken …` then `Dieses Grid backt serverseitig — … wird übersprungen.` with no visible rebake. The underlying `{cof_version}` nudge on SSB is correct; the contradictory message comes from `Boot.RebakeAvatar` also calling the OpenSim-only `BakeAvatarAsync()`, and there is no positive confirmation the cap POST landed. Fix needed (small, `Boot.cs`): on SSB skip `BakeAvatarAsync` and report the cap POST result.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness` (found and fixed mid-session, same branch)

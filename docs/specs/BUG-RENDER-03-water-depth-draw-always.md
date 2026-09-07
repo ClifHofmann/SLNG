@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-03`
 - **Track:** `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — the `depth_draw_always` → `depth_draw_opaque` change is committed (`v0.20.0-alpha`) and aligns `water.gdshader` with every sibling shader. Closed 2026-09-07 (doc triage); the user-visible canopy cut was fully resolved by `BUG-RENDER-05`, confirmed in-world.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness` (found and fixed mid-session, same branch)

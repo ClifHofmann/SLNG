@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-INV-05`
 - **Track:** `ui` / `net`
-- **Status:** `🧪 Review` — implemented `v0.20.60`, needs a live check.
+- **Status:** `✅ Done` — implemented `v0.20.60`; confirmed in-world 2026-09-07: the per-item context menu (Anziehen / Ausziehen / Aus diesem Outfit entfernen) works on a single item row.
 - **Owner:** `claude`
 - **Depends on:** `FEAT-INV-04` (Outfits browser), `MVP3-1` (wear/detach), `BUG-INV-01`
 - **Requested:** *"wenn man im outfit view ist sollte man auch die normalen aktionen machen

@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-08`
 - **Track:** `render`
-- **Status:** `🧪 Review` (three fixes shipped) + open low-priority gaps below
+- **Status:** `✅ Done` — the three fixes (width, strobe, morph turnover) shipped `v0.20.31-alpha` and are confirmed in-world. Closed 2026-09-07 (doc triage); the remaining low-priority fidelity gaps below are split out as `FEAT-RENDER-10` (GPU-driven particle path).
 - **Priority:** the shipped fixes were user-driven; the remaining gaps are **LOW** — decorative
   content, no crash / data / correctness impact.
 - **Owner:** `claude`

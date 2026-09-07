@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-SL-02`
 - **Track:** `net` / `ui`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — confirmed in-world 2026-09-07 (Agni), with BUG-NET-10: the Age Settings tab shows the account's real ceiling, options above it disabled, and a maturity change is accepted and reflected.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness` (continues the same SL-readiness branch)

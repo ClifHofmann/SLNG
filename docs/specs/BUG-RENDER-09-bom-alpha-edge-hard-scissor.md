@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-09`
 - **Track:** `render`
-- **Status:** `🧪 Review` — 1a (`v0.20.41`) reverted `v0.20.46`; **1c (`v0.20.52`) tried and rejected live**; **1b shipped `v0.20.53`** (no visible change); **real cause found `v0.20.54`** — a Blend depth-sort failure, not the cut point.
+- **Status:** `✅ Done` — the `depth_prepass_alpha` fix (`v0.20.54`) is confirmed in-world 2026-09-07: soft edge with 1 and 2 alpha layers, no venetian-blind banding, heads and hair unaffected. (Trail: 1a `v0.20.41` reverted `v0.20.46`; 1c `v0.20.52` rejected live; 1b shipped `v0.20.53`; real cause — a Blend depth-sort failure — found `v0.20.54`.)
 - **Owner:** `claude`
 - **Depends on:** `FEAT-RENDER-01` (shader family), `FEAT-AVATAR-01` / `BUG-AVATAR-02` (BoM bake resolve)
 - **Reported:** live, Agni, 2026-09-03, with two screenshots of a mesh-body foot: the skin ends

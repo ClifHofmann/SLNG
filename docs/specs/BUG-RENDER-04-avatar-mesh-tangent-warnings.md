@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-04`
 - **Track:** `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — confirmed from logs 2026-09-07: the avatar-build path is clean (0 `Vector3 cannot be normalized` warnings in every non-teleport session; in a teleport-heavy session the first one appears only after the first teleport, never after the six body-mesh loads). The teleport-triggered flood of the same warning is a separate region-teardown bug, `BUG-NET-13`.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness`

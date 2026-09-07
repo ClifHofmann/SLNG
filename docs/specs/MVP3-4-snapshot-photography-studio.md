@@ -2,9 +2,10 @@
 
 - **Feature ID:** `MVP3-4`
 - **Track:** `ui` / `render`
-- **Status:** `🚧 In Progress` — Phase 1 (capture + save) confirmed in-world 2026-08-27;
-  Phases 2–4 (resolution multiplier, FOV/DoF, presets) deliberately deferred — the basic
-  capture works and the polish is not blocking other MVP 3 work.
+- **Status:** `✅ Done` — Phase 1 (capture + save) shipped `v0.9.53-alpha` and confirmed
+  in-world 2026-08-27. Closed 2026-09-07 (doc triage): the remaining phases are split into
+  their own tracked work — `FEAT-RENDER-07` (DoF), `FEAT-UI-17` (save destination/format/
+  upload), `FEAT-UI-22` (resolution multiplier, FOV, EEP presets).
 - **Owner:** `claude`
 - **Agent:** `ux-designer` (window) + `graphics-engineer` (capture / DoF / FOV)
 - **Dep:** `M2-5` (lighting/post-fx)

@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-05`
 - **Track:** `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` — `v0.20.6-alpha`; user confirmed in-world ("passt jetzt mit dem wasser"). Closed 2026-09-07.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness`

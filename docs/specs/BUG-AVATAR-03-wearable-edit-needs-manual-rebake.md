@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-AVATAR-03`
 - **Track:** `net`
-- **Status:** `🧪 Review` — real fix landed `v0.20.39` (first attempt `v0.20.37` reverted first).
+- **Status:** `✅ Done` — real fix landed `v0.20.39` (first attempt `v0.20.37` reverted first); confirmed in-world 2026-09-07: a wearable/alpha edit shows without a manual rebake and worn hair/shoes survive a relog.
 - **Owner:** `claude`
 - **Depends on:** `FEAT-AVATAR-01`, `BUG-AVATAR-01` (`RebakeAvatar` → `RequestServerSideRebakeAsync`)
 - **Reported:** live, Agni / *Millenium*, 2026-09-03. *"Wechsel von Alphas … noch nicht sauber"* →

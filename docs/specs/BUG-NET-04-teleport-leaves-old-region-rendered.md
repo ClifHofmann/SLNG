@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-NET-04`
 - **Track:** `net`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` (superseded) — in-world 2026-09-07 (Agni): the original "old region lingers after a teleport" symptom has not recurred. The remaining teleport problem — destination region comes up nearly empty + `Mesh`/`Instance` RID leak + `Vector3 cannot be normalized` flood + disposed-`ImageTexture` exceptions — is a distinct teardown/lifecycle bug, tracked as `BUG-NET-13`.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness` (found and fixed mid-session, same branch)
