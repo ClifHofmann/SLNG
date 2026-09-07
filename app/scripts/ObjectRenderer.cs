@@ -519,6 +519,11 @@ public partial class ObjectRenderer : Node3D
     /// told us to draw — the open question is only whether we draw it the viewer's way.</summary>
     public static void LogFaceTextureParams(Entity entity)
     {
+        // --diag only. It fires on every object click and prints a multi-line block (one row per
+        // linkset part), which buries a normal session's console. The texture-placement
+        // investigation it was built for is closed; keep it a flag away for the next one.
+        if (!Diagnostics.Enabled) return;
+
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim == null) return;
 
@@ -554,12 +559,8 @@ public partial class ObjectRenderer : Node3D
             ? $"mode=0x{(byte)ta.Mode:X2} face={ta.Face} grid={ta.SizeX}x{ta.SizeY} " +
               $"start={ta.Start:0.##} length={ta.Length:0.##} rate={ta.Rate:0.##}"
             : "none";
-        // GD.Print, NOT Logger.Info: every other line in this function is Info-level and therefore
-        // invisible unless the client was started with --diag (see Diagnostics). That is right for
-        // the per-face dump, which is long, but wrong for this one -- it answers "what IS this
-        // object" for a user who just clicked something that renders wrong, and asking them to
-        // relaunch with a flag first costs a whole round trip. It cannot spam: nothing calls this
-        // except an explicit click.
+        // GD.Print rather than Logger.Info so the whole dump lands together under --diag without
+        // also needing the Info sub-level (see Diagnostics).
         GD.Print($"[FaceParams] object {entity.LocalId} {geometry} " +
                  $"scale=({prim.Scale.X:0.##},{prim.Scale.Y:0.##},{prim.Scale.Z:0.##}) texanim: {texAnim}");
 
