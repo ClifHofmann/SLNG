@@ -156,7 +156,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.20.93-alpha";
+    public const string AppVersion = "v0.20.94-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -197,6 +197,7 @@ public partial class Boot : Control
 
     public override void _Ready()
     {
+        GetTree().AutoAcceptQuit = false;
         MouseFilter = MouseFilterEnum.Ignore;
 
         _localizationManager = LoadLocalizationManager();
@@ -227,6 +228,8 @@ public partial class Boot : Control
         // actually run.
         GD.Print($"[Boot] {AppVersion}");
 
+        // Background is standard at startup. User-specific screenshot is loaded in OnLoginPressed.
+        
         _vboxContainer = GetNode<VBoxContainer>("%VBoxContainer");
         _profileDropdown = GetNode<OptionButton>("%ProfileDropdown");
         _gridDropdown = GetNode<OptionButton>("%GridDropdown");
@@ -382,27 +385,11 @@ public partial class Boot : Control
         AddChild(_topMenu);
 
         _topMenu.OnDisconnect = () => {
-            if (_session != null)
-            {
-                LogMessage("Disconnecting...");
-                _session.Dispose();
-                _session = null;
-                GetNode<Control>("%LoginScreen").Visible = true;
-                GetNode<Control>("%Background").Visible = true;
-                _topMenu.Visible = false;
-                var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
-                if (hudLayer != null) hudLayer.Visible = false;
-                _chatWindow.Visible = false;
-                if (_inventoryPanel != null) { _inventoryPanel.QueueFree(); _inventoryPanel = null; }
-                Input.MouseMode = Input.MouseModeEnum.Visible;
-                _teleportActive = false;
-                _teleportCameraResetPending = false;
-                _teleportOverlay?.ForceHide();
-            }
+            QuitGracefully(false);
         };
 
         _topMenu.OnExit = () => {
-            GetTree().Quit();
+            QuitGracefully(true);
         };
 
         _topMenu.OnToggleHud = () => {
@@ -1098,6 +1085,8 @@ public partial class Boot : Control
                 IsLoadingScreenVisible = false;
                 GetNode<Control>("%LoadingScreenBlur").Visible = false;
                 GetNode<Control>("%LoadingScreen").Visible = false;
+                var bg = GetNodeOrNull<Control>("%Background");
+                if (bg != null) bg.Visible = false;
             }
         }
 
@@ -1265,6 +1254,7 @@ public partial class Boot : Control
         if (what == NotificationWMCloseRequest)
         {
             SaveWindowSettings();
+            QuitGracefully(true);
         }
     }
 
@@ -1700,7 +1690,24 @@ public partial class Boot : Control
     private async void OnLoginPressed()
     {
         _loginButton.Disabled = true;
-        LogMessage($"Connecting to {_gridInput.Text} as {_firstInput.Text} {_lastInput.Text}...");
+        
+        var firstName = _firstInput.Text.Trim();
+        var lastName = _lastInput.Text.Trim();
+        
+        LogMessage($"Connecting to {_gridInput.Text} as {firstName} {lastName}...");
+
+        // Load the user's specific last session screenshot as the loading background (FEAT-UI-21)
+        var bgPath = $"user://last_session_bg_{firstName}_{lastName}.png";
+        if (FileAccess.FileExists(bgPath))
+        {
+            using var img = Image.LoadFromFile(bgPath);
+            if (img != null)
+            {
+                var tex = ImageTexture.CreateFromImage(img);
+                var bg = GetNodeOrNull<TextureRect>("%Background");
+                if (bg != null) bg.Texture = tex;
+            }
+        }
 
         // Switch UI views
         GetNode<Control>("%LoginScreen").Visible = false;
@@ -1919,10 +1926,9 @@ public partial class Boot : Control
                 LogMessage(result.Message);
             }
 
-            // Hide the background and show the top menu. The loading screen itself stays up a
-            // little longer -- through the post-login setup below -- so its final "Entering
-            // world" step actually reflects that setup finishing, not just the login handshake.
-            GetNode<Control>("%Background").Visible = false;
+            // The background and loading screen stay up a little longer -- through the
+            // post-login setup below -- so its final "Entering world" step actually reflects
+            // that setup finishing, not just the login handshake. They are hidden together.
             _topMenu.Visible = true;
 
             if (hudLayer != null) hudLayer.Visible = true;
@@ -2287,5 +2293,140 @@ public partial class Boot : Control
         // (like evicted cache entries) run their finalizers safely.
         System.GC.Collect();
         System.GC.WaitForPendingFinalizers();
+    }
+
+    // Merged with existing _Notification above
+
+    private bool _isQuitting = false;
+
+    private async void QuitGracefully(bool quitProcess = true)
+    {
+        if (_isQuitting) return;
+        _isQuitting = true;
+
+        if (_session != null && _session.IsConnected)
+        {
+            // Hide all UI components for a clean screenshot
+            var loginScreen = GetNodeOrNull<Control>("%LoginScreen");
+            if (loginScreen != null) loginScreen.Visible = false;
+            
+            var bg = GetNodeOrNull<Control>("%Background");
+            if (bg != null) bg.Visible = false;
+            
+            var loadingScreen = GetNodeOrNull<Control>("%LoadingScreen");
+            if (loadingScreen != null) loadingScreen.Visible = false;
+            
+            var loadingBlur = GetNodeOrNull<Control>("%LoadingScreenBlur");
+            if (loadingBlur != null) loadingBlur.Visible = false;
+            
+            if (_topMenu != null) _topMenu.Visible = false;
+            
+            var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+            if (hudLayer != null) hudLayer.Visible = false;
+            
+            if (_chatWindow != null) _chatWindow.Visible = false;
+            if (_inventoryPanel != null) _inventoryPanel.Visible = false;
+            _teleportOverlay?.ForceHide();
+            if (_dialogLayer != null) _dialogLayer.Visible = false;
+
+            // Wait 2 frames to ensure the UI is fully hidden by the renderer
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+
+            // Capture viewport
+            var firstName = _firstInput.Text.Trim();
+            var lastName = _lastInput.Text.Trim();
+            using var img = GetViewport().GetTexture().GetImage();
+            if (img != null)
+            {
+                img.SavePng($"user://last_session_bg_{firstName}_{lastName}.png");
+            }
+
+            // Show "Logging out..." screen
+            if (loadingBlur != null) loadingBlur.Visible = true;
+            if (loadingScreen != null) loadingScreen.Visible = true;
+            var stepList = GetNodeOrNull<Container>("%StepList");
+            if (stepList != null)
+            {
+                foreach (Node child in stepList.GetChildren())
+                {
+                    if (child is Control c) c.Visible = false;
+                }
+                var lbl = new Label { Name = "LogoutLabel", Text = "Logging out..." };
+                lbl.AddThemeFontSizeOverride("font_size", 16);
+                lbl.HorizontalAlignment = HorizontalAlignment.Center;
+                stepList.AddChild(lbl);
+            }
+            var ring = GetNodeOrNull<TextureProgressBar>("%ProgressRing");
+            if (ring != null) ring.Value = 100;
+            var percent = GetNodeOrNull<Label>("%ProgressPercentLabel");
+            if (percent != null) percent.Text = "";
+
+            // Wait a few frames so the user actually sees the UI update before the app freezes
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        }
+
+        if (quitProcess)
+        {
+            GetTree().Quit();
+        }
+        else
+        {
+            if (_session != null)
+            {
+                LogMessage("Disconnecting...");
+                _session.Dispose();
+                _session = null;
+            }
+            
+            var loginScreen = GetNodeOrNull<Control>("%LoginScreen");
+            if (loginScreen != null) loginScreen.Visible = true;
+            
+            var bg = GetNodeOrNull<TextureRect>("%Background");
+            if (bg != null) 
+            {
+                bg.Visible = true;
+                var firstName = _firstInput.Text.Trim();
+                var lastName = _lastInput.Text.Trim();
+                var bgPath = $"user://last_session_bg_{firstName}_{lastName}.png";
+                if (FileAccess.FileExists(bgPath))
+                {
+                    using var bgImg = Image.LoadFromFile(bgPath);
+                    if (bgImg != null)
+                    {
+                        bg.Texture = ImageTexture.CreateFromImage(bgImg);
+                    }
+                }
+            }
+            
+            if (_topMenu != null) _topMenu.Visible = false;
+            var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+            if (hudLayer != null) hudLayer.Visible = false;
+            if (_chatWindow != null) _chatWindow.Visible = false;
+            if (_inventoryPanel != null) { _inventoryPanel.QueueFree(); _inventoryPanel = null; }
+            Input.MouseMode = Input.MouseModeEnum.Visible;
+            _teleportActive = false;
+            _teleportCameraResetPending = false;
+            _teleportOverlay?.ForceHide();
+            
+            var loadingBlur = GetNodeOrNull<Control>("%LoadingScreenBlur");
+            if (loadingBlur != null) loadingBlur.Visible = false;
+            var loadingScreenNode = GetNodeOrNull<Control>("%LoadingScreen");
+            if (loadingScreenNode != null) loadingScreenNode.Visible = false;
+            
+            var stepList = GetNodeOrNull<Container>("%StepList");
+            if (stepList != null)
+            {
+                var lbl = stepList.GetNodeOrNull("LogoutLabel");
+                if (lbl != null) lbl.QueueFree();
+                foreach (Node child in stepList.GetChildren())
+                {
+                    if (child is Control c) c.Visible = true;
+                }
+            }
+            
+            _isQuitting = false;
+        }
     }
 }
