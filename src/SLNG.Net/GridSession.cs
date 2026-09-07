@@ -5091,6 +5091,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 return;
             }
 
+            // A #Library item can't be linked into an outfit (you don't own it). Attach the OWNED
+            // COPY instead of the Library original, so the scene attachment id, the COF link and
+            // any outfit link all point at the same item — otherwise the worn marker never matches
+            // ("Schuhe angezogen, im Outfit stehen sie als nicht getragen"). The copy is content-
+            // identical and reused across wears (CopyLibraryItemForOutfitAsync dedups by AssetUUID).
+            if (IsUnderLibrary(realItem.UUID))
+            {
+                var owned = await CopyLibraryItemForOutfitAsync(realItem).ConfigureAwait(false);
+                if (owned != null) realItem = owned;
+            }
+
             _client.Appearance.Attach(realItem, (LibreMetaverse.AttachmentPoint)attachPoint, replace);
             // LibreMetaverse's Attach only sends RezSingleAttachmentFromInv — it never records the
             // item in the Current Outfit folder. Without a COF link the attachment is on the avatar
