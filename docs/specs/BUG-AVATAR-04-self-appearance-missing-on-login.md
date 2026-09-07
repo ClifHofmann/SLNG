@@ -62,13 +62,19 @@ missing — boots one login, the DOUX hair the next. The Angezogen tab lists the
 simulator simply did not rez that attachment this login. It is always one of the freshly-made
 `#Library` copies, whose newer inventory/asset records lose the login COF/asset race more often.
 
-**Fix:** `ArmAttachmentReconcile()` (armed once per session next to the other appearance
-watchdogs) runs `ReattachMissingCofAttachments()` at 20 s / 40 s / 75 s: for every COF `Object`
-link whose target is not worn (scene + LibreMetaverse's attachment cache) **and was never seen
-worn this session** (`_attachmentsSeenWornThisSession`, so it never re-adds something the user
-took off), it re-sends `Appearance.Attach(item, Default, replace: false)` — the reference
+**Fix (`v0.20.114`, confirmed in-world):** `ArmAttachmentReconcile()` (armed once per session
+next to the other appearance watchdogs) runs `ReattachMissingCofAttachmentsAsync()` at
+6 / 12 / 22 / 45 / 80 s: it **fetches the COF into the store first** (lazy per-folder inventory
+means nothing pulls it on login — this was why earlier versions were a silent no-op), then for
+every COF attachment link whose target is not in the **scene** (the only reliable signal —
+LibreMetaverse's `GetAttachmentsByItemId()` cache lags and gave false "worn" hits) **and was
+never seen worn this session** (`_attachmentsSeenWornThisSession`, so it never re-adds something
+the user took off), it re-sends `Appearance.Attach(…, Default, replace: false)` — the reference
 viewer's `LLAttachmentsMgr` re-request behaviour. Stops early once a pass finds nothing.
-Not yet re-verified in-world.
+
+Live 2026-09-07: `Mellow Elie / Camden Boots` missing on login → re-attached on the 6 s pass,
+`[Appearance] 1 Current-Outfit attachment(s) the sim did not rez on login — re-attaching …`,
+boots back. The one-shot per-link `[Reconcile]` dump used to find this has been removed.
 
 ## Still open
 
