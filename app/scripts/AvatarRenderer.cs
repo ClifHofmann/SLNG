@@ -902,9 +902,27 @@ public partial class AvatarRenderer : Node3D
             var basis = SkeletonBuilder.SlEulerDegToGodotBasis(bone.Rotation);
 
             var rest = new Transform3D(basis, godotPos);
+
+            // BUG-NET-13: a NaN/Inf here becomes a non-finite Skeleton3D bone Rest, and Godot then
+            // re-normalizes it EVERY frame -> the "Vector3 cannot be normalized" flood that starts
+            // on the frame after a teleport (the self avatar rebuilt from a reset AvatarComponent).
+            // The scale/pos guards above cover their inputs; this is the last net before the write.
+            if (!IsFiniteTransform(rest))
+            {
+                if (!_boneRestNaNLogged)
+                {
+                    _boneRestNaNLogged = true;
+                    GD.PushWarning($"[NaNGuard] bone-rest non-finite for '{name}' (idx {idx}) -- substituting base rest. slPos={slPos} slScale={slScale} rot={bone.Rotation}");
+                }
+                var baseGodotPos = new Godot.Vector3(bone.Position.X, bone.Position.Z, -bone.Position.Y);
+                rest = new Transform3D(Basis.Identity, baseGodotPos.IsFinite() ? baseGodotPos : Godot.Vector3.Zero);
+            }
+
             skeleton.SetBoneRest(idx, rest);
         }
     }
+
+    private bool _boneRestNaNLogged;
 
     /// <summary>The world Rest transform of <paramref name="boneIdx"/> WITH its own SL-accurate
     /// scale injected — Godot's native <see cref="ComputeGlobalRestTransform"/> composes only

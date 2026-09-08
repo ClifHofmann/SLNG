@@ -156,6 +156,10 @@ public sealed class WorldSimulation : IDisposable
     private const float AvatarCacheMaxAgeSeconds = 2f;
     private float _avatarCacheAge;
 
+    /// <summary>BUG-NET-13: entities already reported by <see cref="SanitizeAvatarTransform"/>, so a
+    /// per-frame NaN doesn't flood the log. Keyed by entity id + field name.</summary>
+    private readonly HashSet<string> _nanGuardLogged = new();
+
     /// <summary>
     /// Dead-reckons avatar positions between network updates. Runs every frame.
     ///
@@ -180,6 +184,13 @@ public sealed class WorldSimulation : IDisposable
         {
             var transform = entity.GetComponent<TransformComponent>();
             if (transform == null) continue;
+
+            // BUG-NET-13: a non-finite Position/Rotation here reaches the renderer as a NaN basis and
+            // produces the engine's "Vector3 cannot be normalized" warning every single frame (9212
+            // copies in one teleport-heavy session). The upstream cause is meant to be fixed
+            // (stale-circuit churn feeding half-populated transforms), but repair + name it here so a
+            // survivor is caught, not silently flooding.
+            SanitizeAvatarTransform(entity, transform);
 
             transform.TimeSinceUpdate += deltaSeconds;
 
@@ -243,8 +254,76 @@ public sealed class WorldSimulation : IDisposable
         }
     }
 
+    private static bool IsFinite(Vector3 v) =>
+        float.IsFinite(v.X) && float.IsFinite(v.Y) && float.IsFinite(v.Z);
+
+    private static bool IsFinite(Quaternion q) =>
+        float.IsFinite(q.X) && float.IsFinite(q.Y) && float.IsFinite(q.Z) && float.IsFinite(q.W)
+        && (q.X != 0f || q.Y != 0f || q.Z != 0f || q.W != 0f); // a zero quaternion normalizes to NaN
+
+    /// <summary>BUG-NET-13: repairs a non-finite avatar transform before <see cref="ExtrapolateMovement"/>
+    /// feeds it to the renderer (a NaN basis is what triggers the engine's per-frame
+    /// "Vector3 cannot be normalized" warning). A bad Position/TargetPosition falls back to the other
+    /// of the pair, then to <see cref="Vector3.Zero"/>; a bad Rotation/TargetRotation falls back to the
+    /// other, then to <see cref="Quaternion.Identity"/>. Each (entity, field) pair is logged once.</summary>
+    internal void SanitizeAvatarTransform(Entity entity, TransformComponent t)
+    {
+        bool localAgent = entity.GetComponent<AvatarComponent>()?.IsLocalAgent == true;
+
+        void Report(string field)
+        {
+            if (_nanGuardLogged.Add($"{entity.Id}:{field}"))
+                System.Console.WriteLine(
+                    $"[NaNGuard] entity={entity.Id} region={entity.RegionHandle} localAgent={localAgent} field={field} -- non-finite avatar transform repaired");
+        }
+
+        if (!IsFinite(t.Position))
+        {
+            t.Position = IsFinite(t.TargetPosition) ? t.TargetPosition : Vector3.Zero;
+            Report(nameof(t.Position));
+        }
+        if (!IsFinite(t.TargetPosition))
+        {
+            t.TargetPosition = IsFinite(t.Position) ? t.Position : Vector3.Zero;
+            Report(nameof(t.TargetPosition));
+        }
+        if (!IsFinite(t.Rotation))
+        {
+            t.Rotation = IsFinite(t.TargetRotation) ? t.TargetRotation : Quaternion.Identity;
+            Report(nameof(t.Rotation));
+        }
+        if (!IsFinite(t.TargetRotation))
+        {
+            t.TargetRotation = IsFinite(t.Rotation) ? t.Rotation : Quaternion.Identity;
+            Report(nameof(t.TargetRotation));
+        }
+    }
+
+    private readonly HashSet<(ulong, uint)> _objNanLogged = new();
+
+    /// <summary>BUG-NET-13: repair a non-finite prim transform before it reaches the renderer, and
+    /// name it once (`[NaNGuard] object region=<h> localId=<id> field=<name>`). Complements
+    /// <see cref="SanitizeAvatarTransform"/>, which only covers avatars.</summary>
+    private void SanitizeObjectTransform(ulong region, uint localId, TransformComponent t)
+    {
+        void Report(string field)
+        {
+            if (_objNanLogged.Add((region, localId)))
+                System.Console.WriteLine(
+                    $"[NaNGuard] object region={region} localId={localId} field={field} -- non-finite prim transform repaired");
+        }
+
+        if (!IsFinite(t.Position)) { t.Position = IsFinite(t.LocalPosition) ? t.LocalPosition : Vector3.Zero; Report(nameof(t.Position)); }
+        if (!IsFinite(t.LocalPosition)) { t.LocalPosition = IsFinite(t.Position) ? t.Position : Vector3.Zero; Report(nameof(t.LocalPosition)); }
+        if (!IsFinite(t.Rotation)) { t.Rotation = IsFinite(t.LocalRotation) ? t.LocalRotation : Quaternion.Identity; Report(nameof(t.Rotation)); }
+        if (!IsFinite(t.LocalRotation)) { t.LocalRotation = IsFinite(t.Rotation) ? t.Rotation : Quaternion.Identity; Report(nameof(t.LocalRotation)); }
+    }
+
     private void ApplyObjectUpdate(ObjectUpdateEvent e)
     {
+        if (_regionDataLogged.Add(e.RegionHandle))
+            System.Console.WriteLine($"[RegionData] first object update for region {e.RegionHandle}");
+
         var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
 
         var transform = entity.GetComponent<TransformComponent>() ?? new TransformComponent();
@@ -253,6 +332,14 @@ public sealed class WorldSimulation : IDisposable
         transform.ParentLocalId = e.ParentLocalId;
         // Linked child prims send their transform relative to the root; compose to world space.
         ResolveWorldTransform(transform, e.RegionHandle);
+
+        // BUG-NET-13: a non-finite object transform reaches the renderer and the engine re-normalizes
+        // it every frame -> the "Vector3 cannot be normalized" flood that starts right after
+        // "[RegionData] first object update" for a teleport destination. SanitizeAvatarTransform only
+        // covers avatars; this catches a bad prim. Snap the offending field to Identity/Zero and name
+        // the entity + region once.
+        SanitizeObjectTransform(e.RegionHandle, e.LocalId, transform);
+
         entity.SetComponent(transform);
         _world.NotifyComponentUpdated(entity, transform);
 
@@ -486,17 +573,34 @@ public sealed class WorldSimulation : IDisposable
         // avoids.
         _avatarCacheDirty = true;
 
+        AvatarComponent? carriedSelfAppearance = null;
         if (e.IsLocalAgent)
         {
             // Ensure no other entity is marked as the local agent (e.g. leftover from a previous region after teleport)
             var oldAgent = _world.GetAllEntities().FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
             if (oldAgent != null && (oldAgent.RegionHandle != e.RegionHandle || oldAgent.LocalId != e.LocalId))
             {
+                // BUG-NET-13: a teleport re-keys the self entity to the new region, but it must NOT
+                // reset the avatar. Carry the appearance-bearing component (VisualParams,
+                // BakedTextures, hover, active anims) forward -- a fresh AvatarComponent with null
+                // VisualParams makes AvatarRenderer rebuild the skeleton from the DEFAULT shape, and
+                // that path can leave a non-finite bone transform in the Skeleton3D -> the engine
+                // re-normalizes it every frame -> the "Vector3 cannot be normalized" flood that
+                // starts on the exact frame after a teleport. It also blanks the avatar
+                // ([SelfBake] channels (null)) until a new AvatarAppearance arrives, which the sim
+                // does not reliably re-send (BUG-AVATAR-04).
+                carriedSelfAppearance = oldAgent.GetComponent<AvatarComponent>();
                 _world.RemoveEntity(oldAgent.RegionHandle, oldAgent.LocalId);
             }
         }
 
         var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
+        if (carriedSelfAppearance != null && entity.GetComponent<AvatarComponent>() == null)
+        {
+            // The identity/name/scale fields below still run against this instance and update it
+            // from the fresh event; only the appearance state is preserved.
+            entity.SetComponent(carriedSelfAppearance);
+        }
 
         // MVP2-1: while seated, AvatarController stops writing this entity's Z/Rotation each
         // frame (its ground-clamp/camera-yaw ownership is suspended -- see its own isSitting
@@ -706,11 +810,19 @@ public sealed class WorldSimulation : IDisposable
         }
     }
 
+    /// <summary>BUG-NET-13: region handles for which we've already logged the first terrain patch /
+    /// object update, so the "did the sim re-send after a teleport back?" diagnostic prints once
+    /// per region, not per packet.</summary>
+    private readonly HashSet<ulong> _regionDataLogged = new();
+
     private void ApplyTerrainPatch(TerrainPatchEvent e)
     {
+        bool firstPatch = !_world.Terrains.ContainsKey(e.RegionHandle);
         var terrain = _world.GetOrCreateTerrain(e.RegionHandle, e.RegionSizeX, e.RegionSizeY);
         terrain.ApplyPatch(e.X, e.Y, e.HeightMap);
         _world.NotifyTerrainUpdated(e.RegionHandle);
+        if (firstPatch)
+            System.Console.WriteLine($"[RegionData] first terrain patch for region {e.RegionHandle}");
     }
 
     private void ApplyTerrainSettings(TerrainSettingsEvent e)
