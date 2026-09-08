@@ -2,7 +2,15 @@
 
 - **Feature ID:** `BUG-AVATAR-01`
 - **Track:** `net`
-- **Status:** `🧪 Review` — the contradictory-message half is fixed (v0.21.6): `Boot.RebakeAvatar` now branches on `RegionHasServerSideBaking()` and on SSB calls only `GridSession.RequestServerSideRebakeAsync()` (the `{cof_version}` cap POST), reporting its real result in chat (`Server-Rebake angenommen (cof_version N)` / `… abgelehnt: …` / `… keine UpdateAvatarAppearance-Capability`). The OpenSim `BakeAvatarAsync()` path is no longer touched on SSB, so the `… wird übersprungen` line can't appear there any more. Not yet re-verified in-world against a real Ctrl+Alt+R on Agni. The "why was the avatar blank" question is unchanged — see "Still open".
+- **Status:** `🧪 Review` — v0.21.7: Ctrl+Alt+R now mirrors the reference viewer's
+  `handle_rebake_textures` — a **client-side forced re-fetch** of the self bake textures
+  (`AvatarRenderer.ForceRebakeSelf` → `GpuCache.Forget` each bake id + `UpdateVisual`),
+  which SLNG was missing entirely, **plus** the SSB `{cof_version}` cap POST. Before this,
+  SLNG only did the cap POST; if the sim returned the same bake ids nothing visibly
+  happened ("bei SLNG passiert gefühlt nix" vs Firestorm's brief grey). All chat messages
+  removed from the SSB path (the cap-POST outcome logs to the console only, per the user).
+  Not yet re-verified in-world. The separate "why was the avatar blank" question is
+  unchanged — see "Still open".
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness` (found and fixed mid-session, same branch)
@@ -62,7 +70,9 @@ self; see "Still open" below).
 |---|---|
 | `src/SLNG.Net/GridSession.cs` | `RebakeAvatar()` branches on `RegionHasServerSideBaking()` before the diagnostic/hard-stop; new `RequestServerSideRebakeAsync` helper |
 | `src/SLNG.Net/GridSession.cs` (v0.21.6) | `SendServerAppearanceUpdateAsync` now returns a user-facing status string at every exit (accepted / rejected / no cap / cof unknown / version-conflict / exception); `RequestServerSideRebakeAsync` made **public**, returns `Task<string>` |
-| `app/scripts/Boot.cs` (v0.21.6) | `RebakeAvatar()` branches on `_session.RegionHasServerSideBaking()`: on SSB it shows "Server-Rebake wird angefordert …" and reports the cap-POST result via the new `RebakeAvatarSsbAndReportAsync`, and does **not** call `BakeAvatarAndReportAsync` (the OpenSim `BakeAvatarAsync` path); non-SSB is unchanged |
+| `app/scripts/Boot.cs` (v0.21.7) | `RebakeAvatar()`: **always** calls `_avatarRenderer.ForceRebakeSelf()` first (client-side forced re-fetch), then on SSB fires `_session.RequestServerSideRebakeAsync()` (log-only, no chat) and returns; non-SSB keeps the OpenSim `BakeAvatarAndReportAsync` composite path. All "wird neu gebacken" / "Server-Rebake …" chat messages removed |
+| `app/scripts/AvatarRenderer.cs` (v0.21.7) | new `ForceRebakeSelf()` — finds the local-agent entity, `GpuCache.Forget`s each of its `BakedTextures` ids, then `UpdateVisual` to rebuild (the bakes re-download from the CDN). Mirrors `LLVOAvatarSelf::forceBakeAllTextures` |
+| `app/scripts/GpuCache.cs` (v0.21.7) | new `Forget(Guid id)` — un-indexes a cached entry regardless of refcount so the next fetch re-downloads; disposes it only if unreferenced (a live-referenced entry is left for `ReleaseRef`) |
 
 ### Design notes
 

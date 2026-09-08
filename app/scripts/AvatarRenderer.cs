@@ -472,6 +472,39 @@ public partial class AvatarRenderer : Node3D
         _hudContent.Remove(entityId);
     }
 
+    /// <summary>BUG-AVATAR-01 / Ctrl+Alt+R: the client-side half of the reference viewer's
+    /// <c>LLVOAvatarSelf::forceBakeAllTextures</c> (llvoavatarself.cpp) -- evict the self avatar's
+    /// baked textures from the GPU cache and rebuild the visual, so they re-download from the bake
+    /// CDN. SLNG previously only did the SSB <c>{ cof_version }</c> cap POST; if the sim returned
+    /// the same bake ids, nothing visibly happened. Forcing a re-fetch recovers a stale / stuck /
+    /// previously-failed bake channel (the "blank avatar" this button exists for) and shows the
+    /// default skin for a beat until the fresh bake lands -- the "kurz grau" seen in Firestorm.</summary>
+    public void ForceRebakeSelf()
+    {
+        if (_world == null) return;
+        var selfEntity = _world.Query<AvatarComponent>()
+            .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+        if (selfEntity == null)
+        {
+            GD.Print("[Rebake] no local-agent entity yet -- nothing to rebake");
+            return;
+        }
+
+        var bakes = selfEntity.GetComponent<AvatarComponent>()?.BakedTextures;
+        int forgotten = 0;
+        if (bakes != null && _gpuCache != null)
+        {
+            foreach (var id in bakes.Values)
+            {
+                if (id == Guid.Empty) continue;
+                _gpuCache.Forget(id);
+                forgotten++;
+            }
+        }
+        GD.Print($"[Rebake] forced self rebake: evicted {forgotten} bake texture(s), rebuilding visual");
+        UpdateVisual(selfEntity.Id.ToString());
+    }
+
     public void UpdateVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;

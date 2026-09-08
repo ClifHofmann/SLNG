@@ -639,6 +639,33 @@ public class GpuCache
         }
     }
 
+    /// <summary>BUG-AVATAR-01: drop a cached entry outright, ignoring its refcount, so the next
+    /// <see cref="GetOrUploadTextureAsync"/> re-downloads and re-decodes it from scratch. Used by
+    /// "Avatar neu backen" / Ctrl+Alt+R to force the self bake textures to re-fetch -- a stale,
+    /// stuck or previously-failed bake channel is the "blank avatar" symptom that button exists
+    /// for -- and, like the reference viewer's <c>forceBakeAllTextures</c>, to give the visible
+    /// "kurz grau, dann frisch" the user sees in Firestorm. An entry still referenced by live
+    /// nodes is un-indexed here but left for <see cref="ReleaseRef"/> to dispose when the owner
+    /// rebuilds and drops its ref; only an unreferenced entry is disposed immediately.</summary>
+    public void Forget(Guid id)
+    {
+        lock (_cache)
+        {
+            if (_cache.TryGetValue(id, out var entry))
+            {
+                if (entry.Node != null) _lruList.Remove(entry.Node);
+                _cache.Remove(id);
+                _uploadFromDegraded.TryRemove(id, out _);
+                _currentSize -= entry.Size;
+                if (entry.RefCount <= 0 && GodotObject.IsInstanceValid(entry.Res))
+                {
+                    entry.Res.Dispose();
+                }
+            }
+            _pendingRefDelta.Remove(id);
+        }
+    }
+
     private void EvictIfNeeded()
     {
         if (_currentSize <= _maxSize) return;
