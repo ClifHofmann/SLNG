@@ -34,13 +34,42 @@ public sealed class AvatarAnimationPlayer
     }
 
     private readonly List<PlayingAnimation> _active = new();
+    private readonly HashSet<Guid> _animInfoLogged = new();
     private Skeleton3D? _skeleton;
+
+    // FEAT-ANIM-01: for a short window after a predicted MOVING gait starts, force it above any
+    // still-lagging AO stand so the self avatar isn't frozen in the AO's stand pose while moving.
+    // After the window it drops back to its authored priority, so a real AO walk (which by then
+    // has arrived) takes over -- "instant built-in walk -> AO walk", never "stand-slide -> walk".
+    private Guid _locomotionBoostId;
+    private float _locomotionBoostElapsed;
+    private const float LocomotionBoostSeconds = 2.0f;
+    private const int LocomotionBoostPriority = 6; // above SL's normal max authored priority (~4)
 
     /// <summary>True if any animations are currently loaded and playing.</summary>
     public bool IsPlaying => _active.Count > 0;
 
     /// <summary>Bind this player to a skeleton. Must be called before Advance.</summary>
     public void SetSkeleton(Skeleton3D skeleton) => _skeleton = skeleton;
+
+    /// <summary>FEAT-ANIM-01: mark <paramref name="animId"/> (a locally-predicted moving gait) to
+    /// win over everything for <see cref="LocomotionBoostSeconds"/>. Re-marking the same id is a
+    /// no-op (the timer is not reset), so holding a walk key does not keep the boost alive
+    /// forever.</summary>
+    public void SetLocomotionBoost(Guid animId)
+    {
+        if (animId == _locomotionBoostId) return;
+        _locomotionBoostId = animId;
+        _locomotionBoostElapsed = 0f;
+    }
+
+    /// <summary>FEAT-ANIM-01: stop boosting (predicted gait is now a resting pose, or the self
+    /// avatar sat down).</summary>
+    public void ClearLocomotionBoost() => _locomotionBoostId = System.Guid.Empty;
+
+    private bool BoostActive(Guid animId)
+        => animId != System.Guid.Empty && animId == _locomotionBoostId
+        && _locomotionBoostElapsed < LocomotionBoostSeconds;
 
     /// <summary>
     /// Replace the entire set of active animations. Animations not in the new set
@@ -76,6 +105,11 @@ public sealed class AvatarAnimationPlayer
             if (!found)
             {
                 if (Diagnostics.Enabled) GD.Print($"[AnimPlayer] Adding animation {id}");
+                // FEAT-ANIM-01 diagnostic: which animation, at what priority, is competing for
+                // the avatar's bones -- so a "still standing while walking" report can be read as
+                // a priority fight (a high-priority AO stand) vs a broken/short/non-looping clip.
+                if (_animInfoLogged.Add(id))
+                    GD.Print($"[AnimPlayer] +{id.ToString()[..8]} pri={data.Priority} loop={data.Loop} len={data.Length:0.00}s joints={data.Joints.Length}");
                 _active.Add(new PlayingAnimation(data, id));
             }
         }
@@ -95,6 +129,8 @@ public sealed class AvatarAnimationPlayer
     public void Advance(float delta)
     {
         if (_skeleton == null || _active.Count == 0) return;
+
+        if (_locomotionBoostId != System.Guid.Empty) _locomotionBoostElapsed += delta;
 
         // Advance time for each playing animation.
         foreach (var anim in _active)
@@ -139,14 +175,16 @@ public sealed class AvatarAnimationPlayer
 
         foreach (var anim in _active)
         {
-            int animPriority = anim.Data.Priority;
+            bool boosted = BoostActive(anim.AnimationId);
+            int animPriority = boosted ? LocomotionBoostPriority : anim.Data.Priority;
 
             foreach (var joint in anim.Data.Joints)
             {
                 int boneIdx = _skeleton.FindBone(joint.JointName);
                 if (boneIdx < 0) continue;
 
-                int effectivePriority = joint.Priority >= 0 ? joint.Priority : animPriority;
+                int effectivePriority = boosted ? LocomotionBoostPriority
+                    : (joint.Priority >= 0 ? joint.Priority : animPriority);
 
                 if (bonePoses.TryGetValue(boneIdx, out var existing) && existing.priority > effectivePriority)
                     continue;

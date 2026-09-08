@@ -91,6 +91,14 @@ public static class SelfLocomotion
     /// <summary>Vertical speed past which a flying avatar is hovering up or down rather than level.</summary>
     public const float VerticalMoveThreshold = 0.5f;
 
+    /// <summary>A gait that involves motion (walk / run / turn / crouch-walk / fly-forward /
+    /// hover-up / hover-down). The renderer boosts one of these over a still-lagging AO so the
+    /// avatar isn't stuck in the AO's stand pose while moving; a predicted <c>Stand</c> / <c>Hover</c>
+    /// / <c>Crouch</c> is not boosted (a resting AO pose should win there).</summary>
+    public static bool IsMoving(Guid id)
+        => id == Walk || id == Run || id == TurnLeft || id == TurnRight
+        || id == CrouchWalk || id == Fly || id == HoverUp || id == HoverDown;
+
     /// <summary>The locomotion animation the self avatar should play this frame, or
     /// <see langword="null"/> when it is sitting (the server drives the sit pose) — nothing to
     /// predict.</summary>

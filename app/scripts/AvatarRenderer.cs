@@ -306,14 +306,22 @@ public partial class AvatarRenderer : Node3D
             _locomotionPrefetchStarted = true;
             var svc = _assetService;
             GD.Print($"[Locomotion] prefetching {SelfLocomotion.Prefetch.Count} built-in locomotion animations");
+            // Deferred + strictly sequential: firing 18 fetch/decode tasks at once during the
+            // login texture storm starved the thread pool and coincided with an
+            // Image.CreateFromData AccessViolation on a decode worker (v0.21.9). The prediction's
+            // first real need is a walk key, which is rarely in the first ~4 s of a session.
             _ = System.Threading.Tasks.Task.Run(async () =>
             {
-                var results = await System.Threading.Tasks.Task.WhenAll(
-                    SelfLocomotion.Prefetch.Select(async id => (id, data: await svc.GetAnimationAsync(id)))).ConfigureAwait(false);
-                int ok = results.Count(r => r.data != null);
-                var missing = string.Join(" ", results.Where(r => r.data == null).Select(r => r.id.ToString()[..8]));
-                GD.Print($"[Locomotion] prefetch done: {ok}/{results.Length} resolved" +
-                         (missing.Length > 0 ? $" -- missing: {missing}" : ""));
+                await System.Threading.Tasks.Task.Delay(4000).ConfigureAwait(false);
+                int ok = 0;
+                var missing = new List<string>();
+                foreach (var id in SelfLocomotion.Prefetch)
+                {
+                    var data = await svc.GetAnimationAsync(id).ConfigureAwait(false);
+                    if (data != null) ok++; else missing.Add(id.ToString()[..8]);
+                }
+                GD.Print($"[Locomotion] prefetch done: {ok}/{SelfLocomotion.Prefetch.Count} resolved" +
+                         (missing.Count > 0 ? $" -- missing: {string.Join(" ", missing)}" : ""));
             });
         }
 
@@ -874,6 +882,17 @@ public partial class AvatarRenderer : Node3D
             // set is authoritative, including its SIT / stand-up animations.
             if (avatar.ActiveAnimations == null) return;
             desired = new List<Guid>(avatar.ActiveAnimations);
+        }
+
+        // FEAT-ANIM-01: while the self avatar is moving, boost the predicted gait over a
+        // still-lagging AO stand for ~2 s; a resting predicted pose (Stand/Hover/Crouch) is not
+        // boosted so a resting AO pose keeps winning.
+        if (avatar.IsLocalAgent)
+        {
+            if (_selfPredictedLocomotion is { } pid && SelfLocomotion.IsMoving(pid))
+                visual.AnimPlayer.SetLocomotionBoost(pid);
+            else
+                visual.AnimPlayer.ClearLocomotionBoost();
         }
 
         bool changed = visual.LoadedAnimationIds == null

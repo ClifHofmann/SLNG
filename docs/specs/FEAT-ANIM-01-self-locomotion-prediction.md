@@ -84,6 +84,30 @@ the server. It never waits for its own echo.
   (same as today) — a bundled copy is a follow-up if a grid is found missing one.
 - **Jump / prejump not predicted.** Needs a jump-input edge `AvatarController` doesn't expose;
   `FallDown` covers airborne. Follow-up.
+### In-world round 2 (v0.21.9 diag → v0.21.10)
+
+v0.21.9 log confirmed the pipeline works end to end — prefetch `18/18 resolved`,
+`[Locomotion] predict … (applied)` for every state, the predicted id reaches the anim
+set. But the user still saw the stand pose while moving, **and the session ended in an
+`Image.CreateFromData` `AccessViolationException` on a decode worker.**
+
+- **Crash:** firing 18 concurrent `GetAnimationAsync` tasks at login piled onto the
+  texture-decode storm and coincided with GodotSharp's off-main-thread
+  `Image.CreateFromData` binding race. The prefetch is now **deferred 4 s and strictly
+  sequential** — negligible thread-pool impact, and a walk key is rarely pressed in the
+  first few seconds anyway. (The underlying `GpuCache.PrepareImageAsync` off-thread image
+  creation is a separate, pre-existing fragility — not addressed here.)
+- **Still standing while moving:** the user runs a **scripted AO**. Its stand animation is
+  authored at high priority and, under lag, is still playing when the user starts walking
+  (the AO's own walk trigger is server-routed — the same RTT lag, one level up). Our
+  predicted built-in `WALK` was in the set but lost the per-bone priority fight.
+  Fix: `AvatarAnimationPlayer.SetLocomotionBoost` — a predicted **moving** gait
+  (`SelfLocomotion.IsMoving`) is forced to priority 6 (above SL's ~4 max) for **2 s** after
+  it starts, then drops to its authored priority so the AO's real walk (arrived by then)
+  takes over. A predicted resting pose (`Stand`/`Hover`/`Crouch`) is **not** boosted — a
+  resting AO pose should still win. New `[AnimPlayer] +<id> pri=… loop=… len=… joints=…`
+  diagnostic logs the competing animations.
+
 - **Run is speed-thresholded** (`SpeedHoriz > 4.6 m/s`), not tied to an always-run / fast flag —
   `AvatarController` has no run input. Good enough for the reported problem; revisit if a run
   toggle lands.
