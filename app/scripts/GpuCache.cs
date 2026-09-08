@@ -452,10 +452,101 @@ public class GpuCache
     /// comes back is the same texture.</para></summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, Image.AlphaMode> _alphaModes = new();
 
+    /// <summary>BUG-RENDER-11: whether a texture's alpha channel is a 1-bit-ish CUTOUT (foliage,
+    /// hair cards, lace, chain-link) rather than a genuine translucency GRADIENT (glass, smoke,
+    /// a soft fade). Computed on the worker thread next to <see cref="_alphaModes"/>.
+    ///
+    /// <para>Godot's <c>Image.DetectAlpha()</c> answers <c>Blend</c> for a texture with even ONE
+    /// texel of intermediate alpha, so every anti-aliased cutout edge reads as "needs blending"
+    /// and <c>ObjectRenderer.ApplyAlphaCutout</c> put it in the sorted transparent pass -- where a
+    /// world prim with no depth write z-fights itself and pops in/out as the camera turns (the
+    /// reported grass/foliage "flipping"; measured 2026: 257 world-prim faces on that path in one
+    /// SL region). The real viewer is far more permissive: a legacy alpha face is drawn as an
+    /// alpha MASK (<c>PASS_ALPHA_MASK</c>, depth-writing, no sort) unless
+    /// <c>LLFace::canRenderAsMask()</c> says otherwise, and that asks
+    /// <c>LLImageGL::analyzeAlphaData()</c> -- "a mask unless &gt;1/48 of samples are mid-range,
+    /// or every sample is clumped in one half of the range without reaching the extreme". This is
+    /// a faithful port of that function (llimagegl.cpp:2191).</para>
+    ///
+    /// <para>Same lifetime rules as <see cref="_alphaModes"/>: one bool per texture id, never
+    /// cleared on eviction.</para></summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, bool> _alphaMaskable = new();
+
     /// <summary>The alpha mode of an already-uploaded texture, without touching the GPU.
     /// False when this id has not been uploaded through this cache yet.</summary>
     public static bool TryGetAlphaMode(Guid textureId, out Image.AlphaMode mode)
         => _alphaModes.TryGetValue(textureId, out mode);
+
+    /// <summary>BUG-RENDER-11: true if this texture's alpha qualifies as a 1-bit cutout mask
+    /// (viewer parity, see <see cref="_alphaMaskable"/>). False when the id has not been uploaded
+    /// through this cache yet -- callers fall back to the <see cref="Image.AlphaMode"/> guess.</summary>
+    public static bool TryGetIsAlphaMaskable(Guid textureId, out bool maskable)
+        => _alphaMaskable.TryGetValue(textureId, out maskable);
+
+    /// <summary>Faithful port of <c>LLImageGL::analyzeAlphaData</c> (llimagegl.cpp:2191): a
+    /// histogram of quantised alpha, plus a 2x2 box-sampled copy of it that "mid-skews" the data
+    /// so a high-frequency alpha map (which aliases badly when masked) is less likely to be
+    /// treated as a mask. <paramref name="rgba"/> is tightly packed RGBA8, alpha at byte 3,
+    /// stride 4.</summary>
+    private static bool AnalyzeAlphaMaskable(byte[] rgba, int w, int h)
+    {
+        const int AlphaOffset = 3, AlphaStride = 4;
+        long length = (long)w * h;
+        ulong alphatotal = 0;
+        Span<uint> sample = stackalloc uint[16];
+
+        // The 2x2 box-sample path needs even dimensions (the viewer asserts it); a resized LOD or
+        // an odd source falls back to the plain single-pass histogram.
+        if (w >= 2 && h >= 2 && (w & 1) == 0 && (h & 1) == 0)
+        {
+            int rowStride = w * AlphaStride;
+            for (int y = 0; y < h; y += 2)
+            {
+                int rowStart = y * rowStride + AlphaOffset;
+                for (int x = 0; x < w; x += 2)
+                {
+                    int c = rowStart + x * AlphaStride;
+                    uint s1 = rgba[c];
+                    uint s2 = rgba[c + rowStride];
+                    uint s3 = rgba[c + AlphaStride];
+                    uint s4 = rgba[c + AlphaStride + rowStride];
+                    alphatotal += s1 + s2 + s3 + s4;
+                    sample[(int)(s1 / 16)]++;
+                    sample[(int)(s2 / 16)]++;
+                    sample[(int)(s3 / 16)]++;
+                    sample[(int)(s4 / 16)]++;
+                    uint asum = s1 + s2 + s3 + s4;
+                    alphatotal += asum;
+                    sample[(int)(asum / (16 * 4))] += 4;
+                }
+            }
+            length *= 2; // everything was sampled twice
+        }
+        else
+        {
+            for (long i = 0; i < length; i++)
+            {
+                uint s1 = rgba[i * AlphaStride + AlphaOffset];
+                alphatotal += s1;
+                sample[(int)(s1 / 16)]++;
+            }
+        }
+
+        uint midrangetotal = 0;
+        for (int i = 2; i < 13; i++) midrangetotal += sample[i];
+        uint lowerhalftotal = 0;
+        for (int i = 0; i < 8; i++) lowerhalftotal += sample[i];
+        uint upperhalftotal = 0;
+        for (int i = 8; i < 16; i++) upperhalftotal += sample[i];
+
+        if (midrangetotal > length / 48 ||
+            (lowerhalftotal == length && alphatotal != 0) ||
+            (upperhalftotal == length && alphatotal != (ulong)(255 * length)))
+        {
+            return false; // not suitable for masking -- a real gradient / intentional fade
+        }
+        return true; // 1-bit-ish cutout
+    }
 
     // One implementation, shared with AssetService's pre-decode reduce-level choice: two copies of
     // this arithmetic that disagreed would decode a texture small and then treat it as full
@@ -538,7 +629,14 @@ public class GpuCache
                     // Before mipmaps, so the scan covers the base level only -- the mips are
                     // derived from it and add nothing but work. See _alphaModes for why this is
                     // computed here and not where it is used.
-                    if (image != null) _alphaModes[textureId] = image.DetectAlpha();
+                    if (image != null)
+                    {
+                        _alphaModes[textureId] = image.DetectAlpha();
+                        // BUG-RENDER-11: viewer-faithful mask/gradient verdict, same worker, same
+                        // already-decoded pixels. Only meaningful when there IS an alpha channel.
+                        _alphaMaskable[textureId] = _alphaModes[textureId] != Image.AlphaMode.None
+                            && AnalyzeAlphaMaskable(image.GetData(), image.GetWidth(), image.GetHeight());
+                    }
 
                     if (generateMipmaps && image != null) image.GenerateMipmaps();
                 }

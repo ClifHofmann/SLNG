@@ -2092,8 +2092,9 @@ public partial class ObjectRenderer : Node3D
     }
 
     /// <summary>Picks the right transparency mode from the texture's actual alpha:
-    /// binary alpha (foliage/fences) → alpha-scissor cutout; graded alpha (glass, soft edges)
-    /// → alpha blend; fully opaque → left fully opaque, single-sided. Only genuinely alpha
+    /// a 1-bit-ish cutout (foliage/fences/hair cards, per the viewer's own analyzeAlphaData test
+    /// — BUG-RENDER-11) → alpha-scissor cutout; a genuine translucency gradient (glass, soft
+    /// fades) → alpha blend; fully opaque → left fully opaque, single-sided. Only genuinely alpha
     /// surfaces render double-sided.
     ///
     /// A <c>DetectAlpha() == None</c> verdict is treated as authoritative "this texture is
@@ -2168,22 +2169,46 @@ public partial class ObjectRenderer : Node3D
 
         // If the primitive is already explicitly translucent via color tint, keep true Alpha blending.
         // Otherwise, pick the right variant based on the texture's alpha content.
+        bool maskable = false;
         if (!tintIsTranslucent)
         {
-            if (alphaMode == Image.AlphaMode.Blend)
-            {
-                // Smooth translucent edges (hair, glass, clouds)
-                material.Shader = PrimShaderFamily.Blend;
-            }
-            else
-            {
-                // Binary alpha (fences, foliage). The alpha-to-coverage that used to be set
-                // here is baked into prim_scissor.gdshader's render_mode -- and it does real
-                // work: project.godot runs 4x MSAA (msaa_3d=2), despite an older comment here
-                // claiming 3D MSAA was off.
-                material.Shader = PrimShaderFamily.Scissor;
-                material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, 0.5f);
-            }
+            // BUG-RENDER-11: match the real viewer's default for a legacy alpha face. The viewer
+            // draws it as an alpha MASK (PASS_ALPHA_MASK -- depth-writing, opaque queue, NO sort)
+            // unless LLFace::canRenderAsMask() -> LLImageGL::analyzeAlphaData() decides the alpha
+            // is a genuine gradient / intentional fade. Godot's DetectAlpha() calls anything with
+            // one intermediate texel "Blend", so relying on it alone put every anti-aliased cutout
+            // (grass, foliage, fences -- measured: 257 world-prim faces in one SL region) into the
+            // sorted transparent pass, where a world prim with no depth write z-fights itself and
+            // pops in/out as the camera turns. GpuCache computed the viewer's verdict on the
+            // worker thread; fall back to the DetectAlpha() guess only when it is missing (texture
+            // not uploaded through GpuCache).
+            maskable = GpuCache.TryGetIsAlphaMaskable(texId, out var m)
+                ? m
+                : alphaMode != Image.AlphaMode.Blend;
+
+            // BUG-RENDER-11: this branch is a DELIBERATE DIVERGENCE from the reference viewer.
+            //
+            // A face reaches here only when it has NO material and NO translucent per-face tint --
+            // i.e. the creator made no "I want real blending" declaration, the texture just
+            // happens to carry an alpha channel. The viewer would still send a high-frequency one
+            // of these (thin grass, wispy foliage) to PASS_ALPHA: its canRenderAsMask ->
+            // analyzeAlphaData 2x2 box-sample intentionally keeps hi-freq alpha OUT of the mask
+            // pass. But PASS_ALPHA depends on a fine-grained back-to-front sort, and Godot's
+            // transparent queue only sorts per object by AABB-centre distance -- far coarser -- so
+            // the same content that is stable in Firestorm pops chunks here as the camera turns
+            // (measured: 257 such faces in one SL region, all reported flickering).
+            //
+            // So: an undeclared alpha texture is treated as an alpha CUTOUT unconditionally.
+            // prim_scissor writes depth and renders in the opaque queue -> order-independent, no
+            // pop. alpha_to_coverage + project-wide 4x MSAA softens the edge into ~4 coverage
+            // levels, so a wispy grass tip does not hard-step. maskable (analyzeAlphaData's
+            // verdict) now only tunes the cutoff: a clean cutout tests at 0.5, a hi-freq one at a
+            // lower 0.33 (the viewer's own DoF-pass minimum-alpha) so more of the soft tip
+            // survives. Genuine translucency (glass, water, a tinted pane) is unaffected -- it
+            // carries an explicit legacy/glTF Blend mode or a translucent tint and never reaches
+            // this method.
+            material.Shader = PrimShaderFamily.Scissor;
+            material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, maskable ? 0.5f : 0.33f);
         }
         // CullMode is deliberately NOT touched here -- see BuildFaceMaterialAsync's CullMode
         // comment. The real viewer back-face culls alpha-blended and alpha-masked prim faces
@@ -2191,8 +2216,9 @@ public partial class ObjectRenderer : Node3D
         // explicitly-double-sided GLTF materials), so an alpha face is not a reason to render
         // an object's interior surfaces.
 
-        LogFaceAlpha(texId, $"noMat detectAlpha={alphaMode} img={imgW}x{imgH} " +
+        LogFaceAlpha(texId, $"noMat detectAlpha={alphaMode} maskable={(GpuCache.TryGetIsAlphaMaskable(texId, out _) ? maskable.ToString() : "?")} img={imgW}x{imgH} " +
             $"tintTranslucent={tintIsTranslucent} -> {PrimShaderKindName(material.Shader)}" +
+            (ReferenceEquals(material.Shader, PrimShaderFamily.Scissor) ? $" @{(maskable ? 0.5f : 0.33f)}" : "") +
             (ReferenceEquals(material.Shader, PrimShaderFamily.Blend) ? " (SORTED transparent pass)" : ""));
     }
 
