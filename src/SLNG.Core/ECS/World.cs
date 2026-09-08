@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using SLNG.Core.Components;
 
 namespace SLNG.Core.ECS;
 
@@ -115,7 +116,20 @@ public class World
     /// </summary>
     public void RemoveRegion(ulong regionHandle)
     {
-        var toRemove = _entities.Values.Where(e => e.RegionHandle == regionHandle).ToList();
+        // BUG-NET-13: never delete the local agent as a side effect of unloading a region. The
+        // local agent is the player, not regional content. On a teleport this runs (via the eager
+        // BUG-NET-04 cleanup) while the agent entity is still keyed to the region we left, before
+        // the destination sim's first local AvatarUpdate re-keys it -- removing it here blanks the
+        // self avatar (its AvatarComponent/BakedTextures are gone) and leaves the renderer with no
+        // self visual to follow until a fresh AvatarAppearance arrives, which the sim does not
+        // reliably re-send after a teleport (BUG-AVATAR-04). WorldSimulation.ApplyAvatarUpdate
+        // already removes the stale old-region local agent when the new one arrives, so preserving
+        // it here just bridges that gap. A genuine DisableSimulator for a neighbor region (the
+        // BUG-NET-03 walking path) never contains the local agent, so this is a no-op there.
+        var toRemove = _entities.Values
+            .Where(e => e.RegionHandle == regionHandle
+                        && e.GetComponent<AvatarComponent>()?.IsLocalAgent != true)
+            .ToList();
         foreach (var entity in toRemove)
         {
             _entities.Remove(entity.Id);

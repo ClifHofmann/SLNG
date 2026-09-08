@@ -1,0 +1,156 @@
+# [BUG-NET-13] Teleport / sim-hop: destination region comes up nearly empty + renderer RID leak
+
+- **Feature ID:** `BUG-NET-13`
+- **Track:** `net` / `render`
+- **Status:** `🚧 In Progress` — fixes applied, not yet re-verified in-world
+- **Owner:** `claude`
+- **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
+- **Branch:** `feature/BUG-NET-13-teleport-region-teardown`
+- **Depends on:** `BUG-NET-04` (the eager teleport cleanup this bug is a regression of)
+
+## Overview & Goal
+
+Live 2026-09-07 (Agni), found while re-testing `BUG-NET-04`:
+
+- After a teleport the **destination** region renders only a handful of scattered
+  objects — most of the scene is missing.
+- Sim-hopping leaks renderer resources; at exit:
+  `ERROR: 34 RID allocations of type 'N10RendererRD11MeshStorage4MeshE' were leaked`,
+  `ERROR: 34 RID allocations of type 'N17RendererSceneCull8InstanceE' were leaked`,
+  repeated `WARNING: Leaked instance dependency: Bug - did not call instance_notify_deleted
+  when freeing`.
+- Teleport-heavy log `godot2026-09-07T19.02.09.log` (v0.20.122-alpha): **9212**
+  `WARNING: Vector3 cannot be normalized, the elements must be finite` warnings, plus
+  `[MainThreadWork] item threw: Cannot access a disposed object. Object name:
+  'Godot.ImageTexture'`.
+
+## Evidence (from `godot2026-09-07T19.02.09.log`)
+
+| Line | Content |
+|---|---|
+| 4 | `[Boot] v0.20.122-alpha` — the morph/skin NaN guards (`99c89a3`, `6d9dd85`, v0.20.108) are present |
+| 10–15 | six `[AvatarBodyMeshService] Loaded …` lines — **no** `Vector3 cannot be normalized` after them (the `BUG-RENDER-04` fix holds for the load path) |
+| 28, 30 | `[MainThreadWork] item threw: Cannot access a disposed object … 'Godot.ImageTexture'` — already before the first teleport, from an earlier region change |
+| 35–37 | `[Teleport] … left Millenium (741070837455616) +220,-111 region-steps away -- removing eagerly` |
+| 38–39 | `[SelfBake] channels (null) -- no AvatarAppearance has ever been applied to this avatar` **immediately after the teleport** |
+| 43 → EOF | essentially every remaining line is `Vector3 cannot be normalized` / `at: normalize (./core/math/vector3.h:551)` — 9212 copies, never stops |
+
+The flood starts on the **first line after** `removing eagerly` and continues to the end
+of the log (process was force-killed — the log never reaches a clean exit, which is why
+the RID-leak lines aren't in this particular file; they print at exit to whichever log is
+current).
+
+`[SelfBake] channels (null)` recurring after *every* teleport is the tell: the self
+avatar's `AvatarComponent` (with its `BakedTextures`) is being destroyed and re-created
+by the teleport, not just re-keyed.
+
+## Root cause
+
+Two independent defects in the `BUG-NET-04` eager-teleport path, both in
+`GridSession.OnSimChanged`:
+
+### 1. The origin sim's circuit is left connected
+
+`OnSimChanged` raised a **synthetic** `RegionDisconnectedReceived` for the old region.
+That unloads the world entities/terrain (`WorldSimulation` → `World.RemoveRegion`) but
+does **not** touch LibreMetaverse's connection to that simulator. With
+`Settings.Agent.MultipleSims = true` nothing gates `ObjectUpdate` / `AvatarUpdate` /
+`TerseObjectUpdate` on `CurrentSim` (see memory `bug-net-03-render-stack-already-multiregion`),
+so the origin sim kept streaming updates carrying `e.Simulator.Handle == oldHandle`. Those
+handlers happily **re-created** entities in the region we had just removed:
+
+- endless create → (next `DisableSimulator` or nothing) → teardown churn →
+  `Mesh` / `Instance` RIDs allocated and then orphaned instead of freed through Godot
+  (the leak);
+- `await`-continuations for the old region's texture decodes landing after the render
+  side disposed the `ImageTexture` (`[MainThreadWork] item threw: Cannot access a disposed
+  object`);
+- half-populated transforms (a bare terse update with no full state behind it) feeding
+  the renderer — the most likely `Vector3 cannot be normalized` source.
+
+For a distant, non-adjacent teleport the origin sim's own `DisableSimulator` is not
+guaranteed to arrive at all (this is the entire reason `BUG-NET-04` exists), so the stale
+stream can run for the rest of the session — matching "the flood never stops".
+
+**Fix:** `OnSimChanged` now calls `NetworkManager.DisconnectSim(oldSim,
+sendCloseCircuit: true)`. That sends `CloseCircuit` to the origin sim, removes it from
+LibreMetaverse's `Simulators` list (so its packets stop being dispatched), and fires
+`SimDisconnected`, which `OnSimDisconnected` already turns into the same
+`RegionDisconnectedReceived` → `RemoveRegion` cleanup. This is what a real viewer does on
+a long teleport instead of waiting for a server packet. Wrapped in try/catch; on failure
+it falls back to the old synthetic invoke so teleport cleanup can never throw on the
+network thread.
+
+### 2. The eager `RemoveRegion` destroyed the self-agent entity
+
+`World.RemoveRegion` removed **every** entity keyed to the old region handle — including
+the local agent, which at `SimChanged` time is still keyed to the old region because the
+destination sim's first local `AvatarUpdate` has not been processed yet. The local agent
+is the player, not regional content; destroying it here blanks the self avatar
+(`[SelfBake] (null)`), drops its skeleton/appearance, and leaves a window where
+`AvatarController` / `AvatarRenderer` have no self visual to follow or rebuild from. The
+sim does not reliably re-send the self `AvatarAppearance` after a teleport
+(`BUG-AVATAR-04`), so the blank can persist.
+
+`WorldSimulation.ApplyAvatarUpdate` **already** removes the stale old-region local-agent
+entity when the new one arrives (its `e.IsLocalAgent` block) — so preserving it across
+`RemoveRegion` just bridges the gap until that update, and is cleaned up correctly
+afterwards.
+
+**Fix:** `World.RemoveRegion` skips any entity whose `AvatarComponent.IsLocalAgent` is
+true. (A genuine `DisableSimulator` for a neighbor region during walking never contains
+the local agent — you are in your current region, not the one being dropped — so this is
+a no-op for the `BUG-NET-03` path.)
+
+### 3. Defensive: non-finite avatar transform reaching the renderer
+
+`WorldSimulation.ExtrapolateMovement` slerps `Rotation` toward `TargetRotation` and eases
+`Position` toward `TargetPosition` every frame for every avatar. A zero quaternion
+`(0,0,0,0)` target (the `default(Quaternion)`, distinct from `Quaternion.Identity`) or a
+NaN position from a degenerate update makes `Quaternion.Slerp` / the ease produce a
+non-finite result that then reaches the renderer as a NaN basis — one candidate feeder of
+the `vector3.h:551` warning that survives fixes 1–2 if any path still produces it.
+
+**Fix:** `ExtrapolateMovement` sanitises each avatar's `Position` / `TargetPosition` /
+`Rotation` / `TargetRotation` before use — a non-finite value is reset to the last finite
+value (or `Quaternion.Identity` / `Vector3.Zero`) and logged once per entity as
+`[NaNGuard] entity=<id> region=<handle> localAgent=<bool> field=<name>`. This both stops
+the NaN reaching the renderer and **names the culprit** for the next in-world test, in the
+project's measure-don't-guess style.
+
+## Acceptance Criteria
+
+- [ ] After a distant teleport, the origin sim's circuit is closed (`[Teleport] … closing
+      the stale circuit`), no further `ObjectUpdate` churn from the old region.
+- [ ] The destination region streams in normally (no "nearly empty" scene).
+- [ ] No `Vector3 cannot be normalized` flood after a teleport (or, if one remains, a
+      `[NaNGuard]` line identifying it).
+- [ ] The self avatar is not blanked by a teleport — no `[SelfBake] channels (null)`
+      caused purely by the region unload.
+- [ ] No `Mesh` / `Instance` RID-leak or `Leaked instance dependency` lines at exit after
+      a sim-hopping session.
+- [ ] No `[MainThreadWork] item threw: Cannot access a disposed object` burst after a
+      teleport.
+- [x] Unit tests: `RemoveRegion` preserves the local agent while removing everything else
+      + terrain; the transform sanitiser repairs and logs a non-finite avatar transform.
+
+## Technical Specs & Affected Files
+
+| File | Change |
+|---|---|
+| `src/SLNG.Net/GridSession.cs` | `OnSimChanged` → `DisconnectSim(oldSim, sendCloseCircuit: true)` (try/catch, fall back to the synthetic invoke) |
+| `src/SLNG.Core/ECS/World.cs` | `RemoveRegion` skips `AvatarComponent.IsLocalAgent` entities; `using SLNG.Core.Components;` |
+| `src/SLNG.Core/WorldSimulation.cs` | `ExtrapolateMovement` non-finite transform sanitiser + `[NaNGuard]` dedupe log |
+| `tests/SLNG.Core.Tests/…` | `RemoveRegion` local-agent preservation; sanitiser repair/log |
+| `app/scripts/Boot.cs` | `AppVersion` bump |
+
+## Still open / next in-world test
+
+- **Whether fixes 1–2 alone stop the flood.** If a `[NaNGuard]` line appears, follow it to
+  the specific producer (candidate: a terse `AvatarUpdate` with a zero-quaternion rotation
+  from the stale circuit, which fix 1 should already prevent).
+- **The RID leak** is expected to disappear once the stale-circuit churn stops, but this is
+  reasoned, not measured — confirm from the exit log of a sim-hopping session.
+- **Interest-list re-prime.** If the destination still comes up sparse *without* the flood
+  and *without* stale-circuit churn, the next suspect is the destination sim's full object
+  sync / interest list not being re-requested after `CurrentSim` swaps — a separate change.

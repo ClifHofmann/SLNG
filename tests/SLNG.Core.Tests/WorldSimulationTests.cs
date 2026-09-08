@@ -719,4 +719,59 @@ public class WorldSimulationTests
         simulation.ExtrapolateMovement(0.1f);
         Assert.Equal(localYaw, transform.Rotation);
     }
+
+    // BUG-NET-13: the stale-circuit churn after a teleport could leave an avatar entity with a
+    // non-finite Position or a zero (default(Quaternion), not Identity) Rotation -- both feed the
+    // renderer a NaN basis and produce the engine's per-frame "Vector3 cannot be normalized"
+    // warning (9212 copies in one teleport-heavy session). ExtrapolateMovement now repairs it.
+    [Theory]
+    [InlineData(false)] // remote avatar -- Rotation IS slerped here
+    [InlineData(true)]  // local agent  -- Rotation is not, but Position easing still runs
+    public void ExtrapolateMovement_RepairsNonFiniteAvatarTransform(bool isLocalAgent)
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(
+            123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "Test", "Resident", isLocalAgent));
+        simulation.Pump();
+
+        var transform = world.GetEntity(123ul, 42)!.GetComponent<TransformComponent>()!;
+        transform.Position = new Vector3(float.NaN, 0, 0);
+        transform.TargetPosition = new Vector3(1, 2, 3);
+        transform.Rotation = new Quaternion(0, 0, 0, 0);       // zero quaternion normalizes to NaN
+        transform.TargetRotation = new Quaternion(0, 0, 0, 0);
+
+        simulation.ExtrapolateMovement(0.016f);
+
+        Assert.True(float.IsFinite(transform.Position.X) && float.IsFinite(transform.Position.Y)
+            && float.IsFinite(transform.Position.Z), "Position must be finite after ExtrapolateMovement");
+        Assert.True(float.IsFinite(transform.Rotation.X) && float.IsFinite(transform.Rotation.Y)
+            && float.IsFinite(transform.Rotation.Z) && float.IsFinite(transform.Rotation.W),
+            "Rotation must be finite after ExtrapolateMovement");
+        Assert.NotEqual(new Quaternion(0, 0, 0, 0), transform.Rotation);
+    }
+
+    [Fact]
+    public void ExtrapolateMovement_LeavesAFiniteAvatarTransformUntouched()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        var rot = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, 0.7f);
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(
+            123ul, 42, agentId, new Vector3(5, 6, 7), rot, "Test", "Resident", false));
+        simulation.Pump();
+
+        var transform = world.GetEntity(123ul, 42)!.GetComponent<TransformComponent>()!;
+
+        simulation.ExtrapolateMovement(0.016f);
+
+        Assert.Equal(new Vector3(5, 6, 7), transform.Position);
+        Assert.True(Quaternion.Dot(transform.Rotation, rot) > 0.999f);
+    }
 }

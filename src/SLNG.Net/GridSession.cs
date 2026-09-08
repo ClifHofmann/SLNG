@@ -822,9 +822,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     ///
     /// Fix: if the PREVIOUS sim is now more than one region-grid step (256 m) away from the NEW
     /// current sim -- i.e. it cannot possibly be a legitimate BUG-NET-03 neighbor of where we are
-    /// now -- remove it from the world immediately instead of waiting for the server. A same-grid
-    /// walking crossing (dx/dy always ≤ 1) is left entirely alone: that is BUG-NET-03's existing,
-    /// working path, and this must not race or duplicate it.</summary>
+    /// now -- close its circuit immediately instead of waiting for the server. A same-grid walking
+    /// crossing (dx/dy always ≤ 1) is left entirely alone: that is BUG-NET-03's existing, working
+    /// path, and this must not race or duplicate it.
+    ///
+    /// BUG-NET-13: the eager path now calls <c>DisconnectSim</c> rather than only raising a
+    /// synthetic <c>RegionDisconnectedReceived</c> -- leaving the origin circuit connected let it
+    /// keep streaming updates that re-created entities in the just-removed region (RID leak,
+    /// disposed-texture continuations, NaN-transform flood). See the inline comment below.</summary>
     private void OnSimChanged(object? sender, LibreMetaverse.SimChangedEventArgs e)
     {
         var oldSim = e.PreviousSimulator;
@@ -834,8 +839,33 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var (dx, dy) = RegionGridOffset(oldSim.Handle, newSim.Handle);
         if (Math.Abs(dx) <= 1 && Math.Abs(dy) <= 1) return; // still a plausible neighbor -- leave to DisableSimulator
 
-        Console.WriteLine($"[Teleport] left {oldSim.Name} ({oldSim.Handle}) {dx:+0;-0;0},{dy:+0;-0;0} region-steps away -- removing eagerly, not waiting for DisableSimulator");
-        RegionDisconnectedReceived?.Invoke(this, new RegionDisconnectedEvent(oldSim.Handle));
+        // BUG-NET-13: the first cut of this fix only raised a synthetic RegionDisconnectedReceived.
+        // That unloaded the world region but left LibreMetaverse's connection to the origin sim
+        // OPEN -- and with Settings.Agent.MultipleSims = true nothing gates ObjectUpdate /
+        // AvatarUpdate / TerseObjectUpdate on CurrentSim, so the origin sim kept streaming updates
+        // that re-created entities in the region we had just removed. That create/teardown churn
+        // leaked Mesh/Instance RIDs, fired asset-decode continuations against already-disposed
+        // ImageTextures, and fed half-populated transforms into the renderer (the "Vector3 cannot
+        // be normalized" flood). For a distant, non-adjacent teleport the origin sim's own
+        // DisableSimulator is not guaranteed to arrive at all (the whole reason this path exists),
+        // so the stale stream can run for the rest of the session.
+        //
+        // A real viewer closes that circuit itself on a long teleport instead of waiting for a
+        // server packet. Do the same: DisconnectSim sends CloseCircuit, drops the sim from
+        // LibreMetaverse's Simulators list (so its packets stop being dispatched), and fires
+        // SimDisconnected -- which OnSimDisconnected already turns into the same
+        // RegionDisconnectedReceived -> World.RemoveRegion cleanup. Wrapped so teleport cleanup can
+        // never throw on the network thread; the synthetic invoke stays as the fallback.
+        Console.WriteLine($"[Teleport] left {oldSim.Name} ({oldSim.Handle}) {dx:+0;-0;0},{dy:+0;-0;0} region-steps away -- closing the stale circuit, not waiting for DisableSimulator");
+        try
+        {
+            _client.Network.DisconnectSim(oldSim, sendCloseCircuit: true);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Teleport] DisconnectSim({oldSim.Name}) failed: {ex.Message} -- falling back to world-only unload");
+            RegionDisconnectedReceived?.Invoke(this, new RegionDisconnectedEvent(oldSim.Handle));
+        }
     }
 
     /// <summary>Guards <see cref="OnEventQueueRunning"/>'s environment capture against firing more

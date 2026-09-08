@@ -156,6 +156,10 @@ public sealed class WorldSimulation : IDisposable
     private const float AvatarCacheMaxAgeSeconds = 2f;
     private float _avatarCacheAge;
 
+    /// <summary>BUG-NET-13: entities already reported by <see cref="SanitizeAvatarTransform"/>, so a
+    /// per-frame NaN doesn't flood the log. Keyed by entity id + field name.</summary>
+    private readonly HashSet<string> _nanGuardLogged = new();
+
     /// <summary>
     /// Dead-reckons avatar positions between network updates. Runs every frame.
     ///
@@ -180,6 +184,13 @@ public sealed class WorldSimulation : IDisposable
         {
             var transform = entity.GetComponent<TransformComponent>();
             if (transform == null) continue;
+
+            // BUG-NET-13: a non-finite Position/Rotation here reaches the renderer as a NaN basis and
+            // produces the engine's "Vector3 cannot be normalized" warning every single frame (9212
+            // copies in one teleport-heavy session). The upstream cause is meant to be fixed
+            // (stale-circuit churn feeding half-populated transforms), but repair + name it here so a
+            // survivor is caught, not silently flooding.
+            SanitizeAvatarTransform(entity, transform);
 
             transform.TimeSinceUpdate += deltaSeconds;
 
@@ -240,6 +251,51 @@ public sealed class WorldSimulation : IDisposable
             }
 
             _world.NotifyComponentUpdated(entity, transform);
+        }
+    }
+
+    private static bool IsFinite(Vector3 v) =>
+        float.IsFinite(v.X) && float.IsFinite(v.Y) && float.IsFinite(v.Z);
+
+    private static bool IsFinite(Quaternion q) =>
+        float.IsFinite(q.X) && float.IsFinite(q.Y) && float.IsFinite(q.Z) && float.IsFinite(q.W)
+        && (q.X != 0f || q.Y != 0f || q.Z != 0f || q.W != 0f); // a zero quaternion normalizes to NaN
+
+    /// <summary>BUG-NET-13: repairs a non-finite avatar transform before <see cref="ExtrapolateMovement"/>
+    /// feeds it to the renderer (a NaN basis is what triggers the engine's per-frame
+    /// "Vector3 cannot be normalized" warning). A bad Position/TargetPosition falls back to the other
+    /// of the pair, then to <see cref="Vector3.Zero"/>; a bad Rotation/TargetRotation falls back to the
+    /// other, then to <see cref="Quaternion.Identity"/>. Each (entity, field) pair is logged once.</summary>
+    internal void SanitizeAvatarTransform(Entity entity, TransformComponent t)
+    {
+        bool localAgent = entity.GetComponent<AvatarComponent>()?.IsLocalAgent == true;
+
+        void Report(string field)
+        {
+            if (_nanGuardLogged.Add($"{entity.Id}:{field}"))
+                System.Console.WriteLine(
+                    $"[NaNGuard] entity={entity.Id} region={entity.RegionHandle} localAgent={localAgent} field={field} -- non-finite avatar transform repaired");
+        }
+
+        if (!IsFinite(t.Position))
+        {
+            t.Position = IsFinite(t.TargetPosition) ? t.TargetPosition : Vector3.Zero;
+            Report(nameof(t.Position));
+        }
+        if (!IsFinite(t.TargetPosition))
+        {
+            t.TargetPosition = IsFinite(t.Position) ? t.Position : Vector3.Zero;
+            Report(nameof(t.TargetPosition));
+        }
+        if (!IsFinite(t.Rotation))
+        {
+            t.Rotation = IsFinite(t.TargetRotation) ? t.TargetRotation : Quaternion.Identity;
+            Report(nameof(t.Rotation));
+        }
+        if (!IsFinite(t.TargetRotation))
+        {
+            t.TargetRotation = IsFinite(t.Rotation) ? t.Rotation : Quaternion.Identity;
+            Report(nameof(t.TargetRotation));
         }
     }
 
