@@ -77,6 +77,25 @@ public class SelfLocomotionTests
     public void Crouch_key_while_moving_is_CrouchWalk()
         => Assert.Equal(SelfLocomotion.CrouchWalk, SelfLocomotion.Predict(State(crouch: true, fwd: true)));
 
+    [Theory]
+    [InlineData("Walk", true)]
+    [InlineData("Run", true)]
+    [InlineData("TurnLeft", true)]
+    [InlineData("TurnRight", true)]
+    [InlineData("CrouchWalk", true)]
+    [InlineData("Fly", true)]
+    [InlineData("HoverUp", true)]
+    [InlineData("HoverDown", true)]
+    [InlineData("Stand", false)]
+    [InlineData("Hover", false)]
+    [InlineData("Crouch", false)]
+    [InlineData("FallDown", false)]
+    public void IsMoving_matches_the_moving_gaits(string name, bool expected)
+    {
+        var id = (System.Guid)typeof(SelfLocomotion).GetField(name)!.GetValue(null)!;
+        Assert.Equal(expected, SelfLocomotion.IsMoving(id));
+    }
+
     [Fact]
     public void Every_predicted_id_is_in_the_filter_set()
     {
