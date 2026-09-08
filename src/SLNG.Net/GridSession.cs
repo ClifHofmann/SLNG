@@ -784,6 +784,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (sim == _client.Network.CurrentSim)
         {
             _appearanceReadinessLogged = false; // FEAT-AVATAR-01: re-check the wearable-edit path for the new region
+            // BUG-NET-13: pair with WorldSimulation's [RegionData] lines so a live session can see
+            // whether the sim re-sends terrain + objects after a teleport back into a region we
+            // previously tore down. "[RegionEnter] X" with no following "[RegionData] ... for X" is
+            // the sim not streaming (interest list / camera), not a render bug.
+            Console.WriteLine($"[RegionEnter] {sim.Name} ({sim.Handle}) is now the current region");
             RegionConnected?.Invoke(this, sim.Handle);
         }
         else

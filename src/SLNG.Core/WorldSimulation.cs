@@ -301,6 +301,9 @@ public sealed class WorldSimulation : IDisposable
 
     private void ApplyObjectUpdate(ObjectUpdateEvent e)
     {
+        if (_regionDataLogged.Add(e.RegionHandle))
+            System.Console.WriteLine($"[RegionData] first object update for region {e.RegionHandle}");
+
         var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
 
         var transform = entity.GetComponent<TransformComponent>() ?? new TransformComponent();
@@ -762,11 +765,19 @@ public sealed class WorldSimulation : IDisposable
         }
     }
 
+    /// <summary>BUG-NET-13: region handles for which we've already logged the first terrain patch /
+    /// object update, so the "did the sim re-send after a teleport back?" diagnostic prints once
+    /// per region, not per packet.</summary>
+    private readonly HashSet<ulong> _regionDataLogged = new();
+
     private void ApplyTerrainPatch(TerrainPatchEvent e)
     {
+        bool firstPatch = !_world.Terrains.ContainsKey(e.RegionHandle);
         var terrain = _world.GetOrCreateTerrain(e.RegionHandle, e.RegionSizeX, e.RegionSizeY);
         terrain.ApplyPatch(e.X, e.Y, e.HeightMap);
         _world.NotifyTerrainUpdated(e.RegionHandle);
+        if (firstPatch)
+            System.Console.WriteLine($"[RegionData] first terrain patch for region {e.RegionHandle}");
     }
 
     private void ApplyTerrainSettings(TerrainSettingsEvent e)

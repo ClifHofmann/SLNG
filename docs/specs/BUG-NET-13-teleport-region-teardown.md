@@ -144,13 +144,53 @@ project's measure-don't-guess style.
 | `tests/SLNG.Core.Tests/…` | `RemoveRegion` local-agent preservation; sanitiser repair/log |
 | `app/scripts/Boot.cs` | `AppVersion` bump |
 
+## Round 2 (v0.21.1 → v0.21.2) — the flood is gone, the region still comes up sparse
+
+`godot.log` at v0.21.1-alpha, two teleports (Millenium → Secret Love → Millenium), both via
+the new path (`[Teleport] left … closing the stale circuit` + `[Neighbor] disconnected …`):
+
+- **No `Vector3 cannot be normalized`, no `[NaNGuard]`, no RID-leak, no
+  `Cannot access a disposed object` — anywhere.** Fixes 1–3 hold.
+- But the **teleport back into a region we previously tore down comes up nearly empty**
+  (screenshot: water + a handful of distant objects, no terrain). Reported as
+  *"beim Rücksprung … fehlt viel z.B. der sim ground"*.
+
+### Root cause of the sparse re-entry
+
+`AvatarController._Process` sends an `AgentUpdate` (`SetMovement`) at 10 Hz with a camera
+centre (`camSimPos`) and interest radius (`camFar`) computed from
+`localAgent.RegionHandle`. Right after a teleport that handle is still the region we
+**left** — `WorldSimulation.ApplyAvatarUpdate` only re-keys the local-agent entity when the
+new sim's first local `AvatarUpdate` is processed. Meanwhile `RenderConfig`'s floating
+origin has already recentred on the **new** region (`ApplyRegionOrigin` on `RegionConnected`),
+so `RenderConfig.FromGodot(oldHandle, cameraGodotPos)` returns an SL position tens of
+thousands of metres outside the new region. The sim's interest manager centres on that
+point → it streams nothing back until a good `AgentUpdate` arrives.
+
+Before fix 2 this was masked: `RemoveRegion` deleted the local agent, so
+`AvatarController` had `localAgent == null` and skipped `SetMovement` entirely during the
+gap. Fix 2 keeps the agent (correct — it must not be blanked), which exposed the stale-frame
+send.
+
+**Fix (v0.21.2):** `AvatarController._Process` skips the `SetMovement` send while
+`localAgent.RegionHandle != _session.CurrentRegionHandle` (and the current region is
+known). The sim sends us our own `AvatarUpdate` regardless of camera, so the gap self-clears
+within a packet or two, after which the send resumes with correct coordinates.
+
+**Diagnostics added** so the next test is conclusive rather than reasoned:
+`[RegionEnter] <name> (<handle>) is now the current region` (GridSession) paired with
+`[RegionData] first terrain patch for region <handle>` / `[RegionData] first object update
+for region <handle>` (WorldSimulation). `[RegionEnter] X` with no following `[RegionData] …
+for X` = the sim is not streaming (interest list / camera), not a render bug.
+
 ## Still open / next in-world test
 
-- **Whether fixes 1–2 alone stop the flood.** If a `[NaNGuard]` line appears, follow it to
-  the specific producer (candidate: a terse `AvatarUpdate` with a zero-quaternion rotation
-  from the stale circuit, which fix 1 should already prevent).
-- **The RID leak** is expected to disappear once the stale-circuit churn stops, but this is
-  reasoned, not measured — confirm from the exit log of a sim-hopping session.
-- **Interest-list re-prime.** If the destination still comes up sparse *without* the flood
-  and *without* stale-circuit churn, the next suspect is the destination sim's full object
-  sync / interest list not being re-requested after `CurrentSim` swaps — a separate change.
+- **Confirm v0.21.2 fixes the sparse re-entry.** Teleport A → B → A, wait, check the scene
+  on the return. In the log: after the second `[RegionEnter]` for A there should be
+  `[RegionData] first terrain patch for region A` and `… first object update for region A`
+  within a second or two. If those lines appear but the scene is still sparse, it is a
+  render-side rebuild bug (`TerrainRenderer` / `ObjectRenderer` not rebuilding a re-added
+  region). If they do **not** appear, the sim still isn't streaming — next suspect is an
+  explicit interest-list / full-object-sync re-request on region enter.
+- **RID leak** — confirm gone from the exit log of a longer sim-hopping session (this run's
+  log did not reach a clean exit).

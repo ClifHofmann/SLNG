@@ -1064,6 +1064,22 @@ public partial class AvatarController : Camera3D
         {
             _timeSinceLastUpdate = 0;
 
+            // BUG-NET-13: right after a teleport the local-agent entity is still keyed to the
+            // region we LEFT (WorldSimulation.ApplyAvatarUpdate re-keys it only when the new sim's
+            // first local AvatarUpdate is processed). camSimPos/camFar above were computed with
+            // localAgent.RegionHandle -- the OLD region -- while RenderConfig's floating origin has
+            // already recentred on the NEW one, so FromGodot() yields a camera position tens of
+            // thousands of metres outside the new region. Sending that as the AgentUpdate camera
+            // centre points the sim's interest manager into empty space and it streams nothing back
+            // -- the "destination comes up nearly empty" symptom. Skip the send until the agent is
+            // re-keyed to the current region; the sim still sends us our own AvatarUpdate regardless
+            // of camera, so the gap self-clears within a packet or two.
+            ulong currentRegion = _session.CurrentRegionHandle;
+            if (currentRegion != 0 && localAgent != null && localAgent.RegionHandle != currentRegion)
+            {
+                return;
+            }
+
             // Same body-facing quaternion applied per-frame to transform.Rotation above -- here it
             // only goes to the sim in the AgentUpdate. The rendered rotation is NOT set here anymore
             // (that write moved to the per-frame follow block so turning renders smoothly instead of
