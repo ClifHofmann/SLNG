@@ -299,6 +299,26 @@ public sealed class WorldSimulation : IDisposable
         }
     }
 
+    private readonly HashSet<(ulong, uint)> _objNanLogged = new();
+
+    /// <summary>BUG-NET-13: repair a non-finite prim transform before it reaches the renderer, and
+    /// name it once (`[NaNGuard] object region=<h> localId=<id> field=<name>`). Complements
+    /// <see cref="SanitizeAvatarTransform"/>, which only covers avatars.</summary>
+    private void SanitizeObjectTransform(ulong region, uint localId, TransformComponent t)
+    {
+        void Report(string field)
+        {
+            if (_objNanLogged.Add((region, localId)))
+                System.Console.WriteLine(
+                    $"[NaNGuard] object region={region} localId={localId} field={field} -- non-finite prim transform repaired");
+        }
+
+        if (!IsFinite(t.Position)) { t.Position = IsFinite(t.LocalPosition) ? t.LocalPosition : Vector3.Zero; Report(nameof(t.Position)); }
+        if (!IsFinite(t.LocalPosition)) { t.LocalPosition = IsFinite(t.Position) ? t.Position : Vector3.Zero; Report(nameof(t.LocalPosition)); }
+        if (!IsFinite(t.Rotation)) { t.Rotation = IsFinite(t.LocalRotation) ? t.LocalRotation : Quaternion.Identity; Report(nameof(t.Rotation)); }
+        if (!IsFinite(t.LocalRotation)) { t.LocalRotation = IsFinite(t.Rotation) ? t.Rotation : Quaternion.Identity; Report(nameof(t.LocalRotation)); }
+    }
+
     private void ApplyObjectUpdate(ObjectUpdateEvent e)
     {
         if (_regionDataLogged.Add(e.RegionHandle))
@@ -312,6 +332,14 @@ public sealed class WorldSimulation : IDisposable
         transform.ParentLocalId = e.ParentLocalId;
         // Linked child prims send their transform relative to the root; compose to world space.
         ResolveWorldTransform(transform, e.RegionHandle);
+
+        // BUG-NET-13: a non-finite object transform reaches the renderer and the engine re-normalizes
+        // it every frame -> the "Vector3 cannot be normalized" flood that starts right after
+        // "[RegionData] first object update" for a teleport destination. SanitizeAvatarTransform only
+        // covers avatars; this catches a bad prim. Snap the offending field to Identity/Zero and name
+        // the entity + region once.
+        SanitizeObjectTransform(e.RegionHandle, e.LocalId, transform);
+
         entity.SetComponent(transform);
         _world.NotifyComponentUpdated(entity, transform);
 

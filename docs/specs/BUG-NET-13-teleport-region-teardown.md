@@ -256,12 +256,35 @@ bad `Skeleton3D` bone.
   `[NaNGuard] bone-rest non-finite for '<bone>' … slPos=… slScale=… rot=…`. Names the
   source if round 4 doesn't fully fix it.
 
+### Round 5 (v0.21.4 → v0.21.5) — it's a prim, not the avatar
+
+v0.21.4 in-world: `[NaNGuard]` still 0 — the `bone-rest` guard did **not** fire, and
+`[SelfBake] channels (null)` is **gone** (round 4's carry-over works, the avatar is no
+longer rebuilt from empty params). But the flood is unchanged, and it now starts on the
+exact frame after **`[RegionData] first object update for region <B>`** — i.e. when the
+first prims of the teleport destination are processed. So the non-finite `Vector3` is in an
+**object**, not the avatar. `[NaNGuard]` (`SanitizeAvatarTransform`) is avatars-only, so it
+can't see it.
+
+Note the destination is always the same region (Secret Love) in every repro, incl. the
+original v0.20.122 log — so it may be a **specific prim in that region**, not teleport
+mechanics. Worth isolating: does a **direct login to Secret Love** (no teleport) flood too?
+
+- `WorldSimulation.SanitizeObjectTransform` (new): repairs a non-finite prim
+  Position/Rotation before it reaches the renderer, logs
+  `[NaNGuard] object region=<h> localId=<id> field=<name>` once.
+- `ObjectParticles`: the omega axis is now only accepted if the angular velocity is finite
+  and normalisable — a denormalised/NaN `PSYS_SRC_OMEGA` gave a non-unit axis and the
+  per-frame `new Quaternion(_omegaAxis, …)` in `_Process` logged the warning every frame.
+
+If v0.21.5's `[NaNGuard] object …` fires, its region+localId name the prim. If neither that
+nor the omega guard fires, the NaN is in the prim's **mesh geometry** (sculpt / prim-mesh
+build / `GenerateTangents` on a degenerate prim) and the next step is a finite check in
+`ObjectRenderer.BuildArrayMesh` / the sculpt path.
+
 ## Still open / next in-world test
 
-- **Confirm v0.21.4 stops the flood** and that the return region is visible again. If
-  `[NaNGuard] bone-rest …` appears, its `slPos`/`slScale`/`rot` values point at the bad
-  shape input.
-- **RID leak** — still needs confirming from a clean exit log of a sim-hopping session.
-- **`[RegionData] first terrain patch`** never logs (only "first object update") — cosmetic:
-  `OnSimConnected` raises `TerrainSettings` first and that creates the terrain entry, so the
-  first *patch* isn't "first" any more. Not load-bearing.
+- **v0.21.5:** teleport to Secret Love, look for `[NaNGuard] object …` (or the omega guard).
+  Separately: **log in directly to Secret Love** — if it floods without a teleport, this is
+  a bad-prim render-robustness bug, only surfaced via BUG-NET-13's repro, not a teardown bug.
+- **RID leak** — still needs a clean-exit log of a sim-hopping session.

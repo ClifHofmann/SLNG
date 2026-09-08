@@ -240,7 +240,13 @@ public partial class ObjectParticles : CpuParticles3D
 
         var omega = new Vector3(data.AngularVelocity.X, data.AngularVelocity.Z, -data.AngularVelocity.Y);
         _omegaSpeed = omega.Length();
-        _omegaAxis = _omegaSpeed > 0f ? omega / _omegaSpeed : Vector3.Up;
+        // BUG-NET-13: a non-finite / denormalised omega gives a non-unit or NaN axis, and the
+        // per-frame `new Quaternion(_omegaAxis, ...)` in _Process then logs "Vector3 cannot be
+        // normalized" every frame. Only accept a finite, positive, normalisable speed.
+        _omegaAxis = (float.IsFinite(_omegaSpeed) && _omegaSpeed > 1e-6f && omega.IsFinite())
+            ? omega / _omegaSpeed
+            : Vector3.Up;
+        if (!float.IsFinite(_omegaSpeed) || _omegaSpeed <= 1e-6f) _omegaSpeed = 0f;
 
         ResolveTexture(data.TextureId, gpuCache, assetService);
 
