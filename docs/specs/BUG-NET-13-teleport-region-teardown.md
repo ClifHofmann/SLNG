@@ -2,7 +2,9 @@
 
 - **Feature ID:** `BUG-NET-13`
 - **Track:** `net` / `render`
-- **Status:** `🚧 In Progress` — fixes applied, not yet re-verified in-world
+- **Status:** `✅ Done` — confirmed in-world 2026-09-08 (v0.21.5): both regions rez on a
+  teleport A→B→A, no `Vector3 cannot be normalized` flood, no RID leak, no disposed-texture
+  spam. Three distinct bugs, one of them not actually teleport-related (see Round 5).
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/BUG-NET-13-teleport-region-teardown`
@@ -282,9 +284,49 @@ nor the omega guard fires, the NaN is in the prim's **mesh geometry** (sculpt / 
 build / `GenerateTangents` on a degenerate prim) and the next step is a finite check in
 `ObjectRenderer.BuildArrayMesh` / the sculpt path.
 
-## Still open / next in-world test
+## Resolution — three separate bugs
 
-- **v0.21.5:** teleport to Secret Love, look for `[NaNGuard] object …` (or the omega guard).
-  Separately: **log in directly to Secret Love** — if it floods without a teleport, this is
-  a bad-prim render-robustness bug, only surfaced via BUG-NET-13's repro, not a teardown bug.
-- **RID leak** — still needs a clean-exit log of a sim-hopping session.
+**1. Stale circuit not closed (teleport, net).** `OnSimChanged` raised only a synthetic
+`RegionDisconnectedReceived`, leaving the origin sim's circuit connected; with
+`MultipleSims` nothing gates `ObjectUpdate`/`AvatarUpdate` on `CurrentSim`, so it kept
+re-creating entities in the just-removed region → RID leak + disposed-`ImageTexture`
+continuations. **Fix (v0.21.1):** `OnSimChanged` calls
+`NetworkManager.DisconnectSim(oldSim, sendCloseCircuit: true)`. Confirmed gone in the
+v0.21.5 log (`[Neighbor] disconnected` on each teleport, no leak lines).
+
+**2. Destination region came up nearly empty (teleport, render).** `AvatarController` sent
+the `AgentUpdate` camera centre computed from `localAgent.RegionHandle` during the ~1-2
+packet gap before the self entity is re-keyed to the new region, while the floating origin
+had already recentred — the camera centre landed tens of thousands of metres outside the
+new region and the sim's interest manager streamed nothing. **Fix (v0.21.2):** skip the
+`SetMovement` send while `localAgent.RegionHandle != _session.CurrentRegionHandle`.
+Confirmed: the return region rezzes.
+Also: `World.RemoveRegion` no longer deletes the local-agent entity, and
+`WorldSimulation.ApplyAvatarUpdate` carries the self `AvatarComponent` across the re-key
+(no more blank avatar / `[SelfBake] (null)` on a teleport).
+
+**3. The `Vector3 cannot be normalized` flood was NOT teleport-related.** It was a prim in
+one of the two test regions carrying a non-finite / denormalised `PSYS_SRC_OMEGA` (particle
+angular velocity). `ObjectParticles` derived `_omegaAxis = omega / omega.Length()` from it —
+a non-unit / NaN axis — and its `_Process` runs `new Quaternion(_omegaAxis, _omegaSpeed *
+delta)` **every frame**, and Godot's axis-angle `Quaternion` constructor normalises the
+axis → `Vector3 cannot be normalized`, ~1×/frame forever. It only showed up in the teleport
+repro because the login region had no such emitter and the teleport destination did. It is
+invisible to `SanitizeAvatarTransform` (avatars) and the `bone-rest` guard (skeleton).
+**Fix (v0.21.5):** `ObjectParticles` only accepts the omega axis if the angular velocity is
+finite and normalisable, else `_omegaSpeed = 0` (spin disabled). Confirmed: v0.21.5 log has
+zero warnings across an A→B→A teleport session.
+
+### Diagnostics left in place
+
+`[RegionEnter]` (GridSession), `[RegionData] first object update` (WorldSimulation),
+`[NaNGuard] object …` (`SanitizeObjectTransform`), `[NaNGuard] bone-rest …`
+(`AvatarRenderer.ApplyShape`), `[NaNGuard] entity …` (`SanitizeAvatarTransform`) — none
+fired in the clean v0.21.5 run; kept as cheap once-per-offender nets.
+
+## Rounds 3 (reverted) and the wrong guesses
+
+Round 3 (v0.21.3) guessed the camera orbit state had latched a NaN — wrong (`[NaNGuard]`
+never fired) and its `Position` write-guard regressed bug 2; fully reverted. Round 4's
+bone-rest guess was also wrong but its `AvatarComponent` carry-over is a real, kept fix for
+the blank-avatar-on-teleport symptom.
