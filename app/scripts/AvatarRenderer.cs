@@ -1445,7 +1445,7 @@ public partial class AvatarRenderer : Node3D
                 // Apply its joint-position overrides to the skeleton BEFORE binding, like the
                 // viewer does, so invBind·jointWorld cancels at the intended pose.
                 ApplyJointPositionOverrides(avatarVisual, skeleton, meshData.Skin, meshId);
-                var mi = BuildRiggedMeshInstance(meshData, skeleton, meshId, avatarVisual, out var faceIndices);
+                var mi = BuildRiggedMeshInstance(meshData, skeleton, meshId, avatarVisual, faces, defaultFace, out var faceIndices);
                 if (mi == null) return;
                 mi.Name = "RiggedMesh";
                 
@@ -1471,11 +1471,39 @@ public partial class AvatarRenderer : Node3D
 
             var arrayMesh = new ArrayMesh();
             var faceIndices = new List<int>();
+
+            // BUG-RENDER-12: same authored-order surface merging as the rigged path -- see
+            // BuildRiggedMeshInstance's submesh loop for the viewer citations and the reasoning.
+            // A non-rigged worn attachment (sculpt/prim hair, a mesh hat) reaches Godot's
+            // transparent queue exactly the same way, so it has the same reorder problem.
+            SurfaceTool? st = null;
+            var runFace = default(FaceTexture);
+            int runVertexBase = 0;
+
+            void FlushRun()
+            {
+                if (st == null) return;
+                st.GenerateTangents();
+                st.Commit(arrayMesh);
+                st = null;
+            }
+
             foreach (var sub in meshData.Submeshes)
             {
                 if (sub.Indices.Length == 0) continue;
-                var st = new SurfaceTool();
-                st.Begin(Mesh.PrimitiveType.Triangles);
+
+                var subFace = ResolveFaceTexture(faces, defaultFace, sub.FaceIndex);
+                if (st == null || !subFace.Equals(runFace))
+                {
+                    FlushRun();
+                    st = new SurfaceTool();
+                    st.Begin(Mesh.PrimitiveType.Triangles);
+                    runFace = subFace;
+                    runVertexBase = 0;
+                    faceIndices.Add(sub.FaceIndex);
+                }
+
+                int indexBase = runVertexBase;
                 // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front — left
                 // uncorrected, every SL-sourced triangle rasterizes as a backface (masked by
                 // CullMode.Disabled, needed just to make anything render), and Godot's
@@ -1496,14 +1524,14 @@ public partial class AvatarRenderer : Node3D
 
                 for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
                 {
-                    st.AddIndex(sub.Indices[t]);
-                    st.AddIndex(sub.Indices[t + 2]);
-                    st.AddIndex(sub.Indices[t + 1]);
+                    st.AddIndex(indexBase + sub.Indices[t]);
+                    st.AddIndex(indexBase + sub.Indices[t + 2]);
+                    st.AddIndex(indexBase + sub.Indices[t + 1]);
                 }
-                st.GenerateTangents();
-                st.Commit(arrayMesh);
-                faceIndices.Add(sub.FaceIndex);
+
+                runVertexBase += sub.Positions.Length;
             }
+            FlushRun();
 
             var mi = new MeshInstance3D { Name = "AttachMesh", Mesh = arrayMesh };
             mi.Position = new Godot.Vector3(slPos.X, slPos.Z, -slPos.Y);
@@ -1513,6 +1541,17 @@ public partial class AvatarRenderer : Node3D
             _ = ApplyFaceMaterialsAsync(mi, faceIndices.ToArray(), faces, defaultFace, avatarVisual, meshId);
         }, label: "avatar.attach");
     }
+
+    /// <summary>BUG-RENDER-12: resolves a submesh's SL face record exactly the way
+    /// <see cref="ApplyFaceMaterialsAsync"/> does, so "will these two submeshes get the same
+    /// material?" can be answered at MESH-BUILD time, before any material exists.
+    ///
+    /// <see cref="FaceTexture"/> is a <c>readonly record struct</c>, so equality here is full
+    /// value equality over every field the material is built from -- texture id, both material
+    /// ids, tint, repeats, offsets, rotation, texgen and fullbright. Two faces that compare equal
+    /// cannot produce different materials, which is what makes merging them invisible.</summary>
+    private static FaceTexture ResolveFaceTexture(FaceTexture[]? faces, FaceTexture defaultFace, int faceIndex) =>
+        (faces != null && faceIndex >= 0 && faceIndex < faces.Length) ? faces[faceIndex] : defaultFace;
 
     /// <summary>Applies one material per mesh surface, picking each surface's SL face texture
     /// (texture id + colour tint) from <paramref name="faces"/> by its face index. Worn items
@@ -2737,7 +2776,8 @@ public partial class AvatarRenderer : Node3D
         return true;
     }
 
-    private MeshInstance3D? BuildRiggedMeshInstance(MeshData meshData, Skeleton3D skeleton, Guid meshId, AvatarVisual visual, out int[] faceIndices)
+    private MeshInstance3D? BuildRiggedMeshInstance(MeshData meshData, Skeleton3D skeleton, Guid meshId,
+        AvatarVisual visual, FaceTexture[]? faces, FaceTexture defaultFace, out int[] faceIndices)
     {
         faceIndices = System.Array.Empty<int>();
         var skinData = meshData.Skin!;
@@ -2867,11 +2907,63 @@ public partial class AvatarRenderer : Node3D
         // alone, which is meaningless pre-skinning (see the no-rejection comment below).
         var slotWeightSum = new float[skin.GetBindCount()];
 
+        // BUG-RENDER-12: consecutive submeshes that resolve to the SAME face record are committed
+        // as ONE surface, in their authored order.
+        //
+        // This is the half of the reference viewer's rigged-alpha design that makes its depth
+        // write safe. llvovolume.cpp:6332-6335, with Linden's own comment:
+        //     if (rigged) {
+        //         if (!distance_sort) // <--- alpha "sort" rigged faces by maintaining original draw order
+        //             std::sort(faces, faces + face_count, CompareBatchBreakerRigged());
+        //     }
+        // alpha_sort is always true (:6146), so for RIGGED alpha that branch sorts nothing at all:
+        // worn mesh faces are batched in the order the creator authored them and are never
+        // distance-sorted, unlike unrigged alpha (which does sort, and even then only re-sorts once
+        // the view angle has moved more than 0.64 -- llspatialpartition.cpp:667-674).
+        //
+        // Godot has no equivalent knob: every transparent SURFACE is re-sorted by AABB-centre
+        // distance each frame. Splitting a mesh into one surface per SL face therefore hands Godot
+        // six independently reorderable pieces of what the creator authored as one ordered stream.
+        // Measured on the live hair: three rigged meshes of six faces each, all six carrying the
+        // identical texture (`face ids: [b9af3b5f x 6]`) -- 18 co-located transparent draws whose
+        // order reshuffled on the smallest camera move.
+        //
+        // Merging a run restores the authored order as a single draw call, because within one
+        // surface Godot draws triangles in index order and sorts nothing. Only CONSECUTIVE runs
+        // are merged, never scattered matches: merging non-adjacent faces would interleave
+        // triangles the creator ordered deliberately, which is the very thing being preserved.
+        // Faces are merged only when their whole FaceTexture record compares equal, so the
+        // surviving surface's material is bit-identical to the ones it replaces.
+        SurfaceTool? st = null;
+        var runFace = default(FaceTexture);
+        int runVertexBase = 0;
+
+        void FlushRun()
+        {
+            if (st == null) return;
+            st.GenerateTangents();
+            st.Commit(arrayMesh);
+            st = null;
+        }
+
         foreach (var sub in meshData.Submeshes)
         {
             if (sub.Indices.Length == 0 || sub.Weights == null) continue;
-            var st = new SurfaceTool();
-            st.Begin(Mesh.PrimitiveType.Triangles);
+
+            var subFace = ResolveFaceTexture(faces, defaultFace, sub.FaceIndex);
+            if (st == null || !subFace.Equals(runFace))
+            {
+                FlushRun();
+                st = new SurfaceTool();
+                st.Begin(Mesh.PrimitiveType.Triangles);
+                runFace = subFace;
+                runVertexBase = 0;
+                faceList.Add(sub.FaceIndex);
+            }
+
+            // Indices are submesh-local, so a submesh appended to a run in progress has to shift
+            // them past everything already in the SurfaceTool.
+            int indexBase = runVertexBase;
 
             // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front — left
             // uncorrected, every SL-sourced triangle rasterizes as a backface (masked by
@@ -2917,15 +3009,14 @@ public partial class AvatarRenderer : Node3D
 
             for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
             {
-                st.AddIndex(sub.Indices[t]);
-                st.AddIndex(sub.Indices[t + 2]);
-                st.AddIndex(sub.Indices[t + 1]);
+                st.AddIndex(indexBase + sub.Indices[t]);
+                st.AddIndex(indexBase + sub.Indices[t + 2]);
+                st.AddIndex(indexBase + sub.Indices[t + 1]);
             }
 
-            st.GenerateTangents();
-            st.Commit(arrayMesh);
-            faceList.Add(sub.FaceIndex);
+            runVertexBase += sub.Positions.Length;
         }
+        FlushRun();
 
         if (arrayMesh.GetSurfaceCount() == 0) return null;
 
@@ -2944,6 +3035,15 @@ public partial class AvatarRenderer : Node3D
         for (int s = 1; s < slotWeightSum.Length; s++) if (slotWeightSum[s] > slotWeightSum[topSlot]) topSlot = s;
         string topBoneName = slotWeightSum.Length > 0 ? skeleton.GetBoneName(skin.GetBindBone(topSlot)) : "?";
         float topShare = totalVerts > 0 && slotWeightSum.Length > 0 ? slotWeightSum[topSlot] / totalVerts : 0f;
+        // BUG-RENDER-12: says how many transparent draw calls this mesh will cost. If it does not
+        // read "6 submeshes -> 1 surface" for a single-texture hair mesh, the merge did not fire
+        // and the sort instability is back. Behind --diag: it fired 442 times in one session,
+        // which is the same log flood BUG-RENDER-11 spent a round clearing out.
+        if (Diagnostics.Enabled && arrayMesh.GetSurfaceCount() != meshData.Submeshes.Count)
+            GD.Print($"[RiggedMesh] mesh={meshId.ToString("N")[..8]} merged " +
+                     $"{meshData.Submeshes.Count} submeshes -> {arrayMesh.GetSurfaceCount()} surface(s) " +
+                     "(same-material run, authored order preserved)");
+
         Logger.Debug($"[RiggedMesh] mesh {meshId} joints {resolved}/{jointCount} resolved, binds {skin.GetBindCount()}, " +
                  $"bind-pose size ({bpSize.X:0.##}, {bpSize.Y:0.##}, {bpSize.Z:0.##}) at ({bpCenter.X:0.#}, {bpCenter.Y:0.#}, {bpCenter.Z:0.#}), " +
                  $"dominant joint \"{topBoneName}\" ({topShare:P0}), orphaned verts {orphanedVerts}/{totalVerts}, " +
@@ -3243,7 +3343,9 @@ public partial class AvatarRenderer : Node3D
         foreach (var (mi, meshData, meshId) in visual.RiggedAttachments)
         {
             if (!IsInstanceValid(mi) || meshData.Skin == null) continue;
-            var rebuilt = BuildRiggedMeshInstance(meshData, visual.Skeleton, meshId, visual, out _);
+            // Only the Skin is taken from the rebuild, so the face records -- and therefore
+            // BUG-RENDER-12's surface merging -- are irrelevant here; the geometry is discarded.
+            var rebuilt = BuildRiggedMeshInstance(meshData, visual.Skeleton, meshId, visual, null, default, out _);
             if (rebuilt != null) mi.Skin = rebuilt.Skin;
         }
     }
