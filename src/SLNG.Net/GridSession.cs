@@ -3582,7 +3582,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// window -- live on Agni 2026-09-03, worn hair/shoes gone after a rebake (BUG-AVATAR-03). The
     /// cap POST here is a pure nudge: the sim composites from its OWN copy of the COF at
     /// <c>cof_version</c> and pushes a fresh <c>AvatarAppearance</c> back, touching nothing local.</para></summary>
-    private Task RequestServerSideRebakeAsync() => SendServerAppearanceUpdateAsync();
+    /// <summary>Public entry for "Avatar neu backen" / Ctrl+Alt+R on a server-side-baking region:
+    /// the pure <c>{ cof_version }</c> cap POST, returning a user-facing status line so Boot can
+    /// show the real outcome in chat instead of the meaningless OpenSim <c>BakeAvatarAsync</c>
+    /// reply (BUG-AVATAR-01). Caller should first check <see cref="RegionHasServerSideBaking"/>.</summary>
+    public Task<string> RequestServerSideRebakeAsync(CancellationToken ct = default)
+        => SendServerAppearanceUpdateAsync(ct);
 
     /// <summary>Builds the <c>UpdateAvatarAppearance</c> POST body -- pure + internal so a test can
     /// pin the shape (<c>{ "cof_version": &lt;int&gt; }</c>, mirroring the reference viewer's
@@ -3605,21 +3610,26 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <summary>POSTs <c>{ cof_version }</c> to the region's <c>UpdateAvatarAppearance</c> cap and,
     /// on a version-mismatch reply (<c>{ success:false, expected:M }</c>), retries with the
     /// server's expected version (up to 3x, 500 ms apart) -- the reference viewer's
-    /// <c>serverAppearanceUpdateCoro</c> retry loop, minus the UDP texture re-request.</summary>
-    private async Task SendServerAppearanceUpdateAsync(CancellationToken ct = default)
+    /// <c>serverAppearanceUpdateCoro</c> retry loop, minus the UDP texture re-request.
+    ///
+    /// <para>Returns a short user-facing status line (German) so the caller can show what actually
+    /// happened -- BUG-AVATAR-01: "Avatar neu backen" on SSB used to print the OpenSim path's
+    /// "backt serverseitig -- übersprungen" reply, which contradicted the "wird neu gebacken"
+    /// message and left no sign the cap POST had landed. Fire-and-forget callers just ignore it.</para></summary>
+    private async Task<string> SendServerAppearanceUpdateAsync(CancellationToken ct = default)
     {
         var uri = _client.Network.CurrentSim?.Caps?.CapabilityURI("UpdateAvatarAppearance");
         if (uri == null)
         {
             Console.Error.WriteLine("[Appearance] no UpdateAvatarAppearance cap on this region -- cannot nudge a rebake");
-            return;
+            return "Diese Region bietet keine UpdateAvatarAppearance-Capability — Server-Rebake nicht möglich.";
         }
 
         int cofVersion = GetCofVersion();
         if (cofVersion < 0)
         {
             Console.Error.WriteLine("[Appearance] COF version unknown -- skipping the rebake nudge");
-            return;
+            return "Outfit-Version noch nicht bekannt — kurz warten und erneut versuchen.";
         }
 
         for (int attempt = 0; attempt < 3; attempt++)
@@ -3634,7 +3644,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 if (reply != null && reply["success"].AsBoolean())
                 {
                     Console.Error.WriteLine($"[Appearance] server appearance update accepted (cof_version={cofVersion}, HTTP {status})");
-                    return;
+                    return $"Server-Rebake angenommen (cof_version {cofVersion}). Der Sim schickt ein frisches Aussehen zurück.";
                 }
 
                 int expected = reply != null && reply.ContainsKey("expected") ? reply["expected"].AsInteger() : -1;
@@ -3648,16 +3658,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
                 string err = reply != null && reply.ContainsKey("error") ? reply["error"].AsString() : $"HTTP {status}";
                 Console.Error.WriteLine($"[Appearance] server appearance update rejected (cof_version={cofVersion}): {err}");
-                return;
+                return $"Server-Rebake abgelehnt (cof_version {cofVersion}): {err}";
             }
-            catch (OperationCanceledException) { return; }
+            catch (OperationCanceledException) { return "Server-Rebake abgebrochen."; }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[Appearance] server appearance update failed: {ex.Message}");
-                return;
+                return $"Server-Rebake fehlgeschlagen: {ex.Message}";
             }
         }
         Console.Error.WriteLine($"[Appearance] server appearance update: gave up after 3 cof_version retries (last {cofVersion})");
+        return $"Server-Rebake: Versions-Konflikt, nach 3 Versuchen aufgegeben (zuletzt cof_version {cofVersion}).";
     }
 
     /// <summary>Set once the simulator has told us our OWN baked-texture ids. Watched by
