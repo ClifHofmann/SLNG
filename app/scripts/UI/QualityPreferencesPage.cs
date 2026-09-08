@@ -28,12 +28,19 @@ public partial class QualityPreferencesPage : VBoxContainer
     private static readonly int[] FpsChoices = { 0, 30, 60, 90, 120, 144, 240 };
     private static readonly int[] ShadowResChoices = { 1024, 2048, 4096 };
 
+    // FEAT-PERF-04: reads the GpuCache's current byte count for the live "used" readout. Null
+    // until a session exists; evaluated each frame so it picks the cache up once it's created.
+    private Func<long>? _cacheBytes;
+    private Label _textureMemUsage = null!;
+    private double _usageRefreshAccum;
+
     public override void _Ready() => AddThemeConstantOverride("separation", 8);
 
-    public void Initialize(GraphicsSettings settings, Action apply)
+    public void Initialize(GraphicsSettings settings, Action apply, Func<long>? cacheBytes = null)
     {
         _settings = settings;
         _apply = apply;
+        _cacheBytes = cacheBytes;
 
         AddHeading(L10n.Tr("ui.preferences.graphics_heading"));
 
@@ -110,7 +117,9 @@ public partial class QualityPreferencesPage : VBoxContainer
         _textureMemSlider = new HSlider
         {
             MinValue = 256,
-            MaxValue = 6144,
+            // No portable way to read the card's total VRAM from Godot; 8192 covers current
+            // hardware and the live "GPU" readout below shows how close you actually are.
+            MaxValue = 8192,
             Step = 128,
             Value = _settings.TextureMemoryMb,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
@@ -125,6 +134,13 @@ public partial class QualityPreferencesPage : VBoxContainer
         };
         _textureMemValue.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
         texMemRow.AddChild(_textureMemValue);
+
+        // Live readout under the slider (BlackDragon-style): what the cache is holding right now
+        // and Godot's total video memory, so the limit can be set against real numbers.
+        _textureMemUsage = new Label { Text = "" };
+        _textureMemUsage.AddThemeColorOverride("font_color", new Color(0.65f, 0.65f, 0.65f));
+        _textureMemUsage.AddThemeFontSizeOverride("font_size", 12);
+        AddChild(_textureMemUsage);
 
         _textureMemSlider.ValueChanged += value =>
         {
@@ -175,6 +191,22 @@ public partial class QualityPreferencesPage : VBoxContainer
         _smallShadowsToggle = new CheckButton { ButtonPressed = _settings.SmallObjectShadows };
         _smallShadowsToggle.Toggled += pressed => { if (!_refreshing) { _settings.SetSmallObjectShadows(pressed); _apply(); } };
         AddRow(L10n.Tr("ui.preferences.small_object_shadows"), _smallShadowsToggle);
+    }
+
+    public override void _Process(double delta)
+    {
+        // FEAT-PERF-04: refresh the live cache / GPU readout a few times a second, only while the
+        // Quality tab is actually on screen.
+        if (_textureMemUsage == null || !IsVisibleInTree()) return;
+        _usageRefreshAccum += delta;
+        if (_usageRefreshAccum < 0.25) return;
+        _usageRefreshAccum = 0;
+
+        long cacheMb = (_cacheBytes?.Invoke() ?? 0) >> 20;
+        long gpuMb = (long)(Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed) / (1024.0 * 1024.0));
+        _textureMemUsage.Text = cacheMb > 0
+            ? $"Cache: {cacheMb} MB   ·   GPU gesamt: {gpuMb} MB"
+            : $"GPU gesamt: {gpuMb} MB";
     }
 
     public void Refresh()

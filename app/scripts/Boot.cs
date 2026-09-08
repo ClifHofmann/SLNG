@@ -164,7 +164,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.21.11-alpha";
+    public const string AppVersion = "v0.21.12-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -796,7 +796,7 @@ public partial class Boot : Control
 
         _qualityPage = new SLNG.App.UI.QualityPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_quality") };
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_quality"), _qualityPage);
-        _qualityPage.Initialize(_graphicsSettings, ApplyGraphicsSettings);
+        _qualityPage.Initialize(_graphicsSettings, ApplyGraphicsSettings, () => _gpuCache?.CurrentSizeBytes ?? 0);
 
         _designPage = new SLNG.App.UI.DesignPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_design") };
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_design"), _designPage);

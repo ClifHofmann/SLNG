@@ -121,6 +121,14 @@ under the low-water mark.
   secondary pressure and 3 levels (64x) on SL content reads as broken.
 - **No detected-VRAM default** — kept the fixed 1536 MB (open question below).
 
+### v0.21.12 — live readout
+
+The Quality page now shows, under the slider, `Cache: <N> MB   ·   GPU gesamt: <M> MB`
+(refreshed 4x/s while the tab is visible): the GpuCache's own `CurrentSizeBytes` and Godot's
+total video memory (`Performance.RenderVideoMemUsed`). The slider max is 8192 MB —
+Godot exposes no portable "card total VRAM", so the GPU-total readout is what shows how
+close the setting is to the hardware.
+
 ## Open questions
 
 - Should the default be derived from detected VRAM rather than a fixed 1536 MB? Godot exposes total
