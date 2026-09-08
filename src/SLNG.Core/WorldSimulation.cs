@@ -545,17 +545,34 @@ public sealed class WorldSimulation : IDisposable
         // avoids.
         _avatarCacheDirty = true;
 
+        AvatarComponent? carriedSelfAppearance = null;
         if (e.IsLocalAgent)
         {
             // Ensure no other entity is marked as the local agent (e.g. leftover from a previous region after teleport)
             var oldAgent = _world.GetAllEntities().FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
             if (oldAgent != null && (oldAgent.RegionHandle != e.RegionHandle || oldAgent.LocalId != e.LocalId))
             {
+                // BUG-NET-13: a teleport re-keys the self entity to the new region, but it must NOT
+                // reset the avatar. Carry the appearance-bearing component (VisualParams,
+                // BakedTextures, hover, active anims) forward -- a fresh AvatarComponent with null
+                // VisualParams makes AvatarRenderer rebuild the skeleton from the DEFAULT shape, and
+                // that path can leave a non-finite bone transform in the Skeleton3D -> the engine
+                // re-normalizes it every frame -> the "Vector3 cannot be normalized" flood that
+                // starts on the exact frame after a teleport. It also blanks the avatar
+                // ([SelfBake] channels (null)) until a new AvatarAppearance arrives, which the sim
+                // does not reliably re-send (BUG-AVATAR-04).
+                carriedSelfAppearance = oldAgent.GetComponent<AvatarComponent>();
                 _world.RemoveEntity(oldAgent.RegionHandle, oldAgent.LocalId);
             }
         }
 
         var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
+        if (carriedSelfAppearance != null && entity.GetComponent<AvatarComponent>() == null)
+        {
+            // The identity/name/scale fields below still run against this instance and update it
+            // from the fresh event; only the appearance state is preserved.
+            entity.SetComponent(carriedSelfAppearance);
+        }
 
         // MVP2-1: while seated, AvatarController stops writing this entity's Z/Rotation each
         // frame (its ground-clamp/camera-yaw ownership is suspended -- see its own isSitting

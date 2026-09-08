@@ -225,13 +225,43 @@ These stop the flood and repair the state regardless of which input latched it; 
 `[NaNGuard] camera-state repaired: …` line names the exact fields that were bad so the
 root can be traced if it recurs.
 
+### Round 3 (v0.21.3) — camera hypothesis was WRONG, reverted
+
+Added `SanitizeCameraState()` + a camera-Basis guard in `PublishViewSpaceSunDirection` on
+the theory that the orbit/transition state had latched a NaN. v0.21.3 log: **`[NaNGuard]`
+still 0** — the camera state is finite, the camera Basis is finite. The camera is not the
+source. Worse, the round-3 `Position` write-guard (`if (newPosition.IsFinite())`) turned
+"NaN camera → sim ignores it → region streams" into "finite-but-stale camera → sim's
+interest manager centres far away → region stays empty", regressing the v0.21.2 win
+("sim wieder nicht sichtbar nach dem Rücksprung"). **All of round 3 reverted.**
+
+### Round 4 (v0.21.3 → v0.21.4) — stop resetting the self avatar on teleport
+
+The flood starts on the exact frame `[SelfBake] channels (null)` is logged after every
+teleport — the self avatar is being **rebuilt from a reset `AvatarComponent`**.
+`ApplyAvatarUpdate`'s local-agent block removed the old-region self entity and
+`GetOrCreateEntity`'d a fresh one with `VisualParams == null` / `BakedTextures == null`, so
+`AvatarRenderer` rebuilds the skeleton from the **default shape**. That path can leave a
+non-finite bone Rest in the `Skeleton3D`, which the engine then re-normalizes every frame —
+the flood — and `[NaNGuard]` (which only checks the ECS `TransformComponent`) can't see a
+bad `Skeleton3D` bone.
+
+- `WorldSimulation.ApplyAvatarUpdate`: when a teleport re-keys the self entity, **carry the
+  old `AvatarComponent` forward** onto the new-region entity instead of dropping it. The
+  identity/name/scale fields still update from the fresh event; VisualParams, BakedTextures,
+  hover and active anims are preserved. Fixes the blank-avatar-after-teleport
+  (`[SelfBake] (null)`) too.
+- `AvatarRenderer.ApplyShape`: last-net guard before `SetBoneRest` — a non-finite `rest`
+  is replaced with the bone's base rest and logged once as
+  `[NaNGuard] bone-rest non-finite for '<bone>' … slPos=… slScale=… rot=…`. Names the
+  source if round 4 doesn't fully fix it.
+
 ## Still open / next in-world test
 
-- **Confirm v0.21.3 stops the flood.** Teleport A → B (→ A), watch for a single
-  `[NaNGuard] camera-state repaired: …` (or `sun-view-dir …`) line and then **no**
-  `Vector3 cannot be normalized` after it. The named fields point at the latch source.
-- **RID leak** — still needs confirming from a clean exit log of a sim-hopping session
-  (neither the v0.21.1 nor v0.21.2 logs reached a clean exit).
-- **`[RegionData] first terrain patch`** never logged (only "first object update") — a
-  cosmetic flaw in the diagnostic: `OnSimConnected` raises `TerrainSettings` first, which
-  creates the terrain entry, so the first *patch* is no longer "first". Not load-bearing.
+- **Confirm v0.21.4 stops the flood** and that the return region is visible again. If
+  `[NaNGuard] bone-rest …` appears, its `slPos`/`slScale`/`rot` values point at the bad
+  shape input.
+- **RID leak** — still needs confirming from a clean exit log of a sim-hopping session.
+- **`[RegionData] first terrain patch`** never logs (only "first object update") — cosmetic:
+  `OnSimConnected` raises `TerrainSettings` first and that creates the terrain entry, so the
+  first *patch* isn't "first" any more. Not load-bearing.
