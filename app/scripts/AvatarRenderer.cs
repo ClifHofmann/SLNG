@@ -305,10 +305,16 @@ public partial class AvatarRenderer : Node3D
         {
             _locomotionPrefetchStarted = true;
             var svc = _assetService;
-            _ = System.Threading.Tasks.Task.Run(() =>
-                System.Threading.Tasks.Task.WhenAll(
-                    SelfLocomotion.Prefetch.Select(id => svc.GetAnimationAsync(id))));
             GD.Print($"[Locomotion] prefetching {SelfLocomotion.Prefetch.Count} built-in locomotion animations");
+            _ = System.Threading.Tasks.Task.Run(async () =>
+            {
+                var results = await System.Threading.Tasks.Task.WhenAll(
+                    SelfLocomotion.Prefetch.Select(async id => (id, data: await svc.GetAnimationAsync(id)))).ConfigureAwait(false);
+                int ok = results.Count(r => r.data != null);
+                var missing = string.Join(" ", results.Where(r => r.data == null).Select(r => r.id.ToString()[..8]));
+                GD.Print($"[Locomotion] prefetch done: {ok}/{results.Length} resolved" +
+                         (missing.Length > 0 ? $" -- missing: {missing}" : ""));
+            });
         }
 
         // Add a collision capsule so raycasts can identify the avatar
@@ -874,6 +880,9 @@ public partial class AvatarRenderer : Node3D
             || !new HashSet<Guid>(visual.LoadedAnimationIds).SetEquals(desired);
         if (!changed) return;
 
+        if (avatar.IsLocalAgent)
+            GD.Print($"[Locomotion] self anim set -> [{string.Join(" ", desired.Select(d => d.ToString()[..8]))}] (predicted={_selfPredictedLocomotion?.ToString()[..8] ?? "none"})");
+
         visual.LoadedAnimationIds = new List<Guid>(desired);
         _ = LoadAndStartAnimationsAsync(visual, desired);
     }
@@ -890,13 +899,21 @@ public partial class AvatarRenderer : Node3D
     public void SetSelfPredictedLocomotion(Guid? animId)
     {
         if (animId == _selfPredictedLocomotion) return;
+        string from = _selfPredictedLocomotion?.ToString()[..8] ?? "(none)";
+        string to = animId?.ToString()[..8] ?? "(none)";
         _selfPredictedLocomotion = animId;
 
-        if (_selfEntityId != Guid.Empty
-            && _visuals.TryGetValue(_selfEntityId, out var visual)
-            && _world?.GetEntity(_selfEntityId)?.GetComponent<AvatarComponent>() is { } avatar)
+        AvatarVisual? visual = null;
+        bool haveVisual = _selfEntityId != Guid.Empty && _visuals.TryGetValue(_selfEntityId, out visual);
+        var avatar = haveVisual ? _world?.GetEntity(_selfEntityId)?.GetComponent<AvatarComponent>() : null;
+        if (haveVisual && visual != null && avatar != null)
         {
             ApplyActiveAnimations(_selfEntityId, visual, avatar);
+            GD.Print($"[Locomotion] predict {from} -> {to} (applied)");
+        }
+        else
+        {
+            GD.Print($"[Locomotion] predict {from} -> {to} (NOT applied: selfEntityId={(_selfEntityId == Guid.Empty ? "unset" : "set")}, haveVisual={haveVisual})");
         }
     }
 
@@ -3664,13 +3681,14 @@ void fragment() {
                 var data = await _assetService.GetAnimationAsync(animId);
                 if (data != null)
                 {
-                    var jointNames = string.Join(", ", System.Linq.Enumerable.Select(data.Joints, j => j.JointName));
-                    // Logger.Debug($"[AvatarRenderer] Animation {animId}: {data.Joints.Length} joints ({jointNames}), {data.Length:F2}s");
                     loaded.Add((animId, data));
                 }
-                else
+                else if (SelfLocomotion.All.Contains(animId))
                 {
-                    // GD.PrintErr($"[AvatarRenderer] Animation {animId}: fetch returned null (not in grid assets?)");
+                    // FEAT-ANIM-01 diagnostic: a built-in locomotion id the prediction emitted
+                    // failed to resolve as an asset on this grid -> the gait can't play, and a
+                    // res:// bundled copy is needed.
+                    GD.Print($"[Locomotion] anim {animId} did not resolve as an asset -- gait will not play");
                 }
             }
             catch (Exception)

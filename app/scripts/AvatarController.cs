@@ -405,6 +405,7 @@ public partial class AvatarController : Camera3D
     // clamp below). Read one frame later by the self-locomotion prediction to tell "falling"
     // from "standing/walking" -- a frame of lag is imperceptible for animation.
     private bool _grounded = true;
+    private bool _locomotionRendererNullLogged;
 
     // Throttles the ground-clamp diagnostic print below to ~1/sec instead of every frame.
     private double _timeSinceGroundLog = 0;
@@ -744,7 +745,15 @@ public partial class AvatarController : Camera3D
                     Crouching: !isSitting && !_flying && isDown,
                     SpeedHoriz: System.MathF.Sqrt(vel.X * vel.X + vel.Y * vel.Y),
                     SpeedVert: vel.Z);
-                _avatarRenderer?.SetSelfPredictedLocomotion(SelfLocomotion.Predict(locomotion));
+                if (_avatarRenderer != null)
+                {
+                    _avatarRenderer.SetSelfPredictedLocomotion(SelfLocomotion.Predict(locomotion));
+                }
+                else if (!_locomotionRendererNullLogged)
+                {
+                    _locomotionRendererNullLogged = true;
+                    GD.Print("[Locomotion] AvatarController has no AvatarRenderer -- self locomotion prediction disabled");
+                }
 
                 // Camera rotation = avatar facing (_yaw/_pitch) plus the orbit offset.
                 // The orbit offset moves the camera around the avatar without turning it.
