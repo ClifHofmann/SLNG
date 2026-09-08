@@ -97,7 +97,7 @@ set. But the user still saw the stand pose while moving, **and the session ended
   sequential** — negligible thread-pool impact, and a walk key is rarely pressed in the
   first few seconds anyway. (The underlying `GpuCache.PrepareImageAsync` off-thread image
   creation is a separate, pre-existing fragility — not addressed here.)
-- **Still standing while moving:** the user runs a **scripted AO**. Its stand animation is
+- **Still standing while moving:** the user has an **AO** (SL server-side / library-item AO, no HUD). Its stand animation is
   authored at high priority and, under lag, is still playing when the user starts walking
   (the AO's own walk trigger is server-routed — the same RTT lag, one level up). Our
   predicted built-in `WALK` was in the set but lost the per-bone priority fight.
