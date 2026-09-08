@@ -51,7 +51,23 @@ public class GpuCache
     private readonly Dictionary<Guid, int> _pendingRefDelta = new();
 
     private long _currentSize = 0;
-    private readonly long _maxSize;
+
+    // FEAT-PERF-04: no longer readonly -- SetBudget applies the graphics-page slider at runtime.
+    private long _maxSize;
+
+    // FEAT-PERF-04: texture ids that must never be shrunk by the back-pressure pass -- avatar
+    // faces and bake channels (rejectDegraded / bakeChannel callers). A parcel full of scenery
+    // filling the cache must not soften someone's face at conversation distance.
+    private readonly ConcurrentDictionary<Guid, byte> _noShrink = new();
+    private readonly ConcurrentDictionary<Guid, byte> _shrinkPending = new();
+
+    private const double LowWater = 0.85;              // hysteresis: only relax below this fraction of budget
+    private const int MaxLodBias = 2;                  // at most 2 extra discard levels (16x) from back-pressure
+    private const long ShrinkFloorBytes = 512 * 1024;  // don't bother shrinking anything already this small
+    private const int ShrinkPerTick = 2;              // mirrors MainThreadWorkQueue's Refine-lane 2/frame cap
+    private const long BiasChangeCooldownMs = 3000;   // don't pump the bias
+    private static readonly System.Diagnostics.Stopwatch _biasClock = System.Diagnostics.Stopwatch.StartNew();
+    private long _nextBiasChangeMs;
 
     // FEAT-PERF-02: single-flight coordination for GetOrUploadTextureAsync, shared by every
     // renderer (Object/Avatar/Terrain) that uploads GPU textures through this one GpuCache
@@ -71,6 +87,21 @@ public class GpuCache
     public GpuCache(long maxSizeInBytes = 256 * 1024 * 1024)
     {
         _maxSize = maxSizeInBytes;
+    }
+
+    /// <summary>FEAT-PERF-04: change the texture/mesh budget at runtime (graphics-page slider). A
+    /// lower budget takes effect immediately -- eviction runs now, and the per-frame
+    /// <see cref="Tick"/> raises the LOD bias / shrinks resident textures until back under it.</summary>
+    public void SetBudget(long maxSizeInBytes)
+    {
+        long clamped = Math.Max(64L * 1024 * 1024, maxSizeInBytes);
+        lock (_cache)
+        {
+            if (clamped == _maxSize) return;
+            _maxSize = clamped;
+            EvictIfNeeded();
+        }
+        Console.Error.WriteLine($"[GpuCache] budget set to {clamped >> 20} MB");
     }
 
     public void AddRef(Guid id)
@@ -209,6 +240,10 @@ public class GpuCache
     {
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
 
+        // FEAT-PERF-04: an avatar face (rejectDegraded) or a bake channel is never a shrink
+        // candidate -- see _noShrink.
+        if (rejectDegraded || bakeChannel.HasValue) _noShrink.TryAdd(textureId, 0);
+
         // A rejectDegraded caller (the avatar) must not be handed an upload that some OTHER
         // caller produced from a gap-filled decode -- but only a DEGRADED upload is a problem.
         // The old blanket `rejectDegraded ? null` made every avatar face bypass this GPU cache
@@ -304,7 +339,7 @@ public class GpuCache
         degraded = _uploadFromDegraded.Count;
         Console.Error.WriteLine($"[GpuCache] get={n} hit={_gpuGetHit} bypassDegraded={_gpuGetBypassDegraded} " +
             $"entries={entries} sizeMB={sizeMb}/{_maxSize >> 20} pinned={pinned} pinnedMB={pinnedMb} " +
-            $"degradedIds={degraded} mainQueue={MainThreadWorkQueue.Depth}");
+            $"lodBias={SLNG.Assets.TextureLod.GlobalLodBias} degradedIds={degraded} mainQueue={MainThreadWorkQueue.Depth}");
     }
 
     /// <summary>Fire-and-forget in-place sharpening of an already-cached texture, when the object
@@ -663,6 +698,119 @@ public class GpuCache
                 }
             }
             _pendingRefDelta.Remove(id);
+        }
+    }
+
+    /// <summary>FEAT-PERF-04: per-frame VRAM back-pressure. Eviction alone cannot bind the budget on
+    /// a dense region -- the whole visible scene is legitimately referenced, so nothing is
+    /// reclaimable. Two levers that act on what is resident / what goes in next:
+    /// <list type="number">
+    /// <item>a global LOD bias (<see cref="SLNG.Assets.TextureLod.GlobalLodBias"/>) added to every
+    ///   NEW world-texture upload, raised above budget and lowered (with hysteresis) below
+    ///   <see cref="LowWater"/>;</item>
+    /// <item>a shrink pass: re-halve the largest, least-recently-used resident textures in place
+    ///   (<c>ImageTexture.SetImage</c>), <see cref="ShrinkPerTick"/> per frame, until back under
+    ///   <see cref="LowWater"/>. Avatar / bake textures (<see cref="_noShrink"/>) are exempt.</item>
+    /// </list>
+    /// Call once per frame from the main thread.</summary>
+    public void Tick()
+    {
+        long now = _biasClock.ElapsedMilliseconds;
+        List<(CacheEntry entry, ImageTexture tex)> toShrink = new();
+
+        lock (_cache)
+        {
+            bool over = _currentSize > _maxSize;
+            bool under = _currentSize < (long)(_maxSize * LowWater);
+
+            if (now >= _nextBiasChangeMs)
+            {
+                if (over && SLNG.Assets.TextureLod.GlobalLodBias < MaxLodBias)
+                {
+                    SLNG.Assets.TextureLod.GlobalLodBias++;
+                    _nextBiasChangeMs = now + BiasChangeCooldownMs;
+                    Console.Error.WriteLine($"[GpuCache] over budget ({_currentSize >> 20}/{_maxSize >> 20} MB) -- LOD bias -> {SLNG.Assets.TextureLod.GlobalLodBias}");
+                }
+                else if (under && SLNG.Assets.TextureLod.GlobalLodBias > 0)
+                {
+                    SLNG.Assets.TextureLod.GlobalLodBias--;
+                    _nextBiasChangeMs = now + BiasChangeCooldownMs;
+                    Console.Error.WriteLine($"[GpuCache] under {LowWater:P0} budget -- LOD bias -> {SLNG.Assets.TextureLod.GlobalLodBias}");
+                }
+            }
+
+            if (over)
+            {
+                for (var node = _lruList.First;
+                     node != null && toShrink.Count < ShrinkPerTick && _currentSize > (long)(_maxSize * LowWater);
+                     node = node.Next)
+                {
+                    var e = node.Value;
+                    if (e.Res is not ImageTexture tex) continue;             // meshes can't be downsampled here
+                    if (e.RefCount <= 0) continue;                            // eviction will take these anyway
+                    if (e.Size <= ShrinkFloorBytes) continue;
+                    if (_noShrink.ContainsKey(e.Id)) continue;
+                    if (!_shrinkPending.TryAdd(e.Id, 0)) continue;
+                    toShrink.Add((e, tex));
+                }
+            }
+        }
+
+        foreach (var (entry, tex) in toShrink)
+        {
+            var e = entry; var t = tex;
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine, () => ShrinkOne(e, t), label: "texture.shrink");
+        }
+    }
+
+    /// <summary>Re-halves one resident texture in place on the main thread (Refine lane, capped at
+    /// 2/frame -- see <see cref="MainThreadWorkQueue"/>'s Signal-11 note). Reads the image back from
+    /// the GPU, downsamples, and pushes it into the SAME <see cref="ImageTexture"/> so every
+    /// material keeps working with no re-wiring; then makes the id an upgrade candidate so
+    /// <see cref="TryUpgradeCachedTexture"/> re-sharpens it if the user walks up to it and the
+    /// budget has room again.</summary>
+    private void ShrinkOne(CacheEntry entry, ImageTexture tex)
+    {
+        try
+        {
+            if (!GodotObject.IsInstanceValid(tex)) return;
+            var img = tex.GetImage();
+            if (img == null) return;
+
+            int w = img.GetWidth(), h = img.GetHeight();
+            int nw = Math.Max(8, w >> 1), nh = Math.Max(8, h >> 1);
+            if (nw >= w && nh >= h) { img.Dispose(); return; }
+
+            bool mips = img.HasMipmaps();
+            if (mips) img.ClearMipmaps();
+            img.Resize(nw, nh, Image.Interpolation.Lanczos);
+            if (mips) img.GenerateMipmaps();
+            tex.SetImage(img);
+            img.Dispose();
+
+            long newSize = (long)nw * nh * 4;
+            lock (_cache)
+            {
+                if (_cache.TryGetValue(entry.Id, out var live))
+                {
+                    _currentSize -= live.Size - newSize;
+                    live.Size = newSize;
+                }
+            }
+            // Mark it improvable, but only on a genuine close-up: TryUpgradeCachedTexture requires
+            // screenPixelArea >= 4x this, i.e. the object must fill roughly its full (shrunk) texel
+            // count on screen before it pays for a re-decode -- otherwise a shrink while over
+            // budget would immediately trigger a re-sharpen and churn.
+            _uploadedForPixelArea[entry.Id] = (float)nw * nh / 4f;
+            Logger.Info($"[GpuCache] shrank {entry.Id.ToString()[..8]} {w}x{h} -> {nw}x{nh}");
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[GpuCache] shrink {entry.Id} failed: {ex.Message}");
+        }
+        finally
+        {
+            _shrinkPending.TryRemove(entry.Id, out _);
         }
     }
 

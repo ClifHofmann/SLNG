@@ -164,7 +164,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.21.10-alpha";
+    public const string AppVersion = "v0.21.11-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1093,6 +1093,10 @@ public partial class Boot : Control
 
     public override void _Process(double delta)
     {
+        // FEAT-PERF-04: per-frame VRAM back-pressure (raise/lower the LOD bias, shrink resident
+        // textures) so the texture-memory budget actually binds on a dense region.
+        _gpuCache?.Tick();
+
         // Drain the region-environment event buffered off-thread (see _pendingRegionEnvironment).
         // FEAT-ENV-01 Phase D: region-scoped -- crossing into a neighbor region with its own
         // environment replaces the cycle wholesale, same as a fresh login.
@@ -1271,7 +1275,11 @@ public partial class Boot : Control
     /// GraphicsPreferencesPage as a callback so the page never has to reach for the viewport, the
     /// environment or the sun itself -- it only knows the settings object.</summary>
     private void ApplyGraphicsSettings()
-        => _graphicsSettings.Apply(GetViewport(), _worldEnvironment, _sun);
+    {
+        _graphicsSettings.Apply(GetViewport(), _worldEnvironment, _sun);
+        // FEAT-PERF-04: the texture-memory slider takes effect immediately, no restart.
+        _gpuCache?.SetBudget((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024);
+    }
 
     /// <summary>
     /// The local agent's transform, with the entity cached.
@@ -1883,7 +1891,7 @@ public partial class Boot : Control
         // GPU budget shared by meshes and textures. Sized for the nearby working set on a
         // 12 GB card with headroom for post-FX; out-of-range content is released so the LRU
         // can reclaim under this cap.
-        _gpuCache = new GpuCache(1536L * 1024 * 1024);
+        _gpuCache = new GpuCache((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024);
 
         _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, _gpuCache);

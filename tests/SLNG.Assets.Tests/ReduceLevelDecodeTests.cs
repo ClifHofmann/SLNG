@@ -128,6 +128,42 @@ public class ReduceLevelDecodeTests
     public void DiscardLevelFollowsTheTexelToPixelRatio(int w, int h, float area, int expected)
         => Assert.Equal(expected, TextureLod.DiscardLevelFor(w, h, area));
 
+    // FEAT-PERF-04: the VRAM back-pressure bias adds discard levels to a world-texture upload...
+    [Fact]
+    public void GlobalLodBias_adds_discard_levels_for_a_real_screen_area()
+    {
+        int baseline = TextureLod.DiscardLevelFor(1024, 1024, 262_144f); // = 1
+        try
+        {
+            TextureLod.GlobalLodBias = 2;
+            Assert.Equal(baseline + 2, TextureLod.DiscardLevelFor(1024, 1024, 262_144f));
+        }
+        finally { TextureLod.GlobalLodBias = 0; }
+    }
+
+    // ...but NEVER for a caller with no LOD info (avatar / bake pass screenPixelArea 0).
+    [Fact]
+    public void GlobalLodBias_never_touches_an_unknown_screen_area()
+    {
+        try
+        {
+            TextureLod.GlobalLodBias = 3;
+            Assert.Equal(0, TextureLod.DiscardLevelFor(1024, 1024, 0f));
+        }
+        finally { TextureLod.GlobalLodBias = 0; }
+    }
+
+    [Fact]
+    public void GlobalLodBias_still_clamps_to_MaxDiscardLevel()
+    {
+        try
+        {
+            TextureLod.GlobalLodBias = 2;
+            Assert.Equal(TextureLod.MaxDiscardLevel, TextureLod.DiscardLevelFor(1024, 1024, 1f));
+        }
+        finally { TextureLod.GlobalLodBias = 0; }
+    }
+
     [Theory]
     [InlineData(0, 0)]
     [InlineData(1, 0)] // one halving -- the caller's own resize handles it

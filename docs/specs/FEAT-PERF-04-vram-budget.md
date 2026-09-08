@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-04`
 - **Track:** `render` / `perf`
-- **Status:** `⏸️ Pending`
+- **Status:** `🧪 Review` — implemented v0.21.11, not yet verified in-world
 - **Owner:** `claude`
 - **Depends on:** `FEAT-PERF-02` (texture LOD), `BUG-NET-11` (`TextureLod`, reduce-level decode)
 - **Requested:** live, 2026-09-03 — *"plane mal ein, dass wir den VRAM begrenzen (setting)"*
@@ -98,6 +98,28 @@ under the low-water mark.
 - No `Signal 11` / RenderingServer crash during a sustained shrink pass.
 - `[GpuCache]` reports the active bias so a "why is everything blurry" report is answerable from the
   log rather than by guessing.
+
+## Implementation (v0.21.11)
+
+| File | Change |
+|---|---|
+| `src/SLNG.Assets/TextureLod.cs` | `public static volatile int GlobalLodBias`; `DiscardLevelFor` adds it **after** the `screenPixelArea <= 0` guard (avatar/bake exempt) and re-clamps to `MaxDiscardLevel` |
+| `app/scripts/GpuCache.cs` | `_maxSize` no longer readonly; `SetBudget(long)` (clamped ≥ 64 MB, runs `EvictIfNeeded`). New `Tick()` (per-frame, main thread): raises `GlobalLodBias` above budget / lowers below `LowWater` 0.85, with a 3 s cooldown, capped at `MaxLodBias` 2; while over budget, enqueues up to `ShrinkPerTick` 2 `ShrinkOne` jobs on the `Refine` lane. `ShrinkOne` reads the texture back, halves it, `SetImage`s it in place, fixes `entry.Size`/`_currentSize`, and marks it re-sharpenable only on a genuine close-up. `_noShrink` set fed by every `rejectDegraded`/`bakeChannel` caller. `[GpuCache]` line gained `lodBias=`. |
+| `app/scripts/UI/GraphicsSettings.cs` | `TextureMemoryMb` (default 1536), persisted as `graphics/texture_memory_mb` |
+| `app/scripts/UI/QualityPreferencesPage.cs` | "Texturspeicher / Texture memory" slider (256–6144 MB, step 128) under Draw distance |
+| `app/scripts/Boot.cs` | `GpuCache` constructed from the setting; `ApplyGraphicsSettings` → `SetBudget` (live, no restart); `_Process` → `_gpuCache.Tick()` |
+| `app/i18n/{de-DE,en-US}.json` | `ui.preferences.texture_memory_heading` |
+| tests | `ReduceLevelDecodeTests`: bias adds levels for a real area, never for area 0, still clamps (3) |
+
+### Deviations from the sketch
+
+- **Shrink re-reads from the GPU (`ImageTexture.GetImage()` + `Resize`)**, it does not re-decode
+  from `AssetService`. Simpler, needs no asset-service handle in `GpuCache`, and shrinking only
+  discards data so a readback is enough. Re-sharpening still goes through the asset path
+  (`TryUpgradeCachedTexture`).
+- **`MaxLodBias` capped at 2**, not 3 — the shrink pass is the primary lever; the bias is
+  secondary pressure and 3 levels (64x) on SL content reads as broken.
+- **No detected-VRAM default** — kept the fixed 1536 MB (open question below).
 
 ## Open questions
 
