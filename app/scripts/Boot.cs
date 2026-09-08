@@ -164,7 +164,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.21.6-alpha";
+    public const string AppVersion = "v0.21.7-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -2304,33 +2304,24 @@ public partial class Boot : Control
     {
         if (_session == null) return;
 
-        // BUG-AVATAR-01: on a server-side-baking region (SL) the rebake IS the { cof_version }
-        // POST to the UpdateAvatarAppearance cap -- the sim re-composites from its own COF copy.
-        // The OpenSim client-composite path (BakeAvatarAsync) does not apply there and returns
-        // "Dieses Grid backt serverseitig — … wird übersprungen", which flatly contradicts the
-        // "wird neu gebacken" line and leaves no sign the POST landed. Branch here and report the
-        // real cap-POST result instead.
+        // BUG-AVATAR-01: mirror the reference viewer's handle_rebake_textures.
+        // 1. Client-side half, ALWAYS: force the self bake textures to re-fetch and the visual to
+        //    rebuild (forceBakeAllTextures). SLNG only ever did step 2, so if the sim returned the
+        //    same bake ids nothing visibly happened -- "bei SLNG passiert gefühlt nix".
+        _avatarRenderer?.ForceRebakeSelf();
+
+        // 2. Server-side half: on an SSB region, nudge the sim to re-composite ({ cof_version }
+        //    POST). Log-only -- the outcome goes to the console, not chat.
         if (_session.RegionHasServerSideBaking())
         {
-            _chatWindow?.AppendLocalChatMessage("System", "Server-Rebake wird angefordert …");
-            _ = RebakeAvatarSsbAndReportAsync();
+            _ = _session.RequestServerSideRebakeAsync();
             return;
         }
 
-        // OpenSim / legacy: what this does depends on SLNG_BAKE_UPLOAD / SLNG_BAKE_SEND, so the
-        // outcome is reported by the bake itself once it finishes.
+        // OpenSim / legacy: SLNG composites, uploads and applies its own bake -- a real result
+        // (incl. failures) worth surfacing in chat, unlike the SSB nudge.
         _session.RebakeAvatar();
-        _chatWindow?.AppendLocalChatMessage("System", "Avatar wird neu gebacken …");
         _ = BakeAvatarAndReportAsync();
-    }
-
-    private async System.Threading.Tasks.Task RebakeAvatarSsbAndReportAsync()
-    {
-        if (_session == null) return;
-        string result;
-        try { result = await _session.RequestServerSideRebakeAsync().ConfigureAwait(false); }
-        catch (System.Exception ex) { result = $"Server-Rebake fehlgeschlagen: {ex.Message}"; }
-        CallDeferred(nameof(NotifyBakeResult), result);
     }
 
     // FEAT-AVATAR-01: bakes the generated test pattern on top of every channel instead of an
