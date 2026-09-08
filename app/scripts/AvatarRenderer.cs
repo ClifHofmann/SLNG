@@ -899,7 +899,9 @@ public partial class AvatarRenderer : Node3D
             || !new HashSet<Guid>(visual.LoadedAnimationIds).SetEquals(desired);
         if (!changed) return;
 
-        if (avatar.IsLocalAgent)
+        // Behind --diag: fires on every gait change while walking through an AO and flooded the
+        // log, burying the alpha diagnostics it competes with.
+        if (avatar.IsLocalAgent && Diagnostics.Enabled)
             GD.Print($"[Locomotion] self anim set -> [{string.Join(" ", desired.Select(d => d.ToString()[..8]))}] (predicted={_selfPredictedLocomotion?.ToString()[..8] ?? "none"})");
 
         visual.LoadedAnimationIds = new List<Guid>(desired);
@@ -918,8 +920,7 @@ public partial class AvatarRenderer : Node3D
     public void SetSelfPredictedLocomotion(Guid? animId)
     {
         if (animId == _selfPredictedLocomotion) return;
-        string from = _selfPredictedLocomotion?.ToString()[..8] ?? "(none)";
-        string to = animId?.ToString()[..8] ?? "(none)";
+        var previous = _selfPredictedLocomotion;
         _selfPredictedLocomotion = animId;
 
         AvatarVisual? visual = null;
@@ -928,10 +929,13 @@ public partial class AvatarRenderer : Node3D
         if (haveVisual && visual != null && avatar != null)
         {
             ApplyActiveAnimations(_selfEntityId, visual, avatar);
-            GD.Print($"[Locomotion] predict {from} -> {to} (applied)");
         }
-        else
+        else if (Diagnostics.Enabled)
         {
+            // Kept, only under --diag: this branch means the predicted walk could not be applied,
+            // a real "why isn't my avatar animating" signal, not per-step chatter.
+            string from = previous?.ToString()[..8] ?? "(none)";
+            string to = animId?.ToString()[..8] ?? "(none)";
             GD.Print($"[Locomotion] predict {from} -> {to} (NOT applied: selfEntityId={(_selfEntityId == Guid.Empty ? "unset" : "set")}, haveVisual={haveVisual})");
         }
     }

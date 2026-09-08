@@ -34,7 +34,6 @@ public sealed class AvatarAnimationPlayer
     }
 
     private readonly List<PlayingAnimation> _active = new();
-    private readonly HashSet<Guid> _animInfoLogged = new();
     private Skeleton3D? _skeleton;
 
     // FEAT-ANIM-01: for a short window after a predicted MOVING gait starts, force it above any
@@ -104,12 +103,6 @@ public sealed class AvatarAnimationPlayer
             }
             if (!found)
             {
-                if (Diagnostics.Enabled) GD.Print($"[AnimPlayer] Adding animation {id}");
-                // FEAT-ANIM-01 diagnostic: which animation, at what priority, is competing for
-                // the avatar's bones -- so a "still standing while walking" report can be read as
-                // a priority fight (a high-priority AO stand) vs a broken/short/non-looping clip.
-                if (_animInfoLogged.Add(id))
-                    GD.Print($"[AnimPlayer] +{id.ToString()[..8]} pri={data.Priority} loop={data.Loop} len={data.Length:0.00}s joints={data.Joints.Length}");
                 _active.Add(new PlayingAnimation(data, id));
             }
         }
