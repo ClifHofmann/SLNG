@@ -164,7 +164,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.21.5-alpha";
+    public const string AppVersion = "v0.21.6-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -2303,14 +2303,34 @@ public partial class Boot : Control
     private void RebakeAvatar()
     {
         if (_session == null) return;
-        // FEAT-AVATAR-01: what this does depends on SLNG_BAKE_UPLOAD / SLNG_BAKE_SEND, so the
-        // outcome is reported by the bake itself once it finishes. Announcing "nothing is sent" up
-        // front was wrong from the moment sending started working, and a stale reassurance about a
-        // write to the user's account is the worst kind to leave standing.
+
+        // BUG-AVATAR-01: on a server-side-baking region (SL) the rebake IS the { cof_version }
+        // POST to the UpdateAvatarAppearance cap -- the sim re-composites from its own COF copy.
+        // The OpenSim client-composite path (BakeAvatarAsync) does not apply there and returns
+        // "Dieses Grid backt serverseitig — … wird übersprungen", which flatly contradicts the
+        // "wird neu gebacken" line and leaves no sign the POST landed. Branch here and report the
+        // real cap-POST result instead.
+        if (_session.RegionHasServerSideBaking())
+        {
+            _chatWindow?.AppendLocalChatMessage("System", "Server-Rebake wird angefordert …");
+            _ = RebakeAvatarSsbAndReportAsync();
+            return;
+        }
+
+        // OpenSim / legacy: what this does depends on SLNG_BAKE_UPLOAD / SLNG_BAKE_SEND, so the
+        // outcome is reported by the bake itself once it finishes.
         _session.RebakeAvatar();
         _chatWindow?.AppendLocalChatMessage("System", "Avatar wird neu gebacken …");
-
         _ = BakeAvatarAndReportAsync();
+    }
+
+    private async System.Threading.Tasks.Task RebakeAvatarSsbAndReportAsync()
+    {
+        if (_session == null) return;
+        string result;
+        try { result = await _session.RequestServerSideRebakeAsync().ConfigureAwait(false); }
+        catch (System.Exception ex) { result = $"Server-Rebake fehlgeschlagen: {ex.Message}"; }
+        CallDeferred(nameof(NotifyBakeResult), result);
     }
 
     // FEAT-AVATAR-01: bakes the generated test pattern on top of every channel instead of an

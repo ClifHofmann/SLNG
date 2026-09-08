@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-AVATAR-01`
 - **Track:** `net`
-- **Status:** `🧪 Review` — in-world retest 2026-09-07 (Agni) still reads as broken: Ctrl+Alt+R prints `Avatar wird neu gebacken …` then `Dieses Grid backt serverseitig — … wird übersprungen.` with no visible rebake. The underlying `{cof_version}` nudge on SSB is correct; the contradictory message comes from `Boot.RebakeAvatar` also calling the OpenSim-only `BakeAvatarAsync()`, and there is no positive confirmation the cap POST landed. Fix needed (small, `Boot.cs`): on SSB skip `BakeAvatarAsync` and report the cap POST result.
+- **Status:** `🧪 Review` — the contradictory-message half is fixed (v0.21.6): `Boot.RebakeAvatar` now branches on `RegionHasServerSideBaking()` and on SSB calls only `GridSession.RequestServerSideRebakeAsync()` (the `{cof_version}` cap POST), reporting its real result in chat (`Server-Rebake angenommen (cof_version N)` / `… abgelehnt: …` / `… keine UpdateAvatarAppearance-Capability`). The OpenSim `BakeAvatarAsync()` path is no longer touched on SSB, so the `… wird übersprungen` line can't appear there any more. Not yet re-verified in-world against a real Ctrl+Alt+R on Agni. The "why was the avatar blank" question is unchanged — see "Still open".
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `feature/FEAT-SL-01-second-life-readiness` (found and fixed mid-session, same branch)
@@ -61,6 +61,8 @@ self; see "Still open" below).
 | File | Change |
 |---|---|
 | `src/SLNG.Net/GridSession.cs` | `RebakeAvatar()` branches on `RegionHasServerSideBaking()` before the diagnostic/hard-stop; new `RequestServerSideRebakeAsync` helper |
+| `src/SLNG.Net/GridSession.cs` (v0.21.6) | `SendServerAppearanceUpdateAsync` now returns a user-facing status string at every exit (accepted / rejected / no cap / cof unknown / version-conflict / exception); `RequestServerSideRebakeAsync` made **public**, returns `Task<string>` |
+| `app/scripts/Boot.cs` (v0.21.6) | `RebakeAvatar()` branches on `_session.RegionHasServerSideBaking()`: on SSB it shows "Server-Rebake wird angefordert …" and reports the cap-POST result via the new `RebakeAvatarSsbAndReportAsync`, and does **not** call `BakeAvatarAndReportAsync` (the OpenSim `BakeAvatarAsync` path); non-SSB is unchanged |
 
 ### Design notes
 
