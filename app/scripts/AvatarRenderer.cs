@@ -1,5 +1,6 @@
 using Godot;
 using SLNG.Core;
+using SLNG.Core.Avatars;
 using SLNG.Core.ECS;
 using SLNG.Core.Components;
 using SLNG.Assets;
@@ -297,6 +298,19 @@ public partial class AvatarRenderer : Node3D
         var avatar = entity.GetComponent<AvatarComponent>()!;
         var visual = new AvatarVisual { AgentId = avatar.AgentId };
 
+        // FEAT-ANIM-01: warm the animation cache with the built-in locomotion set the moment the
+        // self avatar appears, so the first local walk/turn/fly prediction is a cache hit, not a
+        // live asset fetch + decode (which is half the "kommt zu spät wenn es laggt").
+        if (avatar.IsLocalAgent && !_locomotionPrefetchStarted && _assetService != null)
+        {
+            _locomotionPrefetchStarted = true;
+            var svc = _assetService;
+            _ = System.Threading.Tasks.Task.Run(() =>
+                System.Threading.Tasks.Task.WhenAll(
+                    SelfLocomotion.Prefetch.Select(id => svc.GetAnimationAsync(id))));
+            GD.Print($"[Locomotion] prefetching {SelfLocomotion.Prefetch.Count} built-in locomotion animations");
+        }
+
         // Add a collision capsule so raycasts can identify the avatar
         var staticBody = new Godot.StaticBody3D 
         { 
@@ -435,6 +449,9 @@ public partial class AvatarRenderer : Node3D
             visual.QueueFree();
             _visuals.Remove(entityId);
         }
+        // FEAT-ANIM-01: a teleport re-keys the self entity -- the next UpdateVisual sets this
+        // again for the new id; clearing it here just avoids a stale lookup in between.
+        if (entityId == _selfEntityId) _selfEntityId = Guid.Empty;
         if (_attachmentNodes.TryGetValue(entityId, out var attachNode))
         {
             if (GodotObject.IsInstanceValid(attachNode)) attachNode.QueueFree();
@@ -815,32 +832,71 @@ public partial class AvatarRenderer : Node3D
         }
         visual.PreviousSittingOnLocalId = avatar.SittingOnLocalId;
 
-        if (avatar.ActiveAnimations != null && _assetService != null && visual.Skeleton != null)
+        if (avatar.IsLocalAgent) _selfEntityId = entityId;
+
+        ApplyActiveAnimations(entityId, visual, avatar);
+    }
+
+    /// <summary>Reconciles a visual's playing animation set with what it should be.
+    ///
+    /// <para>For a remote avatar that is simply <c>avatar.ActiveAnimations</c> (the sim's echo).
+    /// For the SELF avatar (FEAT-ANIM-01) the built-in locomotion ids are stripped out of the
+    /// network set and replaced with <see cref="_selfPredictedLocomotion"/> — decided locally from
+    /// input by <see cref="AvatarController"/> and pushed via
+    /// <see cref="SetSelfPredictedLocomotion"/> — so the walk cycle starts on the frame the key
+    /// goes down instead of after the round-trip. A custom AO animation is not a built-in id, so
+    /// it stays in the set and wins per bone via its authored priority (matching the reference
+    /// viewer, which also plays the built-in gait locally and lets the AO override it).</para></summary>
+    private void ApplyActiveAnimations(Guid entityId, AvatarVisual visual, AvatarComponent avatar)
+    {
+        if (_assetService == null || visual.Skeleton == null) return;
+
+        List<Guid> desired;
+        if (avatar.IsLocalAgent && _selfPredictedLocomotion is { } predicted)
         {
-            bool animsChanged = visual.LoadedAnimationIds == null
-                || !new HashSet<Guid>(visual.LoadedAnimationIds).SetEquals(avatar.ActiveAnimations);
+            // Local prediction active (not sitting): strip the sim's echo of the built-in
+            // locomotion ids and substitute our own, so the gait is frame-latency, not RTT.
+            desired = new List<Guid>();
+            if (avatar.ActiveAnimations != null)
+                foreach (var id in avatar.ActiveAnimations)
+                    if (!SelfLocomotion.All.Contains(id)) desired.Add(id);
+            desired.Add(predicted);
+        }
+        else
+        {
+            // Remote avatar, or the self avatar while sitting (prediction is null) -- the sim's
+            // set is authoritative, including its SIT / stand-up animations.
+            if (avatar.ActiveAnimations == null) return;
+            desired = new List<Guid>(avatar.ActiveAnimations);
+        }
 
-            if (animsChanged)
-            {
-                // TEMPORARY diagnostic (2026-07-23, OSGrid judder investigation, animation-side
-                // hypothesis): position/rotation sync now measures healthy in live-test data but
-                // the user still reports unchanged judder while walking, and specifically asked
-                // whether animation handling could differ from Firestorm's. Logs every actual
-                // active-animation-set change for the local agent, so a live capture shows whether
-                // this fires far more often than the avatar's real animation state should be
-                // changing (e.g. once per resent-but-reordered packet, before the fix above) or
-                // stays rare as expected. Remove once the OSGrid judder cause is confirmed.
-                if (avatar.IsLocalAgent)
-                {
-                    var oldIds = visual.LoadedAnimationIds == null ? "(none)" : string.Join(",", visual.LoadedAnimationIds);
-                    var newIds = string.Join(",", avatar.ActiveAnimations);
-                    // GD.Print($"[AvatarAnim] active set changed: [{oldIds}] -> [{newIds}]");
-                }
+        bool changed = visual.LoadedAnimationIds == null
+            || !new HashSet<Guid>(visual.LoadedAnimationIds).SetEquals(desired);
+        if (!changed) return;
 
-                visual.LoadedAnimationIds = new List<Guid>(avatar.ActiveAnimations);
-                var animIds = new List<Guid>(avatar.ActiveAnimations);
-                _ = LoadAndStartAnimationsAsync(visual, animIds);
-            }
+        visual.LoadedAnimationIds = new List<Guid>(desired);
+        _ = LoadAndStartAnimationsAsync(visual, desired);
+    }
+
+    /// <summary>FEAT-ANIM-01: the self avatar's locomotion animation as decided from local input
+    /// this frame by <see cref="AvatarController"/> (<see cref="SelfLocomotion.Predict"/>), or
+    /// <see langword="null"/> while sitting. Applied immediately, ahead of the sim's echo.</summary>
+    private Guid? _selfPredictedLocomotion;
+    private Guid _selfEntityId;
+    private bool _locomotionPrefetchStarted;
+
+    /// <summary>Called every frame by <see cref="AvatarController"/> with the locally-predicted
+    /// self locomotion animation. No-op unless it changed.</summary>
+    public void SetSelfPredictedLocomotion(Guid? animId)
+    {
+        if (animId == _selfPredictedLocomotion) return;
+        _selfPredictedLocomotion = animId;
+
+        if (_selfEntityId != Guid.Empty
+            && _visuals.TryGetValue(_selfEntityId, out var visual)
+            && _world?.GetEntity(_selfEntityId)?.GetComponent<AvatarComponent>() is { } avatar)
+        {
+            ApplyActiveAnimations(_selfEntityId, visual, avatar);
         }
     }
 

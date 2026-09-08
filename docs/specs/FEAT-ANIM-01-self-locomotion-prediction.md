@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-ANIM-01`
 - **Track:** `render` / `net`
-- **Status:** `⏸️ Pending`
+- **Status:** `🧪 Review` — implemented v0.21.8, not yet verified in-world
 - **Owner:** `claude`
 - **Reported:** live, 2026-09-03. *"Rumlaufen → Animation zum Laufen kommt nicht / zu spät wenn es
   etwas laggt."*
@@ -60,3 +60,30 @@ the server. It never waits for its own echo.
 - No regression to remote-avatar animation, sit/stand, or worn non-locomotion animations.
 - Tests for the locomotion-state → anim-id decision (pure function, `AvatarController` or a small
   helper in `SLNG.Core`).
+
+## Implementation (v0.21.8)
+
+| File | Change |
+|---|---|
+| `src/SLNG.Core/Avatars/SelfLocomotion.cs` (new) | `LocomotionState` record struct + pure `Predict(in LocomotionState) → Guid?`; the 18 built-in `ANIM_AGENT_*` UUIDs as `Guid` constants (from `llanimationstates.cpp`); `All` (the ids the renderer strips from the sim echo — no `SIT`/`SIT_GROUND`/`STANDUP`) and `Prefetch` (cache-warm set) |
+| `tests/SLNG.Core.Tests/SelfLocomotionTests.cs` (new) | 17 tests pinning the decision (stand / walk vs run / turn / fly / hover-up-down / fall / crouch / sitting → null / every emitted id ∈ `All`) |
+| `app/scripts/AvatarController.cs` | builds a `LocomotionState` from **input keys** (`isFwd/isBack/isLeft/isRight/isDown`), `_flying`, `isSitting` and a new `_grounded` flag (set by the ground clamp), plus network velocity for walk-vs-run / hover-up-down only; pushes `SelfLocomotion.Predict(...)` to the renderer every frame |
+| `app/scripts/AvatarRenderer.cs` | `SetSelfPredictedLocomotion(Guid?)`; `ApplyActiveAnimations` (extracted from step 4) — for the self **with a non-null prediction**, strip `SelfLocomotion.All` from `avatar.ActiveAnimations` and append the prediction; remote avatars and the sitting self are unchanged (sim set authoritative). Prefetches `SelfLocomotion.Prefetch` on first self-visual creation. Tracks `_selfEntityId` (cleared in `RemoveVisual`) |
+| `app/scripts/Boot.cs` | `AppVersion` v0.21.7 → v0.21.8 |
+
+### Notes / follow-ups
+
+- **Merge rule is priority-based, not gap-based.** The prediction always emits a built-in gait;
+  a custom AO walk is not a `SelfLocomotion.All` id so it stays in the set and wins per bone via
+  its authored priority — exactly what the reference viewer does (`gAgent` plays the built-in
+  gait locally, the AO overrides it). Only the sim's echo of the *built-in* ids is stripped, so
+  there is no built-in-vs-built-in fight.
+- **No `res://` bundled fallback yet.** The prefetch warms the cache from grid assets; the 18
+  ids are standard SL library animations present on SL and OSGrid. If one fails to resolve on a
+  given grid the prediction still emits it and `LoadAndStartAnimationsAsync` no-ops that entry
+  (same as today) — a bundled copy is a follow-up if a grid is found missing one.
+- **Jump / prejump not predicted.** Needs a jump-input edge `AvatarController` doesn't expose;
+  `FallDown` covers airborne. Follow-up.
+- **Run is speed-thresholded** (`SpeedHoriz > 4.6 m/s`), not tied to an always-run / fast flag —
+  `AvatarController` has no run input. Good enough for the reported problem; revisit if a run
+  toggle lands.

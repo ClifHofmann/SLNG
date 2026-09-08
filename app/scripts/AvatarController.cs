@@ -1,5 +1,6 @@
 using System.Linq;
 using Godot;
+using SLNG.Core.Avatars;
 using SLNG.Core.Components;
 using SLNG.Core.ECS;
 using SLNG.Net;
@@ -400,6 +401,11 @@ public partial class AvatarController : Camera3D
     // suspended and E/C move vertically. Landing on the ground leaves fly mode.
     private bool _flying = false;
 
+    // FEAT-ANIM-01: whether the avatar is on/near the ground this frame (updated by the ground
+    // clamp below). Read one frame later by the self-locomotion prediction to tell "falling"
+    // from "standing/walking" -- a frame of lag is imperceptible for animation.
+    private bool _grounded = true;
+
     // Throttles the ground-clamp diagnostic print below to ~1/sec instead of every frame.
     private double _timeSinceGroundLog = 0;
 
@@ -723,6 +729,23 @@ public partial class AvatarController : Camera3D
                     _orbitTarget = null;
                 }
 
+                // FEAT-ANIM-01: drive the self avatar's locomotion animation from local input
+                // NOW, not after the sim echoes AvatarAnimation back (which slides the avatar
+                // forward in the stand pose under lag). Key state is the zero-latency signal;
+                // network velocity only tells walk from run and catches keyless motion.
+                var vel = transform.Velocity;
+                var locomotion = new LocomotionState(
+                    Sitting: isSitting,
+                    Flying: _flying,
+                    Grounded: _grounded,
+                    MovingForward: !isSitting && (isFwd || isBack),
+                    TurningLeft: !isSitting && isLeft && !isFwd && !isBack,
+                    TurningRight: !isSitting && isRight && !isFwd && !isBack,
+                    Crouching: !isSitting && !_flying && isDown,
+                    SpeedHoriz: System.MathF.Sqrt(vel.X * vel.X + vel.Y * vel.Y),
+                    SpeedVert: vel.Z);
+                _avatarRenderer?.SetSelfPredictedLocomotion(SelfLocomotion.Predict(locomotion));
+
                 // Camera rotation = avatar facing (_yaw/_pitch) plus the orbit offset.
                 // The orbit offset moves the camera around the avatar without turning it.
                 Rotation = new Vector3(_pitch + _orbitPitch, _yaw + _orbitYaw, 0);
@@ -954,6 +977,10 @@ public partial class AvatarController : Camera3D
                         float fallSpeed = 9.81f * (float)delta;
                         transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, System.Math.Max(clampTargetZ, transform.Position.Z - fallSpeed));
                     }
+
+                    // FEAT-ANIM-01: near the clamp height == standing/walking; well above it (and
+                    // not flying) == airborne / falling.
+                    _grounded = !_flying && transform.Position.Z - clampTargetZ < 0.35f;
                 }
 
                 // Avatar body faces _yaw, updated EVERY FRAME -- not just at the 10 Hz AgentUpdate
