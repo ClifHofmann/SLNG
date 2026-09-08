@@ -553,19 +553,68 @@ public partial class AvatarController : Camera3D
     /// RenderingServer error plus a full C# backtrace whenever the parameter is missing, and once
     /// per frame that buries the log rather than reporting anything.</para>
     /// </summary>
+    private bool _sunViewDirNaNLogged;
+
     private void PublishViewSpaceSunDirection()
     {
         var dir = EnvironmentDriver.LastSunDirectionGodot;
         if (dir.LengthSquared() < 0.000001f) return;
 
+        // BUG-NET-13: if the camera's own Basis is non-finite (the orbit/transition state latched a
+        // NaN -- see the guard at the top of _Process), Inverse() yields a NaN basis and the
+        // Normalized() below logs "Vector3 cannot be normalized" every single frame. Skip and name
+        // it once rather than flood; the _Process guard is what actually repairs the root.
+        var basis = GlobalTransform.Basis;
+        if (!basis.X.IsFinite() || !basis.Y.IsFinite() || !basis.Z.IsFinite())
+        {
+            if (!_sunViewDirNaNLogged)
+            {
+                _sunViewDirNaNLogged = true;
+                GD.PushWarning("[NaNGuard] sun-view-dir: camera Basis is non-finite -- skipping slng_sun_direction_view this frame");
+            }
+            return;
+        }
+
         // Camera basis maps view -> world, so its inverse maps world -> view. Orthonormal, so the
         // transpose would do; Inverse() is clearer and this runs once a frame.
         var viewDir = GlobalTransform.Basis.Inverse() * dir.Normalized();
+        if (!viewDir.IsFinite()) return;
         RenderingServer.GlobalShaderParameterSet("slng_sun_direction_view", viewDir.Normalized());
+    }
+
+    private bool _cameraStateNaNLogged;
+
+    /// <summary>BUG-NET-13: the orbit / transition camera state (<see cref="_yaw"/>, <see cref="_pitch"/>,
+    /// <see cref="_orbitYaw"/>, <see cref="_orbitPitch"/>, <see cref="_orbitTarget"/>) must never be
+    /// non-finite -- a NaN here goes straight into <c>Rotation</c>/<c>Position</c>, the camera Basis
+    /// then can't be inverted, and <see cref="PublishViewSpaceSunDirection"/>'s Normalized() logs
+    /// "Vector3 cannot be normalized" every frame for the rest of the session. It latched once right
+    /// after a teleport (a transition/orbit value captured from a camera position computed against a
+    /// stale region handle / pre-recenter origin). Repair to a sane default and name it once.</summary>
+    private void SanitizeCameraState()
+    {
+        bool bad = !float.IsFinite(_yaw) || !float.IsFinite(_pitch)
+                   || !float.IsFinite(_orbitYaw) || !float.IsFinite(_orbitPitch)
+                   || (_orbitTarget is { } ot && !ot.IsFinite());
+        if (!bad) return;
+
+        if (!_cameraStateNaNLogged)
+        {
+            _cameraStateNaNLogged = true;
+            GD.PushWarning($"[NaNGuard] camera-state repaired: yaw={_yaw} pitch={_pitch} orbitYaw={_orbitYaw} orbitPitch={_orbitPitch} orbitTarget={_orbitTarget}");
+        }
+
+        if (!float.IsFinite(_yaw)) _yaw = 0f;
+        if (!float.IsFinite(_pitch)) _pitch = 0f;
+        if (!float.IsFinite(_orbitYaw)) _orbitYaw = 0f;
+        if (!float.IsFinite(_orbitPitch)) _orbitPitch = 0f;
+        if (_orbitTarget is { } t && !t.IsFinite()) _orbitTarget = null;
+        _transitioning = false;
     }
 
     public override void _Process(double delta)
     {
+        SanitizeCameraState();
         PublishViewSpaceSunDirection();
 
         using var _phase = MainThreadPhase.Enter("avatar-control");
@@ -1011,8 +1060,12 @@ public partial class AvatarController : Camera3D
                 targetPos += Transform.Basis.X * _panOffset.X;
                 targetPos += Transform.Basis.Y * _panOffset.Y;
 
-                // Third-person camera: pull back along the camera's Z axis
-                Position = targetPos + Transform.Basis.Z * _zoom;
+                // Third-person camera: pull back along the camera's Z axis.
+                // BUG-NET-13: never write a non-finite Position -- it makes the camera Basis
+                // uninvertible and floods PublishViewSpaceSunDirection. SanitizeCameraState clears
+                // a bad _orbitTarget; this catches a bad transform.Position / _zoom / _panOffset too.
+                var newPosition = targetPos + Transform.Basis.Z * _zoom;
+                if (newPosition.IsFinite()) Position = newPosition;
 
                 // BUG-NET-01: tell the sim where the render camera actually is. Its interest list
                 // is centred on CameraCenter; SLNG never set it, so it defaulted to region centre

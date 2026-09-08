@@ -183,14 +183,55 @@ within a packet or two, after which the send resumes with correct coordinates.
 for region <handle>` (WorldSimulation). `[RegionEnter] X` with no following `[RegionData] …
 for X` = the sim is not streaming (interest list / camera), not a render bug.
 
+## Round 3 (v0.21.2 → v0.21.3) — sparse re-entry fixed; NaN flood is NOT an avatar transform
+
+v0.21.2 log (`godot.log`, 23k lines, one teleport Millenium → Secret Love):
+
+- **Sparse re-entry: fixed.** `[RegionData] first object update for region <B>` appears right
+  after the teleport, the scene populates — user: *"Das ging jetzt."*
+- **NaN flood: back, and `[NaNGuard]` never fired** (0 lines in 23k). So the non-finite
+  vector is **not** in any avatar `TransformComponent` — `SanitizeAvatarTransform` would
+  have caught and named it. The v0.21.1 "no flood" was a false negative: that log was only
+  98 lines, the session ended seconds after the teleport.
+- The flood is **~1 warning per frame**, continuous from the first post-teleport frame to
+  the end of the session — a single per-frame call site with a permanently-latched bad
+  input.
+
+### Leading hypothesis for the flood
+
+`AvatarController.PublishViewSpaceSunDirection` runs once per frame, unconditionally, and
+ends in `viewDir.Normalized()` where `viewDir = GlobalTransform.Basis.Inverse() *
+dir.Normalized()`. `dir` (the sun direction) is already length-guarded, so the NaN must be
+the **camera's own Basis**: if the orbit / transition camera state (`_yaw`, `_pitch`,
+`_orbitYaw`, `_orbitPitch`, `_orbitTarget`) latches a non-finite value, it flows into
+`Rotation`/`Position`, the Basis stops being invertible, and `Inverse()` yields NaN — every
+frame, forever. A transition or orbit value captured from a camera position computed
+against a stale region handle / pre-recenter floating origin right after a teleport is the
+most likely way it latches.
+
+### Fixes (v0.21.3)
+
+- `AvatarController.SanitizeCameraState()` at the top of `_Process`: any non-finite `_yaw` /
+  `_pitch` / `_orbitYaw` / `_orbitPitch` / `_orbitTarget` is reset to a sane default,
+  `_transitioning` cleared, and the bad values logged **once** as
+  `[NaNGuard] camera-state repaired: …`.
+- `PublishViewSpaceSunDirection` now checks the camera Basis is finite before inverting it;
+  if not, it logs `[NaNGuard] sun-view-dir: camera Basis is non-finite` once and skips the
+  frame. It also drops a non-finite `viewDir` silently.
+- The camera `Position` write in `_Process` is guarded: a non-finite `targetPos + Basis.Z *
+  zoom` is not applied.
+
+These stop the flood and repair the state regardless of which input latched it; the
+`[NaNGuard] camera-state repaired: …` line names the exact fields that were bad so the
+root can be traced if it recurs.
+
 ## Still open / next in-world test
 
-- **Confirm v0.21.2 fixes the sparse re-entry.** Teleport A → B → A, wait, check the scene
-  on the return. In the log: after the second `[RegionEnter]` for A there should be
-  `[RegionData] first terrain patch for region A` and `… first object update for region A`
-  within a second or two. If those lines appear but the scene is still sparse, it is a
-  render-side rebuild bug (`TerrainRenderer` / `ObjectRenderer` not rebuilding a re-added
-  region). If they do **not** appear, the sim still isn't streaming — next suspect is an
-  explicit interest-list / full-object-sync re-request on region enter.
-- **RID leak** — confirm gone from the exit log of a longer sim-hopping session (this run's
-  log did not reach a clean exit).
+- **Confirm v0.21.3 stops the flood.** Teleport A → B (→ A), watch for a single
+  `[NaNGuard] camera-state repaired: …` (or `sun-view-dir …`) line and then **no**
+  `Vector3 cannot be normalized` after it. The named fields point at the latch source.
+- **RID leak** — still needs confirming from a clean exit log of a sim-hopping session
+  (neither the v0.21.1 nor v0.21.2 logs reached a clean exit).
+- **`[RegionData] first terrain patch`** never logged (only "first object update") — a
+  cosmetic flaw in the diagnostic: `OnSimConnected` raises `TerrainSettings` first, which
+  creates the terrain entry, so the first *patch* is no longer "first". Not load-bearing.
