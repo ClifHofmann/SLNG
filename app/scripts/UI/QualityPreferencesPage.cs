@@ -11,11 +11,13 @@ public partial class QualityPreferencesPage : VBoxContainer
     private GraphicsSettings _settings = null!;
     private Action _apply = null!;
     private Label _drawDistanceValue = null!;
+    private Label _textureMemValue = null!;
 
     // Kept so Refresh can push changed values back into the controls.
     private OptionButton _vsyncOption = null!;
     private OptionButton _fpsOption = null!;
     private HSlider _drawSlider = null!;
+    private HSlider _textureMemSlider = null!;
     private OptionButton _msaaOption = null!;
     private OptionButton _shadowResOption = null!;
     private OptionButton _shadowSplitsOption = null!;
@@ -98,6 +100,40 @@ public partial class QualityPreferencesPage : VBoxContainer
             _apply();
         };
 
+        // --- Texture memory (FEAT-PERF-04) -------------------------------------------------
+        AddHeading(L10n.Tr("ui.preferences.texture_memory_heading"));
+
+        var texMemRow = new HBoxContainer();
+        texMemRow.AddThemeConstantOverride("separation", 12);
+        AddChild(texMemRow);
+
+        _textureMemSlider = new HSlider
+        {
+            MinValue = 256,
+            MaxValue = 6144,
+            Step = 128,
+            Value = _settings.TextureMemoryMb,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(200, 0),
+        };
+        texMemRow.AddChild(_textureMemSlider);
+
+        _textureMemValue = new Label
+        {
+            Text = $"{_settings.TextureMemoryMb} MB",
+            CustomMinimumSize = new Vector2(64, 0),
+        };
+        _textureMemValue.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
+        texMemRow.AddChild(_textureMemValue);
+
+        _textureMemSlider.ValueChanged += value =>
+        {
+            _textureMemValue.Text = $"{value:0} MB";
+            if (_refreshing) return;
+            _settings.SetTextureMemoryMb((int)value);
+            _apply();
+        };
+
         AddChild(new HSeparator());
 
         // --- Quality ------------------------------------------------------------------------
@@ -153,6 +189,9 @@ public partial class QualityPreferencesPage : VBoxContainer
 
             _drawSlider.Value = _settings.DrawDistance;
             _drawDistanceValue.Text = $"{_settings.DrawDistance:0} m";
+
+            _textureMemSlider.Value = _settings.TextureMemoryMb;
+            _textureMemValue.Text = $"{_settings.TextureMemoryMb} MB";
 
             _msaaOption.Select(Mathf.Clamp(_settings.Msaa, 0, _msaaOption.ItemCount - 1));
 

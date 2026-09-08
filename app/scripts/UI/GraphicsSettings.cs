@@ -35,6 +35,13 @@ public sealed class GraphicsSettings
     /// <summary>Viewport.Msaa enum value: 0 off, 1 2x, 2 4x, 3 8x.</summary>
     public int Msaa { get; private set; } = (int)Viewport.Msaa.Msaa2X;
 
+    /// <summary>FEAT-PERF-04: MB the <c>GpuCache</c> may hold in textures + meshes before it applies
+    /// back-pressure (a global LOD bias + a shrink pass). This is NOT a total-VRAM cap — shadow
+    /// maps, render targets and MSAA buffers live outside the cache; the cache is roughly 40 % of
+    /// Godot's reported total. Default 1536 keeps today's value; the point of the setting is that
+    /// the number now actually binds.</summary>
+    public int TextureMemoryMb { get; private set; } = 1536;
+
     public bool PostFxSsao { get; private set; } = true;
     public bool PostFxSsil { get; private set; } = true;
     public bool PostFxGlow { get; private set; } = true;
@@ -56,6 +63,7 @@ public sealed class GraphicsSettings
         MaxFps = (int)cfg.GetValue(Section, "max_fps", MaxFps);
         DrawDistance = (float)cfg.GetValue(Section, "draw_distance", DrawDistance);
         Msaa = (int)cfg.GetValue(Section, "msaa", Msaa);
+        TextureMemoryMb = (int)cfg.GetValue(Section, "texture_memory_mb", TextureMemoryMb);
         PostFxSsao = (bool)cfg.GetValue(Section, "post_fx_ssao", PostFxSsao);
         PostFxSsil = (bool)cfg.GetValue(Section, "post_fx_ssil", PostFxSsil);
         PostFxGlow = (bool)cfg.GetValue(Section, "post_fx_glow", PostFxGlow);
@@ -77,6 +85,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "max_fps", MaxFps);
         cfg.SetValue(Section, "draw_distance", DrawDistance);
         cfg.SetValue(Section, "msaa", Msaa);
+        cfg.SetValue(Section, "texture_memory_mb", TextureMemoryMb);
         cfg.SetValue(Section, "post_fx_ssao", PostFxSsao);
         cfg.SetValue(Section, "post_fx_ssil", PostFxSsil);
         cfg.SetValue(Section, "post_fx_glow", PostFxGlow);
@@ -95,6 +104,7 @@ public sealed class GraphicsSettings
     public void SetMaxFps(int fps) { MaxFps = fps; Save(); }
     public void SetDrawDistance(float metres) { DrawDistance = metres; Save(); }
     public void SetMsaa(int msaa) { Msaa = msaa; Save(); }
+    public void SetTextureMemoryMb(int mb) { TextureMemoryMb = mb; Save(); }
     public void SetPostFxSsao(bool on) { PostFxSsao = on; Save(); }
     public void SetPostFxSsil(bool on) { PostFxSsil = on; Save(); }
     public void SetPostFxGlow(bool on) { PostFxGlow = on; Save(); }

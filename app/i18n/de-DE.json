@@ -215,6 +215,7 @@
       "fps_limit": "FPS-Grenze",
       "fps_unlimited": "Unbegrenzt",
       "draw_distance_heading": "Sichtweite:",
+      "texture_memory_heading": "Texturspeicher:",
       "quality_heading": "Qualität:",
       "msaa": "Kantenglättung",
       "off": "Aus",

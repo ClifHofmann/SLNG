@@ -15,6 +15,14 @@ public static class TextureLod
     /// duplicated rather than referenced so this file stays free of a Net dependency for a constant.</summary>
     public const int MaxDiscardLevel = 5;
 
+    /// <summary>FEAT-PERF-04: extra discard levels the renderer's VRAM back-pressure adds to every
+    /// world-texture upload while the GPU cache is over its budget (raised/lowered with hysteresis
+    /// by <c>GpuCache</c>). One level is a 4x cut in texel count. Added only when a real screen area
+    /// is known — avatar and bake textures pass <c>screenPixelArea: 0</c> and are exempt by
+    /// construction, so a parcel full of scenery never softens faces. Written on the main thread,
+    /// read on decode workers.</summary>
+    public static volatile int GlobalLodBias;
+
     /// <summary>
     /// The real viewer's texel-to-screen-pixel criterion: how many halvings of each dimension a
     /// texture can take before it stops carrying more detail than the screen can show. One discard
@@ -28,7 +36,9 @@ public static class TextureLod
         if (screenPixelArea <= 0f || width <= 0 || height <= 0) return 0;
         double texels = (double)width * height;
         int discard = (int)System.Math.Floor(System.Math.Log(texels / System.Math.Max(screenPixelArea, 1f)) / System.Math.Log(4.0));
-        return System.Math.Clamp(discard, 0, MaxDiscardLevel);
+        // FEAT-PERF-04: fold in the VRAM back-pressure bias. After the screenPixelArea guard above,
+        // so a caller with no LOD info (avatar / bake, screenPixelArea 0) is never affected.
+        return System.Math.Clamp(discard + GlobalLodBias, 0, MaxDiscardLevel);
     }
 
     /// <summary>
