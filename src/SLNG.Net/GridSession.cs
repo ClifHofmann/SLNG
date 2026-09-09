@@ -4312,7 +4312,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     private void ArmSelfAppearanceRestore()
     {
         if (System.Threading.Interlocked.Exchange(ref _selfAppearanceRestoreArmed, 1) != 0) return;
-        _selfAppearanceClock.Restart();
+        // The clock starts at login success (see LoginAsync), NOT here: this runs from
+        // OnEventQueueRunning, after the caps handshake, which a healthy relay beats.
+        if (!_selfAppearanceClock.IsRunning) _selfAppearanceClock.Restart();
 
         _ = Task.Run(async () =>
         {
@@ -4973,6 +4975,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
             if (response.Success)
             {
+                // BUG-AVATAR-04: start the appearance clock HERE, at login success.
+                //
+                // It used to start in ArmSelfAppearanceRestore, which runs from OnEventQueueRunning
+                // — after the caps handshake. On a healthy login the self AvatarAppearance relay
+                // arrives before that, so the clock was not running yet and
+                // `relay arrived N s after login` never printed: the measurement missed exactly the
+                // logins it exists to measure (zero hits across every session, found 2026-09-09).
+                // The number it produces is what turns EarlyRestoreDelay from an estimate into a
+                // measurement.
+                _selfAppearanceClock.Restart();
+                System.Threading.Volatile.Write(ref _selfRelayLatencyLogged, 0);
+
                 // FEAT-SL-02: the login response is the ONE place AccountMaturityMax and the
                 // initial PreferredMaturity are ever populated -- without this, both stayed
                 // permanently at their General/false-support defaults for the whole session,
