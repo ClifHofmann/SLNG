@@ -149,7 +149,13 @@ public partial class ObjectRenderer : Node3D
     /// other transparent surface -- unstable as the view angle changes) when it should have been
     /// alpha-tested (<c>prim_scissor</c> keeps it in the opaque, depth-writing pass; no sort, no
     /// flicker). This line says which one a given texture got, so the report can be settled
-    /// against a specific id instead of a guess. Always on; deduped per texture id.</summary>
+    /// against a specific id instead of a guess. Deduped per texture id.
+    ///
+    /// <para>Behind <c>--diag</c>, despite what this comment claimed until 2026-09-09 ("always
+    /// on"): one SL region measured 257 distinct world-prim faces on a single verdict, so
+    /// unconditional it is a flood, not a diagnostic. The mismatch mattered — a soft-alpha flame
+    /// reported as looking wrong could not be checked against its verdict without knowing to
+    /// re-run with the switch.</para></summary>
     // Keyed by "id:decision", not just id -- if the SAME texture is later rebuilt with a DIFFERENT
     // verdict (e.g. Scissor one build, Blend the next), that second line is exactly the evidence a
     // flicker hunt needs, so it must not be deduped away.
@@ -2073,7 +2079,7 @@ public partial class ObjectRenderer : Node3D
                         // DEFAULT) has already decided this face's transparency — don't let the
                         // DetectAlpha() pixel guess second-guess it.
                         if (!legacyAlphaModeResolved)
-                            ApplyAlphaCutout(material, tex, tintIsTranslucent, ft.TextureId);
+                            ApplyAlphaCutout(material, tex, tintIsTranslucent, ft.TextureId, ft.Fullbright);
                     }, label: "prim.legacy_default_face");
                 }
                 else
@@ -2127,7 +2133,8 @@ public partial class ObjectRenderer : Node3D
     /// fallback is 4.7 ms of main thread and is meant never to happen.</summary>
     private static readonly System.Collections.Generic.HashSet<Guid> _alphaReadbackLogged = new();
 
-    private void ApplyAlphaCutout(ShaderMaterial material, ImageTexture tex, bool tintIsTranslucent, Guid texId = default)
+    private void ApplyAlphaCutout(ShaderMaterial material, ImageTexture tex, bool tintIsTranslucent,
+        Guid texId = default, bool fullbright = false)
     {
         // GpuCache computed this on a worker thread while the decoded pixels were already in hand.
         // The old code called tex.GetImage() here instead -- a full VRAM readback -- and then
@@ -2207,8 +2214,30 @@ public partial class ObjectRenderer : Node3D
             // survives. Genuine translucency (glass, water, a tinted pane) is unaffected -- it
             // carries an explicit legacy/glTF Blend mode or a translucent tint and never reaches
             // this method.
-            material.Shader = PrimShaderFamily.Scissor;
-            material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, maskable ? 0.5f : 0.33f);
+            // BUG-RENDER-14: FULLBRIGHT is the exception to the divergence above.
+            //
+            // A fullbright face with an alpha texture is SL's standard construction for a flame,
+            // a glow, a light shaft, a hologram -- content whose entire appearance IS the soft
+            // blend. Cutting it binary produces a hard-edged, faceted shape: reported live
+            // 2026-09-09 with a Firestorm side-by-side of a candle flame, whose selection wireframe
+            // showed crossed flat planes (a prim, not a particle system) carrying a soft flame
+            // texture. Grass and foliage -- the content this divergence was written for -- are not
+            // fullbright, so the exception costs BUG-RENDER-11 nothing.
+            //
+            // It is also the better KIND of signal, by this method's own argument two paragraphs
+            // up: the divergence is justified by the creator having declared nothing, so the
+            // texture's alpha is only incidental. Here the creator DID declare something. Taking a
+            // declared flag over a pixel guess is the same reasoning that makes a glTF alphaMode
+            // authoritative, and it needs no threshold.
+            if (fullbright)
+            {
+                material.Shader = PrimShaderFamily.Blend;
+            }
+            else
+            {
+                material.Shader = PrimShaderFamily.Scissor;
+                material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, maskable ? 0.5f : 0.33f);
+            }
         }
         // CullMode is deliberately NOT touched here -- see BuildFaceMaterialAsync's CullMode
         // comment. The real viewer back-face culls alpha-blended and alpha-masked prim faces
@@ -2217,6 +2246,9 @@ public partial class ObjectRenderer : Node3D
         // an object's interior surfaces.
 
         LogFaceAlpha(texId, $"noMat detectAlpha={alphaMode} maskable={(GpuCache.TryGetIsAlphaMaskable(texId, out _) ? maskable.ToString() : "?")} img={imgW}x{imgH} " +
+            // BUG-RENDER-14: the flag that now decides between blending and cutting. Without it in
+            // the line, "why is this face hard-edged" cannot be answered from the log.
+            $"fullbright={fullbright} " +
             $"tintTranslucent={tintIsTranslucent} -> {PrimShaderKindName(material.Shader)}" +
             (ReferenceEquals(material.Shader, PrimShaderFamily.Scissor) ? $" @{(maskable ? 0.5f : 0.33f)}" : "") +
             (ReferenceEquals(material.Shader, PrimShaderFamily.Blend) ? " (SORTED transparent pass)" : ""));

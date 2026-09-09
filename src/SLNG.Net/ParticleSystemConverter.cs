@@ -74,8 +74,25 @@ internal static class ParticleSystemConverter
             PartStartScaleX: Clamp(sys.PartStartScaleX, 0f, MaxPartScale),
             PartStartScaleY: Clamp(sys.PartStartScaleY, 0f, MaxPartScale),
             PartEndScaleX: Clamp(sys.PartEndScaleX, 0f, MaxPartScale),
-            PartEndScaleY: Clamp(sys.PartEndScaleY, 0f, MaxPartScale));
+            PartEndScaleY: Clamp(sys.PartEndScaleY, 0f, MaxPartScale),
+            // PSYS_PART_BLEND_FUNC_SOURCE / _DEST. Carried through because a destination factor of
+            // One is ADDITIVE, and flames/glows are built from it -- rendering those with ordinary
+            // alpha blending draws each sprite as a flat opaque card (Firestorm side-by-side on a
+            // candle flame, 2026-09-09). SLNG read neither field until then.
+            //
+            // Mapped through the byte, which is the wire value and identical in both enums, but
+            // CLAMPED to a defined member: an out-of-range byte would otherwise become an enum
+            // value no switch handles. Note One=0 and Zero=1 -- the counter-intuitive order is the
+            // real one, so never compare against a literal.
+            BlendFuncSource: BlendFunc(sys.BlendFuncSource, SlParticleBlendFunc.SourceAlpha),
+            BlendFuncDest: BlendFunc(sys.BlendFuncDest, SlParticleBlendFunc.OneMinusSourceAlpha));
     }
+
+    /// <summary>An SL blend factor byte as a defined <see cref="SlParticleBlendFunc"/>, falling
+    /// back to <paramref name="fallback"/> for anything outside the enum. A raw cast would hand the
+    /// renderer a value no switch covers.</summary>
+    private static SlParticleBlendFunc BlendFunc(byte raw, SlParticleBlendFunc fallback) =>
+        Enum.IsDefined(typeof(SlParticleBlendFunc), raw) ? (SlParticleBlendFunc)raw : fallback;
 
     /// <summary>
     /// Whether the ObjectUpdate carried a particle block at all.
