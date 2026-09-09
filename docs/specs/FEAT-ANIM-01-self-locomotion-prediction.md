@@ -2,7 +2,11 @@
 
 - **Feature ID:** `FEAT-ANIM-01`
 - **Track:** `render` / `net`
-- **Status:** `🧪 Review` — implemented v0.21.8, not yet verified in-world
+- **Status:** `✅ Done` — implemented v0.21.8, fixed v0.21.10, verified in-world 2026-09-08: no crash,
+  prefetch 18/18, `[Locomotion] predict … applied` for every gait, walk cycle shows under lag.
+  Watch item, not a blocker: the boost and the user’s own worn anims both sit at priority 6, so the
+  boost wins the tie only by play order — bump to 7 if the gait proves flaky. Follow-ups named in the
+  roadmap row: `res://` bundled fallback, jump/prejump prediction.
 - **Owner:** `claude`
 - **Reported:** live, 2026-09-03. *"Rumlaufen → Animation zum Laufen kommt nicht / zu spät wenn es
   etwas laggt."*

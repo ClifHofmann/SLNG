@@ -2091,7 +2091,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         // Persist a healthy self appearance so a later login that receives none can still render
         // the real shape (ArmSelfAppearanceRestore).
-        if (e.AvatarID == _client.Self.AgentID) MaybeSaveSelfAppearanceCache();
+        if (e.AvatarID == _client.Self.AgentID)
+        {
+            MaybeSaveSelfAppearanceCache();
+            NoteSelfAppearanceRelayArrived();
+        }
 
         AvatarAppearanceReceived?.Invoke(this, new AvatarAppearanceEvent(
             e.Simulator.Handle,
@@ -4089,6 +4093,185 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     private byte[]? _selfAppearanceCacheVp;
     private int _selfAppearanceRestoreArmed;
 
+    /// <summary>BUG-AVATAR-04: 1 once the cache restore has driven the renderer, cleared again the
+    /// moment a genuine relay arrives. Without it the 12 s summary reads <c>_lastSelfRelayVisualParams</c>,
+    /// sees the shape WE just restored, and reports "FROM SIM" — the one thing the summary exists
+    /// to get right.</summary>
+    private int _selfShapeFromCache;
+
+    /// <summary>When this login's appearance clock started, for the relay-latency measurement.</summary>
+    private readonly System.Diagnostics.Stopwatch _selfAppearanceClock = new();
+    private int _selfRelayLatencyLogged;
+
+    /// <summary>BUG-AVATAR-04: how long to wait before falling back to the cached shape.
+    ///
+    /// <para>Deliberately short. The old flat 12 s was the entire visible defect on a failed login
+    /// — blank head, helmet hair, for twelve seconds. Firing early costs nothing when the sim does
+    /// answer (the relay overrides it), and 2.5 s is enough for a prompt relay to win the race and
+    /// avoid a needless swap. The `[Appearance] self AvatarAppearance relay arrived N s after
+    /// login` line exists to replace this estimate with a measurement.</para></summary>
+    private static readonly TimeSpan EarlyRestoreDelay = TimeSpan.FromSeconds(2.5);
+
+    /// <summary>BUG-AVATAR-04 root cause: derive our own shape from the WEARABLE ASSETS, the way
+    /// the reference viewer does, instead of waiting for the simulator to echo an
+    /// <c>AvatarAppearance</c> back at us.
+    ///
+    /// <para>Why this exists. <c>Settings.Agent.SendAppearance</c> is off (see the constructor, and
+    /// it stays off: with it on, LibreMetaverse writes an appearance to the account on every login
+    /// before a human can react). That flag also gates LibreMetaverse's wearable decoding, so
+    /// <c>GetWearables()</c> is empty and it holds no visual parameters — which left the sim's
+    /// unprompted echo of our own appearance as SLNG's ONLY source for the ~253 params. Second Life
+    /// does not owe us that echo, and after an outfit change it is least likely to arrive: measured
+    /// live 2026-09-09, change outfit → relog → no <c>AvatarAppearance</c> at all.</para>
+    ///
+    /// <para>The viewer never depends on the echo. It reads the worn wearables and takes the params
+    /// out of the assets themselves. Everything needed for that already existed here for the bake
+    /// path — <see cref="CollectWornWearablesForBakeAsync"/> reads the Current Outfit Folder and
+    /// downloads each asset, <c>OrderWearablesAsTheViewerDoes</c> puts them in layer order, and
+    /// <see cref="AgentAppearanceParams.BuildWireArray"/> resolves them into the wire array — it was
+    /// simply never wired into the LOGIN path. Purely local: nothing is sent, so this carries none
+    /// of the risk the flag does.</para>
+    ///
+    /// <para>Returns false when the COF yields no usable wearables, in which case the on-disk cache
+    /// is still the fallback.</para></summary>
+    private async Task<bool> TryDeriveSelfShapeFromWearablesAsync(CancellationToken ct)
+    {
+        try
+        {
+            var worn = await CollectWornWearablesForBakeAsync(verbose: false, ct).ConfigureAwait(false);
+
+            // The collector resolves the COF links and fills in ItemID / AssetID / WearableType --
+            // it does NOT download the assets; the bake path does that itself right after calling
+            // it. Skipping this step is why the first live run reported "9 wearable(s), 0 with a
+            // downloaded asset" and fell through to the cache (v0.21.25 log). Same request the bake
+            // path uses, so a wearable already fetched for a bake this session is a cache hit.
+            int decoded = 0;
+            foreach (var w in worn)
+            {
+                if (w.Asset != null) { decoded++; continue; }
+                // Only body parts and clothing carry visual params; the COF also holds attachments.
+                if (w.AssetType is not (LibreMetaverse.AssetType.Bodypart or LibreMetaverse.AssetType.Clothing))
+                    continue;
+                try
+                {
+                    var asset = await _client.Assets
+                        .RequestAssetAsync(w.AssetID, w.AssetType, priority: true, ct).ConfigureAwait(false);
+                    if (asset is LibreMetaverse.Assets.AssetWearable aw && aw.Decode()) { w.Asset = aw; decoded++; }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[Appearance]   {w.WearableType}: wearable asset {w.AssetID} did not fetch/decode: {ex.Message}");
+                }
+            }
+
+            var ordered = OrderWearablesAsTheViewerDoes(worn.Where(w => w.Asset != null).ToList(), verbose: false);
+            var wearableParams = ordered
+                .Where(w => w.Asset != null)
+                .Select(w => (IReadOnlyDictionary<int, float>)w.Asset!.Params)
+                .ToList();
+
+            // Say WHY when this cannot produce a shape. Returning a bare false was the same mistake
+            // the healthy path made before the login summary existed: the first live run (v0.21.24)
+            // fell through to the cache and the log could not say whether the Current Outfit Folder
+            // was empty, the assets had not downloaded, or the resolved array failed the health
+            // check. One line per failed login, and the next relog is decisive.
+            if (wearableParams.Count == 0)
+            {
+                Console.Error.WriteLine(
+                    $"[Appearance] cannot derive a shape: Current Outfit Folder gave {worn.Count} wearable(s), " +
+                    $"{decoded} with a downloaded asset — nothing to read params from");
+                return false;
+            }
+
+            var wire = AgentAppearanceParams.BuildWireArray(wearableParams);
+            if (!VisualParamsHealthy(wire))
+            {
+                int defaulted = wire.Count(b => b == 0 || b == 128);
+                Console.Error.WriteLine(
+                    $"[Appearance] cannot derive a shape: {wearableParams.Count} wearable(s) resolved to " +
+                    $"{wire.Length} params but {defaulted} of them are default (0/128) — needs at least " +
+                    $"{MinHealthyVisualParams} params and one non-default value");
+                return false;
+            }
+
+            _lastSelfRelayVisualParams = wire;
+            System.Threading.Volatile.Write(ref _selfShapeFromCache, 0);
+
+            Console.Error.WriteLine(
+                $"[Appearance] derived our own shape from {wearableParams.Count} worn wearable(s) " +
+                $"({wire.Length} params) — no AvatarAppearance needed");
+
+            // Persist it too: a later login that cannot reach the assets in time still has it.
+            MaybeSaveSelfAppearanceCache();
+
+            var sim = _client.Network.CurrentSim;
+            if (sim != null)
+                AvatarAppearanceReceived?.Invoke(this, new AvatarAppearanceEvent(
+                    sim.Handle, _client.Self.AgentID.Guid, wire,
+                    new Dictionary<int, Guid>(_lastSelfRelayBakes), _lastSelfHoverOffsetZ));
+            return true;
+        }
+        catch (OperationCanceledException) { return false; }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Appearance] deriving the shape from worn wearables failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Loads the cached shape and drives the renderer with it. Returns false when there is
+    /// nothing usable cached. <paramref name="provisional"/> only picks the wording: the early
+    /// attempt may still be overtaken by a real relay, the 12 s one is the verdict.</summary>
+    private bool TryRestoreSelfShapeFromCache(bool provisional)
+    {
+        if (!SelfAppearanceCache.TryLoad(_client.Self.AgentID.Guid, out var vp, out var bakes, out var hoverZ)
+            || !VisualParamsHealthy(vp))
+            return false;
+
+        _lastSelfRelayVisualParams = vp;
+        if (bakes.Count > 0 && _lastSelfRelayBakes.Count == 0) _lastSelfRelayBakes = bakes;
+        if (_lastSelfHoverOffsetZ == 0f) _lastSelfHoverOffsetZ = hoverZ;
+        System.Threading.Volatile.Write(ref _selfShapeFromCache, 1);
+
+        if (provisional)
+            Console.Error.WriteLine(
+                $"[Appearance] no relay yet after {EarlyRestoreDelay.TotalSeconds:F1} s — showing the cached shape " +
+                $"({vp.Length} params, {bakes.Count} bake id(s)); a real relay still overrides it{DescribeAppearanceCacheAge()}");
+        else
+            Console.Error.WriteLine(
+                $"[Appearance] login summary: shape RESTORED FROM CACHE ({vp.Length} params) + {bakes.Count} bake id(s) " +
+                $"— the sim sent no AvatarAppearance for us this login{DescribeAppearanceCacheAge()}");
+
+        var sim = _client.Network.CurrentSim;
+        if (sim != null)
+            AvatarAppearanceReceived?.Invoke(this, new AvatarAppearanceEvent(
+                sim.Handle, _client.Self.AgentID.Guid, vp,
+                _lastSelfRelayBakes.Count > 0 ? new Dictionary<int, Guid>(_lastSelfRelayBakes) : bakes,
+                _lastSelfHoverOffsetZ));
+        return true;
+    }
+
+    /// <summary>BUG-AVATAR-04: reports how long the simulator took to relay our own
+    /// <c>AvatarAppearance</c>, once per login.
+    ///
+    /// <para>This is the number that sets <see cref="EarlyRestoreDelay"/>. The restore used to wait
+    /// a flat 12 s, which is why a failed login rendered a blank head and helmet hair for twelve
+    /// seconds before recovering — measured live 2026-09-09, and exactly the "kam kaputt, baute
+    /// sich dann sauber auf" report. Pulling the restore earlier is safe (a real relay overrides
+    /// it through the same event), but firing it *before* a healthy relay would arrive shows the
+    /// cached shape for no reason. So: measure the healthy case, then set the delay from data
+    /// rather than taste.</para></summary>
+    private void NoteSelfAppearanceRelayArrived()
+    {
+        System.Threading.Volatile.Write(ref _selfShapeFromCache, 0);
+        if (!_selfAppearanceClock.IsRunning) return;
+        if (System.Threading.Interlocked.Exchange(ref _selfRelayLatencyLogged, 1) != 0) return;
+        Console.Error.WriteLine(
+            $"[Appearance] self AvatarAppearance relay arrived {_selfAppearanceClock.Elapsed.TotalSeconds:F1} s after login " +
+            $"(early restore fires at {EarlyRestoreDelay.TotalSeconds:F1} s — BUG-AVATAR-04)");
+    }
+
     /// <summary>Persists the last <b>healthy</b> self appearance so a later login that receives no
     /// <c>AvatarAppearance</c> can still render the real shape (see <see cref="SelfAppearanceCache"/>
     /// and <see cref="ArmSelfAppearanceRestore"/>). Only writes when the shape actually changed.</summary>
@@ -4102,6 +4285,25 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _selfAppearanceCacheVp = (byte[])vp.Clone();
     }
 
+    /// <summary>BUG-AVATAR-04: " · cache written 2026-09-08 19:44 UTC (14 h ago)", or " · no cache"
+    /// — appended to every login-summary line.
+    ///
+    /// <para>Reported on the healthy path too, on purpose. The cache is written only when an
+    /// <c>AvatarAppearance</c> arrives, so its age is the direct test for the second candidate
+    /// cause: after an outfit change that received no further relay, the newest entry predates the
+    /// change and a later restore brings back the OLD outfit. A timestamp older than the last
+    /// outfit change confirms that; a fresh one rules it out.</para></summary>
+    private string DescribeAppearanceCacheAge()
+    {
+        var written = SelfAppearanceCache.LastWrittenUtc(_client.Self.AgentID.Guid);
+        if (written == null) return " · no cache";
+        var age = DateTime.UtcNow - written.Value;
+        string ageText = age.TotalMinutes < 90
+            ? $"{age.TotalMinutes:F0} min ago"
+            : age.TotalHours < 48 ? $"{age.TotalHours:F0} h ago" : $"{age.TotalDays:F0} d ago";
+        return $" · cache written {written.Value:yyyy-MM-dd HH:mm} UTC ({ageText})";
+    }
+
     /// <summary>One-shot: if no healthy self <c>AvatarAppearance</c> has arrived a little after
     /// login, load the last one from <see cref="SelfAppearanceCache"/> and drive the renderer with
     /// it — the sim's own relay is missing on roughly every second Agni login and the ~253 visual
@@ -4110,38 +4312,81 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     private void ArmSelfAppearanceRestore()
     {
         if (System.Threading.Interlocked.Exchange(ref _selfAppearanceRestoreArmed, 1) != 0) return;
+        _selfAppearanceClock.Restart();
 
         _ = Task.Run(async () =>
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(12)).ConfigureAwait(false);
+                // BUG-AVATAR-04: try the cache EARLY, then report the verdict at the old 12 s mark.
+                //
+                // A failed login used to render a blank head and helmet hair for the full twelve
+                // seconds before the restore fired -- measured live 2026-09-09, and precisely the
+                // "kam kaputt, baute sich dann sauber auf" report. Restoring early is safe by
+                // construction: a genuine relay arriving later overrides it through the same
+                // event, and NoteSelfAppearanceRelayArrived clears the from-cache marker so the
+                // summary below still tells the truth about what the SIM did.
+                //
+                // This is mitigation, not the fix. The open question is why the simulator sends no
+                // AvatarAppearance after an outfit change at all -- see the spec.
+                await Task.Delay(EarlyRestoreDelay).ConfigureAwait(false);
                 if (!_client.Network.Connected) return;
-                if (VisualParamsHealthy(_lastSelfRelayVisualParams)) return; // the sim did send one
+                if (!VisualParamsHealthy(_lastSelfRelayVisualParams)) TryRestoreSelfShapeFromCache(provisional: true);
 
-                if (!SelfAppearanceCache.TryLoad(_client.Self.AgentID.Guid, out var vp, out var bakes, out var hoverZ)
-                    || !VisualParamsHealthy(vp))
+                await Task.Delay(TimeSpan.FromSeconds(12) - EarlyRestoreDelay).ConfigureAwait(false);
+                if (!_client.Network.Connected) return;
+
+                // BUG-AVATAR-04, the actual fix rather than the mitigation above: if the simulator
+                // still has not echoed our appearance, stop waiting for it and read the worn
+                // wearables ourselves, which is what the reference viewer does in the first place.
+                // Tried BEFORE falling back to the cache, because the assets are the current truth
+                // and the cache is only the last thing we happened to see.
+                if (!VisualParamsHealthy(_lastSelfRelayVisualParams)
+                    || System.Threading.Volatile.Read(ref _selfShapeFromCache) != 0)
+                {
+                    if (await TryDeriveSelfShapeFromWearablesAsync(CancellationToken.None).ConfigureAwait(false))
+                    {
+                        Console.Error.WriteLine(
+                            "[Appearance] login summary: shape DERIVED FROM WORN WEARABLES — the sim sent no " +
+                            $"AvatarAppearance for us this login{DescribeAppearanceCacheAge()}");
+                        return;
+                    }
+                }
+
+                // BUG-AVATAR-04: say out loud, once per login, WHICH path produced this avatar.
+                //
+                // This used to be silent on the healthy path -- it simply returned -- so a session
+                // where the sim behaved and a session where this code never ran looked identical
+                // in the log, and "kam kaputt, baute sich dann sauber auf" could not be told apart
+                // from ordinary progressive loading. Months of test logins passed without the
+                // restore below ever executing and nobody could tell.
+                //
+                // With the 2026-09-09 repro (change outfit, then relog) one line here decides the
+                // open question: whether the sim withholds AvatarAppearance, or whether an outfit
+                // change of our own leaves us without one. Unconditional, not behind --diag: it is
+                // one line per login.
+                bool fromCache = System.Threading.Volatile.Read(ref _selfShapeFromCache) != 0;
+                if (VisualParamsHealthy(_lastSelfRelayVisualParams) && !fromCache)
                 {
                     Console.Error.WriteLine(
-                        "[Appearance] no self AvatarAppearance from the sim and no cached shape to fall back on " +
-                        "— the avatar keeps the default shape until a relay arrives");
+                        $"[Appearance] login summary: shape FROM SIM ({_lastSelfRelayVisualParams!.Length} params), " +
+                        $"{_lastSelfRelayBakes.Count} bake id(s){DescribeAppearanceCacheAge()}");
                     return;
                 }
 
-                _lastSelfRelayVisualParams = vp;
-                if (bakes.Count > 0 && _lastSelfRelayBakes.Count == 0) _lastSelfRelayBakes = bakes;
-                if (_lastSelfHoverOffsetZ == 0f) _lastSelfHoverOffsetZ = hoverZ;
+                if (fromCache)
+                {
+                    Console.Error.WriteLine(
+                        $"[Appearance] login summary: shape RESTORED FROM CACHE ({_lastSelfRelayVisualParams!.Length} params) " +
+                        $"+ {_lastSelfRelayBakes.Count} bake id(s) — the sim sent no AvatarAppearance for us this login" +
+                        $"{DescribeAppearanceCacheAge()}");
+                    return;
+                }
 
-                Console.Error.WriteLine(
-                    $"[Appearance] restored last-known shape ({vp.Length} params) + {bakes.Count} bake id(s) from cache " +
-                    "— the sim sent no AvatarAppearance for us this login");
-
-                var sim = _client.Network.CurrentSim;
-                if (sim != null)
-                    AvatarAppearanceReceived?.Invoke(this, new AvatarAppearanceEvent(
-                        sim.Handle, _client.Self.AgentID.Guid, vp,
-                        _lastSelfRelayBakes.Count > 0 ? new Dictionary<int, Guid>(_lastSelfRelayBakes) : bakes,
-                        _lastSelfHoverOffsetZ));
+                if (!TryRestoreSelfShapeFromCache(provisional: false))
+                    Console.Error.WriteLine(
+                        "[Appearance] login summary: NO shape — the sim sent no AvatarAppearance and there is no " +
+                        $"cached one to fall back on; the avatar keeps the default shape until a relay arrives{DescribeAppearanceCacheAge()}");
             }
             catch (Exception ex)
             {
@@ -5722,14 +5967,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 // First check soon so a missing attachment pops in fast, not 20 s later; the
                 // later passes cover a slow COF load or a sim that is still settling.
                 int[] schedule = { 6, 12, 22, 45, 80 };
+                int totalReattached = 0;
                 for (int i = 0; i < schedule.Length; i++)
                 {
                     await Task.Delay(TimeSpan.FromSeconds(i == 0 ? schedule[0] : schedule[i] - schedule[i - 1]))
                         .ConfigureAwait(false);
                     if (!_client.Network.Connected) return;
-                    if (await ReattachMissingCofAttachmentsAsync().ConfigureAwait(false) == 0 && i > 0)
-                        return;
+                    int sent = await ReattachMissingCofAttachmentsAsync().ConfigureAwait(false);
+                    totalReattached += sent;
+                    if (sent == 0 && i > 0) break;
                 }
+
+                // BUG-AVATAR-04: the second half of the login summary. Silent before, so a login
+                // where every attachment rezzed and a login where this never ran looked the same.
+                // Only speaks up when it actually did something -- a clean login stays quiet.
+                if (totalReattached > 0)
+                    Console.Error.WriteLine(
+                        $"[Appearance] login summary: RECONCILED {totalReattached} missing Current-Outfit attachment(s) " +
+                        "— the sim did not rez them on login");
             }
             catch (Exception ex)
             {
