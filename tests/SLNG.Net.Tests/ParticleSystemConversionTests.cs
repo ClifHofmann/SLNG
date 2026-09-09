@@ -265,4 +265,82 @@ public class ParticleSystemConversionTests
         Assert.Equal(ParticleSystemConverter.MaxPartScale, data.PartStartScaleX);
         Assert.Equal(ParticleSystemConverter.MaxPartScale, data.PartEndScaleY);
     }
+
+    /// <summary>
+    /// A candle flame rendered as flat opaque cards next to Firestorm's soft glow (live, 2026-09-09)
+    /// traced back to SLNG reading neither <c>PSYS_PART_BLEND_FUNC_SOURCE</c> nor <c>_DEST</c> at
+    /// all: every emitter drew with ordinary alpha blending. A destination factor of <c>One</c> is
+    /// ADDITIVE, which is what makes overlapping flame quads accumulate towards white instead of
+    /// each one occluding the last. The viewer applies the pair per draw call
+    /// (<c>lldrawpoolalpha.cpp:774</c>).
+    /// </summary>
+    [Fact]
+    public void AdditiveBlendFunc_SurvivesTheWire()
+    {
+        var sys = WireFountain();
+        sys.BlendFuncSource = (byte)Primitive.ParticleSystem.BlendFunc.SourceAlpha;
+        sys.BlendFuncDest = (byte)Primitive.ParticleSystem.BlendFunc.One;
+
+        ParticleSystemData? data = ParticleSystemConverter.FromWire(RoundTrip(sys));
+
+        Assert.NotNull(data);
+        Assert.Equal(SlParticleBlendFunc.SourceAlpha, data!.BlendFuncSource);
+        Assert.Equal(SlParticleBlendFunc.One, data.BlendFuncDest);
+        Assert.True(data.IsAdditive);
+        Assert.False(data.HasUnsupportedBlendFunc);
+    }
+
+    /// <summary>
+    /// The default pair is ordinary alpha blending and must NOT be mistaken for additive -- that
+    /// would turn every ordinary smoke or dust emitter into a glow.
+    /// </summary>
+    [Fact]
+    public void DefaultBlendFunc_IsAlphaBlendingNotAdditive()
+    {
+        ParticleSystemData? data = ParticleSystemConverter.FromWire(WireFountain());
+
+        Assert.NotNull(data);
+        Assert.Equal(SlParticleBlendFunc.SourceAlpha, data!.BlendFuncSource);
+        Assert.Equal(SlParticleBlendFunc.OneMinusSourceAlpha, data.BlendFuncDest);
+        Assert.False(data.IsAdditive);
+        Assert.False(data.HasUnsupportedBlendFunc);
+    }
+
+    /// <summary>
+    /// The trap in this enum: <c>One</c> is 0 and <c>Zero</c> is 1, which is the reverse of what
+    /// the names suggest. A wire byte of 0 therefore means ONE -- i.e. additive -- and reading it
+    /// as "zero, so nothing" would silently drop exactly the case that matters. Pinned against
+    /// LibreMetaverse's own enum so the two cannot drift apart.
+    /// </summary>
+    [Fact]
+    public void BlendFuncValues_MatchTheWireEncoding()
+    {
+        Assert.Equal(0, (byte)SlParticleBlendFunc.One);
+        Assert.Equal(1, (byte)SlParticleBlendFunc.Zero);
+        Assert.Equal((byte)Primitive.ParticleSystem.BlendFunc.One, (byte)SlParticleBlendFunc.One);
+        Assert.Equal((byte)Primitive.ParticleSystem.BlendFunc.Zero, (byte)SlParticleBlendFunc.Zero);
+        Assert.Equal((byte)Primitive.ParticleSystem.BlendFunc.SourceAlpha, (byte)SlParticleBlendFunc.SourceAlpha);
+        Assert.Equal((byte)Primitive.ParticleSystem.BlendFunc.OneMinusSourceAlpha,
+            (byte)SlParticleBlendFunc.OneMinusSourceAlpha);
+    }
+
+    /// <summary>
+    /// Godot's StandardMaterial3D offers Mix/Add/Sub/Mul only, so the rarer SL pairs cannot be
+    /// expressed. They must be RECOGNISED as unsupported rather than quietly drawn as one of the
+    /// two we do handle -- the renderer says so once per emitter instead of drawing the wrong
+    /// thing in silence.
+    /// </summary>
+    [Fact]
+    public void ExoticBlendFunc_IsReportedAsUnsupported()
+    {
+        var sys = WireFountain();
+        sys.BlendFuncSource = (byte)Primitive.ParticleSystem.BlendFunc.DestColor;
+        sys.BlendFuncDest = (byte)Primitive.ParticleSystem.BlendFunc.SourceColor;
+
+        ParticleSystemData? data = ParticleSystemConverter.FromWire(RoundTrip(sys));
+
+        Assert.NotNull(data);
+        Assert.False(data!.IsAdditive);
+        Assert.True(data.HasUnsupportedBlendFunc);
+    }
 }

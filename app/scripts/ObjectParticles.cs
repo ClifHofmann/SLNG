@@ -228,8 +228,13 @@ public partial class ObjectParticles : CpuParticles3D
             // 1/30 s steps: 30 s over a 2048 pool is 1.8M updates in one frame.
             Preprocess = Math.Min(data.PartMaxAge, MaxPreprocessSeconds);
             ConfigureEmission(data, followSource);
-            ConfigureMaterial(emissive);
         }
+
+        // Outside the structural branch on purpose: it sets two material properties and needs no
+        // pool rebuild, while the flags it reads (EMISSIVE, and the blend func) can change on their
+        // own. Leaving it inside meant a script that only switched blending kept the old material
+        // until something else forced a Restart.
+        ConfigureMaterial(emissive, data);
 
         ConfigureColor(data, interpolateColor, _smoothEndColor);
         ConfigureScale(data, interpolateScale, _smoothEndScale);
@@ -681,7 +686,7 @@ public partial class ObjectParticles : CpuParticles3D
         return c;
     }
 
-    private void ConfigureMaterial(bool emissive)
+    private void ConfigureMaterial(bool emissive, ParticleSystemData data)
     {
         if (_drawMaterial is null)
         {
@@ -689,11 +694,53 @@ public partial class ObjectParticles : CpuParticles3D
         }
 
         // SL's EMISSIVE is fullbright, not additive blending: the viewer sets LLFace::FULLBRIGHT
-        // and skips writing a normal for the particle (llvopartgroup.cpp:346, 632).
+        // and skips writing a normal for the particle (llvopartgroup.cpp:346, 632). It also adds
+        // the face to the ALPHA channel for the glow/bloom pass -- "don't touch color, add to
+        // alpha (glow)", lldrawpoolalpha.cpp:832-839 -- which is a separate thing again from the
+        // blend mode below. Do not conflate the two.
         _drawMaterial.ShadingMode = emissive
             ? BaseMaterial3D.ShadingModeEnum.Unshaded
             : BaseMaterial3D.ShadingModeEnum.PerPixel;
+
+        // The blend mode comes from PSYS_PART_BLEND_FUNC_SOURCE / _DEST, which SLNG did not read
+        // at all until now -- every emitter drew with ordinary alpha blending. A candle flame
+        // compared side by side against Firestorm (2026-09-09) showed what that costs: the viewer
+        // renders a soft glow, SLNG drew each sprite as a flat opaque card with a visible quad
+        // silhouette, because additive is exactly what makes overlapping flame quads accumulate
+        // towards white instead of each one occluding the last.
+        //
+        // The viewer sets these per draw call: lldrawpoolalpha.cpp:774,
+        // gGL.blendFunc((eBlendFactor) params.mBlendFuncSrc, (eBlendFactor) params.mBlendFuncDst, …).
+        _drawMaterial.BlendMode = data.IsAdditive
+            ? BaseMaterial3D.BlendModeEnum.Add
+            : BaseMaterial3D.BlendModeEnum.Mix;
+
+        // BUG-RENDER-14: report the pair, UNCONDITIONALLY (not behind --diag) and deduplicated per
+        // distinct pair, so at most a handful of lines per session however many emitters a region
+        // has.
+        //
+        // It is here because the first attempt at this bug shipped without it: the fix went in, the
+        // candle looked unchanged, and the log could not say whether the emitter was additive at
+        // all, whether it was a particle system, or whether the new code had run. Every other step
+        // of this session was decided by one such line; this one was skipped and cost a round.
+        string pair = $"{data.BlendFuncSource}/{data.BlendFuncDest}";
+        lock (_blendFuncLogged)
+        {
+            if (_blendFuncLogged.Add(pair))
+            {
+                GD.Print($"[Particles] blend func {pair} -> Godot {_drawMaterial.BlendMode}" +
+                         (data.HasUnsupportedBlendFunc
+                             ? " (NOT expressible as a Godot BlendMode -- drawn as Mix)"
+                             : "") +
+                         $"  first seen on obj={EmitterEntityId:N} tex={(data.TextureId == Guid.Empty ? "(none)" : data.TextureId.ToString()[..8])}");
+            }
+        }
     }
+
+    /// <summary>Distinct blend-func pairs already reported, so the line above costs a handful per
+    /// session rather than one per emitter. Static: the question is "what does this region use",
+    /// not "what does this one emitter use".</summary>
+    private static readonly System.Collections.Generic.HashSet<string> _blendFuncLogged = new();
 
     private void ResolveTexture(Guid textureId, GpuCache gpuCache, AssetService assetService)
     {

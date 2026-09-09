@@ -76,9 +76,31 @@ public record ParticleSystemData(
     float PartStartScaleX,
     float PartStartScaleY,
     float PartEndScaleX,
-    float PartEndScaleY
+    float PartEndScaleY,
+    // Defaulted so the existing positional construction keeps compiling, and defaulted to the
+    // pair SL itself uses when a script sets neither -- ordinary alpha blending.
+    SlParticleBlendFunc BlendFuncSource = SlParticleBlendFunc.SourceAlpha,
+    SlParticleBlendFunc BlendFuncDest = SlParticleBlendFunc.OneMinusSourceAlpha
 )
 {
+    /// <summary>True when this emitter asks for ADDITIVE blending — a destination factor of
+    /// <see cref="SlParticleBlendFunc.One"/>, which is how flames, glows and light shafts are
+    /// written: overlapping quads accumulate towards white instead of each occluding the last.
+    ///
+    /// <para>The source factor is deliberately not part of the test. Both common additive
+    /// spellings (<c>SourceAlpha, One</c> and <c>One, One</c>) map to the same thing in a renderer
+    /// that only offers Mix/Add, and it is the destination factor that decides whether the result
+    /// accumulates.</para></summary>
+    public bool IsAdditive => BlendFuncDest == SlParticleBlendFunc.One;
+
+    /// <summary>True when the pair is neither ordinary alpha blending nor additive — something a
+    /// Mix/Add-only renderer cannot express (multiply, subtract, dest-colour tricks). Callers use
+    /// it to say so once rather than silently drawing the wrong thing.</summary>
+    public bool HasUnsupportedBlendFunc =>
+        !IsAdditive
+        && !(BlendFuncSource == SlParticleBlendFunc.SourceAlpha
+             && BlendFuncDest == SlParticleBlendFunc.OneMinusSourceAlpha);
+
     /// <summary>True if the emitter can never produce a visible particle, whatever the renderer
     /// does with it: a particle that is dead on its first step, or a burst of nothing.</summary>
     public bool IsInert => PartMaxAge <= 0f || BurstPartCount == 0;
