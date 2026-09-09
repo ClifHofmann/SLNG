@@ -28,6 +28,28 @@ internal static class SelfAppearanceCache
 
     private static string FilePath(Guid agentId) => Path.Combine(DirPath, agentId.ToString("N") + ".bin");
 
+    /// <summary>BUG-AVATAR-04: when this cache was last written, or null if there is no entry.
+    ///
+    /// <para>The login summary reports it because the cache's AGE is what separates the two
+    /// candidate causes. <see cref="Save"/> only runs when an <c>AvatarAppearance</c> actually
+    /// arrives, so after an outfit change that received no further relay the newest entry predates
+    /// the change — and the restore path then faithfully restores the OLD outfit, which reads as
+    /// "broken" exactly like a default shape does. A timestamp from before the last outfit change
+    /// says that happened; a fresh one rules it out.</para></summary>
+    internal static DateTime? LastWrittenUtc(Guid agentId)
+    {
+        try
+        {
+            var path = FilePath(agentId);
+            return File.Exists(path) ? File.GetLastWriteTimeUtc(path) : null;
+        }
+        catch
+        {
+            // Never worth failing a login over a diagnostic timestamp.
+            return null;
+        }
+    }
+
     /// <summary>Writes the cache for <paramref name="agentId"/>. Never throws.</summary>
     internal static void Save(Guid agentId, byte[] visualParams, IReadOnlyDictionary<int, Guid> bakes, float hoverZ)
     {
