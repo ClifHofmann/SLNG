@@ -3346,7 +3346,18 @@ public partial class AvatarRenderer : Node3D
             // Only the Skin is taken from the rebuild, so the face records -- and therefore
             // BUG-RENDER-12's surface merging -- are irrelevant here; the geometry is discarded.
             var rebuilt = BuildRiggedMeshInstance(meshData, visual.Skeleton, meshId, visual, null, default, out _);
-            if (rebuilt != null) mi.Skin = rebuilt.Skin;
+            if (rebuilt == null) continue;
+            mi.Skin = rebuilt.Skin;
+
+            // BUG-RENDER-13: and the discarded node has to be FREED, not just dropped. A Godot Node
+            // is not reference-counted -- one that was never added to the tree keeps its RIDs (a
+            // RendererSceneCull::Instance, and through its ArrayMesh a MeshStorage::Mesh plus the
+            // index/vertex buffers) until the process exits. Letting the local go out of scope
+            // leaked one set per rigged attachment per shape change, which is what produced
+            // `ERROR: N RID allocations of type 'N10RendererRD11MeshStorage4MeshE' were leaked at
+            // exit` with N tracking how busy the session had been (34 in a teleport-heavy one, 20
+            // in a quiet one). The Skin survives: it is a Resource, and `mi` now holds it.
+            rebuilt.QueueFree();
         }
     }
 

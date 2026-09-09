@@ -303,3 +303,30 @@ composites we can only recover, never compute (`SendAppearance` stays off).
 - `[Appearance] no worn wearables returned` still appears at login — that is
   `AgentWearablesRequest` (LibreMetaverse's own list, dead with `SendAppearance` off) and now only
   affects the Worn tab, not the avatar. It is FEAT-AVATAR-01 / BUG-INV-01 territory.
+
+## Closed (2026-09-09, `v0.21.27`)
+
+Second in-world run: the simulator again sent no `AvatarAppearance`, the derivation handled it, and
+the avatar was confirmed by eye — *"sieht erst mal alles gut aus"*. Log and look together, which is
+the pair this bug kept failing to produce.
+
+The same run validated the **order** of the fallback ladder:
+
+```
+[Appearance] no relay yet after 2,5 s — showing the cached shape … cache written 07:01 UTC (67 min ago)
+[Appearance] login summary: shape DERIVED FROM WORN WEARABLES … cache written 08:08 UTC (0 min ago)
+```
+
+A 67-minute-old cache is precisely the stale-outfit case that was once suspected as the root cause.
+It appeared for ten seconds and the derivation replaced it — which is why derivation is tried
+*before* falling back to the cache, and not the other way round.
+
+### Residual, deliberately not reopened
+
+- The `relay arrived N s after login` measurement **never fires**: the stopwatch starts in
+  `ArmSelfAppearanceRestore`, and on a healthy login the relay arrives first. It therefore misses
+  exactly the logins it was built to measure, so `EarlyRestoreDelay` (2.5 s) remains an estimate.
+  Start the clock at login completion instead.
+- `RECONCILED 1 missing Current-Outfit attachment(s)` appears in **every** login of this series.
+  The workaround is reliable, which is the problem: it hides that the simulator reproducibly fails
+  to rez the same single object. No longer a race, and worth its own investigation.
