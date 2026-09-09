@@ -22,7 +22,6 @@ public partial class DesignPreferencesPage : VBoxContainer
     private CheckBox _postFxSsaoCheck = null!;
     private CheckBox _postFxSsilCheck = null!;
     private CheckBox _postFxGlowCheck = null!;
-    private CheckBox _postFxVolumetricFogCheck = null!;
 
     private bool _refreshing;
 
@@ -69,10 +68,9 @@ public partial class DesignPreferencesPage : VBoxContainer
         _postFxGlowCheck = AddCheck(L10n.Tr("ui.preferences.post_fx_glow"), _settings.PostFxGlow,
                                 on => { if (!_refreshing) { _settings.SetPostFxGlow(on); _apply(); } });
 
-        _postFxVolumetricFogCheck = AddCheck(L10n.Tr("ui.preferences.post_fx_volumetric_fog"), _settings.PostFxVolumetricFog,
-                                on => { if (!_refreshing) { _settings.SetPostFxVolumetricFog(on); _apply(); } });
-
-        AddHint(L10n.Tr("ui.preferences.post_fx_hint"));
+        // No hint line here any more: the only thing it ever said was that F2 toggles all three
+        // at once, and F2 is gone (see Boot._Input). These three checkboxes are now the whole
+        // interface to post-processing.
     }
 
     public void Refresh()
@@ -95,7 +93,6 @@ public partial class DesignPreferencesPage : VBoxContainer
             _postFxSsaoCheck.ButtonPressed = _settings.PostFxSsao;
             _postFxSsilCheck.ButtonPressed = _settings.PostFxSsil;
             _postFxGlowCheck.ButtonPressed = _settings.PostFxGlow;
-            _postFxVolumetricFogCheck.ButtonPressed = _settings.PostFxVolumetricFog;
         }
         finally
         {

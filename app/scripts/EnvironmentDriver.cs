@@ -862,7 +862,17 @@ public sealed class EnvironmentDriver
     /// single region because the hardcoded half never moves. Classic fog is the one Godot fog
     /// model with a colour input, which is the property this data actually has to offer before
     /// Phase E; the volumetric model's value here was never about `DistanceMultiplier`
-    /// specifically, so it is retired rather than mapped.</summary>
+    /// specifically, so it is retired rather than mapped.
+    ///
+    /// <para>This method is the SINGLE owner of both fog flags, and that had to be made true
+    /// rather than merely intended. <c>GraphicsSettings.Apply</c> also wrote
+    /// <c>VolumetricFogEnabled</c>, from a user preference that defaulted to on -- and since this
+    /// runs every frame and that runs only when the preference page applies, the driver won every
+    /// time. The setting was therefore not a second fog model competing with the seam; it was a
+    /// checkbox that changed nothing, plus an F2 shortcut whose "is any post-FX on?" test was
+    /// permanently true because of it. Retired in FEAT-RENDER-01 Phase 5; do not re-introduce a
+    /// preference for either flag without first deciding what it would mean next to the
+    /// per-fragment seam.</para></summary>
     private void ApplyFog(Godot.Environment env, SkySettings sky, SkyLighting lighting)
     {
         // Godot's built-in standard and volumetric fogs conflict with our procedural sky

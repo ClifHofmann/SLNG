@@ -45,7 +45,17 @@ public sealed class GraphicsSettings
     public bool PostFxSsao { get; private set; } = true;
     public bool PostFxSsil { get; private set; } = true;
     public bool PostFxGlow { get; private set; } = true;
-    public bool PostFxVolumetricFog { get; private set; } = true;
+
+    // No PostFxVolumetricFog. Godot's volumetric fog is a second, flat-density fog model with
+    // nothing region-aware behind it, and FEAT-RENDER-01 Phase 5 replaced distance haze entirely
+    // with the per-fragment Windlight/EEP seam (slng_atmospherics.gdshaderinc). Leaving both
+    // active is the "double-applying" the phase exists to rule out, so EnvironmentDriver.ApplyFog
+    // forces it off every frame -- which made this setting write a value that was overwritten
+    // ~16 ms later. Two visible symptoms, both from that: the Design tab's "Volumetric Fog"
+    // checkbox toggled nothing, and F2's `anyOn` was permanently true because this defaulted to
+    // true, so the first F2 press always turned post-FX OFF instead of on. Retired rather than
+    // wired up: the setting is unreachable as long as EnvironmentDriver owns the fog, and it
+    // should.
 
     public bool Shadows { get; private set; } = true;
     public float ShadowBlur { get; private set; } = 1.8f;
@@ -67,7 +77,6 @@ public sealed class GraphicsSettings
         PostFxSsao = (bool)cfg.GetValue(Section, "post_fx_ssao", PostFxSsao);
         PostFxSsil = (bool)cfg.GetValue(Section, "post_fx_ssil", PostFxSsil);
         PostFxGlow = (bool)cfg.GetValue(Section, "post_fx_glow", PostFxGlow);
-        PostFxVolumetricFog = (bool)cfg.GetValue(Section, "post_fx_volumetric_fog", PostFxVolumetricFog);
         Shadows = (bool)cfg.GetValue(Section, "shadows", Shadows);
         ShadowBlur = (float)cfg.GetValue(Section, "shadow_blur", ShadowBlur);
         ShadowResolution = (int)cfg.GetValue(Section, "shadow_resolution", ShadowResolution);
@@ -89,7 +98,6 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "post_fx_ssao", PostFxSsao);
         cfg.SetValue(Section, "post_fx_ssil", PostFxSsil);
         cfg.SetValue(Section, "post_fx_glow", PostFxGlow);
-        cfg.SetValue(Section, "post_fx_volumetric_fog", PostFxVolumetricFog);
         cfg.SetValue(Section, "shadows", Shadows);
         cfg.SetValue(Section, "shadow_blur", ShadowBlur);
         cfg.SetValue(Section, "shadow_resolution", ShadowResolution);
@@ -108,7 +116,6 @@ public sealed class GraphicsSettings
     public void SetPostFxSsao(bool on) { PostFxSsao = on; Save(); }
     public void SetPostFxSsil(bool on) { PostFxSsil = on; Save(); }
     public void SetPostFxGlow(bool on) { PostFxGlow = on; Save(); }
-    public void SetPostFxVolumetricFog(bool on) { PostFxVolumetricFog = on; Save(); }
     public void SetShadows(bool on) { Shadows = on; Save(); }
     public void SetShadowBlur(float blur) { ShadowBlur = blur; Save(); }
     public void SetShadowResolution(int res) { ShadowResolution = res; Save(); }
@@ -143,7 +150,6 @@ public sealed class GraphicsSettings
             env.SsaoEnabled = PostFxSsao;
             env.SsilEnabled = PostFxSsil;
             env.GlowEnabled = PostFxGlow;
-            env.VolumetricFogEnabled = PostFxVolumetricFog;
         }
 
         if (sun != null)

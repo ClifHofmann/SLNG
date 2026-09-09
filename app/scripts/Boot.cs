@@ -164,7 +164,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.0-alpha";
+    public const string AppVersion = "v0.22.2-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -432,7 +432,7 @@ public partial class Boot : Control
 
 
         _topMenu.OnOpenPreferences = () => {
-            // Re-read on open: F2 and F3/F4 change quality/design settings from outside the
+            // Re-read on open: F3/F4 change quality/design settings from outside the
             // dialog, so controls built once at startup would otherwise show stale values.
             // MaturityPreferencesPage has a different reason for the same fix -- see its own
             // Refresh() doc comment: SupportsMaturityPreference can read false right after login,
@@ -1476,26 +1476,20 @@ public partial class Boot : Control
     {
         if (@event is InputEventKey keyEvent && keyEvent.Pressed && !keyEvent.Echo)
         {
-            if (keyEvent.Keycode == Key.F2)
+            // No F2 post-FX toggle. It claimed in its own comment that the shortcut and the
+            // Graphics tab's checkboxes "can never end up disagreeing", and that was only true
+            // while the tab was closed: it wrote GraphicsSettings and called
+            // ApplyGraphicsSettings(), but never Refresh(), so an open Design page kept showing
+            // the old ticks. Removed rather than wired to Refresh() -- SSAO/SSIL/Glow already
+            // have a discoverable home in Preferences > Design, and one way to set a flag cannot
+            // desynchronise from itself. The F-keys that remain (F3/F4 draw distance, F5 sun
+            // gizmo, F6 nearby objects) are diagnostics with no UI counterpart to disagree with.
+            if (keyEvent.Keycode == Key.F3)
             {
-                // Routed through GraphicsSettings rather than toggling the environment directly, so
-                // the shortcut and the Graphics tab's checkbox can never end up disagreeing about
-                // the same four flags -- and so the state survives a restart like every other
-                // graphics option does.
-                bool anyOn = _graphicsSettings.PostFxSsao || _graphicsSettings.PostFxSsil || _graphicsSettings.PostFxGlow || _graphicsSettings.PostFxVolumetricFog;
-                bool target = !anyOn;
-                _graphicsSettings.SetPostFxSsao(target);
-                _graphicsSettings.SetPostFxSsil(target);
-                _graphicsSettings.SetPostFxGlow(target);
-                _graphicsSettings.SetPostFxVolumetricFog(target);
-                ApplyGraphicsSettings();
-                LogMessage($"Post-FX {(target ? "enabled" : "disabled")}");
-            }
-            else if (keyEvent.Keycode == Key.F3)
-            {
-                // Through GraphicsSettings for the same reason as F2 above: the Graphics tab's
-                // slider reads from it, and a key that wrote RenderConfig directly would leave the
-                // slider showing a stale number and overwrite the change on the next apply.
+                // Through GraphicsSettings rather than writing RenderConfig directly: the Graphics
+                // tab's slider reads from it, and a key that wrote RenderConfig directly would
+                // leave the slider showing a stale number and overwrite the change on the next
+                // apply.
                 _graphicsSettings.SetDrawDistance(Mathf.Max(32f, _graphicsSettings.DrawDistance - 16f));
                 ApplyGraphicsSettings();
                 LogMessage($"Draw distance: {RenderConfig.DrawDistance:0} m");
