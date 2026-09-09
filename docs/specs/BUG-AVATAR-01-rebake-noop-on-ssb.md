@@ -2,7 +2,8 @@
 
 - **Feature ID:** `BUG-AVATAR-01`
 - **Track:** `net`
-- **Status:** `🧪 Review` — v0.21.7: Ctrl+Alt+R now mirrors the reference viewer's
+- **Status:** `✅ Done` — in-world 2026-09-08 (Agni): both halves fire, server appearance update accepted (cof_version=97, HTTP 200); no visible flash because the evicted bakes return the same valid ids. Reviewed 2026-09-09: all acceptance criteria checked, code on `main`.
+- **Was:** `🧪 Review` — v0.21.7: Ctrl+Alt+R now mirrors the reference viewer's
   `handle_rebake_textures` — a **client-side forced re-fetch** of the self bake textures
   (`AvatarRenderer.ForceRebakeSelf` → `GpuCache.Forget` each bake id + `UpdateVisual`),
   which SLNG was missing entirely, **plus** the SSB `{cof_version}` cap POST. Before this,
