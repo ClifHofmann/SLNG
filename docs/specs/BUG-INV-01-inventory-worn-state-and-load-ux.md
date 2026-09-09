@@ -52,7 +52,7 @@ every swap dropped the new attachment.
 **Fix:** after `_client.Appearance.Attach`, `AttachItemAsync` now calls
 `EnsureCofLinkForItemAsync(item, InventoryType.Object)` — a `CreateLinkAsync` into the COF,
 guarded against duplicates, **no bake or appearance send** (an inventory link only, unlike the
-wearable path). `WearOutfitAttachmentsAsync` / `ReplaceWornWithOutfitAttachmentsAsync` (loops of
+wearable path). `WearOutfitAsync` / `ReplaceWornWithOutfitAsync` (loops of
 `AttachItemAsync`) now persist too. `replace: true` on an attach point still leaves the
 replaced item's stale link for `CleanUpCurrentOutfit` to reap — known gap.
 

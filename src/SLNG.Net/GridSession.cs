@@ -2038,7 +2038,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
             // The appearance workflow is off, so LMV's MyVisualParameters stays empty -- seed it
             // so a diagnostic read shows something truthful.
-            TrySeedVisualParams(e.VisualParams);
+            TrySeedVisualParams(e.VisualParams?.ToArray(), "the self AvatarAppearance relay");
         }
 
         // FEAT-UI-16: a self appearance relay can change the worn wearable set.
@@ -2180,10 +2180,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <c>DefaultValue</c> when the asset was never downloaded) and then OVERWRITES
     /// <c>MyVisualParameters</c> — it never reads the seeded value. FEAT-AVATAR-01 Phase 1's
     /// wearable send is reverted for exactly this reason.</summary>
-    private void TrySeedVisualParams(List<byte>? incoming)
+    private void TrySeedVisualParams(byte[]? arr, string source)
     {
         if (_visualParamsSeeded) return;
-        var arr = incoming?.ToArray();
         if (!VisualParamsHealthy(arr)) return;
         if (VisualParamsHealthy(_client.Appearance.MyVisualParameters)
             && _client.Appearance.MyVisualParameters.Length >= arr!.Length)
@@ -2194,7 +2193,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         _client.Appearance.MyVisualParameters = arr!;
         _visualParamsSeeded = true;
-        Console.Error.WriteLine($"[VisualParams] seeded {arr!.Length} params from self AvatarAppearance relay (diagnostic only)");
+        Console.Error.WriteLine($"[VisualParams] seeded {arr!.Length} params from {source} (diagnostic only)");
     }
 
     /// <summary>Whether a "Wear" / "Detach" on an inventory item targets a system wearable
@@ -3914,7 +3913,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     /// <summary>Puts a system wearable on: adds its Current-Outfit link, then tells the simulator
     /// the new worn set. Deliberately does NOT go through <c>AppearanceManager.AddToOutfit</c>,
-    /// which ends in the appearance send that has corrupted this avatar three times.</summary>
+    /// which ends in the appearance send that has corrupted this avatar three times.
+    ///
+    /// <para><b>The new link is written before the old one is removed, and a refusal aborts.</b>
+    /// AIS answers a link it will not accept with a bare <c>Bad Request</c>, which
+    /// <c>CreateLinkAsync</c> passes on as <c>null</c> — and this ignored it. It then took the old
+    /// body part's link out, told the simulator the new worn set and nudged a server re-composite,
+    /// so the server rebuilt the avatar from a Current Outfit Folder that had just lost its skin
+    /// and never got the replacement: a washed-out default body, reported live as *"wenn ich über
+    /// das Inventar die Skin anziehe sieht der Avi kaputt aus"* (2026-09-09 — seven refusals in one
+    /// session, every one of them followed by the broken bake and never by a good one). Creating
+    /// first, and stopping when that fails, means a refusal leaves the avatar exactly as it
+    /// was.</para></summary>
     private async Task WearWearableAsync(LibreMetaverse.InventoryItem wearable, bool replace)
     {
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
@@ -3930,18 +3940,26 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             byte type = wearable is LibreMetaverse.InventoryWearable iw ? (byte)iw.WearableType : (byte)0;
             var wearType = wearable is LibreMetaverse.InventoryWearable iw2
                 ? iw2.WearableType : LibreMetaverse.WearableType.Invalid;
+            bool replacesSameType = WearableRules.ReplacesSameType(wearable.AssetType, wearType);
 
-            // Body parts replace, they do not layer: an avatar has exactly one shape, skin, hair
-            // and eyes. Without this a second one is simply added -- and since the layer-ordering
-            // token is written below, it would even be given a position in a stack that cannot
-            // exist. Take the old one's link out first, so wearing means swapping.
-            if (WearableRules.ReplacesSameType(wearable.AssetType, wearType))
+            // The same resolution the attachment path has had since BUG-INV-01 and this one never
+            // did: walk a link chain down to the base item, and copy a #Library item into our own
+            // inventory first. Both are things AIS refuses a COF link for.
+            var target = await ResolveCofLinkTargetAsync(wearable).ConfigureAwait(false);
+            if (target == null)
             {
-                int replaced = await RemoveCofLinksOfWearableTypeAsync(type, keep: wearable.UUID)
-                    .ConfigureAwait(false);
-                if (replaced > 0)
-                    Console.Error.WriteLine($"[Appearance] replacing {replaced} worn {wearType} " +
-                        "-- body parts are replaced, not layered");
+                WearableEditUnavailable?.Invoke(this, wearable.Name);
+                return;
+            }
+
+            if (FindCofLinkTo(target.UUID) != null)
+            {
+                Console.Error.WriteLine($"[Appearance] \"{target.Name}\" is already in the Current Outfit " +
+                    "-- re-composite nudged, no second link written");
+                SendAgentIsNowWearing(CollectWornWearablesFromCof());
+                WornItemsChanged?.Invoke(this, EventArgs.Empty);
+                ScheduleRebakeAfterWearableEdit();
+                return;
             }
 
             // The COF link's description is where Second Life keeps the layer's position in the
@@ -3949,20 +3967,40 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // description there, as this did, leaves every layer SLNG puts on untokened, and an
             // untokened layer sorts BELOW every tokened one. So anything worn here landed at the
             // bottom of its type's stack and disappeared under whatever was already on. A new layer
-            // belongs on top, which is index = however many of that type are already worn.
-            int existing = wearable is LibreMetaverse.InventoryWearable
-                ? CollectWornWearablesFromCof().Count(e => e.WearableType == type)
-                : 0;
+            // belongs on top, which is index = however many of that type are already worn -- except
+            // a body part, which ends up the only one of its type whatever is still on right now.
+            int existing = replacesSameType
+                ? 0
+                : CollectWornWearablesFromCof().Count(e => e.WearableType == type);
             string linkDescription = wearable is LibreMetaverse.InventoryWearable
                 ? WearableLayerOrder.BuildOrderString(type, existing)
                 : wearable.Description;
 
-            await _client.Inventory.CreateLinkAsync(
-                cofUuid, wearable.UUID, wearable.Name, linkDescription,
-                LibreMetaverse.InventoryType.Wearable, LibreMetaverse.UUID.Zero).ConfigureAwait(false);
-            SendAgentIsNowWearing(CollectWornWearablesFromCof(extra: (wearable.UUID, type)));
+            var created = await CreateCofLinkAsync(
+                cofUuid, target, linkDescription, LibreMetaverse.InventoryType.Wearable).ConfigureAwait(false);
+            if (created == null)
+            {
+                Console.Error.WriteLine($"[Appearance] wear of \"{target.Name}\" abandoned -- the Current-Outfit " +
+                    "link was refused, so nothing was changed and the avatar is as it was");
+                WearableEditUnavailable?.Invoke(this, wearable.Name);
+                return;
+            }
 
-            Console.Error.WriteLine($"[Appearance] wore \"{wearable.Name}\" ({wearable.AssetType}) " +
+            // Body parts replace, they do not layer: an avatar has exactly one shape, skin, hair
+            // and eyes. This runs AFTER the new link exists -- doing it first is what left the
+            // avatar with no skin at all whenever the create was refused.
+            if (replacesSameType)
+            {
+                int replaced = await RemoveCofLinksOfWearableTypeAsync(type, keep: target.UUID)
+                    .ConfigureAwait(false);
+                if (replaced > 0)
+                    Console.Error.WriteLine($"[Appearance] replaced {replaced} worn {wearType} " +
+                        "-- body parts are replaced, not layered");
+            }
+
+            SendAgentIsNowWearing(CollectWornWearablesFromCof(extra: (target.UUID, type)));
+
+            Console.Error.WriteLine($"[Appearance] wore \"{target.Name}\" ({target.AssetType}) " +
                 "-- recorded server-side; auto re-composite scheduled");
             WornItemsChanged?.Invoke(this, EventArgs.Empty);
             ScheduleRebakeAfterWearableEdit();
@@ -4197,6 +4235,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
             _lastSelfRelayVisualParams = wire;
             System.Threading.Volatile.Write(ref _selfShapeFromCache, 0);
+
+            // FEAT-AVATAR-01, its last unchecked acceptance criterion: LogVisualParamHealth() must
+            // read a full, non-default parameter set. It reads AppearanceManager.MyVisualParameters,
+            // which stays empty because Settings.Agent.SendAppearance is off, and the only thing
+            // that ever filled it was the simulator's relay — so on precisely the logins
+            // BUG-AVATAR-04 is about it reported "LibreMetaverse holds NO visual parameters".
+            //
+            // The array just built from the worn wearable ASSETS is exactly such a set, and it is
+            // arguably the better source: it comes from what the avatar is actually wearing rather
+            // than from what the sim happened to echo. Seeding is diagnostic-only either way —
+            // nothing sends from this store while the flag is off.
+            TrySeedVisualParams(wire, $"{wearableParams.Count} worn wearable(s)");
 
             Console.Error.WriteLine(
                 $"[Appearance] derived our own shape from {wearableParams.Count} worn wearable(s) " +
@@ -5529,17 +5579,42 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     /// <summary>Creates a Current-Outfit link for <paramref name="item"/> unless one already
     /// exists. See the call in <see cref="AttachItemAsync"/> for why an attachment needs this
-    /// explicitly — no bake or appearance send is triggered, this is an inventory link only.
-    ///
-    /// <para>The link target is resolved to the <b>base</b> inventory item first: AIS rejects a
-    /// link whose <c>linked_id</c> is itself a link (link-to-link is illegal) or points at
-    /// something not in agent inventory — the <c>Create inventory in &lt;COF&gt;: Bad Request</c>
-    /// pairs BUG-INV-01 kept hitting on a couple of worn attachments.</para></summary>
+    /// explicitly — no bake or appearance send is triggered, this is an inventory link only.</summary>
     private async Task EnsureCofLinkForItemAsync(LibreMetaverse.InventoryItem item, LibreMetaverse.InventoryType invType)
     {
         var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
         if (cofUuid == LibreMetaverse.UUID.Zero) return;
 
+        var target = await ResolveCofLinkTargetAsync(item).ConfigureAwait(false);
+        if (target == null) return;
+        if (FindCofLinkTo(target.UUID) != null) return; // already recorded
+
+        try
+        {
+            await CreateCofLinkAsync(cofUuid, target, string.Empty, invType).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Appearance] could not COF-link '{target.Name}': {ex.Message}");
+        }
+    }
+
+    /// <summary>Resolves an inventory item to the one a Current-Outfit link may legally point at,
+    /// or <c>null</c> — with the reason logged — when there is none.
+    ///
+    /// <para>Two different things make AIS refuse a link, and it answers both with the same bare
+    /// <c>Create inventory in &lt;folder&gt;: Bad Request</c>: a <c>linked_id</c> that is itself a
+    /// link (link-to-link is illegal, and one hop is not always enough — the pairs BUG-INV-01 kept
+    /// hitting), and a target that is not in this agent's inventory. The second is the
+    /// <c>#Library</c> case: a Linden-owned starter item wears fine but cannot be linked, so the
+    /// reference viewer copies it into your inventory first and links the copy
+    /// (<c>LLAppearanceMgr::wearItemsOnAvatar</c>).</para>
+    ///
+    /// <para>Shared by the attachment path and the wearable path. It was written for the first and
+    /// for a year applied only there, which is one half of why wearing a skin from the inventory
+    /// could 400 while the identical item worn from an outfit did not.</para></summary>
+    private async Task<LibreMetaverse.InventoryItem?> ResolveCofLinkTargetAsync(LibreMetaverse.InventoryItem item)
+    {
         var store = _client.Inventory.Store;
 
         // Walk to the real item: a link's linked_id must be a base item, never another link.
@@ -5556,13 +5631,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             Console.Error.WriteLine(
                 $"[Appearance] not COF-linking '{item.Name}' ({item.UUID}) — does not resolve to a real inventory item " +
                 $"(isLink={item.IsLink()} resolvedItemId={item.ResolvedItemID} assetUuid={item.AssetUUID})");
-            return;
+            return null;
         }
 
-        // A #Library item (SL starter-avatar hair/clothing, freebies) is owned by the Library
-        // account, not you. It wears fine, but AIS refuses to link one into your COF
-        // ("Create inventory in <COF>: Bad Request") — the reference viewer copies it into your
-        // inventory first and links the copy (LLAppearanceMgr::wearItemsOnAvatar). Do the same.
         if (IsUnderLibrary(target.UUID))
         {
             var owned = await CopyLibraryItemForOutfitAsync(target).ConfigureAwait(false);
@@ -5570,53 +5641,73 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             {
                 Console.Error.WriteLine(
                     $"[Appearance] '{target.Name}' is a Library item and could not be copied into your inventory — " +
-                    "it will wear this session but cannot be saved to an outfit");
-                return;
+                    "it cannot be recorded in your outfit");
+                return null;
             }
             target = owned;
         }
 
-        bool foreignOwner = target.OwnerID != LibreMetaverse.UUID.Zero && target.OwnerID != _client.Self.AgentID;
-
-        var cofNode = store?.GetNodeOrDefault(cofUuid);
-        if (cofNode != null)
-            foreach (var child in cofNode.Nodes.Values)
-            {
-                if (child.Data is not LibreMetaverse.InventoryItem link || !link.IsLink()) continue;
-                var t = link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID;
-                if (t == target.UUID) return; // already recorded
-            }
-
-        try
-        {
-            var created = await _client.Inventory.CreateLinkAsync(
-                cofUuid, target.UUID, target.Name, string.Empty, invType, LibreMetaverse.UUID.Zero).ConfigureAwait(false);
-            if (created != null) return;
-
-            // AIS refused it.
-            if (foreignOwner)
-            {
-                Console.Error.WriteLine(
-                    $"[Appearance] '{target.Name}' ({target.UUID}) was not added to your outfit — the grid says it is " +
-                    $"owned by {target.OwnerID}, not you, so it is not in your inventory (worn from a shared/demo source?)");
-                return;
-            }
-            string where = "?";
-            for (var n = store?.GetNodeOrDefault(target.UUID); n != null; n = n.Parent)
-                if (n.Data is LibreMetaverse.InventoryFolder pf)
-                { where = pf.PreferredType != LibreMetaverse.FolderType.None ? pf.PreferredType.ToString() : pf.Name; break; }
-            Console.Error.WriteLine(
-                $"[Appearance] AIS refused COF link for '{target.Name}' ({target.UUID}): " +
-                $"assetType={target.AssetType} invType={target.InventoryType} isLink={target.IsLink()} " +
-                $"owner={target.OwnerID} mine={target.OwnerID == _client.Self.AgentID} " +
-                $"perms={target.Permissions.OwnerMask} parentFolder={where}");
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[Appearance] could not COF-link '{target.Name}': {ex.Message}");
-        }
+        return target;
     }
 
+    /// <summary>Writes one Current-Outfit link and reports the truth about it.
+    ///
+    /// <para><c>CreateLinkAsync</c> signals an AIS refusal by returning <c>null</c> — it does not
+    /// throw, and the only other trace is LibreMetaverse's own
+    /// <c>warn: Create inventory in &lt;folder&gt;: Bad Request</c>. A caller that ignores the
+    /// return therefore reports a wear as successful while the folder the server bakes from never
+    /// received the item. Returns the created link, or null after logging everything known about
+    /// why it was refused.</para></summary>
+    private async Task<LibreMetaverse.InventoryItem?> CreateCofLinkAsync(
+        LibreMetaverse.UUID cofUuid, LibreMetaverse.InventoryItem target, string description,
+        LibreMetaverse.InventoryType invType)
+    {
+        var created = await _client.Inventory.CreateLinkAsync(
+            cofUuid, target.UUID, target.Name, description, invType, LibreMetaverse.UUID.Zero).ConfigureAwait(false);
+        if (created != null) return created;
+
+        if (target.OwnerID != LibreMetaverse.UUID.Zero && target.OwnerID != _client.Self.AgentID)
+        {
+            Console.Error.WriteLine(
+                $"[Appearance] '{target.Name}' ({target.UUID}) was not added to your outfit — the grid says it is " +
+                $"owned by {target.OwnerID}, not you, so it is not in your inventory (worn from a shared/demo source?)");
+            return null;
+        }
+
+        var store = _client.Inventory.Store;
+        string where = "?";
+        for (var n = store?.GetNodeOrDefault(target.UUID); n != null; n = n.Parent)
+            if (n.Data is LibreMetaverse.InventoryFolder pf)
+            { where = pf.PreferredType != LibreMetaverse.FolderType.None ? pf.PreferredType.ToString() : pf.Name; break; }
+
+        Console.Error.WriteLine(
+            $"[Appearance] AIS refused COF link for '{target.Name}' ({target.UUID}): " +
+            $"assetType={target.AssetType} invType={target.InventoryType} isLink={target.IsLink()} " +
+            $"owner={target.OwnerID} mine={target.OwnerID == _client.Self.AgentID} " +
+            $"perms={target.Permissions.OwnerMask} parentFolder={where}");
+        return null;
+    }
+
+    /// <summary>The Current-Outfit link pointing at <paramref name="targetId"/>, or null. Used to
+    /// keep a wear idempotent: re-wearing something already on must not pile up duplicate links,
+    /// which <see cref="CollectWornWearablesFromCof"/> would then report to the simulator twice.</summary>
+    private LibreMetaverse.InventoryItem? FindCofLinkTo(LibreMetaverse.UUID targetId)
+    {
+        if (targetId == LibreMetaverse.UUID.Zero) return null;
+
+        var store = _client.Inventory.Store;
+        var cofUuid = _client.Inventory.FindFolderForType(LibreMetaverse.FolderType.CurrentOutfit);
+        var cofNode = cofUuid != LibreMetaverse.UUID.Zero ? store?.GetNodeOrDefault(cofUuid) : null;
+        if (cofNode == null) return null;
+
+        foreach (var child in cofNode.Nodes.Values.ToList())
+        {
+            if (child.Data is not LibreMetaverse.InventoryItem link || !link.IsLink()) continue;
+            var t = link.ResolvedItemID != LibreMetaverse.UUID.Zero ? link.ResolvedItemID : link.AssetUUID;
+            if (t == targetId) return link;
+        }
+        return null;
+    }
     /// <summary>True when <paramref name="itemId"/>'s node sits anywhere under the store's
     /// <c>#Library</c> root — a Linden-owned item that this agent can wear but not link or
     /// modify.</summary>
@@ -7193,41 +7284,134 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return linkIds.Count;
     }
 
-    /// <summary>Wears the <b>attachment</b> part of a saved outfit — every link in
-    /// <paramref name="outfitFolderId"/> whose target is an <c>AssetType.Object</c>. Wearables
-    /// (Clothing/Bodypart) are skipped: applying those is a rebake and waits on FEAT-AVATAR-01
-    /// Phase 2. Returns how many attach calls were sent. FEAT-INV-04.</summary>
-    public async Task<int> WearOutfitAttachmentsAsync(Guid outfitFolderId, CancellationToken ct = default)
+    /// <summary>One entry of a saved outfit reduced to what the wear ORDER depends on — its
+    /// asset/wearable type and the outfit link's layer-order token. Engine-neutral so the ordering
+    /// rule can be tested without a grid.</summary>
+    internal readonly record struct OutfitWearRow(
+        Guid ItemId, int AssetType, int WearableType, string? OrderToken, string Name);
+
+    /// <summary>Pure: the order a saved outfit's items have to be put on in.
+    ///
+    /// <para><b>Body parts first.</b> Shape, skin, hair and eyes replace rather than layer, and
+    /// everything else composites over them — putting them on first means the rest of the outfit
+    /// is never briefly stacked onto the previous body.</para>
+    ///
+    /// <para><b>Then clothing, bottom layer first, per type.</b> <c>WearWearableAsync</c> gives a
+    /// newly worn layer the index "however many of that type are already on", i.e. the top of the
+    /// stack — so the order they are worn in <i>is</i> the resulting stack order. A saved outfit's
+    /// links carry the viewer's <c>build_order_string</c> token in their description (see
+    /// <see cref="WearableLayerOrder"/>), which is the stack the outfit was saved with; without
+    /// this a five-layer tattoo outfit comes back in whatever order AIS happened to list it.</para>
+    ///
+    /// <para>Attachments last, together with anything whose target the inventory store has not
+    /// resolved yet: <see cref="AttachItemAsync"/> re-classifies every item when it reaches it, so
+    /// an unresolved row still takes the right path — just not a chosen position.</para></summary>
+    internal static List<Guid> OrderOutfitForWearing(IEnumerable<OutfitWearRow> rows)
+    {
+        static bool IsBodyPart(OutfitWearRow r) => r.AssetType == (int)LibreMetaverse.AssetType.Bodypart;
+        static bool IsClothing(OutfitWearRow r) => r.AssetType == (int)LibreMetaverse.AssetType.Clothing;
+
+        var all = rows.ToList();
+        var ordered = new List<Guid>(all.Count);
+
+        ordered.AddRange(all.Where(IsBodyPart).Select(r => r.ItemId));
+
+        foreach (var group in all.Where(IsClothing).GroupBy(r => r.WearableType))
+        {
+            ordered.AddRange(WearableLayerOrder
+                .Sort(group, group.Key, r => r.OrderToken, r => r.Name)
+                .Select(r => r.ItemId));
+        }
+
+        ordered.AddRange(all.Where(r => !IsBodyPart(r) && !IsClothing(r)).Select(r => r.ItemId));
+        return ordered;
+    }
+
+    /// <summary>Reads a saved outfit folder's links out of the inventory store — the per-layer
+    /// order token lives on the <b>link</b>, the target item only carries its type — and returns
+    /// <paramref name="targetIds"/> in <see cref="OrderOutfitForWearing"/> order. The caller has
+    /// already fetched the folder, so this costs no round trip.</summary>
+    private List<Guid> OrderOutfitTargetsForWearing(Guid outfitFolderId, IEnumerable<Guid> targetIds)
+    {
+        var store = _client.Inventory.Store;
+
+        var tokens = new Dictionary<Guid, string?>();
+        var folderNode = store?.GetNodeOrDefault(new LibreMetaverse.UUID(outfitFolderId));
+        if (folderNode != null)
+        {
+            foreach (var child in folderNode.Nodes.Values.ToList())
+            {
+                if (child.Data is not LibreMetaverse.InventoryItem link) continue;
+                var target = link.IsLink() && link.ResolvedItemID != LibreMetaverse.UUID.Zero
+                    ? link.ResolvedItemID
+                    : link.UUID;
+                if (target != LibreMetaverse.UUID.Zero) tokens[target.Guid] = link.Description;
+            }
+        }
+
+        var rows = new List<OutfitWearRow>();
+        foreach (var id in targetIds)
+        {
+            var item = store?.GetNodeOrDefault(new LibreMetaverse.UUID(id))?.Data as LibreMetaverse.InventoryItem;
+            rows.Add(new OutfitWearRow(
+                id,
+                item != null ? (int)item.AssetType : -1,
+                item is LibreMetaverse.InventoryWearable iw ? (int)iw.WearableType : -1,
+                tokens.GetValueOrDefault(id),
+                item?.Name ?? string.Empty));
+        }
+        return OrderOutfitForWearing(rows);
+    }
+
+    /// <summary>Wears a saved outfit <b>on top of</b> what is on now — the additive "Zu aktuellem
+    /// Outfit hinzufügen". Attachments are attached and system wearables are put on, both through
+    /// <see cref="AttachItemAsync"/>, which routes a Clothing/Bodypart layer to the COF +
+    /// <c>AgentIsNowWearing</c> path. Returns how many items were sent.
+    ///
+    /// <para>This used to skip Clothing and Bodypart outright ("waits on FEAT-AVATAR-01 Phase 2"),
+    /// from when wearing a system layer was not possible at all. It is now, and the leftover skip
+    /// was the whole of "changing the skin through an outfit does nothing, doing it by hand works"
+    /// (reported live 2026-09-09). The rebake that makes the change visible is debounced
+    /// (<c>ScheduleRebakeAfterWearableEdit</c>), so a whole outfit still costs exactly one.</para>
+    ///
+    /// <para>FEAT-INV-04 / FEAT-AVATAR-01.</para></summary>
+    public async Task<int> WearOutfitAsync(Guid outfitFolderId, CancellationToken ct = default)
     {
         var children = await FetchInventoryChildrenAsync(outfitFolderId, ct).ConfigureAwait(false);
-        var store = _client.Inventory.Store;
-        int sent = 0;
 
+        var targets = new List<Guid>();
+        var seen = new HashSet<Guid>();
         foreach (var e in children)
         {
             if (e.IsFolder) continue;
+            var target = e.IsLink && e.LinkTargetId != Guid.Empty ? e.LinkTargetId : e.Id;
+            if (target != Guid.Empty && seen.Add(target)) targets.Add(target);
+        }
+
+        int sent = 0;
+        foreach (var id in OrderOutfitTargetsForWearing(outfitFolderId, targets))
+        {
             ct.ThrowIfCancellationRequested();
-
-            var targetUuid = new LibreMetaverse.UUID(e.IsLink ? e.LinkTargetId : e.Id);
-            var target = store?.GetNodeOrDefault(targetUuid)?.Data as LibreMetaverse.InventoryItem;
-            var assetType = target?.AssetType ?? (LibreMetaverse.AssetType)e.AssetType;
-
-            // Skip only what we can positively identify as a wearable; attach the rest (an
-            // Attach for a wearable is a server-side no-op anyway).
-            if (assetType is LibreMetaverse.AssetType.Clothing or LibreMetaverse.AssetType.Bodypart)
-                continue;
-
-            await AttachItemAsync(e.Id, replace: false).ConfigureAwait(false);
+            await AttachItemAsync(id, replace: false).ConfigureAwait(false);
             sent++;
         }
         return sent;
     }
 
-    /// <summary>Makes the avatar's <b>attachments</b> match a saved outfit's: detaches every worn
-    /// attachment the outfit doesn't contain, then attaches the outfit's objects that aren't worn.
-    /// Items common to both are left alone. Clothing / body parts are untouched — swapping those
-    /// is a rebake (FEAT-AVATAR-01 Phase 2). Returns (detached, attached). FEAT-INV-04.</summary>
-    public async Task<(int Detached, int Attached)> ReplaceWornWithOutfitAttachmentsAsync(
+    /// <summary>Makes the avatar match a saved outfit: takes off every worn attachment and every
+    /// worn clothing layer the outfit does not contain, then puts on everything the outfit has that
+    /// is not already on. Items in both are left alone. Returns (removed, worn).
+    ///
+    /// <para><b>Body parts are never taken off.</b> An avatar always has exactly one shape, skin,
+    /// hair and eyes — <c>RemoveWearableAsync</c> refuses to remove one, and an outfit that lists
+    /// no skin means "keep the one you have", not "have none". The outfit's own body parts replace
+    /// the worn ones in place as they go on (<c>WearWearableAsync</c> drops the old link of the
+    /// same type first), which is why the skip removed here stayed invisible until an outfit was
+    /// the only way someone tried to change a skin.</para>
+    ///
+    /// <para>Removal runs before the wear pass so a new clothing layer's stack index counts only
+    /// the layers the outfit itself wants. FEAT-INV-04 / FEAT-AVATAR-01.</para></summary>
+    public async Task<(int Removed, int Worn)> ReplaceWornWithOutfitAsync(
         Guid outfitFolderId, CancellationToken ct = default)
     {
         var contents = await GetOutfitContentsAsync(outfitFolderId, ct).ConfigureAwait(false);
@@ -7237,35 +7421,43 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             contents = await GetOutfitContentsAsync(outfitFolderId, ct).ConfigureAwait(false);
         }
 
-        // Everything the outfit references (so we never detach an item it wants to keep), and the
-        // subset we're confident is an attachment (so we only attach real objects).
+        // Everything the outfit references, so nothing it wants kept is taken off first.
         var targetAll = new HashSet<Guid>(contents.Select(w => w.ItemId));
-        var targetObjs = new HashSet<Guid>(contents
-            .Where(w => w.Category is WornCategory.Attachment or WornCategory.Hud)
-            .Select(w => w.ItemId));
 
-        var wornAttach = GetSceneWornAttachments().Keys.ToHashSet();
+        int removed = 0, worn = 0;
 
-        int detached = 0, attached = 0;
-
-        foreach (var id in wornAttach)
+        foreach (var id in GetSceneWornAttachments().Keys.ToList())
         {
             if (targetAll.Contains(id)) continue;
             ct.ThrowIfCancellationRequested();
             await DetachItemAsync(id).ConfigureAwait(false);
-            detached++;
+            removed++;
         }
 
-        foreach (var id in targetObjs)
+        var wornClothing = GetWornItems()
+            .Where(w => w.Live && w.Category == WornCategory.Clothing)
+            .Select(w => w.ItemId)
+            .ToList();
+        foreach (var id in wornClothing)
         {
-            if (wornAttach.Contains(id)) continue;
+            if (targetAll.Contains(id)) continue;
+            ct.ThrowIfCancellationRequested();
+            var result = await DetachItemAsync(id).ConfigureAwait(false);
+            if (result.WearableRemoved) removed++;
+        }
+
+        // Live is GetOutfitContentsAsync's own "this entry is already on", which also matches a
+        // #Library original by asset id — a plain id compare would put a second copy on.
+        var missing = contents.Where(w => !w.Live).Select(w => w.ItemId).ToList();
+        foreach (var id in OrderOutfitTargetsForWearing(outfitFolderId, missing))
+        {
             ct.ThrowIfCancellationRequested();
             await AttachItemAsync(id, replace: false).ConfigureAwait(false);
-            attached++;
+            worn++;
         }
 
         await SetCurrentOutfitLinkAsync(outfitFolderId, ct).ConfigureAwait(false);
-        return (detached, attached);
+        return (removed, worn);
     }
 
     /// <summary>Points the Current Outfit Folder at a saved outfit — trashes any existing
@@ -7310,9 +7502,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         catch { }
     }
 
-    /// <summary>Takes off the <b>attachment</b> part of a saved outfit — detaches every currently
-    /// worn attachment the outfit contains. Clothing / body parts untouched. Returns how many were
-    /// detached. FEAT-INV-04.</summary>
+    /// <summary>Takes a saved outfit off — detaches every currently worn attachment the outfit
+    /// contains and removes every worn clothing layer it contains. Body parts are left on: an
+    /// avatar always has exactly one shape, skin, hair and eyes. Returns how many came off.
+    /// FEAT-INV-04.</summary>
     public async Task<int> RemoveOutfitFromWornAsync(Guid outfitFolderId, CancellationToken ct = default)
     {
         var contents = await GetOutfitContentsAsync(outfitFolderId, ct).ConfigureAwait(false);

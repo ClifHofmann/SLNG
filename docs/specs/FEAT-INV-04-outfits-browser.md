@@ -34,11 +34,14 @@ flattened the avatar on 2026-08-29.
   (`RequestFetchInventory` + a short wait) so links never get the "Link" placeholder name.
 - `AddCurrentToOutfitAsync(folderId)` / `ReplaceOutfitWithCurrentAsync(folderId)` — edit a saved
   outfit: add the missing worn items, or trash all its links and re-link the whole worn set.
-- `WearOutfitAttachmentsAsync(folderId)` → attaches the outfit's `AssetType.Object` links
-  (additive). `ReplaceWornWithOutfitAttachmentsAsync(folderId)` → detaches every worn attachment
-  the outfit doesn't contain, attaches its objects that aren't worn, and writes the COF
-  folder-link (`SetCurrentOutfitLinkAsync`) so the "worn" marker follows. `RemoveOutfitFromWornAsync`
-  → detaches the outfit's currently-worn attachments. All three leave Clothing/Bodypart alone.
+- `WearOutfitAsync(folderId)` → puts the whole outfit on, on top of what is worn (additive).
+  `ReplaceWornWithOutfitAsync(folderId)` → takes off every worn attachment and clothing layer the
+  outfit doesn't contain, puts on everything it has that isn't on, and writes the COF folder-link
+  (`SetCurrentOutfitLinkAsync`) so the "worn" marker follows. `RemoveOutfitFromWornAsync` → takes
+  the outfit's currently-worn parts off. **Body parts are never removed** by any of the three (an
+  avatar has exactly one shape/skin/hair/eyes); an outfit's own body parts replace the worn ones in
+  place. All three originally stopped at attachments — see **BUG-INV-02** for why that outlived its
+  reason, and `OrderOutfitForWearing` for why the order items go on in matters.
 - `GetOutfitContentsAsync(folderId)` → `IReadOnlyList<WornItem>` — an outfit's links resolved to
   their **target** name / type / category, with `Live` = worn-right-now, de-duped.
 - `RenameOutfitAsync(folderId, name)` (`Inventory.UpdateFolderProperties`) /
@@ -56,8 +59,8 @@ flattened the avatar on 2026-08-29.
   as **✏️ Umbenennen** while a rename is armed (Tree cell-editing needs keyboard focus this tree
   deliberately doesn't take).
 - Right-click menu, mirroring Firestorm:
-  - *Aktuelles Outfit ersetzen* → `ReplaceWornWithOutfitAttachmentsAsync`
-  - *Zu aktuellem Outfit hinzufügen* → `WearOutfitAttachmentsAsync`
+  - *Aktuelles Outfit ersetzen* → `ReplaceWornWithOutfitAsync`
+  - *Zu aktuellem Outfit hinzufügen* → `WearOutfitAsync`
   - *Von aktuellem Outfit entfernen* → `RemoveOutfitFromWornAsync`
   - *Outfit neu benennen* → arms the rename in the name field
   - *Outfit speichern (= akt. Getrage)* → `ReplaceOutfitWithCurrentAsync`
