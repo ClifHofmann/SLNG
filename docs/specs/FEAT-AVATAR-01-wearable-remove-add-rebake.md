@@ -449,11 +449,14 @@ Confirm `AvatarRenderer.UpdateVisual` step 3 + `RecomputeMeshVisibility` (M4-7) 
 bake ids after a wearable edit. Expected to already work once real bakes arrive.
 
 ## Acceptance criteria
-- [ ] Detaching an Alpha wearable reveals the system body it was hiding, no relog.
-- [ ] Wearing an Alpha wearable hides the painted regions.
-- [ ] Swapping skin / shape updates the avatar.
-- [ ] `LogVisualParamHealth()` reads a full, non-default parameter set before any
+- [x] Detaching an Alpha wearable reveals the system body it was hiding, no relog.
+- [x] Wearing an Alpha wearable hides the painted regions.
+- [x] Swapping skin / shape updates the avatar — both by hand and through an outfit
+      (*"Funktioniert jetzt super!"*, `v0.21.34`). Getting there took **BUG-INV-02** and
+      **BUG-INV-03**; see "The one check that was left" below.
+- [x] `LogVisualParamHealth()` reads a full, non-default parameter set before any
       `AgentSetAppearance`; the 2026-08-02 flattening does not recur (A/B in Firestorm).
+      *(`v0.21.32` — see "The last criterion" below.)*
 - [x] Attachment detach (the current `DetachItemAsync` behaviour) still works — unchanged path.
 - [x] Unit test: wearable vs attachment routing picks the right LibreMetaverse call.
 
@@ -465,3 +468,56 @@ bake ids after a wearable edit. Expected to already work once real bakes arrive.
   currently never set true).
 - `tests/SLNG.Net.Tests/GridSessionTests.cs` — classification + health-check + seed tests.
 - `app/scripts/AvatarRenderer.cs` — Phase 3 verify only.
+
+## The last criterion, closed by BUG-AVATAR-04's machinery (`v0.21.32`)
+
+`LogVisualParamHealth()` reads `AppearanceManager.MyVisualParameters`. That store stays empty
+because `Settings.Agent.SendAppearance` is off, and the only thing that ever filled it was
+`TrySeedVisualParams`, called from **one place**: the self `AvatarAppearance` handler. So on
+exactly the logins BUG-AVATAR-04 is about — the ones where the simulator sends no relay at all —
+it reported *"LibreMetaverse holds NO visual parameters"*, and no amount of work on this feature
+would have changed that.
+
+BUG-AVATAR-04's `TryDeriveSelfShapeFromWearablesAsync` builds precisely such a set, from the worn
+wearable **assets**, and simply was not handing it over. It now seeds the same store
+(`TrySeedVisualParams(wire, "N worn wearable(s)")`), which is arguably the better source: it comes
+from what the avatar is actually wearing rather than from what the simulator happened to echo.
+Diagnostic-only either way — nothing sends from that store while the flag is off.
+
+**In-world 2026-09-09:** *"das alpha sieht gut aus"* — the alpha-layer criteria confirmed.
+
+### The one check that was left, and what it found (`v0.21.33`)
+
+Swapping **skin / shape** had not been exercised; only the alpha layers had. The reasoning recorded
+here was that it is "the same COF write plus re-bake, so there is no reason to expect it to differ".
+
+That was true of the path this feature owns, and it is exactly why the check still mattered:
+
+> *"beim wechseln von einem skin über den wechsel des outfits passiert nix, wenn ich die manuell
+> anlege gehts"* — 2026-09-09
+
+By hand: works, criterion met. Through an outfit: nothing, because the outfits browser still refused
+to wear Clothing/Bodypart at all — a guard written when wearing a system layer was impossible, left
+behind when this feature made it possible. Filed and fixed as **BUG-INV-02**.
+
+Fixing that exposed a second one underneath. With the outfit route finally wearing a skin, the two
+routes could be compared — and the *inventory* route turned out to be the broken one: the skins are
+`#Library` items, AIS refuses a COF link to one, `CreateLinkAsync` reports that by returning null,
+and `WearWearableAsync` neither checked it nor waited before deleting the old skin's link. The
+avatar was left with no skin at all and the server baked the default. **BUG-INV-03**, `v0.21.34`.
+
+All six criteria are now met, confirmed in-world 2026-09-09.
+
+The lesson is about the argument, not the code. "Same path, no reason to differ" was sound and still
+missed the bug, because the user does not reach a feature through the path its spec is written in.
+A criterion is met when it has been *seen*, and the way to see it is the way the user gets there —
+which here uncovered two separate defects, neither of them in the code this spec owns.
+
+### The shared root, worth stating once
+
+This criterion and BUG-INV-01's "worn state not visible" have one cause: `SendAppearance = false`
+leaves LibreMetaverse's own stores empty, and everything reading from them is left without data —
+the visual params here, and the wearable list behind the *Angezogen* tab there
+(`[Appearance] no worn wearables returned`, from `AgentWearablesRequest`). The remedy demonstrated
+here is the general one: do not wait for LibreMetaverse or the simulator, read the Current Outfit
+Folder. `CollectWornWearablesForBakeAsync` already does exactly that for the tab's data too.

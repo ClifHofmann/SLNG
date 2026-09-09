@@ -918,9 +918,9 @@ public partial class InventoryPanel : SLNGWindow
         if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out var folderId)) return;
         switch (id)
         {
-            case 0: _ = ReplaceWornWithOutfitAsync(folderId); break;          // make my attachments match the outfit
-            case 1: _ = WearOutfitAsync(folderId); break;                     // attach the outfit's objects, keep current
-            case 2: _ = RemoveOutfitFromWornAsync(folderId); break;           // detach the outfit's attachments
+            case 0: _ = ReplaceWornWithOutfitAsync(folderId); break;          // make me match the outfit
+            case 1: _ = WearOutfitAsync(folderId); break;                     // add the outfit on top of what I wear
+            case 2: _ = RemoveOutfitFromWornAsync(folderId); break;           // take the outfit's parts off
             case 3: BeginRenameOutfit(row); break;
             case 4: _ = ModifyOutfitAsync(folderId, replace: true); break;    // saved outfit contents := current worn
             case 5: DeleteOutfitAsync(folderId); break;
@@ -976,11 +976,11 @@ public partial class InventoryPanel : SLNGWindow
 
     private async System.Threading.Tasks.Task ReplaceWornWithOutfitAsync(Guid folderId)
     {
-        RunOnMainThread(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = "Tausche Anhänge…"; });
+        RunOnMainThread(() => { if (IsInstanceValid(this)) _outfitsStatus.Text = "Ziehe um…"; });
 
-        (int Detached, int Attached) r = (0, 0);
+        (int Removed, int Worn) r = (0, 0);
         string? err = null;
-        try { r = await _session!.ReplaceWornWithOutfitAttachmentsAsync(folderId).ConfigureAwait(false); }
+        try { r = await _session!.ReplaceWornWithOutfitAsync(folderId).ConfigureAwait(false); }
         catch (Exception ex) { err = ex.Message; }
 
         RunOnMainThread(() =>
@@ -988,7 +988,7 @@ public partial class InventoryPanel : SLNGWindow
             if (!IsInstanceValid(this)) return;
             _outfitsStatus.Text = err != null
                 ? $"Fehler: {err}"
-                : $"{r.Detached} abgelegt, {r.Attached} angezogen. Kleidung & Körper unverändert (Phase 2).";
+                : $"{r.Removed} abgelegt, {r.Worn} angezogen — Kleidung wird nach dem Rebake sichtbar.";
             if (err == null) RefreshOutfits(); // the ✅ "getragen" marker moved
         });
     }
@@ -997,7 +997,7 @@ public partial class InventoryPanel : SLNGWindow
     {
         int n = 0;
         string? err = null;
-        try { n = await _session!.WearOutfitAttachmentsAsync(folderId).ConfigureAwait(false); }
+        try { n = await _session!.WearOutfitAsync(folderId).ConfigureAwait(false); }
         catch (Exception ex) { err = ex.Message; }
 
         RunOnMainThread(() =>
@@ -1006,8 +1006,8 @@ public partial class InventoryPanel : SLNGWindow
             _outfitsStatus.Text = err != null
                 ? $"Fehler: {err}"
                 : n == 0
-                    ? "Keine Anhänge in diesem Outfit."
-                    : $"{n} Anhang/Anhänge angezogen. Kleidung & Körper folgen mit FEAT-AVATAR-01 Phase 2.";
+                    ? "Dieses Outfit ist leer."
+                    : $"{n} Teil(e) angezogen — Kleidung wird nach dem Rebake sichtbar.";
         });
     }
 

@@ -250,10 +250,10 @@ public class GridSessionTests
     }
 
     [Fact]
-    public async Task WearOutfitAttachmentsAsync_without_connection_returns_zero()
+    public async Task WearOutfitAsync_without_connection_returns_zero()
     {
         using var session = new GridSession();
-        Assert.Equal(0, await session.WearOutfitAttachmentsAsync(Guid.NewGuid()));
+        Assert.Equal(0, await session.WearOutfitAsync(Guid.NewGuid()));
     }
 
     [Fact]
@@ -269,7 +269,7 @@ public class GridSessionTests
         using var session = new GridSession();
         Assert.Equal(0, await session.AddCurrentToOutfitAsync(Guid.NewGuid()));
         Assert.Equal(0, await session.ReplaceOutfitWithCurrentAsync(Guid.NewGuid()));
-        Assert.Equal((0, 0), await session.ReplaceWornWithOutfitAttachmentsAsync(Guid.NewGuid()));
+        Assert.Equal((0, 0), await session.ReplaceWornWithOutfitAsync(Guid.NewGuid()));
         Assert.Equal(0, await session.RemoveOutfitFromWornAsync(Guid.NewGuid()));
         Assert.False(session.RenameOutfitAsync(Guid.NewGuid(), "x"));
         Assert.False(session.DeleteOutfitAsync(Guid.NewGuid()));
