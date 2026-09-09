@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-ENV-01`
 - **Track:** `net` / `core` / `render`
-- **Status:** `🚧 In Progress` (Phases A–D confirmed live against Firestorm on two OSGrid regions, 2026-08-21; E open and now precisely scoped — see ADR 0003)
+- **Status:** `✅ Done` (Phases A–D confirmed live against Firestorm on two OSGrid regions, 2026-08-21; Phase E — the atmospherics consumption half — landed under FEAT-RENDER-08 and was verified against the code on 2026-09-09, `v0.22.2-alpha`)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md) · [ADR 0002](file:///E:/Git/SLNG/docs/adr/0002-custom-spatial-shader-family.md) · [ADR 0003](file:///E:/Git/SLNG/docs/adr/0003-eep-parameter-model-and-lighting-seam.md) · [FEAT-RENDER-01](file:///E:/Git/SLNG/docs/specs/FEAT-RENDER-01-custom-spatial-shader-family.md)
 
@@ -235,12 +235,24 @@ region yet.
 Godot's `VolumetricFogEnabled` and the `ProceduralSkyMaterial` must be **reconciled here,
 not left double-applying** once Phase E lands.
 
-### Phase E — Hand off to FEAT-RENDER-01 Phase 5
+### Phase E — Hand off to FEAT-RENDER-01 Phase 5 ✅
 
 Fill `slng_apply_atmospherics` with the `calcAtmosphericVars` port, reading the global
 uniforms this feature publishes. **Blocked on FEAT-RENDER-01 Phases 3–4**: until avatars,
 terrain and water are on the shader family, only prims would receive atmospherics and the
 seam would be visible at exactly the sun angles this feature exists to render.
+
+**Done.** The port landed incrementally under **FEAT-RENDER-08** (`a911215`…`fff825f`,
+`v0.20.63`–`v0.20.93`) rather than under either of the two ids that specify it, which is why
+this phase and FEAT-RENDER-01 Phase 5 both stayed unticked well after the work was live. It is
+`calcAtmosphericVars` + `atmosFragLighting` with both halves — extinction `color * atten.r` and
+in-scatter returned separately so the caller can route it through `EMISSION` rather than
+`ALBEDO` (Godot would otherwise scale the haze by the scene lighting, so dusk went dark instead
+of bright). Prims and avatars reach it through one shared call site inside `slng_shade`;
+terrain calls it directly; water takes only `atten.r` and gets its haze from the already-hazed
+screen texture, exactly as `class3/environment/waterF.glsl` does. See FEAT-RENDER-01's
+acceptance list for the per-criterion evidence, and FEAT-RENDER-08 for the five deviations the
+Firestorm A/B found.
 
 ## Open questions — settle by measurement, not by reasoning
 
@@ -287,11 +299,31 @@ midnight and noon.
 - [x] Region environment is fetched once the region's capabilities are live
       (`EventQueueRunning`, not `SimConnected` — the caps seed may not have been fetched
       yet at `SimConnected`), on a background thread, applied on the main thread.
-- [ ] Re-fetch strategy for server-side environment changes, since no push notification
-      exists (see above). Polling interval or upstream EventQueue handler — undecided, and
-      deliberately not guessed.
-- [ ] No LibreMetaverse type (`OSD`, `UUID`, `ExtEnvironmentMessage`) crosses a public
-      `SLNG.Net` boundary; `SLNG.Core` stays free of protocol and Godot types.
+- [x] Re-fetch strategy for server-side environment changes, since no push notification
+      exists (see above). Settled in two halves by
+      [BUG-NET-09](file:///E:/Git/SLNG/docs/specs/BUG-NET-09-parcel-only-environment-poll.md),
+      against real reference-viewer source rather than by picking an interval:
+      a **region-wide** change already pushes — it arrives as a `RegionInfo` packet →
+      `RepollEnvironment()`, the same wiring as `llenvironment.cpp`'s `LLRegionInfoModel` →
+      `requestRegion()`. A **parcel-only** edit has no reachable push at all: the real viewer
+      reads `ParcelEnvironmentVersion` out of an unsolicited `ParcelProperties`, and
+      LibreMetaverse's `ParcelPropertiesMessage` never parses that field, with no raw-LLSD
+      fallback in its public API. So that half polls: `ParcelEnvironmentPollLoopAsync`, 30 s,
+      reusing the existing single-flight / 2.5 s-gap / publish-only-on-change throttling.
+      **Confirmed in-world 2026-09-07 (Agni)** — a parcel-only Windlight change is picked up
+      within one interval without a relog.
+- [x] No LibreMetaverse type (`OSD`, `UUID`, `ExtEnvironmentMessage`) crosses a public
+      `SLNG.Net` boundary; `SLNG.Core` stays free of protocol and Godot types. Checked, not
+      assumed: `SLNG.Core.csproj` has no `ProjectReference` or `PackageReference` at all and no
+      `using OpenMetaverse` / `using LibreMetaverse` / `using Godot` anywhere under
+      `src/SLNG.Core/`. `RegionEnvironmentCapture` and `RegionEnvironmentEvent` — the two types
+      on `GridSession`'s public environment events — carry only primitives and Core records;
+      the LLSD travels as `string?` notation text, never as `OSD`. `EnvironmentLlsdParser` does
+      take `OSD`/`OSDMap`, but the class is `internal`, so those signatures are not a public
+      boundary. A recursive sweep of every `public`/`protected` member in `src/SLNG.Net/` and
+      `src/SLNG.Assets/` for `OSD`, `OSDMap`, `OSDArray`, `UUID`, `ExtEnvironmentMessage`,
+      `Primitive`, `Simulator`, `FacetedMesh`, `AssetMesh`, `AgentManager` and `GridClient`
+      returns nothing.
 - [x] Day-cycle evaluation is a pure `SLNG.Core` function with unit tests covering
       keyframe interpolation, wrap-around and fixed-sky cycles.
 - [x] EEP and legacy Windlight both parse into the same engine-neutral model; the fallback
@@ -300,9 +332,17 @@ midnight and noon.
 - [x] Sky, sun and water visibly change with the region's time of day (Phase D,
       `v0.7.0-alpha`) — implemented and headless-boot clean; **needs a live login to confirm it
       actually looks right**, not just that it runs.
-- [ ] Windlight parameters are published as global shader uniforms once per frame — no
-      per-material updates.
-- [ ] `dotnet build` + `dotnet test` clean; `dotnet format` clean.
+- [x] Windlight parameters are published as global shader uniforms once per frame — no
+      per-material updates. `Boot._Process` → `EnvironmentDriver.Update` →
+      `UpdateGlobalShaderParameters`, with no change-guard on the path;
+      `tools/check_shader_globals.py` reports 28 registered / 28 typed / 0 stale. Live-verified
+      with real region values (`[SkyAtmos]`, Millenium), not defaults. Same criterion as
+      FEAT-RENDER-01 Phase 5's first.
+- [x] `dotnet build` + `dotnet test` clean; `dotnet format` clean. Verified at
+      `v0.22.1-alpha`: `SLNG.sln` 8 projects / 0 errors, `app/SLNG.App.csproj` 4 projects /
+      0 errors (built separately — the solution compiles none of `app/`), 657 tests green
+      (229 Core + 102 Assets + 326 Net), `dotnet format --verify-no-changes` clean,
+      `check_shader_globals.py` 28/28/0, `--selftest` 32/32 with `project.godot` untouched.
 
 ## Technical Specs & Affected Files
 

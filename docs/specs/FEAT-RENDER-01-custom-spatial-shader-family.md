@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-RENDER-01`
 - **Track:** `render`
-- **Status:** `⏸️ Pending`
+- **Status:** `✅ Done` (all five phases; Phase 5 verified against the code and closed 2026-09-09, `v0.22.2-alpha`. The sculpt-UV side investigation below stays UNRESOLVED and is deliberately not part of this spec's acceptance.)
 - **Owner:** _(unclaimed)_
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **ADR:** [0002-custom-spatial-shader-family.md](file:///E:/Git/SLNG/docs/adr/0002-custom-spatial-shader-family.md)
@@ -310,13 +310,59 @@ parallel; Phase 5 here is only the *consumption* side, filling
 with atmospherics next to avatars, terrain and water without is precisely the seam ADR
 0002 exists to avoid.
 
-- [ ] Windlight parameters are published once per frame as global shader uniforms; no
-      per-material updates for them.
-- [ ] All four renderers receive the same atmospherics — no visible seam between a prim,
+- [x] Windlight parameters are published once per frame as global shader uniforms; no
+      per-material updates for them. `Boot._Process` → `EnvironmentDriver.Update` runs
+      unconditionally (no change-guard) and calls `UpdateGlobalShaderParameters`;
+      `AvatarController._Process` publishes `slng_sun_direction_view` the same way, because
+      `VIEW_MATRIX` is not in scope in a function called from `fragment()`.
+      `tools/check_shader_globals.py`: 28 registered / 28 typed / 0 stale. Live-verified with
+      real region values, not defaults (`[SkyAtmos] hazeDensity=4 densityMul=0,0002223
+      distanceMul=7,87 blueDensity.r=0,16 | atten.r@176m=0,278 @1km=0,001`, Millenium).
+- [x] All four renderers receive the same atmospherics — no visible seam between a prim,
       an avatar, terrain and water at sunset (the failure mode a hybrid would have had).
-- [ ] Godot's built-in fog approximation is retired or explicitly reconciled with the new
-      model, not left double-applying.
-- [ ] Compared against Firestorm at matching sun positions on the same region.
+      Prims **and avatars** share one call site: `slng_apply_atmospherics` is invoked inside
+      `slng_shade()` (`prim_common.gdshaderinc:238`), and all twelve `prim_*.gdshader`
+      variants — the four `*_avatar` ones included — call `slng_shade`, so a prim/avatar seam
+      is impossible by construction rather than by convention. `terrain.gdshader:76` calls it
+      directly.
+      **Water is deliberately the exception, and matches the viewer in being one:** it calls
+      the seam only for `atten.r` (the sun glint's distance falloff) and leaves the in-scatter
+      out-param unused, taking its haze from `slng_screen_tex` — the sky behind it is already
+      hazed. That is `class3/environment/waterF.glsl`, where the haze-restore line
+      `color = mix(color, additive * water_haze_scale, (1 - atten))` is **commented out**
+      (:336, vendored source). Adding the in-scatter here would be the double-application, not
+      the fix.
+      Every remaining `StandardMaterial3D` in `app/scripts/` is a debug gizmo, a placeholder
+      capsule/box, a selection-highlight line, or particles — no production surface.
+- [x] Godot's built-in fog approximation is retired or explicitly reconciled with the new
+      model, not left double-applying. `EnvironmentDriver.ApplyFog` forces `FogEnabled` and
+      `VolumetricFogEnabled` off every frame.
+      This was only half true until `v0.22.1-alpha`: `GraphicsSettings.Apply` also wrote
+      `VolumetricFogEnabled`, from a `PostFxVolumetricFog` preference that defaulted to **on**.
+      The driver runs per frame and the preference page does not, so the driver always won —
+      meaning the Design tab's "Volumetric Fog" checkbox toggled nothing, and the F2 post-FX
+      shortcut's `anyOn = Ssao || Ssil || Glow || VolumetricFog` was permanently true, so the
+      first F2 press always turned post-FX *off* instead of on. The preference is retired —
+      property, config key, setter, the `env.VolumetricFogEnabled` write, the checkbox and both
+      i18n strings — leaving `EnvironmentDriver.ApplyFog` the single owner of both fog flags.
+      (The stale `post_fx_volumetric_fog` key survives in an existing `preferences.cfg` because
+      `Save()` loads the file first to preserve sections it does not own. Nothing reads it.)
+      **F2 itself is gone too, in `v0.22.2-alpha`.** Verified live rather than assumed: two F2
+      presses left `preferences.cfg` byte-identical, and inspecting the handler showed why it
+      would have been wrong even when it did fire — it wrote `GraphicsSettings` and called
+      `ApplyGraphicsSettings()` but never `Refresh()`, so an open Design page kept showing the
+      old ticks, contradicting the comment that sat directly above it. Removed rather than
+      wired to `Refresh()`: SSAO/SSIL/Glow have a discoverable home in Preferences → Design,
+      and one way to set a flag cannot desynchronise from itself. The `post_fx_hint` string
+      existed only to advertise F2 and went with it; F3/F4/F5/F6 stay, being diagnostics with
+      no UI counterpart to disagree with.
+- [x] Compared against Firestorm at matching sun positions on the same region. The 2026-09-04
+      labelled A/B is what *found* the five deviations recorded in
+      [FEAT-RENDER-08](file:///E:/Git/SLNG/docs/specs/FEAT-RENDER-08-windlight-fog-density.md)
+      (scalar extinction, wrong transfer function, no in-scatter, `haze_glow` pinned at its
+      floor, in-scatter routed through ALBEDO); the post-fix comparison is `fff825f`
+      (`v0.20.93-alpha`): "Colour and horizon match Firestorm A/Bs on Azure Haven / The Dangazi
+      Forest sunsets." 
 
 ## Technical Specs & Affected Files
 
@@ -346,7 +392,11 @@ with atmospherics next to avatars, terrain and water without is precisely the se
       `v0.9.3-alpha`; the version was renumbered mid-flight when `v0.9.2-alpha` was taken by an
       unrelated fix landing on main).
 - [x] Phase 4 — terrain + water refactor onto the family with shared `slng_atmospherics.gdshaderinc` seam (`v0.9.13-alpha`).
-- [ ] Phase 5 — Windlight / EEP atmospherics via global shader uniforms.
+- [x] Phase 5 — Windlight / EEP atmospherics via global shader uniforms. The port itself
+      landed incrementally under **FEAT-RENDER-08** (`a911215`…`fff825f`, `v0.20.63`–`v0.20.93`)
+      rather than under this id, which is why this box stayed unticked long after the work was
+      live; the fog reconciliation above was the one criterion genuinely still open, closed in
+      `v0.22.1-alpha` (plus the F2 follow-up in `v0.22.2-alpha`).
 - [ ] Follow-up (not this spec): `llSetTextureAnim` and media-on-a-prim as uniform
       updates instead of material rebuilds — enabled by, but not part of, this work.
 
