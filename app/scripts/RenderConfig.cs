@@ -24,6 +24,27 @@ public static class RenderConfig
     public static bool SmallObjectShadows = false;
 
     /// <summary>
+    /// FEAT-PERF-06: render groups of identical, repeated, static prims (same shared mesh, same
+    /// single material, same shadow flag) through one <c>MultiMeshInstance3D</c> instead of one
+    /// <c>MeshInstance3D</c> each. Measured trigger: a fully-loaded OpenSim villa region submitting
+    /// ~12–14k draw calls because nothing batches. A prim is evicted back to its own node the
+    /// instant it is selected, edited, animated or leaves draw distance. Turn off with
+    /// <c>--no-instancing</c> for an A/B.
+    /// </summary>
+    public static bool EnableInstancing = true;
+
+    /// <summary>
+    /// FEAT-PERF-06: an object farther than this (metres, to whichever of avatar/camera is nearer)
+    /// stops casting a directional shadow. The shadow DEPTH pass draws the scene once per CSM
+    /// split, so a distant object is drawn 2 extra times for a shadow the atmosphere haze hides
+    /// anyway. Measured on the villa scene: shadows off entirely is ~15 FPS, and a pure draw-call
+    /// cut (instancing) moved nothing — the shadow pass is the cost. Default is well inside the
+    /// 96 m draw distance; near shadows, which are the ones you actually read, are untouched.
+    /// Instanced groups decide this once at join time from the shared mesh size instead.
+    /// </summary>
+    public static float ShadowCasterDistance = 56f;
+
+    /// <summary>
     /// BUG-RENDER-16: how to render an undeclared-alpha world-prim face whose texture
     /// <c>analyzeAlphaData</c> classifies as NOT maskable (high-frequency / gradient alpha — thin
     /// grass, wispy foliage). Clean cutouts (<c>maskable == true</c>: fences, sharp leaf cards)

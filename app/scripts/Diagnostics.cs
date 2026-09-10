@@ -95,6 +95,12 @@ public static class Diagnostics
             || HasFlag(OS.GetCmdlineUserArgs(), "--alpha-sort-freeze"))
             RenderConfig.AlphaSortFreezeDebug = true;
 
+        // FEAT-PERF-06: --no-instancing keeps every prim on its own MeshInstance3D (the
+        // pre-v0.22.29 behaviour) so the MultiMesh batching can be A/B'd in-world.
+        if (HasFlag(OS.GetCmdlineArgs(), "--no-instancing")
+            || HasFlag(OS.GetCmdlineUserArgs(), "--no-instancing"))
+            RenderConfig.EnableInstancing = false;
+
         GD.Print($"[Diagnostics] high-frequency foliage alpha = {RenderConfig.HighFrequencyFoliageAlpha}" +
                  $" (hashScale={RenderConfig.FoliageHashScale}" +
                  $" coreAlpha={RenderConfig.FoliageCoreAlpha.ToString(System.Globalization.CultureInfo.InvariantCulture)})" +
@@ -103,6 +109,8 @@ public static class Diagnostics
                  $" alphaSortFreeze={RenderConfig.AlphaSortFreezeDebug}" +
                  $" alphaSplit={RenderConfig.SplitSortedSurfaces}" +
                  $" (BUG-RENDER-16)");
+
+        GD.Print($"[Diagnostics] instancing = {(RenderConfig.EnableInstancing ? "on" : "off (--no-instancing)")} (FEAT-PERF-06)");
 
         // Info is where the per-object asset logging lives -- texture fetches, sharpen decisions,
         // mesh sites. One session of it ran to 3.4 GB before it was throttled, and even throttled it

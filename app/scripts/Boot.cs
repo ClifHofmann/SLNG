@@ -169,7 +169,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.28-alpha";
+    public const string AppVersion = "v0.22.29-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -975,7 +975,10 @@ public partial class Boot : Control
             DirectionalShadowSplit1 = 0.08f,
             DirectionalShadowSplit2 = 0.22f,
             DirectionalShadowSplit3 = 0.50f,
-            DirectionalShadowMaxDistance = 150.0f,
+            // FEAT-PERF-06: 150 -> 90. Beyond ~56 m objects stop casting (ShadowCasterDistance),
+            // so a 150 m CSM range only spread the 4096 atlas thinner over empty distance; 90 m
+            // (just under draw distance) puts that resolution on the near shadows you actually see.
+            DirectionalShadowMaxDistance = 90.0f,
             ShadowBias = 0.015f,
             ShadowNormalBias = 1.0f,
             ShadowOpacity = 0.88f,

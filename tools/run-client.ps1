@@ -66,7 +66,15 @@ param(
     # If the grass still flickers with this on, the cause is not the transparent sort order at all
     # and every fix aimed at it is wasted. Expect odd layering while walking -- that is not what is
     # being judged; the only question is whether it still shimmers. Passes --alpha-sort-freeze.
-    [switch]$AlphaSortFreeze
+    [switch]$AlphaSortFreeze,
+
+    # FEAT-PERF-06: turn OFF MultiMesh instancing (on by default). With it on, groups of identical
+    # repeated static prims -- same shared mesh, same single material, same shadow flag -- are drawn
+    # by one MultiMeshInstance3D instead of one MeshInstance3D each; a prim pops back to its own
+    # node the instant it is selected, edited, animated or leaves draw distance. This switch is the
+    # A/B: run the same spot with and without it and compare `draws` / `process` ms / FPS in the
+    # perf overlay (and the [Instancing] line in logs/slng-perf.log). Passes --no-instancing.
+    [switch]$NoInstancing
 )
 
 $ErrorActionPreference = 'Stop'
@@ -140,6 +148,10 @@ if ($AlphaSplit -eq 'off') {
 if ($AlphaSortFreeze) {
     Write-Host "      alpha sort FROZEN -- falsification test (--alpha-sort-freeze)" -ForegroundColor Magenta
     $userArgs += '--alpha-sort-freeze'
+}
+if ($NoInstancing) {
+    Write-Host "      MultiMesh instancing OFF (--no-instancing)" -ForegroundColor Yellow
+    $userArgs += '--no-instancing'
 }
 if ($userArgs.Count -gt 0) {
     $clientArgs += @('--') + $userArgs

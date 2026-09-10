@@ -118,6 +118,20 @@ public partial class ObjectRenderer : Node3D
         // refs to free GPU memory. It reloads when it comes back into range.
         public bool ResourcesReleased;
 
+        // FEAT-PERF-06: the bounding radius captured at mesh-assign time. BoundingRadius() reads
+        // MeshInstance.GetAabb(), which returns empty once an instanced prim's Mesh is nulled, so
+        // the shadow / collision-reach checks that call it need this fallback for a prim that is
+        // currently drawn by a MultiMesh. NaN = not captured yet.
+        public float CachedBoundingRadius = float.NaN;
+
+        // FEAT-PERF-06: distance shadow-caster cull. When an object goes past
+        // RenderConfig.ShadowCasterDistance the cull sweep forces its CastShadow to Off and
+        // remembers what it was, so coming back into range restores the real setting rather than
+        // unconditionally turning shadows on for something that was never meant to cast.
+        public bool ShadowForcedOffByDistance;
+        public GeometryInstance3D.ShadowCastingSetting ShadowSettingBeforeDistanceCull =
+            GeometryInstance3D.ShadowCastingSetting.On;
+
         // Set whenever a face material is (re)built, because that write puts the face's STATIC
         // TextureEntry placement back into the shader uniforms and so undoes the current
         // animation frame. The texture-anim tick normally skips objects whose frame has not
@@ -132,6 +146,22 @@ public partial class ObjectRenderer : Node3D
     }
 
     private readonly Dictionary<Guid, VisualState> _visuals = new();
+
+    // FEAT-PERF-06: draw-call reduction. Groups of identical repeated static prims are drawn by
+    // one MultiMeshInstance3D each; a prim is evicted the instant it is selected, edited or
+    // animated. Null until Initialize(). See ObjectInstanceGroups.
+    private ObjectInstanceGroups? _instanceGroups;
+
+    // FEAT-PERF-06: ids the cull sweep must NOT re-instance right now -- currently selected /
+    // highlighted, so their own MeshInstance3D must stay live for the edit gizmo and GetAabb().
+    private readonly HashSet<Guid> _instanceSuppressed = new();
+
+    private double _instanceStatsAccum;
+
+    // FEAT-PERF-06 diagnostic: why EvaluateInstancing turned prims away this interval, so a
+    // "groups=0, no effect" run says WHERE the funnel collapsed instead of needing a guess.
+    // --diag only; reset when the [Instancing] line is emitted.
+    private readonly Dictionary<string, int> _instanceReject = new();
 
     // Meshes are shared and budgeted through the GpuCache (LRU + refcount), keyed by mesh
     // asset id or by a stable id assigned per unique prim shape. Identical objects share one
@@ -332,6 +362,9 @@ public partial class ObjectRenderer : Node3D
         _world = world;
         _assetService = assetService;
         _gpuCache = gpuCache;
+        _instanceGroups = new ObjectInstanceGroups(
+            this,
+            id => _visuals.TryGetValue(id, out var vs) && IsInstanceValid(vs.MeshInstance) ? vs.MeshInstance : null);
 
         _world.EntityAdded += OnEntityAdded;
         _world.EntityRemoved += OnEntityRemoved;
@@ -484,6 +517,34 @@ public partial class ObjectRenderer : Node3D
                 if (viewDSq <= showSq && !state.MeshInstance.Visible) state.MeshInstance.Visible = true;
                 else if (viewDSq > hideSq && state.MeshInstance.Visible) state.MeshInstance.Visible = false;
 
+                // FEAT-PERF-06: distance shadow-caster cull. Measured on the villa scene: turning
+                // shadows off entirely is worth ~15 FPS, and instancing (a ~10% draw-call cut)
+                // moved the frame rate not at all -- the cost is the shadow DEPTH pass drawing the
+                // whole scene an extra 2x for the two CSM splits, not the main-pass call count.
+                // An object past ShadowCasterDistance from the viewpoint contributes a shadow no
+                // one can resolve against the sky/atmosphere haze, so it stops casting. Hysteresis
+                // (1.1x to switch back on) keeps it from toggling every tick at the boundary.
+                // Instanced objects are handled per-GROUP at join time (size-based) instead --
+                // toggling one member here would fight its MultiMeshInstance3D's single flag.
+                if (_instanceGroups == null || !_instanceGroups.IsInstanced(id))
+                {
+                    float scd = RenderConfig.ShadowCasterDistance;
+                    bool tooFarToCast = viewDSq > scd * scd;
+                    bool nearEnoughToCast = viewDSq < (scd * 0.9f) * (scd * 0.9f);
+                    if (tooFarToCast && state.MeshInstance.CastShadow != GeometryInstance3D.ShadowCastingSetting.Off
+                        && !state.ShadowForcedOffByDistance)
+                    {
+                        state.ShadowSettingBeforeDistanceCull = state.MeshInstance.CastShadow;
+                        state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+                        state.ShadowForcedOffByDistance = true;
+                    }
+                    else if (nearEnoughToCast && state.ShadowForcedOffByDistance)
+                    {
+                        state.MeshInstance.CastShadow = state.ShadowSettingBeforeDistanceCull;
+                        state.ShadowForcedOffByDistance = false;
+                    }
+                }
+
                 // Repair pass for the deferral above: an object that was far away when its mesh landed got
                 // its shape queued in the background, and by the time the avatar walks over to it the
                 // shape may well be built (another object shares the mesh, or the queue simply caught
@@ -491,7 +552,7 @@ public partial class ObjectRenderer : Node3D
                 // walk onto something that is drawn but not yet solid.
                 // Same extent-aware reasoning as the urgent path: compare against the object's bounds,
                 // not its origin, or a large object is never repaired until its centre comes into range.
-                float collisionReach = RenderConfig.CollisionUrgentDistance + BoundingRadius(state.MeshInstance);
+                float collisionReach = RenderConfig.CollisionUrgentDistance + EffectiveBoundingRadius(state);
                 if (dSq <= collisionReach * collisionReach && state.CollisionShape.Shape == null
                     && state.LoadedMeshKey != Guid.Empty
                     && _meshCollisionShapes.TryGetValue(state.LoadedMeshKey, out var readyShape))
@@ -541,6 +602,11 @@ public partial class ObjectRenderer : Node3D
                     texLodMs += (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0
                                 / System.Diagnostics.Stopwatch.Frequency;
                 }
+
+                // FEAT-PERF-06: rides the same spread sweep -- offer this prim to an instancing
+                // group, or pull it out. Cheap for the common case (already tracked -> one
+                // HashSet lookup and return).
+                EvaluateInstancing(state);
             }
             _cullCursor = end;
         });
@@ -548,6 +614,27 @@ public partial class ObjectRenderer : Node3D
         // Reported apart from the scan so the two possible culprits are separable: walking the
         // dictionary and doing distance maths, versus the texture re-offer inside it.
         MainThreadWorkQueue.RecordExternal("cull.texlod", texLodMs);
+
+        // FEAT-PERF-06: one [Instancing] line into the perf sidecar every 5 s, matching the
+        // [Perf] cadence, so the batching's effect is visible while standing still in a loaded
+        // scene (the whole reason this feature exists).
+        _instanceStatsAccum += delta;
+        if (_instanceStatsAccum >= 5.0)
+        {
+            _instanceStatsAccum = 0;
+            if (_instanceGroups != null)
+            {
+                string line = _instanceGroups.StatsLine();
+                if (_instanceReject.Count > 0)
+                {
+                    var parts = _instanceReject.OrderByDescending(kv => kv.Value)
+                                               .Select(kv => $"{kv.Key}={kv.Value}");
+                    line += " | eval/5s: " + string.Join(" ", parts);
+                    _instanceReject.Clear();
+                }
+                SLNG.App.UI.StatsOverlay.EmitPerfLine(line);
+            }
+        }
     }
 
     /// <summary>Drops an out-of-range object's GPU resources so VRAM can be reclaimed. The
@@ -555,6 +642,11 @@ public partial class ObjectRenderer : Node3D
     private void ReleaseResources(VisualState state)
     {
         if (state.ResourcesReleased) return;
+
+        // FEAT-PERF-06: leave the group BEFORE the mesh is nulled -- Leave restores a member's own
+        // Mesh only when it finds it null, so evicting after `Mesh = null` would re-populate the
+        // node with the shared mesh and un-hide an object that just went out of range.
+        _instanceGroups?.Leave(state.EntityId);
 
         state.MeshInstance.Mesh = null;
         state.MeshInstance.MaterialOverride = null;
@@ -1012,6 +1104,7 @@ public partial class ObjectRenderer : Node3D
         {
             if (_visuals.TryGetValue(id, out var soloState) && soloState.MeshInstance != null)
             {
+                SuppressInstancing(id, isSelected);
                 // If editing linked parts, the specifically selected part acts as the primary selection (yellow)
                 ApplyHighlightBox(soloState.MeshInstance, isSelected, true);
             }
@@ -1030,8 +1123,28 @@ public partial class ObjectRenderer : Node3D
             if (visRootLocalId == rootLocalId && kvp.Value.MeshInstance != null)
             {
                 bool isRoot = visEntity.LocalId == rootLocalId;
+                // FEAT-PERF-06: a highlighted part needs its own live node -- the edit gizmo and
+                // ApplyHighlightBox's GetAabb() both read the MeshInstance, which is empty once it
+                // is drawn by a MultiMesh. Evict the whole highlighted linkset; the cull sweep
+                // re-instances each part on deselect.
+                SuppressInstancing(kvp.Key, isSelected);
                 ApplyHighlightBox(kvp.Value.MeshInstance, isSelected, isRoot);
             }
+        }
+    }
+
+    /// <summary>FEAT-PERF-06: mark a prim as not-instanceable (while selected/edited) and pull it
+    /// out of any group now, or clear the mark so the cull sweep may re-instance it.</summary>
+    private void SuppressInstancing(Guid id, bool suppress)
+    {
+        if (suppress)
+        {
+            _instanceSuppressed.Add(id);
+            _instanceGroups?.Leave(id);
+        }
+        else
+        {
+            _instanceSuppressed.Remove(id);
         }
     }
 
@@ -1085,6 +1198,7 @@ public partial class ObjectRenderer : Node3D
             }
             _visuals.Remove(entityId);
             _texAnims.Remove(entityId);
+            _instanceSuppressed.Remove(entityId);
         }
     }
 
@@ -1139,6 +1253,10 @@ public partial class ObjectRenderer : Node3D
         }
 
         _texAnims[entityId] = new TexAnimState { Anim = running, StartMsec = Godot.Time.GetTicksMsec() };
+
+        // FEAT-PERF-06: an animating face must not be frozen inside a MultiMesh -- pull it out so
+        // its own shader can run the flipbook. The cull sweep leaves it out while _texAnims holds it.
+        _instanceGroups?.Leave(entityId);
 
         // Report every animation the client actually starts, once per object, without --diag and
         // without needing the object to be clicked. "The animation runs the wrong way" is not
@@ -1787,6 +1905,11 @@ public partial class ObjectRenderer : Node3D
 
             var slQuat = new Godot.Quaternion(transform.Rotation.X, transform.Rotation.Z, -transform.Rotation.Y, transform.Rotation.W);
             state.MeshInstance.Quaternion = slQuat;
+
+            // FEAT-PERF-06: if this prim is drawn by a MultiMesh, its own node moving does nothing
+            // on screen -- push the new transform into the instance buffer. No-op when it is not
+            // instanced.
+            _instanceGroups?.UpdateTransform(state.EntityId, state.MeshInstance.Transform);
         }
     }
 
@@ -2002,6 +2125,11 @@ public partial class ObjectRenderer : Node3D
         // put any split surface back first so the new material lands where the census will read
         // it, and the census re-splits within a second once the alpha kinds have settled.
         UnsplitSurfaces(state);
+
+        // FEAT-PERF-06: the material is being rebuilt, so this prim's group fingerprint is about
+        // to change. Pull it out; the cull sweep re-fingerprints and re-joins the right group
+        // once the new material has settled on its own node.
+        _instanceGroups?.Leave(state.EntityId);
 
         // FEAT-RENDER-01 Phase 2 needs an object that actually HAS a texture rotation to be
         // testable at all. The one picked by eye turned out to have rot=0 on every face, so the
@@ -3204,7 +3332,7 @@ public partial class ObjectRenderer : Node3D
 
         if (mesh != null)
         {
-            if (!RenderConfig.SmallObjectShadows && BoundingRadius(state.MeshInstance) < 0.5f)
+            if (!RenderConfig.SmallObjectShadows && EffectiveBoundingRadius(state) < 0.5f)
             {
                 state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
             }
@@ -3275,6 +3403,11 @@ public partial class ObjectRenderer : Node3D
     /// <summary>Drops this object's current shared-mesh reference (if any).</summary>
     private void ReleaseMeshRef(VisualState state)
     {
+        // FEAT-PERF-06: the mesh this prim is instanced against is about to change or go away.
+        // Pull it out of its group first (restores its own node's Mesh); the cull sweep re-joins
+        // it against the new geometry once that has landed.
+        _instanceGroups?.Leave(state.EntityId);
+
         // BUG-RENDER-16 (v0.22.26): the children hold one-surface copies of THIS mesh; they must
         // not outlive it on the parent, whatever replaces it (LOD placeholder, new geometry, none).
         UnsplitSurfaces(state);
@@ -3518,6 +3651,85 @@ public partial class ObjectRenderer : Node3D
         return size.Length() * 0.5f;
     }
 
+    /// <summary>FEAT-PERF-06: <see cref="BoundingRadius(MeshInstance3D)"/> but tolerant of a prim
+    /// whose <c>Mesh</c> is currently null because it is drawn by a MultiMesh — falls back to the
+    /// value captured when the mesh was assigned.</summary>
+    private static float EffectiveBoundingRadius(VisualState state)
+    {
+        if (state.MeshInstance.Mesh != null)
+        {
+            float live = BoundingRadius(state.MeshInstance);
+            state.CachedBoundingRadius = live;
+            return live;
+        }
+        return float.IsNaN(state.CachedBoundingRadius) ? 0f : state.CachedBoundingRadius;
+    }
+
+    /// <summary>FEAT-PERF-06: offer one swept prim to the instancing groups, or pull it out if it
+    /// no longer qualifies. Runs inside the budgeted cull sweep, so it processes a slice of the
+    /// visuals per frame like everything else in that loop.
+    ///
+    /// <para>Eligibility (all required): not selected/suppressed, in range, visible, single-surface
+    /// <see cref="ArrayMesh"/>, a shareable depth-writing <see cref="ShaderMaterial"/> (never a
+    /// sorted-transparent kind — those depend on per-object sort depth and the BUG-RENDER-16
+    /// split), no running texture animation, no split children, no light/particle child.</para></summary>
+    private void EvaluateInstancing(VisualState state)
+    {
+        if (_instanceGroups == null || !RenderConfig.EnableInstancing)
+        {
+            _instanceGroups?.Leave(state.EntityId);
+            return;
+        }
+
+        bool disqualified =
+            _instanceSuppressed.Contains(state.EntityId)
+            || state.ResourcesReleased
+            || state.SplitChildren != null
+            || state.LightNode != null
+            || state.ParticlesNode != null
+            || _texAnims.ContainsKey(state.EntityId)
+            || !IsInstanceValid(state.MeshInstance)
+            || !state.MeshInstance.Visible;
+
+        if (disqualified)
+        {
+            _instanceGroups.Leave(state.EntityId);
+            return;
+        }
+
+        // Already placed (grouped or pending): moves are pushed from UpdateVisual, eviction was
+        // handled above -- nothing to re-derive, and re-fingerprinting every sweep is the cost
+        // this skip exists to avoid.
+        if (_instanceGroups.IsTracked(state.EntityId)) { RejectInstancing("tracked-ok"); return; }
+
+        if (state.LoadedMeshKey == Guid.Empty) { RejectInstancing("no-mesh-key"); return; }
+        if (state.MeshInstance.Mesh is not ArrayMesh am) { RejectInstancing("not-arraymesh"); return; }
+        if (am.GetSurfaceCount() != 1) { RejectInstancing("multi-surface"); return; }
+
+        var mat = state.MeshInstance.MaterialOverride as ShaderMaterial
+                  ?? state.MeshInstance.GetSurfaceOverrideMaterial(0) as ShaderMaterial;
+        if (mat == null) { RejectInstancing("no-shadermaterial"); return; }
+        if (IsSortedTransparent(mat.Shader)) { RejectInstancing("sorted-transparent"); return; }
+
+        // The object's REAL (size-based) shadow intent, not a value the distance cull may have just
+        // flipped to Off -- otherwise a group's shadow flag would depend on where the camera
+        // happened to be when its second member joined.
+        var realShadow = state.ShadowForcedOffByDistance
+            ? state.ShadowSettingBeforeDistanceCull
+            : state.MeshInstance.CastShadow;
+        bool castShadow = realShadow != GeometryInstance3D.ShadowCastingSetting.Off;
+        var key = new InstanceGroupKey(state.LoadedMeshKey, MaterialFingerprint.Of(mat), castShadow);
+        _instanceGroups.Join(state.EntityId, key, am, mat, state.MeshInstance.Transform);
+        RejectInstancing("joined");
+    }
+
+    private void RejectInstancing(string reason)
+    {
+        if (!Diagnostics.Enabled) return;
+        _instanceReject.TryGetValue(reason, out int n);
+        _instanceReject[reason] = n + 1;
+    }
+
     /// <summary>Distance test against the local agent, false until the agent is in the world -- which
     /// correctly makes nothing urgent during login, since there is nobody yet to fall.</summary>
     private bool IsNearLocalAgent(Godot.Vector3 godotPos, float radius)
@@ -3561,7 +3773,7 @@ public partial class ObjectRenderer : Node3D
         // walked onto it. Adding the bounding radius makes the test conservative -- it can only ever
         // decide to build a shape sooner, never later.
         if (IsNearLocalAgent(state.MeshInstance.Position,
-                             RenderConfig.CollisionUrgentDistance + BoundingRadius(state.MeshInstance)))
+                             RenderConfig.CollisionUrgentDistance + EffectiveBoundingRadius(state)))
         {
             MainThreadWorkQueue.Measure("collision.urgent", () =>
             {
