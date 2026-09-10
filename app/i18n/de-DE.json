@@ -78,6 +78,7 @@
       "dof_auto_focus": "Autofokus",
       "dof_auto_focus_tooltip": "Folgt dem, was in der Bildmitte liegt. Ausschalten, um die Fokusdistanz von Hand zu setzen.",
       "dof_focus": "Fokus",
+      "dof_focus_tooltip": "Entfernung zur scharf bleibenden Ebene. Ziehen schaltet den Autofokus ab.",
       "dof_range": "Schärfebereich",
       "dof_range_tooltip": "Wie viele Meter rund um die Fokusebene scharf bleiben. Kleiner bedeutet eine flachere, filmischere Schärfe.",
       "dof_blur": "Unschärfe",

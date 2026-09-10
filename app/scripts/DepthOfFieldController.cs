@@ -171,17 +171,28 @@ public partial class DepthOfFieldController : Node
 
         _attributes.DofBlurAmount = _settings.BlurAmount;
 
-        // Far zone: everything beyond the sharp band, fading in over a distance equal to the band's
-        // own half-width so a narrow focus also has a tight falloff.
+        // A real lens's circle of confusion grows continuously with distance from the focal
+        // plane and then flattens toward a limit; Godot's practical DoF only offers a single
+        // linear ramp to approximate that whole curve. A ramp as short as the sharp band's own
+        // half-width (the first cut) put full blur a couple of metres past the subject, which
+        // reads as the blur snapping on rather than falling off. So the transition is
+        // deliberately long and scaled to the focal distance — a near focus still gets a tighter
+        // falloff than a far one, but in both cases the blur builds up over distance instead of
+        // stepping.
+        float falloff = Mathf.Max(focus * 1.5f, 2f);
+
+        // Far zone: sharp out to focus+half, then the blur ramps in across `falloff` metres.
         _attributes.DofBlurFarEnabled = true;
         _attributes.DofBlurFarDistance = focus + half;
-        _attributes.DofBlurFarTransition = Mathf.Max(half, 0.1f);
+        _attributes.DofBlurFarTransition = falloff;
 
-        // Near zone: mirrors the far one. Clamped above zero because a near distance of 0 puts the
-        // blur's ramp behind the camera and Godot then blurs the whole frame.
+        // Near zone: mirrors it, but the foreground only has focus-half metres of room before the
+        // camera, so the ramp is capped to that. Clamped above zero because a near distance of 0
+        // puts the ramp behind the camera and Godot then blurs the whole frame.
+        float near = Mathf.Max(focus - half, 0.05f);
         _attributes.DofBlurNearEnabled = _settings.NearBlur;
-        _attributes.DofBlurNearDistance = Mathf.Max(focus - half, 0.05f);
-        _attributes.DofBlurNearTransition = Mathf.Max(half, 0.1f);
+        _attributes.DofBlurNearDistance = near;
+        _attributes.DofBlurNearTransition = Mathf.Max(Mathf.Min(falloff, near), 0.1f);
     }
 
     private void Detach()

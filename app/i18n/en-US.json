@@ -78,6 +78,7 @@
       "dof_auto_focus": "Auto focus",
       "dof_auto_focus_tooltip": "Follows whatever is in the centre of the view. Turn it off to set the focal distance by hand.",
       "dof_focus": "Focus",
+      "dof_focus_tooltip": "Distance to the plane that stays sharp. Dragging this switches auto focus off.",
       "dof_range": "Sharp band",
       "dof_range_tooltip": "How many metres stay sharp, centred on the focal plane. Smaller is a shallower, more cinematic focus.",
       "dof_blur": "Blur",

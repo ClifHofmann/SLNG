@@ -222,9 +222,6 @@ public partial class SnapshotWindow : SLNGWindow
         {
             if (_refreshingDof || _dof == null) return;
             _dof.SetAutoFocus(on);
-            // The manual slider is meaningless while auto focus drives the plane, but it stays
-            // readable rather than hidden so switching back does not move the framing.
-            _dofFocusSlider.Editable = !on;
             _dofController?.Apply();
         };
         autoRow.AddChild(_dofAutoFocus);
@@ -235,12 +232,25 @@ public partial class SnapshotWindow : SLNGWindow
         autoRow.AddChild(_dofAutoFocusReadout);
 
         // --- The three sliders ---------------------------------------------------------------
+        // The focus slider stays editable even while auto focus is on: _Process tracks the live
+        // focal plane onto its handle, and grabbing it is a manual override that switches auto
+        // focus off (so the value the user just set actually holds, with no jump on the handoff).
         _dofFocusSlider = AddSliderRow(
-            L10n.Tr("ui.snapshot.dof_focus"), null,
+            L10n.Tr("ui.snapshot.dof_focus"), L10n.Tr("ui.snapshot.dof_focus_tooltip"),
             DofSettings.MinFocusDistance, DofSettings.MaxFocusDistance, 0.1,
             DofSettings.DefaultFocusDistance, out _dofFocusValue,
             v => $"{v:0.0} m",
-            (v, persist) => _dof?.SetFocusDistance((float)v, persist));
+            (v, persist) =>
+            {
+                if (_dof is { AutoFocus: true })
+                {
+                    _dof.SetAutoFocus(false);
+                    _refreshingDof = true;
+                    _dofAutoFocus.ButtonPressed = false;
+                    _refreshingDof = false;
+                }
+                _dof?.SetFocusDistance((float)v, persist);
+            });
 
         _dofRangeSlider = AddSliderRow(
             L10n.Tr("ui.snapshot.dof_range"), L10n.Tr("ui.snapshot.dof_range_tooltip"),
@@ -366,7 +376,6 @@ public partial class SnapshotWindow : SLNGWindow
             _dofAutoFocus.ButtonPressed = _dof.AutoFocus;
             _dofNearBlur.ButtonPressed = _dof.NearBlur;
             _dofFocusSlider.Value = _dof.FocusDistance;
-            _dofFocusSlider.Editable = !_dof.AutoFocus;
             _dofRangeSlider.Value = _dof.FocusRange;
             _dofBlurSlider.Value = _dof.BlurAmount;
         }
@@ -392,6 +401,12 @@ public partial class SnapshotWindow : SLNGWindow
         _dofAutoFocusReadout.Text = _dofController.AutoFocusHasTarget
             ? $"→ {_dofController.CurrentFocusDistance:0.0} m"
             : L10n.Tr("ui.snapshot.dof_no_target");
+
+        // Track the live focal plane onto the slider handle so switching to manual (by grabbing
+        // it) has no jump. Guarded so this write is not read back as a user edit.
+        _refreshingDof = true;
+        _dofFocusSlider.Value = _dofController.CurrentFocusDistance;
+        _refreshingDof = false;
     }
 
     // --- Capture ----------------------------------------------------------------------------

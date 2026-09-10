@@ -18,7 +18,7 @@ As a later addition (specifically for the Photography and Machinima tools), a De
 - [x] UI sliders provide smooth manual control over the blur intensity and focal plane.
 - [x] The feature is cleanly integrated into the `MVP 3` Snapshot Studio toolset.
 
-## Implementation (v0.22.4-alpha)
+## Implementation (v0.22.4-alpha, refined v0.22.5-alpha)
 
 `feature/FEAT-RENDER-07-depth-of-field`. Three new files plus wiring in `Boot.cs` and
 `SnapshotWindow.cs`.
@@ -30,9 +30,15 @@ two independent blur zones (everything nearer than X, everything further than Y)
 user-facing model is a **focal plane plus a sharp band in metres**. That translation lives
 in `Apply()` and nowhere else:
 
-- far zone: `focus + range/2`, transition = `range/2`
-- near zone: `focus - range/2` (clamped > 0 — a near distance of 0 puts the ramp behind the
-  camera and Godot blurs the whole frame), transition = `range/2`, only when "blur
+- far zone: blur begins at `focus + range/2`, then ramps in over a **`falloff`** distance of
+  `max(focus * 1.5, 2)` m — deliberately long. A real lens's circle of confusion grows
+  continuously with distance and then flattens; Godot only offers a single linear ramp, so a
+  short transition (the first cut used `range/2`) put full blur a couple of metres past the
+  subject and read as the blur *snapping on*. Scaling `falloff` to the focal distance keeps a
+  near focus tighter than a far one. (v0.22.5)
+- near zone: blur begins at `focus - range/2` (clamped > 0 — a near distance of 0 puts the
+  ramp behind the camera and Godot blurs the whole frame), transition = `min(falloff, near)`
+  because the foreground only has that much room before the camera, only when "blur
   foreground" is on
 
 **Toggling off detaches the resource** (`camera.Attributes = null`), it does not merely zero
@@ -77,8 +83,10 @@ UI applies live with `persist:false` during the drag and writes once on `DragEnd
 DoF is framing, not a quality setting — you set the focal plane while looking at the shot.
 Enable toggle, auto-focus checkbox with a live `→ N.N m` / "nothing in the centre of frame"
 readout, focus / sharp-band / blur sliders, "blur foreground" toggle, reset button. The
-manual focus slider goes read-only (not hidden) while auto-focus is on, so switching back
-doesn't move the framing.
+focus slider stays editable while auto-focus is on — `_Process` tracks the live focal plane
+onto its handle, and grabbing it is a **manual override** that switches auto-focus off, so
+the value the user set holds and the handoff has no jump. (v0.22.5 — it was read-only under
+auto-focus at first, which just read as a broken slider.)
 
 ### Not done here
 
