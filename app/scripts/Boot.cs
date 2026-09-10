@@ -127,6 +127,11 @@ public partial class Boot : Control
     private SLNG.App.UI.UiSettings _uiSettings = null!;
     private SLNG.App.UI.CameraSettings _cameraSettings = null!;
 
+    // FEAT-RENDER-07: depth-of-field. The settings holder exists from startup; the controller is
+    // built with the camera after login (see the AvatarController block).
+    private SLNG.App.UI.DofSettings _dofSettings = new();
+    private SLNG.App.DepthOfFieldController? _dofController;
+
     // M5-3 Tabbed Chat window
     private SLNG.App.UI.ChatWindow _chatWindow = null!;
     private SLNG.App.UI.SnapshotWindow _snapshotWindow = null!;
@@ -164,7 +169,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.2-alpha";
+    public const string AppVersion = "v0.22.7-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -489,7 +494,8 @@ public partial class Boot : Control
         // correctly following the saved value while the controls still showed the defaults --
         // shadows genuinely off after login, with the checkbox ticked.
         _graphicsSettings.Load();
-        
+        _dofSettings.Load();
+
         // Apply saved language setting
         _localizationManager.CurrentLocale = _uiSettings.Language;
 
@@ -593,6 +599,7 @@ public partial class Boot : Control
         _snapshotWindow = new SLNG.App.UI.SnapshotWindow { Name = "SnapshotWindow" };
         hudLayer.AddChild(_snapshotWindow);
         _snapshotWindow.Initialize(hudLayer);
+        _snapshotWindow.InitializeDof(_dofSettings); // FEAT-RENDER-07; controller wired post-login
 
         // FEAT-ENV-02: the shipped Windlight presets. Loaded here (a directory listing, no
         // parsing) so the picker has its index before it is ever opened.
@@ -2082,6 +2089,14 @@ public partial class Boot : Control
             }
 
             _avatarController.MakeCurrent();
+
+            // FEAT-RENDER-07: depth of field. Attaches to the play camera and reads _dofSettings,
+            // which the Snapshot window has already been editing (disabled by default, so this is
+            // inert until the user turns it on).
+            _dofController = new SLNG.App.DepthOfFieldController { Name = "DepthOfFieldController" };
+            AddChild(_dofController);
+            _dofController.Initialize(_avatarController, _dofSettings);
+            _snapshotWindow.SetDofController(_dofController);
 
             // Post-login setup above (avatar controller, selection/cursor, camera) has now
             // genuinely finished -- the client is actually ready to render the world.
