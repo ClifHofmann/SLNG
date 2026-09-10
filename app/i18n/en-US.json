@@ -62,6 +62,30 @@
       "source_legacy": "Windlight",
       "source_default": "default — sim sends none"
     },
+    "snapshot": {
+      "title": "Snapshot",
+      "capture": "Capture",
+      "save": "Save PNG",
+      "capturing": "Capturing…",
+      "capture_failed": "Capture failed: the viewport returned no image.",
+      "captured": "Captured {0} × {1}. Save it, or capture again.",
+      "saved": "Saved: {0}",
+      "save_failed": "Save failed ({0}).",
+      "dir_failed": "Could not create {0} ({1}).",
+      "dof_heading": "Depth of Field",
+      "dof_enable": "Enable",
+      "dof_enable_tooltip": "Blurs everything outside the sharp band. Off by default — it costs a full-screen blur pass, and auto focus costs a raycast.",
+      "dof_auto_focus": "Auto focus",
+      "dof_auto_focus_tooltip": "Follows whatever is in the centre of the view. Turn it off to set the focal distance by hand.",
+      "dof_focus": "Focus",
+      "dof_range": "Sharp band",
+      "dof_range_tooltip": "How many metres stay sharp, centred on the focal plane. Smaller is a shallower, more cinematic focus.",
+      "dof_blur": "Blur",
+      "dof_near_blur": "Blur foreground",
+      "dof_near_blur_tooltip": "Blur what is nearer than the sharp band too, not just what is behind it.",
+      "dof_reset": "Reset",
+      "dof_no_target": "nothing in the centre of frame"
+    },
     "map": {
       "arrived_in": "Arrived in {0}"
     },

@@ -62,6 +62,30 @@
       "source_legacy": "Windlight",
       "source_default": "Standard — Sim sendet nichts"
     },
+    "snapshot": {
+      "title": "Schnappschuss",
+      "capture": "Aufnehmen",
+      "save": "PNG speichern",
+      "capturing": "Nehme auf…",
+      "capture_failed": "Aufnahme fehlgeschlagen: Das Viewport lieferte kein Bild.",
+      "captured": "{0} × {1} aufgenommen. Speichern oder erneut aufnehmen.",
+      "saved": "Gespeichert: {0}",
+      "save_failed": "Speichern fehlgeschlagen ({0}).",
+      "dir_failed": "{0} konnte nicht angelegt werden ({1}).",
+      "dof_heading": "Schärfentiefe",
+      "dof_enable": "Aktiv",
+      "dof_enable_tooltip": "Zeichnet alles außerhalb des Schärfebereichs weich. Standardmäßig aus — der Effekt kostet einen Vollbild-Weichzeichner, der Autofokus zusätzlich einen Raycast.",
+      "dof_auto_focus": "Autofokus",
+      "dof_auto_focus_tooltip": "Folgt dem, was in der Bildmitte liegt. Ausschalten, um die Fokusdistanz von Hand zu setzen.",
+      "dof_focus": "Fokus",
+      "dof_range": "Schärfebereich",
+      "dof_range_tooltip": "Wie viele Meter rund um die Fokusebene scharf bleiben. Kleiner bedeutet eine flachere, filmischere Schärfe.",
+      "dof_blur": "Unschärfe",
+      "dof_near_blur": "Vordergrund weichzeichnen",
+      "dof_near_blur_tooltip": "Zeichnet auch das weich, was näher als der Schärfebereich liegt, nicht nur den Hintergrund.",
+      "dof_reset": "Zurücksetzen",
+      "dof_no_target": "nichts in der Bildmitte"
+    },
     "map": {
       "arrived_in": "Angekommen in {0}"
     },
