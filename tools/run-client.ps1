@@ -3,7 +3,24 @@ param(
     # Logger's Debug level (AvatarRenderer's per-mesh rigging lines -- [RiggedMesh],
     # [JointOverride], [HeadSize]), the stats overlay, the main-thread watchdog and the
     # per-object asset logging. Off by default so an ordinary session stays quiet and fast.
-    [switch]$Diag
+    [switch]$Diag,
+
+    # BUG-RENDER-16 prototype: passes --foliage-alpha=<mode>. Re-routes undeclared-alpha world-prim
+    # faces that analyzeAlphaData calls high-frequency (thin grass, wispy foliage) away from the
+    # hard Scissor cutout:
+    #   blend   - reference-viewer parity, soft edge, but Godot's coarse per-object sort can pop it
+    #   hash    - stochastic cutout, no sort/pop, gradient becomes a dither (can shimmer, no TAA)
+    #   prepass - blend colour + alpha depth-prepass; soft edge, two draws (can still flicker)
+    #   edge       - scissor pass + ALPHA_ANTIALIASING_EDGE; still ~4 MSAA coverage levels, hard-ish
+    #   blenddepth - blended colour + depth_draw_always; soft outer edge, no flicker, overlap opaque
+    #   scissor (default) - BUG-RENDER-11's shipped behaviour
+    # Combine with -Diag to see the per-texture [FaceAlpha] verdicts in the log.
+    [ValidateSet('scissor', 'blend', 'hash', 'prepass', 'edge', 'blenddepth')]
+    [string]$FoliageAlpha = 'scissor',
+
+    # BUG-RENDER-16: ALPHA_HASH_SCALE for -FoliageAlpha hash (also the shipped default). Higher =
+    # finer dither grain. 0 leaves the built-in default (2.0). Passes --foliage-hash-scale=N.
+    [double]$FoliageHashScale = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,8 +62,20 @@ $ErrorActionPreference = 'Continue'
 # Diagnostics.Initialize looks (see Diagnostics.cs) -- so the flag has to go after the separator,
 # not next to --path.
 $clientArgs = @('--path', (Join-Path $PSScriptRoot "..\app"))
+$userArgs = @()
 if ($Diag) {
     Write-Host "      diagnostics ON (--diag)" -ForegroundColor Yellow
-    $clientArgs += @('--', '--diag')
+    $userArgs += '--diag'
+}
+if ($FoliageAlpha -ne 'scissor') {
+    Write-Host "      foliage alpha = $FoliageAlpha (--foliage-alpha=$FoliageAlpha)" -ForegroundColor Yellow
+    $userArgs += "--foliage-alpha=$FoliageAlpha"
+}
+if ($FoliageHashScale -gt 0) {
+    Write-Host "      foliage hash scale = $FoliageHashScale" -ForegroundColor Yellow
+    $userArgs += "--foliage-hash-scale=$([string]::Format([cultureinfo]::InvariantCulture, '{0}', $FoliageHashScale))"
+}
+if ($userArgs.Count -gt 0) {
+    $clientArgs += @('--') + $userArgs
 }
 godot @clientArgs *>&1 | Tee-Object -FilePath $transcriptPath

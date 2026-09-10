@@ -24,6 +24,63 @@ public static class RenderConfig
     public static bool SmallObjectShadows = false;
 
     /// <summary>
+    /// BUG-RENDER-16: how to render an undeclared-alpha world-prim face whose texture
+    /// <c>analyzeAlphaData</c> classifies as NOT maskable (high-frequency / gradient alpha — thin
+    /// grass, wispy foliage). Clean cutouts (<c>maskable == true</c>: fences, sharp leaf cards)
+    /// are unaffected and stay on Scissor regardless.
+    ///
+    /// <list type="bullet">
+    /// <item><see cref="FoliageAlpha.Scissor"/> — BUG-RENDER-11's shipped behaviour: hard binary
+    ///   cutout at 0.33, depth-writing opaque queue, no sort so nothing pops, but the soft blade
+    ///   tips are chopped and thin low-alpha detail vanishes.</item>
+    /// <item><see cref="FoliageAlpha.Blend"/> — reference-viewer parity
+    ///   (<c>LLFace::canRenderAsMask()</c> false → <c>PASS_ALPHA</c>): soft feathered edge back,
+    ///   but Godot's per-object AABB-centre transparent sort is coarse, so overlapping foliage
+    ///   swaps draw order as the camera orbits (the flicker BUG-RENDER-11 chose Scissor to avoid).</item>
+    /// <item><see cref="FoliageAlpha.Hash"/> — BUG-RENDER-09's stochastic cutout
+    ///   (<see cref="PrimShaderFamily.Hash"/>): depth written like opaque so nothing sorts and
+    ///   nothing pops, and the gradient resolves as a dither rather than a hard step. The price is
+    ///   dither noise that can shimmer under motion / read as over-sharp speckle without TAA
+    ///   (SLNG has none).</item>
+    /// <item><see cref="FoliageAlpha.Prepass"/> — <see cref="PrimShaderFamily.BlendPrepass"/>:
+    ///   soft blended colour like Blend, plus an alpha depth-prepass so overlapping foliage
+    ///   self-occludes by depth and the coarse per-object sort stops flickering it. Costs a second
+    ///   draw of the geometry. (Godot's prepass alpha threshold is strict, so mid-alpha overlap
+    ///   can still sort — observed to still flicker on dense grass.)</item>
+    /// <item><see cref="FoliageAlpha.Edge"/> — <see cref="PrimShaderFamily.ScissorEdge"/>:
+    ///   Scissor's flicker-free opaque/depth-write pass, but with <c>ALPHA_ANTIALIASING_EDGE</c>.
+    ///   Still limited to MSAA's 4 coverage levels, so the edge stays fairly hard.</item>
+    /// <item><see cref="FoliageAlpha.BlendDepth"/> — <see cref="PrimShaderFamily.BlendDepth"/>:
+    ///   blended colour + <c>depth_draw_always</c>. Every fragment writes depth so overlapping
+    ///   foliage self-occludes and the sort stops mattering — no flicker — while the outer
+    ///   silhouette still blends softly against the background. Blade-on-blade overlap reads as
+    ///   opaque rather than blended.</item>
+    /// </list>
+    ///
+    /// Set via <c>--foliage-alpha=scissor|blend|hash|prepass|edge|blenddepth</c> (or the alias
+    /// <c>--foliage-blend</c>) on the command line. The default is
+    /// <see cref="HighFrequencyFoliageAlpha"/> below; the other five stay wired only as the
+    /// in-world A/B harness the real fix (see that field's comment) will need.
+    /// </summary>
+    public enum FoliageAlpha { Scissor, Blend, Hash, Prepass, Edge, BlendDepth }
+
+    // BUG-RENDER-16: default to Blend. Round after round of in-world A/B on dense pink grass
+    // settled it: the depth-writing / opaque-queue modes (scissor, edge, hash) never flicker but
+    // their edge is always hard, blocky or grainy -- 4x-MSAA coverage has 4 levels and the hash
+    // dither reads as speckle even with FXAA and a finer scale (TAA tried too, did not resolve
+    // it). Blend is the only mode whose texture the user accepted as matching Firestorm. Its
+    // flicker under camera motion is Godot's coarse per-SURFACE transparent sort and the real fix
+    // is to merge a foliage mesh's same-material faces into one sortable surface (the BUG-RENDER-12
+    // approach); until that lands this ships the correct look with the known flicker rather than a
+    // permanently degraded edge. --foliage-alpha= overrides for an A/B.
+    public static FoliageAlpha HighFrequencyFoliageAlpha = FoliageAlpha.Blend;
+
+    /// <summary>BUG-RENDER-16: <c>ALPHA_HASH_SCALE</c> for the Hash foliage path. Higher = finer
+    /// dither cells (less blocky, reads smoother once FXAA blurs it); 1.0 is Godot's own default.
+    /// Override with <c>--foliage-hash-scale=N</c>.</summary>
+    public static float FoliageHashScale = 2.0f;
+
+    /// <summary>
     /// How many milliseconds per frame the main thread may spend on deferred scene work (building
     /// object visuals, pushing sharpened textures to the GPU). Everything over budget waits for
     /// the next frame -- see <see cref="MainThreadWorkQueue"/> for why an unbounded flush is what

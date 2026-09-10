@@ -44,6 +44,15 @@ public static class PrimShaderFamily
     // BUG-RENDER-09: hashed alpha -- prim_scissor's depth behaviour with prim_blend's smooth
     // gradient. See prim_hash.gdshader for why the avatar needed a fourth Kind.
     private const string HashPath = "res://materials/prim/prim_hash.gdshader";
+    // BUG-RENDER-16: blend for colour + an alpha depth-prepass, for dense high-frequency foliage.
+    // See prim_blend_prepass.gdshader. WorldPrim only -- it is opt-in via --foliage-alpha=prepass.
+    private const string BlendPrepassPath = "res://materials/prim/prim_blend_prepass.gdshader";
+    // BUG-RENDER-16: prim_scissor + ALPHA_ANTIALIASING_EDGE (alpha-edge-blend). Opaque pass,
+    // depth write, no sort -> no flicker, but a soft (non-dithered) silhouette. --foliage-alpha=edge.
+    private const string ScissorEdgePath = "res://materials/prim/prim_scissor_edge.gdshader";
+    // BUG-RENDER-16: blend for colour + depth_draw_always so overlapping foliage self-occludes by
+    // depth and the coarse sort stops mattering. --foliage-alpha=blenddepth.
+    private const string BlendDepthPath = "res://materials/prim/prim_blend_depth.gdshader";
 
     // BUG-RENDER-06: the real viewer back-face culls WorldPrim faces by default, EXCEPT a face
     // whose GLTF material explicitly declares mDoubleSided (lldrawpool.cpp:839, :856) --
@@ -75,6 +84,9 @@ public static class PrimShaderFamily
     private static readonly Lazy<Shader> _scissor = MakeLazy(ScissorPath);
     private static readonly Lazy<Shader> _blend = MakeLazy(BlendPath);
     private static readonly Lazy<Shader> _hash = MakeLazy(HashPath);
+    private static readonly Lazy<Shader> _blendPrepass = MakeLazy(BlendPrepassPath);
+    private static readonly Lazy<Shader> _scissorEdge = MakeLazy(ScissorEdgePath);
+    private static readonly Lazy<Shader> _blendDepth = MakeLazy(BlendDepthPath);
 
     private static readonly Lazy<Shader> _opaqueDoubleSided = MakeLazy(OpaqueDoubleSidedPath);
     private static readonly Lazy<Shader> _scissorDoubleSided = MakeLazy(ScissorDoubleSidedPath);
@@ -109,6 +121,24 @@ public static class PrimShaderFamily
     /// so it cannot sort wrong, but resolves a soft alpha gradient as a dither instead of a hard
     /// step. Pair it with <see cref="AlphaHashScale"/>.</summary>
     public static Shader Hash => _hash.Value;
+
+    /// <summary>BUG-RENDER-16: true alpha blending for colour, plus <c>depth_prepass_alpha</c> so
+    /// overlapping high-frequency foliage self-occludes by depth and Godot's coarse per-object
+    /// transparent sort stops flickering it. Draws the geometry twice; WorldPrim only, opt-in via
+    /// <c>--foliage-alpha=prepass</c>.</summary>
+    public static Shader BlendPrepass => _blendPrepass.Value;
+
+    /// <summary>BUG-RENDER-16: <see cref="Scissor"/> plus <c>ALPHA_ANTIALIASING_EDGE</c> — the
+    /// silhouette resolves as a smooth coverage ramp instead of a staircase, with no dither
+    /// noise. Still the opaque, depth-writing, no-sort pass, so it does not flicker. Pair it with
+    /// <see cref="AlphaScissorThreshold"/> and <see cref="AlphaEdge"/>.</summary>
+    public static Shader ScissorEdge => _scissorEdge.Value;
+
+    /// <summary>BUG-RENDER-16: true alpha blending for colour, plus <c>depth_draw_always</c> so
+    /// every fragment writes depth and overlapping foliage self-occludes instead of being sorted.
+    /// No flicker; blade-on-blade overlap goes effectively opaque but the outer silhouette still
+    /// blends. WorldPrim only, opt-in via <c>--foliage-alpha=blenddepth</c>.</summary>
+    public static Shader BlendDepth => _blendDepth.Value;
 
     /// <summary>The transparency treatment of a face, i.e. which compile-time variant it needs.
     /// Named after the <c>StandardMaterial3D.TransparencyEnum</c> values it replaces so the
@@ -200,6 +230,9 @@ public static class PrimShaderFamily
         _ = Scissor;
         _ = Blend;
         _ = Hash;
+        _ = _blendPrepass.Value;
+        _ = _scissorEdge.Value;
+        _ = _blendDepth.Value;
         _ = _opaqueAvatar.Value;
         _ = _scissorAvatar.Value;
         _ = _blendAvatar.Value;
@@ -271,8 +304,6 @@ public static class PrimShaderFamily
     /// no render branch, no build-floater UI -- so the real viewer draws those faces as default
     /// too. LSL cannot even set them (PRIM_TEXGEN exposes default and planar only).</summary>
     /// <summary>Diagnostic V nudge, applied after the full UV transform. See the shader.</summary>
-    public static readonly StringName UvExtraV = "uv_extra_v";
-    public static readonly StringName UvExtraU = "uv_extra_u";
 
     public static readonly StringName UvTexGen = "uv_texgen";
 
@@ -280,8 +311,11 @@ public static class PrimShaderFamily
     /// vertex position in world units.</summary>
     public static readonly StringName PrimScale = "prim_scale";
 
-    /// <summary>Only meaningful on <see cref="Scissor"/>.</summary>
+    /// <summary>Only meaningful on <see cref="Scissor"/> and <see cref="ScissorEdge"/>.</summary>
     public static readonly StringName AlphaScissorThreshold = "alpha_scissor_threshold";
+
+    /// <summary>BUG-RENDER-16: width of the softened coverage band on <see cref="ScissorEdge"/>.</summary>
+    public static readonly StringName AlphaEdge = "alpha_edge";
 
     /// <summary>Only meaningful on <see cref="Hash"/>. 1.0 is Godot's own default noise scale;
     /// the value only tunes the dither's grain, it does not decide the cutoff.</summary>

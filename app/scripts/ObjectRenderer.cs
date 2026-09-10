@@ -164,13 +164,17 @@ public partial class ObjectRenderer : Node3D
     private static string PrimShaderKindName(Shader? s) =>
         ReferenceEquals(s, PrimShaderFamily.Blend) ? "Blend"
         : ReferenceEquals(s, PrimShaderFamily.Scissor) ? "Scissor"
+        : ReferenceEquals(s, PrimShaderFamily.Hash) ? "Hash"
+        : ReferenceEquals(s, PrimShaderFamily.BlendPrepass) ? "BlendPrepass"
+        : ReferenceEquals(s, PrimShaderFamily.ScissorEdge) ? "ScissorEdge"
+        : ReferenceEquals(s, PrimShaderFamily.BlendDepth) ? "BlendDepth"
         : ReferenceEquals(s, PrimShaderFamily.Opaque) ? "Opaque"
         : "other";
 
     private void LogFaceAlpha(Guid texId, string decision)
     {
         if (!Diagnostics.Enabled) return;
-        
+
         if (texId == Guid.Empty) return;
         if (_faceAlphaLogged.TryAdd($"{texId:N}:{decision}", 0))
             GD.Print($"[FaceAlpha] {texId.ToString()[..8]} {decision}");
@@ -207,14 +211,14 @@ public partial class ObjectRenderer : Node3D
 
         var st = new SurfaceTool();
         st.Begin(Mesh.PrimitiveType.Lines);
-        
+
         Vector3[] c = new Vector3[] {
             new Vector3(-0.5f, -0.5f, -0.5f), new Vector3(0.5f, -0.5f, -0.5f),
             new Vector3(0.5f, 0.5f, -0.5f), new Vector3(-0.5f, 0.5f, -0.5f),
             new Vector3(-0.5f, -0.5f, 0.5f), new Vector3(0.5f, -0.5f, 0.5f),
             new Vector3(0.5f, 0.5f, 0.5f), new Vector3(-0.5f, 0.5f, 0.5f)
         };
-        int[] indices = new int[] { 0,1, 1,2, 2,3, 3,0, 4,5, 5,6, 6,7, 7,4, 0,4, 1,5, 2,6, 3,7 };
+        int[] indices = new int[] { 0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7 };
         foreach (var idx in indices) st.AddVertex(c[idx]);
         _highlightBoxMesh = st.Commit();
     }
@@ -373,82 +377,82 @@ public partial class ObjectRenderer : Node3D
         double texLodMs = 0;
         MainThreadWorkQueue.Measure("cull.scan", () =>
         {
-        int end = Math.Min(_cullCursor + budget, _cullOrder.Count);
-        for (int ci = _cullCursor; ci < end; ci++)
-        {
-            var id = _cullOrder[ci];
-            if (!_visuals.TryGetValue(id, out var state)) continue; // removed since the snapshot
-            if (!IsInstanceValid(state.MeshInstance)) continue;
-
-            float dSq = state.MeshInstance.Position.DistanceSquaredTo(agentPos);
-            // Distance to whichever viewpoint is nearer (BUG-NET-01): drives visibility and the
-            // resource reload/release below. dSq (avatar only) still gates collision repair.
-            float viewDSq = Math.Min(dSq, state.MeshInstance.Position.DistanceSquaredTo(viewPos));
-
-            // Visibility with hysteresis: show within draw distance, hide only past 1.15x, so
-            // objects sitting near the edge don't flicker on/off every tick while moving.
-            if (viewDSq <= showSq && !state.MeshInstance.Visible) state.MeshInstance.Visible = true;
-            else if (viewDSq > hideSq && state.MeshInstance.Visible) state.MeshInstance.Visible = false;
-
-            // Repair pass for the deferral above: an object that was far away when its mesh landed got
-            // its shape queued in the background, and by the time the avatar walks over to it the
-            // shape may well be built (another object shares the mesh, or the queue simply caught
-            // up). Claiming it here costs a dictionary lookup and closes the window in which you can
-            // walk onto something that is drawn but not yet solid.
-            // Same extent-aware reasoning as the urgent path: compare against the object's bounds,
-            // not its origin, or a large object is never repaired until its centre comes into range.
-            float collisionReach = RenderConfig.CollisionUrgentDistance + BoundingRadius(state.MeshInstance);
-            if (dSq <= collisionReach * collisionReach && state.CollisionShape.Shape == null
-                && state.LoadedMeshKey != Guid.Empty
-                && _meshCollisionShapes.TryGetValue(state.LoadedMeshKey, out var readyShape))
+            int end = Math.Min(_cullCursor + budget, _cullOrder.Count);
+            for (int ci = _cullCursor; ci < end; ci++)
             {
-                state.CollisionShape.Shape = readyShape;
-            }
+                var id = _cullOrder[ci];
+                if (!_visuals.TryGetValue(id, out var state)) continue; // removed since the snapshot
+                if (!IsInstanceValid(state.MeshInstance)) continue;
 
-            if (viewDSq <= showSq && state.ResourcesReleased)
-            {
-                state.ResourcesReleased = false;
-                // Queued, not called inline. Running it here put a full mesh+material reload inside
-                // the sweep, and the sweep is walked in slices sized for cheap distance maths -- one
-                // slice that happened to contain several returning objects took 346.9 ms, which is
-                // what pushed cull.scan's average from 0.78 ms back up to 3.22 ms. Coalesced on the
-                // same key as the ordinary update path, so a re-entering object cannot queue twice.
-                string reloadId = id.ToString();
-                MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
-                                            () => UpdateVisual(reloadId), $"update:{reloadId}", "visual.update");
-            }
-            else if (viewDSq > releaseSq && !state.ResourcesReleased)
-            {
-                ReleaseResources(state); // far from BOTH avatar and camera -- reclaim its VRAM
-            }
-            else if (state.MeshInstance.Visible && !state.ResourcesReleased
-                     && state.UsedTextureIds.Count > 0 && _gpuCache != null && _assetService != null)
-            {
-                // Re-offer this object's current on-screen size to the GpuCache. A texture first
-                // uploaded while the object was small/distant was downsampled and, before this,
-                // stayed that way for the session however close the camera later got -- so
-                // walking up to something left it permanently soft. GpuCache decides whether that
-                // actually warrants a sharper re-upload (it ignores anything already at full
-                // resolution, and requires a full discard level of headroom), so this is a cheap
-                // no-op for the overwhelming majority of objects. Rides the same spread sweep as
-                // the rest of this loop, so each object is re-offered about four times a second --
-                // ample for approach speed, and no longer all in the same frame.
-                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-                var (screenPixelArea, priority) = ComputeTextureLod(state.MeshInstance);
-                if (screenPixelArea > 0f)
+                float dSq = state.MeshInstance.Position.DistanceSquaredTo(agentPos);
+                // Distance to whichever viewpoint is nearer (BUG-NET-01): drives visibility and the
+                // resource reload/release below. dSq (avatar only) still gates collision repair.
+                float viewDSq = Math.Min(dSq, state.MeshInstance.Position.DistanceSquaredTo(viewPos));
+
+                // Visibility with hysteresis: show within draw distance, hide only past 1.15x, so
+                // objects sitting near the edge don't flicker on/off every tick while moving.
+                if (viewDSq <= showSq && !state.MeshInstance.Visible) state.MeshInstance.Visible = true;
+                else if (viewDSq > hideSq && state.MeshInstance.Visible) state.MeshInstance.Visible = false;
+
+                // Repair pass for the deferral above: an object that was far away when its mesh landed got
+                // its shape queued in the background, and by the time the avatar walks over to it the
+                // shape may well be built (another object shares the mesh, or the queue simply caught
+                // up). Claiming it here costs a dictionary lookup and closes the window in which you can
+                // walk onto something that is drawn but not yet solid.
+                // Same extent-aware reasoning as the urgent path: compare against the object's bounds,
+                // not its origin, or a large object is never repaired until its centre comes into range.
+                float collisionReach = RenderConfig.CollisionUrgentDistance + BoundingRadius(state.MeshInstance);
+                if (dSq <= collisionReach * collisionReach && state.CollisionShape.Shape == null
+                    && state.LoadedMeshKey != Guid.Empty
+                    && _meshCollisionShapes.TryGetValue(state.LoadedMeshKey, out var readyShape))
                 {
-                    foreach (var texId in state.UsedTextureIds)
-                    {
-                        _ = _gpuCache.GetOrUploadTextureAsync(
-                            texId, _assetService, generateMipmaps: true,
-                            screenPixelArea: screenPixelArea, priority: priority);
-                    }
+                    state.CollisionShape.Shape = readyShape;
                 }
-                texLodMs += (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0
-                            / System.Diagnostics.Stopwatch.Frequency;
+
+                if (viewDSq <= showSq && state.ResourcesReleased)
+                {
+                    state.ResourcesReleased = false;
+                    // Queued, not called inline. Running it here put a full mesh+material reload inside
+                    // the sweep, and the sweep is walked in slices sized for cheap distance maths -- one
+                    // slice that happened to contain several returning objects took 346.9 ms, which is
+                    // what pushed cull.scan's average from 0.78 ms back up to 3.22 ms. Coalesced on the
+                    // same key as the ordinary update path, so a re-entering object cannot queue twice.
+                    string reloadId = id.ToString();
+                    MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
+                                                () => UpdateVisual(reloadId), $"update:{reloadId}", "visual.update");
+                }
+                else if (viewDSq > releaseSq && !state.ResourcesReleased)
+                {
+                    ReleaseResources(state); // far from BOTH avatar and camera -- reclaim its VRAM
+                }
+                else if (state.MeshInstance.Visible && !state.ResourcesReleased
+                         && state.UsedTextureIds.Count > 0 && _gpuCache != null && _assetService != null)
+                {
+                    // Re-offer this object's current on-screen size to the GpuCache. A texture first
+                    // uploaded while the object was small/distant was downsampled and, before this,
+                    // stayed that way for the session however close the camera later got -- so
+                    // walking up to something left it permanently soft. GpuCache decides whether that
+                    // actually warrants a sharper re-upload (it ignores anything already at full
+                    // resolution, and requires a full discard level of headroom), so this is a cheap
+                    // no-op for the overwhelming majority of objects. Rides the same spread sweep as
+                    // the rest of this loop, so each object is re-offered about four times a second --
+                    // ample for approach speed, and no longer all in the same frame.
+                    long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                    var (screenPixelArea, priority) = ComputeTextureLod(state.MeshInstance);
+                    if (screenPixelArea > 0f)
+                    {
+                        foreach (var texId in state.UsedTextureIds)
+                        {
+                            _ = _gpuCache.GetOrUploadTextureAsync(
+                                texId, _assetService, generateMipmaps: true,
+                                screenPixelArea: screenPixelArea, priority: priority);
+                        }
+                    }
+                    texLodMs += (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0
+                                / System.Diagnostics.Stopwatch.Frequency;
+                }
             }
-        }
-        _cullCursor = end;
+            _cullCursor = end;
         });
 
         // Reported apart from the scan so the two possible culprits are separable: walking the
@@ -931,11 +935,11 @@ public partial class ObjectRenderer : Node3D
             if (existingBox == null)
             {
                 if (_highlightBoxMesh == null) InitializeHighlightBox();
-                var box = new MeshInstance3D 
-                { 
-                    Name = "HighlightBox", 
-                    Mesh = _highlightBoxMesh, 
-                    MaterialOverride = isRoot ? _highlightLineMaterialYellow : _highlightLineMaterialCyan 
+                var box = new MeshInstance3D
+                {
+                    Name = "HighlightBox",
+                    Mesh = _highlightBoxMesh,
+                    MaterialOverride = isRoot ? _highlightLineMaterialYellow : _highlightLineMaterialCyan
                 };
                 meshInstance.AddChild(box);
                 var aabb = meshInstance.GetAabb();
@@ -1766,13 +1770,6 @@ public partial class ObjectRenderer : Node3D
         // emission when set, so the face reads at full colour regardless of scene lighting.
         material.SetShaderParameter(PrimShaderFamily.Fullbright, ft.Fullbright);
 
-        // Diagnostic: sculpts only, because prims are already confirmed to match Firestorm and
-        // dragging them along would destroy the reference the measurement leans on.
-        if (isSculpted)
-        {
-            material.SetShaderParameter(PrimShaderFamily.UvExtraU, SculptUNudge);
-            material.SetShaderParameter(PrimShaderFamily.UvExtraV, SculptVNudge);
-        }
         material.SetShaderParameter(PrimShaderFamily.PrimScale,
             new Godot.Vector3(primScale.X, primScale.Y, primScale.Z));
         // Centered like SL (u' = (u-0.5)*repeat + 0.5 + off) — the shader scales UVs from the
@@ -2177,6 +2174,7 @@ public partial class ObjectRenderer : Node3D
         // If the primitive is already explicitly translucent via color tint, keep true Alpha blending.
         // Otherwise, pick the right variant based on the texture's alpha content.
         bool maskable = false;
+        bool hiFreqBlend = false; // BUG-RENDER-16: set when a --foliage-alpha= re-route below fires.
         if (!tintIsTranslucent)
         {
             // BUG-RENDER-11: match the real viewer's default for a legacy alpha face. The viewer
@@ -2229,9 +2227,55 @@ public partial class ObjectRenderer : Node3D
             // texture's alpha is only incidental. Here the creator DID declare something. Taking a
             // declared flag over a pixel guess is the same reasoning that makes a glTF alphaMode
             // authoritative, and it needs no threshold.
+            // BUG-RENDER-16 prototype: for a high-frequency / gradient alpha (analyzeAlphaData
+            // says NOT a clean mask -- thin grass, wispy foliage), the hard Scissor cutout
+            // BUG-RENDER-11 forced here eats the low-alpha blade tips and stair-steps them into
+            // blocky shapes (reported live as a pink cut-out grass field vs Firestorm's soft one).
+            // --foliage-alpha= lets that subset be re-routed for an in-world A/B:
+            //   Blend -> reference-viewer parity (canRenderAsMask() false -> PASS_ALPHA); soft
+            //            edge back, but Godot's coarse per-object transparent sort can pop it.
+            //   Hash  -> BUG-RENDER-09's stochastic cutout; depth-written like opaque so nothing
+            //            sorts/pops, gradient becomes a dither (can shimmer / read over-sharp
+            //            without TAA).
+            //   Prepass -> blend for colour + an alpha depth-prepass so overlapping foliage
+            //            self-occludes by depth and the coarse sort stops flickering it; two draws.
+            //   Edge  -> Scissor's flicker-free opaque pass + ALPHA_ANTIALIASING_EDGE so the
+            //            silhouette is a smooth coverage ramp, not a staircase, and not a dither.
+            // maskable cutouts (fences, sharp leaf cards) are never re-routed.
+            var foliageMode = RenderConfig.HighFrequencyFoliageAlpha;
             if (fullbright)
             {
                 material.Shader = PrimShaderFamily.Blend;
+            }
+            else if (!maskable && foliageMode == RenderConfig.FoliageAlpha.Blend)
+            {
+                material.Shader = PrimShaderFamily.Blend;
+                hiFreqBlend = true;
+            }
+            else if (!maskable && foliageMode == RenderConfig.FoliageAlpha.Hash)
+            {
+                material.Shader = PrimShaderFamily.Hash;
+                material.SetShaderParameter(PrimShaderFamily.AlphaHashScale, RenderConfig.FoliageHashScale);
+                hiFreqBlend = true;
+            }
+            else if (!maskable && foliageMode == RenderConfig.FoliageAlpha.Prepass)
+            {
+                material.Shader = PrimShaderFamily.BlendPrepass;
+                hiFreqBlend = true;
+            }
+            else if (!maskable && foliageMode == RenderConfig.FoliageAlpha.Edge)
+            {
+                material.Shader = PrimShaderFamily.ScissorEdge;
+                // Lower cutoff than plain Scissor's 0.33: the edge band now does the softening, so
+                // the test itself only needs to drop the near-empty texels.
+                material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, 0.15f);
+                material.SetShaderParameter(PrimShaderFamily.AlphaEdge, 0.3f);
+                hiFreqBlend = true;
+            }
+            else if (!maskable && foliageMode == RenderConfig.FoliageAlpha.BlendDepth)
+            {
+                material.Shader = PrimShaderFamily.BlendDepth;
+                hiFreqBlend = true;
             }
             else
             {
@@ -2251,7 +2295,8 @@ public partial class ObjectRenderer : Node3D
             $"fullbright={fullbright} " +
             $"tintTranslucent={tintIsTranslucent} -> {PrimShaderKindName(material.Shader)}" +
             (ReferenceEquals(material.Shader, PrimShaderFamily.Scissor) ? $" @{(maskable ? 0.5f : 0.33f)}" : "") +
-            (ReferenceEquals(material.Shader, PrimShaderFamily.Blend) ? " (SORTED transparent pass)" : ""));
+            (ReferenceEquals(material.Shader, PrimShaderFamily.Blend) ? " (SORTED transparent pass)" : "") +
+            (hiFreqBlend ? $" [BUG-RENDER-16 --foliage-alpha={RenderConfig.HighFrequencyFoliageAlpha}]" : ""));
     }
 
     // FEAT-PERF-02: thin wrapper -- the real fetch/decode/Image/mipmap/upload work (and its
@@ -2576,63 +2621,6 @@ public partial class ObjectRenderer : Node3D
         6 => "cylindrical (not implemented — falls back to default)",
         _ => $"unknown ({texGen})"
     };
-
-    /// <summary>Live V offset applied to SCULPT faces only, in texture units (1.0 = one full
-    /// texture). Driven from F10/F11 so the constant offset sculpts still show against Firestorm
-    /// can be dialled in and READ OFF as a number, instead of being derived -- six derivations in
-    /// a row were wrong about this, while every measurement held.
-    ///
-    /// The step is 1/128, one row of a typical sculpt's vertex grid, since that is the size of
-    /// the most plausible candidates (a half or whole grid step). Coarse steps with Shift.</summary>
-    public static float SculptVNudge { get; private set; }
-
-    /// <summary>Same, for U. Added once the real stone turned out to be shifted HORIZONTALLY too:
-    /// a comparable offset on both axes would point at something displacing the texture as a
-    /// whole, which is a very different suspect from an error in one axis.</summary>
-    public static float SculptUNudge { get; private set; }
-
-    /// <summary>Developer menu entry point. <paramref name="step"/> is in texture units; passing
-    /// 0 resets. Reports the value three ways because which unit it lands on IS the finding: a
-    /// half or whole grid row points at the sculpt sampling, half a texture points at centring.</summary>
-    public void NudgeSculptV(float step)
-    {
-        SculptVNudge = step == 0f ? 0f : SculptVNudge + step;
-        PushSculptNudge();
-        LogNudge();
-    }
-
-    /// <summary>As <see cref="NudgeSculptV"/>, for the horizontal axis.</summary>
-    public void NudgeSculptU(float step)
-    {
-        SculptUNudge = step == 0f ? 0f : SculptUNudge + step;
-        PushSculptNudge();
-        LogNudge();
-    }
-
-    private static void LogNudge() =>
-        Logger.Info($"[SculptNudge] U = {SculptUNudge:0.#####} ({SculptUNudge * 128f:0.##} rows)   " +
-                    $"V = {SculptVNudge:0.#####} ({SculptVNudge * 128f:0.##} rows)");
-
-    /// <summary>Sets the nudge on every sculpt material currently in the scene. Cheap enough to do
-    /// on a keypress -- it is one uniform write per surface, no rebuild and no re-decode.</summary>
-    private void PushSculptNudge()
-    {
-        foreach (var state in _visuals.Values)
-        {
-            if (!IsInstanceValid(state.MeshInstance)) continue;
-            if (state.MeshInstance.MaterialOverride is ShaderMaterial mo) Apply(mo);
-
-            int surfaces = state.MeshInstance.Mesh?.GetSurfaceCount() ?? 0;
-            for (int i = 0; i < surfaces; i++)
-                if (state.MeshInstance.GetSurfaceOverrideMaterial(i) is ShaderMaterial sm) Apply(sm);
-        }
-
-        static void Apply(ShaderMaterial m)
-        {
-            m.SetShaderParameter(PrimShaderFamily.UvExtraU, SculptUNudge);
-            m.SetShaderParameter(PrimShaderFamily.UvExtraV, SculptVNudge);
-        }
-    }
 
     /// <summary>Pushes a new prim size into every material already on this visual. Only the
     /// planar projection reads it; for a default-texgen face the uniform is inert.</summary>

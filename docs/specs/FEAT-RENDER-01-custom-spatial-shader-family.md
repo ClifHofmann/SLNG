@@ -400,7 +400,39 @@ with atmospherics next to avatars, terrain and water without is precisely the se
 - [ ] Follow-up (not this spec): `llSetTextureAnim` and media-on-a-prim as uniform
       updates instead of material rebuilds — enabled by, but not part of, this work.
 
-## Side investigation: the "mirrored texture" sculpt (object 233207937) — UNRESOLVED
+## Side investigation: the "mirrored texture" sculpt (object 233207937) — ✅ CLOSED 2026-09-10
+
+**All three parts are accounted for. Read this header before the narrative below, which was
+written while they were still open and preserves the eliminations in the order they happened.**
+
+| Part of the report | Outcome |
+|---|---|
+| "unscharf" (blurry) | **Not a defect.** The asset is truncated to 8 % of what its own SOT marker declares, on the sim. Confirmed from outside our client: Firestorm's `texture.entries` index records `mImageSize = 32000` for it, i.e. that viewer does not consider the asset incomplete either. No client-side change recovers the missing bytes. |
+| "falsch platziert" (misplaced) | **Fixed 2026-08-18.** SL's PLANAR texgen, decoded but never applied — three stacked defects, see the section below. Live-verified against Firestorm on a known-answer probe object we own, matching on tile count and phase, with the probe's full case table then stepped through with no divergence. |
+| the residual constant UV offset (~3 grid rows in V, U comparable) | **Fixed 2026-08-23 by `faadfa8`, though nothing said so at the time.** That commit was written for a different symptom — a non-square sculpt rendering shallower than in Firestorm — and replaced PrimMesher's grid rule with `sculpt_calc_mesh_resolution`. The offset was a side effect of the old rule: our grid was 33×33 against the viewer's 32×32 (`SculptMap` padded by one for seam stitching), so our UV step was 1/32 where the viewer's is 1/31. That diverges to `(1/31 − 1/32)·s`, up to **0.031 of the texture — about 4 rows of 128**, on both axes, which is the magnitude and the shape that was reported. |
+
+Why the residual half was not recognised as closed: the 2026-08-02 numerical A/B *had* found the
+33-vs-32 grid and dismissed it — "1.5 % of a texel grid cannot move a baked atlas whose stone and
+ivy regions are hundreds of pixels wide". That was correct for the symptom it was aimed at (the
+gross misplacement, which really was planar texgen) and wrong for the one left over, whose whole
+description was a few grid rows. When `faadfa8` removed the grid mismatch five days later it was
+not connected back to this, and the handover recording the offset as open predates it.
+
+It is now pinned rather than merely fixed: `ViewerSculptParityTests.OurSculptUVs_MatchViewerAlgorithm`
+fails outright if our vertex count differs from the viewer's, then compares UVs index-by-index
+against `ss = tIdx/(sizeT−1)`, `tt = sIdx/(sizeS−1)` with a tolerance of 0.001 — a twentieth of the
+error the old grid produced. 34 sculpt tests green.
+
+The diagnostic scaffolding built to chase it is removed in `v0.22.3-alpha`: the `uv_extra_u` /
+`uv_extra_v` shader uniforms, their `PrimShaderFamily` names, the two `SetShaderParameter` calls
+every sculpt face paid, and the `NudgeSculptU` / `NudgeSculptV` API. The menu entries that drove
+them went in `a2d338a` (2026-08-25), which left the rest unreachable and writing zero.
+
+The linked handover file no longer exists — it was deleted in `b7ec318`. Its "ruled out" list is
+the table below, which is why it was safe to delete and why the table is kept here.
+
+---
+
 
 Reported as a light plaster patch sitting top-RIGHT where Firestorm shows it top-LEFT. Chosen as
 Phase 2's acceptance target on the assumption it was a UV-rotation case. It is not. Recorded here
