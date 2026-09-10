@@ -417,8 +417,6 @@ def render(milestones, series, kinds, version, tests, out_path):
                 tags = []
                 for tr in [x for x in re.split(r"[/\s]+", t["track"]) if x]:
                     tags.append('<span class="tag">%s</span>' % esc(tr))
-                if t["owner"]:
-                    tags.append('<span class="tag owner">%s</span>' % esc(t["owner"]))
                 if tags:
                     p.append('<div class="tags">%s</div>' % "".join(tags))
                 p.append("</article>")
@@ -427,18 +425,18 @@ def render(milestones, series, kinds, version, tests, out_path):
 
     # ---- full inventory
     p.append("<section><h2>Alle Aufgaben</h2><div class=\"tablewrap\"><table>")
-    p.append("<thead><tr><th>ID</th><th>Aufgabe</th><th>Status</th><th>Track</th><th>Owner</th></tr></thead><tbody>")
+    p.append("<thead><tr><th>ID</th><th>Aufgabe</th><th>Status</th><th>Track</th></tr></thead><tbody>")
     for m in milestones:
-        p.append('<tr class="ms-row"><td colspan="5">%s — %s</td></tr>'
+        p.append('<tr class="ms-row"><td colspan="4">%s — %s</td></tr>'
                  % (esc(m["name"]), esc(m["title"])))
         order = {k: i for i, k in enumerate(BOARD_ORDER)}
         for t in sorted(m["tasks"], key=lambda x: order.get(x["status"], 9)):
             st = STATUS.get(t["status"], STATUS["pending"])
             p.append('<tr><td class="id">%s</td><td>%s</td>'
                      '<td class="st"><span class="pill %s">%s</span></td>'
-                     '<td class="mono">%s</td><td class="mono">%s</td></tr>'
+                     '<td class="mono">%s</td></tr>'
                      % (esc(t["id"]), esc(t["title"]), t["status"], esc(st["label"]),
-                        esc(t["track"] or "—"), esc(t["owner"] or "—")))
+                        esc(t["track"] or "—")))
     p.append("</tbody></table></div></section>")
 
     p.append('<footer>Neu erzeugen mit <code>python tools/roadmap-dashboard.py</code>. '

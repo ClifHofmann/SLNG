@@ -1,0 +1,81 @@
+name: Progress dashboard
+
+# Regenerates docs/dashboard.html from docs/ROADMAP.md + git history and publishes
+# it to GitHub Pages. The page is a build artifact -- it is never committed (it is in
+# .gitignore); this workflow is the only thing that produces the public copy.
+#
+# One-time setup: repo Settings -> Pages -> Source = "GitHub Actions".
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/ROADMAP.md'
+      - 'docs/specs/**'
+      - 'tools/roadmap-dashboard.py'
+      - '.github/workflows/dashboard.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two deploys at once; let an in-flight run finish rather than cancelling it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # full history: the "Commits pro Woche" chart and the commit-count fact
+          # read `git log` back over many weeks.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # The green-test count is a nice-to-have header tile. If the build or tests
+      # fail we still publish the dashboard, just without that number.
+      - name: Count green tests
+        id: tests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          dotnet test SLNG.sln -c Release --nologo | tee test.log
+          n=$(grep -oE 'Passed:[[:space:]]+[0-9]+' test.log | grep -oE '[0-9]+' | awk '{s+=$1} END{print s}')
+          echo "count=${n:-}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate dashboard
+        run: |
+          mkdir -p _site
+          if [ -n "${{ steps.tests.outputs.count }}" ]; then
+            python tools/roadmap-dashboard.py --tests "${{ steps.tests.outputs.count }}" -o _site/index.html
+          else
+            python tools/roadmap-dashboard.py -o _site/index.html
+          fi
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
