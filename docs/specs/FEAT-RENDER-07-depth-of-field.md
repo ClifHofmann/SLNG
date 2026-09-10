@@ -45,6 +45,15 @@ in `Apply()` and nowhere else:
 `DofBlurAmount` — a `CameraAttributes` left assigned keeps its exposure model in the
 pipeline, and "cleanly toggled on and off" is an acceptance criterion.
 
+**Bokeh kernel (v0.22.6).** The first time DoF switches on, the controller sets the global
+DoF kernel to `RenderingServer.DofBokehShape.Circle` + `DofBlurQuality.High` + jitter.
+Godot's defaults are Box at Very Low with no jitter, which on a round high-contrast object
+(a cartwheel against bright grass — reported in-world) renders as a stair-stepped double
+edge / halo rather than a soft blur. It is global render state, but it only takes effect
+while a `CameraAttributes` with DoF is on the active camera — only ever this controller — so
+nothing is restored when DoF turns off. If High proves too costly on a busy sim it becomes
+a quality dropdown; DoF is off by default so ordinary play never pays for it.
+
 The camera is `AvatarController` (itself a `Camera3D`). It is the **only** live camera —
 `FreeCamera` is never instantiated and the View-menu first/third/free switch is a
 `LogMessage` stub — so one attachment covers the whole live view, and the effect shows in

@@ -21,6 +21,11 @@ public partial class DepthOfFieldController : Node
     private DofSettings? _settings;
     private CameraAttributesPractical? _attributes;
 
+    // Set the first time DoF actually switches on. Godot's default DoF kernel is Box-shaped at
+    // Very Low quality with no jitter -- on a high-contrast round object (a cartwheel against
+    // bright grass) that reads as a stair-stepped double edge / halo, not a soft blur.
+    private bool _bokehConfigured;
+
     /// <summary>The focal distance actually in use this frame -- the manual setting, or the
     /// smoothed auto-focus reading. The Snapshot window shows it so auto-focus is observable.</summary>
     public float CurrentFocusDistance { get; private set; } = DofSettings.DefaultFocusDistance;
@@ -165,6 +170,19 @@ public partial class DepthOfFieldController : Node
 
         _attributes ??= new CameraAttributesPractical();
         if (_camera.Attributes != _attributes) _camera.Attributes = _attributes;
+
+        if (!_bokehConfigured)
+        {
+            // Circle kernel + a real sample count + jitter: the fix for the halo/double-edge on
+            // round high-contrast objects. Jitter trades faint residual ringing for a slight
+            // fuzziness, which is what a photographic bokeh looks like anyway. This is global
+            // render state, but it only has any effect while a CameraAttributes with DoF is on
+            // the active camera -- which is exactly this controller and nothing else -- so there
+            // is nothing to put back when DoF turns off.
+            RenderingServer.CameraAttributesSetDofBlurBokehShape(RenderingServer.DofBokehShape.Circle);
+            RenderingServer.CameraAttributesSetDofBlurQuality(RenderingServer.DofBlurQuality.High, useJitter: true);
+            _bokehConfigured = true;
+        }
 
         float focus = _settings.AutoFocus ? CurrentFocusDistance : _settings.FocusDistance;
         float half = Mathf.Max(_settings.FocusRange * 0.5f, 0.05f);
