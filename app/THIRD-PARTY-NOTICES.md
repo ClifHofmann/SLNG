@@ -1,6 +1,8 @@
 # Third-party notices
 
-SLNG / Puris Viewer distributes the third-party material listed below. Each entry states what is
+SLNG / Puris Viewer is licensed under the **MIT License** (see `LICENSE` in the repository root).
+
+In addition, the project incorporates or distributes the third-party material listed below. Each entry states what is
 included, where it came from, its licence, and **what we changed** — the last part being an explicit
 condition of the Creative Commons licence covering the Second Life viewer artwork.
 

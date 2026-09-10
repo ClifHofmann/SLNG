@@ -41,6 +41,7 @@ mono_crash.*.json
 /scratch-viewer/
 /scratchpad/
 /captures/
+linden_*.cpp
 asset-cache/
 # LibreMetaverse runtime cache + bundled static assets
 app/linden/
