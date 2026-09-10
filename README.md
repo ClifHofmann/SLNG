@@ -1,6 +1,6 @@
 # SLNG — Second Life Next-Gen Viewer
 
-![SLNG / Puris Viewer](https://img.shields.io/badge/Status-Alpha%20(MVP%202)-brightgreen)
+![SLNG / Puris Viewer](https://img.shields.io/badge/Status-Alpha%20(MVP%203)-brightgreen)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Download](https://img.shields.io/github/v/release/ClifHofmann/SLNG?include_prereleases&label=Download)](https://github.com/ClifHofmann/SLNG/releases)
 ![Godot 4](https://img.shields.io/badge/Godot-4.7_stable-blue?logo=godotengine)
@@ -14,7 +14,7 @@ SLNG (branded in-app as *Puris Viewer*) keeps full grid compatibility by reusing
 > [!IMPORTANT]
 > **Pre-Alpha / Developer Preview:** SLNG is under active early development. It is **not yet a daily-driver replacement** for mature viewers like Firestorm. Core systems are functional (logging in, rendering Bento/BoM avatars, chat, world navigation), but features are evolving and instabilities may occur. We welcome technical feedback, bug reports, and contributions!
 
-> **Milestone Status:** MVP 1 (Playable Client) and MVP 1.5 (CI/CD, Installers, Configurations) are complete. We are currently actively working on **MVP 2 (Navigation & Social Core)**.
+> **Milestone Status:** **MVP 1** (Playable Client), **MVP 1.5** (CI/CD & Installer), and **MVP 2** (Navigation & Social Core) are complete. We are currently actively working on **MVP 3 (Avatar, Posing & Media Studio)**.
 
 ## 📥 Download (Pre-built Windows Installer)
 
