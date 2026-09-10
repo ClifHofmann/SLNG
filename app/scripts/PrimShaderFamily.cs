@@ -53,6 +53,10 @@ public static class PrimShaderFamily
     // BUG-RENDER-16: blend for colour + depth_draw_always so overlapping foliage self-occludes by
     // depth and the coarse sort stops mattering. --foliage-alpha=blenddepth.
     private const string BlendDepthPath = "res://materials/prim/prim_blend_depth.gdshader";
+    // BUG-RENDER-16: depth-only companion pass chained onto prim_blend as its next_pass -- writes
+    // depth for fragments at or above core_alpha_threshold, nothing to colour. The reference
+    // viewer's own alpha depth pass (lldrawpoolalpha.cpp:212-227). --foliage-alpha=blendcore.
+    private const string DepthCorePath = "res://materials/prim/prim_depth_core.gdshader";
 
     // BUG-RENDER-06: the real viewer back-face culls WorldPrim faces by default, EXCEPT a face
     // whose GLTF material explicitly declares mDoubleSided (lldrawpool.cpp:839, :856) --
@@ -87,6 +91,7 @@ public static class PrimShaderFamily
     private static readonly Lazy<Shader> _blendPrepass = MakeLazy(BlendPrepassPath);
     private static readonly Lazy<Shader> _scissorEdge = MakeLazy(ScissorEdgePath);
     private static readonly Lazy<Shader> _blendDepth = MakeLazy(BlendDepthPath);
+    private static readonly Lazy<Shader> _depthCore = MakeLazy(DepthCorePath);
 
     private static readonly Lazy<Shader> _opaqueDoubleSided = MakeLazy(OpaqueDoubleSidedPath);
     private static readonly Lazy<Shader> _scissorDoubleSided = MakeLazy(ScissorDoubleSidedPath);
@@ -139,6 +144,21 @@ public static class PrimShaderFamily
     /// No flicker; blade-on-blade overlap goes effectively opaque but the outer silhouette still
     /// blends. WorldPrim only, opt-in via <c>--foliage-alpha=blenddepth</c>.</summary>
     public static Shader BlendDepth => _blendDepth.Value;
+
+    /// <summary>BUG-RENDER-16: the alpha DEPTH pass. Not a face shader in its own right but the
+    /// <c>next_pass</c> of a <see cref="Blend"/> material: it writes depth for every fragment whose
+    /// alpha reaches <see cref="CoreAlphaThreshold"/> and leaves the colour buffer untouched, and
+    /// it runs at <see cref="DepthCoreRenderPriority"/> so every core is in the depth buffer before
+    /// any blend pass is drawn. A soft fringe behind another blade's core is then rejected in EVERY
+    /// draw order, which is what makes the coarse per-instance sort stop mattering. See the shader
+    /// header for the viewer citations. WorldPrim only; attached by ObjectRenderer.</summary>
+    public static Shader DepthCore => _depthCore.Value;
+
+    /// <summary>BUG-RENDER-16: render priority of a <see cref="DepthCore"/> pass. Godot's alpha
+    /// comparator orders by priority BEFORE depth (render_forward_clustered.h:722-726), so this
+    /// bucket -- below water's -1 and the default 0 -- is drawn in full before any ordinary
+    /// transparent surface, exactly like the viewer's depth pass over the whole alpha pool.</summary>
+    public const int DepthCoreRenderPriority = -2;
 
     /// <summary>The transparency treatment of a face, i.e. which compile-time variant it needs.
     /// Named after the <c>StandardMaterial3D.TransparencyEnum</c> values it replaces so the
@@ -233,6 +253,7 @@ public static class PrimShaderFamily
         _ = _blendPrepass.Value;
         _ = _scissorEdge.Value;
         _ = _blendDepth.Value;
+        _ = _depthCore.Value;
         _ = _opaqueAvatar.Value;
         _ = _scissorAvatar.Value;
         _ = _blendAvatar.Value;
@@ -320,4 +341,9 @@ public static class PrimShaderFamily
     /// <summary>Only meaningful on <see cref="Hash"/>. 1.0 is Godot's own default noise scale;
     /// the value only tunes the dither's grain, it does not decide the cutoff.</summary>
     public static readonly StringName AlphaHashScale = "alpha_hash_scale";
+
+    /// <summary>BUG-RENDER-16: only meaningful on <see cref="DepthCore"/>. Alpha at or above this
+    /// writes depth; below it the fragment is discarded from the depth pass (and still blends in
+    /// the colour pass). The viewer's value is 0.33 (lldrawpoolalpha.cpp:217).</summary>
+    public static readonly StringName CoreAlphaThreshold = "core_alpha_threshold";
 }

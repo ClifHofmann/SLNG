@@ -64,7 +64,45 @@ public partial class ObjectRenderer : Node3D
         public PrimShape? LoadedPrimShape;
 
         // GpuCache key of the mesh this object currently references (Guid.Empty = none).
+        // BUG-RENDER-16: this is the MERGED key -- geometry plus the surface-merge pattern the
+        // object's own texturing implies -- so two objects that share geometry but not that
+        // pattern no longer share one upload. LoadedGeometryKey below is the un-merged one.
         public Guid LoadedMeshKey;
+
+        // BUG-RENDER-16: the pre-merge geometry key. Collision shapes are cached against THIS,
+        // not LoadedMeshKey: a merge changes only how the triangles are grouped into surfaces,
+        // never the triangles, so every merge variant of one geometry shares one trimesh shape.
+        // Without the split, a re-textured object would rebuild a byte-identical 6 ms shape.
+        public Guid LoadedGeometryKey;
+
+        // BUG-RENDER-16: retained so a RE-TEXTURE can re-plan the surface merge. The merge
+        // pattern is a function of the object's face records, so an edit that changes those can
+        // change it -- and the mesh-assignment paths are gated on shape/asset change and never
+        // re-run for a texture edit. Without the mesh data in hand, the object would keep a
+        // surface grouping computed for its previous texturing and wear the wrong materials.
+        // These are references to the shared, cached MeshData every instance already holds, not
+        // copies.
+        public MeshData? LoadedMeshData;
+        public bool LoadedMeshFlipV;
+
+        // BUG-RENDER-16 falsification test: the sort depth this object was first seen at, held
+        // forever so the transparent order can never change again. NaN = not yet captured.
+        public float AlphaSortFrozenTarget = float.NaN;
+
+        // BUG-RENDER-16: last value written to SortingOffset, so an unchanged frame writes
+        // nothing. Every write is a Godot interop call and this runs over every transparent
+        // object, every frame. The frozen view state itself lives per CELL, not here -- see
+        // TickAlphaSortHysteresis for why per-object freezing does not work.
+        public float AlphaSortLastOffset;
+        // Whether this object currently carries a sorted-transparent surface, refreshed by the
+        // census walk so the hysteresis pass does not re-derive it per frame.
+        public bool HasSortedTransparent;
+
+        // BUG-RENDER-16: the SL face a running per-face texture animation was driving when the
+        // surface grouping was last planned, so a script that STARTS (or stops, or re-aims) an
+        // llSetTextureAnim afterwards re-plans instead of leaving the animated face merged into a
+        // run it would then drag along with it. int.MinValue = never planned.
+        public int LoadedAnimBarrierFace = int.MinValue;
 
         // True while this object is beyond draw distance and we've dropped its mesh/texture
         // refs to free GPU memory. It reloads when it comes back into range.
@@ -95,7 +133,37 @@ public partial class ObjectRenderer : Node3D
 
     // Per shared-mesh key: the SL face number of each surface, so any instance can apply that
     // face's texture via SetSurfaceOverrideMaterial.
+    //
+    // BUG-RENDER-16: this is no longer surface <-> face 1:1. A surface can cover a RUN of
+    // consecutive submeshes whose faces resolve to an identical material (see FaceSurfaceMerge),
+    // in which case the entry holds the run's FIRST face number -- the one whose material the
+    // whole surface wears, which is what both consumers need. It is a valid representative
+    // precisely because every face in the run compares equal, so any of them would build the
+    // same material.
     private readonly Dictionary<Guid, int[]> _meshFaceIndices = new();
+
+    // BUG-RENDER-16: one GpuCache key per (geometry, surface-merge pattern) pair. The merge
+    // depends on the INSTANCE's texturing, so a merged mesh is only shareable with instances
+    // whose texturing implies the same grouping -- a field of identically-textured grass still
+    // shares a single upload, while a re-textured copy gets its own. The pattern is carried as an
+    // exact bitmask rather than a hash: a collision here would render the wrong geometry.
+    //
+    // When the plan merges nothing the geometry key is returned unchanged and no entry is made,
+    // so every object that cannot benefit from the merge keeps exactly the caching it had.
+    private readonly Dictionary<(Guid Geometry, ulong MergePattern), Guid> _meshMergeKeys = new();
+
+    // How many distinct merge patterns one geometry has already been uploaded for. Sharing is
+    // what keeps a mesh-heavy region affordable, and the merge trades some of it away: an asset
+    // re-textured many different ways would otherwise get one ArrayMesh per pattern. Past the cap
+    // the geometry stops merging entirely and every further variant shares the single un-merged
+    // upload -- "render budgets over fidelity" (AGENTS.md), and the content that needs this fix
+    // (a field of one plant re-used verbatim) sits at one or two patterns, nowhere near it.
+    private readonly Dictionary<Guid, HashSet<ulong>> _meshMergePatterns = new();
+    private const int MaxMergePatternsPerGeometry = 8;
+
+    // Mesh keys whose merge has already been reported, so the diagnostic below is once per
+    // distinct merged mesh rather than once per object. Main-thread only.
+    private readonly HashSet<Guid> _meshMergesLogged = new();
 
     /// <summary>Trimesh collision shapes, cached against the SAME key as the shared mesh they were
     /// derived from. Measured: CreateTrimeshShape ran 1830 times for only 701 mesh builds, i.e. two
@@ -170,6 +238,15 @@ public partial class ObjectRenderer : Node3D
         : ReferenceEquals(s, PrimShaderFamily.BlendDepth) ? "BlendDepth"
         : ReferenceEquals(s, PrimShaderFamily.Opaque) ? "Opaque"
         : "other";
+
+    /// <summary>BUG-RENDER-16: true for the shader kinds that render in Godot's SORTED transparent
+    /// queue, i.e. the ones whose draw order the alpha comparator decides. The cutout kinds
+    /// (Scissor, ScissorEdge, Hash) write depth and render in the opaque queue, so they are
+    /// order-independent and cannot flicker however many surfaces an object has.</summary>
+    private static bool IsSortedTransparent(Shader? s) =>
+        ReferenceEquals(s, PrimShaderFamily.Blend)
+        || ReferenceEquals(s, PrimShaderFamily.BlendPrepass)
+        || ReferenceEquals(s, PrimShaderFamily.BlendDepth);
 
     private void LogFaceAlpha(Guid texId, string decision)
     {
@@ -339,6 +416,9 @@ public partial class ObjectRenderer : Node3D
         // known yet or its per-frame budget rounds to zero, and an animated texture must keep
         // running through both.
         TickTextureAnimations();
+
+        TickAlphaSortCensus();
+        TickAlphaSortHysteresis();
 
         if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
         _agentPos = agentPos;
@@ -1097,6 +1177,290 @@ public partial class ObjectRenderer : Node3D
         }
     }
 
+    // BUG-RENDER-16: when the [AlphaSort] census may next be printed, and what it last said, so
+    // an unchanged scene prints once instead of every interval. Main-thread only.
+    private ulong _alphaSortScanDueMsec;
+    private ulong _alphaSortPrintDueMsec;
+    private string _alphaSortCensusLast = string.Empty;
+
+    // The scan runs far more often than the line is printed: its other job is to keep
+    // VisualState.HasSortedTransparent current, which is what the hysteresis pass reads, so a
+    // newly-loaded plant must not wait a whole print interval before it is stabilised.
+    private const ulong AlphaSortScanIntervalMsec = 1000;
+    private const ulong AlphaSortPrintIntervalMsec = 15000;
+
+    // Bounds the census walk: every surface read is a Godot interop call, and this file already
+    // documents interop as what makes the per-frame object walk expensive. 96 m covers the draw
+    // distance the flicker is reported at without sweeping the whole 24k-visual dictionary.
+    private const int MaxCensusSurfaces = 8000;
+
+    /// <summary>BUG-RENDER-16: counts, over every visible object near the agent, how many carry
+    /// surfaces in Godot's SORTED transparent queue and how those surfaces are distributed.
+    ///
+    /// <para>This is the measurement that decides what the remaining flicker IS, and it is
+    /// deliberately NOT behind <c>--diag</c>: the first run of the surface merge came back
+    /// "flackert noch" with the deciding line invisible, which cost a round trip.</para>
+    ///
+    /// <para><c>multiSurface</c> objects hand the alpha comparator several pieces that tie on
+    /// depth — every surface of one instance gets the SAME depth
+    /// (<c>render_forward_clustered.cpp:961-966</c>) — and that tie is what the surface merge
+    /// removes. <c>singleSurface</c> objects have nothing left to merge: their only remaining
+    /// reordering is against OTHER objects, which is the reference viewer's <c>ALPHA_DIRTY</c>
+    /// hysteresis case and out of reach of any mesh change.</para></summary>
+    private void TickAlphaSortCensus()
+    {
+        var now = Godot.Time.GetTicksMsec();
+        if (now < _alphaSortScanDueMsec) return;
+        _alphaSortScanDueMsec = now + AlphaSortScanIntervalMsec;
+
+        if (!_agentPosKnown) return;
+
+        int objects = 0, singleSurface = 0, multiSurface = 0, surfaces = 0, near = 0, examined = 0;
+        int depthCoreSurfaces = 0; // BUG-RENDER-16: sorted surfaces that also carry the alpha depth pass.
+        foreach (var vs in _visuals.Values)
+        {
+            if (vs.ResourcesReleased || !IsInstanceValid(vs.MeshInstance) || !vs.MeshInstance.Visible)
+            {
+                vs.HasSortedTransparent = false;
+                continue;
+            }
+            if (vs.MeshInstance.Mesh is not ArrayMesh am) { vs.HasSortedTransparent = false; continue; }
+
+            float dist = vs.MeshInstance.Position.DistanceTo(_agentPos);
+            if (dist > 96f) { vs.HasSortedTransparent = false; continue; }
+            if (examined > MaxCensusSurfaces) break;
+
+            // Read the SETTLED shader off the surface, not the one the material build returned:
+            // ApplyAlphaCutout runs in a fire-and-forget continuation on the Visual lane, so at
+            // material-build time the alpha decision has NOT been made yet. Counting there read
+            // Opaque for every face and reported nothing at all -- the first version of this
+            // census did exactly that.
+            int count = am.GetSurfaceCount();
+            int blend = 0;
+            for (int i = 0; i < count; i++)
+            {
+                examined++;
+                if (vs.MeshInstance.GetSurfaceOverrideMaterial(i) is ShaderMaterial sm && IsSortedTransparent(sm.Shader))
+                {
+                    blend++;
+                    if (HasDepthCore(sm)) depthCoreSurfaces++;
+                }
+            }
+            vs.HasSortedTransparent = blend > 0;
+            if (blend == 0) continue;
+
+            objects++;
+            surfaces += blend;
+            if (blend > 1) multiSurface++; else singleSurface++;
+            if (dist <= 32f) near++;
+        }
+
+        if (objects == 0) return;
+        if (now < _alphaSortPrintDueMsec) return;
+        _alphaSortPrintDueMsec = now + AlphaSortPrintIntervalMsec;
+
+        string summary = $"{objects} objects / {surfaces} surfaces  " +
+                         $"multiSurface={multiSurface} singleSurface={singleSurface} within32m={near}" +
+                         $" depthCore={depthCoreSurfaces}@{RenderConfig.FoliageCoreAlpha.ToString(System.Globalization.CultureInfo.InvariantCulture)}" +
+                         $" foliage={RenderConfig.HighFrequencyFoliageAlpha}" +
+                         $" hysteresis={(RenderConfig.AlphaSortHysteresis > 0f ? RenderConfig.AlphaSortHysteresis.ToString(System.Globalization.CultureInfo.InvariantCulture) : "off")}" +
+                         (RenderConfig.AlphaSortHysteresis > 0f
+                             ? $" cells={_alphaSortCells.Count} refreezes={_alphaSortRefreezes}"
+                             : string.Empty) +
+                         (RenderConfig.AlphaSortFreezeDebug ? " FROZEN(debug)"
+                             : RenderConfig.AlphaSortPlanarDepth ? " planar" : " radial");
+        _alphaSortRefreezes = 0;
+        if (summary == _alphaSortCensusLast) return;
+        _alphaSortCensusLast = summary;
+
+        Logger.Info($"[AlphaSort] sorted transparent: {summary} — " +
+                    (multiSurface > singleSurface
+                        ? "mostly MULTI-surface: the surface merge is the right lever (BUG-RENDER-16)"
+                        : "mostly SINGLE-surface: the reorder is BETWEEN objects, which no mesh " +
+                          "merge can reach — needs the viewer's ALPHA_DIRTY sort hysteresis (BUG-RENDER-16)"));
+    }
+
+    // BUG-RENDER-16: true while SortingOffset has been written on at least one object, so turning
+    // the hysteresis off at runtime can clear them once instead of every frame.
+    private bool _alphaSortOffsetsApplied;
+
+    /// <summary>BUG-RENDER-16: one spatial cell's frozen view state -- SLNG's stand-in for an
+    /// <c>LLSpatialGroup</c>. Every object in the cell sorts as if the camera were still at
+    /// <see cref="AlphaSortCell.FrozenCam"/>, so they re-order TOGETHER and consistently.</summary>
+    private struct AlphaSortCell
+    {
+        public Godot.Vector3 FrozenDir;
+        public Godot.Vector3 FrozenCam;
+        public Godot.Vector3 FrozenAt;
+    }
+
+    private readonly Dictionary<(int X, int Y, int Z), AlphaSortCell> _alphaSortCells = new();
+    private int _alphaSortRefreezes;
+
+    /// <summary>Edge length of an alpha-sort cell, in metres. The viewer freezes per octree node;
+    /// this is the flat equivalent. Big enough that neighbouring plants land in the same cell and
+    /// therefore re-order together, small enough that one frozen camera stays a good
+    /// approximation across it.</summary>
+    private const float AlphaSortCellSize = 16f;
+
+    /// <summary>BUG-RENDER-16: the reference viewer's alpha-sort hysteresis, ported per spatial
+    /// cell.
+    ///
+    /// <para>Godot re-sorts its whole transparent list every frame by per-INSTANCE AABB-centre
+    /// distance. For interpenetrating grass cards that distance is a poor proxy for the true
+    /// per-pixel order, so re-deciding it every frame swaps between orderings that are each wrong
+    /// in different pixels -- the shimmer. The viewer's proxy is no better; it simply stops
+    /// re-deciding. <c>llspatialpartition.cpp:657-676</c> re-sorts a group's alpha only once the
+    /// NORMALISED direction to the camera has moved more than 0.64 -- a chord on the unit sphere,
+    /// about 37 degrees, not radians -- and reuses the previous order in between.</para>
+    ///
+    /// <para><b>Freezing per OBJECT does not work, and v0.22.20 shipped that mistake.</b> Each
+    /// object crosses its own threshold at its own moment -- a plant 5 m away swings past 37
+    /// degrees of direction change while one 60 m away has barely moved -- so the population thaws
+    /// continuously and the result is a steady drizzle of individual re-orders instead of one
+    /// shared snap. In-world that is still flicker. The viewer freezes a whole spatial group
+    /// against ONE shared view angle for exactly this reason, and that part is load-bearing.</para>
+    ///
+    /// <para>So the freeze is per cell. Every object in a cell sorts at the distance it would have
+    /// from that cell's frozen camera position, which keeps the whole cell mutually consistent and
+    /// makes it re-order in one step. Godot's sorter is untouched: it is only ever told a
+    /// different depth, via <c>inst-&gt;depth = distance(cam, centre) - sorting_offset</c>
+    /// (<c>render_forward_clustered.cpp:961-966</c>).</para></summary>
+    private void TickAlphaSortHysteresis()
+    {
+        float threshold = RenderConfig.AlphaSortHysteresis;
+        bool planar = RenderConfig.AlphaSortPlanarDepth;
+        bool freeze = RenderConfig.AlphaSortFreezeDebug;
+        if (threshold <= 0f && !planar && !freeze)
+        {
+            if (_alphaSortOffsetsApplied) ClearAlphaSortOffsets();
+            return;
+        }
+
+        var camNode = GetViewport()?.GetCamera3D();
+        if (camNode == null || !IsInstanceValid(camNode)) return;
+        var cam = camNode.GlobalPosition;
+        // -Z is forward for a Godot Camera3D; the viewer's at-axis is the same idea.
+        var at = -camNode.GlobalTransform.Basis.Column2.Normalized();
+
+        float thresholdSq = threshold * threshold;
+
+        foreach (var vs in _visuals.Values)
+        {
+            if (!vs.HasSortedTransparent) continue;
+            if (vs.ResourcesReleased || !IsInstanceValid(vs.MeshInstance) || !vs.MeshInstance.Visible) continue;
+
+            // The same centre Godot sorts by: the instance AABB centre, in world space.
+            var aabb = vs.MeshInstance.GetAabb();
+            var centre = vs.MeshInstance.GlobalTransform * aabb.GetCenter();
+
+            // Falsification test: capture the depth once, then never move it again. Checked
+            // before everything else so it overrides both other modes -- the point is to remove
+            // every remaining input the order could depend on.
+            if (freeze)
+            {
+                if (float.IsNaN(vs.AlphaSortFrozenTarget))
+                    vs.AlphaSortFrozenTarget = cam.DistanceTo(centre);
+
+                float frozenOffset = cam.DistanceTo(centre) - vs.AlphaSortFrozenTarget;
+                if (Mathf.Abs(frozenOffset - vs.AlphaSortLastOffset) >= 0.0005f)
+                {
+                    vs.AlphaSortLastOffset = frozenOffset;
+                    vs.MeshInstance.SortingOffset = frozenOffset;
+                    _alphaSortOffsetsApplied = true;
+                }
+                continue;
+            }
+
+            // The reference frame the sort depth is measured from. Without hysteresis that is
+            // simply the live camera; with it, the cell's frozen one. One direction per CELL, not
+            // per object -- that is what makes a cell re-order in one step instead of object by
+            // object (see the class comment for why per-object freezing does not work).
+            var refCam = cam;
+            var refAt = at;
+            if (threshold > 0f)
+            {
+                var key = ((int)Mathf.Floor(centre.X / AlphaSortCellSize),
+                           (int)Mathf.Floor(centre.Y / AlphaSortCellSize),
+                           (int)Mathf.Floor(centre.Z / AlphaSortCellSize));
+
+                if (!_alphaSortCells.TryGetValue(key, out var cell))
+                {
+                    cell = FreezeCell(key, cam, at);
+                    _alphaSortCells[key] = cell;
+                }
+                else
+                {
+                    var toCell = cam - CellCentre(key);
+                    float cellDist = toCell.Length();
+                    if (cellDist > 0.0001f && (toCell / cellDist - cell.FrozenDir).LengthSquared() > thresholdSq)
+                    {
+                        cell = FreezeCell(key, cam, at);
+                        _alphaSortCells[key] = cell;
+                    }
+                }
+                refCam = cell.FrozenCam;
+                refAt = cell.FrozenAt;
+            }
+
+            // What the viewer would have sorted this by. Godot SUBTRACTS the offset from its own
+            // radial distance, so writing (radial - target) makes it sort by target instead.
+            float target;
+            if (planar)
+            {
+                // llspatialpartition.cpp:684-692, componentwise: the projection of (centre - cam)
+                // on the view axis, biased a quarter of the extents toward the front of the box.
+                var extents = vs.MeshInstance.GetAabb().Size * 0.5f * vs.MeshInstance.Scale.Abs();
+                var bias = refAt * 0.25f * extents;
+                target = (centre - refCam - bias).Dot(refAt);
+            }
+            else
+            {
+                target = refCam.DistanceTo(centre);
+            }
+
+            float offset = cam.DistanceTo(centre) - target;
+            if (Mathf.Abs(offset - vs.AlphaSortLastOffset) < 0.0005f) continue;
+
+            vs.AlphaSortLastOffset = offset;
+            vs.MeshInstance.SortingOffset = offset;
+            _alphaSortOffsetsApplied = true;
+        }
+    }
+
+    private static Godot.Vector3 CellCentre((int X, int Y, int Z) key) => new(
+        (key.X + 0.5f) * AlphaSortCellSize,
+        (key.Y + 0.5f) * AlphaSortCellSize,
+        (key.Z + 0.5f) * AlphaSortCellSize);
+
+    private AlphaSortCell FreezeCell((int X, int Y, int Z) key, Godot.Vector3 cam, Godot.Vector3 at)
+    {
+        var toCell = cam - CellCentre(key);
+        float d = toCell.Length();
+        _alphaSortRefreezes++;
+        return new AlphaSortCell
+        {
+            FrozenDir = d > 0.0001f ? toCell / d : Godot.Vector3.Forward,
+            FrozenCam = cam,
+            FrozenAt = at,
+        };
+    }
+
+    /// <summary>BUG-RENDER-16: puts every object back on Godot's own depth. Runs once when the
+    /// hysteresis is switched off, so an A/B toggle leaves no offsets behind.</summary>
+    private void ClearAlphaSortOffsets()
+    {
+        foreach (var vs in _visuals.Values)
+        {
+            if (!IsInstanceValid(vs.MeshInstance)) continue;
+            if (vs.AlphaSortLastOffset == 0f) continue;
+            vs.MeshInstance.SortingOffset = 0f;
+            vs.AlphaSortLastOffset = 0f;
+        }
+        _alphaSortCells.Clear();
+        _alphaSortOffsetsApplied = false;
+    }
+
     /// <summary>Writes one animation frame onto the affected surfaces' materials.</summary>
     private void ApplyTextureAnimFrame(VisualState state, PrimitiveComponent prim, sbyte animFace, in SLNG.Core.TextureAnimFrame frame)
     {
@@ -1154,11 +1518,23 @@ public partial class ObjectRenderer : Node3D
             rotation = frame.Rotation;
         }
 
-        mat.SetShaderParameter(PrimShaderFamily.UvScale, new Godot.Vector2(repeatU, repeatV));
-        mat.SetShaderParameter(PrimShaderFamily.UvRotation, rotation);
-        mat.SetShaderParameter(PrimShaderFamily.UvOffset, new Godot.Vector2(
+        var uvScale = new Godot.Vector2(repeatU, repeatV);
+        var uvOffset = new Godot.Vector2(
             0.5f - 0.5f * repeatU + offsetU,
-            0.5f - 0.5f * repeatV - offsetV));
+            0.5f - 0.5f * repeatV - offsetV);
+        mat.SetShaderParameter(PrimShaderFamily.UvScale, uvScale);
+        mat.SetShaderParameter(PrimShaderFamily.UvRotation, rotation);
+        mat.SetShaderParameter(PrimShaderFamily.UvOffset, uvOffset);
+
+        // BUG-RENDER-16: the alpha depth pass samples the same texel through its own copy of these
+        // uniforms; left behind, its cores would occlude one frame's worth of animation away from
+        // where the colour pass draws them.
+        if (mat.NextPass is ShaderMaterial core && ReferenceEquals(core.Shader, PrimShaderFamily.DepthCore))
+        {
+            core.SetShaderParameter(PrimShaderFamily.UvScale, uvScale);
+            core.SetShaderParameter(PrimShaderFamily.UvRotation, rotation);
+            core.SetShaderParameter(PrimShaderFamily.UvOffset, uvOffset);
+        }
     }
 
     private void SetTexturesForVisual(VisualState state, List<Guid> newTextureIds)
@@ -1194,6 +1570,12 @@ public partial class ObjectRenderer : Node3D
             if (entity.GetComponent<AttachmentComponent>() != null) return;
 
             UpdateTextureAnimRegistration(state.EntityId, prim.TextureAnim);
+
+            // BUG-RENDER-16: an animation that arrives AFTER the mesh was built changes the merge
+            // barrier, and nothing else in UpdateVisual re-plans for it -- a TextureAnim block
+            // touches neither the shape nor the face records the two other re-plan triggers watch.
+            if (state.LoadedMeshKey != Guid.Empty && state.LoadedAnimBarrierFace != AnimBarrierFace(prim))
+                RePlanSurfaceMerge(state);
 
             // Skip all asset loading while the object is released (out of draw distance). The
             // cull pass clears ResourcesReleased and re-calls UpdateVisual when it returns; only
@@ -1254,7 +1636,19 @@ public partial class ObjectRenderer : Node3D
                     state.LoadedColorTint = prim.ColorTint;
                     state.LoadedFaces = prim.Faces;
                     if (state.LoadedMeshKey != Guid.Empty)
-                        _ = ApplyFaceMaterialsAsync(state);
+                    {
+                        // BUG-RENDER-16: the surface-merge grouping is a function of these very
+                        // face records, so re-plan it before re-applying materials. The three
+                        // mesh-assignment paths are all gated on a shape/asset change and never
+                        // re-run for a texture edit -- without this the object would keep a
+                        // grouping computed for its PREVIOUS texturing and every merged surface
+                        // would wear only the first face's material. AssignSharedMesh early-outs
+                        // when the plan is unchanged, which is the overwhelmingly common case.
+                        // A re-assignment re-applies the materials itself, so only apply here
+                        // when the grouping was already right.
+                        if (!RePlanSurfaceMerge(state))
+                            _ = ApplyFaceMaterialsAsync(state);
+                    }
                 }
             }
 
@@ -2175,6 +2569,7 @@ public partial class ObjectRenderer : Node3D
         // Otherwise, pick the right variant based on the texture's alpha content.
         bool maskable = false;
         bool hiFreqBlend = false; // BUG-RENDER-16: set when a --foliage-alpha= re-route below fires.
+        bool depthCore = false;   // BUG-RENDER-16: BlendCore -- the face also gets the alpha depth pass.
         if (!tintIsTranslucent)
         {
             // BUG-RENDER-11: match the real viewer's default for a legacy alpha face. The viewer
@@ -2277,12 +2672,23 @@ public partial class ObjectRenderer : Node3D
                 material.Shader = PrimShaderFamily.BlendDepth;
                 hiFreqBlend = true;
             }
+            else if (!maskable && foliageMode == RenderConfig.FoliageAlpha.BlendCore)
+            {
+                // BUG-RENDER-16 (v0.22.24): the same Blend colour pass the user accepted, plus the
+                // viewer's alpha depth pass as a next_pass so the blade cores occlude by real depth
+                // in every draw order. See AttachDepthCore and prim_depth_core.gdshader.
+                material.Shader = PrimShaderFamily.Blend;
+                hiFreqBlend = true;
+                depthCore = true;
+            }
             else
             {
                 material.Shader = PrimShaderFamily.Scissor;
                 material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, maskable ? 0.5f : 0.33f);
             }
         }
+        if (depthCore) AttachDepthCore(material);
+        else DetachDepthCore(material);
         // CullMode is deliberately NOT touched here -- see BuildFaceMaterialAsync's CullMode
         // comment. The real viewer back-face culls alpha-blended and alpha-masked prim faces
         // exactly like opaque ones (lldrawpoolalpha.cpp only lifts culling for particles and
@@ -2296,8 +2702,52 @@ public partial class ObjectRenderer : Node3D
             $"tintTranslucent={tintIsTranslucent} -> {PrimShaderKindName(material.Shader)}" +
             (ReferenceEquals(material.Shader, PrimShaderFamily.Scissor) ? $" @{(maskable ? 0.5f : 0.33f)}" : "") +
             (ReferenceEquals(material.Shader, PrimShaderFamily.Blend) ? " (SORTED transparent pass)" : "") +
-            (hiFreqBlend ? $" [BUG-RENDER-16 --foliage-alpha={RenderConfig.HighFrequencyFoliageAlpha}]" : ""));
+            (hiFreqBlend ? $" [BUG-RENDER-16 --foliage-alpha={RenderConfig.HighFrequencyFoliageAlpha}]" : "") +
+            (depthCore ? $" +DepthCore@{RenderConfig.FoliageCoreAlpha.ToString(System.Globalization.CultureInfo.InvariantCulture)}" : ""));
     }
+
+    /// <summary>BUG-RENDER-16: chains the alpha depth pass (<see cref="PrimShaderFamily.DepthCore"/>)
+    /// onto a Blend material as its <c>next_pass</c>, or refreshes it if it is already there.
+    ///
+    /// <para>Built by <c>Duplicate()</c> rather than by copying a list of uniforms, so every
+    /// placement input the depth pass must agree with -- albedo texture and tint, uv_scale /
+    /// uv_offset / uv_rotation, uv_texgen, prim_scale -- comes across by construction, including
+    /// any uniform added to the placement later. Textures are shared by reference, so the
+    /// GpuCache refcounts (held per object via UsedTextureIds, not per material) are untouched
+    /// and a later in-place sharpen (<c>ImageTexture.SetImage</c>) reaches both passes. The pass
+    /// must rasterise the identical texel at the identical depth as the colour pass, otherwise a
+    /// core would occlude with nothing drawn on it -- which is also why
+    /// <see cref="ApplyAnimatedPlacement"/> forwards the animated UV uniforms.</para>
+    ///
+    /// <para>Main thread only (Godot resource mutation), like everything else in ApplyAlphaCutout.</para></summary>
+    private static void AttachDepthCore(ShaderMaterial material)
+    {
+        if (material.NextPass is ShaderMaterial existing && ReferenceEquals(existing.Shader, PrimShaderFamily.DepthCore))
+        {
+            existing.SetShaderParameter(PrimShaderFamily.AlbedoTexture, material.GetShaderParameter(PrimShaderFamily.AlbedoTexture));
+            existing.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, material.GetShaderParameter(PrimShaderFamily.HasAlbedoTexture));
+            existing.SetShaderParameter(PrimShaderFamily.CoreAlphaThreshold, RenderConfig.FoliageCoreAlpha);
+            return;
+        }
+
+        var core = (ShaderMaterial)material.Duplicate();
+        core.NextPass = null;
+        core.Shader = PrimShaderFamily.DepthCore;
+        core.RenderPriority = PrimShaderFamily.DepthCoreRenderPriority;
+        core.SetShaderParameter(PrimShaderFamily.CoreAlphaThreshold, RenderConfig.FoliageCoreAlpha);
+        material.NextPass = core;
+    }
+
+    /// <summary>BUG-RENDER-16: drops a stale alpha depth pass. Nothing else in the client uses
+    /// <c>next_pass</c>, so a non-null one on a prim material can only be ours.</summary>
+    private static void DetachDepthCore(ShaderMaterial material)
+    {
+        if (material.NextPass != null) material.NextPass = null;
+    }
+
+    /// <summary>BUG-RENDER-16: true when the material carries the alpha depth pass.</summary>
+    private static bool HasDepthCore(ShaderMaterial material) =>
+        material.NextPass is ShaderMaterial np && ReferenceEquals(np.Shader, PrimShaderFamily.DepthCore);
 
     // FEAT-PERF-02: thin wrapper -- the real fetch/decode/Image/mipmap/upload work (and its
     // single-flight dedup across every renderer, not just this one) lives in
@@ -2483,6 +2933,122 @@ public partial class ObjectRenderer : Node3D
         return key;
     }
 
+    /// <summary>BUG-RENDER-16: which of <paramref name="data"/>'s submeshes may share one Godot
+    /// surface, for THIS object's texturing. See <see cref="SLNG.Core.FaceSurfaceMerge"/> for the
+    /// Godot sorting behaviour that makes the merge the fix and for why no shader mode substitutes.
+    ///
+    /// <para><c>RunStart</c> is indexed by COMMITTABLE submesh — empty submeshes are filtered out
+    /// here exactly as <see cref="BuildArrayMesh"/> skips them, so a submesh that produces no
+    /// surface cannot break a run.</para></summary>
+    private (bool[] RunStart, int Surfaces, int SubmeshCount, ulong Pattern) PlanSurfaceMerge(
+        VisualState state, MeshData data)
+    {
+        var committable = new List<int>(data.Submeshes.Count);
+        foreach (var sub in data.Submeshes)
+        {
+            if (sub.Indices.Length == 0) continue;
+            committable.Add(sub.FaceIndex);
+        }
+
+        var runStart = new bool[committable.Count];
+        var prim = committable.Count == 0
+            ? null
+            : _world?.GetEntity(state.EntityId)?.GetComponent<PrimitiveComponent>();
+
+        if (prim == null)
+        {
+            // Nothing to commit, or no face records to reason about: merge nothing, which
+            // reproduces the pre-merge behaviour exactly (and keeps the cache key equal to the
+            // geometry key). The barrier is still recorded, so the re-plan check in UpdateVisual
+            // does not see a permanent mismatch and fire on every ObjectUpdate.
+            state.LoadedAnimBarrierFace = SLNG.Core.FaceSurfaceMerge.NoAnimatedFace;
+            for (int i = 0; i < runStart.Length; i++) runStart[i] = true;
+            return (runStart, runStart.Length, runStart.Length, 0UL);
+        }
+
+        var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId,
+            prim.ColorTint, prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation,
+            prim.TexGen, prim.Fullbright);
+
+        int animatedFace = AnimBarrierFace(prim);
+        state.LoadedAnimBarrierFace = animatedFace;
+
+        var indices = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(committable);
+        int surfaces = SLNG.Core.FaceSurfaceMerge.Plan(
+            indices, prim.Faces, defaultFace, animatedFace, runStart);
+
+        ulong pattern = SLNG.Core.FaceSurfaceMerge.IsIdentity(runStart, runStart.Length)
+            ? 0UL
+            : SLNG.Core.FaceSurfaceMerge.Signature(runStart, runStart.Length);
+
+        return (runStart, surfaces, runStart.Length, pattern);
+    }
+
+    /// <summary>BUG-RENDER-16: the SL face that a per-face texture animation makes a merge
+    /// barrier, or <see cref="SLNG.Core.FaceSurfaceMerge.NoAnimatedFace"/> for none.
+    ///
+    /// <para>Merging an individually-animated face into a run would animate the identically-
+    /// textured static faces beside it, because a merged run wears a single material. Two cases
+    /// need no barrier and deliberately do not get one, so merging stays maximal: an all-faces
+    /// block (wire 255, unpacked to -1) moves every face together anyway, and a block that is not
+    /// ON drives nothing — matching <see cref="UpdateTextureAnimRegistration"/>, which likewise
+    /// only registers a running animation.</para></summary>
+    private static int AnimBarrierFace(PrimitiveComponent prim) =>
+        prim.TextureAnim is { IsOn: true } ta && ta.Face >= 0
+            ? ta.Face
+            : SLNG.Core.FaceSurfaceMerge.NoAnimatedFace;
+
+    /// <summary>BUG-RENDER-16: re-runs the surface-merge plan for an already-loaded mesh after the
+    /// object's texturing changed, and re-assigns the mesh if the grouping moved. A no-op when it
+    /// did not — <see cref="AssignSharedMesh"/> early-outs on an unchanged key, so the ordinary
+    /// texture edit costs one plan (a few struct comparisons) and nothing else.</summary>
+    /// <returns>True when the mesh was re-assigned — which re-applies the face materials itself,
+    /// so the caller must not do it a second time.</returns>
+    private bool RePlanSurfaceMerge(VisualState state)
+    {
+        var data = state.LoadedMeshData;
+        if (data == null || state.LoadedGeometryKey == Guid.Empty) return false;
+
+        var before = state.LoadedMeshKey;
+        AssignSharedMesh(state, state.LoadedGeometryKey, data, state.LoadedMeshFlipV);
+        return state.LoadedMeshKey != before;
+    }
+
+    /// <summary>BUG-RENDER-16: the GpuCache key for a geometry rendered with a given surface-merge
+    /// pattern. A plan that merges nothing returns <paramref name="geometryKey"/> UNCHANGED, so
+    /// every object the merge cannot help keeps bit-identical caching and sharing.
+    ///
+    /// <para>Past <see cref="MaxMergePatternsPerGeometry"/> distinct patterns for one geometry the
+    /// merge is abandoned for this object and <paramref name="plan"/> is rewritten to identity —
+    /// rewritten, not merely re-keyed, or the merged geometry would be built under the un-merged
+    /// key and every sharer of it would render the wrong surface layout.</para></summary>
+    private Guid MergedMeshKey(Guid geometryKey, ref (bool[] RunStart, int Surfaces, int SubmeshCount, ulong Pattern) plan)
+    {
+        if (plan.Pattern == 0UL) return geometryKey;
+
+        if (!_meshMergePatterns.TryGetValue(geometryKey, out var patterns))
+        {
+            patterns = new HashSet<ulong>();
+            _meshMergePatterns[geometryKey] = patterns;
+        }
+
+        if (!patterns.Contains(plan.Pattern) && patterns.Count >= MaxMergePatternsPerGeometry)
+        {
+            for (int i = 0; i < plan.RunStart.Length; i++) plan.RunStart[i] = true;
+            plan = (plan.RunStart, plan.RunStart.Length, plan.SubmeshCount, 0UL);
+            return geometryKey;
+        }
+        patterns.Add(plan.Pattern);
+
+        var key2 = (geometryKey, plan.Pattern);
+        if (!_meshMergeKeys.TryGetValue(key2, out var key))
+        {
+            key = Guid.NewGuid();
+            _meshMergeKeys[key2] = key;
+        }
+        return key;
+    }
+
     /// <summary>Assigns a shared, refcounted mesh to the object's node, building+caching it on
     /// first use. Releases the previous mesh ref so the GpuCache can reclaim it.
     /// <paramref name="flipV"/>: true for geometry whose UVs are in SL's bottom-left-origin
@@ -2490,9 +3056,20 @@ public partial class ObjectRenderer : Node3D
     /// caller — LLMesh assets, sculpt meshing, AND MeshFoundry prim output all need it (see the
     /// llvolume.cpp verification at the prim call site) — but it stays a parameter rather than a
     /// constant since sculpt meshing's flip is inferred from SL convention, not proven the same
-    /// way.</summary>
-    private void AssignSharedMesh(VisualState state, Guid key, MeshData data, bool flipV)
+    /// way.
+    /// <para><paramref name="geometryKey"/> identifies the GEOMETRY. The mesh is actually cached
+    /// under a key derived from it plus the surface-merge pattern this object's texturing implies
+    /// (BUG-RENDER-16) — identical when nothing merges. Collision shapes stay on
+    /// <paramref name="geometryKey"/>, since a merge regroups triangles into surfaces without
+    /// changing them.</para></summary>
+    private void AssignSharedMesh(VisualState state, Guid geometryKey, MeshData data, bool flipV)
     {
+        // BUG-RENDER-16: decide the surface grouping BEFORE consulting the cache -- it is part of
+        // the key. Kept on the main thread with the rest of this method: it reads the object's
+        // face records out of the world and is a handful of struct comparisons.
+        var plan = PlanSurfaceMerge(state, data);
+        Guid key = MergedMeshKey(geometryKey, ref plan);
+
         if (state.LoadedMeshKey == key && state.MeshInstance.Mesh != null) return;
 
         ReleaseMeshRef(state);
@@ -2512,16 +3089,43 @@ public partial class ObjectRenderer : Node3D
             int[]? faceIndices = null;
             MainThreadWorkQueue.Measure("mesh.build", () =>
             {
-                built = BuildArrayMesh(data, flipV, out var fi);
+                built = BuildArrayMesh(data, flipV, plan.RunStart, out var fi);
                 faceIndices = fi;
             });
             mesh = built;
             _meshFaceIndices[key] = faceIndices!;
             if (mesh != null) _gpuCache?.Put(key, mesh, EstimateMeshSize(data), initialRefCount: 1);
+
+            // "Did the merge fire, and did it have anything to work with?" is the one question an
+            // in-world A/B cannot answer from the screen -- exactly as BUG-RENDER-12 found on the
+            // avatar side, where a mesh reporting "6 submeshes -> 5 surface(s)" was the proof that
+            // a multi-material mesh is only partly merged.
+            //
+            // Logged for EVERY distinct mesh, not only the ones that merged, because the three
+            // outcomes point at three different follow-ups and only the log separates them:
+            //   "6 -> 1"  the flicker was N reorderable surfaces inside one object; fixed here.
+            //   "6 -> 6"  the faces genuinely differ, so nothing could merge -- look at why
+            //             (different tint? different repeats?) before blaming the sort.
+            //   "1 -> 1"  one surface already, so the reordering is BETWEEN objects: Godot ties
+            //             two instances whose AABB centres are near-equidistant and its introsort
+            //             permutes them. That needs the reference viewer's ALPHA_DIRTY hysteresis
+            //             (llspatialpartition.cpp:667-674, re-sort only past 0.64 of view-angle
+            //             change), not a mesh change, and this fix cannot reach it.
+            if (_meshMergesLogged.Add(key))
+            {
+                string verdict = plan.Surfaces < plan.SubmeshCount ? "MERGED"
+                    : plan.SubmeshCount <= 1 ? "single surface already -- any reorder is BETWEEN objects"
+                    : "no same-material consecutive runs";
+                Logger.Debug($"[PrimMesh] mesh={key.ToString()[..8]} {plan.SubmeshCount} submeshes " +
+                             $"-> {plan.Surfaces} surface(s): {verdict} (BUG-RENDER-16)");
+            }
         }
 
         state.MeshInstance.Mesh = mesh;
         state.LoadedMeshKey = key;
+        state.LoadedGeometryKey = geometryKey;
+        state.LoadedMeshData = data;
+        state.LoadedMeshFlipV = flipV;
 
         if (mesh != null)
         {
@@ -2548,7 +3152,11 @@ public partial class ObjectRenderer : Node3D
             //    needed for the object to be VISIBLE -- only to walk into it or click it -- so making
             //    the user wait for it before the object appears gets the priority backwards. The
             //    object shows up now and becomes solid a few frames later.
-            EnsureCollisionShape(state, key, data);
+            // BUG-RENDER-16: the GEOMETRY key, not the merged one. A merge regroups triangles
+            // into surfaces without changing a single triangle, so all merge variants of one
+            // geometry share the one trimesh shape -- which matters, since building it was
+            // measured at 6.12 ms and 94% of all mesh work.
+            EnsureCollisionShape(state, geometryKey, data);
         }
         else
         {
@@ -2596,6 +3204,11 @@ public partial class ObjectRenderer : Node3D
         {
             _gpuCache?.ReleaseRef(state.LoadedMeshKey);
             state.LoadedMeshKey = Guid.Empty;
+            // BUG-RENDER-16: cleared together, so a collision build still in flight for this
+            // geometry does not hand its shape to an object that has meanwhile dropped the mesh
+            // (the guard in EnsureCollisionShape now compares the geometry key).
+            state.LoadedGeometryKey = Guid.Empty;
+            state.LoadedMeshData = null;
         }
     }
 
@@ -2819,7 +3432,10 @@ public partial class ObjectRenderer : Node3D
                         // Skip anything that was freed, re-shaped, or released out of range while the
                         // build was in flight.
                         if (!IsInstanceValid(w.CollisionShape)) continue;
-                        if (w.LoadedMeshKey != key) continue;
+                        // Compared against the GEOMETRY key, which is what this shape is
+                        // cached under (BUG-RENDER-16) -- LoadedMeshKey also encodes the
+                        // surface-merge pattern, which collision does not care about.
+                        if (w.LoadedGeometryKey != key) continue;
                         w.CollisionShape.Shape = shape;
                     }
                 }
@@ -2827,17 +3443,47 @@ public partial class ObjectRenderer : Node3D
         });
     }
 
-    private static ArrayMesh BuildArrayMesh(MeshData mesh, bool flipV, out int[] faceIndices)
+    /// <summary>Builds the shared ArrayMesh. <paramref name="runStart"/> (BUG-RENDER-16) is
+    /// indexed by COMMITTABLE submesh — the same submeshes this method commits, empty ones already
+    /// filtered out by <see cref="PlanSurfaceMerge"/> — and marks where a new Godot surface
+    /// begins. Consecutive submeshes inside one run are appended into a single
+    /// <see cref="SurfaceTool"/> with their indices shifted past the vertices already in it, so
+    /// the run becomes one surface whose triangles are drawn in authored index order and are never
+    /// sorted against each other. With every entry true this emits exactly one surface per
+    /// submesh, i.e. the pre-merge behaviour.</summary>
+    private static ArrayMesh BuildArrayMesh(MeshData mesh, bool flipV, bool[] runStart, out int[] faceIndices)
     {
         var arrayMesh = new ArrayMesh();
         var indices = new List<int>(mesh.Submeshes.Count);
+
+        SurfaceTool? st = null;
+        int runVertexBase = 0;
+        int committable = -1;
+
+        void FlushRun()
+        {
+            if (st == null) return;
+            st.Commit(arrayMesh);
+            st = null;
+        }
 
         foreach (var sub in mesh.Submeshes)
         {
             if (sub.Indices.Length == 0) continue;
 
-            var st = new SurfaceTool();
-            st.Begin(Mesh.PrimitiveType.Triangles);
+            committable++;
+            // Defensive: a plan shorter than the committable submeshes would silently merge the
+            // tail into whatever run preceded it, so treat a missing entry as "starts a surface".
+            // Written as one condition rather than via a bool so the compiler's null analysis can
+            // still see that st is non-null below.
+            if (st == null || committable >= runStart.Length || runStart[committable])
+            {
+                FlushRun();
+                st = new SurfaceTool();
+                st.Begin(Mesh.PrimitiveType.Triangles);
+                runVertexBase = 0;
+                indices.Add(sub.FaceIndex);
+            }
 
             // Tangents, computed in GODOT space and from the FINAL UVs -- both matter. The
             // positions below are swizzled from SL's Z-up and the V is conditionally flipped, and
@@ -2889,16 +3535,19 @@ public partial class ObjectRenderer : Node3D
                 st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
             }
 
+            // Shifted past whatever this run already holds. Zero unless a previous submesh was
+            // merged into this same surface, so the un-merged path is unchanged arithmetic.
+            int indexBase = runVertexBase;
             for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
             {
-                st.AddIndex(sub.Indices[t]);
-                st.AddIndex(sub.Indices[t + 2]);
-                st.AddIndex(sub.Indices[t + 1]);
+                st.AddIndex(indexBase + sub.Indices[t]);
+                st.AddIndex(indexBase + sub.Indices[t + 2]);
+                st.AddIndex(indexBase + sub.Indices[t + 1]);
             }
 
-            st.Commit(arrayMesh);
-            indices.Add(sub.FaceIndex);
+            runVertexBase += sub.Positions.Length;
         }
+        FlushRun();
 
         faceIndices = indices.ToArray();
         return arrayMesh;

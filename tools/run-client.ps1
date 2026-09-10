@@ -13,14 +13,52 @@ param(
     #   prepass - blend colour + alpha depth-prepass; soft edge, two draws (can still flicker)
     #   edge       - scissor pass + ALPHA_ANTIALIASING_EDGE; still ~4 MSAA coverage levels, hard-ish
     #   blenddepth - blended colour + depth_draw_always; soft outer edge, no flicker, overlap opaque
-    #   scissor (default) - BUG-RENDER-11's shipped behaviour
+    #   blendcore  - blend colour + the viewer's alpha DEPTH pass (alpha >= -FoliageCoreAlpha writes
+    #                depth before any transparent draw); soft edge, cores occlude in every draw
+    #                order. The shipped default since v0.22.24; pass 'blend' for the A/B control.
+    #   scissor    - BUG-RENDER-11's earlier shipped behaviour
+    # 'scissor' here means "pass nothing", i.e. the client's own default (RenderConfig).
     # Combine with -Diag to see the per-texture [FaceAlpha] verdicts in the log.
-    [ValidateSet('scissor', 'blend', 'hash', 'prepass', 'edge', 'blenddepth')]
+    [ValidateSet('scissor', 'blend', 'hash', 'prepass', 'edge', 'blenddepth', 'blendcore')]
     [string]$FoliageAlpha = 'scissor',
+
+    # BUG-RENDER-16: alpha threshold of the blendcore depth pass. 0 leaves the built-in default
+    # (0.33, the viewer's lldrawpoolalpha.cpp:217). Passes --foliage-core-alpha=N.
+    [double]$FoliageCoreAlpha = 0,
 
     # BUG-RENDER-16: ALPHA_HASH_SCALE for -FoliageAlpha hash (also the shipped default). Higher =
     # finer dither grain. 0 leaves the built-in default (2.0). Passes --foliage-hash-scale=N.
-    [double]$FoliageHashScale = 0
+    [double]$FoliageHashScale = 0,
+
+    # BUG-RENDER-16: the reference viewer's alpha-sort hysteresis, ported per object. 0 = off
+    # (default). The viewer's own value is 0.64 -- a CHORD on the unit sphere, i.e. re-sort only
+    # after ~37 deg of direction change, NOT 0.64 radians (llspatialpartition.cpp:667, where `eye`
+    # is normalize3fast()'d before the comparison).
+    #
+    # This is the lever for the flicker the surface merge cannot reach: measured on Millenium,
+    # 937 of 1310 transparent objects have exactly ONE sorted surface, so there is no internal tie
+    # left to merge away and what reorders them is the between-object sort, re-run every frame.
+    # Expect the trade the viewer makes: no continuous shimmer, but the order snaps once per
+    # ~37 deg of orbit. Passes --alpha-sort-hysteresis=N.
+    [double]$AlphaSortHysteresis = 0,
+
+    # BUG-RENDER-16: sort transparent objects by PLANAR depth along the view axis, the way the
+    # reference viewer does for alpha groups (llspatialpartition.cpp:684-692, pipeline.cpp:3732),
+    # instead of Godot's radial distance from the camera.
+    #
+    # This is the one that matches the reported symptom: radial distance is invariant under camera
+    # ROTATION (which is why turning is calm) but changes by completely different amounts for an
+    # object ahead and one off to the side when you WALK -- so the order churns. Planar depth
+    # drops by the same amount for every object as you move along the view axis, preserving order.
+    # Passes --alpha-sort-planar.
+    [switch]$AlphaSortPlanar,
+
+    # BUG-RENDER-16: FALSIFICATION TEST, not a fix. Freezes each transparent object's sort depth at
+    # first sight so the draw order becomes completely camera-independent and can never change.
+    # If the grass still flickers with this on, the cause is not the transparent sort order at all
+    # and every fix aimed at it is wasted. Expect odd layering while walking -- that is not what is
+    # being judged; the only question is whether it still shimmers. Passes --alpha-sort-freeze.
+    [switch]$AlphaSortFreeze
 )
 
 $ErrorActionPreference = 'Stop'
@@ -71,9 +109,25 @@ if ($FoliageAlpha -ne 'scissor') {
     Write-Host "      foliage alpha = $FoliageAlpha (--foliage-alpha=$FoliageAlpha)" -ForegroundColor Yellow
     $userArgs += "--foliage-alpha=$FoliageAlpha"
 }
+if ($FoliageCoreAlpha -gt 0) {
+    Write-Host "      foliage core alpha = $FoliageCoreAlpha (--foliage-core-alpha)" -ForegroundColor Yellow
+    $userArgs += "--foliage-core-alpha=$([string]::Format([cultureinfo]::InvariantCulture, '{0}', $FoliageCoreAlpha))"
+}
 if ($FoliageHashScale -gt 0) {
     Write-Host "      foliage hash scale = $FoliageHashScale" -ForegroundColor Yellow
     $userArgs += "--foliage-hash-scale=$([string]::Format([cultureinfo]::InvariantCulture, '{0}', $FoliageHashScale))"
+}
+if ($AlphaSortHysteresis -gt 0) {
+    Write-Host "      alpha sort hysteresis = $AlphaSortHysteresis (--alpha-sort-hysteresis)" -ForegroundColor Yellow
+    $userArgs += "--alpha-sort-hysteresis=$([string]::Format([cultureinfo]::InvariantCulture, '{0}', $AlphaSortHysteresis))"
+}
+if ($AlphaSortPlanar) {
+    Write-Host "      alpha sort by planar view-axis depth (--alpha-sort-planar)" -ForegroundColor Yellow
+    $userArgs += '--alpha-sort-planar'
+}
+if ($AlphaSortFreeze) {
+    Write-Host "      alpha sort FROZEN -- falsification test (--alpha-sort-freeze)" -ForegroundColor Magenta
+    $userArgs += '--alpha-sort-freeze'
 }
 if ($userArgs.Count -gt 0) {
     $clientArgs += @('--') + $userArgs
