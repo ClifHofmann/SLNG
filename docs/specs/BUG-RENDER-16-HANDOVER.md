@@ -52,7 +52,68 @@ Tiefe **jedes** Fragments, in Attachment-Reihenfolge, vor dem unrigged Alpha
 wäre der naheliegende Port. Nicht in dieser Runde.
 
 Verifiziert: beide Builds, 683 Tests, `dotnet format SLNG.sln` clean, Shader-Globals, Selftest
-36/36 (`prim_depth_core.gdshader: 33 uniforms`). `AppVersion` v0.22.24-alpha. Nicht committet.
+36/36 (`prim_depth_core.gdshader: 33 uniforms`). Committet als `ef53574`.
+
+**v0.22.25 — Ergebnis nach zwei In-World-Läufen: `blendcore` ist wieder Opt-in, Default `blend`.**
+Gras war ruhig (`depthCore=858`), aber die Nadelbüschel einer Kiefer wurden zum blassen Dunst.
+Zwei Ursachen, beide lokal reproduziert (`scratch/probes/`):
+1. Ohne Bias verwarf `GREATER_OR_EQUAL` den Farb-Pass gegen den *eigenen* Kern (zwei
+   Shader-Varianten, Tiefe nur bis auf ein ulp gleich) → Löcher. Fix im Shader:
+   `DEPTH = FRAGCOORD.z * (1.0 - 1e-4)`. Bleibt drin.
+2. **Der eigentliche Grund, warum der Depth-Pass kein Default sein kann:** die Nadeltextur der
+   Kiefer (Familie `1dff5e30` u. a., aus dem Cache gemessen: 25 % Texel sichtbar, davon 80 % ≥ 0.33,
+   57 % ≥ 0.9) ist auf Mip 0 solide, auf dem beim Betrachten benutzten Mip-Level aber ~0.5 Alpha.
+   Solche Texel schreiben Tiefe, verdecken alles dahinter und decken selbst nur den halben Pixel:
+   Blend akkumuliert N Lagen zu dichtem Dunkel, der Depth-Pass lässt EINE halbtransparente Lage
+   über dem Himmel. Mit der echten Textur nachgestellt: Blend dunkel, Core@0.33 = das In-World-Bild,
+   Core@0.9 immer noch heller als Blend. Keine Schwelle passt für Nadeln UND Rispen (`f04d8802`:
+   nur 3 % der sichtbaren Texel ≥ 0.9). Der Viewer setzt Tiefe genau deshalb nur für rigged Alpha
+   und DoF ein, nie für Foliage.
+
+**Nebenbefund (eigene Aufgabe):** das Mask/Blend-Urteil entsteht auf dem ERSTEN Decode — auf
+Millenium für 2931 von 3861 1024²-Assets ein 64×64-Bild — und wird nach einem `[GpuSharpen]` nie
+neu bewertet. 19 der 229 Texturen sind bei voller Auflösung per `analyzeAlphaData` Masken, bei
+64 px nur 1. Der Viewer analysiert bei jedem Discard-Level neu (`LLImageGL::setImage`) und liest
+`getIsAlphaMask()` pro Frame (llface.cpp:1194).
+
+**v0.22.26 — der Gleichstand INNERHALB eines Objekts (per-Face-Sortierung des Viewers).** Der
+Nutzer nannte ein flackerndes Objekt per Firestorm-UUID. Die `[FaceParams]`-Klickblöcke derselben
+Session zeigten: 23-teiliges Linkset, jedes Teil Mesh `77204967` mit Faces
+`[0] 458b205a`, `[1] 458b205a mat=0774b985 (Mask, cutoff 90)`, `[2] 84ed20c0`, `[3] 84ed20c0 mat=…`.
+Die Material-Faces sind Scissor (nie sortiert), Face 0 und 2 haben KEIN Material → Blend → **zwei
+sortierte Flächen pro Instanz bei identischer Tiefe** (`render_forward_clustered.cpp:961-966`).
+Der instabile Introsort entscheidet ihre Reihenfolge nach dem restlichen Render-Array, das sich mit
+jedem ein-/ausgeblendeten Objekt ändert. Genau das überlebt Freeze/Hysterese/planare Tiefe (alle
+pro Instanz), war für den Merge unerreichbar (zwei Texturen) und verschwand mit `blendcore`. Der
+Viewer hat den Gleichstand nie, weil er pro Face sortiert (`LLFace::CompareDistanceGreater` in
+`genDrawInfo`). Port: `ObjectRenderer.SplitSortedSurfaces` gibt jeder sortierten Fläche eines
+Mehrflächen-Objekts eine eigene Kind-`MeshInstance3D` (Ein-Flächen-Kopie, gecacht pro
+(Mesh, Fläche)), die Elterninstanz zeichnet die Fläche mit `prim_hidden.gdshader` (nichts).
+Läuft im Zensus, Rückbau vor jedem Material-/Mesh-Wechsel. Default an, `-AlphaSplit off` als
+Kontrolle. Im Log: `[AlphaSort] … split=<n>`, `multiSurface` sollte 0 werden. `[FaceParams]`
+druckt jetzt `uuid=`.
+
+**In-world bestätigt (2026-09-10):** mit Split ist das gemeldete Gras ruhig, mit `-AlphaSplit off`
+flackert es wieder (`multiSurface=0 split=487`). Nächste Meldung: ein Busch (Mesh `2377c336`,
+Blend/Scissor/Blend, ein Teil). Beide Blattflächen füllen dasselbe Volumen, ihre Ein-Flächen-Kopien
+haben dieselbe AABB-Mitte und liegen als Kinder wieder gleichauf. **v0.22.27:** jedes Kind bekommt
+`SortingOffset = (Fläche+1) mm`, niedrigere Fläche zuerst = Autorenreihenfolge (das behält auch der
+std::sort des Viewers bei gleicher Distanz zwischen zwei Rebuilds). Die Teilezeile im Klick-Block
+zeigt jetzt `[Blend*,Scissor,Blend*] split=2` (Stern = eigene Instanz).
+
+**v0.22.28 — der Gleichstand ZWISCHEN Objekten.** Der Busch (`c25bf00f`) ist ein dreiteiliges
+Sculpt-Linkset, alle Teile an derselben Position/Rotation/Größe, zwei davon `[Blend]` mit je einer
+Fläche. Zwei Instanzen mit identischer AABB-Mitte → identische Tiefe → derselbe Münzwurf, nur
+zwischen Objekten. Jedes sortierte Objekt bekommt jetzt einen festen `SortingOffset`-Tie-Break von
+`(LocalId % 16) cm` (in Hysterese/Freeze eingerechnet, Split-Kinder addieren ihre Millimeter).
+Gleich liegende Objekte werden in fester Reihenfolge gezeichnet — mehr bietet der Viewer mit seinem
+einmal-pro-Rebuild-Sort auch nicht.
+
+**Für die nächste Runde:** `scissor` flackert an der Kiefer „subtil" — ohne jede Sortierung. Das
+zeigt auf eine Quelle außerhalb der Transparenz: Shadow-Map-Refit bei Kamerabewegung auf
+hochfrequenten Cutouts, oder die `[GpuSharpen]`-Pops (2368 in einer Session, jeder tauscht eine
+Mip-Kette in-place, während der Avatar läuft). Erst `shadows=false` und einen Sharpen-Freeze
+A/B'en, bevor noch einmal am Alpha-Pfad gedreht wird.
 
 ---
 

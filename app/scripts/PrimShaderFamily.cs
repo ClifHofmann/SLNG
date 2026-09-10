@@ -57,6 +57,9 @@ public static class PrimShaderFamily
     // depth for fragments at or above core_alpha_threshold, nothing to colour. The reference
     // viewer's own alpha depth pass (lldrawpoolalpha.cpp:212-227). --foliage-alpha=blendcore.
     private const string DepthCorePath = "res://materials/prim/prim_depth_core.gdshader";
+    // BUG-RENDER-16: draws nothing. Worn by a shared-mesh surface whose geometry now lives on its
+    // own MeshInstance3D (ObjectRenderer.SplitSortedSurfaces).
+    private const string HiddenPath = "res://materials/prim/prim_hidden.gdshader";
 
     // BUG-RENDER-06: the real viewer back-face culls WorldPrim faces by default, EXCEPT a face
     // whose GLTF material explicitly declares mDoubleSided (lldrawpool.cpp:839, :856) --
@@ -92,6 +95,7 @@ public static class PrimShaderFamily
     private static readonly Lazy<Shader> _scissorEdge = MakeLazy(ScissorEdgePath);
     private static readonly Lazy<Shader> _blendDepth = MakeLazy(BlendDepthPath);
     private static readonly Lazy<Shader> _depthCore = MakeLazy(DepthCorePath);
+    private static readonly Lazy<Shader> _hidden = MakeLazy(HiddenPath);
 
     private static readonly Lazy<Shader> _opaqueDoubleSided = MakeLazy(OpaqueDoubleSidedPath);
     private static readonly Lazy<Shader> _scissorDoubleSided = MakeLazy(ScissorDoubleSidedPath);
@@ -159,6 +163,12 @@ public static class PrimShaderFamily
     /// bucket -- below water's -1 and the default 0 -- is drawn in full before any ordinary
     /// transparent surface, exactly like the viewer's depth pass over the whole alpha pool.</summary>
     public const int DepthCoreRenderPriority = -2;
+
+    /// <summary>BUG-RENDER-16: a surface that draws nothing (every vertex collapsed, every fragment
+    /// discarded). Godot has no per-surface visibility and world meshes are SHARED by geometry, so
+    /// this is how a parent instance stops drawing a surface that has been moved onto its own
+    /// child instance for per-surface transparent sorting. Opaque queue, no shadow.</summary>
+    public static Shader Hidden => _hidden.Value;
 
     /// <summary>The transparency treatment of a face, i.e. which compile-time variant it needs.
     /// Named after the <c>StandardMaterial3D.TransparencyEnum</c> values it replaces so the
@@ -254,6 +264,7 @@ public static class PrimShaderFamily
         _ = _scissorEdge.Value;
         _ = _blendDepth.Value;
         _ = _depthCore.Value;
+        _ = _hidden.Value;
         _ = _opaqueAvatar.Value;
         _ = _scissorAvatar.Value;
         _ = _blendAvatar.Value;

@@ -82,12 +82,17 @@ public static class RenderConfig
     // approach); until that lands this ships the correct look with the known flicker rather than a
     // permanently degraded edge. --foliage-alpha= overrides for an A/B.
     //
-    // v0.22.24: BlendCore. The --alpha-sort-freeze test (v0.22.23) showed that a frozen order still
-    // flickers when walking, so the flicker is not the RE-ordering but the WRONG order itself made
-    // visible by parallax: a far blade composited over a near one slides across it as the avatar
-    // moves, and only real per-pixel depth removes that. BlendCore keeps Blend's accepted look and
-    // adds the viewer's alpha depth pass for the cores. --foliage-alpha=blend is the A/B control.
-    public static FoliageAlpha HighFrequencyFoliageAlpha = FoliageAlpha.BlendCore;
+    // v0.22.24 tried BlendCore as the default (the --alpha-sort-freeze test had shown that a frozen
+    // order still flickers when walking, i.e. the WRONG order made visible by parallax, which only
+    // per-pixel depth removes) and it calmed the Millenium grass in-world -- but it turned a pine's
+    // canopy into a pale haze, reproduced offline with the real needle texture
+    // (scratch/probes/probe_motion.gd): at the mip level a canopy is actually viewed at, a thin
+    // needle texel's alpha is ~0.5, so it writes depth and hides every card behind it while itself
+    // covering only half the pixel. Blend accumulates those layers into a dense dark canopy; the
+    // depth pass leaves ONE half-transparent layer over the sky. No threshold serves both textures
+    // (0.9 still reads lighter than Blend on the pine, and leaves the plumes to the sort), so
+    // BlendCore is opt-in per session (--foliage-alpha=blendcore) and Blend stays the default.
+    public static FoliageAlpha HighFrequencyFoliageAlpha = FoliageAlpha.Blend;
 
     /// <summary>BUG-RENDER-16: alpha at or above which a <see cref="FoliageAlpha.BlendCore"/> face
     /// writes depth in its companion pass. The reference viewer's 0.33 (lldrawpoolalpha.cpp:217).
@@ -95,6 +100,24 @@ public static class RenderConfig
     /// what is behind it and shows the background through itself instead); higher = softer but
     /// more of the fringe is left to the sort. Override with <c>--foliage-core-alpha=N</c>.</summary>
     public static float FoliageCoreAlpha = 0.33f;
+
+    /// <summary>BUG-RENDER-16 (v0.22.26): give every sorted-transparent surface of a multi-surface
+    /// object its own <c>MeshInstance3D</c>, so Godot sorts it by its OWN bounds instead of tying
+    /// it with its siblings at the parent's depth.
+    ///
+    /// <para>Godot assigns ONE sort depth per instance (<c>render_forward_clustered.cpp:961-966</c>)
+    /// and orders the tie with an unstable introsort, so two blended surfaces of one object draw in
+    /// an order that depends on the surrounding render list -- which changes as the camera moves.
+    /// The Millenium grass is exactly that: each of 23 linkset parts carries TWO blended faces
+    /// (different textures, no material) beside its alpha-masked ones, measured 2026-09-10 via the
+    /// click diagnostic. Freezing, hysteresis and planar depth are all per INSTANCE and cannot
+    /// touch a tie inside one; the reference viewer never has the tie because it sorts per face
+    /// (<c>LLFace::CompareDistanceGreater</c> in <c>genDrawInfo</c>). This is that granularity.</para>
+    ///
+    /// <para>The shared ArrayMesh is untouched: the parent wears <see cref="PrimShaderFamily.Hidden"/>
+    /// on the moved surface and the child gets a one-surface copy, cached per (mesh, surface) so a
+    /// field of identical plants still shares. Off with <c>--alpha-split=off</c>.</para></summary>
+    public static bool SplitSortedSurfaces = true;
 
     /// <summary>BUG-RENDER-16: a FALSIFICATION TEST, not a fix. Freezes each transparent object's
     /// sort depth at the value it had the first time it was seen, so the transparent draw order

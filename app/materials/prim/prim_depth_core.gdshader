@@ -61,4 +61,16 @@ void fragment() {
     // Depth only. Zero alpha under blend_mix leaves the colour buffer exactly as it was.
     ALBEDO = vec3(0.0);
     ALPHA = 0.0;
+
+    // Nudge the core a hair FARTHER than the colour pass will land (reversed Z: smaller is
+    // farther). The two passes are different shader variants (this one unshaded, prim_blend
+    // shaded), and the driver is free to contract/reorder the position maths differently in
+    // each, so their depths agree only to within an ulp or two -- and GREATER_OR_EQUAL on a
+    // coin-flip ulp rejected the colour pass of its OWN core on roughly half the triangles.
+    // Seen in-world on v0.22.24 as pine needle clumps drawn as sky-coloured silhouettes (the
+    // water behind them was rejected by the core too, so the hole showed the sky) while the
+    // neighbouring clumps rendered correctly. 1e-4 relative is ~1000x the ulp noise and moves
+    // a core 1 cm at 100 m, 0.1 mm at 1 m: a fringe closer behind a core than that still
+    // blends, which nothing can see.
+    DEPTH = FRAGCOORD.z * (1.0 - 1e-4);
 }

@@ -84,6 +84,12 @@ public static class Diagnostics
             || HasFlag(OS.GetCmdlineUserArgs(), "--alpha-sort-planar"))
             RenderConfig.AlphaSortPlanarDepth = true;
 
+        // BUG-RENDER-16: --alpha-split=off. Keeps every sorted surface of a multi-surface object on
+        // its parent instance (the pre-v0.22.26 behaviour) so the per-surface split can be A/B'd.
+        string? splitArg = FindValueArg("--alpha-split=", OS.GetCmdlineArgs())
+                        ?? FindValueArg("--alpha-split=", OS.GetCmdlineUserArgs());
+        if (splitArg == "off") RenderConfig.SplitSortedSurfaces = false;
+
         // BUG-RENDER-16: --alpha-sort-freeze. Falsification test -- see RenderConfig.
         if (HasFlag(OS.GetCmdlineArgs(), "--alpha-sort-freeze")
             || HasFlag(OS.GetCmdlineUserArgs(), "--alpha-sort-freeze"))
@@ -95,6 +101,7 @@ public static class Diagnostics
                  $" alphaSortHysteresis={(RenderConfig.AlphaSortHysteresis > 0f ? RenderConfig.AlphaSortHysteresis.ToString(System.Globalization.CultureInfo.InvariantCulture) : "off")}" +
                  $" alphaSortPlanar={RenderConfig.AlphaSortPlanarDepth}" +
                  $" alphaSortFreeze={RenderConfig.AlphaSortFreezeDebug}" +
+                 $" alphaSplit={RenderConfig.SplitSortedSurfaces}" +
                  $" (BUG-RENDER-16)");
 
         // Info is where the per-object asset logging lives -- texture fetches, sharpen decisions,

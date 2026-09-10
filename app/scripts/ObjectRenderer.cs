@@ -98,6 +98,16 @@ public partial class ObjectRenderer : Node3D
         // census walk so the hysteresis pass does not re-derive it per frame.
         public bool HasSortedTransparent;
 
+        // BUG-RENDER-16 (v0.22.26): sorted-transparent surfaces that have been moved onto their own
+        // child MeshInstance3D so Godot sorts each by its own bounds. The parent wears
+        // PrimShaderFamily.Hidden on those surfaces. Null when nothing is split.
+        public List<(int Surface, MeshInstance3D Node)>? SplitChildren;
+
+        // BUG-RENDER-16 (v0.22.28): a deterministic per-object sort tie-break, in metres, folded
+        // into every SortingOffset this object (and its split children) ever gets. NaN = not yet
+        // assigned. See AlphaSortTieBreakFor.
+        public float AlphaSortTieBreak = float.NaN;
+
         // BUG-RENDER-16: the SL face a running per-face texture animation was driving when the
         // surface grouping was last planned, so a script that STARTS (or stops, or re-aims) an
         // llSetTextureAnim afterwards re-plans instead of leaving the animated face merged into a
@@ -651,7 +661,11 @@ public partial class ObjectRenderer : Node3D
             : "none";
         // GD.Print rather than Logger.Info so the whole dump lands together under --diag without
         // also needing the Info sub-level (see Diagnostics).
-        GD.Print($"[FaceParams] object {entity.LocalId} {geometry} " +
+        // The sim's object UUID alongside the LocalId: it is the id Firestorm's build floater and
+        // inspector show, so a report of the form "object <uuid> flickers" can be matched to this
+        // block by a plain search instead of being unanswerable (BUG-RENDER-16, 2026-09-10).
+        var meta = entity.GetComponent<MetadataComponent>();
+        GD.Print($"[FaceParams] object {entity.LocalId} uuid={(meta != null ? meta.Id.ToString() : "?")} {geometry} " +
                  $"scale=({prim.Scale.X:0.##},{prim.Scale.Y:0.##},{prim.Scale.Z:0.##}) texanim: {texAnim}");
 
         // The face's texture id and ALPHA, on the same unconditional line. Both are needed to tell
@@ -748,7 +762,21 @@ public partial class ObjectRenderer : Node3D
                 // Y and Z extents are swapped back into SL's order to be comparable.
                 var aabb = vs.MeshInstance.GetAabb();
                 var scaled = aabb.Size * vs.MeshInstance.Scale;
-                drawn = $"drawn, {vs.MeshInstance.Mesh.GetSurfaceCount()} surfaces, " +
+                // BUG-RENDER-16 (v0.22.27): the SETTLED shader kind per surface and whether the
+                // surface sorts on its own child instance (*). "Two Blend surfaces, neither
+                // split" is the intra-instance tie; "Blend*,Blend*" with the same AABB is the
+                // sibling tie the SortingOffset tie-break exists for. Decidable from one click.
+                int surfaceCount = vs.MeshInstance.Mesh.GetSurfaceCount();
+                var kinds = new System.Text.StringBuilder();
+                for (int i = 0; i < surfaceCount; i++)
+                {
+                    bool split = false;
+                    if (vs.SplitChildren != null)
+                        foreach (var (si, _) in vs.SplitChildren) if (si == i) { split = true; break; }
+                    var sm = SurfaceMaterial(vs, i);
+                    kinds.Append(i == 0 ? "" : ",").Append(PrimShaderKindName(sm?.Shader)).Append(split ? "*" : "");
+                }
+                drawn = $"drawn, {surfaceCount} surfaces [{kinds}] split={vs.SplitChildren?.Count ?? 0}, " +
                         $"aabb=({scaled.X:0.##} x {scaled.Z:0.##} x {scaled.Y:0.##} m)";
             }
 
@@ -1217,6 +1245,7 @@ public partial class ObjectRenderer : Node3D
 
         int objects = 0, singleSurface = 0, multiSurface = 0, surfaces = 0, near = 0, examined = 0;
         int depthCoreSurfaces = 0; // BUG-RENDER-16: sorted surfaces that also carry the alpha depth pass.
+        int splitSurfaces = 0;     // BUG-RENDER-16 (v0.22.26): sorted surfaces living on their own child instance.
         foreach (var vs in _visuals.Values)
         {
             if (vs.ResourcesReleased || !IsInstanceValid(vs.MeshInstance) || !vs.MeshInstance.Visible)
@@ -1246,11 +1275,27 @@ public partial class ObjectRenderer : Node3D
                     if (HasDepthCore(sm)) depthCoreSurfaces++;
                 }
             }
-            vs.HasSortedTransparent = blend > 0;
-            if (blend == 0) continue;
+            // BUG-RENDER-16 (v0.22.26): two or more sorted surfaces on ONE instance tie at one
+            // depth. Move each onto its own child instance here -- this walk is the one place that
+            // reads the SETTLED shader (ApplyAlphaCutout lands asynchronously), and it already
+            // runs once a second over exactly the objects that matter.
+            if (blend > 0 && float.IsNaN(vs.AlphaSortTieBreak))
+            {
+                vs.AlphaSortTieBreak = AlphaSortTieBreakFor(vs);
+                // With no other pass owning SortingOffset, the tie-break IS the offset. The
+                // hysteresis/freeze pass adds it to whatever it writes instead.
+                if (RenderConfig.AlphaSortHysteresis <= 0f && !RenderConfig.AlphaSortPlanarDepth && !RenderConfig.AlphaSortFreezeDebug)
+                    vs.MeshInstance.SortingOffset = vs.AlphaSortTieBreak;
+            }
+            if (blend > 1 && RenderConfig.SplitSortedSurfaces && SplitSortedSurfaces(vs, am))
+                blend = 0;
+            int children = vs.SplitChildren?.Count ?? 0;
+            vs.HasSortedTransparent = blend > 0 || children > 0;
+            if (blend + children == 0) continue;
 
             objects++;
-            surfaces += blend;
+            surfaces += blend + children;
+            splitSurfaces += children;
             if (blend > 1) multiSurface++; else singleSurface++;
             if (dist <= 32f) near++;
         }
@@ -1262,6 +1307,7 @@ public partial class ObjectRenderer : Node3D
         string summary = $"{objects} objects / {surfaces} surfaces  " +
                          $"multiSurface={multiSurface} singleSurface={singleSurface} within32m={near}" +
                          $" depthCore={depthCoreSurfaces}@{RenderConfig.FoliageCoreAlpha.ToString(System.Globalization.CultureInfo.InvariantCulture)}" +
+                         $" split={splitSurfaces}{(RenderConfig.SplitSortedSurfaces ? "" : "(off)")}" +
                          $" foliage={RenderConfig.HighFrequencyFoliageAlpha}" +
                          $" hysteresis={(RenderConfig.AlphaSortHysteresis > 0f ? RenderConfig.AlphaSortHysteresis.ToString(System.Globalization.CultureInfo.InvariantCulture) : "off")}" +
                          (RenderConfig.AlphaSortHysteresis > 0f
@@ -1366,7 +1412,7 @@ public partial class ObjectRenderer : Node3D
                 if (Mathf.Abs(frozenOffset - vs.AlphaSortLastOffset) >= 0.0005f)
                 {
                     vs.AlphaSortLastOffset = frozenOffset;
-                    vs.MeshInstance.SortingOffset = frozenOffset;
+                    vs.MeshInstance.SortingOffset = frozenOffset + TieBreakOrZero(vs);
                     _alphaSortOffsetsApplied = true;
                 }
                 continue;
@@ -1423,9 +1469,33 @@ public partial class ObjectRenderer : Node3D
             if (Mathf.Abs(offset - vs.AlphaSortLastOffset) < 0.0005f) continue;
 
             vs.AlphaSortLastOffset = offset;
-            vs.MeshInstance.SortingOffset = offset;
+            vs.MeshInstance.SortingOffset = offset + TieBreakOrZero(vs);
             _alphaSortOffsetsApplied = true;
         }
+    }
+
+    private static float TieBreakOrZero(VisualState vs) => float.IsNaN(vs.AlphaSortTieBreak) ? 0f : vs.AlphaSortTieBreak;
+
+    /// <summary>BUG-RENDER-16 (v0.22.28): a small, deterministic, per-object sort offset so two
+    /// transparent objects with the SAME bounds centre never tie in Godot's per-instance sort.
+    ///
+    /// <para>The case that needed it: a bush built as a three-part linkset of sculpts, all three at
+    /// one position/rotation/scale, two of them blended. Identical AABB centres → identical depth →
+    /// the unstable introsort re-decides their order from the surrounding render list every frame
+    /// (reported flickering right after the per-surface split fixed the grass). The viewer never
+    /// re-decides such a tie: its std::sort runs once per ALPHA_DIRTY rebuild over a stable face
+    /// list, so equal distances keep their list order for the next ~37 degrees.</para>
+    ///
+    /// <para>Keyed on the sim LocalId -- stable for the object's lifetime, consecutive for the
+    /// parts of one linkset, and independent of load order -- in 1 cm steps up to 15 cm. That is
+    /// far above float noise on a 100 m distance and far below any distance at which two objects'
+    /// order is visually decidable; a co-located pair is drawn in a fixed order, which is all the
+    /// viewer offers too. The split children add their own millimetre steps on top
+    /// (SplitSortedSurfaces), so the two scales never collide.</para></summary>
+    private float AlphaSortTieBreakFor(VisualState vs)
+    {
+        uint localId = _world?.GetEntity(vs.EntityId)?.LocalId ?? 0;
+        return (localId % 16) * 0.01f;
     }
 
     private static Godot.Vector3 CellCentre((int X, int Y, int Z) key) => new(
@@ -1454,7 +1524,7 @@ public partial class ObjectRenderer : Node3D
         {
             if (!IsInstanceValid(vs.MeshInstance)) continue;
             if (vs.AlphaSortLastOffset == 0f) continue;
-            vs.MeshInstance.SortingOffset = 0f;
+            vs.MeshInstance.SortingOffset = TieBreakOrZero(vs);
             vs.AlphaSortLastOffset = 0f;
         }
         _alphaSortCells.Clear();
@@ -1485,7 +1555,7 @@ public partial class ObjectRenderer : Node3D
             int faceIdx = faceIndices[surf];
             // Face -1 (wire 255) means every face; anything else is a single SL face number.
             if (animFace >= 0 && faceIdx != animFace) continue;
-            if (state.MeshInstance.GetSurfaceOverrideMaterial(surf) is not ShaderMaterial mat) continue;
+            if (SurfaceMaterial(state, surf) is not ShaderMaterial mat) continue;
 
             FaceTexture ft = (prim.Faces != null && faceIdx >= 0 && faceIdx < prim.Faces.Length)
                 ? prim.Faces[faceIdx] : defaultFace;
@@ -1927,6 +1997,11 @@ public partial class ObjectRenderer : Node3D
         // requests below. Must stay ahead of the first await -- see ComputeTextureLod's note on
         // main-thread-only access.
         var (screenPixelArea, priority) = ComputeTextureLod(state.MeshInstance);
+
+        // BUG-RENDER-16 (v0.22.26): a re-apply writes fresh materials onto the PARENT's surfaces;
+        // put any split surface back first so the new material lands where the census will read
+        // it, and the census re-splits within a second once the alpha kinds have settled.
+        UnsplitSurfaces(state);
 
         // FEAT-RENDER-01 Phase 2 needs an object that actually HAS a texture rotation to be
         // testable at all. The one picked by eye turned out to have rot=0 on every face, so the
@@ -3200,6 +3275,9 @@ public partial class ObjectRenderer : Node3D
     /// <summary>Drops this object's current shared-mesh reference (if any).</summary>
     private void ReleaseMeshRef(VisualState state)
     {
+        // BUG-RENDER-16 (v0.22.26): the children hold one-surface copies of THIS mesh; they must
+        // not outlive it on the parent, whatever replaces it (LOD placeholder, new geometry, none).
+        UnsplitSurfaces(state);
         if (state.LoadedMeshKey != Guid.Empty)
         {
             _gpuCache?.ReleaseRef(state.LoadedMeshKey);
@@ -3248,9 +3326,116 @@ public partial class ObjectRenderer : Node3D
         int surfaces = state.MeshInstance.Mesh?.GetSurfaceCount() ?? 0;
         for (int i = 0; i < surfaces; i++)
         {
-            if (state.MeshInstance.GetSurfaceOverrideMaterial(i) is ShaderMaterial sm)
+            if (SurfaceMaterial(state, i) is ShaderMaterial sm)
                 sm.SetShaderParameter(PrimShaderFamily.PrimScale, v);
         }
+    }
+
+    // ---- BUG-RENDER-16 (v0.22.26): per-surface transparent sorting ---------------------------
+
+    /// <summary>One-surface copies of shared meshes, per (mesh, surface). Weak on the mesh so a
+    /// copy dies with the upload it was cut from, and shared so a field of identical plants pays
+    /// for one copy per surface, not one per plant.</summary>
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<ArrayMesh, ArrayMesh?[]> _splitMeshes = new();
+
+    private ShaderMaterial? _hiddenMaterial;
+    private ShaderMaterial HiddenMaterial => _hiddenMaterial ??= new ShaderMaterial { Shader = PrimShaderFamily.Hidden };
+
+    /// <summary>The material a surface is currently drawn with: the child's when the surface has
+    /// been split off, else the parent's own override. Every per-surface uniform write (texture
+    /// animation, prim scale) must go through this or it lands on the Hidden stand-in.</summary>
+    private static ShaderMaterial? SurfaceMaterial(VisualState state, int surface)
+    {
+        if (state.SplitChildren != null)
+        {
+            foreach (var (s, node) in state.SplitChildren)
+                if (s == surface && IsInstanceValid(node))
+                    return node.GetSurfaceOverrideMaterial(0) as ShaderMaterial;
+        }
+        return state.MeshInstance.GetSurfaceOverrideMaterial(surface) as ShaderMaterial;
+    }
+
+    /// <summary>Moves every sorted-transparent surface of a multi-surface object onto its own
+    /// child <see cref="MeshInstance3D"/>. Returns true when at least two were moved (one alone
+    /// has no tie to break).
+    ///
+    /// <para>Why a child node and a mesh copy rather than anything cheaper: Godot's transparent
+    /// sort key is per INSTANCE (<c>render_forward_clustered.cpp:961-966</c>) -- no material
+    /// property, no per-surface offset, no AABB override exists below that level -- and the mesh
+    /// is SHARED by every object of the same geometry, so a surface cannot simply be removed from
+    /// it. The child gets a one-surface ArrayMesh (its own AABB, hence its own depth) and the
+    /// parent draws the original surface with <see cref="PrimShaderFamily.Hidden"/>, which
+    /// rasterises nothing. The material object is the same one, so a later ApplyAlphaCutout,
+    /// sharpen or animation write reaches it unchanged.</para>
+    ///
+    /// <para>Main thread only; called from the census walk.</para></summary>
+    private bool SplitSortedSurfaces(VisualState state, ArrayMesh mesh)
+    {
+        var parent = state.MeshInstance;
+        int count = mesh.GetSurfaceCount();
+        var sorted = new List<int>(4);
+        for (int i = 0; i < count; i++)
+            if (parent.GetSurfaceOverrideMaterial(i) is ShaderMaterial sm && IsSortedTransparent(sm.Shader))
+                sorted.Add(i);
+        if (sorted.Count < 2) return false;
+
+        var copies = _splitMeshes.GetValue(mesh, m => new ArrayMesh?[m.GetSurfaceCount()]);
+        if (copies.Length != count) return false;
+        state.SplitChildren ??= new List<(int, MeshInstance3D)>(sorted.Count);
+
+        foreach (int i in sorted)
+        {
+            var material = (ShaderMaterial)parent.GetSurfaceOverrideMaterial(i)!;
+            var copy = copies[i];
+            if (copy == null)
+            {
+                copy = new ArrayMesh();
+                copy.AddSurfaceFromArrays(mesh.SurfaceGetPrimitiveType(i), mesh.SurfaceGetArrays(i));
+                copies[i] = copy;
+            }
+            var node = new MeshInstance3D
+            {
+                Name = $"Split{i}",
+                Mesh = copy,
+                // A blended surface never cast a shadow (no FLAG_PASS_SHADOW without a depth
+                // write), so turning it off here loses nothing and skips a shadow-pass draw.
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+                Layers = parent.Layers,
+            };
+            node.SetSurfaceOverrideMaterial(0, material);
+            // v0.22.27: a deterministic tie-break between siblings. Two leaf-card surfaces of one
+            // bush span the same volume, so their one-surface copies have the SAME AABB centre and
+            // would tie at the instance level exactly as they tied before the split (reported on
+            // a bush right after the grass was fixed). Godot sorts by (distance - SortingOffset),
+            // far first, so a millimetre per surface index draws the lower-numbered surface first
+            // -- the authored order, which is also what the viewer's std::sort keeps for equal
+            // face distances between ALPHA_DIRTY rebuilds. Never re-decided, never visible.
+            // v0.22.28: plus the parent's own tie-break, or two co-located objects' children with
+            // the same surface index would tie with each other instead.
+            node.SortingOffset = TieBreakOrZero(state) + (i + 1) * 0.001f;
+            parent.AddChild(node);
+            parent.SetSurfaceOverrideMaterial(i, HiddenMaterial);
+            state.SplitChildren.Add((i, node));
+        }
+        return true;
+    }
+
+    /// <summary>Undoes <see cref="SplitSortedSurfaces"/>: the parent gets its real materials back
+    /// on the moved surfaces and the children are freed. Safe to call when nothing is split.</summary>
+    private void UnsplitSurfaces(VisualState state)
+    {
+        if (state.SplitChildren == null) return;
+        var parent = state.MeshInstance;
+        bool parentOk = IsInstanceValid(parent) && parent.Mesh != null;
+        int count = parentOk ? parent.Mesh!.GetSurfaceCount() : 0;
+        foreach (var (i, node) in state.SplitChildren)
+        {
+            if (!IsInstanceValid(node)) continue;
+            if (parentOk && i < count && node.GetSurfaceOverrideMaterial(0) is Material m)
+                parent.SetSurfaceOverrideMaterial(i, m);
+            node.QueueFree();
+        }
+        state.SplitChildren = null;
     }
 
     /// <summary>

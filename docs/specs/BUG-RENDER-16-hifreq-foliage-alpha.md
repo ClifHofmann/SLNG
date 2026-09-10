@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-16`
 - **Track:** `render`
-- **Status:** `🧪 Review` — viewer alpha depth pass (`blendcore`) shipped as default at `v0.22.24-alpha`, awaiting the in-world A/B
+- **Status:** `✅ Done` — confirmed in-world 2026-09-10 at `v0.22.28-alpha`: grass, bush and pine all calm while walking ("passt jetzt alles"); the fix is three deterministic tie-breaks in Godot's per-instance transparent sort, see the v0.22.26–28 sections
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -399,6 +399,107 @@ blends its own (1 − α) with the *background*, not with the far blade it hid �
 plumes overlap, never a moving one. Lower `N` = more occlusion, more halo; higher `N` = softer, more
 fringe left to the sort. 0.33 is the viewer's number, not a tuning result.
 
+### v0.22.25 — the core must sit a hair behind its own colour pass
+
+First in-world run: a pine's needle clumps rendered as sky-coloured silhouettes while the
+neighbouring clumps were correct (Firestorm side-by-side, 2026-09-10). Diagnosis from the picture
+alone: the silhouette showed the *sky*, not the water behind the tree — so the water had been
+depth-rejected by the needle's core, and then the needle's own colour pass was rejected too.
+The two passes are different shader variants (the depth pass is `unshaded`), the driver may
+contract or reorder the position maths differently in each, and `GREATER_OR_EQUAL` on a
+coin-flip ulp fails the colour pass against its own core on roughly half the triangles. The
+depth pass now writes `DEPTH = FRAGCOORD.z * (1.0 - 1e-4)` (reversed Z, so slightly farther):
+~1000× the ulp noise, 1 cm at 100 m, 0.1 mm at 1 m. The grass had hidden the same defect because
+a hole in grass shows more grass.
+
+### v0.22.25 — BlendCore hazes dense canopies; it is opt-in again, Blend is the default
+
+Second in-world run: the Millenium grass was calm, but a pine (Firestorm side-by-side) rendered
+its needle clumps as a pale haze. `--foliage-alpha=blend` at the same tree: correct dark canopy,
+flicker back ("nicht extrem"); `scissor`: coarse, subtle flicker.
+
+**Measured, not guessed.** The 229 textures the session routed to BlendCore were pulled from the
+client's own cache (`scratch/AlphaVerdict`, Magick.NET; `scratch/` is git-ignored, so the tool and the probes below live on the dev machine only) and the pine's needle family identified —
+~20 textures with one signature: 25 % of texels visible, 80 % of those ≥ 0.33 alpha, 57 % ≥ 0.9.
+Solid needles at mip 0, not a soft texture. `scratch/probes/probe_motion.gd` then rebuilt a
+24-card canopy from the REAL needle texture with the REAL shaders: Blend = dense and dark, Core@0.33
+= exactly the in-world haze, Core@0.9 = still visibly lighter than Blend. The mechanism: at the mip
+level a canopy is viewed at, a one-texel needle averages to ~0.5 alpha. Such a texel writes depth,
+hides every card behind it, and itself covers half the pixel — Blend accumulates N such layers into
+1 − 0.5^N, the depth pass leaves a single 50 % layer over the sky. Depth-based occlusion is wrong
+by construction for minified thin foliage; the reference viewer applies it only to rigged alpha
+and to the DoF depth, never to unrigged foliage, and this is why.
+
+The pink plume texture (`f04d8802`: only 27 % of visible texels ≥ 0.33, 3 % ≥ 0.9) is the
+opposite kind of content, which is why the grass looked right. No single threshold serves both, so
+`RenderConfig.HighFrequencyFoliageAlpha` is `Blend` again and `blendcore` stays an opt-in mode with
+the trade documented. The depth-pass shader keeps the v0.22.25 bias (`DEPTH = FRAGCOORD.z *
+(1 − 1e-4)`): without it the colour pass lost a coin-flip ulp against its own core and rendered
+holes (the first pine screenshot); the probe with and without bias confirms both halves.
+
+**Found along the way, not fixed here (separate task):** the alpha-mask verdict is computed on the
+FIRST decode, which on this region was a 64×64 image for 2931 of 3861 1024² assets
+(`[GpuUpload] decoded=64`), and `ApplyAlphaCutout` never re-runs after a `[GpuSharpen]`. Of the
+229 BlendCore textures, 19 are masks by the viewer's own `analyzeAlphaData` at full resolution and
+only 1 at 64 px — 18 faces are wearing a verdict made on a blur. The viewer re-analyses on every
+discard level it uploads (`LLImageGL::setImage` → `analyzeAlpha`) and `canRenderAsMask()` reads
+the current answer per frame (llface.cpp:1194). Port: re-run the verdict on sharpen, and do not
+trust one made below ~256 px.
+
+### The remaining question, now sharper
+
+For single-surface grass objects the reference viewer's order is the same per-object order Godot
+produces, it is frozen between `ALPHA_DIRTY` rebuilds, and SLNG's frozen order still flickered —
+so for that content the sort is not the difference either way. The pine's `scissor` run flickered
+"subtil" too, with no sorting involved at all, which points at a source that is not transparency:
+shadow-map re-fit under camera motion on high-frequency cutouts, or the `[GpuSharpen]` pops (2368
+in one session, each swapping a texture's mip chain in place while the avatar walks). Next round
+should A/B `shadows=false` and a sharpen-freeze before touching the alpha path again.
+
+### v0.22.26 — the tie INSIDE an object: per-surface instances (viewer per-face granularity)
+
+The user named a flickering object by its Firestorm UUID. SLNG's logs carry only LocalIds, so
+the click diagnostic now prints `uuid=` too — but the same session's `[FaceParams]` blocks
+already held the answer. The clicked grass is a 23-part linkset; every part wears mesh
+`77204967` (4 submeshes, `no same-material consecutive runs`) with this face set:
+
+```
+[0] 458b205a            [1] 458b205a mat=0774b985   [2] 84ed20c0            [3] 84ed20c0 mat=0774b985 ...
+```
+
+Material `0774b985` is `mode=Mask cutoff=90` → those faces are `Scissor` (opaque queue, never
+sorted). Faces 0 and 2 carry **no material** (LibreMetaverse's `MaterialID` already falls back to
+the TE default, so this is authored, not lost) → the undeclared-alpha path → `Blend`. So each part
+hands the transparent queue **two sorted surfaces at one identical instance depth**
+(`render_forward_clustered.cpp:961-966`), and the unstable introsort orders that pair by whatever
+the surrounding render list happens to be — which changes with every object that enters or
+leaves the frustum. That is a flicker that:
+
+- survives `--alpha-sort-freeze`, hysteresis and planar depth — all three act per INSTANCE and
+  cannot reach a tie inside one (the census had said it: `multiSurface=402`);
+- the surface merge could not remove — the two faces are different textures;
+- `blendcore` did remove — its depth pass made the order irrelevant;
+- the reference viewer never has — it sorts alpha **per face** (`LLFace::CompareDistanceGreater`
+  in `genDrawInfo`, `llvovolume.cpp`), so its two faces get their own depths.
+
+**The port.** Godot's sort key is per instance and nothing below it (no per-surface offset, no
+material property, no AABB override) can split a tie — and the ArrayMesh is SHARED by every object
+of the same geometry, so a surface cannot be removed from it either. `SplitSortedSurfaces`
+(`ObjectRenderer.cs`) therefore gives each sorted-transparent surface of a multi-surface object its
+own child `MeshInstance3D` holding a one-surface copy of the mesh (its own AABB → its own depth),
+cached per `(mesh, surface)` in a `ConditionalWeakTable` so a field of identical plants still
+shares, and the parent draws the original surface with `prim_hidden.gdshader` (every vertex
+collapsed, every fragment discarded: nothing rasterised, no shadow pass). The material OBJECT is the
+same one, so `ApplyAlphaCutout`, sharpen and texture-animation writes reach it unchanged;
+`SurfaceMaterial()` routes per-surface uniform writes to the child. It runs inside the census walk
+— the one place that reads the SETTLED shader — and `UnsplitSurfaces` restores the parent before
+any material re-apply or mesh replacement (`ApplyFaceMaterialsAsync`, `ReleaseMeshRef`).
+Verified with `scratch/probes/probe_split.gd`: split and unsplit frames are pixel-identical.
+
+Default on; `--alpha-split=off` / `tools/run-client.ps1 -AlphaSplit off` is the A/B control.
+`[AlphaSort] … split=<n>` counts the surfaces living on their own instance; `multiSurface` should
+read 0 once every tie is split.
+
 ### What to read in the log
 
 - `[AlphaSort] … depthCore=<n>@0.33 foliage=BlendCore` — `n` counts sorted surfaces that actually
@@ -426,13 +527,12 @@ The hysteresis and planar-depth switches remain independent and default off.
 
 ## Acceptance Criteria
 
-- [ ] Dense grass renders with Firestorm-soft edges **and** no flicker under pure
-      camera rotation, A/B'd on *Millenium* against `--foliage-alpha=blend`.
-      **Check `[PrimMesh]` in the log first** — it says whether the merge had anything to
-      merge, and the answer decides whether a remaining flicker is this bug or the
-      inter-object one.
-- [ ] No regression on fences / sharp leaf cards (`maskable`) or flames (`fullbright`).
-- [ ] No regression to per-face texture animation or LOD swaps after the surface merge.
+- [x] Dense grass renders with Firestorm-soft edges **and** no flicker while walking, A/B'd
+      on *Millenium* against `-AlphaSplit off` (v0.22.26) and confirmed at v0.22.28.
+- [x] No regression reported on fences / sharp leaf cards (`maskable`) or flames
+      (`fullbright`) in the confirming session.
+- [x] Per-face texture animation and prim-scale writes are routed to the split child's
+      material (`SurfaceMaterial`); LOD/mesh swaps unsplit first (`ReleaseMeshRef`).
 - [x] Build + `dotnet test` + `dotnet format` + shader-globals + selftest green
       (both builds; 683 tests; selftest 35/35).
 
@@ -466,7 +566,15 @@ The hysteresis and planar-depth switches remain independent and default off.
   `FoliageCoreAlpha`.
 - `app/scripts/Diagnostics.cs`, `tools/run-client.ps1` (v0.22.24) — `blendcore`,
   `--foliage-core-alpha=N` / `-FoliageCoreAlpha`.
-- `app/scripts/Boot.cs` — `AppVersion` → `v0.22.24-alpha`.
+- `app/scripts/Boot.cs` — `AppVersion` → `v0.22.25-alpha`.
+- `app/materials/prim/prim_hidden.gdshader` (v0.22.26) — **new.** Draws nothing; worn by a shared
+  mesh surface whose geometry moved to a child instance.
+- `app/scripts/ObjectRenderer.cs` (v0.22.26) — `SplitSortedSurfaces`, `UnsplitSurfaces`,
+  `SurfaceMaterial`, `_splitMeshes`; census split + `split=` field; `VisualState.SplitChildren`;
+  `uuid=` on `[FaceParams]`.
+- `app/scripts/RenderConfig.cs` (v0.22.26) — `SplitSortedSurfaces`; `Diagnostics.cs` /
+  `tools/run-client.ps1` — `--alpha-split=off` / `-AlphaSplit off`.
+- `app/scripts/Boot.cs` — `AppVersion` → `v0.22.26-alpha`.
 
 ### Unchanged on purpose
 
@@ -504,5 +612,33 @@ harness is also what the A/B needs.
       sorted surfaces, 232 `+DepthCore` face verdicts. If a static overlap halo shows up, tune
       `-FoliageCoreAlpha` (higher = softer); if anything still flickers with `depthCore` > 0, the
       remaining pairs are fringe-over-fringe and the lever is a lower threshold, not the sort.
-- [ ] Confirm no regression on fences (`maskable`) and flames (`fullbright`), then `✅ Done`.
+- [x] Second in-world run: a pine canopy hazed under `blendcore`. Reproduced offline with the real
+      needle texture (`scratch/probes/probe_motion.gd`), mechanism identified (minified thin
+      needles are ~0.5 alpha and occlude as if solid). Default reverted to `Blend`; `blendcore`
+      stays opt-in. Bias in the depth pass kept (fixes the hole rendering of the first run).
+- [ ] Separate task: alpha-mask verdict is made on the first (64 px) decode and never re-run on
+      sharpen; 18 of 229 textures on Millenium wear a wrong verdict.
+- [x] The reported grass object (Firestorm UUID) traced through the click diagnostic: 23 parts,
+      each with TWO blended faces at one instance depth — an intra-instance tie no per-instance
+      lever can reach. Ported the viewer's per-face granularity as per-surface child instances
+      (`--alpha-split`, default on). Click diagnostic now prints the object UUID.
+- [x] A/B'd in-world 2026-09-10: with the split the reported grass is calm, with
+      `-AlphaSplit off` it flickers again. `[AlphaSort] … multiSurface=0 split=487`.
+- [x] Next report, a bush (mesh `2377c336`: faces 616249d1 Blend, 72ccfcce Scissor, 1a6c10a1
+      Blend, one part): both leaf surfaces span the same volume, so their one-surface copies have
+      the SAME AABB centre and tie again at the child level. v0.22.27: each child gets
+      `SortingOffset = (surface + 1) mm` -- lower surface index draws first, the authored order
+      the viewer's std::sort keeps for equal face distances between rebuilds -- so siblings never
+      tie. The click block now prints `[Blend*,Scissor,Blend*] split=2` per part.
+- [x] The bush re-tested: still flickering, and the click block named the real object
+      (`c25bf00f`): a THREE-part linkset of sculpts at one position/rotation/scale, two of them
+      `[Blend]` single-surface parts (`57fbf391`, `224b2535`) plus an opaque trunk. Two separate
+      INSTANCES with identical AABB centres — the inter-object tie. v0.22.28: every
+      sorted-transparent object gets a deterministic `SortingOffset` tie-break of
+      `(LocalId % 16) cm` (folded into the hysteresis/freeze writes and into the split children's
+      millimetre steps), so no two co-located objects ever tie; a co-located pair draws in a
+      fixed order, which is what the viewer's once-per-rebuild std::sort gives too.
+- [x] Bush re-tested at v0.22.28: calm. User confirms the whole scene ("passt jetzt alles").
+- [ ] If a flicker remains with `split>0` and `multiSurface=0`: `shadows=false` and a
+      sharpen-freeze next, since `scissor` flickers subtly on the pine with no sorting involved.
 - [ ] Re-verify in-world; then this can go `✅ Done`.

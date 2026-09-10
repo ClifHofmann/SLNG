@@ -15,7 +15,8 @@ param(
     #   blenddepth - blended colour + depth_draw_always; soft outer edge, no flicker, overlap opaque
     #   blendcore  - blend colour + the viewer's alpha DEPTH pass (alpha >= -FoliageCoreAlpha writes
     #                depth before any transparent draw); soft edge, cores occlude in every draw
-    #                order. The shipped default since v0.22.24; pass 'blend' for the A/B control.
+    #                order. Calms sparse grass; HAZES dense canopies (pine needles), so it is
+    #                opt-in per session, not the default (see RenderConfig.HighFrequencyFoliageAlpha).
     #   scissor    - BUG-RENDER-11's earlier shipped behaviour
     # 'scissor' here means "pass nothing", i.e. the client's own default (RenderConfig).
     # Combine with -Diag to see the per-texture [FaceAlpha] verdicts in the log.
@@ -52,6 +53,13 @@ param(
     # drops by the same amount for every object as you move along the view axis, preserving order.
     # Passes --alpha-sort-planar.
     [switch]$AlphaSortPlanar,
+
+    # BUG-RENDER-16 (v0.22.26): 'off' keeps every sorted-transparent surface of a multi-surface
+    # object on its parent instance, i.e. tied at one depth (the pre-v0.22.26 behaviour). The
+    # default gives each such surface its own instance so Godot sorts it by its own bounds, the
+    # way the viewer sorts per face. Passes --alpha-split=off.
+    [ValidateSet('on', 'off')]
+    [string]$AlphaSplit = 'on',
 
     # BUG-RENDER-16: FALSIFICATION TEST, not a fix. Freezes each transparent object's sort depth at
     # first sight so the draw order becomes completely camera-independent and can never change.
@@ -124,6 +132,10 @@ if ($AlphaSortHysteresis -gt 0) {
 if ($AlphaSortPlanar) {
     Write-Host "      alpha sort by planar view-axis depth (--alpha-sort-planar)" -ForegroundColor Yellow
     $userArgs += '--alpha-sort-planar'
+}
+if ($AlphaSplit -eq 'off') {
+    Write-Host "      alpha per-surface split OFF (--alpha-split=off)" -ForegroundColor Yellow
+    $userArgs += '--alpha-split=off'
 }
 if ($AlphaSortFreeze) {
     Write-Host "      alpha sort FROZEN -- falsification test (--alpha-sort-freeze)" -ForegroundColor Magenta
