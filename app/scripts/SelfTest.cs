@@ -61,6 +61,7 @@ public static class SelfTest
         results.AddRange(CheckLocales());
         results.Add(CheckAvatarSkeleton());
         results.AddRange(CheckWindlightPresets());
+        results.Add(CheckInstanceSlotMap());
 
         foreach (var r in results)
         {
@@ -319,6 +320,47 @@ public static class SelfTest
             "windlight water presets",
             library.WaterNames.Count >= 5 && waterFailures == 0,
             waterFailures == 0 ? $"{library.WaterNames.Count} presets parse" : $"{waterFailures} of {library.WaterNames.Count} failed to parse");
+    }
+
+    /// <summary>
+    /// FEAT-PERF-06: the swap-remove bookkeeping in <see cref="InstanceSlotMap"/> — the fiddly
+    /// bit of the MultiMesh instancing. app/ has no unit-test project, and getting a middle
+    /// removal wrong here silently draws a prim at another prim's transform, so it is checked
+    /// through the one harness app/ code does run: <c>--selftest</c>.
+    /// </summary>
+    private static Check CheckInstanceSlotMap()
+    {
+        var map = new InstanceSlotMap();
+        var ids = new Guid[6];
+        for (int i = 0; i < ids.Length; i++) ids[i] = Guid.NewGuid();
+
+        var problems = new List<string>();
+
+        for (int i = 0; i < ids.Length; i++)
+            if (map.Add(ids[i]) != i) problems.Add($"Add returned wrong slot at {i}");
+        if (map.Add(ids[2]) != 2) problems.Add("re-Add of an existing id did not return its slot");
+        if (map.Count != 6) problems.Add($"Count {map.Count} != 6 after adds");
+
+        // Remove a middle entry: the last id (ids[5]) must move into slot 2, every index stays dense.
+        int freed = map.Remove(ids[2], out Guid moved);
+        if (freed != 2) problems.Add($"Remove freed slot {freed}, expected 2");
+        if (moved != ids[5]) problems.Add("Remove did not report the last id as moved");
+        if (map.Count != 5) problems.Add($"Count {map.Count} != 5 after middle remove");
+        if (!map.TryIndex(ids[5], out int m5) || m5 != 2) problems.Add($"moved id not re-indexed to slot 2 (got {m5})");
+        if (map.TryIndex(ids[2], out _)) problems.Add("removed id still present");
+        for (int i = 0; i < map.Count; i++)
+            if (!map.TryIndex(map.Order[i], out int back) || back != i)
+                problems.Add($"index/order disagree at slot {i}");
+
+        // Remove the last entry: no move should be reported.
+        map.Remove(map.Order[map.Count - 1], out Guid movedLast);
+        if (movedLast != Guid.Empty) problems.Add("removing the last entry reported a moved id");
+
+        // Removing an absent id is a -1 no-op.
+        if (map.Remove(Guid.NewGuid(), out _) != -1) problems.Add("Remove of an absent id did not return -1");
+
+        return new Check("instance slot map", problems.Count == 0,
+            problems.Count == 0 ? "swap-remove keeps indices dense" : string.Join("; ", problems));
     }
 
     /// <summary>

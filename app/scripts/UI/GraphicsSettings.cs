@@ -60,7 +60,7 @@ public sealed class GraphicsSettings
     public bool Shadows { get; private set; } = true;
     public float ShadowBlur { get; private set; } = 1.8f;
     public int ShadowResolution { get; private set; } = 4096;
-    public float ShadowDistance { get; private set; } = 150.0f;
+    public float ShadowDistance { get; private set; } = 90.0f; // FEAT-PERF-06: was 150; see Boot's DirectionalShadowMaxDistance note
     public float ShadowOpacity { get; private set; } = 0.90f;
     public int ShadowSplits { get; private set; } = 2;
     public bool SmallObjectShadows { get; private set; } = false;
