@@ -160,7 +160,9 @@ All features, tasks, and specs MUST use a unified Feature ID scheme across code,
 - **Branch names:** `feature/<ID>-<short-description>`.
 - **Commit messages:** `feat(<area>): [<ID>] <description>` (e.g. `feat(render): [M4-7] implement base mesh hiding`).
 - **Status tracking in `docs/ROADMAP.md`:** Standardized status flags (`⏸️ Pending`, `🚧 In Progress`, `🧪 Review`, `✅ Done`).
-- **Progress dashboard:** those same flags render `docs/dashboard.html` via
-  `python tools/roadmap-dashboard.py --tests <N>`. The dashboard is generated, never
-  hand-edited, and git-ignored. Procedure for updating and publishing it (identical for
-  Claude Code and Gemini up to the publish step): **`docs/PROGRESS_UPDATE.md`**.
+- **Progress dashboard:** those same flags render the public status page at
+  <https://clifhofmann.github.io/SLNG/>, auto-built from `docs/ROADMAP.md` + git by
+  `tools/roadmap-dashboard.py` in `.github/workflows/dashboard.yml` on every push to
+  `main` that touches the roadmap, `docs/specs/**` or the script. `docs/dashboard.html`
+  is a generated artifact, never hand-edited, git-ignored. Update procedure (edit flags,
+  commit, push — identical for Claude Code and Gemini): **`docs/PROGRESS_UPDATE.md`**.

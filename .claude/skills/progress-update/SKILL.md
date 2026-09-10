@@ -1,24 +1,27 @@
 ---
 name: progress-update
-description: Update the "Puris Viewer — Fortschritt" progress dashboard — refresh the status flags in docs/ROADMAP.md, regenerate docs/dashboard.html from it, and republish the Artifact at its fixed URL. Use when asked to update the progress, the roadmap status, the dashboard, or "den Fortschritt aktualisieren".
+description: Update the "Puris Viewer — Fortschritt" progress dashboard — refresh the status flags in docs/ROADMAP.md (and the matching docs/specs/<ID>-*.md Status line), commit and push. The dashboard on GitHub Pages then rebuilds itself. Use when asked to update the progress, the roadmap status, the dashboard, or "den Fortschritt aktualisieren".
 ---
 
 # Fortschritt aktualisieren
 
 The full procedure lives in **[docs/PROGRESS_UPDATE.md](../../../docs/PROGRESS_UPDATE.md)**
 and is the single source of truth — it is written tool-agnostically so Gemini CLI follows
-the same steps. Read it and work through steps 0–6 in order.
+the same steps. Read it and work through it in order.
 
-Do not restate the procedure from memory and do not shortcut it. Two things in particular
-are load-bearing and easy to get wrong:
+The dashboard is **auto-published**: `.github/workflows/dashboard.yml` regenerates
+`docs/dashboard.html` and deploys it to <https://clifhofmann.github.io/SLNG/> on every
+push to `main` that touches `docs/ROADMAP.md`, `docs/specs/**` or
+`tools/roadmap-dashboard.py`. There is no Artifact to publish and no script to run by
+hand — the only work is editing the roadmap and pushing.
 
-- **Step 1 is the only thinking step.** The dashboard is generated; it reports whatever
+One thing is load-bearing and easy to get wrong:
+
+- **Setting a flag is the only thinking step.** The dashboard reports whatever
   `docs/ROADMAP.md` says. A flag only goes to `✅` with evidence — acceptance criteria in
-  `docs/specs/<ID>-*.md` all checked, code on `main`, tests green. Otherwise `🧪`.
-- **Step 5 publishes to a fixed Artifact URL.** Pass that URL as `url:` to the `Artifact`
-  tool; publishing without it silently creates a second, competing artifact. The URL is in
-  step 5 of the procedure — take it from there, never from memory. If the tool refuses
-  because the live version has not been read this session, do the `action: "read"` on the
-  same URL first and then publish; that refusal is expected, not an error.
+  `docs/specs/<ID>-*.md` all checked, code on `main`, `dotnet build` + `dotnet test`
+  green. Otherwise `🧪`. When moving to `✅`, also update the spec's `**Status:**` line
+  and add one "Done when" sentence with the commit hash / live-verification.
 
-`docs/dashboard.html` is git-ignored and is never edited by hand.
+`docs/dashboard.html` is git-ignored and is never edited by hand; the workflow builds it
+fresh in `_site/`.
