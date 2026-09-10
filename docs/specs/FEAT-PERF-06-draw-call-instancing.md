@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-06`
 - **Track:** `render`
-- **Status:** `🚧 In Progress`
+- **Status:** `🧪 Review` — P1 shipped on `main` (v0.22.29-alpha, commit d54cc0b); mechanically correct and verified (build/test/selftest), but the headline goal (FPS on the villa scene) was not met — that scene is GPU-fill bound (MSAA), see "In-world result". P1 in-world checks (no visible diff, picking/edit/cull intact) still open.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
