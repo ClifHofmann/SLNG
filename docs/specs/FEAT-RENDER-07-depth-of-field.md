@@ -1,5 +1,7 @@
 # Feature: FEAT-RENDER-07 (Depth of Field / DoF)
 
+**Status:** ✅ Done — merged to `main` (`9847726`), `v0.22.7-alpha`; confirmed in-world 2026-09-10.
+
 ## Context
 As a later addition (specifically for the Photography and Machinima tools), a Depth of Field (DoF) effect should be implemented. This allows the camera to focus on a specific subject (e.g., the avatar or a selected object) while applying a cinematic blur to the out-of-focus background and foreground.
 
