@@ -33,6 +33,70 @@ public static class Diagnostics
     {
         Enabled = HasFlag(OS.GetCmdlineArgs()) || HasFlag(OS.GetCmdlineUserArgs());
 
+        // BUG-RENDER-16: read once here, alongside --diag, since this is already the "parse the
+        // command line at startup" site. See RenderConfig.HighFrequencyFoliageAlpha for what each
+        // mode does. With no arg the RenderConfig default (Hash + TAA) stands -- the switch's
+        // fall-through keeps the current value, it does NOT reset to Scissor.
+        //   --foliage-alpha=scissor|blend|hash|prepass|edge|blenddepth|blendcore  (--foliage-blend = =blend)
+        string? foliageArg = FindValueArg("--foliage-alpha=", OS.GetCmdlineArgs())
+                          ?? FindValueArg("--foliage-alpha=", OS.GetCmdlineUserArgs());
+        RenderConfig.HighFrequencyFoliageAlpha = foliageArg switch
+        {
+            "blend" => RenderConfig.FoliageAlpha.Blend,
+            "hash" => RenderConfig.FoliageAlpha.Hash,
+            "prepass" => RenderConfig.FoliageAlpha.Prepass,
+            "edge" => RenderConfig.FoliageAlpha.Edge,
+            "blenddepth" => RenderConfig.FoliageAlpha.BlendDepth,
+            "blendcore" => RenderConfig.FoliageAlpha.BlendCore,
+            "scissor" => RenderConfig.FoliageAlpha.Scissor,
+            _ when HasFlag(OS.GetCmdlineArgs(), "--foliage-blend")
+                || HasFlag(OS.GetCmdlineUserArgs(), "--foliage-blend") => RenderConfig.FoliageAlpha.Blend,
+            _ => RenderConfig.HighFrequencyFoliageAlpha,
+        };
+        string? hashScaleArg = FindValueArg("--foliage-hash-scale=", OS.GetCmdlineArgs())
+                            ?? FindValueArg("--foliage-hash-scale=", OS.GetCmdlineUserArgs());
+        if (hashScaleArg != null && float.TryParse(hashScaleArg, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float hs) && hs > 0f)
+            RenderConfig.FoliageHashScale = hs;
+
+        // BUG-RENDER-16: --foliage-core-alpha=N, the depth-pass threshold for --foliage-alpha=blendcore.
+        string? coreAlphaArg = FindValueArg("--foliage-core-alpha=", OS.GetCmdlineArgs())
+                            ?? FindValueArg("--foliage-core-alpha=", OS.GetCmdlineUserArgs());
+        if (coreAlphaArg != null && float.TryParse(coreAlphaArg, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float ca) && ca >= 0f && ca <= 1f)
+            RenderConfig.FoliageCoreAlpha = ca;
+
+        // BUG-RENDER-16: --alpha-sort-hysteresis [=N]. Bare flag takes the reference viewer's own
+        // 0.64 (llspatialpartition.cpp:667); =N overrides it. See RenderConfig.AlphaSortHysteresis
+        // for what the number means -- it is a chord on the unit sphere (~37 deg), not radians.
+        string? hystArg = FindValueArg("--alpha-sort-hysteresis=", OS.GetCmdlineArgs())
+                       ?? FindValueArg("--alpha-sort-hysteresis=", OS.GetCmdlineUserArgs());
+        if (hystArg != null && float.TryParse(hystArg, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float hy) && hy >= 0f)
+            RenderConfig.AlphaSortHysteresis = hy;
+        else if (HasFlag(OS.GetCmdlineArgs(), "--alpha-sort-hysteresis")
+                 || HasFlag(OS.GetCmdlineUserArgs(), "--alpha-sort-hysteresis"))
+            RenderConfig.AlphaSortHysteresis = RenderConfig.ViewerAlphaSortHysteresis;
+
+        // BUG-RENDER-16: --alpha-sort-planar. Sorts transparent objects by view-axis depth like
+        // the reference viewer (llspatialpartition.cpp:684-692) instead of Godot's radial distance.
+        if (HasFlag(OS.GetCmdlineArgs(), "--alpha-sort-planar")
+            || HasFlag(OS.GetCmdlineUserArgs(), "--alpha-sort-planar"))
+            RenderConfig.AlphaSortPlanarDepth = true;
+
+        // BUG-RENDER-16: --alpha-sort-freeze. Falsification test -- see RenderConfig.
+        if (HasFlag(OS.GetCmdlineArgs(), "--alpha-sort-freeze")
+            || HasFlag(OS.GetCmdlineUserArgs(), "--alpha-sort-freeze"))
+            RenderConfig.AlphaSortFreezeDebug = true;
+
+        GD.Print($"[Diagnostics] high-frequency foliage alpha = {RenderConfig.HighFrequencyFoliageAlpha}" +
+                 $" (hashScale={RenderConfig.FoliageHashScale}" +
+                 $" coreAlpha={RenderConfig.FoliageCoreAlpha.ToString(System.Globalization.CultureInfo.InvariantCulture)})" +
+                 $" alphaSortHysteresis={(RenderConfig.AlphaSortHysteresis > 0f ? RenderConfig.AlphaSortHysteresis.ToString(System.Globalization.CultureInfo.InvariantCulture) : "off")}" +
+                 $" alphaSortPlanar={RenderConfig.AlphaSortPlanarDepth}" +
+                 $" alphaSortFreeze={RenderConfig.AlphaSortFreezeDebug}" +
+                 $" (BUG-RENDER-16)");
+
         // Info is where the per-object asset logging lives -- texture fetches, sharpen decisions,
         // mesh sites. One session of it ran to 3.4 GB before it was throttled, and even throttled it
         // is thousands of lines nobody reads unless they are chasing something.
@@ -46,12 +110,27 @@ public static class Diagnostics
         if (Enabled) GD.Print("[Diagnostics] enabled via --diag: perf logging, watchdog and overlay on");
     }
 
-    private static bool HasFlag(string[] args)
+    private static bool HasFlag(string[] args) => HasFlag(args, Flag);
+
+    private static bool HasFlag(string[] args, string flag)
     {
         foreach (string arg in args)
         {
-            if (arg == Flag) return true;
+            if (arg == flag) return true;
         }
         return false;
+    }
+
+    /// <summary>Returns the part after <paramref name="prefix"/> for the first
+    /// <c>--name=value</c> argument that matches, lower-cased; null if none. Used for the
+    /// BUG-RENDER-16 foliage-alpha selector.</summary>
+    private static string? FindValueArg(string prefix, string[] args)
+    {
+        foreach (string arg in args)
+        {
+            if (arg.StartsWith(prefix, System.StringComparison.Ordinal))
+                return arg[prefix.Length..].ToLowerInvariant();
+        }
+        return null;
     }
 }

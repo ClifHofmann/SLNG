@@ -109,14 +109,6 @@ varying vec2 v_specular_uv;
 // uniform (instead of reading MODEL_MATRIX) keeps meshes shareable between prims of the same
 // shape and different sizes, which is the whole point of AssignSharedMesh, and avoids silently
 // picking up an ancestor's scale from the node hierarchy.
-// DIAGNOSTIC. Added to V after the full transform, so it shifts the finished result rather than
-// the source coordinate -- which is what makes it directly readable as "the pattern sits N
-// textures too low". Driven live from F10/F11 (ObjectRenderer) and applied to SCULPT faces only,
-// to measure the constant offset those still show against Firestorm once the mirror question was
-// settled. Zero by default; it exists to turn an argument into a number.
-uniform float uv_extra_v = 0.0;
-uniform float uv_extra_u = 0.0;
-
 uniform int uv_texgen = 0;
 uniform vec3 prim_scale = vec3(1.0);
 
@@ -211,10 +203,14 @@ vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
     if (uv_texgen == 1) {
         uv = slng_planar_uv(vertex, normal);
     }
-    uv = slng_place_uv(uv, uv_scale, uv_offset, uv_rotation);
-    uv.x += uv_extra_u;
-    uv.y += uv_extra_v;
-    return uv;
+    // No uv_extra_u/uv_extra_v here any more. They were a DIAGNOSTIC pair, added after the
+    // finished transform so a residual sculpt offset could be dialled in from F10/F11 and read
+    // off as a number instead of argued about. The offset they were built to measure is gone --
+    // it was our sculpt grid, 33x33 against the viewer's 32x32, which put our UV step at 1/32
+    // where the viewer's is 1/31 (fixed in `faadfa8`, now pinned index-by-index by
+    // ViewerSculptParityTests). They wrote zero on every face after that, and every sculpt face
+    // paid two SetShaderParameter calls for it.
+    return slng_place_uv(uv, uv_scale, uv_offset, uv_rotation);
 }
 
 // Samples everything a face needs and hands it back through out-params. It does NOT assign
