@@ -189,15 +189,18 @@ public partial class DepthOfFieldController : Node
 
         _attributes.DofBlurAmount = _settings.BlurAmount;
 
-        // A real lens's circle of confusion grows continuously with distance from the focal
-        // plane and then flattens toward a limit; Godot's practical DoF only offers a single
-        // linear ramp to approximate that whole curve. A ramp as short as the sharp band's own
-        // half-width (the first cut) put full blur a couple of metres past the subject, which
-        // reads as the blur snapping on rather than falling off. So the transition is
-        // deliberately long and scaled to the focal distance — a near focus still gets a tighter
-        // falloff than a far one, but in both cases the blur builds up over distance instead of
-        // stepping.
-        float falloff = Mathf.Max(focus * 1.5f, 2f);
+        // A real lens's circle of confusion keeps growing with distance from the focal plane;
+        // CameraAttributesPractical only offers ONE linear ramp (blur climbs from `far_distance`
+        // over `far_transition` metres, then flat) to stand in for that whole curve. The
+        // "Falloff" slider is how long that ramp is, as a multiple of the focal distance:
+        //   0   -> 0.15x  -- full blur almost immediately past the sharp band (a hard cut)
+        //   1   -> 30x    -- the ramp outruns any normal view, so within frame the blur is
+        //                    always still climbing and never flattens into a uniform wash
+        // Scaling by the focal distance keeps a near focus tighter than a far one at the same
+        // slider value. (A true f-stop model would be CameraAttributesPhysical, which also takes
+        // over exposure -- deliberately not going there.)
+        float rampMult = Mathf.Lerp(0.15f, 30f, _settings.Falloff);
+        float falloff = Mathf.Max(focus * rampMult, 0.3f);
 
         // Far zone: sharp out to focus+half, then the blur ramps in across `falloff` metres.
         _attributes.DofBlurFarEnabled = true;

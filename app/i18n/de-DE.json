@@ -81,6 +81,8 @@
       "dof_focus_tooltip": "Entfernung zur scharf bleibenden Ebene. Ziehen schaltet den Autofokus ab.",
       "dof_range": "Schärfebereich",
       "dof_range_tooltip": "Wie viele Meter rund um die Fokusebene scharf bleiben. Kleiner bedeutet eine flachere, filmischere Schärfe.",
+      "dof_falloff": "Verlauf",
+      "dof_falloff_tooltip": "Wie allmählich die Unschärfe mit der Entfernung zunimmt. Niedrig ist ein harter Übergang am Schärfebereich; hoch lässt die Unschärfe bis in die Ferne weiter ansteigen, wie es eine echte Blende tut.",
       "dof_blur": "Unschärfe",
       "dof_near_blur": "Vordergrund weichzeichnen",
       "dof_near_blur_tooltip": "Zeichnet auch das weich, was näher als der Schärfebereich liegt, nicht nur den Hintergrund.",

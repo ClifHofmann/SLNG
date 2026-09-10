@@ -44,9 +44,11 @@ public partial class SnapshotWindow : SLNGWindow
     private CheckBox _dofNearBlur = null!;
     private HSlider _dofFocusSlider = null!;
     private HSlider _dofRangeSlider = null!;
+    private HSlider _dofFalloffSlider = null!;
     private HSlider _dofBlurSlider = null!;
     private Label _dofFocusValue = null!;
     private Label _dofRangeValue = null!;
+    private Label _dofFalloffValue = null!;
     private Label _dofBlurValue = null!;
     private Label _dofAutoFocusReadout = null!;
 
@@ -259,6 +261,13 @@ public partial class SnapshotWindow : SLNGWindow
             v => $"{v:0.0} m",
             (v, persist) => _dof?.SetFocusRange((float)v, persist));
 
+        _dofFalloffSlider = AddSliderRow(
+            L10n.Tr("ui.snapshot.dof_falloff"), L10n.Tr("ui.snapshot.dof_falloff_tooltip"),
+            DofSettings.MinFalloff, DofSettings.MaxFalloff, 0.01,
+            DofSettings.DefaultFalloff, out _dofFalloffValue,
+            v => $"{v * 100:0} %",
+            (v, persist) => _dof?.SetFalloff((float)v, persist));
+
         _dofBlurSlider = AddSliderRow(
             L10n.Tr("ui.snapshot.dof_blur"), null,
             DofSettings.MinBlurAmount, DofSettings.MaxBlurAmount, 0.01,
@@ -377,6 +386,7 @@ public partial class SnapshotWindow : SLNGWindow
             _dofNearBlur.ButtonPressed = _dof.NearBlur;
             _dofFocusSlider.Value = _dof.FocusDistance;
             _dofRangeSlider.Value = _dof.FocusRange;
+            _dofFalloffSlider.Value = _dof.Falloff;
             _dofBlurSlider.Value = _dof.BlurAmount;
         }
         finally

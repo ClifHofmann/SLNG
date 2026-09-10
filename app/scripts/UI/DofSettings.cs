@@ -40,6 +40,16 @@ public sealed class DofSettings
     public const float MaxBlurAmount = 1f;
     public const float DefaultBlurAmount = 0.15f;
 
+    // How gradually the blur builds up beyond the sharp band. 0 == full blur immediately at the
+    // band edge (a hard cut); 1 == the ramp outruns any normal view distance, so the blur keeps
+    // increasing with distance instead of flattening into a uniform wash. The controller maps
+    // this to CameraAttributesPractical's single linear far/near transition -- the closest that
+    // model gets to a real aperture, whose blur genuinely grows without limit. Default leans
+    // gradual because "everything at the back is equally blurred" was the first complaint.
+    public const float MinFalloff = 0f;
+    public const float MaxFalloff = 1f;
+    public const float DefaultFalloff = 0.35f;
+
     public bool Enabled { get; private set; }
 
     /// <summary>Track the focal plane with a raycast through the centre of the viewport, instead
@@ -56,6 +66,9 @@ public sealed class DofSettings
     /// <summary>Blur intensity, 0..1.</summary>
     public float BlurAmount { get; private set; } = DefaultBlurAmount;
 
+    /// <summary>How gradually the blur ramps up with distance, 0..1. See the const block.</summary>
+    public float Falloff { get; private set; } = DefaultFalloff;
+
     /// <summary>Blur the foreground too (everything nearer than the sharp band). Off gives the
     /// "sharp subject, blurred background only" look; on is the full cinematic one.</summary>
     public bool NearBlur { get; private set; } = true;
@@ -69,6 +82,7 @@ public sealed class DofSettings
         FocusDistance = ClampFocus((float)cfg.GetValue(Section, "focus_distance", DefaultFocusDistance));
         FocusRange = ClampRange((float)cfg.GetValue(Section, "focus_range", DefaultFocusRange));
         BlurAmount = ClampBlur((float)cfg.GetValue(Section, "blur_amount", DefaultBlurAmount));
+        Falloff = ClampFalloff((float)cfg.GetValue(Section, "falloff", DefaultFalloff));
         NearBlur = (bool)cfg.GetValue(Section, "near_blur", true);
     }
 
@@ -100,6 +114,12 @@ public sealed class DofSettings
         Persist("blur_amount", clamped, () => BlurAmount = clamped, persist);
     }
 
+    public void SetFalloff(float value, bool persist = true)
+    {
+        float clamped = ClampFalloff(value);
+        Persist("falloff", clamped, () => Falloff = clamped, persist);
+    }
+
     /// <summary>Restores every value to its shipped default and writes them out.</summary>
     public void ResetToDefaults()
     {
@@ -108,6 +128,7 @@ public sealed class DofSettings
         SetFocusDistance(DefaultFocusDistance);
         SetFocusRange(DefaultFocusRange);
         SetBlurAmount(DefaultBlurAmount);
+        SetFalloff(DefaultFalloff);
         SetNearBlur(true);
     }
 
@@ -125,4 +146,5 @@ public sealed class DofSettings
     private static float ClampFocus(float v) => Mathf.Clamp(v, MinFocusDistance, MaxFocusDistance);
     private static float ClampRange(float v) => Mathf.Clamp(v, MinFocusRange, MaxFocusRange);
     private static float ClampBlur(float v) => Mathf.Clamp(v, MinBlurAmount, MaxBlurAmount);
+    private static float ClampFalloff(float v) => Mathf.Clamp(v, MinFalloff, MaxFalloff);
 }

@@ -31,15 +31,23 @@ user-facing model is a **focal plane plus a sharp band in metres**. That transla
 in `Apply()` and nowhere else:
 
 - far zone: blur begins at `focus + range/2`, then ramps in over a **`falloff`** distance of
-  `max(focus * 1.5, 2)` m — deliberately long. A real lens's circle of confusion grows
-  continuously with distance and then flattens; Godot only offers a single linear ramp, so a
-  short transition (the first cut used `range/2`) put full blur a couple of metres past the
-  subject and read as the blur *snapping on*. Scaling `falloff` to the focal distance keeps a
-  near focus tighter than a far one. (v0.22.5)
+  `focus * lerp(0.15, 30, Falloff)` m, floored at 0.3 m. A real lens's circle of confusion
+  keeps growing with distance; `CameraAttributesPractical` only offers one linear ramp
+  (blur climbs over the transition, then flat), so the **Falloff** slider (0..1) is just how
+  long that ramp is. At the top of the slider the ramp outruns any normal view distance —
+  the blur is always still climbing in frame and never flattens into a uniform wash, which
+  was the "everything at the back is equally blurred" complaint. Scaled by the focal
+  distance so a near focus stays tighter than a far one at the same slider value. Default
+  0.35 leans gradual. (`v0.22.5` long-transition; slider `v0.22.7`)
 - near zone: blur begins at `focus - range/2` (clamped > 0 — a near distance of 0 puts the
   ramp behind the camera and Godot blurs the whole frame), transition = `min(falloff, near)`
   because the foreground only has that much room before the camera, only when "blur
   foreground" is on
+- **not** `CameraAttributesPhysical` — its DoF *is* a real thin-lens aperture model and
+  would give a physically-correct "blurrier with distance", but it also takes over the
+  exposure pipeline (auto-exposure, physical light units) and changes scene brightness. A
+  bigger change than a photo blur is worth; noted here so the aperture question has an
+  answer.
 
 **Toggling off detaches the resource** (`camera.Attributes = null`), it does not merely zero
 `DofBlurAmount` — a `CameraAttributes` left assigned keeps its exposure model in the
@@ -91,8 +99,9 @@ UI applies live with `persist:false` during the drag and writes once on `DragEnd
 
 DoF is framing, not a quality setting — you set the focal plane while looking at the shot.
 Enable toggle, auto-focus checkbox with a live `→ N.N m` / "nothing in the centre of frame"
-readout, focus / sharp-band / blur sliders, "blur foreground" toggle, reset button. The
-focus slider stays editable while auto-focus is on — `_Process` tracks the live focal plane
+readout, focus / sharp-band / falloff / blur sliders, "blur foreground" toggle, reset
+button. The falloff slider (`v0.22.7`) shows a percentage and drives the ramp length above.
+The focus slider stays editable while auto-focus is on — `_Process` tracks the live focal plane
 onto its handle, and grabbing it is a **manual override** that switches auto-focus off, so
 the value the user set holds and the handoff has no jump. (v0.22.5 — it was read-only under
 auto-focus at first, which just read as a broken slider.)

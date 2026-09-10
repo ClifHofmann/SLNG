@@ -81,6 +81,8 @@
       "dof_focus_tooltip": "Distance to the plane that stays sharp. Dragging this switches auto focus off.",
       "dof_range": "Sharp band",
       "dof_range_tooltip": "How many metres stay sharp, centred on the focal plane. Smaller is a shallower, more cinematic focus.",
+      "dof_falloff": "Falloff",
+      "dof_falloff_tooltip": "How gradually the blur builds up with distance. Low is a hard cut at the sharp band; high keeps the blur climbing all the way into the distance, the way a real aperture does.",
       "dof_blur": "Blur",
       "dof_near_blur": "Blur foreground",
       "dof_near_blur_tooltip": "Blur what is nearer than the sharp band too, not just what is behind it.",
