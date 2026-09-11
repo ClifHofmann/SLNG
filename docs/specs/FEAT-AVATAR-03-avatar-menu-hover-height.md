@@ -30,19 +30,24 @@ hover height — and becomes the home for `FEAT-AVATAR-02`'s troubleshooting too
    Stop Animations / Reset Skeleton / Reload Avatar.
 
 ## Acceptance Criteria
-- [ ] An "Avatar" menu exists; Rebake and Detach-All are reachable from it and gone from World.
-      Implemented (`TopMenu.cs`) and builds/selftests clean, but not yet clicked through in a
-      running client -- no GUI available in this session to confirm visually.
-- [ ] The hover-height slider moves the local avatar up/down and other viewers see the change.
-      Local half implemented (`Boot.ApplySelfHoverHeight`, optimistic, no sim round-trip needed);
-      outbound half implemented (`GridSession.SetHoverHeight` -> `AgentManager.SetHoverHeightAsync`
-      -> `AgentPreferences` cap) but **unverified against a live grid** -- the OpenSim dev target is
-      expected (per protocol-re's source read) to lack this cap entirely, so "other viewers see the
-      change" needs an SL/Agni session to actually confirm, same caveat FEAT-AVATAR-03's own spec
-      text anticipated.
-- [ ] The value persists across a relog. `AvatarHoverSettings` read/write to preferences.cfg is
-      implemented and follows the existing DofSettings/CameraSettings pattern exactly, but an
-      actual relog was not performed.
+- [x] An "Avatar" menu exists; Rebake and Detach-All are reachable from it and gone from World.
+      **Confirmed in-world 2026-09-11** ("das Menü ... passt").
+- [x] The hover-height slider moves the local avatar up/down and other viewers see the change.
+      **Confirmed in-world 2026-09-11** — a second viewer sees a live slider change ("beim anderen
+      viewer kommts an").
+- [ ] The value persists across a relog, for both the self view AND a second viewer.
+      **Partially confirmed, and a real bug found in the process (2026-09-11):** self correctly
+      shows the sunken stance after a relog (local render doesn't need the cap — it's optimistic),
+      but a second viewer does NOT — "der andere viewer... da stehe ich wieder normal da". Root
+      cause: the outbound resend on login/region-entry was hung off `GridSession.RegionConnected`,
+      which fires from `SimConnected` — BEFORE the region's HTTP CAPS handshake completes, so
+      `AgentManager.SetHoverHeightAsync`'s own `CapabilityURI("AgentPreferences") == null` guard
+      silently dropped the resend every time, the exact same class of mistake FEAT-ENV-01 had
+      already hit and documented (`GridSession.cs`'s comment above `EventQueueRunning` wiring).
+      **Fixed:** new `GridSession.RegionCapabilitiesReady` event, fired from the already-deduped
+      block inside `OnEventQueueRunning` (once per `Simulator` instance, after caps are actually
+      up) instead of `SimConnected`; `Boot.ResendHoverHeight` moved there from `ApplyRegionOrigin`.
+      **Not yet re-verified in-world** — needs one more relog with a second viewer watching.
 - [x] `--selftest` locale parity stays green. 281/281 keys, de-DE covers en-US fully (verified
       2026-09-11, `v0.22.31-alpha`).
 

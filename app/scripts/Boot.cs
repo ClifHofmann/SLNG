@@ -173,7 +173,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.37-alpha";
+    public const string AppVersion = "v0.22.38-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1227,8 +1227,8 @@ public partial class Boot : Control
 
                 // FEAT-AVATAR-03: re-apply a persisted hover height to the local render now that
                 // the self avatar entity exists -- optimistic (see ApplySelfHoverHeight), not
-                // waiting on the sim to echo it back. The outbound send for region re-entry lives
-                // in ApplyRegionOrigin, which already ran before this point on a fresh login.
+                // waiting on the sim to echo it back. The outbound send is separate and later:
+                // ResendHoverHeight, off RegionCapabilitiesReady once this region's caps are up.
                 if (_avatarHoverSettings.HoverHeight != 0f) ApplySelfHoverHeight(_avatarHoverSettings.HoverHeight);
             }
         }
@@ -1991,6 +1991,9 @@ public partial class Boot : Control
         // route through the Node.CallDeferred(nameof(...)) path / a per-frame drain instead.
         _session.RegionConnected += (s, regionHandle) =>
             CallDeferred(nameof(ApplyRegionOrigin), regionHandle.ToString());
+        // FEAT-AVATAR-03: re-send a persisted hover height once this region's caps are actually up
+        // -- see RegionCapabilitiesReady's doc comment for why this can't be RegionConnected.
+        _session.RegionCapabilitiesReady += (s, regionHandle) => CallDeferred(nameof(ResendHoverHeight));
         // MVP2-3 Phase 4: flip the flag the _Process drain above watches. A plain bool write is
         // fine here -- worst case the toast is a frame late, same tolerance as every other
         // "parked" flag in this class.
@@ -2342,13 +2345,16 @@ public partial class Boot : Control
         // its void-water plane sits at this region's water height (order matters -- it reads the
         // origin we just set).
         _terrainRenderer?.SetPrimaryRegion(handle);
+    }
 
-        // FEAT-AVATAR-03: the real viewer zeroes hover height on a region that doesn't support the
-        // AgentPreferences cap and re-sends it on one that does (llvoavatarself.cpp
-        // setHoverIfRegionEnabled), so a persisted non-default value needs re-applying on every
-        // region change, not just at login. GridSession.SetHoverHeight is itself a no-op on a
-        // region without the cap. Local render is unaffected either way -- it's optimistic, not
-        // fed by this.
+    // Deferred target for GridSession.RegionCapabilitiesReady -- see that event's doc comment for
+    // why this is NOT hung off RegionConnected/ApplyRegionOrigin: the AgentPreferences cap isn't
+    // resolvable yet at RegionConnected time, so a hover-height POST from there silently no-op'd on
+    // every relogin. Caught live 2026-09-11 -- self saw the correct sunken stance after a relog
+    // (the local render doesn't depend on the cap), but a second viewer did not, because the resend
+    // never actually reached the sim.
+    private void ResendHoverHeight()
+    {
         if (_avatarHoverSettings.HoverHeight != 0f) _session?.SetHoverHeight(_avatarHoverSettings.HoverHeight);
     }
 

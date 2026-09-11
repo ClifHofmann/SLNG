@@ -189,6 +189,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// origin recenter) is the reason this exists -- see Boot.cs's subscription.</summary>
     public event EventHandler<ulong>? RegionConnected;
 
+    /// <summary>Fired once per region, after its HTTP CAPS have actually been seeded -- unlike
+    /// <see cref="RegionConnected"/> (raised from <c>SimConnected</c>), which fires BEFORE the caps
+    /// handshake completes, so <c>CapabilityURI(...)</c> can still report a capability absent on a
+    /// sim that genuinely has it (see <see cref="OnEventQueueRunning"/>'s doc comment -- the same
+    /// reasoning FEAT-ENV-01's environment fetch is already built on). Any outbound send gated on a
+    /// specific capability (hover height's <c>AgentPreferences</c> POST, FEAT-AVATAR-03) belongs
+    /// here, not on <see cref="RegionConnected"/> -- that mistake shipped once (silently no-op'd on
+    /// every relogin) and cost a live bug report to catch, because the LOCAL render doesn't depend
+    /// on the cap at all and looked correct throughout.
+    ///
+    /// Deduped to once per <see cref="Simulator"/> instance, same guard as the environment capture
+    /// this reuses. Raised from a background thread -- consumers must marshal before touching world
+    /// state or a scene node.</summary>
+    public event EventHandler<ulong>? RegionCapabilitiesReady;
+
     /// <summary>Fired once per region, after its capabilities are up, with a raw snapshot of the
     /// region's Windlight / EEP environment (FEAT-ENV-01 Phase A). Diagnostic for now: the payload
     /// carries the settings LLSD as text, because nothing parses it yet.
@@ -916,6 +931,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         // Re-request any Current-Outfit attachment the sim failed to rez on login.
         ArmAttachmentReconcile();
+
+        // FEAT-AVATAR-03 (and any future cap-gated outbound send): the caps handshake for this
+        // region is done now, unlike at RegionConnected.
+        RegionCapabilitiesReady?.Invoke(this, e.Simulator.Handle);
 
         _ = Task.Run(async () =>
         {
