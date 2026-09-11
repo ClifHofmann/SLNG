@@ -129,6 +129,10 @@ public partial class AvatarRenderer : Node3D
         // remote avatar whose account has no AppearanceHover set but DOES have a nonzero Hover
         // shape slider (2026-07-22, round 11 — see claude-handover-height.md).
         public float AvatarHoverParamZ { get; set; }
+        // SLNG-specific: Combined height offset from Shoe Base (Height Adjuster) wearables,
+        // calculated as 0.08 * ParamHeelHeight + 0.07 * ParamPlatformHeight.
+        // Added to BodySizeZ and PelvisToFootZ to prevent floating/sinking.
+        public float ShoeOffsetZ { get; set; }
         // Per-avatar system-body-part Skin cache (bone binds + boneName->slot map), keyed by part
         // name. Used to be a single static dictionary shared across every avatar because the bind
         // matrices only depended on the neutral skeleton rest — true under the OLD (Godot-native
@@ -730,6 +734,12 @@ public partial class AvatarRenderer : Node3D
                 // param wasn't in this avatar's transmitted Group0 array at all.
                 const int HoverVisualParamId = 11001;
                 visual.AvatarHoverParamZ = weights.TryGetValue(HoverVisualParamId, out var hoverW) ? hoverW : 0f;
+
+                const int ParamHeelHeight = 198;
+                const int ParamPlatformHeight = 503;
+                float heelW = weights.TryGetValue(ParamHeelHeight, out var h) ? h : 0f;
+                float platformW = weights.TryGetValue(ParamPlatformHeight, out var p) ? p : 0f;
+                visual.ShoeOffsetZ = heelW * 0.08f + platformW * 0.07f;
 
                 var distortions = AvatarShapeService.ComputeDistortions(avatar.VisualParams, charDir);
 
@@ -2718,8 +2728,8 @@ public partial class AvatarRenderer : Node3D
         // received the pushed-up simPos.Z but subtracted the too-small 1.99m halfBodyZ, resulting in
         // the Godot foot floating significantly above the ground.
         var body = SLNG.Core.SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions, visual.JointPosOverrides);
-        visual.BodySizeZ = body.BodySizeZ;
-        visual.PelvisToFootZ = body.PelvisToFoot;
+        visual.BodySizeZ = body.BodySizeZ + visual.ShoeOffsetZ;
+        visual.PelvisToFootZ = body.PelvisToFoot + visual.ShoeOffsetZ;
 
         // Skip entirely when `distortions` IS visual.LastDistortions (the aliased case above) —
         // it's already correct by definition, and Clear()-then-copy on itself would just erase it.
