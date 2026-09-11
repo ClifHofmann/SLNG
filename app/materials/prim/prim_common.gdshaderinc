@@ -241,6 +241,55 @@ float slng_glossiness_to_roughness(float glossiness) {
     return clamp(sqrt(ggx_alpha), 0.0, 1.0);
 }
 
+// BUG-RENDER-20: the environment-reflection half of the viewer's specular model, for a face with
+// legacy Shiny and no specular map (the build tool's Shiny low/medium/high -- probe steps 6-8).
+// Ported from applyGlossEnv (reflectionProbeF.glsl:893, quoted in the spec) as its OWN additive
+// EMISSION term, deliberately NOT folded into METALLIC/SPECULAR/ROUGHNESS the way the sun lobe
+// above is.
+//
+// Why separate: the viewer reads the SAME `spec`/`glossiness` for its Blinn-Phong sun lobe and for
+// applyGlossEnv, but applies a DIFFERENT overall scale to each (the env term gets its own
+// `*0.5*fresnel*0.5`, on top of a Fresnel that is a completely different curve from the lobe's
+// exponent). Godot's built-in metallic-roughness IBL has only one shared strength knob
+// (SPECULAR/METALLIC feed both the direct-light response AND the automatic sky-radiance
+// reflection identically -- confirmed empirically, not assumed: a ShaderMaterial and a
+// StandardMaterial3D given the same METALLIC/ROUGHNESS/SPECULAR produced matching, non-zero,
+// silhouette-strongest, shininess-scaling reflections in isolated probes, so Godot's automatic
+// path is not broken). Raising that shared knob enough to make the reflection clearly visible
+// would also brighten the sun highlight FEAT-RENDER-19 already calibrated against Firestorm past
+// its confirmed-correct level -- so the reflection needs its own, independent term instead, exactly
+// mirroring the viewer's own separation.
+//
+// `glossenv` (the reference reads an actual reflection-probe radiance map, a full deferred-
+// renderer feature) is approximated here from the same Windlight globals sky.gdshader itself
+// paints the sky from (slng_atmospherics.gdshaderinc, already in scope) -- a reflection and the
+// sky it echoes stay in the same palette this way. SLNG places no reflection probes (this bug's
+// own "untested variable" turned out NOT to be the custom ShaderMaterial; building a real probe
+// capture of nearby geometry is FEAT-ENV work, not this fix), so this will not show actual
+// courtyard walls the way a placed probe would -- only a Fresnel-weighted, shininess-scaled sky
+// streak, which is what the acceptance criteria asks for.
+//
+// Deliberately stays in VIEW space throughout, unlike a true reflection vector, which would need
+// INV_VIEW_MATRIX to bring the reflected ray back to world space to compare against a world-space
+// sky. That matrix is a fragment()-only built-in -- unreachable from a function fragment() calls,
+// exactly the same restriction slng_apply_atmospherics' own comment already documents for
+// VIEW_MATRIX, which is why AvatarController publishes slng_sun_direction_view instead of
+// transforming here. A flat horizon tint, weighted by the same Fresnel term, sidesteps it.
+vec3 slng_env_reflection(vec3 view_position, vec3 normal, float shininess_level, vec3 base_color) {
+    // fresnel: reflectionProbeF.glsl:894-896, unchanged. `pos`/`norm` there are the fragment's
+    // VIEW-SPACE position and normal -- exactly view_position and NORMAL here (both already in
+    // view space in every prim variant's fragment()).
+    float fresnel = clamp(1.0 + dot(normalize(view_position), normal), 0.3, 1.0);
+    fresnel *= fresnel;
+    fresnel *= shininess_level;   // spec.a: the shininess LEVEL scales the whole term
+
+    vec3 glossenv = slng_srgb_to_linear(clamp(slng_blue_horizon.rgb, vec3(0.0), vec3(1.0)));
+
+    glossenv *= 0.5 * fresnel;              // applyGlossEnv: `glossenv *= 0.5;` then `*= fresnel`
+    glossenv *= (vec3(1.0) - base_color);   // applyGlossEnv's "fake energy conservation"
+    return glossenv * 0.5;                  // applyGlossEnv: `color.rgb += glossenv * 0.5;`
+}
+
 // Samples everything a face needs and hands it back through out-params. It does NOT assign
 // the built-ins itself: METALLIC / ROUGHNESS / NORMAL_MAP / EMISSION are fragment-stage
 // built-ins and Godot rejects writing them from a user function ("Unknown identifier in
@@ -248,7 +297,7 @@ float slng_glossiness_to_roughness(float glossiness) {
 // sampling logic in one place, which is the part that must not drift between variants.
 //
 // Returns the albedo alpha, the one thing the variants genuinely disagree about.
-float slng_shade(vec2 uv, vec3 view_position,
+float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
                  out vec3 out_albedo,
                  out float out_metallic, out float out_roughness, out float out_specular,
                  out vec3 out_normal_map, out float out_normal_depth,
@@ -276,6 +325,12 @@ float slng_shade(vec2 uv, vec3 view_position,
     // because what it was reflecting was the warm courtyard. A specular map still overrides this
     // below, which is the only path SL actually feeds.
     out_specular = 0.0;
+
+    // BUG-RENDER-20: an additive, independent environment-reflection term for the legacy-shininess
+    // branch below -- see slng_env_reflection's own comment for why it is not folded into
+    // out_metallic/out_specular/out_roughness the way the sun highlight is. Zero unless that
+    // branch actually runs, so PRIM_SHINY_NONE (probe steps 0-5) is untouched.
+    vec3 env_reflection = vec3(0.0);
 
     if (has_specular_texture) {
         vec3 spec = texture(specular_texture, v_specular_uv).rgb * specular_tint;
@@ -315,6 +370,7 @@ float slng_shade(vec2 uv, vec3 view_position,
         // inventing brightness the protocol never sent.
         out_specular = 0.5;
         out_roughness = slng_glossiness_to_roughness(legacy_shininess);
+        env_reflection = slng_env_reflection(view_position, normal, legacy_shininess, out_albedo);
     }
 
     // glTF ORM packing: occlusion in R, roughness in G, metallic in B.
@@ -343,6 +399,13 @@ float slng_shade(vec2 uv, vec3 view_position,
             emission *= texture(emission_texture, uv).rgb;
         }
         out_emission = emission + atmos_additive;
+    }
+
+    // Fullbright ignores scene lighting entirely (see below), and the viewer never runs its
+    // specular/env branch for a fullbright face either -- so this is skipped rather than added
+    // and then cancelled out by the fullbright block's own albedo routing.
+    if (!fullbright) {
+        out_emission += env_reflection;
     }
 
     // SL fullbright: the face is lit by nothing. Route the (already atmospherics-applied) albedo

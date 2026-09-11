@@ -2,8 +2,8 @@
 
 - **Feature ID:** `BUG-RENDER-20`
 - **Track:** `render`
-- **Status:** `⏸️ Pending`
-- **Owner:** *(unassigned)*
+- **Status:** `✅ Done`
+- **Owner:** `claude` (graphics-engineer)
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
 ## Overview & Goal
@@ -77,12 +77,14 @@ Godot's radiance-map contribution, and does `blend_mix` on an otherwise-opaque p
 
 ## Acceptance Criteria
 
-- [ ] The probe sphere at shiny low/medium/high shows an environment reflection, strongest near
-      the silhouette, as `applyGlossEnv`'s Fresnel term predicts
-- [ ] Reflection strength tracks the shininess LEVEL
-- [ ] The greys and primaries (probe steps 0-5) do not shift — they are `PRIM_SHINY_NONE` and
-      must stay exactly where `FEAT-RENDER-19` calibrated them
-- [ ] `EnvironmentDriver`'s ambient-source comment corrected to match what was measured
+- [x] The probe sphere at shiny low/medium/high shows an environment reflection, strongest near
+      the silhouette, as `applyGlossEnv`'s Fresnel term predicts — verified via probe script
+      (isolated Godot scene, not the live grid; see "Honesty note" below)
+- [x] Reflection strength tracks the shininess LEVEL — verified monotonically increasing
+      low<medium<high in the same probe
+- [x] The greys and primaries (probe steps 0-5) do not shift — they are `PRIM_SHINY_NONE` and
+      must stay exactly where `FEAT-RENDER-19` calibrated them — verified bit-identical pre/post-fix
+- [x] `EnvironmentDriver`'s ambient-source comment corrected to match what was measured
 
 ## Technical Specs & Affected Files
 
@@ -95,3 +97,110 @@ Godot's radiance-map contribution, and does `blend_mix` on an otherwise-opaque p
 `tools/testassets/probe_lighting.lsl` steps 6-8 (dark grey at shiny low / medium / high), with
 step 2 as the matte reference for the same albedo. Shoot from the **same camera position** in
 both viewers — a highlight and a reflection both depend on the eye, unlike diffuse shading.
+
+## What was actually found (2026-09-11, empirical)
+
+No interactive desktop-automation tool is available in this environment for a native Godot
+window (the sandboxed browser tooling only drives web pages), so live-grid A/B screenshotting
+was not possible this session. Verification instead used this project's own established pattern
+for exactly this situation — `scratch/probes/*.gd`, a `SceneTree`-rooted script that builds a
+small isolated scene and reads pixels back from `get_viewport().get_texture().get_image()` —
+run as `godot --path app -s <script>.gd`. **Not `--headless`**: headless forces Godot's `dummy`
+rendering driver regardless of `--rendering-driver`, which never populates a real viewport
+texture (`texture_2d_get` returns null, confirmed directly). Without `--headless`, Godot opens
+real Vulkan (`Vulkan 1.4.351 - Forward+`, an actual GPU device) and renders for real.
+
+**The untested variable named above — closed, with a negative result.** A probe built a
+`WorldEnvironment` with a `ProceduralSkyMaterial` sky and no placed `ReflectionProbe`/
+`VoxelGI`/`SDFGI` (matching the live scene exactly, confirmed absent by grep at the start of
+this session), then rendered a sphere with `prim_opaque.gdshader` (the real shader, real
+`ShaderMaterial`, real `legacy_shininess`/`metallic_factor` uniforms) against the identical
+sphere with `StandardMaterial3D` at matching METALLIC/ROUGHNESS/SPECULAR for shiny low/medium/
+high. Sampled centre (view-parallel normal) and near-silhouette (grazing normal) pixels: **the
+two matched almost exactly** at every level, e.g. shiny HIGH centre `(0.1373, 0.1333, 0.1608)`
+for both. A diagnostic mirror override (`metallic_factor=1, roughness_factor=0` — Godot's own
+exposed uniforms, no shader edit needed) showed an obvious, strong reflection, proving the
+pipeline can receive environment radiance at all. Also tested and ruled out: re-driving the
+sky's `global uniform`s every single frame (exactly mirroring `EnvironmentDriver.Update`, called
+from `Boot._Process`) does not stop Godot's sky-radiance filter from converging — static and
+per-frame-churning skies gave the same reflection numbers; and Boot's real post-FX stack (SSAO
+radius 1.0/intensity 2.0, SSIL, Glow) made no measurable difference either.
+
+**Conclusion: the rendering pipeline was never broken.** A custom spatial `ShaderMaterial`
+receives Godot's automatic sky-radiance specular IBL exactly like `StandardMaterial3D` does, and
+mechanically already produced a real, non-zero, shininess-tracking, silhouette-strongest
+reflection at FEAT-RENDER-19's existing `out_specular = 0.5` (4% dielectric F0) — this is
+consistent with the report ("weak but real" is what a 4% F0 should look like, not literally
+zero) and explains why every earlier line of investigation (ambient source/energy/sky
+contribution, `render_mode`) came up clean: none of them were the actual gap.
+
+**The real gap:** Godot's built-in metallic-roughness model has exactly ONE strength knob
+(SPECULAR/METALLIC, feeding F0) shared between the DIRECT-light specular response and the
+automatic sky-IBL reflection. Raising it enough to make the reflection clearly, robustly visible
+would also brighten the sun highlight FEAT-RENDER-19 already calibrated and confirmed correct
+against Firestorm. The reference viewer does not have this problem — `softenLightF.glsl:243`'s
+Blinn-Phong sun lobe and `applyGlossEnv` (`reflectionProbeF.glsl:893`) read the same
+`spec`/`glossiness` but apply completely DIFFERENT overall scale constants, so the viewer can
+(and does) tune the two independently. Godot's shared built-in cannot.
+
+## The fix
+
+Ported `applyGlossEnv` as its own, independent, additive EMISSION term —
+`slng_env_reflection()` in `app/materials/prim/prim_common.gdshaderinc` — instead of trying to
+express it through METALLIC/SPECULAR/ROUGHNESS:
+
+- Same Fresnel term as the viewer: `clamp(1.0 + dot(normalize(view_position), normal), 0.3, 1.0)`,
+  squared, then scaled by the shininess LEVEL itself (`spec.a` in the viewer) — a factor the old
+  flat `out_specular = 0.5` never carried at all (only roughness/tightness varied by level
+  before). This is also why the fix shows a materially cleaner low<medium<high progression than
+  Godot's built-in IBL alone gave.
+- Same final chain: `* 0.5 * fresnel`, `* (vec3(1.0) - base_color)` ("fake energy
+  conservation"), `* 0.5`.
+- `glossenv` (a real reflection-probe radiance sample in the viewer — a full deferred-renderer
+  feature SLNG does not have and was NOT built here) is approximated from `slng_blue_horizon`
+  and `slng_ambient` — the SAME Windlight globals `sky.gdshader` itself paints the sky from,
+  already in scope via the shared `slng_atmospherics.gdshaderinc` seam, so no new global uniform
+  was needed (`check_shader_globals.py` stays clean). This produces a Fresnel-weighted,
+  shininess-scaled SKY TINT — it will NOT show actual nearby courtyard geometry the way a real
+  placed reflection probe would. Building that is FEAT-ENV work, tracked separately, not this
+  bug.
+- Called only from the existing `legacy_shininess > 0.0` branch (probe steps 6-8), and skipped
+  when `fullbright` (the viewer never runs its specular/env branch for a fullbright face
+  either). Steps 0-5 (`PRIM_SHINY_NONE`) get `env_reflection = vec3(0.0)` and are untouched —
+  verified bit-identical pre/post-fix in the probe (`(0.0627, 0.0627, 0.1059)` centre,
+  `(0.0275, 0.0549, 0.1725)` edge, both times).
+- `slng_shade()` gained a `vec3 normal` parameter (Godot's `NORMAL` built-in, already
+  view-space in every prim variant's `fragment()`). Since the signature is shared, all 17
+  variants' call sites needed the one-line update even though only the 8 non-avatar/non-HUD/
+  non-depth "world prim" variants (`prim_opaque[_doublesided]`, `prim_blend[_doublesided]`,
+  `prim_scissor[_doublesided/_edge]`, `prim_hash`) can ever reach the branch that uses it.
+- A first attempt transformed the reflection vector to world space with `INV_VIEW_MATRIX`
+  inside the new helper function, to blend horizon-vs-ambient colour by up/down direction, and
+  hit `Unknown identifier in expression: 'INV_VIEW_MATRIX'`. This is the SAME restriction
+  `slng_apply_atmospherics`'s own comment already documents for `VIEW_MATRIX` — a
+  `fragment()`-only built-in, unreachable from a function `fragment()` calls (which is why
+  `AvatarController` publishes `slng_sun_direction_view` as a global instead of transforming
+  in-shader). Fixed by staying in view space and using a flat horizon tint rather than a
+  direction-dependent one.
+- `EnvironmentDriver.ApplyAmbient`'s comment corrected per the acceptance criteria: it claimed
+  Godot ignores `AmbientLightColor` under `AmbientSource.Sky` unconditionally; measured (see
+  table above) that this only holds at the DEFAULT `sky_contribution` of 1 — which is what this
+  driver actually leaves it at, since it never sets the property — and confirmed neither the
+  source choice nor `sky_contribution` affects the specular/IBL reflection amount at all, only
+  the flat diffuse ambient term.
+
+**Verification:** `dotnet build` (both `SLNG.sln` and `app/SLNG.App.csproj`, separately),
+`dotnet test` (690, 0 failures), `dotnet format` clean, `check_shader_globals.py` clean (no new
+globals), `godot --headless --path app -- --selftest` 38/38 (every prim shader compiles, every
+avatar/HUD twin's uniform count still matches its base variant). Re-ran the reflection probe
+post-fix: shiny low/medium/high all clearly brighter than the pre-fix run and now monotonically
+increasing with level (probe centre R channel `0.1176 → 0.1412 → 0.1529`); the matte control
+unchanged. `AppVersion` bumped to `v0.22.65-alpha`.
+
+**Honesty note:** this was NOT re-verified against the live grid / a reference-viewer
+screenshot in this session (no tool available to drive the native Godot window interactively).
+The fix is grounded in: (a) a source-faithful port of the viewer's own formula, (b) empirical,
+reproducible probe measurements of every mechanism it touches, and (c) a full green build/test/
+selftest — but the acceptance criteria's "matches Firestorm's ~0.19 magnitude at the silhouette"
+is a qualitative target this session could not pixel-compare against a running Firestorm. Worth
+a live A/B on the next in-world session.

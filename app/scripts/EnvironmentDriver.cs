@@ -863,9 +863,17 @@ public sealed class EnvironmentDriver
 
     private void ApplyAmbient(Godot.Environment env, SkyLighting lighting)
     {
-        // Switching AmbientLightSource away from Sky is required, not cosmetic: Godot ignores
-        // AmbientLightColor entirely while the source is Sky (it derives ambient from the sky
-        // radiance instead), so writing the colour below would silently do nothing otherwise.
+        // Switching AmbientLightSource away from Sky is required given how this driver leaves
+        // AmbientLightSkyContribution -- not a universal Godot rule, which the comment here used
+        // to claim. BUG-RENDER-20 measured both Sky and Color sources side by side (Godot 4.7,
+        // StandardMaterial3D): at the DEFAULT sky_contribution (1.0, what this driver leaves it
+        // at -- it never sets the property), AmbientLightColor is indeed ignored under Sky, so
+        // switching to Color is what makes the colour below take effect. But at
+        // sky_contribution = 0 the Sky source honours a driver-set ambient colour exactly like
+        // Color does (confirmed: identical measured reflection/ambient at every energy tested).
+        // Also confirmed NOT to matter for BUG-RENDER-20 itself: neither this source choice nor
+        // sky_contribution changes Godot's specular/IBL reflection amount at all -- only the flat
+        // diffuse ambient term reads AmbientLightSource.
         env.AmbientLightSource = Godot.Environment.AmbientSource.Color;
 
         // SL never lights a surface with tmpAmbient directly. calcAtmosphericVars hands the
