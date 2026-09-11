@@ -4849,7 +4849,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     f.Rotation,
                     (byte)f.TexMapType,
                     f.Fullbright,
-                    (byte)f.Shiny);
+                    // >> 6, NOT a plain cast. LibreMetaverse's Shininess enum holds the value
+                    // still packed in the protocol byte's top two bits -- None 0, Low 0x40,
+                    // Medium 0x80, High 0xC0 (TextureEntry.cs:83) -- while the viewer reads it as
+                    // `mBump >> 6`, i.e. 0-3, which is what FaceTexture.Shiny is documented to
+                    // carry. Casting straight across fed 64/128/192 into a 0-3 lookup, so every
+                    // shiny level fell through to "none" and FEAT-RENDER-19 was inert on arrival:
+                    // no highlight and no environment reflection on any face in the world.
+                    (byte)((byte)f.Shiny >> 6));
             }
         }
 

@@ -122,4 +122,26 @@ public class LegacyMaterialConversionTests
         Assert.Equal(1f, data.SpecularColor.X, Tol);
         Assert.Equal(1f, data.SpecularColor.W, Tol);
     }
+
+    [Theory]
+    [InlineData(Shininess.None, (byte)0, 0.00f)]
+    [InlineData(Shininess.Low, (byte)1, 0.25f)]
+    [InlineData(Shininess.Medium, (byte)2, 0.50f)]
+    [InlineData(Shininess.High, (byte)3, 0.75f)]
+    public void ShininessIsShiftedOutOfItsProtocolBits(Shininess wire, byte expected, float glossiness)
+    {
+        // LibreMetaverse's enum holds the value still packed in the top two bits of the
+        // bump/shiny byte -- Low is 0x40, not 1 -- while the viewer reads it as `mBump >> 6` and
+        // FaceTexture.Shiny is documented as that 0-3 value. A plain cast therefore fed 64, 128
+        // and 192 into a 0-3 lookup, every level missed, and FEAT-RENDER-19 shipped inert: no
+        // highlight and no environment reflection anywhere. The shift is the whole fix, and a
+        // wrong one fails silently as "matte", so it is pinned here rather than left to review.
+        Assert.Equal(expected, (byte)((byte)wire >> 6));
+
+        var face = new FaceTexture(
+            System.Guid.Empty, System.Guid.Empty, System.Guid.Empty,
+            new System.Numerics.Vector4(1, 1, 1, 1), 1f, 1f, 0f, 0f, 0f,
+            FaceTexture.TexGenDefault, false, expected);
+        Assert.Equal(glossiness, face.ShinyGlossiness, Tol);
+    }
 }
