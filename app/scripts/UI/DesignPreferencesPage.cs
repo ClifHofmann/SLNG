@@ -22,6 +22,7 @@ public partial class DesignPreferencesPage : VBoxContainer
     private CheckBox _postFxSsaoCheck = null!;
     private CheckBox _postFxSsilCheck = null!;
     private CheckBox _postFxGlowCheck = null!;
+    private CheckBox _postFxReflectionProbeCheck = null!;
 
     private bool _refreshing;
 
@@ -68,6 +69,12 @@ public partial class DesignPreferencesPage : VBoxContainer
         _postFxGlowCheck = AddCheck(L10n.Tr("ui.preferences.post_fx_glow"), _settings.PostFxGlow,
                                 on => { if (!_refreshing) { _settings.SetPostFxGlow(on); _apply(); } });
 
+        // FEAT-RENDER-20: the camera-following ReflectionProbe. Toggleable like every other
+        // visual feature here (AGENTS.md non-negotiable #3) so it can be profiled/compared against
+        // Godot's plain sky-only IBL fallback.
+        _postFxReflectionProbeCheck = AddCheck(L10n.Tr("ui.preferences.post_fx_reflection_probe"), _settings.PostFxReflectionProbe,
+                                on => { if (!_refreshing) { _settings.SetPostFxReflectionProbe(on); _apply(); } });
+
         // No hint line here any more: the only thing it ever said was that F2 toggles all three
         // at once, and F2 is gone (see Boot._Input). These three checkboxes are now the whole
         // interface to post-processing.
@@ -93,6 +100,7 @@ public partial class DesignPreferencesPage : VBoxContainer
             _postFxSsaoCheck.ButtonPressed = _settings.PostFxSsao;
             _postFxSsilCheck.ButtonPressed = _settings.PostFxSsil;
             _postFxGlowCheck.ButtonPressed = _settings.PostFxGlow;
+            _postFxReflectionProbeCheck.ButtonPressed = _settings.PostFxReflectionProbe;
         }
         finally
         {

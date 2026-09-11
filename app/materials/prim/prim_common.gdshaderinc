@@ -241,135 +241,30 @@ float slng_glossiness_to_roughness(float glossiness) {
     return clamp(sqrt(ggx_alpha), 0.0, 1.0);
 }
 
-// BUG-RENDER-20: the environment-reflection half of the viewer's specular model, for a face with
-// legacy Shiny and no specular map (the build tool's Shiny low/medium/high -- probe steps 6-8).
-// Ported from applyGlossEnv (reflectionProbeF.glsl:893, quoted in the spec) as its OWN additive
-// EMISSION term, deliberately NOT folded into METALLIC/SPECULAR/ROUGHNESS the way the sun lobe
-// above is.
+// FEAT-RENDER-20: BUG-RENDER-20's hand-rolled slng_env_reflection() -- a Fresnel-weighted,
+// shininess-scaled SKY-TINT approximation of applyGlossEnv (reflectionProbeF.glsl:893), ported as
+// an independent additive EMISSION term because SLNG placed no real reflection probe at the time
+// -- lived here through four rounds of hand-tuning (see BUG-RENDER-20's spec for the full history:
+// a flat single colour was invisible head-on, blending by "which way is up" needed a per-fragment
+// INV_VIEW_MATRIX computation threaded through every variant as world_normal_up, gating intensity
+// by that same upness produced a visible hard seam at the world-space equator, and the final
+// shipped shape was a Fresnel-only ring around the whole silhouette -- an honestly-labelled
+// approximation, never a real capture of surrounding geometry).
 //
-// Why separate: the viewer reads the SAME `spec`/`glossiness` for its Blinn-Phong sun lobe and for
-// applyGlossEnv, but applies a DIFFERENT overall scale to each (the env term gets its own
-// `*0.5*fresnel*0.5`, on top of a Fresnel that is a completely different curve from the lobe's
-// exponent). Godot's built-in metallic-roughness IBL has only one shared strength knob
-// (SPECULAR/METALLIC feed both the direct-light response AND the automatic sky-radiance
-// reflection identically -- confirmed empirically, not assumed: a ShaderMaterial and a
-// StandardMaterial3D given the same METALLIC/ROUGHNESS/SPECULAR produced matching, non-zero,
-// silhouette-strongest, shininess-scaling reflections in isolated probes, so Godot's automatic
-// path is not broken). Raising that shared knob enough to make the reflection clearly visible
-// would also brighten the sun highlight FEAT-RENDER-19 already calibrated against Firestorm past
-// its confirmed-correct level -- so the reflection needs its own, independent term instead, exactly
-// mirroring the viewer's own separation.
+// Removed once FEAT-RENDER-20 placed an actual Godot ReflectionProbe (see Boot.cs
+// SetupEnvironment/UpdateReflectionProbe) and confirmed empirically that Godot's built-in
+// metallic-roughness pipeline already routes a real probe's capture into the same
+// METALLIC/ROUGHNESS/SPECULAR this file already writes -- no new shader plumbing needed, exactly
+// as BUG-RENDER-20 round 1 had already shown for the sky-only IBL fallback this term stood in
+// for. Leaving both active was measured to double-count: a courtyard probe scene with real
+// coloured walls around a shiny-HIGH sphere showed crisp, clearly separated wall colours with
+// ONLY the real probe active, but a washed-out, near-uniform blue-grey haze smearing across the
+// whole sphere with this term ALSO active on top -- the old sky-tint drowning out the real
+// capture it was written to approximate. Removing it is what lets the real probe's capture reach
+// the screen undiluted. The `world_normal_up` parameter this function needed (threaded through
+// every prim_*.gdshader variant's slng_shade() call site as
+// `(INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).y`) went with it -- nothing else ever used it.
 //
-// `glossenv` (the reference reads an actual reflection-probe radiance map, a full deferred-
-// renderer feature) is approximated here from the same Windlight globals sky.gdshader itself
-// paints the sky from (slng_atmospherics.gdshaderinc, already in scope) -- a reflection and the
-// sky it echoes stay in the same palette this way. SLNG places no reflection probes (this bug's
-// own "untested variable" turned out NOT to be the custom ShaderMaterial; building a real probe
-// capture of nearby geometry is FEAT-ENV work, not this fix), so this will not show actual
-// courtyard walls the way a placed probe would -- only a Fresnel-weighted, shininess-scaled sky
-// streak, which is what the acceptance criteria asks for.
-//
-// A flat single-colour glossenv (the first cut of this fix) was nearly invisible from a head-on
-// framing: with only the Fresnel term varying it, the additive term is tiny anywhere near the
-// centre of a sphere and only picks up near the silhouette -- but live in-world comparison
-// against Firestorm (same probe, same camera position) showed its reflection is NOT just a rim
-// brightening. It is visibly brighter across the UPPER half of the sphere, where the surface
-// faces up toward the open sky, than lower down -- a real environment reflection varies with
-// which part of the sky/scene a point's normal faces, not only with the VIEWING angle. Fresnel
-// alone cannot produce that: it depends on the angle between the VIEW ray and the normal, which
-// is symmetric regardless of which way the surface points in the world.
-//
-// Fixed (v2) by blending two already-available Windlight globals by how much the normal faces
-// up: slng_blue_horizon (the horizon colour) for a normal at or below the horizon, toward
-// slng_blue_density (SL's own zenith-leaning scattering term -- see EnvironmentDriver
-// .ApplySkyDome's identical reasoning for reusing it as a zenith stand-in) for one facing
-// straight up. Still an approximation of an actual radiance-map sample (see below), but now one
-// that varies with surface orientation the way a real reflection has to.
-//
-// Getting "which way is up" here needs INV_VIEW_MATRIX, a fragment()-only built-in -- unreachable
-// from a function fragment() calls, exactly the restriction slng_apply_atmospherics' own comment
-// already documents for VIEW_MATRIX. Unlike slng_sun_direction_view (a per-FRAME global, because
-// the sun moves), the camera's own basis changes every fragment of every frame, so the same
-// per-frame-global trick does not apply here -- instead each variant's fragment() computes
-// `(INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).y` (Godot world space: +Y is up) once, itself, and hands
-// the single float in, the same way it already hands in NORMAL directly.
-//
-// v2 STILL produced no visible change live (v0.22.68-alpha, reported again: "ich seh aber noch
-// keine reflexion"). Investigated further with actual rendered PICTURES rather than hand-derived
-// arithmetic or single-pixel samples -- a `SceneTree`-rooted script run via `godot --path app -s
-// <script>.gd` (NOT `--headless`, which forces Godot's `dummy` rendering driver and never
-// populates a real viewport texture) that builds an isolated probe scene and calls
-// `Image.save_png()` on the viewport texture so the frame can actually be looked at. The v2 code,
-// screenshotted unmodified: a dark grey sphere at shiny HIGH showed the FEAT-RENDER-19 sun
-// highlight and, on close comparison against a matte control, a barely-there lightening of the
-// upper rim -- nothing a person would describe as "a reflection" without already knowing where to
-// look. Root cause: MAGNITUDE. `glossenv` in the reference is an actual captured HDR radiance
-// sample, explicitly clamped to [0, 10] (sampleReflectionProbes, reflectionProbeF.glsl:890) --
-// i.e. it can be an order of magnitude brighter than 1.0. SLNG's stand-in is `slng_blue_horizon`/
-// `slng_blue_density`, LDR Windlight haze colours that top out around 0.5-0.8 pre-linearize and
-// land under 0.55 in linear after `slng_srgb_to_linear`. Applying the viewer's literal
-// `*0.5 ... *0.5` attenuation chain -- tuned by LL against that HDR input -- to an input roughly
-// 20x dimmer produces a term on the order of 0.01-0.05, which is exactly what the screenshot
-// showed: technically present, invisible in practice.
-//
-// A v3 attempt tried fixing this by gating the term's INTENSITY on `upness` (not just its hue),
-// on the theory that Firestorm's screenshot showed a patch confined to the sphere's upper half
-// rather than an even ring, and that only surface ORIENTATION (not view angle) could produce that
-// asymmetry. Shipped, still did not read as visible live (v0.22.69-alpha, "weiterhin keine
-// reflexionen"). Rendering it and LOOKING at the picture (not trusting the numbers alone, which
-// had shown a plausible-looking monotonic low<medium<high progression) showed why: multiplying
-// intensity by `upness` produces a stark, perfectly flat, dead-straight line at the world-space
-// equator -- everything above lit with a uniform wash, everything below completely unlit -- which
-// reads as "the top half of the ball is a different material", not as a reflection. A matte
-// control confirmed this line was entirely the new term's own doing, not pre-existing shading.
-//
-// Reverted the intensity gate. `upness` blends the reflection's COLOUR (see below) but Fresnel
-// alone drives its INTENSITY, exactly like the viewer's own formula and like v1 -- rendered, this
-// is a soft, continuous rim glowing around the WHOLE silhouette, brightest where a real environment
-// reflection actually is strongest (grazing angles), with no hard seam anywhere. This is a ring,
-// not Firestorm's specific asymmetric patch -- but it is what a Fresnel-driven, no-real-probe
-// approximation can honestly produce, and it is exactly what this bug's own acceptance criteria
-// asks for ("strongest near the silhouette, as applyGlossEnv's Fresnel term predicts"). Matching
-// Firestorm's exact patch shape would need an actual reflection-probe capture of nearby geometry,
-// which is FEAT-ENV work, not this fix (see the note near the top of this comment).
-//
-// MAGNITUDE was retested against two saved probe renders -- the stock default SL sky global values
-// AND a deliberately dim, desaturated dusk/overcast palette (closer to what this bug's live reports
-// were actually shot against) -- because the whole reason v1/v2 failed was tuning against a palette
-// brighter than what a real region can ship. A `sky_color` floor (`max(..., 0.25)`) plus a `3.5`
-// boost (both empirically picked from the saved renders, not derived) keep the rim visibly present
-// against BOTH palettes without washing out the bright-sky case; `PRIM_SHINY_NONE` is unaffected in
-// either test, since this function is never called for it.
-vec3 slng_env_reflection(vec3 view_position, vec3 normal, float world_normal_up,
-                          float shininess_level, vec3 base_color) {
-    // fresnel: reflectionProbeF.glsl:894-896, unchanged. `pos`/`norm` there are the fragment's
-    // VIEW-SPACE position and normal -- exactly view_position and NORMAL here (both already in
-    // view space in every prim variant's fragment()).
-    float fresnel = clamp(1.0 + dot(normalize(view_position), normal), 0.3, 1.0);
-    fresnel *= fresnel;
-    fresnel *= shininess_level;   // spec.a: the shininess LEVEL scales the whole term
-
-    // Colour only, NOT intensity (see the v3 revert above): 0 at or below the horizon, rising to 1
-    // facing straight up. Not the full hemisphere: SLNG carries no distinct "ground" colour as a
-    // shader global (only the sky dome material gets one, and only on the CPU side), so a
-    // downward-facing normal picks the horizon tint rather than fading toward black -- a
-    // reflection that is merely un-varying below the horizon, not an inaccurate one, since nothing
-    // here claims to show the actual ground.
-    float upness = clamp(world_normal_up, 0.0, 1.0);
-    vec3 sky_color = mix(slng_blue_horizon.rgb, slng_blue_density.rgb, upness);
-    // Floor: a dim/desaturated regional sky (dusk, overcast -- exactly what this bug's live
-    // reports were shot against) must not silently zero out the whole reflection.
-    sky_color = max(sky_color, vec3(0.25));
-    vec3 glossenv = slng_srgb_to_linear(clamp(sky_color, vec3(0.0), vec3(1.0)));
-
-    // 3.5: empirically-tuned boost, see the note above -- compensates for `sky_color` being an
-    // LDR stand-in for what should be an HDR radiance sample. Intensity is Fresnel-only (no
-    // `upness` factor here), matching the viewer's own formula and producing a ring, not a patch.
-    glossenv *= 3.5 * fresnel;
-    glossenv *= (vec3(1.0) - base_color);   // applyGlossEnv's "fake energy conservation"
-    return glossenv;
-}
-
 // Samples everything a face needs and hands it back through out-params. It does NOT assign
 // the built-ins itself: METALLIC / ROUGHNESS / NORMAL_MAP / EMISSION are fragment-stage
 // built-ins and Godot rejects writing them from a user function ("Unknown identifier in
@@ -377,7 +272,7 @@ vec3 slng_env_reflection(vec3 view_position, vec3 normal, float world_normal_up,
 // sampling logic in one place, which is the part that must not drift between variants.
 //
 // Returns the albedo alpha, the one thing the variants genuinely disagree about.
-float slng_shade(vec2 uv, vec3 view_position, vec3 normal, float world_normal_up,
+float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
                  out vec3 out_albedo,
                  out float out_metallic, out float out_roughness, out float out_specular,
                  out vec3 out_normal_map, out float out_normal_depth,
@@ -405,12 +300,6 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal, float world_normal_up
     // because what it was reflecting was the warm courtyard. A specular map still overrides this
     // below, which is the only path SL actually feeds.
     out_specular = 0.0;
-
-    // BUG-RENDER-20: an additive, independent environment-reflection term for the legacy-shininess
-    // branch below -- see slng_env_reflection's own comment for why it is not folded into
-    // out_metallic/out_specular/out_roughness the way the sun highlight is. Zero unless that
-    // branch actually runs, so PRIM_SHINY_NONE (probe steps 0-5) is untouched.
-    vec3 env_reflection = vec3(0.0);
 
     if (has_specular_texture) {
         vec3 spec = texture(specular_texture, v_specular_uv).rgb * specular_tint;
@@ -450,7 +339,6 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal, float world_normal_up
         // inventing brightness the protocol never sent.
         out_specular = 0.5;
         out_roughness = slng_glossiness_to_roughness(legacy_shininess);
-        env_reflection = slng_env_reflection(view_position, normal, world_normal_up, legacy_shininess, out_albedo);
     }
 
     // glTF ORM packing: occlusion in R, roughness in G, metallic in B.
@@ -479,13 +367,6 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal, float world_normal_up
             emission *= texture(emission_texture, uv).rgb;
         }
         out_emission = emission + atmos_additive;
-    }
-
-    // Fullbright ignores scene lighting entirely (see below), and the viewer never runs its
-    // specular/env branch for a fullbright face either -- so this is skipped rather than added
-    // and then cancelled out by the fullbright block's own albedo routing.
-    if (!fullbright) {
-        out_emission += env_reflection;
     }
 
     // SL fullbright: the face is lit by nothing. Route the (already atmospherics-applied) albedo

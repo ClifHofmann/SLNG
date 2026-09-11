@@ -2,7 +2,10 @@
 
 - **Feature ID:** `BUG-RENDER-20`
 - **Track:** `render`
-- **Status:** `✅ Done (code, v4) — not yet re-confirmed live in-world against Firestorm`
+- **Status:** `✅ Superseded by FEAT-RENDER-20` — v4's hand-rolled `slng_env_reflection` approximation
+  described below was removed once a real `ReflectionProbe` (FEAT-RENDER-20) was confirmed
+  working; none of the code in this spec's history exists in the tree any more. Kept as the
+  round-by-round record of why the approximation approach was abandoned in favour of a real probe.
 - **Owner:** `claude` (graphics-engineer + orchestrating session)
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 

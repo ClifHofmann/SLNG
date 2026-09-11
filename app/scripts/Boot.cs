@@ -58,6 +58,36 @@ public partial class Boot : Control
     
     private WorldEnvironment? _worldEnvironment;
     private DirectionalLight3D? _sun;
+
+    // FEAT-RENDER-20: a real ReflectionProbe that follows the avatar/camera through the open
+    // world -- see SetupEnvironment for why (replaces BUG-RENDER-20's hand-rolled sky-tint
+    // approximation) and UpdateReflectionProbe for the measured update cadence.
+    private ReflectionProbe? _reflectionProbe;
+
+    /// <summary>How often <see cref="UpdateReflectionProbe"/> re-bakes the probe regardless of
+    /// movement. Chosen from a measured comparison (see the FEAT-RENDER-20 spec): an isolated
+    /// 900-mesh-instance scene cost ~0.92ms/frame with no probe, ~0.93ms/frame with a stationary
+    /// <c>UpdateModeEnum.Once</c> probe (statistically the same), and ~1.65ms/frame with
+    /// <c>UpdateModeEnum.Always</c> (~1.8x, forever, since Always re-renders all 6 cubemap faces
+    /// EVERY frame regardless of whether anything changed -- confirmed from Godot's own XML docs,
+    /// not just the measurement: "it's recommended to only use one ReflectionProbe with Always at
+    /// most per scene"). A single re-triggered Once bake showed a mildly elevated window of about
+    /// a dozen frames (~1-2ms above baseline, Godot's own docs: "generated over the following six
+    /// frames") before settling back down -- at a 3s/180-frame cadence that is roughly 5-7% of
+    /// frames bearing a small, temporary cost, versus Always's flat overhead on literally every
+    /// frame forever. AGENTS.md non-negotiable #3 (render budgets over fidelity) is what rules
+    /// Always out for a continuously-running open world with no fixed rooms to pre-bake probes
+    /// for.</summary>
+    private const double ReflectionProbeUpdateIntervalSeconds = 3.0;
+
+    /// <summary>An avatar/vehicle/teleport that outruns the periodic cadence above gets an
+    /// immediate re-bake instead of waiting out the rest of the interval with a stale, far-away
+    /// reflection sitting at the old capture point.</summary>
+    private const float ReflectionProbeMoveThresholdMeters = 10.0f;
+
+    private double _reflectionProbeAccum;
+    private Godot.Vector3 _reflectionProbeLastCapturePos;
+    private bool _reflectionProbeEverCaptured;
     // FEAT-ENV-01 Phase D: drives sun/ambient/sky/fog/water from the region's actual environment.
     // Always constructed (not nullable) -- with no region connected yet it just evaluates
     // DayCycle.Default every frame, which is the same hardcoded-looking scene as before this
@@ -176,7 +206,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.70-alpha";
+    public const string AppVersion = "v0.22.71-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1016,6 +1046,86 @@ public partial class Boot : Control
         };
         AddChild(sun);
         _sun = sun;
+
+        // FEAT-RENDER-20: a real reflection probe, superseding BUG-RENDER-20's hand-rolled
+        // slng_env_reflection sky-tint approximation (removed from prim_common.gdshaderinc once
+        // this was confirmed working -- see that file's history). Godot's built-in PBR pipeline
+        // already routes ReflectionProbe content into the exact METALLIC/ROUGHNESS/SPECULAR
+        // channels every prim_*.gdshader variant writes (confirmed in BUG-RENDER-20 round 1: a
+        // custom ShaderMaterial receives the same automatic sky-radiance IBL a StandardMaterial3D
+        // does), so this needed no new shader plumbing -- it just gives that existing pipeline
+        // real captured content instead of the sky-only fallback. Verified with an isolated probe
+        // scene containing real coloured geometry around a mirror sphere: without a placed probe
+        // the sphere reflected flat black; with one, it showed the surrounding walls' actual
+        // colours in their correct screen positions (see the FEAT-RENDER-20 spec for the saved
+        // screenshots).
+        //
+        // Position is set every frame the cadence in UpdateReflectionProbe fires (NOT here, and
+        // NOT every _Process tick -- see that method's own doc comment for why continuous
+        // per-frame repositioning was measured to cost real, avoidable frame time).
+        //
+        // Size/MaxDistance: generous "nearby content" extents for an open world with no fixed
+        // rooms to size a probe to, not a room-scale capture. BoxProjection off: box projection
+        // assumes a bounded interior to project against, which an open outdoor scene is not.
+        // EnableShadows off: a reflection this blurry cannot show shadow detail anyway, and
+        // shadows would roughly double the render cost of every one of the 6 face captures for no
+        // visible return.
+        var reflectionProbe = new ReflectionProbe
+        {
+            Name = "ReflectionProbe",
+            Size = new Godot.Vector3(40f, 40f, 40f),
+            MaxDistance = 60f,
+            UpdateMode = ReflectionProbe.UpdateModeEnum.Once,
+            BoxProjection = false,
+            EnableShadows = false,
+        };
+        AddChild(reflectionProbe);
+        _reflectionProbe = reflectionProbe;
+    }
+
+    /// <summary>
+    /// FEAT-RENDER-20: keeps the follow probe anchored near the camera and re-bakes it on a
+    /// measured cadence (<see cref="ReflectionProbeUpdateIntervalSeconds"/> /
+    /// <see cref="ReflectionProbeMoveThresholdMeters"/>) instead of every frame.
+    ///
+    /// Repositioning ALONE is enough to force a fresh capture: Godot's own docs for
+    /// <c>UpdateModeEnum.Once</c> say so explicitly ("The ReflectionProbe is updated when its
+    /// transform changes... you can force an update by moving the ReflectionProbe slightly in any
+    /// direction"), and an isolated probe confirmed it empirically -- moving a baked probe (and
+    /// its test sphere) from beside a green wall to beside a red one, without ever touching
+    /// UpdateMode, picked up the red wall on the very next few frames. <see cref="UpdateMode"/> is
+    /// still re-assigned here too, belt-and-suspenders, for the case nothing moved at all (an
+    /// avatar standing still for a whole interval still deserves a periodic refresh, e.g. if
+    /// something else nearby changed).
+    ///
+    /// Critically, this is NOT called with a fresh position every single frame. An isolated
+    /// measurement (900 mesh instances, see the FEAT-RENDER-20 spec) showed that continuously
+    /// nudging a ReflectionProbe's position every frame -- exactly what an update-mode-Once probe
+    /// naively kept "attached" to a moving camera would do -- costs real, avoidable frame time
+    /// (~1.27x the no-probe baseline in that measurement, versus a stationary Once probe's ~1.01x)
+    /// even though it never approaches UpdateModeEnum.Always's ~1.8x. Repositioning only on this
+    /// throttled cadence keeps the steady-state cost between recaptures indistinguishable from no
+    /// probe at all.
+    /// </summary>
+    private void UpdateReflectionProbe(double delta)
+    {
+        if (_reflectionProbe == null || _avatarController == null) return;
+
+        using var _phase = MainThreadPhase.Enter("reflection-probe");
+
+        _reflectionProbeAccum += delta;
+        var camPos = _avatarController.GlobalPosition;
+        bool movedFar = !_reflectionProbeEverCaptured
+            || camPos.DistanceTo(_reflectionProbeLastCapturePos) > ReflectionProbeMoveThresholdMeters;
+
+        if (!movedFar && _reflectionProbeAccum < ReflectionProbeUpdateIntervalSeconds) return;
+
+        _reflectionProbeAccum = 0;
+        _reflectionProbeEverCaptured = true;
+        _reflectionProbeLastCapturePos = camPos;
+
+        _reflectionProbe.GlobalPosition = camPos;
+        _reflectionProbe.UpdateMode = ReflectionProbe.UpdateModeEnum.Once;
     }
 
     /// <summary>Standing dev tool (F5): renders the sun's actual direction into the scene as an
@@ -1136,6 +1246,10 @@ public partial class Boot : Control
         // FEAT-PERF-04: per-frame VRAM back-pressure (raise/lower the LOD bias, shrink resident
         // textures) so the texture-memory budget actually binds on a dense region.
         _gpuCache?.Tick();
+
+        // FEAT-RENDER-20: cheap every frame (an early-out plus a distance check) -- the probe
+        // itself only actually moves/re-bakes on its own measured cadence, see the method.
+        UpdateReflectionProbe(delta);
 
         // Drain the region-environment event buffered off-thread (see _pendingRegionEnvironment).
         // FEAT-ENV-01 Phase D: region-scoped -- crossing into a neighbor region with its own
@@ -1322,7 +1436,7 @@ public partial class Boot : Control
     /// environment or the sun itself -- it only knows the settings object.</summary>
     private void ApplyGraphicsSettings()
     {
-        _graphicsSettings.Apply(GetViewport(), _worldEnvironment, _sun);
+        _graphicsSettings.Apply(GetViewport(), _worldEnvironment, _sun, _reflectionProbe);
         // FEAT-PERF-04: the texture-memory slider takes effect immediately, no restart.
         _gpuCache?.SetBudget((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024);
     }
