@@ -228,8 +228,20 @@ public sealed class EnvironmentDriver
 
         LogDiagnostics(sky, lighting, lightDirectionZ);
 
-        ApplySun(sun, lighting, lightDirectionZ);
-        ApplyAmbient(env, lighting);
+        // FEAT-ENV-03: Boot.SetupEnvironment pins Linear only as the one-time startup default
+        // (no sky has been evaluated yet); from here on the active sky decides every frame. A
+        // legacy sky's own getTonemapMix() returns exactly 0 -- "legacy settings do not support
+        // tonemaping" (llsettingssky.cpp:2062) -- so Linear (Godot's identity mapper) is the
+        // real target, not an approximation of one. A sky carrying reflection_probe_ambiance
+        // instead ships RenderTonemapMix 0.7 in Firestorm's own settings.xml; Godot has no
+        // continuous mix between tonemap curves, so Aces (its closest HDR curve) stands in for
+        // that partial blend until a custom post-pass can reproduce the mix itself.
+        env.TonemapMode = sky.IsLegacy
+            ? Godot.Environment.ToneMapper.Linear
+            : Godot.Environment.ToneMapper.Aces;
+
+        ApplySun(sun, sky, lighting, lightDirectionZ);
+        ApplyAmbient(env, sky, lighting);
         ApplySkyDome(env, sky, lighting, lightDirectionZ);
         ApplyFog(env, sky, lighting);
         ApplyWater(waterMaterial, water);
@@ -777,20 +789,34 @@ public sealed class EnvironmentDriver
     /// daytime sun colour -- terrain plainly readable at night where the real viewer has it in
     /// near-silhouette. sky.gdshader:141-143 already switches on exactly this test; only the
     /// driver, which drives the light that actually shades geometry, did not.</summary>
-    private void ApplySun(DirectionalLight3D? sun, SkyLighting lighting, float lightDirectionZ)
+    private void ApplySun(DirectionalLight3D? sun, SkySettings sky, SkyLighting lighting, float lightDirectionZ)
     {
         if (sun == null) return;
 
         bool moonUp = lightDirectionZ <= 0f;
         var diffuse = moonUp ? lighting.MoonDiffuse * MoonLightScale : lighting.SunDiffuse;
 
-        // The sunlit endpoint MINUS the shadow endpoint, so that adding Godot's linear ambient
-        // back reproduces the viewer's fully-lit pixel. See ClassicShadowRadiance for why the two
-        // endpoints are what gets matched.
-        var ambSrgb = ClassicAmbientSrgb(lighting);
-        var litSrgb = ambSrgb + diffuse * (SkySunlightScale * ClassicSunlitScale);
-        var radiance = SrgbToLinearVec(litSrgb) * ClassicFinalScale - ClassicShadowRadiance(lighting);
-        radiance = System.Numerics.Vector3.Max(radiance, System.Numerics.Vector3.Zero);
+        System.Numerics.Vector3 radiance;
+        if (sky.IsLegacy)
+        {
+            // The sunlit endpoint MINUS the shadow endpoint, so that adding Godot's linear
+            // ambient back reproduces the viewer's fully-lit pixel. See ClassicShadowRadiance
+            // for why the two endpoints are what gets matched.
+            var ambSrgb = ClassicAmbientSrgb(lighting);
+            var litSrgb = ambSrgb + diffuse * (SkySunlightScale * ClassicSunlitScale);
+            radiance = SrgbToLinearVec(litSrgb) * ClassicFinalScale - ClassicShadowRadiance(lighting);
+            radiance = System.Numerics.Vector3.Max(radiance, System.Numerics.Vector3.Zero);
+        }
+        else
+        {
+            // FEAT-ENV-03: the classic_mode<1 branch (softenLightF.glsl:234-238,
+            // atmosphericsFuncs.glsl:154-159) converts sun and ambient to linear separately and
+            // sums them directly -- no 1.35 boost, no sRGB mix, no final_scale. That is exactly
+            // Godot's own additive lighting model (ambient + NdotL * light), so unlike the
+            // classic branch above this needs no endpoint-subtraction trick: the sun light can
+            // simply carry its own linear radiance and let Godot's ambient add on top.
+            radiance = SrgbToLinearVec(diffuse) * SkySunlightScale;
+        }
 
         SplitLinear(radiance, out var color, out var energy);
         sun.LightColor = color;
@@ -858,10 +884,30 @@ public sealed class EnvironmentDriver
     private static System.Numerics.Vector3 ClassicShadowRadiance(SkyLighting lighting)
         => SrgbToLinearVec(ClassicAmbientSrgb(lighting)) * ClassicFinalScale;
 
+    /// <summary>FEAT-ENV-03: the classic_mode&lt;1 ambient a MODERN sky reaches geometry with --
+    /// <c>srgb_to_linear(pow(tmpAmbient,0.9)*0.57*sky_ambient_scale)</c>, then greyscaled by
+    /// luminance (atmosphericsFuncs.glsl:154-157). Unlike <see cref="ClassicAmbientSrgb"/> this
+    /// carries none of the classic branch's 0.9 ambient-mix weight -- that weight belongs to
+    /// softenLightF's sRGB mix step (softenLightF.glsl:231), which the modern branch never
+    /// performs; it sums already-linear ambient and sun directly instead (see <see
+    /// cref="ApplySun"/>'s non-legacy branch).</summary>
+    private static System.Numerics.Vector3 ModernAmbientLinear(SkyLighting lighting)
+    {
+        var amb = lighting.SunAmbient;
+        var amblitSrgb = new System.Numerics.Vector3(
+            MathF.Pow(MathF.Max(amb.X, 0f), 0.9f),
+            MathF.Pow(MathF.Max(amb.Y, 0f), 0.9f),
+            MathF.Pow(MathF.Max(amb.Z, 0f), 0.9f)) * (0.57f * SkyAmbientScale);
+
+        var linear = SrgbToLinearVec(amblitSrgb);
+        float grey = linear.X * 0.2126f + linear.Y * 0.7152f + linear.Z * 0.0722f;
+        return new System.Numerics.Vector3(grey, grey, grey);
+    }
+
     private static System.Numerics.Vector3 SrgbToLinearVec(System.Numerics.Vector3 v)
         => new(SrgbToLinear(v.X), SrgbToLinear(v.Y), SrgbToLinear(v.Z));
 
-    private void ApplyAmbient(Godot.Environment env, SkyLighting lighting)
+    private void ApplyAmbient(Godot.Environment env, SkySettings sky, SkyLighting lighting)
     {
         // Switching AmbientLightSource away from Sky is required, not cosmetic: Godot ignores
         // AmbientLightColor entirely while the source is Sky (it derives ambient from the sky
@@ -890,12 +936,13 @@ public sealed class EnvironmentDriver
         // famous for,
         //     amblit = srgb_to_linear(amblit);
         //     amblit = vec3(dot(amblit, vec3(0.2126, 0.7152, 0.0722)));
-        // sit INSIDE `if (classic_mode < 1)`. These skies take the other branch (ADR 0003: no
-        // reflection_probe_ambiance, so canAutoAdjust is true and classic mode is on), where the
-        // ambient reaches the surface still sRGB-valued and still coloured. Applying that branch's
-        // conversion here anyway, on top of the one Godot runs on AmbientLightColor, is what made
-        // shadow sides read blue: two 2.4 powers on a mildly blue ambient.
-        var amb = ClassicShadowRadiance(lighting);
+        // sit INSIDE `if (classic_mode < 1)`. FEAT-ENV-03 gave that branch its own path
+        // (ModernAmbientLinear) instead of applying it universally: on a LEGACY sky (no
+        // reflection_probe_ambiance, canAutoAdjust true, classic mode on) the ambient must stay
+        // sRGB-valued and coloured -- applying this conversion there too, on top of the one Godot
+        // runs on AmbientLightColor, is what made shadow sides read blue: two 2.4 powers on a
+        // mildly blue ambient. A MODERN sky takes exactly this branch instead.
+        var amb = sky.IsLegacy ? ClassicShadowRadiance(lighting) : ModernAmbientLinear(lighting);
         float currentLum = amb.X * 0.2126f + amb.Y * 0.7152f + amb.Z * 0.0722f;
         if (currentLum < 0.02f)
         {

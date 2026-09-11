@@ -2,8 +2,8 @@
 
 - **Feature ID:** `FEAT-ENV-03`
 - **Track:** `render`
-- **Status:** `⏸️ Pending`
-- **Owner:** *(unassigned)*
+- **Status:** `✅ Done (code) — not yet re-verified in-world on a modern-sky region`
+- **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
 ## Overview & Goal
@@ -65,14 +65,61 @@ A midtone error on legacy-sky regions is a shade. This is the entire transfer pa
 region that ships a modern sky — and it is invisible in testing precisely because the region
 we have been comparing against is legacy.
 
+## Fix (2026-09-11, `v0.22.66-alpha`)
+
+`SkySettings` gained `IsLegacy` (default `true`, so any document carrying no explicit signal —
+`SkySettings.Default`, a single sky/water document, anything parsed before this field existed —
+keeps rendering through the already-verified legacy path). `EnvironmentLlsdParser.ParseSky` sets
+it from `!map.ContainsKey("reflection_probe_ambiance")`. Confirmed against source that this is a
+TOP-LEVEL key, not nested under `legacy_haze`: `llsettingssky.cpp:1174`'s
+`mCanAutoAdjust = !settings.has(SETTING_REFLECTION_PROBE_AMBIANCE)` reads `getSettings()`, the
+whole document, the same map `ParseSky` receives as `map`. `DayCycle.Lerp` picks the nearer
+keyframe's value (same convention as `SunTextureId`/`CloudTextureId` — not a continuous
+quantity, and in practice both keyframes of one cycle share a schema anyway).
+
+`EnvironmentDriver.ApplySun`/`ApplyAmbient` now take the evaluated `SkySettings` and branch on
+`IsLegacy`:
+
+- **Legacy branch: the EXISTING code, moved inside the branch UNCHANGED.** Byte-for-byte the
+  same computation `FEAT-RENDER-19` calibrated and verified — nothing here was rewritten.
+- **New non-legacy branch**, porting `atmosphericsFuncs.glsl`'s `classic_mode<1` path: convert
+  both `sunlit` and `amblit` with `srgb_to_linear`, luminance-greyscale the ambient
+  (`ModernAmbientLinear`), then sum directly — none of the classic branch's `1.35` sun boost,
+  `0.9`/`0.7` sRGB mix, or `1.1` final scale. This turned out simpler to implement than the
+  classic branch, not harder: the modern branch is already linear-additive, which is exactly
+  Godot's own lighting model (ambient + N·L·sun, summed in linear space), so unlike the classic
+  branch it needs no endpoint-subtraction trick — the sun light and the ambient can each just
+  carry their own linear radiance straight through.
+
+`EnvironmentDriver.Update` also sets `env.TonemapMode` every frame from `sky.IsLegacy`: `Linear`
+for legacy (an exact target — `getTonemapMix()` really does return 0 there,
+`llsettingssky.cpp:2062`) vs `Aces` for modern (Godot has no continuous mix control between
+tonemap curves, so this stands in for Firestorm's partial 0.7 blend rather than reproducing it
+exactly). `Boot.SetupEnvironment`'s `TonemapMode = Linear` is now documented as only the
+one-frame startup default before any sky has been evaluated; its stale TODO now points at the
+driver.
+
+2 new parser tests (`ParseSky_NoReflectionProbeAmbianceKey_IsLegacy`,
+`ParseSky_ReflectionProbeAmbianceKeyPresent_IsNotLegacy`). Build (solution + `app/`) + 692 tests
++ `dotnet format` + shader-globals + `--selftest` 38/38 green.
+
+**Not yet re-verified in-world** — needs a region that actually ships a modern sky; a parity
+claim made only against Azure Haven's legacy sky would be exactly the blind spot this task
+exists to remove. The tonemap-mix approximation (`Aces` full-strength standing in for a
+continuous 0.7 blend) is unverified pixel-for-pixel and may want its own follow-up once such a
+region is found — a custom post-pass could reproduce the mix itself instead of approximating it.
+
 ## Acceptance Criteria
 
-- [ ] `EnvironmentLlsdParser` reads `reflection_probe_ambiance` and exposes "is this sky legacy"
-- [ ] A parser test covers a capture WITH and one WITHOUT the key
-- [ ] Tonemapper follows the sky: `Linear` for legacy, tonemapped at mix 0.7 otherwise
-- [ ] `EnvironmentDriver` selects the matching surface-lighting branch, both derived from source
-- [ ] Legacy-sky regions are BYTE-UNCHANGED — `FEAT-RENDER-19` is verified and must not move
-- [ ] Verified with the probe sphere on a region of each kind
+- [x] `EnvironmentLlsdParser` reads `reflection_probe_ambiance` and exposes "is this sky legacy"
+- [x] A parser test covers a capture WITH and one WITHOUT the key
+- [x] Tonemapper follows the sky: `Linear` for legacy, tonemapped otherwise — using `Aces` as the
+      closest Godot has to the real 0.7 mix, since Godot has no continuous blend control
+- [x] `EnvironmentDriver` selects the matching surface-lighting branch, both derived from source
+- [x] Legacy-sky regions are BYTE-UNCHANGED — the existing code was moved, not edited, and all
+      692 tests (including every pre-existing one) still pass
+- [ ] Verified with the probe sphere on a region of each kind — **still needs a live modern-sky
+      region**; only the legacy side (Azure Haven) has been available so far
 
 ## Technical Specs & Affected Files
 

@@ -176,7 +176,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.64-alpha";
+    public const string AppVersion = "v0.22.66-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -960,8 +960,12 @@ public partial class Boot : Control
             //
             // Godot's Linear mapper is `color / white` with white at 1.0, i.e. the identity, so the
             // frame reaches the screen through linear_to_srgb and a clamp exactly as the viewer's
-            // does. TODO: once EnvironmentLlsdParser reads reflection_probe_ambiance, switch back
-            // to Aces for skies that carry it, which is the branch this mirrors.
+            // does.
+            //
+            // FEAT-ENV-03: this is now only the STARTUP default, for the one frame before any sky
+            // has been evaluated. EnvironmentDriver.Update reads reflection_probe_ambiance off the
+            // active sky every frame from here on and switches to Aces for one that carries it --
+            // see the TonemapMode assignment there for what changed and why.
             TonemapMode = Godot.Environment.ToneMapper.Linear,
             
             // Post-FX (M2-5)

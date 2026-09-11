@@ -99,6 +99,31 @@ public class EnvironmentLlsdParserTests
         Assert.Equal(0.4f, sky.SunRotation.W, 5);
     }
 
+    // --- FEAT-ENV-03: legacy vs. modern sky --------------------------------------------------
+    // The key's mere PRESENCE decides it (llsettingssky.cpp:1174: mCanAutoAdjust =
+    // !settings.has("reflection_probe_ambiance")), not its value -- so the WITH case below
+    // deliberately gives it 0.0, the same value the viewer's own default table would.
+
+    [Fact]
+    public void ParseSky_NoReflectionProbeAmbianceKey_IsLegacy()
+    {
+        var map = new OSDMap { ["blue_horizon"] = Color(0.1f, 0.2f, 0.3f) };
+
+        Assert.True(EnvironmentLlsdParser.ParseSky(map).IsLegacy);
+    }
+
+    [Fact]
+    public void ParseSky_ReflectionProbeAmbianceKeyPresent_IsNotLegacy()
+    {
+        var map = new OSDMap
+        {
+            ["blue_horizon"] = Color(0.1f, 0.2f, 0.3f),
+            ["reflection_probe_ambiance"] = OSD.FromReal(0.0),
+        };
+
+        Assert.False(EnvironmentLlsdParser.ParseSky(map).IsLegacy);
+    }
+
     // --- Water ------------------------------------------------------------------------------
 
     [Fact]

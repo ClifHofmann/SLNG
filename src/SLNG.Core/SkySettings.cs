@@ -144,6 +144,20 @@ public record SkySettings
     /// <summary>Moon texture asset, or <see cref="Guid.Empty"/> for the viewer default.</summary>
     public Guid MoonTextureId { get; init; }
 
+    // --- FEAT-ENV-03: which lighting/tonemap path this sky takes -----------------------------
+
+    /// <summary>True for a sky that predates PBR/HDR — a legacy Windlight sky, or an EEP sky
+    /// converted from one. Mirrors the viewer's <c>mCanAutoAdjust</c>
+    /// (<c>llsettingssky.cpp:1174</c>): <c>!settings.has("reflection_probe_ambiance")</c> — the
+    /// key's mere PRESENCE, not its value, is what takes a sky off the legacy path
+    /// (<c>llsettingsvo.cpp:810</c>, <c>classic_mode = canAutoAdjust() &amp;&amp;
+    /// !should_auto_adjust()</c>; every grid this project has measured ships
+    /// <c>RenderSkyAutoAdjustLegacy=0</c>, so <c>canAutoAdjust()</c> alone decides it here).
+    /// Defaults to <c>true</c> so a document that carries no explicit signal — the viewer
+    /// default, a single sky/water document, anything parsed before this field existed — keeps
+    /// rendering through the already-calibrated legacy path (<c>FEAT-RENDER-19</c>).</summary>
+    public bool IsLegacy { get; init; } = true;
+
     /// <summary>The viewer's own default sky, used when a region advertises no environment at all
     /// and as the base every parsed sky starts from.</summary>
     public static SkySettings Default { get; } = new();
@@ -178,6 +192,10 @@ public record SkySettings
         MoonScale = float.Lerp(a.MoonScale, b.MoonScale, t),
         SunTextureId = t < 0.5f ? a.SunTextureId : b.SunTextureId,
         MoonTextureId = t < 0.5f ? a.MoonTextureId : b.MoonTextureId,
+        // Not a continuous quantity -- like the texture ids above, the nearer keyframe wins. In
+        // practice both keyframes of one day cycle come from the same document schema, so this
+        // is never actually a choice between two different answers.
+        IsLegacy = t < 0.5f ? a.IsLegacy : b.IsLegacy,
 
         CloudColor = Vector3.Lerp(a.CloudColor, b.CloudColor, t),
         CloudPosDensity1 = Vector3.Lerp(a.CloudPosDensity1, b.CloudPosDensity1, t),

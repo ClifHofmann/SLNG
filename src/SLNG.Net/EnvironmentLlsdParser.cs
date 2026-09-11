@@ -37,6 +37,10 @@ internal static class EnvironmentLlsdParser
     // that only reads one of the two silently renders half the regions with default haze.
     private const string KeyLegacyHaze = "legacy_haze";
 
+    // FEAT-ENV-03: a top-level (not haze-block) key present only on a post-PBR/HDR sky. Its mere
+    // PRESENCE -- not its value -- is what the viewer tests (llsettingssky.cpp:1174).
+    private const string KeyReflectionProbeAmbiance = "reflection_probe_ambiance";
+
     /// <summary>Parses an EEP day cycle, or a single sky/water settings document, into a
     /// <see cref="DayCycle"/>.
     ///
@@ -164,6 +168,8 @@ internal static class EnvironmentLlsdParser
             CloudTextureId = Id(map, "cloud_id"),
             SunTextureId = Id(map, "sun_id"),
             MoonTextureId = Id(map, "moon_id"),
+
+            IsLegacy = !map.ContainsKey(KeyReflectionProbeAmbiance),
         };
     }
 
