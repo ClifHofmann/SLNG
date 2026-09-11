@@ -20,6 +20,7 @@ public partial class DepthOfFieldController : Node
     private Camera3D? _camera;
     private DofSettings? _settings;
     private CameraAttributesPractical? _attributes;
+    private SLNG.Core.ECS.World? _world;
 
     // Set the first time DoF actually switches on. Godot's default DoF kernel is Box-shaped at
     // Very Low quality with no jitter -- on a high-contrast round object (a cartwheel against
@@ -60,10 +61,11 @@ public partial class DepthOfFieldController : Node
 
     private float _autoFocusTarget = DofSettings.DefaultFocusDistance;
 
-    public void Initialize(Camera3D camera, DofSettings settings)
+    public void Initialize(Camera3D camera, DofSettings settings, SLNG.Core.ECS.World? world = null)
     {
         _camera = camera;
         _settings = settings;
+        _world = world;
         CurrentFocusDistance = settings.FocusDistance;
         _autoFocusTarget = settings.FocusDistance;
         Apply();
@@ -124,24 +126,69 @@ public partial class DepthOfFieldController : Node
         }
 
         var query = PhysicsRayQueryParameters3D.Create(origin, origin + normal * MaxFocusRayLength);
-        // Same mask as AvatarController's Alt-click focus ray: anything you would want to point a
-        // camera at. Terrain is on its own bit and has to be named explicitly.
-        query.CollisionMask = PhysicsLayers.Objects | PhysicsLayers.Terrain | PhysicsLayers.Avatars;
+        // PhysicsLayers.Terrain removed: Godot's HeightMapShape3D normalizes a NaN cross-product
+        // when an angled ray crosses an unstreamed cell, printing "Vector3 cannot be normalized"
+        // every single time. At 20 Hz this flooded the console. We raycast objects/avatars
+        // natively, then manually trace the terrain heightmap below.
+        query.CollisionMask = PhysicsLayers.Objects | PhysicsLayers.Avatars;
 
         var hit = spaceState.IntersectRay(query);
-        if (hit.Count == 0)
+        float depth = MaxFocusRayLength;
+        bool hitSomething = false;
+
+        if (hit.Count > 0)
+        {
+            hitSomething = true;
+            // The blur is keyed off VIEW-SPACE depth, so the focal plane wants the hit's distance
+            // ALONG the view axis, not its euclidean distance from the camera. The two are identical
+            // dead ahead and diverge toward the edges of a wide FOV -- which is exactly where a
+            // euclidean reading would put the plane slightly too far and soften the subject it just
+            // focused on.
+            depth = (hit["position"].AsVector3() - origin).Dot(normal);
+        }
+
+        if (_world != null)
+        {
+            float step = 2.0f; // 2m resolution is plenty for DoF
+            for (float d = 0f; d < depth; d += step)
+            {
+                var pos = origin + normal * d;
+                double gx = pos.X + RenderConfig.OriginX;
+                double gy = -pos.Z + RenderConfig.OriginY;
+
+                bool hitTerrain = false;
+                foreach (var kvp in _world.Terrains)
+                {
+                    var t = kvp.Value;
+                    uint rx = (uint)(kvp.Key >> 32);
+                    uint ry = (uint)(kvp.Key & 0xFFFFFFFF);
+                    
+                    if (gx >= rx && gx < rx + t.Width && gy >= ry && gy < ry + t.Height)
+                    {
+                        if (t.TryGetKnownHeight((int)(gx - rx), (int)(gy - ry), out float h))
+                        {
+                            if (pos.Y <= h)
+                            {
+                                depth = d;
+                                hitSomething = true;
+                                hitTerrain = true;
+                                break;
+                            }
+                        }
+                        break; // Found the region, no need to check others
+                    }
+                }
+                if (hitTerrain) break;
+            }
+        }
+
+        if (!hitSomething)
         {
             AutoFocusHasTarget = false;
             _autoFocusTarget = _settings.FocusDistance;
             return;
         }
 
-        // The blur is keyed off VIEW-SPACE depth, so the focal plane wants the hit's distance
-        // ALONG the view axis, not its euclidean distance from the camera. The two are identical
-        // dead ahead and diverge toward the edges of a wide FOV -- which is exactly where a
-        // euclidean reading would put the plane slightly too far and soften the subject it just
-        // focused on.
-        float depth = (hit["position"].AsVector3() - origin).Dot(normal);
         AutoFocusHasTarget = true;
         _autoFocusTarget = Mathf.Clamp(depth, DofSettings.MinFocusDistance, DofSettings.MaxFocusDistance);
     }

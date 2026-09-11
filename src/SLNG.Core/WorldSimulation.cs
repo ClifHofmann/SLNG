@@ -563,6 +563,7 @@ public sealed class WorldSimulation : IDisposable
             if (child == null || ct == null) continue;
             ResolveWorldTransform(ct, region);
             _world.NotifyComponentUpdated(child, ct);
+            RecomposeChildren(region, child.LocalId);
         }
     }
 

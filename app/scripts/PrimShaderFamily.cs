@@ -216,7 +216,7 @@ public static class PrimShaderFamily
     /// <paramref name="doubleSided"/> (BUG-RENDER-06) routes a <see cref="Surface.WorldPrim"/>
     /// face to its cull_disabled twin -- pass it ONLY from a face's own
     /// <c>PbrMaterialData.DoubleSided</c>, never as a default. It is a no-op for
-    /// <see cref="Surface.Avatar"/>/<see cref="Surface.Hud"/>, which are already cull_disabled
+    /// <see cref="Surface.Avatar"/>, which is already cull_disabled
     /// unconditionally (see <see cref="Surface"/>'s own doc comment) -- nothing for it to
     /// change there.</summary>
     public static Shader Select(Kind kind, Surface surface, bool doubleSided = false) => surface switch

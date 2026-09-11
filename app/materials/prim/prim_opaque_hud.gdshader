@@ -12,7 +12,7 @@
 // a HUD would fog an overlay by its distance from the camera, which is meaningless. An unshaded
 // shader cannot receive them, so the seam is closed by construction rather than by remembering.
 shader_type spatial;
-render_mode unshaded, blend_mix, depth_draw_opaque, cull_disabled, diffuse_burley, specular_schlick_ggx;
+render_mode unshaded, blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
 
 #include "res://materials/prim/prim_common.gdshaderinc"
 

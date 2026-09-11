@@ -3,7 +3,7 @@
 // See prim_opaque_hud.gdshader for why HUD surfaces need their own compile-time variants.
 // The common case here is a HUD panel with a soft-edged or partly translucent background.
 shader_type spatial;
-render_mode unshaded, blend_mix, depth_draw_opaque, cull_disabled, diffuse_burley, specular_schlick_ggx;
+render_mode unshaded, blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
 
 #include "res://materials/prim/prim_common.gdshaderinc"
 

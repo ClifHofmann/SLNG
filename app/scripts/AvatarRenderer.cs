@@ -283,11 +283,16 @@ public partial class AvatarRenderer : Node3D
 
     private void OnComponentUpdated(object? sender, ComponentEventArgs e)
     {
-        if (e.Component is AttachmentComponent || e.Component is PrimitiveComponent)
+        if (e.Component is AttachmentComponent || e.Component is PrimitiveComponent
+            || (e.Component is TransformComponent && e.Entity.GetComponent<AttachmentComponent>() != null))
+        {
             CallDeferred(nameof(UpdateAttachment), e.Entity.Id.ToString());
+        }
 
-        if (e.Component is AvatarComponent || e.Component is TransformComponent)
+        if (e.Component is AvatarComponent || (e.Component is TransformComponent && e.Entity.GetComponent<AvatarComponent>() != null))
+        {
             CallDeferred(nameof(UpdateVisual), e.Entity.Id.ToString());
+        }
     }
 
     private void CreateVisual(string entityIdStr)
@@ -505,6 +510,7 @@ public partial class AvatarRenderer : Node3D
         }
         _hudPlacements.Remove(entityId);
         _hudContent.Remove(entityId);
+        _hudTriangles.Remove(entityId);
     }
 
     /// <summary>BUG-AVATAR-01 / Ctrl+Alt+R: the client-side half of the reference viewer's
@@ -1249,6 +1255,7 @@ public partial class AvatarRenderer : Node3D
             _hudNodes.Remove(entityId);
             _hudPlacements.Remove(entityId);
             _hudContent.Remove(entityId);
+            _hudTriangles.Remove(entityId);
         }
 
         // The attachment-point bone only matters for STATIC attachments. A rigged mesh
@@ -1656,6 +1663,12 @@ public partial class AvatarRenderer : Node3D
         FaceTexture ft, AvatarVisual? avatarVisual = null, Guid meshId = default, int faceIndex = -1,
         PrimShaderFamily.Surface surface = PrimShaderFamily.Surface.Avatar)
     {
+        if (ft.TextureId == new Guid("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903")
+            || (ft.Color != default && ft.Color.W <= 0.001f))
+        {
+            return new ShaderMaterial { Shader = PrimShaderFamily.Hidden };
+        }
+
         var tint = ft.Color == default
             ? new Color(1, 1, 1, 1)
             : new Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
@@ -2244,9 +2257,31 @@ public partial class AvatarRenderer : Node3D
     // HUD entity id → its Node3D in the overlay, its (point, SL-local offset) placement (kept
     // for aspect-ratio repositioning on window resize), and a content signature mirroring
     // _attachmentMeshIds' duplicate-load guard (see that field's doc comment).
+    private readonly struct HudTriangle
+    {
+        public readonly int FaceIndex;
+        public readonly Godot.Vector3 P0;
+        public readonly Godot.Vector3 P1;
+        public readonly Godot.Vector3 P2;
+        public readonly System.Numerics.Vector2 UV0;
+        public readonly System.Numerics.Vector2 UV1;
+        public readonly System.Numerics.Vector2 UV2;
+
+        public HudTriangle(
+            int faceIndex,
+            Godot.Vector3 p0, Godot.Vector3 p1, Godot.Vector3 p2,
+            System.Numerics.Vector2 uv0, System.Numerics.Vector2 uv1, System.Numerics.Vector2 uv2)
+        {
+            FaceIndex = faceIndex;
+            P0 = p0; P1 = p1; P2 = p2;
+            UV0 = uv0; UV1 = uv1; UV2 = uv2;
+        }
+    }
+
     private readonly Dictionary<Guid, Node3D> _hudNodes = new();
     private readonly Dictionary<Guid, (byte Point, System.Numerics.Vector3 SlOffset)> _hudPlacements = new();
     private readonly Dictionary<Guid, (object ShapeKey, FaceTexture[]? Faces, FaceTexture DefaultFace)> _hudContent = new();
+    private readonly Dictionary<Guid, HudTriangle[]> _hudTriangles = new();
 
     /// <summary>Anchor offset of one HUD attachment point in SL's HUD frame (X=depth,
     /// Y=left(+)/right(−), Z=up(+)/down(−)) — the exact `position` attributes of points 31–38
@@ -2359,8 +2394,9 @@ public partial class AvatarRenderer : Node3D
         }
 
         var slOffset = transform?.Position ?? System.Numerics.Vector3.Zero;
-        // Viewer parity: LLViewerJointAttachment::clampObjectPosition, MAX_ATTACHMENT_DIST=3.5.
-        if (slOffset.Length() > 3.5f) slOffset = System.Numerics.Vector3.Normalize(slOffset) * 3.5f;
+        // Viewer parity: LLViewerJointAttachment::clampObjectPosition, MAX_ATTACHMENT_DIST=3.5 (roots only).
+        if (transform?.ParentLocalId == 0 && slOffset.Length() > 3.5f)
+            slOffset = System.Numerics.Vector3.Normalize(slOffset) * 3.5f;
         _hudPlacements[entityId] = (attachment.AttachmentPoint, slOffset);
         PositionHudNode(entityId);
         if (transform != null)
@@ -2374,14 +2410,16 @@ public partial class AvatarRenderer : Node3D
         // asset id for mesh HUDs, or the full PrimShape (equatable — ObjectRenderer keys a
         // dictionary with it) for classic prim HUDs.
         var defaultFace = new FaceTexture(
-            prim.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f);
+            prim.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint,
+            prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation,
+            prim.TexGen, prim.Fullbright);
         object shapeKey = prim.IsMesh && prim.MeshId != Guid.Empty ? prim.MeshId : prim.Shape;
         if (_hudContent.TryGetValue(entityId, out var cur)
             && Equals(cur.ShapeKey, shapeKey)
             && cur.DefaultFace == defaultFace
             && (cur.Faces == prim.Faces || (cur.Faces != null && prim.Faces != null && cur.Faces.SequenceEqual(prim.Faces))))
             return;
-        _hudContent[entityId] = (shapeKey, prim.Faces, defaultFace);
+        _hudContent[entityId] = (shapeKey, prim.Faces != null ? (FaceTexture[])prim.Faces.Clone() : null, defaultFace);
 
         _ = LoadHudContentAsync(hudNode, entityId, prim, defaultFace);
     }
@@ -2431,16 +2469,16 @@ public partial class AvatarRenderer : Node3D
             // flipV:true for BOTH mesh assets and prims — MeshFoundry's prim UVs are vertically
             // inverted vs the real viewer (see ObjectRenderer's prim path for the llvolume.cpp
             // verification); mesh assets need the flip too (SL bottom-left origin → Godot top-left).
-            var arrayMesh = BuildHudArrayMesh(meshData, flipV: true, scale, out var faceIndices);
+            var arrayMesh = BuildHudArrayMesh(meshData, flipV: true, scale, out var faceIndices, out var triangles);
             if (arrayMesh.GetSurfaceCount() == 0) return;
+
+            _hudTriangles[entityId] = triangles;
 
             var mi = new MeshInstance3D { Name = "HudMesh", Mesh = arrayMesh };
             hudNode.AddChild(mi);
             _ = ApplyHudFaceMaterialsAsync(mi, faceIndices, faces, defaultFace);
 
-            // Click detection: one combined trimesh collision shape per HUD prim (not per-face —
-            // ClickObjectAsync's simple no-surface-detail overload is a fully legitimate SL touch,
-            // and a HUD button script practically never inspects which face/UV was hit). Tagged
+            // Click detection: one combined trimesh collision shape per HUD prim. Tagged
             // with the owning entity id so TryClickHud can resolve a raycast hit back to a LocalId.
             var body = new StaticBody3D { Name = "HudCollision" };
             body.SetMeta("EntityId", entityId.ToString());
@@ -2458,10 +2496,12 @@ public partial class AvatarRenderer : Node3D
     /// every other SL-mesh builder (see BuildPartMesh) for consistency, though it is visually
     /// moot without lighting.</summary>
     private static ArrayMesh BuildHudArrayMesh(
-        MeshData meshData, bool flipV, System.Numerics.Vector3 slScale, out int[] faceIndices)
+        MeshData meshData, bool flipV, System.Numerics.Vector3 slScale,
+        out int[] faceIndices, out HudTriangle[] triangles)
     {
         var arrayMesh = new ArrayMesh();
         var faceList = new List<int>();
+        var triList = new List<HudTriangle>();
         foreach (var sub in meshData.Submeshes)
         {
             if (sub.Indices.Length == 0) continue;
@@ -2477,14 +2517,30 @@ public partial class AvatarRenderer : Node3D
 
             for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
             {
-                st.AddIndex(sub.Indices[t]);
-                st.AddIndex(sub.Indices[t + 2]);
-                st.AddIndex(sub.Indices[t + 1]);
+                int i0 = sub.Indices[t];
+                int i1 = sub.Indices[t + 2];
+                int i2 = sub.Indices[t + 1];
+                st.AddIndex(i0);
+                st.AddIndex(i1);
+                st.AddIndex(i2);
+
+                var p0 = sub.Positions[i0];
+                var p1 = sub.Positions[i1];
+                var p2 = sub.Positions[i2];
+                triList.Add(new HudTriangle(
+                    sub.FaceIndex,
+                    new Godot.Vector3(p0.X * slScale.X, p0.Z * slScale.Z, -p0.Y * slScale.Y),
+                    new Godot.Vector3(p1.X * slScale.X, p1.Z * slScale.Z, -p1.Y * slScale.Y),
+                    new Godot.Vector3(p2.X * slScale.X, p2.Z * slScale.Z, -p2.Y * slScale.Y),
+                    sub.UVs[i0],
+                    sub.UVs[i1],
+                    sub.UVs[i2]));
             }
             st.Commit(arrayMesh);
             faceList.Add(sub.FaceIndex);
         }
         faceIndices = faceList.ToArray();
+        triangles = triList.ToArray();
         return arrayMesh;
     }
 
@@ -3530,7 +3586,10 @@ public partial class AvatarRenderer : Node3D
             var hovered = GetViewport().GuiGetHoveredControl();
             if (hovered == null)
             {
-                TryClickHud(mb.Position);
+                if (TryClickHud(mb.Position))
+                {
+                    GetViewport().SetInputAsHandled();
+                }
             }
             else
             {
@@ -3547,21 +3606,21 @@ public partial class AvatarRenderer : Node3D
     /// <summary>Raycasts a screen click into the HUD overlay's own isolated World3D (via its own
     /// orthographic camera) and, on a hit, sends an SL touch (GridSession.ClickObjectAsync — a
     /// grab/de-grab pair, which is what fires touch_start/touch_end on the object's script) for
-    /// the entity the hit collision body is tagged with. A miss (empty overlay space, or no HUD
-    /// loaded) does nothing — the event is left unhandled so nothing else is blocked by it.</summary>
-    private void TryClickHud(Godot.Vector2 screenPos)
+    /// the entity the hit collision body is tagged with. Returns true if a HUD collider was hit
+    /// and processed so caller can mark input as handled.</summary>
+    private bool TryClickHud(Godot.Vector2 screenPos)
     {
         if (_hudViewport == null || _session == null || _world == null)
         {
             GD.Print($"[HUD] click ignored: viewport={_hudViewport != null} "
                      + $"session={_session != null} world={_world != null}");
-            return;
+            return false;
         }
         var cam = _hudViewport.GetCamera3D();
         if (cam == null)
         {
             GD.Print("[HUD] click ignored: viewport has no Camera3D");
-            return;
+            return false;
         }
 
         // FindWorld3D(), NOT the World3D property: with OwnWorld3D the viewport's children live
@@ -3571,18 +3630,19 @@ public partial class AvatarRenderer : Node3D
         if (world3d == null)
         {
             GD.PrintErr("[HUD] click: viewport has no effective World3D yet — ignoring");
-            return;
+            return false;
         }
         var spaceState = world3d.DirectSpaceState;
         if (spaceState == null)
         {
             GD.PrintErr("[HUD] click: World3D has no DirectSpaceState yet — ignoring");
-            return;
+            return false;
         }
 
         var from = cam.ProjectRayOrigin(screenPos);
         var dir = cam.ProjectRayNormal(screenPos);
         var query = PhysicsRayQueryParameters3D.Create(from, from + dir * 20f);
+        query.HitBackFaces = false;
         var hit = spaceState.IntersectRay(query);
 
         // Every exit below used to be silent, which is why "the HUD does not react" could not be
@@ -3597,29 +3657,69 @@ public partial class AvatarRenderer : Node3D
         {
             GD.Print($"[HUD] click at {screenPos}: ray missed every collider "
                      + $"({_hudPlacements.Count} HUD attachment(s) placed)");
-            return;
+            return false;
         }
 
         if (hit["collider"].As<Node>() is not { } collider || !collider.HasMeta("EntityId"))
         {
             GD.Print("[HUD] click hit a body with no EntityId meta -- it is not one of ours");
-            return;
+            return false;
         }
         if (!Guid.TryParse(collider.GetMeta("EntityId").AsString(), out var entityId))
         {
             GD.Print($"[HUD] click hit '{collider.Name}' whose EntityId meta does not parse");
-            return;
+            return false;
         }
 
         var entity = _world.GetEntity(entityId);
         if (entity == null)
         {
             GD.Print($"[HUD] click hit entity {entityId:N}, which is no longer in the world");
-            return;
+            return false;
         }
 
-        GD.Print($"[HUD] clicked entity {entityId:N} (LocalId {entity.LocalId})");
-        _ = _session.ClickObjectAsync(entity.LocalId);
+        // Convert hit position and normal from Godot to SL space: SL (X, Y, Z) = Godot (X, -Z, Y)
+        var hitPosGodot = hit.TryGetValue("position", out var hp) ? hp.AsVector3() : Godot.Vector3.Zero;
+        var hitNormGodot = hit.TryGetValue("normal", out var hn) ? hn.AsVector3() : Godot.Vector3.Zero;
+        var hitPosSl = new System.Numerics.Vector3(hitPosGodot.X, -hitPosGodot.Z, hitPosGodot.Y);
+        var hitNormSl = new System.Numerics.Vector3(hitNormGodot.X, -hitNormGodot.Z, hitNormGodot.Y);
+
+        int hitFaceIndex = 0;
+        var hitUvSl = System.Numerics.Vector3.Zero;
+        int hitTriIdx = hit.TryGetValue("face_index", out var fi) ? fi.AsInt32() : -1;
+        if (_hudTriangles.TryGetValue(entityId, out var triMap) && hitTriIdx >= 0 && hitTriIdx < triMap.Length)
+        {
+            var tri = triMap[hitTriIdx];
+            hitFaceIndex = tri.FaceIndex;
+
+            var localHit = collider is Node3D cNode ? cNode.ToLocal(hitPosGodot) : hitPosGodot;
+            var v0 = tri.P1 - tri.P0;
+            var v1 = tri.P2 - tri.P0;
+            var v2 = localHit - tri.P0;
+            float d00 = v0.Dot(v0);
+            float d01 = v0.Dot(v1);
+            float d11 = v1.Dot(v1);
+            float d20 = v2.Dot(v0);
+            float d21 = v2.Dot(v1);
+            float denom = d00 * d11 - d01 * d01;
+            float v = System.MathF.Abs(denom) > 1e-8f ? (d11 * d20 - d01 * d21) / denom : 0f;
+            float w = System.MathF.Abs(denom) > 1e-8f ? (d00 * d21 - d01 * d20) / denom : 0f;
+            float u = 1.0f - v - w;
+
+            var uv = u * tri.UV0 + v * tri.UV1 + w * tri.UV2;
+            hitUvSl = new System.Numerics.Vector3(uv.X, uv.Y, 0f);
+        }
+
+        GD.Print($"[HUD] clicked entity {entityId:N} (LocalId {entity.LocalId}) face={hitFaceIndex} uv=({hitUvSl.X:0.###}, {hitUvSl.Y:0.###})");
+
+        _ = _session.ClickObjectAsync(
+            entity.LocalId,
+            faceIndex: hitFaceIndex,
+            position: hitPosSl,
+            normal: hitNormSl,
+            uvCoord: hitUvSl,
+            stCoord: hitUvSl);
+        return true;
     }
 
     /// <summary>F8: freeze every avatar in its rest (T-)pose and stop animation playback, so a

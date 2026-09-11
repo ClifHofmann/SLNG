@@ -176,7 +176,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.60-alpha";
+    public const string AppVersion = "v0.22.64-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -2137,7 +2137,7 @@ public partial class Boot : Control
             // inert until the user turns it on).
             _dofController = new SLNG.App.DepthOfFieldController { Name = "DepthOfFieldController" };
             AddChild(_dofController);
-            _dofController.Initialize(_avatarController, _dofSettings);
+            _dofController.Initialize(_avatarController, _dofSettings, _world);
             _snapshotWindow.SetDofController(_dofController);
 
             // Post-login setup above (avatar controller, selection/cursor, camera) has now

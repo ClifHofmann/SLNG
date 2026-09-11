@@ -3,7 +3,7 @@
 // See prim_opaque_hud.gdshader for why HUD surfaces need their own compile-time variants.
 // alpha_to_coverage carries over from the other scissor variants for the same reason.
 shader_type spatial;
-render_mode unshaded, blend_mix, depth_draw_opaque, cull_disabled, diffuse_burley, specular_schlick_ggx, alpha_to_coverage;
+render_mode unshaded, blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx, alpha_to_coverage;
 
 #include "res://materials/prim/prim_common.gdshaderinc"
 

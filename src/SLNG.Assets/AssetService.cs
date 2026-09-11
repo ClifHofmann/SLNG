@@ -19,6 +19,11 @@ namespace SLNG.Assets;
 /// </summary>
 public class AssetService
 {
+    private static readonly Guid TextureTransparentId = new("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903");
+    private static readonly Guid TextureWhiteId = new("5748decc-f629-461c-9a36-a35a221fe21f");
+    private static readonly TextureData TextureTransparentData = new(1, 1, new byte[] { 0, 0, 0, 0 });
+    private static readonly TextureData TextureWhiteData = new(1, 1, new byte[] { 255, 255, 255, 255 });
+
     private readonly GridSession _session;
     private readonly string _cacheDir;
     private readonly MemoryCache _memCache;
@@ -565,6 +570,11 @@ public class AssetService
     /// look can re-decode it sharper.</param>
     public Task<TextureData?> GetTextureAsync(Guid textureId, int desiredDiscard = 0, bool isSculpt = false, float priority = 0f, bool rejectDegraded = false, float screenPixelArea = 0f)
     {
+        if (textureId == TextureTransparentId)
+            return Task.FromResult<TextureData?>(TextureTransparentData);
+        if (textureId == TextureWhiteId)
+            return Task.FromResult<TextureData?>(TextureWhiteData);
+
         // Only FULL decodes are memoized (see FetchDecodeAndCacheTextureAsync), so a hit is always
         // the best available version -- handing it to a caller that asked for a reduced one is
         // strictly better than what it asked for, and it lets a near object's decode serve every

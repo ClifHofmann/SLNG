@@ -80,6 +80,45 @@ public class WorldSimulationTests
     }
 
     [Fact]
+    public void LinkedGrandchild_IsRecomposed_WhenRootArrivesLast()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        // Grandchild (id 3, parent 2), child (id 2, parent 1), then root (id 1, parent 0)
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(1ul, 3, new Vector3(2, 0, 0), Quaternion.Identity, Vector3.One, 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One, ParentLocalId: 2, AttachmentPoint: 0));
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(1ul, 2, new Vector3(5, 0, 0), Quaternion.Identity, Vector3.One, 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One, ParentLocalId: 1, AttachmentPoint: 0));
+        simulation.Pump();
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(1ul, 1, new Vector3(100, 200, 30), Quaternion.Identity, Vector3.One, 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One, ParentLocalId: 0, AttachmentPoint: 0));
+        simulation.Pump();
+
+        var grandchild = world.GetEntity(1ul, 3)!.GetComponent<TransformComponent>()!;
+        Assert.Equal(new Vector3(107, 200, 30), grandchild.Position);
+    }
+
+    [Fact]
+    public void LinkedAttachmentChild_ComposesRootRotation_WhenRecomposed()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        // Rotations: root rotated 180 deg around Z -> (0, 0, 1, 0).
+        // Child local offset (1, 2, 3).
+        // Transformed by 180 deg around Z: (-1, -2, 3).
+        var rotZ180 = new Quaternion(0, 0, 1, 0);
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(1ul, 2, new Vector3(1, 2, 3), Quaternion.Identity, Vector3.One, 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One, ParentLocalId: 1, AttachmentPoint: 35));
+        simulation.Pump();
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(1ul, 1, new Vector3(10, 20, 30), rotZ180, Vector3.One, 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One, ParentLocalId: 0, AttachmentPoint: 35));
+        simulation.Pump();
+
+        var child = world.GetEntity(1ul, 2)!.GetComponent<TransformComponent>()!;
+        Assert.Equal(new Vector3(9, 18, 33), child.Position);
+        Assert.Equal(rotZ180, child.Rotation);
+    }
+
+    [Fact]
     public void RootPrim_KeepsWorldPosition()
     {
         var world = new World();
