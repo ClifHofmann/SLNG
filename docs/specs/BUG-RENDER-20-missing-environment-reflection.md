@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-20`
 - **Track:** `render`
-- **Status:** `✅ Done (code, v2) — not yet re-confirmed live in-world against Firestorm`
+- **Status:** `✅ Done (code, v3) — not yet re-confirmed live in-world against Firestorm`
 - **Owner:** `claude` (graphics-engineer)
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -250,3 +250,99 @@ numbers, while real, are exactly what turned out not to be the whole story — a
 value can look identical to "no reflection" from some camera angles and obviously present from
 others, which a probe sampling fixed points cannot by itself catch). This needs the same live
 walk-up/A-B the user was already mid-way through when they reported v1 as not working.
+
+## Round 3: an actual rendered picture, not more arithmetic (same session)
+
+Handed back with an explicit instruction not to trust another round of hand-derived numbers:
+render an actual PNG of the probe sphere and look at it, the way a person would. This changed
+the outcome, and changed it twice.
+
+**Method.** Extended `scratch/probes/*.gd`'s established pattern (`godot --path app -s
+<script>.gd`, not `--headless`, for the reason already established above — headless never
+populates a real viewport texture) with `Image.save_png()` on `get_viewport().get_texture()
+.get_image()`, so the frame could be read back as an actual image via the Read tool instead of
+sampled at single pixels. Built a `WorldEnvironment` with `TonemapMode.Linear` (matching
+`Boot.SetupEnvironment` exactly — SLNG does not run ACES, see the comment there), a flat
+sky-blue background/ambient standing in for a clear-noon sky, a `DirectionalLight3D` sun, and
+the real `prim_opaque.gdshader` `ShaderMaterial` on a sphere at the probe's dark-grey albedo
+(0.2, 0.2, 0.2) and each shiny level in turn. The project's own `[shader_globals]` defaults
+(`app/project.godot`) were re-set explicitly in the probe script rather than relied on
+implicitly, to be certain of exactly which numbers were driving the render — they are the stock
+default SL sky (`BlueDensity (0.2447, 0.4487, 0.7599)`, `BlueHorizon (0.4954, 0.4954, 0.6399)`),
+not a capture of the live "Millenium" region the original report came from. **Honesty note:**
+this session had no way to reach that region's actual EEP values (no client-output log or
+captured `.llsd` for it was found on disk, and it was not logged into live) — the numbers below
+are for the stock default sky, which is the closest available stand-in, not a confirmed match
+to what the user was actually looking at. The shape of the finding (LDR haze colour vs HDR
+radiance sample) does not depend on which specific sky is loaded, only the fix's exact tuning
+constant might.
+
+**What the v2 code's own screenshot showed.** Rendered unmodified: the sun highlight from
+FEAT-RENDER-19 was clearly visible (a small bright disc), and, held up next to a matte control
+of the same albedo, the shiny-HIGH sphere's upper rim was *very slightly* less black than the
+matte one — a difference only findable by comparing the two images side by side, not something
+that reads as "a reflection" on its own. Isolating the two contributions (re-rendering with
+`slng_env_reflection`'s call site commented out) showed the delta between shiny and matte was
+**entirely** attributable to the custom term — this probe's flat ambient colour (not a real sky
+radiance map) gives Godot's own built-in specular IBL nothing directional to reflect, so it
+contributed exactly zero here, isolating the new term perfectly.
+
+**Why it was that dim, numerically.** `applyGlossEnv`'s `glossenv` argument in the reference
+viewer is an actual captured HDR reflection-probe radiance sample, explicitly clamped only to
+`[0, 10]` (`sampleReflectionProbes`, `reflectionProbeF.glsl:890`) — i.e. routinely brighter than
+1.0. SLNG's stand-in, `slng_blue_horizon`/`slng_blue_density`, is an LDR Windlight haze colour:
+even at its brightest channel it lands under 0.55 once linearized. Applying the viewer's literal
+`glossenv *= 0.5; ... *= fresnel; ... *= 0.5;` chain — two attenuations LL tuned against an input
+that can be an order of magnitude brighter — to an input structurally ~20x dimmer reproduces
+almost exactly the near-invisible result the screenshot showed. This is the hypothesis the
+orchestrating session raised, and the probe confirmed it directly rather than by further hand
+arithmetic.
+
+**The first fix attempt made it WORSE, and the picture is what caught that.** Dropping both
+`*0.5` fudges and boosting the raw colour (tried at `*6.0`) does fix the magnitude — but rendered
+and looked at, it produces a bright RING running around the sphere's ENTIRE silhouette, top to
+bottom, an unmistakable "glass bubble" look, nothing like Firestorm's reference. The reason is
+geometric, not numeric: Fresnel (`clamp(1 + dot(view, normal), 0.3, 1.0)`) depends only on the
+angle between the view ray and the surface normal, which is exactly as large at the BOTTOM of a
+sphere's limb as at the top — it cannot tell "faces the sky" from "faces the ground." Raising a
+Fresnel-only term's overall brightness makes the ring more visible, not less of a ring. A second
+attempt raised Fresnel's floor from 0.3 to 0.6 (to soften the top/centre falloff) — rendered,
+this just made the WHOLE sphere a uniform lighter grey-blue with a brighter rim on top, still not
+a patch, and now also washing out the matte body the reflection is supposed to sit on top of.
+
+**Fix v3 (`v0.22.69-alpha`).** The picture made the missing piece obvious in a way the numbers
+alone had not: the reflection's INTENSITY, not only its hue, needs to fall off with `upness` —
+`slng_env_reflection` now computes `float patch = upness;` and multiplies it in alongside
+`fresnel`: `glossenv *= 8.0 * fresnel * patch;` (both `applyGlossEnv`-literal `*0.5`s dropped;
+`8.0` is an empirical boost tuned against the saved screenshots, not derived, documented as such
+in the code). This is what actually produces "bright patch on the upper hemisphere, fading
+toward nothing below the equator" instead of "ring around the silhouette": Fresnel alone cannot
+distinguish top from bottom, so the world-direction-based `upness` term has to carry that part of
+the shape, on TOP of hue, not only for it. Tried a steeper `pow(upness, 1.5)` gate first — this
+pulled the visible patch in to a thin crescent right at the top rim, not the broad upper-half
+patch Firestorm's screenshot shows; a plain linear `upness` spread it correctly, because a
+sphere's own foreshortening near the equator already compresses most of the visible falloff into
+a fairly narrow screen band without an extra exponent's help. Verified across all three shininess
+levels with the identical saved-PNG method: LOW, MEDIUM and HIGH show the same upper-hemisphere
+patch shape, cleanly monotonic in both the rendered images and the sampled numbers (probe
+upper-mid R channel `0.1098 → 0.1569 → 0.1922`); the matte control and `PRIM_SHINY_NONE` stayed
+bit-identical throughout, since `slng_env_reflection` is simply never called when
+`legacy_shininess == 0.0`.
+
+**Verification:** `dotnet build` (both `SLNG.sln` and `app/SLNG.App.csproj`, separately),
+`dotnet test` (690, 0 failures), `dotnet format` clean, `check_shader_globals.py` clean (28
+registered/28 typed/0 stale — no new global uniforms, the fix only changes constants inside
+`slng_env_reflection`), `godot --headless --path app -- --selftest` 38/38 (every shader still
+compiles, every variant's uniform count still matches its avatar/HUD twin), `git diff
+app/project.godot` empty after the selftest run (nothing to revert this time). `AppVersion`
+bumped to `v0.22.69-alpha`.
+
+**Honesty note (round 3):** this is the first round of this bug backed by an actual look at a
+rendered image rather than single-pixel samples or hand arithmetic, and it changed the outcome
+materially (caught the ring artefact that pure numbers would not have surfaced). It is still not
+a live-grid A/B against a running Firestorm — the probe's sky is the stock default SL sky, not a
+capture of the "Millenium" region the report came from (no `.llsd` capture or reachable
+client-output log for that region was found on disk this session), and the `8.0` boost constant
+is tuned to look right against this session's own rendered screenshots, not against a
+side-by-side Firestorm frame. The next session with live grid access should do that walk-up
+comparison before considering this bug fully closed.

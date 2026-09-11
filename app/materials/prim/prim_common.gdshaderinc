@@ -279,8 +279,8 @@ float slng_glossiness_to_roughness(float glossiness) {
 // alone cannot produce that: it depends on the angle between the VIEW ray and the normal, which
 // is symmetric regardless of which way the surface points in the world.
 //
-// Fixed by blending two already-available Windlight globals by how much the normal faces up:
-// slng_blue_horizon (the horizon colour) for a normal at or below the horizon, toward
+// Fixed (v2) by blending two already-available Windlight globals by how much the normal faces
+// up: slng_blue_horizon (the horizon colour) for a normal at or below the horizon, toward
 // slng_blue_density (SL's own zenith-leaning scattering term -- see EnvironmentDriver
 // .ApplySkyDome's identical reasoning for reusing it as a zenith stand-in) for one facing
 // straight up. Still an approximation of an actual radiance-map sample (see below), but now one
@@ -293,6 +293,45 @@ float slng_glossiness_to_roughness(float glossiness) {
 // per-frame-global trick does not apply here -- instead each variant's fragment() computes
 // `(INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).y` (Godot world space: +Y is up) once, itself, and hands
 // the single float in, the same way it already hands in NORMAL directly.
+//
+// v2 STILL produced no visible change live (v0.22.68-alpha, reported again: "ich seh aber noch
+// keine reflexion"). This time verified with an actual rendered PICTURE rather than hand-derived
+// arithmetic or single-pixel samples -- `scratch/probes/*.gd`'s pattern, but with
+// `Image.save_png()` on the viewport texture so the frame could be looked at (see BUG-RENDER-20
+// spec for the saved files). The v2 code, screenshotted unmodified: a dark grey sphere at shiny
+// HIGH showed the FEAT-RENDER-19 sun highlight and, on close comparison against a matte control,
+// a barely-there lightening of the upper rim -- nothing a person would describe as "a reflection"
+// without already knowing where to look. Two compounding problems, both numeric:
+//
+// 1. MAGNITUDE. `glossenv` in the reference is an actual captured HDR radiance sample, explicitly
+//    clamped to [0, 10] (sampleReflectionProbes, reflectionProbeF.glsl:890) -- i.e. it can be an
+//    order of magnitude brighter than 1.0. SLNG's stand-in is `slng_blue_horizon`/
+//    `slng_blue_density`, LDR Windlight haze colours that top out around 0.5-0.8 pre-linearize
+//    and land under 0.55 in linear after `slng_srgb_to_linear`. Applying the viewer's literal
+//    `*0.5 ... *0.5` attenuation chain -- tuned by LL against that HDR input -- to an input roughly
+//    20x dimmer produces a term on the order of 0.01-0.05, which is exactly what the probe
+//    screenshot showed: technically present, invisible in practice.
+// 2. GEOMETRY. Simply removing the two `*0.5` fudges and boosting the raw colour (tried first,
+//    boost x6, both `*0.5`s dropped) does not reproduce Firestorm's look either -- rendered, it is
+//    a bright RING around the ENTIRE silhouette (a "glass bubble" look), because Fresnel
+//    (`clamp(1+dot(view,normal), 0.3, 1)`) is symmetric all the way around a sphere's limb: the
+//    BOTTOM of the silhouette gets exactly as much of the boosted term as the top, which is not
+//    what a real environment reflection does (the bottom of a sphere reflects the ground/floor,
+//    not the bright sky) and not what Firestorm's screenshot shows (bright on top, dark below,
+//    not an even halo).
+//
+// Fixed by gating the term's INTENSITY on `upness` as well as its hue -- not just picking the
+// colour between horizon and zenith, but scaling the whole reflection down toward zero as the
+// surface stops facing up. This is the piece that actually produces "a patch on the upper
+// hemisphere, fading below" instead of "a ring around the silhouette": Fresnel alone cannot tell
+// the top of a sphere from the bottom (it only knows the VIEW angle), so intensity has to carry
+// the part of the shape that varies with which way the surface points in the WORLD, exactly the
+// same insight v2's colour-blend already had, now applied to brightness and not only hue.
+// Verified visually (not just numerically) against a saved probe screenshot at each step:
+// Fresnel-gated-only produced the ring; adding the `upness` intensity gate produced a patch
+// confined to the upper hemisphere, tracking shininess LOW < MEDIUM < HIGH exactly as before,
+// with the equator-line cutoff itself a real, expected consequence of how steeply a sphere's
+// surface curves away right at that latitude when viewed head-on -- not an artefact of the gate.
 vec3 slng_env_reflection(vec3 view_position, vec3 normal, float world_normal_up,
                           float shininess_level, vec3 base_color) {
     // fresnel: reflectionProbeF.glsl:894-896, unchanged. `pos`/`norm` there are the fragment's
@@ -302,19 +341,36 @@ vec3 slng_env_reflection(vec3 view_position, vec3 normal, float world_normal_up,
     fresnel *= fresnel;
     fresnel *= shininess_level;   // spec.a: the shininess LEVEL scales the whole term
 
-    // 0 at or below the horizon (where the horizon colour already applies faithfully), rising to
-    // 1 facing straight up. Not the full hemisphere: SLNG carries no distinct "ground" colour as a
-    // shader global (only the sky dome material gets one, and only on the CPU side), so a downward
-    // normal reflects the same horizon tint rather than fading toward black -- a reflection that is
-    // merely un-varying below the horizon, not an inaccurate one, since nothing here claims to show
-    // the actual ground.
+    // 0 at or below the horizon, rising to 1 facing straight up. Not the full hemisphere: SLNG
+    // carries no distinct "ground" colour as a shader global (only the sky dome material gets
+    // one, and only on the CPU side), so a downward-facing normal picks the horizon tint rather
+    // than fading toward black -- a reflection that is merely un-varying below the horizon, not an
+    // inaccurate one, since nothing here claims to show the actual ground. `upness` now ALSO
+    // scales the term's intensity (`patch` below), not only its hue -- see the v3 note above for
+    // why that is the change that actually made a visible difference.
     float upness = clamp(world_normal_up, 0.0, 1.0);
     vec3 sky_color = mix(slng_blue_horizon.rgb, slng_blue_density.rgb, upness);
     vec3 glossenv = slng_srgb_to_linear(clamp(sky_color, vec3(0.0), vec3(1.0)));
 
-    glossenv *= 0.5 * fresnel;              // applyGlossEnv: `glossenv *= 0.5;` then `*= fresnel`
+    // ENV_REFLECTION_BOOST (8.0): compensates for `sky_color` being an LDR haze-colour stand-in
+    // (tops out well under 1.0 after linearizing) where the viewer's own `glossenv` is a genuine
+    // HDR radiance sample clamped only at 10.0 -- see the v3 note above. Tuned empirically against
+    // saved probe screenshots (not derived): 8.0 is the smallest value at shiny HIGH that reads
+    // unambiguously as a bright reflected patch rather than a faint tint, without blowing the
+    // upper rim's blue channel out past a small, physically-plausible sliver near the true
+    // grazing+straight-up point (where `fresnel` and `patch` both peak at once -- a single point
+    // on a sphere, in practice a handful of pixels, not a visible blob in any of the probe
+    // screenshots at shiny low/medium/high).
+    //
+    // `patch`: the intensity gate itself. Deliberately linear in `upness`, not `pow(upness, n)` --
+    // a steeper falloff (tried at n=1.5) pulled the visible patch in to a thin crescent right at
+    // the top rim; linear let the reflection extend down across roughly the upper half of the
+    // visible sphere, which is what the Firestorm reference screenshot shows and what a plain
+    // `upness` already produces once foreshortening (a sphere's own geometry) is accounted for.
+    float patch = upness;
+    glossenv *= 8.0 * fresnel * patch;
     glossenv *= (vec3(1.0) - base_color);   // applyGlossEnv's "fake energy conservation"
-    return glossenv * 0.5;                  // applyGlossEnv: `color.rgb += glossenv * 0.5;`
+    return glossenv;
 }
 
 // Samples everything a face needs and hands it back through out-params. It does NOT assign
