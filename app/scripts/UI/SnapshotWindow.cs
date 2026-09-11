@@ -19,7 +19,7 @@ namespace SLNG.App.UI;
 /// </summary>
 public partial class SnapshotWindow : SLNGWindow
 {
-    private const string SnapshotDir = "user://snapshots";
+    private const string DefaultSnapshotDir = "user://snapshots";
 
     private CanvasLayer? _hudLayer;
     private Viewport? _vp;
@@ -31,6 +31,20 @@ public partial class SnapshotWindow : SLNGWindow
 
     private Image? _lastImage;
     private bool _capturing;
+
+    // --- Output folder (FEAT-UI-17, partial) -----------------------------------------------
+    private SnapshotSettings? _settings;
+    private Label _folderLabel = null!;
+    private FileDialog _folderDialog = null!;
+
+    // --- Live HUD hide ------------------------------------------------------------------
+    // Capture already hides the whole HUD for the single frame it reads back (see the class
+    // doc comment) -- this is a separate, manual toggle so the user can compose the shot with
+    // a clean view instead of only seeing the HUD-free result after pressing Capture.
+    private CheckButton _hideHudCheck = null!;
+    // Guards the Toggled handler while _Process resyncs the checkbox to _hudLayer.Visible, so
+    // that resync does not read back as a user click and re-toggle the HUD it just followed.
+    private bool _refreshingHudCheck;
 
     // --- Depth of field (FEAT-RENDER-07) ---------------------------------------------------
     private DofSettings? _dof;
@@ -62,8 +76,8 @@ public partial class SnapshotWindow : SLNGWindow
         base._Ready();
 
         Title = L10n.Tr("ui.snapshot.title");
-        CustomMinimumSize = new Vector2(340, 360);
-        Size = new Vector2(400, 620);
+        CustomMinimumSize = new Vector2(340, 390);
+        Size = new Vector2(400, 650);
         Position = new Vector2(120, 120);
         Visible = false;
 
@@ -98,6 +112,22 @@ public partial class SnapshotWindow : SLNGWindow
         _resolutionLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
         vbox.AddChild(_resolutionLabel);
 
+        _hideHudCheck = new CheckButton
+        {
+            Text = L10n.Tr("ui.snapshot.hide_hud"),
+            TooltipText = L10n.Tr("ui.snapshot.hide_hud_tooltip"),
+            FocusMode = FocusModeEnum.None,
+        };
+        _hideHudCheck.Toggled += on =>
+        {
+            if (_refreshingHudCheck || _hudLayer == null) return;
+            // Hiding the layer hides this window too (it lives inside the HUD like everything
+            // else) -- same as the existing top-menu "Toggle HUD", and the way back is the same:
+            // that menu, which lives outside the HUD layer on purpose. The tooltip says so.
+            _hudLayer.Visible = !on;
+        };
+        vbox.AddChild(_hideHudCheck);
+
         var buttonRow = new HBoxContainer();
         buttonRow.AddThemeConstantOverride("separation", 8);
         vbox.AddChild(buttonRow);
@@ -120,6 +150,8 @@ public partial class SnapshotWindow : SLNGWindow
         };
         _saveButton.Pressed += Save;
         buttonRow.AddChild(_saveButton);
+
+        BuildFolderRow(vbox);
 
         BuildDofSection(vbox);
 
@@ -147,6 +179,14 @@ public partial class SnapshotWindow : SLNGWindow
     /// frame. Without it, capture still works but the shot includes the UI.</summary>
     public void Initialize(CanvasLayer hudLayer) => _hudLayer = hudLayer;
 
+    /// <summary>FEAT-UI-17 (partial): the persisted output-folder choice. Available from startup,
+    /// same split as <see cref="InitializeDof"/>.</summary>
+    public void InitializeSettings(SnapshotSettings settings)
+    {
+        _settings = settings;
+        UpdateFolderLabel();
+    }
+
     /// <summary>FEAT-RENDER-07: the persisted DoF settings. Available from startup, unlike the
     /// controller — see <see cref="SetDofController"/>.</summary>
     public void InitializeDof(DofSettings settings)
@@ -170,6 +210,95 @@ public partial class SnapshotWindow : SLNGWindow
     {
         var size = GetViewport().GetVisibleRect().Size;
         _resolutionLabel.Text = $"{(int)size.X} × {(int)size.Y}";
+    }
+
+    // --- Output folder (FEAT-UI-17, partial) ------------------------------------------------
+
+    /// <summary>The folder snapshots are saved to right now: the user's chosen folder if one is
+    /// set, otherwise <see cref="DefaultSnapshotDir"/>. Always returned as a globalized OS path,
+    /// since that is what <see cref="FileDialog"/> and <see cref="OS.ShellShowInFileManager"/>
+    /// both need, and what <see cref="Save"/> and <see cref="Image.SavePng"/> accept just as well
+    /// as a Godot user:// path.</summary>
+    private string ResolvedSnapshotDir() =>
+        string.IsNullOrEmpty(_settings?.OutputDir)
+            ? ProjectSettings.GlobalizePath(DefaultSnapshotDir)
+            : _settings.OutputDir;
+
+    private void BuildFolderRow(VBoxContainer parent)
+    {
+        var row = new HBoxContainer();
+        row.AddThemeConstantOverride("separation", 8);
+        parent.AddChild(row);
+
+        _folderLabel = new Label
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            ClipText = true,
+            TooltipText = L10n.Tr("ui.snapshot.folder_tooltip"),
+        };
+        _folderLabel.AddThemeFontSizeOverride("font_size", 11);
+        _folderLabel.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+        row.AddChild(_folderLabel);
+
+        var chooseButton = new Button
+        {
+            Text = L10n.Tr("ui.snapshot.choose_folder"),
+            FocusMode = FocusModeEnum.None,
+        };
+        chooseButton.Pressed += () =>
+        {
+            _folderDialog.CurrentDir = ResolvedSnapshotDir();
+            _folderDialog.PopupCentered(new Vector2I(560, 420));
+        };
+        row.AddChild(chooseButton);
+
+        var openButton = new Button
+        {
+            Text = L10n.Tr("ui.snapshot.open_folder"),
+            FocusMode = FocusModeEnum.None,
+        };
+        openButton.Pressed += OpenFolder;
+        row.AddChild(openButton);
+
+        _folderDialog = new FileDialog
+        {
+            FileMode = FileDialog.FileModeEnum.OpenDir,
+            Access = FileDialog.AccessEnum.Filesystem,
+            Title = L10n.Tr("ui.snapshot.choose_folder"),
+            // Godot's own built-in file browser has no relation to SLNGWindow's hand-drawn
+            // translucent/rounded look (it is a completely separate engine dialog, generic grey
+            // chrome, English-only button captions) -- so instead of trying to reskin it, use the
+            // real OS folder picker. That looks native everywhere, the way every app's file
+            // dialogs do, instead of half-matching ours.
+            UseNativeDialog = true,
+        };
+        _folderDialog.DirSelected += dir =>
+        {
+            _settings?.SetOutputDir(dir);
+            UpdateFolderLabel();
+        };
+        AddChild(_folderDialog);
+
+        UpdateFolderLabel();
+    }
+
+    private void UpdateFolderLabel()
+    {
+        _folderLabel.Text = ResolvedSnapshotDir();
+    }
+
+    /// <summary>Ensures the folder exists, then hands it to the OS file manager. Creating it
+    /// first means "Open folder" works even before the first capture, same as most viewers.</summary>
+    private void OpenFolder()
+    {
+        var dir = ResolvedSnapshotDir();
+        var err = DirAccess.MakeDirRecursiveAbsolute(dir);
+        if (err != Error.Ok && err != Error.AlreadyExists)
+        {
+            _statusLabel.Text = L10n.TrFormat("ui.snapshot.dir_failed", dir, err);
+            return;
+        }
+        OS.ShellShowInFileManager(dir);
     }
 
     // --- Depth of field ---------------------------------------------------------------------
@@ -399,6 +528,21 @@ public partial class SnapshotWindow : SLNGWindow
     {
         base._Process(delta);
 
+        // Resync the checkbox to the HUD layer's actual state. Needed because the layer can be
+        // toggled back on from outside this window (the top menu's "Toggle HUD", which lives
+        // outside the HUD layer on purpose, precisely so there is a way back in) -- without this
+        // the checkbox would keep reading "hidden" after that.
+        if (Visible && _hudLayer != null)
+        {
+            bool hudHidden = !_hudLayer.Visible;
+            if (_hideHudCheck.ButtonPressed != hudHidden)
+            {
+                _refreshingHudCheck = true;
+                _hideHudCheck.ButtonPressed = hudHidden;
+                _refreshingHudCheck = false;
+            }
+        }
+
         // Only the auto-focus readout is live, and only while it can actually be seen.
         if (!Visible || _dof == null || !_dof.Enabled || !_dof.AutoFocus)
         {
@@ -463,22 +607,22 @@ public partial class SnapshotWindow : SLNGWindow
     {
         if (_lastImage == null) return;
 
-        var dirErr = DirAccess.MakeDirRecursiveAbsolute(SnapshotDir);
+        var dir = ResolvedSnapshotDir();
+        var dirErr = DirAccess.MakeDirRecursiveAbsolute(dir);
         if (dirErr != Error.Ok && dirErr != Error.AlreadyExists)
         {
-            _statusLabel.Text = L10n.TrFormat(
-                "ui.snapshot.dir_failed", ProjectSettings.GlobalizePath(SnapshotDir), dirErr);
+            _statusLabel.Text = L10n.TrFormat("ui.snapshot.dir_failed", dir, dirErr);
             return;
         }
 
         var stamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
-        var path = $"{SnapshotDir}/snapshot_{stamp}.png";
+        var path = $"{dir}/snapshot_{stamp}.png";
         for (int n = 1; FileAccess.FileExists(path); n++)
-            path = $"{SnapshotDir}/snapshot_{stamp}_{n}.png";
+            path = $"{dir}/snapshot_{stamp}_{n}.png";
 
         var err = _lastImage.SavePng(path);
         _statusLabel.Text = err == Error.Ok
-            ? L10n.TrFormat("ui.snapshot.saved", ProjectSettings.GlobalizePath(path))
+            ? L10n.TrFormat("ui.snapshot.saved", path)
             : L10n.TrFormat("ui.snapshot.save_failed", err);
     }
 }

@@ -139,6 +139,9 @@ public partial class Boot : Control
     // M5-3 Tabbed Chat window
     private SLNG.App.UI.ChatWindow _chatWindow = null!;
     private SLNG.App.UI.SnapshotWindow _snapshotWindow = null!;
+    // FEAT-UI-17 (partial): user-chosen snapshot output folder. Same startup-holder pattern as
+    // DofSettings above.
+    private readonly SLNG.App.UI.SnapshotSettings _snapshotSettings = new();
     private SLNG.App.UI.EnvironmentWindow _environmentWindow = null!;
     // MVP2-3: minimap radar overlay + world map/search window.
     private SLNG.App.UI.MinimapOverlay _minimapOverlay = null!;
@@ -173,7 +176,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.57-alpha";
+    public const string AppVersion = "v0.22.59-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -501,6 +504,7 @@ public partial class Boot : Control
         _graphicsSettings.Load();
         _dofSettings.Load();
         _avatarHoverSettings.Load();
+        _snapshotSettings.Load();
 
         // Apply saved language setting
         _localizationManager.CurrentLocale = _uiSettings.Language;
@@ -606,6 +610,7 @@ public partial class Boot : Control
         hudLayer.AddChild(_snapshotWindow);
         _snapshotWindow.Initialize(hudLayer);
         _snapshotWindow.InitializeDof(_dofSettings); // FEAT-RENDER-07; controller wired post-login
+        _snapshotWindow.InitializeSettings(_snapshotSettings); // FEAT-UI-17 (partial)
 
         // FEAT-ENV-02: the shipped Windlight presets. Loaded here (a directory listing, no
         // parsing) so the picker has its index before it is ever opened.
