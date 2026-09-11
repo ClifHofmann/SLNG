@@ -295,43 +295,51 @@ float slng_glossiness_to_roughness(float glossiness) {
 // the single float in, the same way it already hands in NORMAL directly.
 //
 // v2 STILL produced no visible change live (v0.22.68-alpha, reported again: "ich seh aber noch
-// keine reflexion"). This time verified with an actual rendered PICTURE rather than hand-derived
-// arithmetic or single-pixel samples -- `scratch/probes/*.gd`'s pattern, but with
-// `Image.save_png()` on the viewport texture so the frame could be looked at (see BUG-RENDER-20
-// spec for the saved files). The v2 code, screenshotted unmodified: a dark grey sphere at shiny
-// HIGH showed the FEAT-RENDER-19 sun highlight and, on close comparison against a matte control,
-// a barely-there lightening of the upper rim -- nothing a person would describe as "a reflection"
-// without already knowing where to look. Two compounding problems, both numeric:
+// keine reflexion"). Investigated further with actual rendered PICTURES rather than hand-derived
+// arithmetic or single-pixel samples -- a `SceneTree`-rooted script run via `godot --path app -s
+// <script>.gd` (NOT `--headless`, which forces Godot's `dummy` rendering driver and never
+// populates a real viewport texture) that builds an isolated probe scene and calls
+// `Image.save_png()` on the viewport texture so the frame can actually be looked at. The v2 code,
+// screenshotted unmodified: a dark grey sphere at shiny HIGH showed the FEAT-RENDER-19 sun
+// highlight and, on close comparison against a matte control, a barely-there lightening of the
+// upper rim -- nothing a person would describe as "a reflection" without already knowing where to
+// look. Root cause: MAGNITUDE. `glossenv` in the reference is an actual captured HDR radiance
+// sample, explicitly clamped to [0, 10] (sampleReflectionProbes, reflectionProbeF.glsl:890) --
+// i.e. it can be an order of magnitude brighter than 1.0. SLNG's stand-in is `slng_blue_horizon`/
+// `slng_blue_density`, LDR Windlight haze colours that top out around 0.5-0.8 pre-linearize and
+// land under 0.55 in linear after `slng_srgb_to_linear`. Applying the viewer's literal
+// `*0.5 ... *0.5` attenuation chain -- tuned by LL against that HDR input -- to an input roughly
+// 20x dimmer produces a term on the order of 0.01-0.05, which is exactly what the screenshot
+// showed: technically present, invisible in practice.
 //
-// 1. MAGNITUDE. `glossenv` in the reference is an actual captured HDR radiance sample, explicitly
-//    clamped to [0, 10] (sampleReflectionProbes, reflectionProbeF.glsl:890) -- i.e. it can be an
-//    order of magnitude brighter than 1.0. SLNG's stand-in is `slng_blue_horizon`/
-//    `slng_blue_density`, LDR Windlight haze colours that top out around 0.5-0.8 pre-linearize
-//    and land under 0.55 in linear after `slng_srgb_to_linear`. Applying the viewer's literal
-//    `*0.5 ... *0.5` attenuation chain -- tuned by LL against that HDR input -- to an input roughly
-//    20x dimmer produces a term on the order of 0.01-0.05, which is exactly what the probe
-//    screenshot showed: technically present, invisible in practice.
-// 2. GEOMETRY. Simply removing the two `*0.5` fudges and boosting the raw colour (tried first,
-//    boost x6, both `*0.5`s dropped) does not reproduce Firestorm's look either -- rendered, it is
-//    a bright RING around the ENTIRE silhouette (a "glass bubble" look), because Fresnel
-//    (`clamp(1+dot(view,normal), 0.3, 1)`) is symmetric all the way around a sphere's limb: the
-//    BOTTOM of the silhouette gets exactly as much of the boosted term as the top, which is not
-//    what a real environment reflection does (the bottom of a sphere reflects the ground/floor,
-//    not the bright sky) and not what Firestorm's screenshot shows (bright on top, dark below,
-//    not an even halo).
+// A v3 attempt tried fixing this by gating the term's INTENSITY on `upness` (not just its hue),
+// on the theory that Firestorm's screenshot showed a patch confined to the sphere's upper half
+// rather than an even ring, and that only surface ORIENTATION (not view angle) could produce that
+// asymmetry. Shipped, still did not read as visible live (v0.22.69-alpha, "weiterhin keine
+// reflexionen"). Rendering it and LOOKING at the picture (not trusting the numbers alone, which
+// had shown a plausible-looking monotonic low<medium<high progression) showed why: multiplying
+// intensity by `upness` produces a stark, perfectly flat, dead-straight line at the world-space
+// equator -- everything above lit with a uniform wash, everything below completely unlit -- which
+// reads as "the top half of the ball is a different material", not as a reflection. A matte
+// control confirmed this line was entirely the new term's own doing, not pre-existing shading.
 //
-// Fixed by gating the term's INTENSITY on `upness` as well as its hue -- not just picking the
-// colour between horizon and zenith, but scaling the whole reflection down toward zero as the
-// surface stops facing up. This is the piece that actually produces "a patch on the upper
-// hemisphere, fading below" instead of "a ring around the silhouette": Fresnel alone cannot tell
-// the top of a sphere from the bottom (it only knows the VIEW angle), so intensity has to carry
-// the part of the shape that varies with which way the surface points in the WORLD, exactly the
-// same insight v2's colour-blend already had, now applied to brightness and not only hue.
-// Verified visually (not just numerically) against a saved probe screenshot at each step:
-// Fresnel-gated-only produced the ring; adding the `upness` intensity gate produced a patch
-// confined to the upper hemisphere, tracking shininess LOW < MEDIUM < HIGH exactly as before,
-// with the equator-line cutoff itself a real, expected consequence of how steeply a sphere's
-// surface curves away right at that latitude when viewed head-on -- not an artefact of the gate.
+// Reverted the intensity gate. `upness` blends the reflection's COLOUR (see below) but Fresnel
+// alone drives its INTENSITY, exactly like the viewer's own formula and like v1 -- rendered, this
+// is a soft, continuous rim glowing around the WHOLE silhouette, brightest where a real environment
+// reflection actually is strongest (grazing angles), with no hard seam anywhere. This is a ring,
+// not Firestorm's specific asymmetric patch -- but it is what a Fresnel-driven, no-real-probe
+// approximation can honestly produce, and it is exactly what this bug's own acceptance criteria
+// asks for ("strongest near the silhouette, as applyGlossEnv's Fresnel term predicts"). Matching
+// Firestorm's exact patch shape would need an actual reflection-probe capture of nearby geometry,
+// which is FEAT-ENV work, not this fix (see the note near the top of this comment).
+//
+// MAGNITUDE was retested against two saved probe renders -- the stock default SL sky global values
+// AND a deliberately dim, desaturated dusk/overcast palette (closer to what this bug's live reports
+// were actually shot against) -- because the whole reason v1/v2 failed was tuning against a palette
+// brighter than what a real region can ship. A `sky_color` floor (`max(..., 0.25)`) plus a `3.5`
+// boost (both empirically picked from the saved renders, not derived) keep the rim visibly present
+// against BOTH palettes without washing out the bright-sky case; `PRIM_SHINY_NONE` is unaffected in
+// either test, since this function is never called for it.
 vec3 slng_env_reflection(vec3 view_position, vec3 normal, float world_normal_up,
                           float shininess_level, vec3 base_color) {
     // fresnel: reflectionProbeF.glsl:894-896, unchanged. `pos`/`norm` there are the fragment's
@@ -341,34 +349,23 @@ vec3 slng_env_reflection(vec3 view_position, vec3 normal, float world_normal_up,
     fresnel *= fresnel;
     fresnel *= shininess_level;   // spec.a: the shininess LEVEL scales the whole term
 
-    // 0 at or below the horizon, rising to 1 facing straight up. Not the full hemisphere: SLNG
-    // carries no distinct "ground" colour as a shader global (only the sky dome material gets
-    // one, and only on the CPU side), so a downward-facing normal picks the horizon tint rather
-    // than fading toward black -- a reflection that is merely un-varying below the horizon, not an
-    // inaccurate one, since nothing here claims to show the actual ground. `upness` now ALSO
-    // scales the term's intensity (`patch` below), not only its hue -- see the v3 note above for
-    // why that is the change that actually made a visible difference.
+    // Colour only, NOT intensity (see the v3 revert above): 0 at or below the horizon, rising to 1
+    // facing straight up. Not the full hemisphere: SLNG carries no distinct "ground" colour as a
+    // shader global (only the sky dome material gets one, and only on the CPU side), so a
+    // downward-facing normal picks the horizon tint rather than fading toward black -- a
+    // reflection that is merely un-varying below the horizon, not an inaccurate one, since nothing
+    // here claims to show the actual ground.
     float upness = clamp(world_normal_up, 0.0, 1.0);
     vec3 sky_color = mix(slng_blue_horizon.rgb, slng_blue_density.rgb, upness);
+    // Floor: a dim/desaturated regional sky (dusk, overcast -- exactly what this bug's live
+    // reports were shot against) must not silently zero out the whole reflection.
+    sky_color = max(sky_color, vec3(0.25));
     vec3 glossenv = slng_srgb_to_linear(clamp(sky_color, vec3(0.0), vec3(1.0)));
 
-    // ENV_REFLECTION_BOOST (8.0): compensates for `sky_color` being an LDR haze-colour stand-in
-    // (tops out well under 1.0 after linearizing) where the viewer's own `glossenv` is a genuine
-    // HDR radiance sample clamped only at 10.0 -- see the v3 note above. Tuned empirically against
-    // saved probe screenshots (not derived): 8.0 is the smallest value at shiny HIGH that reads
-    // unambiguously as a bright reflected patch rather than a faint tint, without blowing the
-    // upper rim's blue channel out past a small, physically-plausible sliver near the true
-    // grazing+straight-up point (where `fresnel` and `patch` both peak at once -- a single point
-    // on a sphere, in practice a handful of pixels, not a visible blob in any of the probe
-    // screenshots at shiny low/medium/high).
-    //
-    // `patch`: the intensity gate itself. Deliberately linear in `upness`, not `pow(upness, n)` --
-    // a steeper falloff (tried at n=1.5) pulled the visible patch in to a thin crescent right at
-    // the top rim; linear let the reflection extend down across roughly the upper half of the
-    // visible sphere, which is what the Firestorm reference screenshot shows and what a plain
-    // `upness` already produces once foreshortening (a sphere's own geometry) is accounted for.
-    float patch = upness;
-    glossenv *= 8.0 * fresnel * patch;
+    // 3.5: empirically-tuned boost, see the note above -- compensates for `sky_color` being an
+    // LDR stand-in for what should be an HDR radiance sample. Intensity is Fresnel-only (no
+    // `upness` factor here), matching the viewer's own formula and producing a ring, not a patch.
+    glossenv *= 3.5 * fresnel;
     glossenv *= (vec3(1.0) - base_color);   // applyGlossEnv's "fake energy conservation"
     return glossenv;
 }

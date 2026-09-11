@@ -2,8 +2,8 @@
 
 - **Feature ID:** `BUG-RENDER-20`
 - **Track:** `render`
-- **Status:** `✅ Done (code, v3) — not yet re-confirmed live in-world against Firestorm`
-- **Owner:** `claude` (graphics-engineer)
+- **Status:** `✅ Done (code, v4) — not yet re-confirmed live in-world against Firestorm`
+- **Owner:** `claude` (graphics-engineer + orchestrating session)
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
 ## Overview & Goal
@@ -346,3 +346,66 @@ client-output log for that region was found on disk this session), and the `8.0`
 is tuned to look right against this session's own rendered screenshots, not against a
 side-by-side Firestorm frame. The next session with live grid access should do that walk-up
 comparison before considering this bug fully closed.
+
+## Round 4: round 3's OWN screenshot contradicted its own writeup
+
+User relaunched (log confirmed `[Boot] v0.22.69-alpha`, not a stale build) and reported: *"weiterhin
+keine reflexionen"* — round 3 unchanged too.
+
+**What round 3 actually got wrong.** Round 3's writeup above (paragraph "Fix v3") describes its own
+result as "bright patch on the upper hemisphere, fading toward nothing below the equator" and calls
+the sampled numbers "cleanly monotonic" as if that confirmed the intended shape. The orchestrating
+session re-ran round 3's own saved probe script this round and actually looked at the PNG (not just
+the three numbers round 3 printed) — and the picture shows something round 3's own writeup
+undersells: a stark, dead-straight, perfectly flat line at exactly the world-space equator, with a
+uniformly-washed blue-grey upper hemisphere above it and a completely flat black lower hemisphere
+below, no gradient at all at the seam. Re-rendering the MATTE control confirmed this line was
+entirely the new `upness`-gated intensity term's own doing (the matte control has no such line at
+any brightness). This does not read as "an environment reflection" to a human looking at it — it
+reads as "the top half of the ball is a different, flatter material," a visibly synthetic artefact,
+regardless of how monotonic the three sampled shininess levels were. **The lesson: three numbers
+increasing in the expected order is necessary but not sufficient evidence a fix looks right — round
+3 had the tool (saved PNGs) to catch this and did not look closely enough at what it saved.**
+
+**Fix (`v0.22.70-alpha`).** Reverted the `upness`-gated intensity entirely. `slng_env_reflection` now
+uses `upness` for COLOUR ONLY (`sky_color = mix(slng_blue_horizon, slng_blue_density, upness)`,
+unchanged from v2/v3) while INTENSITY goes back to Fresnel alone — `glossenv *= 3.5 * fresnel;`, no
+`patch` multiplier at all. This is structurally round 1's approach (a ring around the whole
+silhouette, not a patch confined to one hemisphere), re-tuned:
+
+- Re-rendered against the SAME stock-default-sky probe used in round 3: a soft, continuous,
+  believable rim glowing around the ENTIRE silhouette, brightest near grazing angles, hue shifting
+  subtly from horizon-tint at the sides/bottom to a cooler zenith-tint very close to the true top —
+  no seam anywhere, at any of the three shininess levels. This is a RING, not Firestorm's specific
+  asymmetric patch (Firestorm's shape comes from an actual reflection-probe capture of real nearby
+  geometry — a courtyard, presumably brighter on one side — which SLNG has no equivalent of and is
+  explicitly out of scope, see "the remaining difference" above) — but it is what a Fresnel-driven,
+  no-real-probe approximation can honestly produce, and it is exactly what this bug's OWN acceptance
+  criteria asks for: "shows an environment reflection, strongest near the silhouette, as
+  `applyGlossEnv`'s Fresnel term predicts."
+- Re-tuned the magnitude against TWO rendered palettes, not one, specifically because the whole
+  reason rounds 1-3 undershot was tuning against a brighter sky than a real region necessarily
+  ships: the same stock bright SL sky AND a second, deliberately dim/desaturated dusk-overcast probe
+  (`slng_blue_horizon`/`slng_blue_density` around 0.15-0.20, `ambient_light_energy` unchanged at
+  0.25) meant to approximate the mood the live reports were actually shot against (a muted pink-grey
+  sky, visible in the user's own screenshots) — still without a real capture of "Millenium" itself,
+  which remains unavailable on disk. A `sky_color` floor of `max(sky_color, vec3(0.25))` plus a
+  `3.5` boost (both read off the saved renders, not derived) keep the rim visibly distinct from a
+  matte control in BOTH renders, confirmed by eye, without the bright-sky render looking overblown.
+- `PRIM_SHINY_NONE` (probe steps 0-5) is untouched in every render across both palettes — the
+  function is structurally never called when `legacy_shininess == 0.0`, unchanged since round 1.
+
+**Verification:** `godot --headless --path app -- --selftest` 38/38 (uniform counts unchanged —
+no new global uniform, the fix only edits constants and one line of logic inside
+`slng_env_reflection`), `git diff app/project.godot` empty. `dotnet build` (both `SLNG.sln` and
+`app/SLNG.App.csproj`) and `dotnet test` (690, 0 failures) reconfirmed, unaffected by construction
+since no C# changed. `AppVersion` bumped to `v0.22.70-alpha`.
+
+**Honesty note (round 4):** every round of this bug so far has been verified by rendering an
+isolated probe scene and looking at the result — which is what caught rounds 2's near-invisibility
+and round 3's hemisphere-seam artefact, both misses that pure numeric sampling did not surface on
+its own. That same method has NOT yet been cross-checked against the one thing it cannot stand in
+for: an actual screenshot of the live grid, in the real "Millenium" region, next to a running
+Firestorm. Round 4's dusk-palette probe is a deliberately constructed approximation of that mood,
+not a capture of it. This remains the one verification step every round of this bug has been
+missing, and should be the very next thing done before considering this closed.
