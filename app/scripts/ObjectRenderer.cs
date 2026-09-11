@@ -2410,6 +2410,12 @@ public partial class ObjectRenderer : Node3D
         // emission when set, so the face reads at full colour regardless of scene lighting.
         material.SetShaderParameter(PrimShaderFamily.Fullbright, ft.Fullbright);
 
+        // FEAT-RENDER-19: the build tool's legacy Shiny. Set unconditionally -- the shader gives a
+        // specular MAP precedence, matching the viewer, which packs shininess into the vertex
+        // alpha only when there is no map. Zero here means genuinely matte, and the viewer skips
+        // its entire specular branch for such a face.
+        material.SetShaderParameter(PrimShaderFamily.LegacyShininess, ft.ShinyGlossiness);
+
         material.SetShaderParameter(PrimShaderFamily.PrimScale,
             new Godot.Vector3(primScale.X, primScale.Y, primScale.Z));
         // Centered like SL (u' = (u-0.5)*repeat + 0.5 + off) — the shader scales UVs from the

@@ -4848,7 +4848,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     f.OffsetV,
                     f.Rotation,
                     (byte)f.TexMapType,
-                    f.Fullbright);
+                    f.Fullbright,
+                    (byte)f.Shiny);
             }
         }
 

@@ -19,10 +19,10 @@ public class FaceSurfaceMergeTests
         Guid? texture = null, Guid? renderMaterial = null, Guid? legacyMaterial = null,
         Vector4? color = null, float repeatU = 1f, float repeatV = 1f,
         float offsetU = 0f, float offsetV = 0f, float rotation = 0f,
-        byte texGen = 0, bool fullbright = false) =>
+        byte texGen = 0, bool fullbright = false, byte shiny = 0) =>
         new(texture ?? TexA, renderMaterial ?? Guid.Empty, legacyMaterial ?? Guid.Empty,
             color ?? new Vector4(1, 1, 1, 1), repeatU, repeatV, offsetU, offsetV, rotation,
-            texGen, fullbright);
+            texGen, fullbright, shiny);
 
     private static (int Surfaces, bool[] RunStart) Plan(
         int[] submeshFaceIndices, FaceTexture[]? faces,
@@ -95,6 +95,10 @@ public class FaceSurfaceMergeTests
         { "rotation", Face(rotation: 1.5707964f) },
         { "texgen", Face(texGen: FaceTexture.TexGenPlanar) },
         { "fullbright", Face(fullbright: true) },
+        // A specular highlight is a material difference like any other: FEAT-RENDER-19 drives
+        // ROUGHNESS and SPECULAR from this, so a matte face merged with a polished one would
+        // take whichever material the run happened to build.
+        { "legacy shininess", Face(shiny: 2) },
     };
 
     [Theory]

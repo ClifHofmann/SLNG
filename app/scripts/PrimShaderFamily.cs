@@ -321,6 +321,10 @@ public static class PrimShaderFamily
     public static readonly StringName SpecularUvOffset = "specular_uv_offset";
     public static readonly StringName SpecularUvRotation = "specular_uv_rotation";
 
+    /// <summary>The build tool's legacy Shiny level, as glossiness (none 0, low 0.25, medium 0.5,
+    /// high 0.75). A face with a specular map ignores it, exactly as the viewer does.</summary>
+    public static readonly StringName LegacyShininess = "legacy_shininess";
+
     public static readonly StringName OrmTexture = "orm_texture";
     public static readonly StringName HasOrmTexture = "has_orm_texture";
 

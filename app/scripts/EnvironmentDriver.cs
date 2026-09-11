@@ -52,7 +52,7 @@ public sealed class EnvironmentDriver
 
     /// <summary>Name of the active water preset, or null when the region's own water is in use.</summary>
     public string? WaterPresetName { get; private set; }
-
+    
     /// <summary>True while any user preset is overriding the region.</summary>
     public bool HasPresetOverride => _skyOverride != null || _waterOverride != null;
 
@@ -365,12 +365,7 @@ public sealed class EnvironmentDriver
         bool moonUp = lightDirectionZ < 0f;
         Split(moonUp ? lighting.MoonDiffuse : lighting.SunDiffuse, out _, out float sunEnergy);
 
-        var amb = lighting.SunAmbient;
-        amb = new System.Numerics.Vector3(
-            MathF.Pow(MathF.Max(amb.X, 0f), 0.9f),
-            MathF.Pow(MathF.Max(amb.Y, 0f), 0.9f),
-            MathF.Pow(MathF.Max(amb.Z, 0f), 0.9f)) * 0.57f;
-        amb = new System.Numerics.Vector3(SrgbToLinear(amb.X), SrgbToLinear(amb.Y), SrgbToLinear(amb.Z));
+        var amb = ClassicShadowRadiance(lighting);
         float ambEnergy = amb.X * 0.2126f + amb.Y * 0.7152f + amb.Z * 0.0722f;
 
         // Only on a material move, so a static sky logs once rather than 60x a second.
@@ -383,7 +378,8 @@ public sealed class EnvironmentDriver
 
         GD.Print($"[ENVDBG] body={(moonUp ? "moon" : "sun")} sunZ={lightDirectionZ:F3} " +
                  $"lightZ={CalculatedLightDirection.Z:F3} " +
-                 $"=> lightEnergy={sunEnergy:F3} ambEnergy={ambEnergy:F3}");
+                 $"=> lightEnergy={sunEnergy:F3} ambEnergy={ambEnergy:F3} " +
+                 $"ambRGB=({amb.X:F3},{amb.Y:F3},{amb.Z:F3})");
         GD.Print($"[ENVDBG]   derived diffuse=({lit.X:F3},{lit.Y:F3},{lit.Z:F3}) " +
                  $"rawSunCol=({sky.SunlightColor.X:F2},{sky.SunlightColor.Y:F2},{sky.SunlightColor.Z:F2}) " +
                  $"rawAmbient=({sky.AmbientColor.X:F2},{sky.AmbientColor.Y:F2},{sky.AmbientColor.Z:F2})");
@@ -442,6 +438,38 @@ public sealed class EnvironmentDriver
     {
         if (c <= 0f) return 0f;
         return c <= 0.04045f ? c / 12.92f : MathF.Pow((c + 0.055f) / 1.055f, 2.4f);
+    }
+
+    /// <summary>Inverse of <see cref="SrgbToLinear"/>. Needed because Godot treats
+    /// <c>Light3D.LightColor</c> and <c>Environment.AmbientLightColor</c> as sRGB and runs
+    /// <c>srgb_to_linear</c> on them before shading — measured, not assumed: a 0.5 grey light on a
+    /// white albedo at NdotL 1 renders 0.498, which is <c>linear_to_srgb(srgb_to_linear(0.5))</c>,
+    /// where an unconverted colour would render 0.735. Feeding a value through this first makes
+    /// Godot's conversion cancel, so the shader receives the linear radiance we actually computed.</summary>
+    private static float LinearToSrgb(float c)
+    {
+        if (c <= 0f) return 0f;
+        return c <= 0.0031308f ? c * 12.92f : 1.055f * MathF.Pow(c, 1f / 2.4f) - 0.055f;
+    }
+
+    /// <summary>Like <see cref="Split"/>, but pre-compensates for the sRGB→linear conversion Godot
+    /// applies to light colours. <c>v</c> is the LINEAR radiance the shader must end up with;
+    /// energy carries the magnitude (Godot multiplies it in after the conversion, so it must stay
+    /// out of the transfer function).</summary>
+    private static void SplitLinear(System.Numerics.Vector3 v, out Color color, out float energy)
+    {
+        float max = MathF.Max(v.X, MathF.Max(v.Y, v.Z));
+        if (max <= 0.0001f)
+        {
+            color = Colors.Black;
+            energy = 0f;
+            return;
+        }
+        color = new Color(
+            LinearToSrgb(v.X / max),
+            LinearToSrgb(v.Y / max),
+            LinearToSrgb(v.Z / max));
+        energy = max;
     }
 
     /// <summary>Last reported atmosphere signature, so [SkyAtmos] prints on change rather than
@@ -755,7 +783,16 @@ public sealed class EnvironmentDriver
 
         bool moonUp = lightDirectionZ <= 0f;
         var diffuse = moonUp ? lighting.MoonDiffuse * MoonLightScale : lighting.SunDiffuse;
-        Split(diffuse, out var color, out var energy);
+
+        // The sunlit endpoint MINUS the shadow endpoint, so that adding Godot's linear ambient
+        // back reproduces the viewer's fully-lit pixel. See ClassicShadowRadiance for why the two
+        // endpoints are what gets matched.
+        var ambSrgb = ClassicAmbientSrgb(lighting);
+        var litSrgb = ambSrgb + diffuse * (SkySunlightScale * ClassicSunlitScale);
+        var radiance = SrgbToLinearVec(litSrgb) * ClassicFinalScale - ClassicShadowRadiance(lighting);
+        radiance = System.Numerics.Vector3.Max(radiance, System.Numerics.Vector3.Zero);
+
+        SplitLinear(radiance, out var color, out var energy);
         sun.LightColor = color;
         // At night, ensure directional moonlight has enough energy to cast crisp shadows
         // and specular water reflections, matching Firestorm
@@ -763,12 +800,66 @@ public sealed class EnvironmentDriver
         {
             energy = Mathf.Max(energy, 0.4f);
         }
-        // Godot's default DirectionalLight3D energy is 1.0 for a clear midday sun; SL's derived
-        // sunlight magnitude lands in roughly the same range, so no extra scale is applied here.
         // Clamped rather than left open-ended so a sky with an extreme setting cannot blow the
-        // exposure out past what the tonemapper (ACES, set in Boot.SetupEnvironment) can recover.
+        // exposure out past what the tonemapper (Linear, set in Boot.SetupEnvironment) can recover.
         sun.LightEnergy = Mathf.Clamp(energy, 0f, 3f);
     }
+
+    // softenLightF.glsl:159-160 and :226-233, the classic_mode > 0 branch. The viewer boosts the
+    // sunlight 1.35x, then mixes it into the ambient at 0.7 while scaling the ambient itself by
+    // 0.9 -- and does that sum in sRGB, converting once afterwards. The frame is finally scaled
+    // by 1.1 (:280-281).
+    private const float ClassicSunlitScale = 1.35f * 0.7f;
+    private const float ClassicAmbientScale = 0.9f;
+    private const float ClassicFinalScale = 1.1f;
+
+    // atmosphericsFuncs.glsl:163-164, applied OUTSIDE the classic_mode branch so they reach every
+    // sky: RenderSkySunlightScale and RenderSkyAmbientScale.
+    //
+    // 1.0, NOT Linden's 1.5. These are gSavedSettings rather than sky settings, and Firestorm --
+    // which is what we are compared against -- overrides both in its own settings.xml, with the
+    // comment "fudge factor for matching with pre-PBR viewer". Checked against
+    // FirestormViewer/phoenix-firestorm@master:indra/newview/app_settings/settings.xml, which also
+    // confirms RenderSkyAutoAdjustLegacy = 0 (so classic mode is on, as ADR 0003 concluded).
+    //
+    // Shipping Linden's 1.5 here made the scene brighter at EVERY albedo without changing the
+    // sun/ambient ratio at all -- the probe sphere read washed out rather than brighter, because
+    // lifting both lights together only slides the pixel up the compressive part of the sRGB
+    // encode. Contrast is the ratio; brightness is not contrast.
+    private const float SkySunlightScale = 1.0f;
+    private const float SkyAmbientScale = 1.0f;
+
+    /// <summary><c>amblit</c> as the viewer hands it to a surface, still sRGB-valued:
+    /// <c>pow(tmpAmbient, 0.9) * 0.57</c> (atmosphericsFuncs.glsl:125), scaled by the 0.9 the
+    /// classic mix applies to it. In classic mode NOTHING converts this to linear and nothing
+    /// greys it out — both of those live in the <c>classic_mode &lt; 1</c> branch
+    /// (atmosphericsFuncs.glsl:153-158), which is not the branch these skies take.</summary>
+    private static System.Numerics.Vector3 ClassicAmbientSrgb(SkyLighting lighting)
+    {
+        var amb = lighting.SunAmbient;
+        return new System.Numerics.Vector3(
+            MathF.Pow(MathF.Max(amb.X, 0f), 0.9f),
+            MathF.Pow(MathF.Max(amb.Y, 0f), 0.9f),
+            MathF.Pow(MathF.Max(amb.Z, 0f), 0.9f)) * (0.57f * SkyAmbientScale * ClassicAmbientScale);
+    }
+
+    /// <summary>The linear radiance a fully shadowed surface receives in the viewer's classic
+    /// path: <c>srgb_to_linear(amblit * 0.9) * 1.1</c>.
+    ///
+    /// Godot sums its lights in LINEAR space; the viewer sums sun and ambient in sRGB and converts
+    /// the sum once. Those cannot be made identical by rescaling, so what is matched instead are
+    /// the two ENDPOINTS a viewer actually looks at — the fully shadowed pixel (here) and the
+    /// fully sunlit one (ApplySun) — and the two interpolate slightly differently in between.
+    /// Matching only the magnitudes was never the issue: a transfer function applied where the
+    /// viewer applies none exaggerates every colour RATIO by the same 2.4 power, which is what
+    /// turned a mildly blue ambient (R/B 0.77) into a strongly blue one (0.77^2.4 = 0.30) and a
+    /// warm sun (R/B 0.58) into an orange one (0.27). Reported live as "shadow sides too blue,
+    /// sun sides too red".</summary>
+    private static System.Numerics.Vector3 ClassicShadowRadiance(SkyLighting lighting)
+        => SrgbToLinearVec(ClassicAmbientSrgb(lighting)) * ClassicFinalScale;
+
+    private static System.Numerics.Vector3 SrgbToLinearVec(System.Numerics.Vector3 v)
+        => new(SrgbToLinear(v.X), SrgbToLinear(v.Y), SrgbToLinear(v.Z));
 
     private void ApplyAmbient(Godot.Environment env, SkyLighting lighting)
     {
@@ -794,31 +885,25 @@ public sealed class EnvironmentDriver
         // `mTotalAmbient = ambient`. SL's nights are dark because a region's night KEYFRAME
         // carries a low ambient, not because the viewer substitutes one. Applying the scotopic
         // value (~0.008, i.e. effectively black) buried the whole scene.
-        var amb = lighting.SunAmbient;
-        amb = new System.Numerics.Vector3(
-            MathF.Pow(MathF.Max(amb.X, 0f), 0.9f),
-            MathF.Pow(MathF.Max(amb.Y, 0f), 0.9f),
-            MathF.Pow(MathF.Max(amb.Z, 0f), 0.9f)) * 0.57f;
-
         // The function that actually lights SURFACES is calcAtmosphericVarsLinear
-        // (atmosphericsFuncs.glsl:147), not calcAtmosphericVars -- and it does two more things to
-        // amblit before any geometry sees it:
+        // (atmosphericsFuncs.glsl:147), not calcAtmosphericVars -- and the two extra steps it is
+        // famous for,
         //     amblit = srgb_to_linear(amblit);
         //     amblit = vec3(dot(amblit, vec3(0.2126, 0.7152, 0.0722)));
-        // The sRGB->linear step is the one that matters here. It is not a uniform dimming: it
-        // pushes values below 1 down hard (0.37 -> 0.11) while lifting values above 1, i.e. it
-        // stretches contrast. That is what lets the real viewer hold a bright twilight sky over
-        // near-black ground at the same time -- the pairing that made our night look wrong even
-        // after the ambient scale was corrected. Every one of this region's 21 keyframes carries a
-        // high ambient (0.54..1.20), so without this step night could not be dark no matter what.
-        // Then the luminance dot greys it: SL's ambient tints nothing, it only sets a level.
-        amb = new System.Numerics.Vector3(SrgbToLinear(amb.X), SrgbToLinear(amb.Y), SrgbToLinear(amb.Z));
-        float lum = amb.X * 0.2126f + amb.Y * 0.7152f + amb.Z * 0.0722f;
-        // Keep a readable baseline ambient level so night scenes are not pitch-black, matching Firestorm
-        lum = MathF.Max(lum, 0.08f);
-        amb = new System.Numerics.Vector3(lum, lum, lum);
+        // sit INSIDE `if (classic_mode < 1)`. These skies take the other branch (ADR 0003: no
+        // reflection_probe_ambiance, so canAutoAdjust is true and classic mode is on), where the
+        // ambient reaches the surface still sRGB-valued and still coloured. Applying that branch's
+        // conversion here anyway, on top of the one Godot runs on AmbientLightColor, is what made
+        // shadow sides read blue: two 2.4 powers on a mildly blue ambient.
+        var amb = ClassicShadowRadiance(lighting);
+        float currentLum = amb.X * 0.2126f + amb.Y * 0.7152f + amb.Z * 0.0722f;
+        if (currentLum < 0.02f)
+        {
+            float scale = 0.02f / MathF.Max(currentLum, 0.0001f);
+            amb = new System.Numerics.Vector3(amb.X * scale, amb.Y * scale, amb.Z * scale);
+        }
 
-        Split(amb, out var color, out var energy);
+        SplitLinear(amb, out var color, out var energy);
         env.AmbientLightColor = color;
         env.AmbientLightEnergy = Mathf.Clamp(energy, 0f, 2f);
     }

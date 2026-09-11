@@ -173,7 +173,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.40-alpha";
+    public const string AppVersion = "v0.22.56-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1000,10 +1000,14 @@ public partial class Boot : Control
             // so a 150 m CSM range only spread the 4096 atlas thinner over empty distance; 90 m
             // (just under draw distance) puts that resolution on the near shadows you actually see.
             DirectionalShadowMaxDistance = 90.0f,
-            ShadowBias = 0.015f,
-            ShadowNormalBias = 1.0f,
-            ShadowOpacity = 0.88f,
-            ShadowBlur = 1.8f,
+            // Do NOT lower these to chase self-shadowing on the avatar. Tried 0.015/1.0 in
+            // v0.22.52: shadow acne came straight back as stripes across the courtyard floor.
+            // The acne is a shadow-map RESOLUTION problem, so the lever is the atlas and the CSM
+            // range, not the bias.
+            ShadowBias = 0.1f,
+            ShadowNormalBias = 3.0f,
+            ShadowOpacity = 1.0f,
+            ShadowBlur = 1.0f,
         };
         AddChild(sun);
         _sun = sun;

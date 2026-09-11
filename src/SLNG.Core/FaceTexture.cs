@@ -46,8 +46,32 @@ public readonly record struct FaceTexture(
     /// face ignores scene lighting and renders at its full unlit texture colour -- signs,
     /// screens, neon, anything meant to look self-lit. The renderer routes it through EMISSION
     /// with ALBEDO zeroed (FEAT-RENDER-06). Separate from glow and from glTF emissive.</summary>
-    bool Fullbright = false)
+    bool Fullbright = false,
+    /// <summary>SL's LEGACY per-face shininess, the build tool's Shiny: none / low / medium /
+    /// high, as the raw 0-3 protocol value (LLTextureEntry::getShiny).
+    ///
+    /// This is a different system from <see cref="LegacyMaterialId"/>'s specular MAP, and the
+    /// viewer treats them as alternatives: it packs shininess into the vertex alpha only
+    /// "if we don't have a specular map" (llface.cpp:1412). The renderer must do the same --
+    /// a specular map wins, and this drives the highlight for every other face.
+    ///
+    /// Until FEAT-RENDER-19 nothing read this at all, and prim_common handed every face
+    /// Godot's default SPECULAR 0.5 instead: a 4% highlight on matte faces that SL says have
+    /// none, and the same 4% on faces SL says are polished. Both wrong, in opposite
+    /// directions.</summary>
+    byte Shiny = 0)
 {
+    /// <summary>The viewer's SHININESS_TO_ALPHA (llface.cpp:1420): the glossiness that a legacy
+    /// shiny level feeds into the specular LUT. Index is the raw 0-3 value; anything out of
+    /// range is treated as none, as the viewer asserts it cannot be.</summary>
+    public float ShinyGlossiness => Shiny switch
+    {
+        1 => 0.25f,
+        2 => 0.50f,
+        3 => 0.75f,
+        _ => 0.0f,
+    };
+
     /// <summary>SL TEX_GEN_DEFAULT -- the face uses the mesh's own UVs.</summary>
     public const byte TexGenDefault = 0;
 

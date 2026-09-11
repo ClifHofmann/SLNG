@@ -92,6 +92,13 @@ uniform vec3 specular_tint = vec3(1.0);
 uniform float specular_glossiness = 0.2;   // SpecExp/255; the viewer's default is 0.2*255
 uniform float specular_environment = 0.0;  // EnvIntensity/255
 
+// LEGACY per-face shininess -- the build tool's Shiny, as glossiness already mapped through the
+// viewer's SHININESS_TO_ALPHA table: none 0, low 0.25, medium 0.5, high 0.75 (llface.cpp:1420).
+// The viewer stores it in the vertex alpha and only "if we don't have a specular map", so a
+// specular map takes precedence over this -- see the branch below. Zero means genuinely matte,
+// and the viewer then skips its whole specular branch (`if (spec.a > 0.0)`, softenLightF.glsl:243).
+uniform float legacy_shininess = 0.0;
+
 uniform vec2 specular_uv_scale = vec2(1.0);
 uniform vec2 specular_uv_offset = vec2(0.0);
 uniform float specular_uv_rotation = 0.0;
@@ -213,6 +220,27 @@ vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
     return slng_place_uv(uv, uv_scale, uv_offset, uv_rotation);
 }
 
+// Blinn-Phong glossiness -> Godot's PERCEPTUAL roughness, from the code that BUILDS SL's
+// specular lookup texture (LLPipeline::createLUTBuffers, pipeline.cpp:1447):
+//     n = glossiness * glossiness * RenderSpecularExponent    (default 368)
+//     spec = pow(N dot H, n)
+// then the standard Blinn-Phong -> GGX conversion alpha = sqrt(2/(n+2)). Godot's ROUGHNESS is
+// perceptual, i.e. alpha = roughness^2, so the square root is taken twice.
+//
+// Getting this wrong is not subtle. A first attempt used roughness = 1 - glossiness, which for
+// the reef rock's glossiness of 51/255 gives 0.8 and no visible highlight at all; the ported
+// value is 0.59, and that is the difference between a matte rock and one whose ledges catch the
+// sun.
+//
+// Shared by BOTH specular paths -- the legacy material's specular map and the build tool's
+// plain Shiny level -- because in the viewer both index the same LUT and only the source of
+// `glossiness` differs. Kept as one function so the two cannot drift apart.
+float slng_glossiness_to_roughness(float glossiness) {
+    float n = glossiness * glossiness * 368.0;
+    float ggx_alpha = sqrt(2.0 / (n + 2.0));
+    return clamp(sqrt(ggx_alpha), 0.0, 1.0);
+}
+
 // Samples everything a face needs and hands it back through out-params. It does NOT assign
 // the built-ins itself: METALLIC / ROUGHNESS / NORMAL_MAP / EMISSION are fragment-stage
 // built-ins and Godot rejects writing them from a user function ("Unknown identifier in
@@ -236,7 +264,18 @@ float slng_shade(vec2 uv, vec3 view_position,
     out_metallic = metallic_factor;
     out_roughness = roughness_factor;
 
-    out_specular = 0.5;   // Godot's default: a 4% dielectric F0.
+    // 0, not Godot's default 0.5. The viewer gates its ENTIRE specular and environment branch on
+    // `if (spec.a > 0.0)` (softenLightF.glsl:243), and spec.a is the face's legacy shininess --
+    // zero for PRIM_SHINY_NONE, which is most SL content. SLNG does not read legacy shininess at
+    // all (there is no uniform for it), so a flat 0.5 here was a 4% dielectric highlight driven by
+    // no SL data whatsoever, on every face without a specular map.
+    //
+    // Found with the probe sphere: greys matched Firestorm exactly while the pure primaries came
+    // out visibly duller. That is the signature -- 4% of neutral reflection is invisible on a
+    // white or grey surface and washes out a fully saturated one, and a blue sphere went violet
+    // because what it was reflecting was the warm courtyard. A specular map still overrides this
+    // below, which is the only path SL actually feeds.
+    out_specular = 0.0;
 
     if (has_specular_texture) {
         vec3 spec = texture(specular_texture, v_specular_uv).rgb * specular_tint;
@@ -250,20 +289,7 @@ float slng_shade(vec2 uv, vec3 view_position,
             glossiness *= texture(normal_texture, has_normal_uv ? v_normal_uv : uv).a;
         }
 
-        // The Blinn-Phong exponent SL actually uses, from the code that BUILDS its specular
-        // lookup texture (LLPipeline::createLUTBuffers, pipeline.cpp:1447):
-        //     n = glossiness * glossiness * RenderSpecularExponent      (default 368)
-        //     spec = pow(N dot H, n)
-        // Then the standard Blinn-Phong -> GGX conversion, alpha = sqrt(2/(n+2)), and Godot's
-        // ROUGHNESS is PERCEPTUAL, i.e. alpha = roughness^2 -- so the square root is taken twice.
-        //
-        // Getting this wrong is not subtle. A first attempt used roughness = 1 - glossiness,
-        // which for the reef rock's glossiness of 51/255 gives 0.8 and no visible highlight at
-        // all; the ported value is 0.59, and that is the difference between a matte rock and one
-        // whose ledges catch the sun.
-        float n = glossiness * glossiness * 368.0;
-        float ggx_alpha = sqrt(2.0 / (n + 2.0));
-        out_roughness = clamp(sqrt(ggx_alpha), 0.0, 1.0);
+        out_roughness = slng_glossiness_to_roughness(glossiness);
 
         // The map's RGB scales the highlight's STRENGTH, matching the viewer's
         // `color += lit * scol * sunlit * spec.rgb`. Godot has no per-texel specular colour, so
@@ -275,6 +301,20 @@ float slng_shade(vec2 uv, vec3 view_position,
         // metalness, so it folds in there, scaled by the same luminance so it only applies where
         // the map says the surface is shiny at all.
         out_metallic = clamp(metallic_factor + specular_environment * out_specular, 0.0, 1.0);
+    }
+    else if (legacy_shininess > 0.0) {
+        // The build tool's Shiny, for a face with no specular map. `else`, not a second `if`:
+        // the viewer packs shininess into the vertex alpha only when there is no specular map
+        // (llface.cpp:1412), so a map always wins and the two never combine.
+        //
+        // 0.5 is Godot's standard 4% dielectric F0. The viewer's legacy highlight is a
+        // Blinn-Phong lobe scaled by a white specular colour and is not energy-conserving, so
+        // there is no exact equivalent; what SL genuinely varies between low/medium/high is the
+        // TIGHTNESS of the lobe, and that is what the glossiness above carries. Taking the
+        // conservative physical value for the strength keeps a polished face polished without
+        // inventing brightness the protocol never sent.
+        out_specular = 0.5;
+        out_roughness = slng_glossiness_to_roughness(legacy_shininess);
     }
 
     // glTF ORM packing: occlusion in R, roughness in G, metallic in B.
