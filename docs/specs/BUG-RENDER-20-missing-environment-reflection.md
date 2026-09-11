@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-20`
 - **Track:** `render`
-- **Status:** `✅ Done`
+- **Status:** `✅ Done (code, v2) — not yet re-confirmed live in-world against Firestorm`
 - **Owner:** `claude` (graphics-engineer)
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -180,8 +180,8 @@ express it through METALLIC/SPECULAR/ROUGHNESS:
   `slng_apply_atmospherics`'s own comment already documents for `VIEW_MATRIX` — a
   `fragment()`-only built-in, unreachable from a function `fragment()` calls (which is why
   `AvatarController` publishes `slng_sun_direction_view` as a global instead of transforming
-  in-shader). Fixed by staying in view space and using a flat horizon tint rather than a
-  direction-dependent one.
+  in-shader). The FIRST cut of this fix worked around it by staying in view space and using a
+  flat horizon tint — see "Live re-test and v2 fix" below for why that had to change, and how.
 - `EnvironmentDriver.ApplyAmbient`'s comment corrected per the acceptance criteria: it claimed
   Godot ignores `AmbientLightColor` under `AmbientSource.Sky` unconditionally; measured (see
   table above) that this only holds at the DEFAULT `sky_contribution` of 1 — which is what this
@@ -204,3 +204,49 @@ reproducible probe measurements of every mechanism it touches, and (c) a full gr
 selftest — but the acceptance criteria's "matches Firestorm's ~0.19 magnitude at the silhouette"
 is a qualitative target this session could not pixel-compare against a running Firestorm. Worth
 a live A/B on the next in-world session.
+
+## Live re-test and v2 fix (same session, immediately after)
+
+The user WAS live-testing (screenshots, side-by-side against Firestorm) and reported, unprompted,
+that the fix above changed nothing visible: *"ich seh aber noch keine reflexion"*. Confirmed
+running the actual fixed build (`[Boot] v0.22.67-alpha` in the client's own log) — not a stale
+assembly, the usual first suspect for "a fix has no effect" in this project.
+
+Comparing the two screenshots side by side (same camera position, both viewers, sphere framed
+close to head-on): Firestorm's reflection is not a rim effect at all in this framing — it reads
+as visibly BRIGHTER across the whole upper half of the sphere, where the surface faces up toward
+the open sky, fading toward the lower half. The v1 fix's `glossenv` was a single flat colour, so
+its only source of variation was the Fresnel term (viewing angle vs. normal) — nearly zero away
+from the silhouette, which is most of a sphere framed close to head-on. A real reflection varies
+with which way a point's surface FACES (what part of the environment it points at), which Fresnel
+alone — a function of the VIEW ray only — structurally cannot produce.
+
+**v2 fix (`v0.22.68-alpha`):** blend two already-available Windlight globals by how much the
+normal faces up, instead of one flat colour: `slng_blue_horizon` (at or below the horizon) toward
+`slng_blue_density` (SL's own zenith-leaning scattering term — reusing it as a zenith stand-in
+mirrors what `EnvironmentDriver.ApplySkyDome` already does for the sky dome itself), weighted by
+`clamp(world_normal_up, 0.0, 1.0)`. No distinct "ground" shader global exists, so a downward
+normal reflects the same horizon tint rather than fading to black — a limitation (nothing below
+the horizon is modelled), not a claim of accuracy down there.
+
+Getting "which way is up" needs `INV_VIEW_MATRIX`, unreachable from `slng_env_reflection` for the
+reason already documented above. Unlike `slng_sun_direction_view`, this could NOT become a new
+per-frame global uniform either: the sun moves once a frame, but the camera's basis is different
+for every fragment of every frame, so there is no single value to publish. Instead each of the 17
+`prim_*.gdshader` variants' `fragment()` computes `(INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).y`
+itself (Godot world space: +Y is up) and passes the single float into `slng_shade()`, mechanically
+threaded the same way `NORMAL` itself already was — one more parameter on an already-shared
+signature, not a new pattern.
+
+Verified: `godot --headless --path app -- --selftest` 38/38 green post-change (shaders still
+compile, uniform counts unchanged — `slng_blue_density` was already declared, reused for the sun/
+ambient path), `project.godot` untouched. No C# changed, so `dotnet build`/`test` (690) are
+unaffected by construction; re-ran both anyway to confirm. `AppVersion` bumped again, to
+`v0.22.68-alpha`.
+
+**Still not re-confirmed live against this v2** — the change compiles and passes every automated
+check, but has not yet been screenshotted against Firestorm the way v1 was (and v1's own probe
+numbers, while real, are exactly what turned out not to be the whole story — a flat 0.15 centre
+value can look identical to "no reflection" from some camera angles and obviously present from
+others, which a probe sampling fixed points cannot by itself catch). This needs the same live
+walk-up/A-B the user was already mid-way through when they reported v1 as not working.

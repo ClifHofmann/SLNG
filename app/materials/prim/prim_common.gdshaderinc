@@ -269,13 +269,32 @@ float slng_glossiness_to_roughness(float glossiness) {
 // courtyard walls the way a placed probe would -- only a Fresnel-weighted, shininess-scaled sky
 // streak, which is what the acceptance criteria asks for.
 //
-// Deliberately stays in VIEW space throughout, unlike a true reflection vector, which would need
-// INV_VIEW_MATRIX to bring the reflected ray back to world space to compare against a world-space
-// sky. That matrix is a fragment()-only built-in -- unreachable from a function fragment() calls,
-// exactly the same restriction slng_apply_atmospherics' own comment already documents for
-// VIEW_MATRIX, which is why AvatarController publishes slng_sun_direction_view instead of
-// transforming here. A flat horizon tint, weighted by the same Fresnel term, sidesteps it.
-vec3 slng_env_reflection(vec3 view_position, vec3 normal, float shininess_level, vec3 base_color) {
+// A flat single-colour glossenv (the first cut of this fix) was nearly invisible from a head-on
+// framing: with only the Fresnel term varying it, the additive term is tiny anywhere near the
+// centre of a sphere and only picks up near the silhouette -- but live in-world comparison
+// against Firestorm (same probe, same camera position) showed its reflection is NOT just a rim
+// brightening. It is visibly brighter across the UPPER half of the sphere, where the surface
+// faces up toward the open sky, than lower down -- a real environment reflection varies with
+// which part of the sky/scene a point's normal faces, not only with the VIEWING angle. Fresnel
+// alone cannot produce that: it depends on the angle between the VIEW ray and the normal, which
+// is symmetric regardless of which way the surface points in the world.
+//
+// Fixed by blending two already-available Windlight globals by how much the normal faces up:
+// slng_blue_horizon (the horizon colour) for a normal at or below the horizon, toward
+// slng_blue_density (SL's own zenith-leaning scattering term -- see EnvironmentDriver
+// .ApplySkyDome's identical reasoning for reusing it as a zenith stand-in) for one facing
+// straight up. Still an approximation of an actual radiance-map sample (see below), but now one
+// that varies with surface orientation the way a real reflection has to.
+//
+// Getting "which way is up" here needs INV_VIEW_MATRIX, a fragment()-only built-in -- unreachable
+// from a function fragment() calls, exactly the restriction slng_apply_atmospherics' own comment
+// already documents for VIEW_MATRIX. Unlike slng_sun_direction_view (a per-FRAME global, because
+// the sun moves), the camera's own basis changes every fragment of every frame, so the same
+// per-frame-global trick does not apply here -- instead each variant's fragment() computes
+// `(INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).y` (Godot world space: +Y is up) once, itself, and hands
+// the single float in, the same way it already hands in NORMAL directly.
+vec3 slng_env_reflection(vec3 view_position, vec3 normal, float world_normal_up,
+                          float shininess_level, vec3 base_color) {
     // fresnel: reflectionProbeF.glsl:894-896, unchanged. `pos`/`norm` there are the fragment's
     // VIEW-SPACE position and normal -- exactly view_position and NORMAL here (both already in
     // view space in every prim variant's fragment()).
@@ -283,7 +302,15 @@ vec3 slng_env_reflection(vec3 view_position, vec3 normal, float shininess_level,
     fresnel *= fresnel;
     fresnel *= shininess_level;   // spec.a: the shininess LEVEL scales the whole term
 
-    vec3 glossenv = slng_srgb_to_linear(clamp(slng_blue_horizon.rgb, vec3(0.0), vec3(1.0)));
+    // 0 at or below the horizon (where the horizon colour already applies faithfully), rising to
+    // 1 facing straight up. Not the full hemisphere: SLNG carries no distinct "ground" colour as a
+    // shader global (only the sky dome material gets one, and only on the CPU side), so a downward
+    // normal reflects the same horizon tint rather than fading toward black -- a reflection that is
+    // merely un-varying below the horizon, not an inaccurate one, since nothing here claims to show
+    // the actual ground.
+    float upness = clamp(world_normal_up, 0.0, 1.0);
+    vec3 sky_color = mix(slng_blue_horizon.rgb, slng_blue_density.rgb, upness);
+    vec3 glossenv = slng_srgb_to_linear(clamp(sky_color, vec3(0.0), vec3(1.0)));
 
     glossenv *= 0.5 * fresnel;              // applyGlossEnv: `glossenv *= 0.5;` then `*= fresnel`
     glossenv *= (vec3(1.0) - base_color);   // applyGlossEnv's "fake energy conservation"
@@ -297,7 +324,7 @@ vec3 slng_env_reflection(vec3 view_position, vec3 normal, float shininess_level,
 // sampling logic in one place, which is the part that must not drift between variants.
 //
 // Returns the albedo alpha, the one thing the variants genuinely disagree about.
-float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
+float slng_shade(vec2 uv, vec3 view_position, vec3 normal, float world_normal_up,
                  out vec3 out_albedo,
                  out float out_metallic, out float out_roughness, out float out_specular,
                  out vec3 out_normal_map, out float out_normal_depth,
@@ -370,7 +397,7 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
         // inventing brightness the protocol never sent.
         out_specular = 0.5;
         out_roughness = slng_glossiness_to_roughness(legacy_shininess);
-        env_reflection = slng_env_reflection(view_position, normal, legacy_shininess, out_albedo);
+        env_reflection = slng_env_reflection(view_position, normal, world_normal_up, legacy_shininess, out_albedo);
     }
 
     // glTF ORM packing: occlusion in R, roughness in G, metallic in B.
