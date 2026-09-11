@@ -44,7 +44,14 @@
       "world_map": "World Map...",
       "minimap": "Minimap",
       "rebake_avatar": "Rebake avatar (Ctrl+Alt+R)",
+      "avatar": "Avatar",
+      "hover_height": "Hover Height...",
       "about": "About Puris Viewer..."
+    },
+    "avatar_hover": {
+      "title": "Hover Height",
+      "description": "Nudges your avatar up or down -- fixes a mesh body/shoe that doesn't quite touch the ground.",
+      "reset": "Reset"
     },
     "hud": {
       "stand_up": "Stand Up"

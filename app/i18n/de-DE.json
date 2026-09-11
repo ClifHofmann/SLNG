@@ -44,7 +44,14 @@
       "world_map": "Weltkarte...",
       "minimap": "Minikarte",
       "rebake_avatar": "Avatar neu backen (Strg+Alt+R)",
+      "avatar": "Avatar",
+      "hover_height": "Schwebehöhe...",
       "about": "Über Puris Viewer..."
+    },
+    "avatar_hover": {
+      "title": "Schwebehöhe",
+      "description": "Verschiebt deinen Avatar nach oben oder unten -- praktisch, wenn ein Mesh-Body/Schuh nicht ganz am Boden aufsetzt.",
+      "reset": "Zurücksetzen"
     },
     "hud": {
       "stand_up": "Aufstehen"

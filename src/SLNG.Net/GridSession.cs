@@ -3592,6 +3592,47 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public Task<string> RequestServerSideRebakeAsync(CancellationToken ct = default)
         => SendServerAppearanceUpdateAsync(ct);
 
+    /// <summary>FEAT-AVATAR-03: sends the local hover-height offset to the sim, fire-and-forget --
+    /// same "no user-facing failure path" contract as the rest of the self-avatar send surface here,
+    /// because a slider drag has nowhere to show an error and shouldn't block the caller.
+    ///
+    /// <para>Wire mechanism confirmed against <c>scratch/slviewer</c>'s <c>LLVOAvatarSelf::
+    /// sendHoverHeight</c> (llvoavatarself.cpp) and the pinned LibreMetaverse 3.1.3 package by
+    /// reflection: an HTTP CAPS POST to the <b>AgentPreferences</b> capability -- NOT the
+    /// "AvatarHoverHeight" cap this task's own spec assumed, and NOT an <c>AgentUpdate</c> UDP
+    /// field (there is no hover field on that message; the only wire occurrence of "HoverHeight" in
+    /// the message template is the unrelated inbound <c>AvatarAppearance.AppearanceHover</c> block).
+    /// LibreMetaverse 3.1.3 already implements the send as <c>AgentManager.SetHoverHeightAsync</c>;
+    /// no raw LLSD needed here.</para>
+    ///
+    /// <para>Deliberately NOT gated on a simulator-features check: <c>Simulator.Features</c> (the
+    /// property the real viewer and a newer LibreMetaverse checkout use to gate the UI on
+    /// <c>AvatarHoverHeightEnabled</c>) does not exist on the pinned 3.1.3 package -- verified by
+    /// reflection, not assumed. <c>SetHoverHeightAsync</c> already no-ops silently (no exception)
+    /// when the region's <c>AgentPreferences</c> cap is absent (OpenSim: expected to be, per
+    /// protocol-re's source read), which is exactly "degrade cleanly" for a region without support.</para>
+    ///
+    /// <para>Clamped defensively to the real viewer's actual range (<c>MIN_HOVER_Z</c>/
+    /// <c>MAX_HOVER_Z</c>, llvoavatar.cpp) rather than this feature's own ±2.0 m UI range, in case a
+    /// future caller doesn't go through <c>AvatarHoverSettings</c>' own clamp.</para></summary>
+    public void SetHoverHeight(float metres)
+    {
+        float clamped = Math.Clamp(metres, -3.0f, 3.0f);
+        _ = SetHoverHeightAsyncInternal(clamped);
+    }
+
+    private async Task SetHoverHeightAsyncInternal(float metres)
+    {
+        try
+        {
+            await _client.Self.SetHoverHeightAsync(metres).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Avatar] SetHoverHeight({metres:0.00}) failed: {ex.Message}");
+        }
+    }
+
     /// <summary>Builds the <c>UpdateAvatarAppearance</c> POST body -- pure + internal so a test can
     /// pin the shape (<c>{ "cof_version": &lt;int&gt; }</c>, mirroring the reference viewer's
     /// <c>postData["cof_version"] = cofVersion</c>).</summary>

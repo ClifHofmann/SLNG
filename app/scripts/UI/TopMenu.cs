@@ -27,6 +27,8 @@ namespace SLNG.App.UI
         /// real viewer's rebake — recomposites the baked textures from the worn set and re-sends the
         /// appearance. The escape hatch when a wearable change did not visibly take.</summary>
         public Action? OnRebakeAvatar;
+        /// <summary>FEAT-AVATAR-03: opens the Hover Height window.</summary>
+        public Action? OnOpenHoverHeight;
         public Action? OnCreateTestSkin;
         public Action? OnBakeTestPattern;
 
@@ -111,21 +113,31 @@ namespace SLNG.App.UI
             worldMenu.AddItem(L10n.Tr("ui.menu.environment"), 3);
             worldMenu.AddItem(L10n.Tr("ui.menu.world_map"), 4);
             worldMenu.AddItem(L10n.Tr("ui.menu.minimap"), 5);
-            worldMenu.AddSeparator();
-            worldMenu.AddItem(L10n.Tr("ui.menu.rebake_avatar"), 6);
-            worldMenu.AddSeparator();
-            worldMenu.AddItem(L10n.Tr("ui.menu.detach_all_huds"), 1);
-            worldMenu.AddItem(L10n.Tr("ui.menu.detach_all_attachments"), 2);
             worldMenu.IdPressed += (id) => {
                 if (id == 0) OnCreateLandmark?.Invoke();
                 else if (id == 3) OnOpenEnvironment?.Invoke();
                 else if (id == 4) OnOpenWorldMap?.Invoke();
                 else if (id == 5) OnOpenMinimap?.Invoke();
-                else if (id == 6) OnRebakeAvatar?.Invoke();
-                else if (id == 1) OnDetachAttachments?.Invoke(true);
-                else if (id == 2) OnDetachAttachments?.Invoke(false);
             };
             menuBar.AddChild(worldMenu);
+
+            // Avatar Menu (FEAT-AVATAR-03) -- shell for FEAT-AVATAR-02's troubleshooting tools too.
+            // Rebake and Detach-All moved here from World, where they used to be the only avatar-
+            // related entries scattered among unrelated World actions.
+            var avatarMenu = new PopupMenu();
+            avatarMenu.Name = L10n.Tr("ui.menu.avatar");
+            avatarMenu.AddItem(L10n.Tr("ui.menu.rebake_avatar"), 0);
+            avatarMenu.AddItem(L10n.Tr("ui.menu.hover_height"), 3);
+            avatarMenu.AddSeparator();
+            avatarMenu.AddItem(L10n.Tr("ui.menu.detach_all_huds"), 1);
+            avatarMenu.AddItem(L10n.Tr("ui.menu.detach_all_attachments"), 2);
+            avatarMenu.IdPressed += (id) => {
+                if (id == 0) OnRebakeAvatar?.Invoke();
+                else if (id == 1) OnDetachAttachments?.Invoke(true);
+                else if (id == 2) OnDetachAttachments?.Invoke(false);
+                else if (id == 3) OnOpenHoverHeight?.Invoke();
+            };
+            menuBar.AddChild(avatarMenu);
 
             // Developer Menu
             var devMenu = new PopupMenu();

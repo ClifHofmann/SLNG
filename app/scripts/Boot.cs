@@ -132,6 +132,10 @@ public partial class Boot : Control
     private SLNG.App.UI.DofSettings _dofSettings = new();
     private SLNG.App.DepthOfFieldController? _dofController;
 
+    // FEAT-AVATAR-03: hover height. Same startup-holder / post-login-application split as DoF.
+    private SLNG.App.UI.AvatarHoverSettings _avatarHoverSettings = new();
+    private SLNG.App.UI.AvatarHoverWindow _avatarHoverWindow = null!;
+
     // M5-3 Tabbed Chat window
     private SLNG.App.UI.ChatWindow _chatWindow = null!;
     private SLNG.App.UI.SnapshotWindow _snapshotWindow = null!;
@@ -169,7 +173,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.30-alpha";
+    public const string AppVersion = "v0.22.31-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -464,6 +468,7 @@ public partial class Boot : Control
         };
 
         _topMenu.OnRebakeAvatar = RebakeAvatar;
+        _topMenu.OnOpenHoverHeight = () => ActivateLauncher(_avatarHoverWindow, _avatarHoverWindow.Toggle);
         _topMenu.OnCreateTestSkin = CreateTestSkin;
         _topMenu.OnBakeTestPattern = BakeTestPattern;
 
@@ -495,6 +500,7 @@ public partial class Boot : Control
         // shadows genuinely off after login, with the checkbox ticked.
         _graphicsSettings.Load();
         _dofSettings.Load();
+        _avatarHoverSettings.Load();
 
         // Apply saved language setting
         _localizationManager.CurrentLocale = _uiSettings.Language;
@@ -607,6 +613,21 @@ public partial class Boot : Control
         _environmentWindow = new SLNG.App.UI.EnvironmentWindow { Name = "EnvironmentWindow" };
         hudLayer.AddChild(_environmentWindow);
         _environmentWindow.Initialize(_windlightPresets, _environmentDriver);
+
+        // FEAT-AVATAR-03: hover height. OnHoverChanged applies the local self-avatar render offset
+        // immediately (not only after the sim echoes AvatarAppearance back) and sends the new value
+        // to the sim; AvatarHoverSettings persists it regardless.
+        _avatarHoverWindow = new SLNG.App.UI.AvatarHoverWindow { Name = "AvatarHoverWindow" };
+        hudLayer.AddChild(_avatarHoverWindow);
+        _avatarHoverWindow.Initialize(_avatarHoverSettings);
+        _avatarHoverWindow.OnHoverChanged = (value, persist) =>
+        {
+            _avatarHoverSettings.SetHoverHeight(value, persist);
+            ApplySelfHoverHeight(value);
+            // Real-viewer parity (llvoavatarself.cpp onFinalCommit): send on release/reset only,
+            // never on every drag tick -- `persist` already means exactly that here.
+            if (persist) _session?.SetHoverHeight(value);
+        };
 
         // MVP2-3: constructed here like every other panel (always present, hidden until
         // toggled); Initialize(...) happens later in OnLoginPressed once session/world/asset
@@ -1203,6 +1224,12 @@ public partial class Boot : Control
                 // open (BUG-UI-07) -- doing it here, not in OnLoginPressed, is what stops the
                 // communication window appearing over the still-visible loading screen.
                 RestoreOpenWindows();
+
+                // FEAT-AVATAR-03: re-apply a persisted hover height to the local render now that
+                // the self avatar entity exists -- optimistic (see ApplySelfHoverHeight), not
+                // waiting on the sim to echo it back. The outbound send for region re-entry lives
+                // in ApplyRegionOrigin, which already ran before this point on a fresh login.
+                if (_avatarHoverSettings.HoverHeight != 0f) ApplySelfHoverHeight(_avatarHoverSettings.HoverHeight);
             }
         }
 
@@ -2315,6 +2342,29 @@ public partial class Boot : Control
         // its void-water plane sits at this region's water height (order matters -- it reads the
         // origin we just set).
         _terrainRenderer?.SetPrimaryRegion(handle);
+
+        // FEAT-AVATAR-03: the real viewer zeroes hover height on a region that doesn't support the
+        // AgentPreferences cap and re-sends it on one that does (llvoavatarself.cpp
+        // setHoverIfRegionEnabled), so a persisted non-default value needs re-applying on every
+        // region change, not just at login. GridSession.SetHoverHeight is itself a no-op on a
+        // region without the cap. Local render is unaffected either way -- it's optimistic, not
+        // fed by this.
+        if (_avatarHoverSettings.HoverHeight != 0f) _session?.SetHoverHeight(_avatarHoverSettings.HoverHeight);
+    }
+
+    /// <summary>FEAT-AVATAR-03: applies a hover-height value to the local self-avatar render
+    /// immediately, without waiting for the sim to echo AvatarAppearance back (per protocol-re:
+    /// the sim republishes AvatarAppearance to OTHERS, not reliably back to the sender). This is
+    /// the same AvatarComponent.HoverOffsetZ field AvatarRenderer already adds into rootPos.Y for
+    /// every avatar including the local one (see its "round 9" comment) -- so writing it here is
+    /// enough, no renderer change needed. A no-op if the local agent entity doesn't exist yet
+    /// (not logged in, or still loading); the login-complete and OnHoverChanged call sites both
+    /// tolerate that silently.</summary>
+    private void ApplySelfHoverHeight(float metres)
+    {
+        GetLocalAgentTransform(); // ensures _localAgent is populated if the world/agent exist
+        var avatarComp = _localAgent?.GetComponent<SLNG.Core.Components.AvatarComponent>();
+        if (avatarComp != null) avatarComp.HoverOffsetZ = metres;
     }
 
     /// <summary>FEAT-AVATAR-01: manual avatar rebake — World menu entry and Ctrl+Alt+R, the same
