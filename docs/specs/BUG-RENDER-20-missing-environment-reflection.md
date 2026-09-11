@@ -195,7 +195,7 @@ globals), `godot --headless --path app -- --selftest` 38/38 (every prim shader c
 avatar/HUD twin's uniform count still matches its base variant). Re-ran the reflection probe
 post-fix: shiny low/medium/high all clearly brighter than the pre-fix run and now monotonically
 increasing with level (probe centre R channel `0.1176 → 0.1412 → 0.1529`); the matte control
-unchanged. `AppVersion` bumped to `v0.22.65-alpha`.
+unchanged. `AppVersion` bumped to `v0.22.67-alpha`.
 
 **Honesty note:** this was NOT re-verified against the live grid / a reference-viewer
 screenshot in this session (no tool available to drive the native Godot window interactively).
