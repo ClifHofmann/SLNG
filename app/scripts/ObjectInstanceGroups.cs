@@ -50,6 +50,15 @@ internal sealed class ObjectInstanceGroups
     public bool IsInstanced(Guid id)
         => _memberKey.TryGetValue(id, out var key) && _groups.ContainsKey(key);
 
+    /// <summary>Diagnostic-only: the realised group a member currently belongs to, or null if it
+    /// is not instanced (pending, or not tracked at all). Lets a click diagnostic show the ACTUAL
+    /// bound material/mesh a member draws through, rather than only the per-object face data that
+    /// went into the fingerprint -- the two can legitimately diverge if this member's own state
+    /// changed after it joined (see <see cref="Join"/>: re-fingerprinting only happens on the next
+    /// cull-sweep offer).</summary>
+    public InstanceGroup? GroupFor(Guid id)
+        => _memberKey.TryGetValue(id, out var key) && _groups.TryGetValue(key, out var g) ? g : null;
+
     /// <summary>True if this prim is either instanced or a pending first-of-key member. The cull
     /// sweep uses it to skip re-deriving a key (and re-fingerprinting a material) for a prim it
     /// has already placed — an explicit <see cref="Leave"/> from a material/mesh change is what
@@ -127,13 +136,13 @@ internal sealed class ObjectInstanceGroups
         if (!_groups.TryGetValue(key, out var group)) return;
 
         group.Remove(id);
-        RestoreMesh(id, group.SharedMesh);
+        RestoreMesh(id, group.SharedMesh, group.SharedMaterial);
 
         if (group.Count <= 1)
         {
             foreach (var remaining in group.Members)
             {
-                RestoreMesh(remaining, group.SharedMesh);
+                RestoreMesh(remaining, group.SharedMesh, group.SharedMaterial);
                 _memberKey.Remove(remaining);
             }
             group.Dissolve();
@@ -141,10 +150,23 @@ internal sealed class ObjectInstanceGroups
         }
     }
 
-    private void RestoreMesh(Guid id, Mesh shared)
+    // BUG-RENDER-17: restoring ONLY `Mesh` left an evicted member with no material at all --
+    // Godot's per-surface override array is bound to the mesh's surface count, so nulling `Mesh`
+    // on Join (line ~78/98 above) discards whatever override this node had, and reassigning the
+    // shared mesh here got back an empty override array, not the one that used to be there. The
+    // node then fell back to Godot's built-in default material: dim, generic-lit, and identical
+    // regardless of windlight or shadow/SSAO settings -- reported live as "sieht aus wie ein
+    // übertriebener Schatten", reproduced on demand by simply right-clicking (selecting) a
+    // previously-correct instanced object, since selection is exactly this Leave() path
+    // (SuppressInstancing -> ApplyHighlightBox needs a live node). Every member of a group shares
+    // one material by construction (InstanceGroupKey's whole point), so the group's own
+    // SharedMaterial is always the right value to put back -- no per-member state to track.
+    private void RestoreMesh(Guid id, Mesh shared, Material material)
     {
         var n = _nodeFor(id);
-        if (n != null && n.Mesh == null) n.Mesh = shared;
+        if (n == null || n.Mesh != null) return;
+        n.Mesh = shared;
+        n.SetSurfaceOverrideMaterial(0, material);
     }
 
     /// <summary>One <c>[Instancing]</c> perf line: how much the batching is actually buying.</summary>
@@ -199,12 +221,14 @@ internal sealed class InstanceGroup
     private readonly List<Transform3D> _xf = new();
 
     public Mesh SharedMesh { get; }
+    public Material SharedMaterial { get; }
     public int Count => _slots.Count;
     public IReadOnlyList<Guid> Members => _slots.Order;
 
     public InstanceGroup(Node3D parent, in InstanceGroupKey key, Mesh sharedMesh, Material sharedMaterial)
     {
         SharedMesh = sharedMesh;
+        SharedMaterial = sharedMaterial;
         _mm = new MultiMesh
         {
             TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,

@@ -1155,6 +1155,7 @@ public class AssetService
             var asset = await _session.FetchMaterialDataAsync(materialId).ConfigureAwait(false);
             if (asset == null)
             {
+                Console.WriteLine($"[AssetService] material {materialId} fetch returned null (RenderMaterials cap gave no data)");
                 return null;
             }
 

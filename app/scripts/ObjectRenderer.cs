@@ -288,6 +288,26 @@ public partial class ObjectRenderer : Node3D
         || ReferenceEquals(s, PrimShaderFamily.BlendPrepass)
         || ReferenceEquals(s, PrimShaderFamily.BlendDepth);
 
+    /// <summary>BUG-RENDER-17: true for the alpha-TESTED cutout kinds (Scissor, ScissorEdge,
+    /// Hash) — these stay in the opaque queue and were assumed instancing-safe on that basis, but
+    /// MEASURED live to render wrong under a <c>MultiMeshInstance3D</c>: a Mask-mode ground
+    /// texture with a soft alpha-fade border (a "Blendable Trails" path, cutoff=225) showed a
+    /// large dark hole exactly where it should have faded softly, on every grouped instance,
+    /// while an individually-drawn copy of the byte-identical <see cref="ShaderMaterial"/> (same
+    /// resource, confirmed via the click diagnostic) rendered correctly — and `--no-instancing`
+    /// alone fixed it with no other change. The opaque-queue depth WRITE these shaders rely on
+    /// for order-independence appears to not honour the fragment discard when Godot draws it as a
+    /// MultiMesh instance, so the "cut away" area still occupies the depth buffer and blocks
+    /// whatever should show through it (here: the grass the path is meant to blend into) —
+    /// reading as a black hole rather than the intended soft fade. Excluded from instancing
+    /// pending a real Godot-side fix or workaround; a plain <see cref="PrimShaderFamily.Opaque"/>
+    /// face (no discard at all) is unaffected and stays eligible.</summary>
+    private static bool HasAlphaDiscard(Shader? s) =>
+        ReferenceEquals(s, PrimShaderFamily.Scissor)
+        || ReferenceEquals(s, PrimShaderFamily.ScissorEdge)
+        || ReferenceEquals(s, PrimShaderFamily.Hash)
+        || ReferenceEquals(s, PrimShaderFamily.Select(PrimShaderFamily.Kind.Scissor, PrimShaderFamily.Surface.WorldPrim, doubleSided: true));
+
     private void LogFaceAlpha(Guid texId, string decision)
     {
         if (!Diagnostics.Enabled) return;
@@ -782,6 +802,12 @@ public partial class ObjectRenderer : Node3D
                 if (f.LegacyMaterialId != Guid.Empty) faceSummary.Append($" mat={f.LegacyMaterialId.ToString()[..8]}");
                 if (f.RenderMaterialId != Guid.Empty) faceSummary.Append($" pbr={f.RenderMaterialId.ToString()[..8]}");
                 if (f.Color.W < 0.995f) faceSummary.Append($" a={f.Color.W:0.##}");
+                // A non-white RGB tint multiplies straight into the shader's albedo (ObjectRenderer.cs
+                // ~2355, `AlbedoColor = colorTint`) with no gamma step of its own -- a face
+                // reported "too dark" with a normal-looking texture is otherwise indistinguishable
+                // from "this face's own SL tint IS dark" purely from the alpha-only summary above.
+                if (f.Color.X < 0.99f || f.Color.Y < 0.99f || f.Color.Z < 0.99f)
+                    faceSummary.Append($" rgb=({f.Color.X:0.##},{f.Color.Y:0.##},{f.Color.Z:0.##})");
             }
         }
         else
@@ -790,6 +816,8 @@ public partial class ObjectRenderer : Node3D
             if (prim.LegacyMaterialId != Guid.Empty) faceSummary.Append($" mat={prim.LegacyMaterialId.ToString()[..8]}");
             if (prim.RenderMaterialId != Guid.Empty) faceSummary.Append($" pbr={prim.RenderMaterialId.ToString()[..8]}");
             if (prim.ColorTint.W < 0.995f) faceSummary.Append($" a={prim.ColorTint.W:0.##}");
+            if (prim.ColorTint.X < 0.99f || prim.ColorTint.Y < 0.99f || prim.ColorTint.Z < 0.99f)
+                faceSummary.Append($" rgb=({prim.ColorTint.X:0.##},{prim.ColorTint.Y:0.##},{prim.ColorTint.Z:0.##})");
         }
         GD.Print($"[FaceParams]   faces: {faceSummary}");
 
@@ -841,6 +869,21 @@ public partial class ObjectRenderer : Node3D
                 drawn = "NO VISUAL (never built)";
             else if (vs.ResourcesReleased)
                 drawn = "RESOURCES-RELEASED (beyond draw distance)";
+            // FEAT-PERF-06: a MultiMesh-instanced member has its OWN node's Mesh nulled by design
+            // (ObjectInstanceGroups.Join, "n.Mesh = null" -- the shared MultiMeshInstance3D draws
+            // it instead), so this check must be BEFORE the "geometry never arrived" verdict below
+            // or every instanced object in the scene reports as broken.
+            else if (renderer._instanceGroups?.GroupFor(e.Id) is { } grp)
+            {
+                // Dump the ACTUAL bound material, not the per-object face data that decided the
+                // fingerprint -- if this member's own resolved material differs from what its
+                // group's shared material shows, the fingerprint match was wrong (a stale/partial
+                // state when it joined) rather than the object's own data being at fault.
+                string matInfo = grp.SharedMaterial is ShaderMaterial sm
+                    ? $"albedo={sm.GetShaderParameter("albedo_color")} shader={sm.Shader?.ResourcePath ?? sm.Shader?.GetInstanceId().ToString() ?? "?"}"
+                    : $"material={grp.SharedMaterial?.GetType().Name ?? "none"}";
+                drawn = $"INSTANCED (drawn via shared MultiMesh, group size={grp.Count}, {matInfo})";
+            }
             else if (vs.MeshInstance.Mesh == null)
                 drawn = "NO MESH (geometry never arrived)";
             else if (!vs.MeshInstance.Visible)
@@ -2523,9 +2566,10 @@ public partial class ObjectRenderer : Node3D
             }
         }
 
+        PbrMaterialData? pbr = null;
         if (ft.RenderMaterialId != Guid.Empty && _assetService != null)
         {
-            var pbr = await _assetService.GetMaterialAsync(ft.RenderMaterialId);
+            pbr = await _assetService.GetMaterialAsync(ft.RenderMaterialId);
             if (pbr != null)
             {
                 if (_pbrMaterialsSeen.TryAdd(ft.RenderMaterialId, 0))
@@ -2649,8 +2693,19 @@ public partial class ObjectRenderer : Node3D
                 }
                 // No await Task.WhenAll(tasks) here! Let the textures populate asynchronously so the mesh renders immediately.
             }
+            else
+            {
+                // FEAT-PERF-02 sibling gap: a PBR material fetch failure used to leave the face
+                // with zero texture and zero diagnostic (the pbr==null branch simply did nothing,
+                // and because this whole block runs inside `if (ft.RenderMaterialId != Empty)`,
+                // the legacy-texture `else if` below never ran either) -- the face rendered flat
+                // AlbedoColor/colorTint forever. Fall back to the face's own legacy diffuse
+                // TextureId (SL always carries one independently of RenderMaterialId, see
+                // FaceTexture.cs) exactly like a pre-PBR viewer would show.
+                GD.PrintErr($"[FaceTex] object PBR material {ft.RenderMaterialId} fetch returned null — falling back to legacy diffuse texture (see [AssetService] log for reason)");
+            }
         }
-        else if (ft.TextureId != Guid.Empty)
+        if (pbr == null && ft.TextureId != Guid.Empty)
         {
             used.Add(ft.TextureId);
             _ = GetOrCreateGpuTextureAsync(ft.TextureId, screenPixelArea, priority).ContinueWith(t =>
@@ -3672,7 +3727,10 @@ public partial class ObjectRenderer : Node3D
     /// <para>Eligibility (all required): not selected/suppressed, in range, visible, single-surface
     /// <see cref="ArrayMesh"/>, a shareable depth-writing <see cref="ShaderMaterial"/> (never a
     /// sorted-transparent kind — those depend on per-object sort depth and the BUG-RENDER-16
-    /// split), no running texture animation, no split children, no light/particle child.</para></summary>
+    /// split — and never an alpha-discard kind either, i.e. no Scissor/ScissorEdge/Hash:
+    /// BUG-RENDER-17 found MultiMesh instancing of those renders wrong, see
+    /// <see cref="HasAlphaDiscard"/>), no running texture animation, no split children, no
+    /// light/particle child.</para></summary>
     private void EvaluateInstancing(VisualState state)
     {
         if (_instanceGroups == null || !RenderConfig.EnableInstancing)
@@ -3710,6 +3768,7 @@ public partial class ObjectRenderer : Node3D
                   ?? state.MeshInstance.GetSurfaceOverrideMaterial(0) as ShaderMaterial;
         if (mat == null) { RejectInstancing("no-shadermaterial"); return; }
         if (IsSortedTransparent(mat.Shader)) { RejectInstancing("sorted-transparent"); return; }
+        if (HasAlphaDiscard(mat.Shader)) { RejectInstancing("alpha-discard"); return; }
 
         // The object's REAL (size-based) shadow intent, not a value the distance cull may have just
         // flipped to Off -- otherwise a group's shadow flag would depend on where the camera
