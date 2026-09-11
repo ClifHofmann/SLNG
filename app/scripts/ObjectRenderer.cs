@@ -62,6 +62,11 @@ public partial class ObjectRenderer : Node3D
             new(float.NaN, float.NaN, float.NaN, float.NaN);
         public FaceTexture[]? LoadedFaces;
         public PrimShape? LoadedPrimShape;
+        // BUG-RENDER-19: the MeshDetailLevel PickPrimDetailLevel chose for the currently-loaded
+        // procedural mesh. Null alongside LoadedPrimShape (nothing procedural loaded yet). Lets
+        // the cull sweep tell whether the viewpoint has moved enough to warrant a re-mesh, instead
+        // of the level being picked once at first load and never revisited.
+        public MeshDetailLevel? LoadedPrimDetailLevel;
 
         // GpuCache key of the mesh this object currently references (Guid.Empty = none).
         // BUG-RENDER-16: this is the MERGED key -- geometry plus the surface-merge pattern the
@@ -623,6 +628,32 @@ public partial class ObjectRenderer : Node3D
                                 / System.Diagnostics.Stopwatch.Frequency;
                 }
 
+                // BUG-RENDER-19: re-evaluate a procedural prim's tessellation as the viewpoint
+                // moves, the same way the texture-LOD re-offer above does for texture resolution.
+                // Without this, PickPrimDetailLevel ran exactly once -- when UpdateVisual first
+                // saw the shape -- so a sphere/torus first seen from far away, or during login
+                // before the local agent position was known (that path falls back to Medium),
+                // stayed at that coarse tessellation forever however close the camera later got.
+                // The real viewer re-runs the equivalent of this on every camera-distance update
+                // (LLDrawable::updateDistance -> LLVOVolume::updateLOD, lldrawable.cpp). Instanced
+                // members are skipped -- FEAT-PERF-06 batches identical repeated prims into one
+                // MultiMesh precisely so their per-instance detail stops mattering individually.
+                if (state.MeshInstance.Visible && !state.ResourcesReleased
+                    && state.LoadedPrimShape.HasValue && _assetService != null
+                    && (_instanceGroups == null || !_instanceGroups.IsInstanced(id)))
+                {
+                    float maxScale = Mathf.Max(state.MeshInstance.Scale.X,
+                                                Mathf.Max(state.MeshInstance.Scale.Y, state.MeshInstance.Scale.Z));
+                    float apparentSize = maxScale / Mathf.Max(Mathf.Sqrt(viewDSq), 0.1f);
+                    var wantLod = DetailLevelForApparentSize(apparentSize);
+                    if (state.LoadedPrimDetailLevel.HasValue && state.LoadedPrimDetailLevel.Value != wantLod)
+                    {
+                        var shape = state.LoadedPrimShape.Value;
+                        state.LoadedPrimDetailLevel = wantLod;
+                        _ = LoadAndApplyPrimMeshAsync(state, shape, shape.ProfileCurve, wantLod);
+                    }
+                }
+
                 // FEAT-PERF-06: rides the same spread sweep -- offer this prim to an instancing
                 // group, or pull it out. Cheap for the common case (already tracked -> one
                 // HashSet lookup and return).
@@ -678,6 +709,7 @@ public partial class ObjectRenderer : Node3D
 
         state.LoadedMeshId = Guid.Empty;
         state.LoadedPrimShape = null;
+        state.LoadedPrimDetailLevel = null;
         state.LoadedTextureId = VisualState.NotLoaded;
         state.LoadedMaterialId = VisualState.NotLoaded;
         state.LoadedColorTint = new System.Numerics.Vector4(float.NaN, float.NaN, float.NaN, float.NaN);
@@ -1822,6 +1854,7 @@ public partial class ObjectRenderer : Node3D
                     {
                         state.LoadedMeshId = prim.MeshId;
                         state.LoadedPrimShape = null;
+                        state.LoadedPrimDetailLevel = null;
                         _ = LoadAndApplyMeshAsync(state, prim.MeshId);
                     }
                 }
@@ -1833,6 +1866,7 @@ public partial class ObjectRenderer : Node3D
                         state.LoadedMeshId = prim.SculptId;
                         state.LoadedSculptType = prim.SculptType;
                         state.LoadedPrimShape = null;
+                        state.LoadedPrimDetailLevel = null;
                         _ = LoadAndApplySculptMeshAsync(state, prim.SculptId, prim.SculptType, prim.ProfileCurve);
                     }
                 }
@@ -1844,6 +1878,7 @@ public partial class ObjectRenderer : Node3D
                     state.LoadedPrimShape = prim.Shape;
                     state.LoadedMeshId = Guid.Empty;
                     var lod = PickPrimDetailLevel(entity, prim.Scale);
+                    state.LoadedPrimDetailLevel = lod;
                     _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve, lod);
                 }
 
@@ -2082,8 +2117,13 @@ public partial class ObjectRenderer : Node3D
         float distance = objectPos.DistanceTo(agentPos);
 
         float maxScale = Mathf.Max(scale.X, Mathf.Max(scale.Y, scale.Z));
-        float apparentSize = maxScale / Mathf.Max(distance, 0.1f);
+        return DetailLevelForApparentSize(maxScale / Mathf.Max(distance, 0.1f));
+    }
 
+    // BUG-RENDER-19: shared by the initial pick above and the cull sweep's periodic
+    // re-evaluation below, so both agree on the same thresholds.
+    private static MeshDetailLevel DetailLevelForApparentSize(float apparentSize)
+    {
         if (apparentSize > 0.3f) return MeshDetailLevel.Highest;
         if (apparentSize > 0.1f) return MeshDetailLevel.High;
         if (apparentSize > 0.03f) return MeshDetailLevel.Medium;
@@ -2099,8 +2139,10 @@ public partial class ObjectRenderer : Node3D
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (!IsInstanceValid(state.MeshInstance)) return;
-            // Drop stale results: the shape may have changed again while we were meshing.
-            if (state.LoadedPrimShape != shape) return;
+            // Drop stale results: the shape may have changed again while we were meshing, or
+            // (BUG-RENDER-19) a later re-evaluation already moved on to a different LOD -- an
+            // in-flight request for a level nobody wants anymore must not clobber it.
+            if (state.LoadedPrimShape != shape || state.LoadedPrimDetailLevel != lod) return;
 
             if (mesh != null && mesh.Submeshes.Count > 0)
             {
