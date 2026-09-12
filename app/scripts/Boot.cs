@@ -78,12 +78,19 @@ public partial class Boot : Control
     /// frame forever. AGENTS.md non-negotiable #3 (render budgets over fidelity) is what rules
     /// Always out for a continuously-running open world with no fixed rooms to pre-bake probes
     /// for.</summary>
-    private const double ReflectionProbeUpdateIntervalSeconds = 3.0;
+    /// <remarks>Lowered 3.0 -> 0.5 after the first live look: at 3s the reflection is stale for
+    /// most of any walk, and re-baking in one visible step reads as lag ("sehr verzögert"). The
+    /// 3s figure came from the measurement below, but that measurement's expensive case was
+    /// repositioning EVERY FRAME (~1.27x baseline at 60fps = ~180 recaptures per 3s). Two per
+    /// second is ~1% of that recapture rate, i.e. nowhere near the measured cost, while being six
+    /// times more responsive. Live headroom confirms there is room for it: the client reports
+    /// 163 FPS at a 6.1ms frame with 0.0 hitches/s on this scene.</remarks>
+    private const double ReflectionProbeUpdateIntervalSeconds = 0.5;
 
     /// <summary>An avatar/vehicle/teleport that outruns the periodic cadence above gets an
     /// immediate re-bake instead of waiting out the rest of the interval with a stale, far-away
     /// reflection sitting at the old capture point.</summary>
-    private const float ReflectionProbeMoveThresholdMeters = 10.0f;
+    private const float ReflectionProbeMoveThresholdMeters = 3.0f;
 
     private double _reflectionProbeAccum;
     private Godot.Vector3 _reflectionProbeLastCapturePos;
@@ -206,7 +213,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.73-alpha";
+    public const string AppVersion = "v0.22.74-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1157,7 +1164,7 @@ public partial class Boot : Control
         // (measured in BUG-RENDER-20's own table). First three bakes then every 20th, so a long
         // session does not drown the log.
         _reflectionProbeBakeCount++;
-        if (_reflectionProbeBakeCount <= 3 || _reflectionProbeBakeCount % 20 == 0)
+        if (_reflectionProbeBakeCount <= 3 || _reflectionProbeBakeCount % 100 == 0)
         {
             var env = _worldEnvironment?.Environment;
             GD.Print(
