@@ -206,7 +206,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.71-alpha";
+    public const string AppVersion = "v0.22.72-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1126,7 +1126,32 @@ public partial class Boot : Control
 
         _reflectionProbe.GlobalPosition = camPos;
         _reflectionProbe.UpdateMode = ReflectionProbe.UpdateModeEnum.Once;
+
+        // FEAT-RENDER-20 diagnostic. The feature verified clean in an isolated probe scene through
+        // the REAL shader path (a courtyard of coloured walls reflected correctly off a
+        // legacy_shininess sphere) and still read as "no reflection" in-world, which is the exact
+        // failure shape BUG-RENDER-20 hit four times: something differs between the test scene and
+        // the live client, and guessing which thing has a bad track record here. This prints what
+        // cannot be seen from a screenshot -- that the probe exists, is visible, actually re-bakes,
+        // where it sits, and (the live suspect) what ambient energy the EnvironmentDriver is
+        // driving, since Godot scales image-based lighting by it and zeroes IBL entirely at 0
+        // (measured in BUG-RENDER-20's own table). First three bakes then every 20th, so a long
+        // session does not drown the log.
+        _reflectionProbeBakeCount++;
+        if (_reflectionProbeBakeCount <= 3 || _reflectionProbeBakeCount % 20 == 0)
+        {
+            var env = _worldEnvironment?.Environment;
+            GD.Print(
+                $"[ReflProbe] bake #{_reflectionProbeBakeCount} visible={_reflectionProbe.Visible} " +
+                $"pos=({camPos.X:0.#},{camPos.Y:0.#},{camPos.Z:0.#}) size={_reflectionProbe.Size.X:0.#} " +
+                $"maxDist={_reflectionProbe.MaxDistance:0.#} interior={_reflectionProbe.Interior} " +
+                $"intensity={_reflectionProbe.Intensity:0.###} " +
+                $"| ambientSource={env?.AmbientLightSource} ambientEnergy={env?.AmbientLightEnergy:0.###} " +
+                $"skyContribution={env?.AmbientLightSkyContribution:0.###} tonemap={env?.TonemapMode}");
+        }
     }
+
+    private int _reflectionProbeBakeCount;
 
     /// <summary>Standing dev tool (F5): renders the sun's actual direction into the scene as an
     /// emissive beam + sphere anchored at the local avatar. Screen-space reasoning about "which
