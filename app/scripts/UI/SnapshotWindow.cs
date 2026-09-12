@@ -6,8 +6,9 @@ namespace SLNG.App.UI;
 /// <summary>
 /// MVP3-4 Phase 1: take a world-only photo of the current 3D view and save it as a PNG.
 ///
-/// Capture hides the whole <see cref="_hudLayer"/> CanvasLayer for one rendered frame so the
-/// shot carries no windows, toolbar or overlay — then reads the main viewport's texture back.
+/// Capture hides every CanvasLayer for one rendered frame — windows, toolbar, menu bar, dialogs,
+/// avatar name tags and worn HUD attachments are all CanvasLayers, the 3D world is not — then
+/// reads the main viewport’s texture back, so the shot carries the world and nothing else.
 ///
 /// FEAT-RENDER-07 adds the depth-of-field controls below the capture buttons. They belong here
 /// rather than in Preferences because DoF is framing, not a quality setting: you set the focal
@@ -22,6 +23,13 @@ public partial class SnapshotWindow : SLNGWindow
     private const string DefaultSnapshotDir = "user://snapshots";
 
     private CanvasLayer? _hudLayer;
+
+    // Nothing registers chrome layers any more -- see HideEveryCanvasLayer. The registration
+    // approach shipped once and the menu bar was still in the photo: SetupHud() builds this
+    // window BEFORE SetupTopMenu() creates the menu, so the registration handed over a null and
+    // silently did nothing. Enumerating the tree at capture time cannot be out of order, and
+    // cannot miss a layer somebody adds later either.
+
     private Viewport? _vp;
     private TextureRect _preview = null!;
     private Label _resolutionLabel = null!;
@@ -41,10 +49,6 @@ public partial class SnapshotWindow : SLNGWindow
     // Capture already hides the whole HUD for the single frame it reads back (see the class
     // doc comment) -- this is a separate, manual toggle so the user can compose the shot with
     // a clean view instead of only seeing the HUD-free result after pressing Capture.
-    private CheckButton _hideHudCheck = null!;
-    // Guards the Toggled handler while _Process resyncs the checkbox to _hudLayer.Visible, so
-    // that resync does not read back as a user click and re-toggle the HUD it just followed.
-    private bool _refreshingHudCheck;
 
     // --- Depth of field (FEAT-RENDER-07) ---------------------------------------------------
     private DofSettings? _dof;
@@ -113,21 +117,11 @@ public partial class SnapshotWindow : SLNGWindow
         _resolutionLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
         vbox.AddChild(_resolutionLabel);
 
-        _hideHudCheck = new CheckButton
-        {
-            Text = L10n.Tr("ui.snapshot.hide_hud"),
-            TooltipText = L10n.Tr("ui.snapshot.hide_hud_tooltip"),
-            FocusMode = FocusModeEnum.None,
-        };
-        _hideHudCheck.Toggled += on =>
-        {
-            if (_refreshingHudCheck || _hudLayer == null) return;
-            // Hiding the layer hides this window too (it lives inside the HUD like everything
-            // else) -- same as the existing top-menu "Toggle HUD", and the way back is the same:
-            // that menu, which lives outside the HUD layer on purpose. The tooltip says so.
-            _hudLayer.Visible = !on;
-        };
-        vbox.AddChild(_hideHudCheck);
+        // There is no "hide HUD" switch here any more. CaptureAsync takes every overlay out of the
+        // captured frame by itself -- viewer chrome, name tags and worn HUD attachments alike --
+        // so a switch could only ever change the LIVE view, which is not what a photo control is
+        // for and is not what the user wanted it to do. Hiding the interface on purpose is still
+        // View -> Toggle HUD in the top menu.
 
         var buttonRow = new HBoxContainer();
         buttonRow.AddThemeConstantOverride("separation", 8);
@@ -179,6 +173,34 @@ public partial class SnapshotWindow : SLNGWindow
     /// <summary>Boot hands us the HUD CanvasLayer so a capture can blank every overlay for one
     /// frame. Without it, capture still works but the shot includes the UI.</summary>
     public void Initialize(CanvasLayer hudLayer) => _hudLayer = hudLayer;
+
+    /// <summary>Hides every CanvasLayer in the scene and returns what was visible, so the caller
+    /// can put it all back.
+    ///
+    /// A CanvasLayer is, in this app, exactly "2D drawn over the world": the HUD, the top menu
+    /// bar, the dialog layer, the teleport overlay, the avatar name tags, the worn-HUD viewport.
+    /// The 3D world itself renders through the root viewport and owns no CanvasLayer, so sweeping
+    /// all of them is precisely "photograph the world and nothing else" -- and unlike a list of
+    /// registered layers it cannot be defeated by construction order or by a layer added later.
+    /// </summary>
+    private static System.Collections.Generic.List<CanvasLayer> HideEveryCanvasLayer(Node root)
+    {
+        var hidden = new System.Collections.Generic.List<CanvasLayer>();
+        Walk(root);
+        return hidden;
+
+        void Walk(Node node)
+        {
+            if (node is CanvasLayer { Visible: true } layer)
+            {
+                layer.Visible = false;
+                hidden.Add(layer);
+            }
+
+            foreach (var child in node.GetChildren()) Walk(child);
+        }
+    }
+
 
     /// <summary>FEAT-UI-17 (partial): the persisted output-folder choice. Available from startup,
     /// same split as <see cref="InitializeDof"/>.</summary>
@@ -546,21 +568,6 @@ public partial class SnapshotWindow : SLNGWindow
     {
         base._Process(delta);
 
-        // Resync the checkbox to the HUD layer's actual state. Needed because the layer can be
-        // toggled back on from outside this window (the top menu's "Toggle HUD", which lives
-        // outside the HUD layer on purpose, precisely so there is a way back in) -- without this
-        // the checkbox would keep reading "hidden" after that.
-        if (Visible && _hudLayer != null)
-        {
-            bool hudHidden = !_hudLayer.Visible;
-            if (_hideHudCheck.ButtonPressed != hudHidden)
-            {
-                _refreshingHudCheck = true;
-                _hideHudCheck.ButtonPressed = hudHidden;
-                _refreshingHudCheck = false;
-            }
-        }
-
         // Only the auto-focus readout is live, and only while it can actually be seen.
         if (!Visible || _dof == null || !_dof.Enabled || !_dof.AutoFocus)
         {
@@ -590,8 +597,10 @@ public partial class SnapshotWindow : SLNGWindow
         _captureButton.Disabled = true;
         _statusLabel.Text = L10n.Tr("ui.snapshot.capturing");
 
-        bool hudWasVisible = _hudLayer?.Visible ?? false;
-        if (_hudLayer != null) _hudLayer.Visible = false;
+        // FEAT-UI-25: the shot is the WORLD and nothing else -- no windows, no menu bar, no name
+        // tags, no worn HUD attachments. Every one of those is a CanvasLayer, so one sweep covers
+        // them all and the finally below puts back exactly what was visible.
+        var hiddenLayers = HideEveryCanvasLayer(GetTree().Root);
 
         try
         {
@@ -615,7 +624,10 @@ public partial class SnapshotWindow : SLNGWindow
         }
         finally
         {
-            if (_hudLayer != null) _hudLayer.Visible = hudWasVisible;
+            foreach (var layer in hiddenLayers)
+            {
+                if (IsInstanceValid(layer)) layer.Visible = true;
+            }
             _captureButton.Disabled = false;
             _capturing = false;
         }

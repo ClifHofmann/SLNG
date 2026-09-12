@@ -206,6 +206,7 @@ public partial class AvatarRenderer : Node3D
     private readonly Dictionary<Guid, (Guid MeshId, FaceTexture[]? Faces, FaceTexture DefaultFace, Guid AvatarEntityId)> _attachmentMeshIds = new();
     private Godot.CanvasLayer? _nameTagLayer;
 
+
     // Bump this string with every fix and check it's actually printed at the top of the log
     // before trusting anything else in it — this session got burned repeatedly by stale/
     // incrementally-rebuilt assemblies silently running old code despite a fresh-looking
@@ -2253,6 +2254,7 @@ public partial class AvatarRenderer : Node3D
     // own root-canvas UI (login/chat) and the Layer=1 position HUD. Mouse events pass through
     // (clicking HUD buttons is not implemented yet — rendering only).
     private SubViewport? _hudViewport;
+
     private Node3D? _hudRoot;
     // HUD entity id → its Node3D in the overlay, its (point, SL-local offset) placement (kept
     // for aspect-ratio repositioning on window resize), and a content signature mirroring
