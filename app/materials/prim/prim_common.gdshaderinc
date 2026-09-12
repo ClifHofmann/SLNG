@@ -75,11 +75,24 @@ uniform bool has_normal_uv = false;
 varying vec2 v_normal_uv;
 
 // A legacy material's SPECULAR map, and the two scalars that go with it. The viewer's model
-// (materialF.glsl:242-307):
+// (class3/deferred/materialF.glsl, getSpecular() + main()):
 //
-//     spec       = texture(specularMap) * specular_color.rgb   // per-texel reflectivity/tint
+//     #ifdef HAS_SPECULAR_MAP
+//         spec  = texture(specularMap); spec.rgb *= specular_color.rgb
+//     #else
+//         spec  = vec4(specular_color.rgb, 1.0)                // NO map: white tint, alpha 1
+//     #endif
 //     glossiness = specular_color.a                            // SpecExp, ONE scalar per material
 //     env        = env_intensity * spec.a                      // reflection strength
+//
+// BUG-RENDER-21: note which of those the `#ifdef` actually covers. The MAP is optional; the two
+// scalars are not. A material with no specular map still runs this same shader -- LLMaterial::
+// getShaderMask() only sets its SPEC_BIT when getSpecularID() is non-null, and mask 0 (no normal
+// map, no specular map) is a perfectly ordinary index into llvovolume.cpp's material pass table,
+// landing on PASS_MATERIAL -- and it still gets `glossiness = specular_color.a` and
+// `env = env_intensity * 1.0`. Gating these on the map dropped both silently, which is exactly
+// the case the Build floater produces when a creator raises Environment Intensity without ever
+// assigning one.
 //
 // Godot's metallic-roughness model has no per-texel specular COLOUR, so this is the one place in
 // FEAT-RENDER-04 that is an approximation rather than a port, and it is deliberately a
@@ -88,15 +101,22 @@ varying vec2 v_normal_uv;
 // all SL content ships -- is reproduced faithfully by that; a coloured one loses its tint.
 uniform sampler2D specular_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool has_specular_texture = false;
+// Whether this face carries a legacy Blinn-Phong MATERIAL at all -- independent of whether that
+// material assigns a specular map. This is the flag that selects the material path, mirroring the
+// viewer's pool/pass choice (which keys off getMaterialParams(), not getSpecularID()); the one
+// above only says whether there is a texture to modulate `specular_tint` with.
+uniform bool has_specular_material = false;
 uniform vec3 specular_tint = vec3(1.0);
 uniform float specular_glossiness = 0.2;   // SpecExp/255; the viewer's default is 0.2*255
 uniform float specular_environment = 0.0;  // EnvIntensity/255
 
 // LEGACY per-face shininess -- the build tool's Shiny, as glossiness already mapped through the
 // viewer's SHININESS_TO_ALPHA table: none 0, low 0.25, medium 0.5, high 0.75 (llface.cpp:1420).
-// The viewer stores it in the vertex alpha and only "if we don't have a specular map", so a
-// specular map takes precedence over this -- see the branch below. Zero means genuinely matte,
-// and the viewer then skips its whole specular branch (`if (spec.a > 0.0)`, softenLightF.glsl:243).
+// The viewer stores it in the vertex alpha and only "if we don't have a specular map"; but the
+// deferred material shader it routes a materialed face to never reads vertex alpha for shininess,
+// so in practice a legacy MATERIAL -- with or without a map -- takes precedence over this. See the
+// branch below. Zero means genuinely matte, and the viewer then skips its whole specular branch
+// (`if (spec.a > 0.0)`, softenLightF.glsl:243).
 uniform float legacy_shininess = 0.0;
 
 uniform vec2 specular_uv_scale = vec2(1.0);
@@ -273,12 +293,19 @@ float slng_shade(vec2 uv, vec3 view_position,
     // Found with the probe sphere: greys matched Firestorm exactly while the pure primaries came
     // out visibly duller. That is the signature -- 4% of neutral reflection is invisible on a
     // white or grey surface and washes out a fully saturated one, and a blue sphere went violet
-    // because what it was reflecting was the warm courtyard. A specular map still overrides this
-    // below, which is the only path SL actually feeds.
+    // because what it was reflecting was the warm courtyard. A legacy MATERIAL still overrides
+    // this below (BUG-RENDER-21 -- a specular MAP is not what decides that), which is the other
+    // path SL feeds.
     out_specular = 0.0;
 
-    if (has_specular_texture) {
-        vec3 spec = texture(specular_texture, v_specular_uv).rgb * specular_tint;
+    // The presence of a legacy MATERIAL selects this path, not the presence of a specular MAP
+    // (BUG-RENDER-21). `specular_tint` is the material's SpecularColor, white by default, which is
+    // exactly what the viewer's `#else` branch of getSpecular() substitutes for the missing map.
+    if (has_specular_material) {
+        vec3 spec = specular_tint;
+        if (has_specular_texture) {
+            spec *= texture(specular_texture, v_specular_uv).rgb;
+        }
 
         // SL modulates glossiness PER TEXEL with the normal map's ALPHA channel
         // (materialF.glsl:227, `glossiness *= vNt.a`). Not an optional refinement: content is
@@ -303,9 +330,12 @@ float slng_shade(vec2 uv, vec3 view_position,
         out_metallic = clamp(metallic_factor + specular_environment * out_specular, 0.0, 1.0);
     }
     else if (legacy_shininess > 0.0) {
-        // The build tool's Shiny, for a face with no specular map. `else`, not a second `if`:
-        // the viewer packs shininess into the vertex alpha only when there is no specular map
-        // (llface.cpp:1412), so a map always wins and the two never combine.
+        // The build tool's Shiny, for a face with no legacy material at all. `else`, not a second
+        // `if`: llface.cpp:1412 packs shininess into the vertex alpha only when there is no
+        // specular map, but the deferred MATERIAL shader never reads vertex alpha for shininess --
+        // it uses specular_color.a -- so a material wins outright and the two never combine
+        // (BUG-RENDER-21; the branch above used to test for the map, which let a materialed face
+        // with no map fall through to here and be shaded by a value the viewer would ignore).
         //
         // 0.5 is Godot's standard 4% dielectric F0. The viewer's legacy highlight is a
         // Blinn-Phong lobe scaled by a white specular colour and is not energy-conserving, so
