@@ -58,6 +58,59 @@ public partial class Boot : Control
     
     private WorldEnvironment? _worldEnvironment;
     private DirectionalLight3D? _sun;
+
+    // FEAT-RENDER-20: a real ReflectionProbe that follows the avatar/camera through the open
+    // world -- see SetupEnvironment for why (replaces BUG-RENDER-20's hand-rolled sky-tint
+    // approximation) and UpdateReflectionProbe for the measured update cadence.
+    private ReflectionProbe? _reflectionProbe;
+
+    /// <summary>How often <see cref="UpdateReflectionProbe"/> re-bakes the probe regardless of
+    /// movement. Chosen from a measured comparison (see the FEAT-RENDER-20 spec): an isolated
+    /// 900-mesh-instance scene cost ~0.92ms/frame with no probe, ~0.93ms/frame with a stationary
+    /// <c>UpdateModeEnum.Once</c> probe (statistically the same), and ~1.65ms/frame with
+    /// <c>UpdateModeEnum.Always</c> (~1.8x, forever, since Always re-renders all 6 cubemap faces
+    /// EVERY frame regardless of whether anything changed -- confirmed from Godot's own XML docs,
+    /// not just the measurement: "it's recommended to only use one ReflectionProbe with Always at
+    /// most per scene"). A single re-triggered Once bake showed a mildly elevated window of about
+    /// a dozen frames (~1-2ms above baseline, Godot's own docs: "generated over the following six
+    /// frames") before settling back down -- at a 3s/180-frame cadence that is roughly 5-7% of
+    /// frames bearing a small, temporary cost, versus Always's flat overhead on literally every
+    /// frame forever. AGENTS.md non-negotiable #3 (render budgets over fidelity) is what rules
+    /// Always out for a continuously-running open world with no fixed rooms to pre-bake probes
+    /// for.</summary>
+    /// <remarks>Lowered 3.0 -> 0.5 after the first live look: at 3s the reflection is stale for
+    /// most of any walk, and re-baking in one visible step reads as lag ("sehr verzögert"). The
+    /// 3s figure came from the measurement below, but that measurement's expensive case was
+    /// repositioning EVERY FRAME (~1.27x baseline at 60fps = ~180 recaptures per 3s). Two per
+    /// second is ~1% of that recapture rate, i.e. nowhere near the measured cost, while being six
+    /// times more responsive. Live headroom confirms there is room for it: the client reports
+    /// 163 FPS at a 6.1ms frame with 0.0 hitches/s on this scene.</remarks>
+    private const double ReflectionProbeUpdateIntervalSeconds = 0.5;
+
+    /// <summary>An avatar/vehicle/teleport that outruns the periodic cadence above gets an
+    /// immediate re-bake instead of waiting out the rest of the interval with a stale, far-away
+    /// reflection sitting at the old capture point.</summary>
+    private const float ReflectionProbeMoveThresholdMeters = 3.0f;
+
+    // FEAT-RENDER-22: the mirror probe. Separate node from the follow probe above, because it is a
+    // different job with a different cost: this one sits ON a mirror-grade surface and re-captures
+    // in real time, which is the only way a reflection can show what is BEHIND the viewer. SSR
+    // structurally cannot (it only knows the rendered frame) and the camera-following probe
+    // cannot (one capture point, no parallax). The reference viewer affords exactly one of these
+    // -- heroBox/heroSphere/heroShape are single uniforms, heroProbes is read at a fixed index 0
+    // (reflectionProbeF.glsl:695-724) -- and for the same reason, so does this.
+    private ReflectionProbe? _heroProbe;
+
+    /// <summary>Beyond this the mirror is small enough on screen that a continuous re-capture is
+    /// not worth its cost, and the hero probe switches off entirely rather than idling.</summary>
+    private const float HeroProbeMaxDistanceMeters = 24.0f;
+
+    private bool _heroProbeActive;
+    private int _heroProbeStateLogs;
+
+    private double _reflectionProbeAccum;
+    private Godot.Vector3 _reflectionProbeLastCapturePos;
+    private bool _reflectionProbeEverCaptured;
     // FEAT-ENV-01 Phase D: drives sun/ambient/sky/fog/water from the region's actual environment.
     // Always constructed (not nullable) -- with no region connected yet it just evaluates
     // DayCycle.Default every frame, which is the same hardcoded-looking scene as before this
@@ -176,7 +229,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.64-alpha";
+    public const string AppVersion = "v0.22.80-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -970,7 +1023,32 @@ public partial class Boot : Control
             SsaoIntensity = 2.0f,
             
             SsilEnabled = true,
-            
+
+            // FEAT-RENDER-21: screen-space reflections. This is the piece a reflection PROBE
+            // structurally cannot deliver -- the probe is captured from one point with box
+            // projection off, so it treats its cubemap as infinitely distant and puts anything
+            // nearby (your own avatar, a few metres away) in the wrong direction. Reported live as
+            // "sollte ich mich vorn auf der kugel spiegeln oder? ich sehe mich aber eher an der
+            // seite". SSR reflects the actual rendered frame, so its parallax is correct by
+            // construction.
+            //
+            // Parity, not an extra: the reference viewer applies SSR in its LEGACY reflection path
+            // (sampleReflectionProbesLegacy, reflectionProbeF.glsl:867-885) with no glossiness
+            // gate at all -- it mixes SSR over the probe sample via `glossenv = mix(glossenv,
+            // ssr.rgb, ssr.a)` for ordinary Shiny faces. The `glossiness >= 0.9` threshold that
+            // does exist (:753) guards the PBR path only, so an SL "Shiny High" prim gets SSR in
+            // Firestorm today and did not here.
+            //
+            // Deliberately modest settings. SSR only ever reflects what is already on screen, so
+            // it fades out at the frame edge and behind occluders; pushing max_steps higher buys
+            // longer traces at real per-pixel cost for reflections that mostly terminate early
+            // anyway in an outdoor scene. Measured cost is in the FEAT-RENDER-21 spec.
+            SsrEnabled = true,
+            SsrMaxSteps = 32,
+            SsrFadeIn = 0.15f,
+            SsrFadeOut = 2.0f,
+
+
             // Glow is deliberately restrained, because the sun's atmospheric halo is ALREADY
             // rendered in sky.gdshader -- that is what the haze_glow term is, ported from SL's own
             // atmospherics. Post-process bloom on top of it double-counts the same effect, and
@@ -1016,7 +1094,210 @@ public partial class Boot : Control
         };
         AddChild(sun);
         _sun = sun;
+
+        // FEAT-RENDER-20: a real reflection probe, superseding BUG-RENDER-20's hand-rolled
+        // slng_env_reflection sky-tint approximation (removed from prim_common.gdshaderinc once
+        // this was confirmed working -- see that file's history). Godot's built-in PBR pipeline
+        // already routes ReflectionProbe content into the exact METALLIC/ROUGHNESS/SPECULAR
+        // channels every prim_*.gdshader variant writes (confirmed in BUG-RENDER-20 round 1: a
+        // custom ShaderMaterial receives the same automatic sky-radiance IBL a StandardMaterial3D
+        // does), so this needed no new shader plumbing -- it just gives that existing pipeline
+        // real captured content instead of the sky-only fallback. Verified with an isolated probe
+        // scene containing real coloured geometry around a mirror sphere: without a placed probe
+        // the sphere reflected flat black; with one, it showed the surrounding walls' actual
+        // colours in their correct screen positions (see the FEAT-RENDER-20 spec for the saved
+        // screenshots).
+        //
+        // Position is set every frame the cadence in UpdateReflectionProbe fires (NOT here, and
+        // NOT every _Process tick -- see that method's own doc comment for why continuous
+        // per-frame repositioning was measured to cost real, avoidable frame time).
+        //
+        // Size/MaxDistance: generous "nearby content" extents for an open world with no fixed
+        // rooms to size a probe to, not a room-scale capture. BoxProjection off: box projection
+        // assumes a bounded interior to project against, which an open outdoor scene is not.
+        // EnableShadows off: a reflection this blurry cannot show shadow detail anyway, and
+        // shadows would roughly double the render cost of every one of the 6 face captures for no
+        // visible return.
+        var reflectionProbe = new ReflectionProbe
+        {
+            Name = "ReflectionProbe",
+            Size = new Godot.Vector3(40f, 40f, 40f),
+            MaxDistance = 60f,
+            UpdateMode = ReflectionProbe.UpdateModeEnum.Once,
+            BoxProjection = false,
+            EnableShadows = false,
+
+            // Was 4.0, from comparing Godot's 4% dielectric F0 against applyGlossEnv's ~19% peak
+            // (reflectionProbeF.glsl:893) and taking the ratio. That derivation was wrong, and the
+            // live result showed exactly how: a blown-out halo around every shiny silhouette.
+            //
+            // The error was comparing the two models at ONE angle. At normal incidence Godot is
+            // indeed the weaker: F0 0.04 against the viewer's 0.25 * 0.3^2 * 0.75 = ~0.017... but
+            // the two curves diverge in opposite directions from there. Godot applies Schlick, so
+            // its reflection climbs to a full 1.0 at grazing angles. The viewer's weight is
+            // `0.25 * fresnel^2 * spec.a` with fresnel clamped to [0.3, 1.0], so it CANNOT exceed
+            // 0.25 * 0.75 = 0.1875 -- at the silhouette Godot is already ~5x the reference before
+            // any boost at all. Multiplying that by 4 is what produced the halo, and the probe
+            // sweep shows it numerically: the limb saturates to 1.0 at intensity 4, sits at 0.80
+            // at 2, and 0.60 at 1.
+            //
+            // 1.5 keeps some of the compensation the centre genuinely needs -- our captured sky is
+            // LDR-clamped (sky.gdshader ends on clamp(sky_color, 0, 1)) where the viewer samples an
+            // HDR radiance map, so equal weights do not mean equal brightness -- while staying well
+            // clear of saturation at the limb.
+            //
+            // The real mismatch is curve SHAPE, not scale: no single multiplier can flatten
+            // Schlick into the viewer's capped ramp. Fixing that properly needs the reflection
+            // weight applied in our own shader, which Godot does not expose for probe data.
+            //
+            // Known trade-off, unchanged: intensity is per-PROBE, so genuinely physical glTF/PBR
+            // content in range is scaled by the same factor.
+            Intensity = 1.5f,
+        };
+        AddChild(reflectionProbe);
+        _reflectionProbe = reflectionProbe;
+
+        // FEAT-RENDER-22: the hero/mirror probe. UpdateModeEnum.Always is exactly the setting
+        // FEAT-RENDER-20 measured at ~1.8x baseline and rejected for the follow probe -- and it is
+        // the right choice HERE, for the same reason the reference viewer accepts the cost for its
+        // one hero probe: a mirror that updates twice a second is not a mirror. It is bounded
+        // instead by scarcity (one probe, nearest mirror only) and by distance
+        // (HeroProbeMaxDistanceMeters), and starts hidden so a scene with no mirror in it pays
+        // nothing at all.
+        //
+        // BoxProjection stays off: it wants a bounded interior to project against and gets the
+        // mirror's own small box here, which would distort rather than correct. EnableShadows
+        // stays off for the same reason as the follow probe -- six shadowed face renders per
+        // frame is precisely the cost this is already spending carefully.
+        var heroProbe = new ReflectionProbe
+        {
+            Name = "HeroProbe",
+            Size = new Godot.Vector3(8f, 8f, 8f),
+            MaxDistance = 40f,
+            UpdateMode = ReflectionProbe.UpdateModeEnum.Always,
+            BoxProjection = false,
+            EnableShadows = false,
+            Intensity = 1.0f,
+            Visible = false,
+        };
+        AddChild(heroProbe);
+        _heroProbe = heroProbe;
     }
+
+    /// <summary>
+    /// FEAT-RENDER-22: parks the one real-time probe on the nearest mirror-grade surface, or
+    /// switches it off when there is none in range.
+    ///
+    /// `ObjectRenderer` does the finding (it already walks every visual on a spread sweep and
+    /// carries each one's material id), so this only decides whether the result is worth a
+    /// capture and moves the node. Deliberately cheap per frame: a null check, a distance compare,
+    /// and a position write only while a mirror is actually in range.
+    /// </summary>
+    private void UpdateHeroProbe()
+    {
+        if (_heroProbe == null || _objectRenderer == null || _avatarController == null) return;
+
+        var mirror = _objectRenderer.MirrorPosition;
+        bool want = _graphicsSettings.PostFxHeroProbe
+                    && mirror.HasValue
+                    && mirror.Value.DistanceTo(_avatarController.GlobalPosition) <= HeroProbeMaxDistanceMeters;
+
+        if (want)
+        {
+            _heroProbe.GlobalPosition = mirror!.Value;
+            // Sized to the surface it serves rather than to a guess: the box is what decides which
+            // geometry the probe's reflection applies to, and a mirror should not be re-lighting
+            // the whole room around it.
+            float extent = Mathf.Clamp(_objectRenderer.MirrorRadius * 2.5f, 2.0f, 16.0f);
+            _heroProbe.Size = new Godot.Vector3(extent, extent, extent);
+        }
+
+        if (want == _heroProbeActive) return;
+        _heroProbeActive = want;
+        _heroProbe.Visible = want;
+
+        // Logged on TRANSITION only -- this is the one thing about the feature that cannot be seen
+        // in a screenshot (a mirror that is off and a mirror reflecting a dark room look alike),
+        // and a per-frame line would be a denial of service on the log at Always cadence.
+        if (_heroProbeStateLogs < 12)
+        {
+            _heroProbeStateLogs++;
+            GD.Print($"[HeroProbe] {(want ? "ON" : "off")}" +
+                     (want ? $" at ({mirror!.Value.X:0.#},{mirror.Value.Y:0.#},{mirror.Value.Z:0.#})" +
+                             $" radius={_objectRenderer.MirrorRadius:0.##} size={_heroProbe.Size.X:0.#}" : "") +
+                     $" | mirrorFound={mirror.HasValue} setting={_graphicsSettings.PostFxHeroProbe}");
+        }
+    }
+
+    /// <summary>
+    /// FEAT-RENDER-20: keeps the follow probe anchored near the camera and re-bakes it on a
+    /// measured cadence (<see cref="ReflectionProbeUpdateIntervalSeconds"/> /
+    /// <see cref="ReflectionProbeMoveThresholdMeters"/>) instead of every frame.
+    ///
+    /// Repositioning ALONE is enough to force a fresh capture: Godot's own docs for
+    /// <c>UpdateModeEnum.Once</c> say so explicitly ("The ReflectionProbe is updated when its
+    /// transform changes... you can force an update by moving the ReflectionProbe slightly in any
+    /// direction"), and an isolated probe confirmed it empirically -- moving a baked probe (and
+    /// its test sphere) from beside a green wall to beside a red one, without ever touching
+    /// UpdateMode, picked up the red wall on the very next few frames. <see cref="UpdateMode"/> is
+    /// still re-assigned here too, belt-and-suspenders, for the case nothing moved at all (an
+    /// avatar standing still for a whole interval still deserves a periodic refresh, e.g. if
+    /// something else nearby changed).
+    ///
+    /// Critically, this is NOT called with a fresh position every single frame. An isolated
+    /// measurement (900 mesh instances, see the FEAT-RENDER-20 spec) showed that continuously
+    /// nudging a ReflectionProbe's position every frame -- exactly what an update-mode-Once probe
+    /// naively kept "attached" to a moving camera would do -- costs real, avoidable frame time
+    /// (~1.27x the no-probe baseline in that measurement, versus a stationary Once probe's ~1.01x)
+    /// even though it never approaches UpdateModeEnum.Always's ~1.8x. Repositioning only on this
+    /// throttled cadence keeps the steady-state cost between recaptures indistinguishable from no
+    /// probe at all.
+    /// </summary>
+    private void UpdateReflectionProbe(double delta)
+    {
+        if (_reflectionProbe == null || _avatarController == null) return;
+
+        using var _phase = MainThreadPhase.Enter("reflection-probe");
+
+        _reflectionProbeAccum += delta;
+        var camPos = _avatarController.GlobalPosition;
+        bool movedFar = !_reflectionProbeEverCaptured
+            || camPos.DistanceTo(_reflectionProbeLastCapturePos) > ReflectionProbeMoveThresholdMeters;
+
+        if (!movedFar && _reflectionProbeAccum < ReflectionProbeUpdateIntervalSeconds) return;
+
+        _reflectionProbeAccum = 0;
+        _reflectionProbeEverCaptured = true;
+        _reflectionProbeLastCapturePos = camPos;
+
+        _reflectionProbe.GlobalPosition = camPos;
+        _reflectionProbe.UpdateMode = ReflectionProbe.UpdateModeEnum.Once;
+
+        // FEAT-RENDER-20 diagnostic. The feature verified clean in an isolated probe scene through
+        // the REAL shader path (a courtyard of coloured walls reflected correctly off a
+        // legacy_shininess sphere) and still read as "no reflection" in-world, which is the exact
+        // failure shape BUG-RENDER-20 hit four times: something differs between the test scene and
+        // the live client, and guessing which thing has a bad track record here. This prints what
+        // cannot be seen from a screenshot -- that the probe exists, is visible, actually re-bakes,
+        // where it sits, and (the live suspect) what ambient energy the EnvironmentDriver is
+        // driving, since Godot scales image-based lighting by it and zeroes IBL entirely at 0
+        // (measured in BUG-RENDER-20's own table). First three bakes then every 20th, so a long
+        // session does not drown the log.
+        _reflectionProbeBakeCount++;
+        if (_reflectionProbeBakeCount <= 3 || _reflectionProbeBakeCount % 100 == 0)
+        {
+            var env = _worldEnvironment?.Environment;
+            GD.Print(
+                $"[ReflProbe] bake #{_reflectionProbeBakeCount} visible={_reflectionProbe.Visible} " +
+                $"pos=({camPos.X:0.#},{camPos.Y:0.#},{camPos.Z:0.#}) size={_reflectionProbe.Size.X:0.#} " +
+                $"maxDist={_reflectionProbe.MaxDistance:0.#} interior={_reflectionProbe.Interior} " +
+                $"intensity={_reflectionProbe.Intensity:0.###} " +
+                $"| ambientSource={env?.AmbientLightSource} ambientEnergy={env?.AmbientLightEnergy:0.###} " +
+                $"skyContribution={env?.AmbientLightSkyContribution:0.###} tonemap={env?.TonemapMode}");
+        }
+    }
+
+    private int _reflectionProbeBakeCount;
 
     /// <summary>Standing dev tool (F5): renders the sun's actual direction into the scene as an
     /// emissive beam + sphere anchored at the local avatar. Screen-space reasoning about "which
@@ -1136,6 +1417,13 @@ public partial class Boot : Control
         // FEAT-PERF-04: per-frame VRAM back-pressure (raise/lower the LOD bias, shrink resident
         // textures) so the texture-memory budget actually binds on a dense region.
         _gpuCache?.Tick();
+
+        // FEAT-RENDER-20: cheap every frame (an early-out plus a distance check) -- the probe
+        // itself only actually moves/re-bakes on its own measured cadence, see the method.
+        UpdateReflectionProbe(delta);
+        // FEAT-RENDER-22: cheap per frame (null check + distance compare); the probe only exists
+        // at all while a mirror-grade surface is actually in range.
+        UpdateHeroProbe();
 
         // Drain the region-environment event buffered off-thread (see _pendingRegionEnvironment).
         // FEAT-ENV-01 Phase D: region-scoped -- crossing into a neighbor region with its own
@@ -1322,7 +1610,7 @@ public partial class Boot : Control
     /// environment or the sun itself -- it only knows the settings object.</summary>
     private void ApplyGraphicsSettings()
     {
-        _graphicsSettings.Apply(GetViewport(), _worldEnvironment, _sun);
+        _graphicsSettings.Apply(GetViewport(), _worldEnvironment, _sun, _reflectionProbe);
         // FEAT-PERF-04: the texture-memory slider takes effect immediately, no restart.
         _gpuCache?.SetBudget((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024);
     }

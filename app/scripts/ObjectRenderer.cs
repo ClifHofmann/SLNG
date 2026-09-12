@@ -147,6 +147,34 @@ public partial class ObjectRenderer : Node3D
 
     private readonly Dictionary<Guid, VisualState> _visuals = new();
 
+    // --- FEAT-RENDER-22: hero-probe (mirror) candidate tracking ------------------------------
+    // SL renders ONE real-time "hero" probe for a mirror-grade surface -- heroBox/heroSphere/
+    // heroShape are single uniforms and heroProbes is read at a fixed index 0
+    // (reflectionProbeF.glsl:695-724), so the reference viewer deliberately affords exactly one.
+    // This picks which surface that should be: glTF materials smooth enough to qualify, then the
+    // nearest visible object wearing one.
+
+    /// <summary>Roughness at or below which a glTF material counts as a mirror. 0.25 is the
+    /// reference viewer's own gate expressed as roughness -- tapHeroProbe fades in over
+    /// `clamp(glossiness - 0.75, 0, 1)`, and glossiness 0.75 is roughness 0.25.</summary>
+    private const float MirrorRoughnessThreshold = 0.25f;
+
+    private readonly HashSet<Guid> _mirrorMaterials = new();
+
+    // Accumulated during a cull sweep, published when the sweep wraps -- "nearest" is only
+    // meaningful once every visual has been visited, and the sweep is deliberately spread across
+    // frames (see _Process).
+    private Guid _mirrorScanBestId;
+    private float _mirrorScanBestDSq = float.MaxValue;
+
+    /// <summary>Position of the nearest visible mirror-grade surface, or null when there is none.
+    /// Read by <c>Boot.UpdateHeroProbe</c>; updated once per completed cull sweep.</summary>
+    public Godot.Vector3? MirrorPosition { get; private set; }
+
+    /// <summary>Bounding radius of that surface, so the hero probe can be sized to it rather than
+    /// to a guess.</summary>
+    public float MirrorRadius { get; private set; }
+
     // FEAT-PERF-06: draw-call reduction. Groups of identical repeated static prims are drawn by
     // one MultiMeshInstance3D each; a prim is evicted the instant it is selected, edited or
     // animated. Null until Initialize(). See ObjectInstanceGroups.
@@ -497,6 +525,23 @@ public partial class ObjectRenderer : Node3D
 
         if (_cullCursor >= _cullOrder.Count)
         {
+            // FEAT-RENDER-22: a full sweep just finished, so the nearest-mirror search is complete
+            // and can be published. Doing it here rather than per-visit is what makes "nearest"
+            // actually mean nearest: the sweep only visits a slice of the world per frame.
+            if (_mirrorScanBestId != Guid.Empty && _visuals.TryGetValue(_mirrorScanBestId, out var mirrorState)
+                && IsInstanceValid(mirrorState.MeshInstance))
+            {
+                MirrorPosition = mirrorState.MeshInstance.GlobalPosition;
+                MirrorRadius = EffectiveBoundingRadius(mirrorState);
+            }
+            else
+            {
+                MirrorPosition = null;
+                MirrorRadius = 0f;
+            }
+            _mirrorScanBestId = Guid.Empty;
+            _mirrorScanBestDSq = float.MaxValue;
+
             _cullOrder.Clear();
             _cullOrder.AddRange(_visuals.Keys);
             _cullCursor = 0;
@@ -621,6 +666,17 @@ public partial class ObjectRenderer : Node3D
                     }
                     texLodMs += (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0
                                 / System.Diagnostics.Stopwatch.Frequency;
+                }
+
+                // FEAT-RENDER-22: is this the mirror the hero probe should spend itself on? One
+                // hash lookup against data the state already carries -- no entity or component
+                // access -- and only when a mirror-grade material has actually been seen at all,
+                // which for most scenes is never.
+                if (_mirrorMaterials.Count > 0 && state.MeshInstance.Visible && !state.ResourcesReleased
+                    && viewDSq < _mirrorScanBestDSq && _mirrorMaterials.Contains(state.LoadedMaterialId))
+                {
+                    _mirrorScanBestDSq = viewDSq;
+                    _mirrorScanBestId = id;
                 }
 
                 // FEAT-PERF-06: rides the same spread sweep -- offer this prim to an instancing
@@ -2411,9 +2467,11 @@ public partial class ObjectRenderer : Node3D
         material.SetShaderParameter(PrimShaderFamily.Fullbright, ft.Fullbright);
 
         // FEAT-RENDER-19: the build tool's legacy Shiny. Set unconditionally -- the shader gives a
-        // specular MAP precedence, matching the viewer, which packs shininess into the vertex
-        // alpha only when there is no map. Zero here means genuinely matte, and the viewer skips
-        // its entire specular branch for such a face.
+        // legacy MATERIAL precedence (BUG-RENDER-21 corrected this from "a specular MAP"), matching
+        // the viewer: llface.cpp packs shininess into the vertex alpha whenever there is no
+        // specular map, but a materialed face is drawn by the deferred material shader, which reads
+        // glossiness from the material's SpecExp and never looks at that vertex alpha. Zero here
+        // means genuinely matte, and the viewer skips its entire specular branch for such a face.
         material.SetShaderParameter(PrimShaderFamily.LegacyShininess, ft.ShinyGlossiness);
 
         material.SetShaderParameter(PrimShaderFamily.PrimScale,
@@ -2503,6 +2561,24 @@ public partial class ObjectRenderer : Node3D
                     ? $"legacyMat={lm.Id.ToString()[..8]} mode={lm.DiffuseAlphaMode} cutoff={lm.AlphaMaskCutoff} tintA={colorTint.A:0.###} -> {PrimShaderKindName(material.Shader)}"
                     : $"legacyMat={lm.Id.ToString()[..8]} mode=Default (defers to DetectAlpha) tintA={colorTint.A:0.###}");
 
+                // BUG-RENDER-21: the material's own specular scalars, set because the MATERIAL
+                // exists -- not because it assigns a specular map. The viewer's material shader is
+                // selected by LLMaterial::getShaderMask(), whose SPEC_BIT is the only part that
+                // looks at getSpecularID(); mask 0 (no maps at all) still lands on PASS_MATERIAL
+                // and still reads `glossiness = specular_color.a` and `env = env_intensity * 1.0`
+                // (getSpecular()'s `#else` substitutes an opaque white spec for the missing map).
+                // Raising Shininess or Environment Intensity in the Build floater without
+                // assigning a map is an ordinary authoring case, and Environment Intensity is the
+                // control that gives content its mirror-like look; gating these on the map dropped
+                // both silently. SL transmits them as bytes and the shader wants them normalised;
+                // the viewer's own defaults are SpecExp 0.2*255 and EnvIntensity 0
+                // (llmaterial.h:55-57, llmaterial.cpp:55).
+                material.SetShaderParameter(PrimShaderFamily.HasSpecularMaterial, true);
+                material.SetShaderParameter(PrimShaderFamily.SpecularTint,
+                    new Godot.Vector3(lm.SpecularColor.X, lm.SpecularColor.Y, lm.SpecularColor.Z));
+                material.SetShaderParameter(PrimShaderFamily.SpecularGlossiness, lm.SpecularExponent / 255f);
+                material.SetShaderParameter(PrimShaderFamily.SpecularEnvironment, lm.EnvironmentIntensity / 255f);
+
                 if (lm.NormalMap != Guid.Empty)
                 {
                     used.Add(lm.NormalMap);
@@ -2545,12 +2621,8 @@ public partial class ObjectRenderer : Node3D
                     var sOffset = new Godot.Vector2(
                         0.5f - 0.5f * sScale.X + lm.SpecularOffset.X,
                         0.5f - 0.5f * sScale.Y - lm.SpecularOffset.Y);
-                    // SL transmits both as bytes; the shader wants them normalised, and the
-                    // viewer's own defaults are SpecExp 0.2*255 and EnvIntensity 0.
-                    float glossiness = lm.SpecularExponent / 255f;
-                    float environment = lm.EnvironmentIntensity / 255f;
-                    var tint = new Godot.Vector3(lm.SpecularColor.X, lm.SpecularColor.Y, lm.SpecularColor.Z);
-
+                    // Only the MAP and its placement belong in here. The tint/glossiness/environment
+                    // scalars are set above, unconditionally -- see BUG-RENDER-21.
                     var specTex = await GetOrCreateGpuTextureAsync(lm.SpecularMap, screenPixelArea, priority);
                     MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                     {
@@ -2561,9 +2633,6 @@ public partial class ObjectRenderer : Node3D
                         }
                         material.SetShaderParameter(PrimShaderFamily.SpecularTexture, specTex);
                         material.SetShaderParameter(PrimShaderFamily.HasSpecularTexture, true);
-                        material.SetShaderParameter(PrimShaderFamily.SpecularTint, tint);
-                        material.SetShaderParameter(PrimShaderFamily.SpecularGlossiness, glossiness);
-                        material.SetShaderParameter(PrimShaderFamily.SpecularEnvironment, environment);
                         material.SetShaderParameter(PrimShaderFamily.SpecularUvScale, sScale);
                         material.SetShaderParameter(PrimShaderFamily.SpecularUvOffset, sOffset);
                         material.SetShaderParameter(PrimShaderFamily.SpecularUvRotation, lm.SpecularRotation);
@@ -2588,6 +2657,17 @@ public partial class ObjectRenderer : Node3D
                 material.SetShaderParameter(PrimShaderFamily.AlbedoColor, baseColor);
                 material.SetShaderParameter(PrimShaderFamily.MetallicFactor, pbr.MetallicFactor);
                 material.SetShaderParameter(PrimShaderFamily.RoughnessFactor, pbr.RoughnessFactor);
+
+                // FEAT-RENDER-22: remember which glTF materials are mirror-grade, so the hero probe
+                // can find the one surface in the scene worth spending a real-time capture on.
+                // Threshold is the reference viewer's own: tapHeroProbe blends in over
+                // `clamp(glossiness - 0.75, 0, 1) * 4` (reflectionProbeF.glsl:722), i.e. nothing
+                // below glossiness 0.75, which is roughness 0.25. Recorded per MATERIAL rather than
+                // per face because the cull sweep already carries each visual's LoadedMaterialId
+                // and can test membership with one hash lookup, without touching the entity or its
+                // components.
+                if (pbr.RoughnessFactor <= MirrorRoughnessThreshold)
+                    _mirrorMaterials.Add(ft.RenderMaterialId);
                 material.SetShaderParameter(PrimShaderFamily.EmissionEnabled, pbr.EmissiveFactor != System.Numerics.Vector3.Zero);
                 material.SetShaderParameter(PrimShaderFamily.EmissionColor,
                     new Godot.Color(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z));

@@ -35,7 +35,7 @@ void fragment() {
     vec3 normal_map;      // filled by slng_shade; unused here, see below
     float normal_depth;
     vec3 emission;
-    slng_shade(UV, v_view_position, albedo, metallic, roughness, specular, normal_map, normal_depth, emission);
+    slng_shade(UV, v_view_position, NORMAL, albedo, metallic, roughness, specular, normal_map, normal_depth, emission);
 
     // albedo + emission, NOT plain albedo: `unshaded` outputs ALBEDO only and drops EMISSION
     // entirely, so anything slng_shade routed through emission has to be folded back in here or

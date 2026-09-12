@@ -75,11 +75,24 @@ uniform bool has_normal_uv = false;
 varying vec2 v_normal_uv;
 
 // A legacy material's SPECULAR map, and the two scalars that go with it. The viewer's model
-// (materialF.glsl:242-307):
+// (class3/deferred/materialF.glsl, getSpecular() + main()):
 //
-//     spec       = texture(specularMap) * specular_color.rgb   // per-texel reflectivity/tint
+//     #ifdef HAS_SPECULAR_MAP
+//         spec  = texture(specularMap); spec.rgb *= specular_color.rgb
+//     #else
+//         spec  = vec4(specular_color.rgb, 1.0)                // NO map: white tint, alpha 1
+//     #endif
 //     glossiness = specular_color.a                            // SpecExp, ONE scalar per material
 //     env        = env_intensity * spec.a                      // reflection strength
+//
+// BUG-RENDER-21: note which of those the `#ifdef` actually covers. The MAP is optional; the two
+// scalars are not. A material with no specular map still runs this same shader -- LLMaterial::
+// getShaderMask() only sets its SPEC_BIT when getSpecularID() is non-null, and mask 0 (no normal
+// map, no specular map) is a perfectly ordinary index into llvovolume.cpp's material pass table,
+// landing on PASS_MATERIAL -- and it still gets `glossiness = specular_color.a` and
+// `env = env_intensity * 1.0`. Gating these on the map dropped both silently, which is exactly
+// the case the Build floater produces when a creator raises Environment Intensity without ever
+// assigning one.
 //
 // Godot's metallic-roughness model has no per-texel specular COLOUR, so this is the one place in
 // FEAT-RENDER-04 that is an approximation rather than a port, and it is deliberately a
@@ -88,15 +101,22 @@ varying vec2 v_normal_uv;
 // all SL content ships -- is reproduced faithfully by that; a coloured one loses its tint.
 uniform sampler2D specular_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool has_specular_texture = false;
+// Whether this face carries a legacy Blinn-Phong MATERIAL at all -- independent of whether that
+// material assigns a specular map. This is the flag that selects the material path, mirroring the
+// viewer's pool/pass choice (which keys off getMaterialParams(), not getSpecularID()); the one
+// above only says whether there is a texture to modulate `specular_tint` with.
+uniform bool has_specular_material = false;
 uniform vec3 specular_tint = vec3(1.0);
 uniform float specular_glossiness = 0.2;   // SpecExp/255; the viewer's default is 0.2*255
 uniform float specular_environment = 0.0;  // EnvIntensity/255
 
 // LEGACY per-face shininess -- the build tool's Shiny, as glossiness already mapped through the
 // viewer's SHININESS_TO_ALPHA table: none 0, low 0.25, medium 0.5, high 0.75 (llface.cpp:1420).
-// The viewer stores it in the vertex alpha and only "if we don't have a specular map", so a
-// specular map takes precedence over this -- see the branch below. Zero means genuinely matte,
-// and the viewer then skips its whole specular branch (`if (spec.a > 0.0)`, softenLightF.glsl:243).
+// The viewer stores it in the vertex alpha and only "if we don't have a specular map"; but the
+// deferred material shader it routes a materialed face to never reads vertex alpha for shininess,
+// so in practice a legacy MATERIAL -- with or without a map -- takes precedence over this. See the
+// branch below. Zero means genuinely matte, and the viewer then skips its whole specular branch
+// (`if (spec.a > 0.0)`, softenLightF.glsl:243).
 uniform float legacy_shininess = 0.0;
 
 uniform vec2 specular_uv_scale = vec2(1.0);
@@ -235,12 +255,60 @@ vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
 // Shared by BOTH specular paths -- the legacy material's specular map and the build tool's
 // plain Shiny level -- because in the viewer both index the same LUT and only the source of
 // `glossiness` differs. Kept as one function so the two cannot drift apart.
+//
+// FEAT-RENDER-20: the second `sqrt` (alpha -> perceptual roughness) is deliberately NOT taken any
+// more. It is the textbook-correct conversion for a HIGHLIGHT in isolation, and it is why this
+// function shipped that way -- but Godot drives BOTH the highlight and the reflection-probe mip
+// from this one value, and its two curves are nowhere near each other. Measured, with a
+// checkerboard courtyard and a real probe at the settings Boot ships: at ROUGHNESS 0.31 (what
+// Shiny HIGH produced with the sqrt) a pure mirror resolves the checker pattern into faint
+// mottling -- unusable as a reflection; at 0.15 the pattern is recognisable but softened; at 0.05
+// it is crisp. So the reflection mip chain is exhausted long before the highlight looks wrong.
+//
+// The reference viewer does not have to choose: it takes highlight sharpness from this LUT
+// exponent and reflection sharpness from a SEPARATE term, `lod = (1.0 - glossiness) *
+// reflection_lods` (reflectionProbeF.glsl:857), fed the raw Shiny level. Godot exposes no
+// equivalent per-probe sharpness control, so one value has to serve both and the question is
+// which compromise lands closer to the reference overall.
+//
+// Dropping the sqrt moves Shiny low/medium/high to 0.28 / 0.15 / 0.10 -- the measured band where
+// a reflection is actually readable -- and tightens the sun highlight in the same step. Live A/B
+// screenshots show the highlight was the LOOSER of the two against Firestorm (a small hard glint
+// there, a broad soft blob here), so this is not a trade of one regression for one fix: both
+// move toward the reference. It remains a compromise, and it does move a value FEAT-RENDER-19
+// calibrated -- if a future A/B shows the highlight has overshot into too tight, the honest fix
+// is a separate roughness for the two paths (which needs a custom light() or a second material),
+// not quietly restoring the sqrt and giving up the reflection again.
 float slng_glossiness_to_roughness(float glossiness) {
     float n = glossiness * glossiness * 368.0;
     float ggx_alpha = sqrt(2.0 / (n + 2.0));
-    return clamp(sqrt(ggx_alpha), 0.0, 1.0);
+    return clamp(ggx_alpha, 0.0, 1.0);
 }
 
+// FEAT-RENDER-20: BUG-RENDER-20's hand-rolled slng_env_reflection() -- a Fresnel-weighted,
+// shininess-scaled SKY-TINT approximation of applyGlossEnv (reflectionProbeF.glsl:893), ported as
+// an independent additive EMISSION term because SLNG placed no real reflection probe at the time
+// -- lived here through four rounds of hand-tuning (see BUG-RENDER-20's spec for the full history:
+// a flat single colour was invisible head-on, blending by "which way is up" needed a per-fragment
+// INV_VIEW_MATRIX computation threaded through every variant as world_normal_up, gating intensity
+// by that same upness produced a visible hard seam at the world-space equator, and the final
+// shipped shape was a Fresnel-only ring around the whole silhouette -- an honestly-labelled
+// approximation, never a real capture of surrounding geometry).
+//
+// Removed once FEAT-RENDER-20 placed an actual Godot ReflectionProbe (see Boot.cs
+// SetupEnvironment/UpdateReflectionProbe) and confirmed empirically that Godot's built-in
+// metallic-roughness pipeline already routes a real probe's capture into the same
+// METALLIC/ROUGHNESS/SPECULAR this file already writes -- no new shader plumbing needed, exactly
+// as BUG-RENDER-20 round 1 had already shown for the sky-only IBL fallback this term stood in
+// for. Leaving both active was measured to double-count: a courtyard probe scene with real
+// coloured walls around a shiny-HIGH sphere showed crisp, clearly separated wall colours with
+// ONLY the real probe active, but a washed-out, near-uniform blue-grey haze smearing across the
+// whole sphere with this term ALSO active on top -- the old sky-tint drowning out the real
+// capture it was written to approximate. Removing it is what lets the real probe's capture reach
+// the screen undiluted. The `world_normal_up` parameter this function needed (threaded through
+// every prim_*.gdshader variant's slng_shade() call site as
+// `(INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).y`) went with it -- nothing else ever used it.
+//
 // Samples everything a face needs and hands it back through out-params. It does NOT assign
 // the built-ins itself: METALLIC / ROUGHNESS / NORMAL_MAP / EMISSION are fragment-stage
 // built-ins and Godot rejects writing them from a user function ("Unknown identifier in
@@ -248,7 +316,7 @@ float slng_glossiness_to_roughness(float glossiness) {
 // sampling logic in one place, which is the part that must not drift between variants.
 //
 // Returns the albedo alpha, the one thing the variants genuinely disagree about.
-float slng_shade(vec2 uv, vec3 view_position,
+float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
                  out vec3 out_albedo,
                  out float out_metallic, out float out_roughness, out float out_specular,
                  out vec3 out_normal_map, out float out_normal_depth,
@@ -273,12 +341,19 @@ float slng_shade(vec2 uv, vec3 view_position,
     // Found with the probe sphere: greys matched Firestorm exactly while the pure primaries came
     // out visibly duller. That is the signature -- 4% of neutral reflection is invisible on a
     // white or grey surface and washes out a fully saturated one, and a blue sphere went violet
-    // because what it was reflecting was the warm courtyard. A specular map still overrides this
-    // below, which is the only path SL actually feeds.
+    // because what it was reflecting was the warm courtyard. A legacy MATERIAL still overrides
+    // this below (BUG-RENDER-21 -- a specular MAP is not what decides that), which is the other
+    // path SL feeds.
     out_specular = 0.0;
 
-    if (has_specular_texture) {
-        vec3 spec = texture(specular_texture, v_specular_uv).rgb * specular_tint;
+    // The presence of a legacy MATERIAL selects this path, not the presence of a specular MAP
+    // (BUG-RENDER-21). `specular_tint` is the material's SpecularColor, white by default, which is
+    // exactly what the viewer's `#else` branch of getSpecular() substitutes for the missing map.
+    if (has_specular_material) {
+        vec3 spec = specular_tint;
+        if (has_specular_texture) {
+            spec *= texture(specular_texture, v_specular_uv).rgb;
+        }
 
         // SL modulates glossiness PER TEXEL with the normal map's ALPHA channel
         // (materialF.glsl:227, `glossiness *= vNt.a`). Not an optional refinement: content is
@@ -303,9 +378,12 @@ float slng_shade(vec2 uv, vec3 view_position,
         out_metallic = clamp(metallic_factor + specular_environment * out_specular, 0.0, 1.0);
     }
     else if (legacy_shininess > 0.0) {
-        // The build tool's Shiny, for a face with no specular map. `else`, not a second `if`:
-        // the viewer packs shininess into the vertex alpha only when there is no specular map
-        // (llface.cpp:1412), so a map always wins and the two never combine.
+        // The build tool's Shiny, for a face with no legacy material at all. `else`, not a second
+        // `if`: llface.cpp:1412 packs shininess into the vertex alpha only when there is no
+        // specular map, but the deferred MATERIAL shader never reads vertex alpha for shininess --
+        // it uses specular_color.a -- so a material wins outright and the two never combine
+        // (BUG-RENDER-21; the branch above used to test for the map, which let a materialed face
+        // with no map fall through to here and be shaded by a value the viewer would ignore).
         //
         // 0.5 is Godot's standard 4% dielectric F0. The viewer's legacy highlight is a
         // Blinn-Phong lobe scaled by a white specular colour and is not energy-conserving, so
@@ -322,6 +400,53 @@ float slng_shade(vec2 uv, vec3 view_position,
         vec4 orm = texture(orm_texture, uv);
         out_roughness = roughness_factor * orm.g;
         out_metallic = metallic_factor * orm.b;
+    }
+
+    // SL's Environment Intensity -- the slider that makes a prim a MIRROR. Reported live as a
+    // mirror rendering near-black and "extrem blurry" against Firestorm's sharp room reflection.
+    //
+    // Folding it into metalness alone (which the branch above still does, and which was the whole
+    // of our handling before this) is wrong in two separate ways, both reproduced in an isolated
+    // render through this very shader before changing anything:
+    //
+    //   BLURRY -- a metallic reflection is sampled from the probe at a mip chosen by ROUGHNESS.
+    //             The viewer does not do that for this term: it samples at a forced `lod 0.0`,
+    //             the sharpest mip, regardless of glossiness
+    //             (`legacyenv = sampleProbes(pos, normalize(refnormpersp), 0.0)`,
+    //             reflectionProbeF.glsl:862-865) -- contrast the `glossenv` sample three lines
+    //             above it, which does use `(1.0 - glossiness) * reflection_lods`.
+    //   BLACK  -- and this is the one that actually hid the reflection: Godot tints a METALLIC
+    //             surface's reflection by its ALBEDO. Rendered side by side, `metallic 0.9,
+    //             roughness 0` gives a pure black rectangle at albedo 0.05 and a working mirror
+    //             at albedo 0.9. Mirrors are dark-textured almost by definition, so the more
+    //             Environment Intensity we folded into metalness, the less there was to see.
+    //
+    // The viewer's model is not a tinted reflection at all, it REPLACES the surface
+    // (`applyLegacyEnv`, reflectionProbeF.glsl:904-913):
+    //
+    //     fresnel = min(fresnel + envIntensity, 1.0);        // full-surface, not a grazing rim
+    //     reflected_color *= (envIntensity * fresnel);
+    //     color = mix(color.rgb, reflected_color * 0.5, envIntensity);
+    //
+    // Godot offers no way to add a probe sample additively from a spatial shader, so the three
+    // built-ins are driven together instead, which reproduces all three properties: roughness to 0
+    // is the `lod 0.0`; metallic to 1 is the full-surface response the forced Fresnel gives; and
+    // albedo toward a mid grey is what makes the result albedo-INDEPENDENT -- a dark mirror stops
+    // eating its own reflection -- with 0.5 standing in for the viewer's own `* 0.5`.
+    //
+    // Deliberately placed AFTER the ORM block so a glTF material's own roughness/metallic cannot
+    // undo it, and gated purely on the uniform so it starts working for materials with no specular
+    // map the moment that plumbing is restored (a separate task owns that fix; this one owns the
+    // model, and the two meet here).
+    //
+    // Overriding out_albedo does discard the atmospherics already applied to it. That is the
+    // viewer's behaviour too -- its mix replaces the shaded colour outright -- and on an indoor
+    // mirror there is nothing to lose; on a distant outdoor one it costs a little haze tint.
+    float env_intensity = clamp(specular_environment, 0.0, 1.0);
+    if (env_intensity > 0.0) {
+        out_roughness = mix(out_roughness, 0.0, env_intensity);
+        out_metallic = mix(out_metallic, 1.0, env_intensity);
+        out_albedo = mix(out_albedo, vec3(0.5), env_intensity);
     }
 
     // A flat normal (0.5, 0.5, 1.0) with zero depth is a no-op, so the variants can assign

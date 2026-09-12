@@ -28,7 +28,7 @@ void fragment() {
     vec3 normal_map;      // filled by slng_shade; unused here, see below
     float normal_depth;
     vec3 emission;
-    float alpha = slng_shade(UV, v_view_position, albedo, metallic, roughness, specular, normal_map, normal_depth, emission);
+    float alpha = slng_shade(UV, v_view_position, NORMAL, albedo, metallic, roughness, specular, normal_map, normal_depth, emission);
 
     // albedo + emission -- see prim_opaque_hud.gdshader for why `unshaded` makes this mandatory
     // rather than cosmetic (it drops EMISSION, and SL fullbright routes the colour through it).

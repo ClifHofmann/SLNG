@@ -42,7 +42,7 @@ void fragment() {
     vec3 normal_map;
     float normal_depth;
     vec3 emission;
-    float alpha = slng_shade(UV, v_view_position, albedo, metallic, roughness, specular, normal_map, normal_depth, emission);
+    float alpha = slng_shade(UV, v_view_position, NORMAL, albedo, metallic, roughness, specular, normal_map, normal_depth, emission);
 
     ALBEDO = albedo;
     METALLIC = metallic;

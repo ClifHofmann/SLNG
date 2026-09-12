@@ -46,6 +46,29 @@ public sealed class GraphicsSettings
     public bool PostFxSsil { get; private set; } = true;
     public bool PostFxGlow { get; private set; } = true;
 
+    /// <summary>FEAT-RENDER-20: the real, camera-following <c>ReflectionProbe</c> that replaced
+    /// BUG-RENDER-20's hand-rolled sky-tint approximation. Toggleable per AGENTS.md's "make visual
+    /// features toggleable so they can be profiled and compared" -- off simply hides the node
+    /// (<see cref="ReflectionProbe.Visible"/>), which stops it capturing or contributing at all,
+    /// letting a shiny face fall back to Godot's plain sky-only IBL for an A/B comparison.</summary>
+    public bool PostFxReflectionProbe { get; private set; } = true;
+
+    /// <summary>FEAT-RENDER-21: screen-space reflections. Separate from
+    /// <see cref="PostFxReflectionProbe"/> on purpose -- they answer different halves of the same
+    /// question and fail in different ways. The probe covers everything, including what is off
+    /// screen, but puts nearby objects in the wrong direction (one capture point, no parallax
+    /// correction); SSR has correct parallax but only for what the frame already contains. The
+    /// reference viewer runs both and mixes SSR over the probe sample
+    /// (reflectionProbeF.glsl:883). Being able to switch them independently is what makes it
+    /// possible to tell which one an artefact came from.</summary>
+    public bool PostFxSsr { get; private set; } = true;
+
+    /// <summary>FEAT-RENDER-22: the real-time mirror (hero) probe. Its own switch because it is
+    /// the only reflection feature here that re-renders the scene continuously -- one probe,
+    /// nearest mirror only, and off entirely when none is in range, but still the first thing to
+    /// turn off if a mirror-heavy parcel ever costs too much.</summary>
+    public bool PostFxHeroProbe { get; private set; } = true;
+
     // No PostFxVolumetricFog. Godot's volumetric fog is a second, flat-density fog model with
     // nothing region-aware behind it, and FEAT-RENDER-01 Phase 5 replaced distance haze entirely
     // with the per-fragment Windlight/EEP seam (slng_atmospherics.gdshaderinc). Leaving both
@@ -77,6 +100,9 @@ public sealed class GraphicsSettings
         PostFxSsao = (bool)cfg.GetValue(Section, "post_fx_ssao", PostFxSsao);
         PostFxSsil = (bool)cfg.GetValue(Section, "post_fx_ssil", PostFxSsil);
         PostFxGlow = (bool)cfg.GetValue(Section, "post_fx_glow", PostFxGlow);
+        PostFxReflectionProbe = (bool)cfg.GetValue(Section, "post_fx_reflection_probe", PostFxReflectionProbe);
+        PostFxSsr = (bool)cfg.GetValue(Section, "post_fx_ssr", PostFxSsr);
+        PostFxHeroProbe = (bool)cfg.GetValue(Section, "post_fx_hero_probe", PostFxHeroProbe);
         Shadows = (bool)cfg.GetValue(Section, "shadows", Shadows);
         ShadowBlur = (float)cfg.GetValue(Section, "shadow_blur", ShadowBlur);
         ShadowResolution = (int)cfg.GetValue(Section, "shadow_resolution", ShadowResolution);
@@ -98,6 +124,9 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "post_fx_ssao", PostFxSsao);
         cfg.SetValue(Section, "post_fx_ssil", PostFxSsil);
         cfg.SetValue(Section, "post_fx_glow", PostFxGlow);
+        cfg.SetValue(Section, "post_fx_reflection_probe", PostFxReflectionProbe);
+        cfg.SetValue(Section, "post_fx_ssr", PostFxSsr);
+        cfg.SetValue(Section, "post_fx_hero_probe", PostFxHeroProbe);
         cfg.SetValue(Section, "shadows", Shadows);
         cfg.SetValue(Section, "shadow_blur", ShadowBlur);
         cfg.SetValue(Section, "shadow_resolution", ShadowResolution);
@@ -116,6 +145,9 @@ public sealed class GraphicsSettings
     public void SetPostFxSsao(bool on) { PostFxSsao = on; Save(); }
     public void SetPostFxSsil(bool on) { PostFxSsil = on; Save(); }
     public void SetPostFxGlow(bool on) { PostFxGlow = on; Save(); }
+    public void SetPostFxReflectionProbe(bool on) { PostFxReflectionProbe = on; Save(); }
+    public void SetPostFxSsr(bool on) { PostFxSsr = on; Save(); }
+    public void SetPostFxHeroProbe(bool on) { PostFxHeroProbe = on; Save(); }
     public void SetShadows(bool on) { Shadows = on; Save(); }
     public void SetShadowBlur(float blur) { ShadowBlur = blur; Save(); }
     public void SetShadowResolution(int res) { ShadowResolution = res; Save(); }
@@ -129,7 +161,8 @@ public sealed class GraphicsSettings
     /// startup the environment and sun do not exist yet, and the window-level settings should still
     /// take effect.
     /// </summary>
-    public void Apply(Viewport? viewport, WorldEnvironment? worldEnvironment, DirectionalLight3D? sun)
+    public void Apply(Viewport? viewport, WorldEnvironment? worldEnvironment, DirectionalLight3D? sun,
+                       ReflectionProbe? reflectionProbe = null)
     {
         DisplayServer.WindowSetVsyncMode((DisplayServer.VSyncMode)VSyncMode);
 
@@ -149,8 +182,15 @@ public sealed class GraphicsSettings
         {
             env.SsaoEnabled = PostFxSsao;
             env.SsilEnabled = PostFxSsil;
+            env.SsrEnabled = PostFxSsr;
             env.GlowEnabled = PostFxGlow;
         }
+
+        // Visible, not QueueFree/re-create: toggling back on must resume from wherever Boot's own
+        // cadence last left it rather than starting the whole node over. A hidden ReflectionProbe
+        // contributes nothing to the pipeline (same as if it were never placed), which is exactly
+        // the A/B this toggle exists for.
+        if (reflectionProbe != null) reflectionProbe.Visible = PostFxReflectionProbe;
 
         if (sun != null)
         {
