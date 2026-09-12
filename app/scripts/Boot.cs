@@ -1013,8 +1013,12 @@ public partial class Boot : Control
             //
             // Godot's Linear mapper is `color / white` with white at 1.0, i.e. the identity, so the
             // frame reaches the screen through linear_to_srgb and a clamp exactly as the viewer's
-            // does. TODO: once EnvironmentLlsdParser reads reflection_probe_ambiance, switch back
-            // to Aces for skies that carry it, which is the branch this mirrors.
+            // does.
+            //
+            // FEAT-ENV-03: this is now only the STARTUP default, for the one frame before any sky
+            // has been evaluated. EnvironmentDriver.Update reads reflection_probe_ambiance off the
+            // active sky every frame from here on and switches to Aces for one that carries it --
+            // see the TonemapMode assignment there for what changed and why.
             TonemapMode = Godot.Environment.ToneMapper.Linear,
             
             // Post-FX (M2-5)
