@@ -235,10 +235,34 @@ vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
 // Shared by BOTH specular paths -- the legacy material's specular map and the build tool's
 // plain Shiny level -- because in the viewer both index the same LUT and only the source of
 // `glossiness` differs. Kept as one function so the two cannot drift apart.
+//
+// FEAT-RENDER-20: the second `sqrt` (alpha -> perceptual roughness) is deliberately NOT taken any
+// more. It is the textbook-correct conversion for a HIGHLIGHT in isolation, and it is why this
+// function shipped that way -- but Godot drives BOTH the highlight and the reflection-probe mip
+// from this one value, and its two curves are nowhere near each other. Measured, with a
+// checkerboard courtyard and a real probe at the settings Boot ships: at ROUGHNESS 0.31 (what
+// Shiny HIGH produced with the sqrt) a pure mirror resolves the checker pattern into faint
+// mottling -- unusable as a reflection; at 0.15 the pattern is recognisable but softened; at 0.05
+// it is crisp. So the reflection mip chain is exhausted long before the highlight looks wrong.
+//
+// The reference viewer does not have to choose: it takes highlight sharpness from this LUT
+// exponent and reflection sharpness from a SEPARATE term, `lod = (1.0 - glossiness) *
+// reflection_lods` (reflectionProbeF.glsl:857), fed the raw Shiny level. Godot exposes no
+// equivalent per-probe sharpness control, so one value has to serve both and the question is
+// which compromise lands closer to the reference overall.
+//
+// Dropping the sqrt moves Shiny low/medium/high to 0.28 / 0.15 / 0.10 -- the measured band where
+// a reflection is actually readable -- and tightens the sun highlight in the same step. Live A/B
+// screenshots show the highlight was the LOOSER of the two against Firestorm (a small hard glint
+// there, a broad soft blob here), so this is not a trade of one regression for one fix: both
+// move toward the reference. It remains a compromise, and it does move a value FEAT-RENDER-19
+// calibrated -- if a future A/B shows the highlight has overshot into too tight, the honest fix
+// is a separate roughness for the two paths (which needs a custom light() or a second material),
+// not quietly restoring the sqrt and giving up the reflection again.
 float slng_glossiness_to_roughness(float glossiness) {
     float n = glossiness * glossiness * 368.0;
     float ggx_alpha = sqrt(2.0 / (n + 2.0));
-    return clamp(sqrt(ggx_alpha), 0.0, 1.0);
+    return clamp(ggx_alpha, 0.0, 1.0);
 }
 
 // FEAT-RENDER-20: BUG-RENDER-20's hand-rolled slng_env_reflection() -- a Fresnel-weighted,
