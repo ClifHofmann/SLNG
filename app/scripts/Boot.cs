@@ -92,6 +92,22 @@ public partial class Boot : Control
     /// reflection sitting at the old capture point.</summary>
     private const float ReflectionProbeMoveThresholdMeters = 3.0f;
 
+    // FEAT-RENDER-22: the mirror probe. Separate node from the follow probe above, because it is a
+    // different job with a different cost: this one sits ON a mirror-grade surface and re-captures
+    // in real time, which is the only way a reflection can show what is BEHIND the viewer. SSR
+    // structurally cannot (it only knows the rendered frame) and the camera-following probe
+    // cannot (one capture point, no parallax). The reference viewer affords exactly one of these
+    // -- heroBox/heroSphere/heroShape are single uniforms, heroProbes is read at a fixed index 0
+    // (reflectionProbeF.glsl:695-724) -- and for the same reason, so does this.
+    private ReflectionProbe? _heroProbe;
+
+    /// <summary>Beyond this the mirror is small enough on screen that a continuous re-capture is
+    /// not worth its cost, and the hero probe switches off entirely rather than idling.</summary>
+    private const float HeroProbeMaxDistanceMeters = 24.0f;
+
+    private bool _heroProbeActive;
+    private int _heroProbeStateLogs;
+
     private double _reflectionProbeAccum;
     private Godot.Vector3 _reflectionProbeLastCapturePos;
     private bool _reflectionProbeEverCaptured;
@@ -213,7 +229,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.77-alpha";
+    public const string AppVersion = "v0.22.78-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1140,6 +1156,77 @@ public partial class Boot : Control
         };
         AddChild(reflectionProbe);
         _reflectionProbe = reflectionProbe;
+
+        // FEAT-RENDER-22: the hero/mirror probe. UpdateModeEnum.Always is exactly the setting
+        // FEAT-RENDER-20 measured at ~1.8x baseline and rejected for the follow probe -- and it is
+        // the right choice HERE, for the same reason the reference viewer accepts the cost for its
+        // one hero probe: a mirror that updates twice a second is not a mirror. It is bounded
+        // instead by scarcity (one probe, nearest mirror only) and by distance
+        // (HeroProbeMaxDistanceMeters), and starts hidden so a scene with no mirror in it pays
+        // nothing at all.
+        //
+        // BoxProjection stays off: it wants a bounded interior to project against and gets the
+        // mirror's own small box here, which would distort rather than correct. EnableShadows
+        // stays off for the same reason as the follow probe -- six shadowed face renders per
+        // frame is precisely the cost this is already spending carefully.
+        var heroProbe = new ReflectionProbe
+        {
+            Name = "HeroProbe",
+            Size = new Godot.Vector3(8f, 8f, 8f),
+            MaxDistance = 40f,
+            UpdateMode = ReflectionProbe.UpdateModeEnum.Always,
+            BoxProjection = false,
+            EnableShadows = false,
+            Intensity = 1.0f,
+            Visible = false,
+        };
+        AddChild(heroProbe);
+        _heroProbe = heroProbe;
+    }
+
+    /// <summary>
+    /// FEAT-RENDER-22: parks the one real-time probe on the nearest mirror-grade surface, or
+    /// switches it off when there is none in range.
+    ///
+    /// `ObjectRenderer` does the finding (it already walks every visual on a spread sweep and
+    /// carries each one's material id), so this only decides whether the result is worth a
+    /// capture and moves the node. Deliberately cheap per frame: a null check, a distance compare,
+    /// and a position write only while a mirror is actually in range.
+    /// </summary>
+    private void UpdateHeroProbe()
+    {
+        if (_heroProbe == null || _objectRenderer == null || _avatarController == null) return;
+
+        var mirror = _objectRenderer.MirrorPosition;
+        bool want = _graphicsSettings.PostFxHeroProbe
+                    && mirror.HasValue
+                    && mirror.Value.DistanceTo(_avatarController.GlobalPosition) <= HeroProbeMaxDistanceMeters;
+
+        if (want)
+        {
+            _heroProbe.GlobalPosition = mirror!.Value;
+            // Sized to the surface it serves rather than to a guess: the box is what decides which
+            // geometry the probe's reflection applies to, and a mirror should not be re-lighting
+            // the whole room around it.
+            float extent = Mathf.Clamp(_objectRenderer.MirrorRadius * 2.5f, 2.0f, 16.0f);
+            _heroProbe.Size = new Godot.Vector3(extent, extent, extent);
+        }
+
+        if (want == _heroProbeActive) return;
+        _heroProbeActive = want;
+        _heroProbe.Visible = want;
+
+        // Logged on TRANSITION only -- this is the one thing about the feature that cannot be seen
+        // in a screenshot (a mirror that is off and a mirror reflecting a dark room look alike),
+        // and a per-frame line would be a denial of service on the log at Always cadence.
+        if (_heroProbeStateLogs < 12)
+        {
+            _heroProbeStateLogs++;
+            GD.Print($"[HeroProbe] {(want ? "ON" : "off")}" +
+                     (want ? $" at ({mirror!.Value.X:0.#},{mirror.Value.Y:0.#},{mirror.Value.Z:0.#})" +
+                             $" radius={_objectRenderer.MirrorRadius:0.##} size={_heroProbe.Size.X:0.#}" : "") +
+                     $" | mirrorFound={mirror.HasValue} setting={_graphicsSettings.PostFxHeroProbe}");
+        }
     }
 
     /// <summary>
@@ -1334,6 +1421,9 @@ public partial class Boot : Control
         // FEAT-RENDER-20: cheap every frame (an early-out plus a distance check) -- the probe
         // itself only actually moves/re-bakes on its own measured cadence, see the method.
         UpdateReflectionProbe(delta);
+        // FEAT-RENDER-22: cheap per frame (null check + distance compare); the probe only exists
+        // at all while a mirror-grade surface is actually in range.
+        UpdateHeroProbe();
 
         // Drain the region-environment event buffered off-thread (see _pendingRegionEnvironment).
         // FEAT-ENV-01 Phase D: region-scoped -- crossing into a neighbor region with its own

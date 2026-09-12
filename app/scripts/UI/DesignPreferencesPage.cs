@@ -24,6 +24,7 @@ public partial class DesignPreferencesPage : VBoxContainer
     private CheckBox _postFxGlowCheck = null!;
     private CheckBox _postFxReflectionProbeCheck = null!;
     private CheckBox _postFxSsrCheck = null!;
+    private CheckBox _postFxHeroProbeCheck = null!;
 
     private bool _refreshing;
 
@@ -83,6 +84,11 @@ public partial class DesignPreferencesPage : VBoxContainer
         _postFxSsrCheck = AddCheck(L10n.Tr("ui.preferences.post_fx_ssr"), _settings.PostFxSsr,
                                 on => { if (!_refreshing) { _settings.SetPostFxSsr(on); _apply(); } });
 
+        // FEAT-RENDER-22: the real-time mirror probe, separate again -- it is the only one of
+        // the three that re-renders the scene continuously.
+        _postFxHeroProbeCheck = AddCheck(L10n.Tr("ui.preferences.post_fx_hero_probe"), _settings.PostFxHeroProbe,
+                                on => { if (!_refreshing) { _settings.SetPostFxHeroProbe(on); _apply(); } });
+
         // No hint line here any more: the only thing it ever said was that F2 toggles all three
         // at once, and F2 is gone (see Boot._Input). These three checkboxes are now the whole
         // interface to post-processing.
@@ -110,6 +116,7 @@ public partial class DesignPreferencesPage : VBoxContainer
             _postFxGlowCheck.ButtonPressed = _settings.PostFxGlow;
             _postFxReflectionProbeCheck.ButtonPressed = _settings.PostFxReflectionProbe;
             _postFxSsrCheck.ButtonPressed = _settings.PostFxSsr;
+            _postFxHeroProbeCheck.ButtonPressed = _settings.PostFxHeroProbe;
         }
         finally
         {
