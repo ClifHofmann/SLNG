@@ -78,11 +78,9 @@ public partial class ScriptDialogWindow : SLNGWindow
 
         OnCloseRequested = () => Close(sendReply: false, buttonIndex: -1, buttonLabel: "");
 
+        // Inset comes from SLNGWindow.ContentContainer now (FEAT-UI-26); this container is kept
+        // only because the layout below hangs off it.
         var margin = new MarginContainer();
-        margin.AddThemeConstantOverride("margin_left", 10);
-        margin.AddThemeConstantOverride("margin_right", 10);
-        margin.AddThemeConstantOverride("margin_top", 10);
-        margin.AddThemeConstantOverride("margin_bottom", 10);
         ContentContainer.AddChild(margin);
 
         _contentVBox = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill };

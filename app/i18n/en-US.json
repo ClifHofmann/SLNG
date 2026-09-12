@@ -69,6 +69,20 @@
       "source_legacy": "Windlight",
       "source_default": "default — sim sends none"
     },
+    "camera": {
+      "title": "Camera",
+      "waiting": "Waiting for the camera …",
+      "orbit": "Orbit",
+      "zoom": "Zoom",
+      "pan": "Pan",
+      "views": "Views",
+      "view_front": "Front",
+      "view_side": "Side",
+      "view_rear": "Rear",
+      "view_front_tooltip": "Camera in front of the avatar, looking back at them",
+      "view_side_tooltip": "Camera beside the avatar",
+      "view_rear_tooltip": "Camera back behind the avatar (the default view)"
+    },
     "snapshot": {
       "title": "Snapshot",
       "capture": "Capture",
@@ -82,8 +96,6 @@
       "choose_folder": "Choose folder…",
       "open_folder": "Open folder",
       "folder_tooltip": "Where snapshots are saved. Use \"Choose folder…\" to change it.",
-      "hide_hud": "Hide HUD",
-      "hide_hud_tooltip": "Hides every window, toolbar and overlay so you can compose the shot with a clean view. This window hides too — bring it back from View → Toggle HUD in the top menu.",
       "dof_heading": "Depth of Field",
       "dof_enable": "Enable",
       "dof_enable_tooltip": "Blurs everything outside the sharp band. Off by default — it costs a full-screen blur pass, and auto focus costs a raycast.",
@@ -100,10 +112,6 @@
       "dof_near_blur_tooltip": "Blur what is nearer than the sharp band too, not just what is behind it.",
       "dof_show_marker": "Show focus point (debug)",
       "dof_show_marker_tooltip": "Draws two markers in the world: cyan is the focal plane (what stays sharp), amber is what the camera looks at — the avatar, or the Alt+LMB focus point. When the two are apart, the camera is focusing past its subject.",
-      "dof_marker_focus": "Focus",
-      "dof_marker_target": "Camera target",
-      "dof_marker_auto": "auto focus",
-      "dof_marker_manual": "manual",
       "dof_reset": "Reset",
       "dof_no_target": "nothing in the centre of frame"
     },

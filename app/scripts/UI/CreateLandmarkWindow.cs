@@ -62,11 +62,9 @@ public partial class CreateLandmarkWindow : SLNGWindow
 
         OnCloseRequested = QueueFree;
 
+        // Inset comes from SLNGWindow.ContentContainer now (FEAT-UI-26); this container is kept
+        // only because the layout below hangs off it.
         var margin = new MarginContainer();
-        margin.AddThemeConstantOverride("margin_left", 14);
-        margin.AddThemeConstantOverride("margin_right", 14);
-        margin.AddThemeConstantOverride("margin_top", 12);
-        margin.AddThemeConstantOverride("margin_bottom", 12);
         ContentContainer.AddChild(margin);
 
         var vbox = new VBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };

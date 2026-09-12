@@ -229,7 +229,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.81-alpha";
+    public const string AppVersion = "v0.22.90-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -345,9 +345,6 @@ public partial class Boot : Control
         _stepList = GetNode<VBoxContainer>("%StepList");
         BuildLoadingSteps();
         _ = SetupThemedIconsAsync();
-
-        var versionLabel = GetNodeOrNull<Label>("%VersionLabel");
-        if (versionLabel != null) versionLabel.Text = AppVersion;
 
         var loginVersionText = GetNodeOrNull<Label>("%VersionText");
         if (loginVersionText != null) loginVersionText.Text = AppVersion;

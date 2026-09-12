@@ -69,6 +69,20 @@
       "source_legacy": "Windlight",
       "source_default": "Standard — Sim sendet nichts"
     },
+    "camera": {
+      "title": "Kamera",
+      "waiting": "Warte auf die Kamera …",
+      "orbit": "Drehen",
+      "zoom": "Zoom",
+      "pan": "Schwenken",
+      "views": "Ansichten",
+      "view_front": "Vorn",
+      "view_side": "Seite",
+      "view_rear": "Hinten",
+      "view_front_tooltip": "Kamera vor den Avatar, mit Blick auf ihn",
+      "view_side_tooltip": "Kamera seitlich neben den Avatar",
+      "view_rear_tooltip": "Kamera zurück hinter den Avatar (Standardansicht)"
+    },
     "snapshot": {
       "title": "Schnappschuss",
       "capture": "Aufnehmen",
@@ -82,8 +96,6 @@
       "choose_folder": "Ordner wählen…",
       "open_folder": "Ordner öffnen",
       "folder_tooltip": "Speicherort für Schnappschüsse. Mit „Ordner wählen…“ ändern.",
-      "hide_hud": "HUD ausblenden",
-      "hide_hud_tooltip": "Blendet alle Fenster, die Werkzeugleiste und Overlays aus, damit du die Aufnahme ohne Bedienelemente komponieren kannst. Auch dieses Fenster verschwindet dabei — über Ansicht → HUD umschalten im oberen Menü wieder einblenden.",
       "dof_heading": "Schärfentiefe",
       "dof_enable": "Aktiv",
       "dof_enable_tooltip": "Zeichnet alles außerhalb des Schärfebereichs weich. Standardmäßig aus — der Effekt kostet einen Vollbild-Weichzeichner, der Autofokus zusätzlich einen Raycast.",
@@ -100,10 +112,6 @@
       "dof_near_blur_tooltip": "Zeichnet auch das weich, was näher als der Schärfebereich liegt, nicht nur den Hintergrund.",
       "dof_show_marker": "Fokuspunkt anzeigen (Debug)",
       "dof_show_marker_tooltip": "Zeichnet zwei Marker in die Welt: türkis die Fokusebene (dort ist das Bild scharf), orange das Ziel, auf das die Kamera blickt — der Avatar bzw. der mit Alt+Linksklick gesetzte Punkt. Liegen beide auseinander, fokussiert die Kamera am Motiv vorbei.",
-      "dof_marker_focus": "Fokus",
-      "dof_marker_target": "Kamera-Ziel",
-      "dof_marker_auto": "Autofokus",
-      "dof_marker_manual": "manuell",
       "dof_reset": "Zurücksetzen",
       "dof_no_target": "nichts in der Bildmitte"
     },

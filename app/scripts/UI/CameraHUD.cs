@@ -36,18 +36,18 @@ public partial class CameraHUD : SLNGWindow
         PersistId = "camera_hud"; // opt into position/size persistence (SLNGWindow)
         _iconFont = GD.Load<Font>("res://assets/fonts/MaterialSymbolsOutlined.ttf");
 
-        Title = "CAMERA";
+        Title = L10n.Tr("ui.camera.title");
         Visible = false;
-        CustomMinimumSize = new Vector2(160, 140);
+        // Room for the captioned groups and the preset row at 1:1 -- below this RescaleContent
+        // starts shrinking the pads, which is a fallback, not the intended size.
+        CustomMinimumSize = new Vector2(210, 190);
         Position = new Vector2(100, 100);
 
         OnCloseRequested = Hide;
 
+        // Inset comes from SLNGWindow.ContentContainer now (FEAT-UI-26); this container is kept
+        // only because the layout below hangs off it.
         var margin = new MarginContainer();
-        margin.AddThemeConstantOverride("margin_top", 12);
-        margin.AddThemeConstantOverride("margin_bottom", 12);
-        margin.AddThemeConstantOverride("margin_left", 12);
-        margin.AddThemeConstantOverride("margin_right", 12);
         ContentContainer.AddChild(margin);
 
         // A plain (non-Container) host so mainVBox below keeps its own natural size instead of
@@ -63,13 +63,13 @@ public partial class CameraHUD : SLNGWindow
         _scaleHost.AddChild(mainVBox);
         _mainVBox = mainVBox;
 
-        _statusLabel = new Label { Text = "Waiting for Camera...", HorizontalAlignment = HorizontalAlignment.Center };
+        _statusLabel = new Label { Text = L10n.Tr("ui.camera.waiting"), HorizontalAlignment = HorizontalAlignment.Center };
         _statusLabel.AddThemeFontSizeOverride("font_size", 12);
         _statusLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
         mainVBox.AddChild(_statusLabel);
 
         var hbox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
-        hbox.AddThemeConstantOverride("separation", 16);
+        hbox.AddThemeConstantOverride("separation", 10);
         mainVBox.AddChild(hbox);
 
         // Pad background style (circle for rotation)
@@ -88,11 +88,15 @@ public partial class CameraHUD : SLNGWindow
             ShadowColor = new Color(0, 0, 0, 0.3f), ShadowSize = 4
         };
 
-        // 1. Rotation Pad
+        // 1. Rotation Pad. Each group is caption + control in its own column: three unlabelled
+        // pads next to each other were guesswork, and "which one pans again?" is not something a
+        // camera window should make you find out by trying.
+        var rotGroup = CreateGroup(L10n.Tr("ui.camera.orbit"), hbox);
+
         var rotPanel = new PanelContainer();
         rotPanel.AddThemeStyleboxOverride("panel", circleStyle);
-        hbox.AddChild(rotPanel);
-        
+        rotGroup.AddChild(rotPanel);
+
         var rotGrid = new GridContainer { Columns = 3 };
         rotPanel.AddChild(rotGrid);
         rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) });
@@ -105,18 +109,27 @@ public partial class CameraHUD : SLNGWindow
         rotGrid.AddChild(CreatePadButton("keyboard_arrow_down", "rot_down"));
         rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) });
 
-        // 2. Zoom Buttons
+        // 2. Zoom. Given the same panel backing as the two pads -- it used to be two loose
+        // buttons floating between them, which read as leftovers rather than as a third control.
+        var zoomGroup = CreateGroup(L10n.Tr("ui.camera.zoom"), hbox);
+
+        var zoomPanel = new PanelContainer();
+        zoomPanel.AddThemeStyleboxOverride("panel", squareStyle);
+        zoomGroup.AddChild(zoomPanel);
+
         var zoomVBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
-        zoomVBox.AddThemeConstantOverride("separation", 8);
-        hbox.AddChild(zoomVBox);
-        zoomVBox.AddChild(CreateModernButton("add", "zoom_in", new Godot.Vector2(32, 36), 20, useIconFont: true));
-        zoomVBox.AddChild(CreateModernButton("remove", "zoom_out", new Godot.Vector2(32, 36), 20, useIconFont: true));
+        zoomVBox.AddThemeConstantOverride("separation", 4);
+        zoomPanel.AddChild(zoomVBox);
+        zoomVBox.AddChild(CreatePadButton("add", "zoom_in"));
+        zoomVBox.AddChild(CreatePadButton("remove", "zoom_out"));
 
         // 3. Pan Pad
+        var panGroup = CreateGroup(L10n.Tr("ui.camera.pan"), hbox);
+
         var panPanel = new PanelContainer();
         panPanel.AddThemeStyleboxOverride("panel", squareStyle);
-        hbox.AddChild(panPanel);
-        
+        panGroup.AddChild(panPanel);
+
         var panGrid = new GridContainer { Columns = 3 };
         panPanel.AddChild(panGrid);
         panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) });
@@ -129,18 +142,29 @@ public partial class CameraHUD : SLNGWindow
         panGrid.AddChild(CreatePadButton("keyboard_arrow_down", "pan_down"));
         panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) });
 
-        // 4. Presets
+        // 4. Presets, under their own caption and a hairline rule, because they are a different
+        // kind of thing from the pads above: one-shot jumps, not held movement.
+        var presetCaption = new Label
+        {
+            Text = L10n.Tr("ui.camera.views"),
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        presetCaption.AddThemeFontSizeOverride("font_size", 10);
+        presetCaption.AddThemeColorOverride("font_color", CaptionColor);
+        mainVBox.AddChild(new HSeparator());
+        mainVBox.AddChild(presetCaption);
+
         var presetsHBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
-        presetsHBox.AddThemeConstantOverride("separation", 8);
+        presetsHBox.AddThemeConstantOverride("separation", 6);
         mainVBox.AddChild(presetsHBox);
         
         // Use sleek text buttons instead of problematic emojis
-        var btnFront = CreateModernButton("Front", "", new Godot.Vector2(60, 28), 12);
-        btnFront.TooltipText = "Front View";
-        var btnSide = CreateModernButton("Side", "", new Godot.Vector2(60, 28), 12);
-        btnSide.TooltipText = "Side View";
-        var btnRear = CreateModernButton("Rear", "", new Godot.Vector2(60, 28), 12);
-        btnRear.TooltipText = "Rear View";
+        var btnFront = CreateModernButton(L10n.Tr("ui.camera.view_front"), "", new Godot.Vector2(58, 26), 12);
+        btnFront.TooltipText = L10n.Tr("ui.camera.view_front_tooltip");
+        var btnSide = CreateModernButton(L10n.Tr("ui.camera.view_side"), "", new Godot.Vector2(58, 26), 12);
+        btnSide.TooltipText = L10n.Tr("ui.camera.view_side_tooltip");
+        var btnRear = CreateModernButton(L10n.Tr("ui.camera.view_rear"), "", new Godot.Vector2(58, 26), 12);
+        btnRear.TooltipText = L10n.Tr("ui.camera.view_rear_tooltip");
         
         presetsHBox.AddChild(btnFront);
         presetsHBox.AddChild(btnSide);
@@ -171,6 +195,26 @@ public partial class CameraHUD : SLNGWindow
 
         _mainVBox.Scale = new Vector2(scale, scale);
         _mainVBox.Position = ((avail - _referenceSize * scale) / 2f).Round();
+    }
+
+    // One muted grey for every caption in this window, so the labels read as annotation and the
+    // controls stay the thing your eye lands on.
+    private static readonly Color CaptionColor = new(0.58f, 0.62f, 0.68f);
+
+    /// <summary>A captioned column: the small grey label on top, the caller's control below,
+    /// centred. Returns the column to add that control to.</summary>
+    private static VBoxContainer CreateGroup(string caption, Control parent)
+    {
+        var column = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+        column.AddThemeConstantOverride("separation", 4);
+        parent.AddChild(column);
+
+        var label = new Label { Text = caption, HorizontalAlignment = HorizontalAlignment.Center };
+        label.AddThemeFontSizeOverride("font_size", 10);
+        label.AddThemeColorOverride("font_color", CaptionColor);
+        column.AddChild(label);
+
+        return column;
     }
 
     private Button CreatePadButton(string text, string actionName)
@@ -231,7 +275,7 @@ public partial class CameraHUD : SLNGWindow
                 {
                     _isLinked = true;
                     _statusLabel.Visible = false; // Hide label to save space once connected
-                    CustomMinimumSize = new Vector2(160, 140); // Shrink window to fit tightly
+                    CustomMinimumSize = new Vector2(210, 172); // Shrink window to fit tightly once the status line goes
                     Logger.Debug("[CameraHUD] AvatarController found and linked!");
                 }
             }

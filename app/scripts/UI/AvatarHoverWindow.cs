@@ -39,11 +39,9 @@ public partial class AvatarHoverWindow : SLNGWindow
         Position = new Vector2(200, 160);
         Visible = false;
 
+        // Inset comes from SLNGWindow.ContentContainer now (FEAT-UI-26); this container is kept
+        // only because the layout below hangs off it.
         var margin = new MarginContainer();
-        margin.AddThemeConstantOverride("margin_left", 14);
-        margin.AddThemeConstantOverride("margin_right", 14);
-        margin.AddThemeConstantOverride("margin_top", 12);
-        margin.AddThemeConstantOverride("margin_bottom", 12);
         ContentContainer.AddChild(margin);
 
         var vbox = new VBoxContainer();

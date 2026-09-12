@@ -130,11 +130,9 @@ public partial class UserProfileWindow : SLNGWindow
 
         // SLNGWindow.ContentContainer has no inner padding of its own, so without this the header,
         // labels and list rows sit flush against the window's left edge.
+        // Inset comes from SLNGWindow.ContentContainer now (FEAT-UI-26); this container is kept
+        // only because the layout below hangs off it.
         var pad = new MarginContainer();
-        pad.AddThemeConstantOverride("margin_left", 12);
-        pad.AddThemeConstantOverride("margin_right", 12);
-        pad.AddThemeConstantOverride("margin_top", 10);
-        pad.AddThemeConstantOverride("margin_bottom", 10);
         ContentContainer.AddChild(pad);
 
         _root = new VBoxContainer();

@@ -88,6 +88,10 @@ public partial class MinimapOverlay : SLNGWindow
     {
         PersistId = "minimap";
         base._Ready();
+        
+        // The minimap is a radar that should fill its window edge to edge, so it opts out of
+        // the standard content inset (FEAT-UI-26).
+        SetContentMargin(0, 0);
 
         Title = L10n.Tr("ui.minimap.title");
         CustomMinimumSize = new Vector2(360, 260);

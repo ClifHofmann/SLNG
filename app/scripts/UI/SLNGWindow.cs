@@ -71,6 +71,21 @@ public partial class SLNGWindow : MarginContainer
 
     public MarginContainer ContentContainer => _contentContainer;
 
+    /// <summary>The standard content inset, horizontal and vertical. Applied to every window in
+    /// <see cref="_Ready"/>.</summary>
+    public const int DefaultContentMarginH = 14;
+    public const int DefaultContentMarginV = 12;
+
+    /// <summary>Overrides the standard content inset for this window -- pass 0, 0 for content that
+    /// should reach the frame (a map filling its window). Call it after <c>base._Ready()</c>.</summary>
+    public void SetContentMargin(int horizontal, int vertical)
+    {
+        _contentContainer.AddThemeConstantOverride("margin_left", horizontal);
+        _contentContainer.AddThemeConstantOverride("margin_right", horizontal);
+        _contentContainer.AddThemeConstantOverride("margin_top", vertical);
+        _contentContainer.AddThemeConstantOverride("margin_bottom", vertical);
+    }
+
     /// <summary>True while the frame is collapsed to its title bar via the "_" button.</summary>
     public bool IsMinimized => _isMinimized;
 
@@ -79,6 +94,12 @@ public partial class SLNGWindow : MarginContainer
 
     public override void _Ready()
     {
+        // FEAT-UI-26: the shared check-control theme. Applied per window because a Control only
+        // inherits a Theme from Control ANCESTORS, and these windows hang off CanvasLayers, which
+        // break that chain -- there is no single root to hang it on. Null-coalescing so a window
+        // that brings its own theme keeps it.
+        Theme ??= UiTheme.Shared;
+
         // Allow free positioning (not constrained by parent containers if placed inside a standard Control)
         SetAnchorsPreset(LayoutPreset.TopLeft);
 
@@ -210,6 +231,14 @@ public partial class SLNGWindow : MarginContainer
         // overflows and draws outside -- which is exactly what the Preferences dialog did once the
         // Graphics tab grew. Clipping here fixes it for every window rather than one page at a time.
         _contentContainer.ClipContents = true;
+        // FEAT-UI-26: one standard inset for every window's content. ContentContainer has always
+        // been a MarginContainer, but with no margins set -- so a window only had breathing room
+        // if it happened to wrap its own content in a second MarginContainer, and roughly half of
+        // them did not (Snapshot, Preferences, Chat, Inventory, Environment, the maps): their
+        // content sat flush against the frame. Setting it here makes the inset the default and
+        // consistent (14/12 was the most common hand-rolled value), and SetContentMargin below is
+        // the opt-out for content that genuinely wants the full frame.
+        SetContentMargin(DefaultContentMarginH, DefaultContentMarginV);
         vbox.AddChild(_contentContainer);
 
         AddResizeHandles();
