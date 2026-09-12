@@ -277,6 +277,7 @@
       "post_fx_ssil": "Indirekte Beleuchtung (SSIL)",
       "post_fx_glow": "Glühen / Bloom",
       "post_fx_reflection_probe": "Umgebungsreflexionen",
+      "post_fx_ssr": "Spiegelungen (Bildschirmraum)",
       "tab_licenses": "Lizenzen",
       "licenses_heading": "Hinweise und Namensnennung zu Fremdmaterial",
       "licenses_missing": "Die Datei mit den Fremdmaterial-Hinweisen fehlt in diesem Build. Das ist ein Lizenzproblem, kein Anzeigeproblem — bitte melden.",

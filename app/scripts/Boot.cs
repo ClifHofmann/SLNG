@@ -213,7 +213,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.76-alpha";
+    public const string AppVersion = "v0.22.77-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1007,7 +1007,32 @@ public partial class Boot : Control
             SsaoIntensity = 2.0f,
             
             SsilEnabled = true,
-            
+
+            // FEAT-RENDER-21: screen-space reflections. This is the piece a reflection PROBE
+            // structurally cannot deliver -- the probe is captured from one point with box
+            // projection off, so it treats its cubemap as infinitely distant and puts anything
+            // nearby (your own avatar, a few metres away) in the wrong direction. Reported live as
+            // "sollte ich mich vorn auf der kugel spiegeln oder? ich sehe mich aber eher an der
+            // seite". SSR reflects the actual rendered frame, so its parallax is correct by
+            // construction.
+            //
+            // Parity, not an extra: the reference viewer applies SSR in its LEGACY reflection path
+            // (sampleReflectionProbesLegacy, reflectionProbeF.glsl:867-885) with no glossiness
+            // gate at all -- it mixes SSR over the probe sample via `glossenv = mix(glossenv,
+            // ssr.rgb, ssr.a)` for ordinary Shiny faces. The `glossiness >= 0.9` threshold that
+            // does exist (:753) guards the PBR path only, so an SL "Shiny High" prim gets SSR in
+            // Firestorm today and did not here.
+            //
+            // Deliberately modest settings. SSR only ever reflects what is already on screen, so
+            // it fades out at the frame edge and behind occluders; pushing max_steps higher buys
+            // longer traces at real per-pixel cost for reflections that mostly terminate early
+            // anyway in an outdoor scene. Measured cost is in the FEAT-RENDER-21 spec.
+            SsrEnabled = true,
+            SsrMaxSteps = 32,
+            SsrFadeIn = 0.15f,
+            SsrFadeOut = 2.0f,
+
+
             // Glow is deliberately restrained, because the sun's atmospheric halo is ALREADY
             // rendered in sky.gdshader -- that is what the haze_glow term is, ported from SL's own
             // atmospherics. Post-process bloom on top of it double-counts the same effect, and

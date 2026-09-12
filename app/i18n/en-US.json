@@ -277,6 +277,7 @@
       "post_fx_ssil": "Indirect Lighting (SSIL)",
       "post_fx_glow": "Glow / Bloom",
       "post_fx_reflection_probe": "Environment Reflections",
+      "post_fx_ssr": "Screen-Space Reflections",
       "tab_licenses": "Licences",
       "licenses_heading": "Third-party notices and attribution",
       "licenses_missing": "The third-party notice file is missing from this build. This is a licensing problem, not a display one — please report it.",
