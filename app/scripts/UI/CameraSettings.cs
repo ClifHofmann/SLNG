@@ -28,7 +28,25 @@ public sealed class CameraSettings
 
     public const float MinFov = 50f;
     public const float MaxFov = 100f;
-    public const float DefaultFov = 75f;
+
+    /// <summary>Second Life's own default vertical field of view: <c>DEFAULT_FIELD_OF_VIEW =
+    /// 60.f * DEG_TO_RAD</c> (indra/llmath/llcamera.h), which is also the shipped default of the
+    /// viewer's <c>CameraAngle</c> setting (<c>1.047197551</c> rad = 60.000°, app_settings/
+    /// settings.xml). SLNG shipped Godot's 75° instead, which is not a cosmetic difference: at the
+    /// same camera distance a 60° view is <c>tan(37.5°)/tan(30°)</c> = <b>1.33x</b> more magnified,
+    /// so the avatar simply renders a third smaller than in the reference viewer — and pulling the
+    /// camera closer to compensate exaggerates perspective, which both shrinks the head relative to
+    /// anything nearer the camera and visibly distorts a face in close-up. BUG-AVATAR-07.</summary>
+    public const float DefaultFov = 60f;
+
+    /// <summary>The pre-BUG-AVATAR-07 default (Godot's own). A stored value of exactly this is
+    /// treated as "never chosen" by <see cref="Load"/> and migrated once to
+    /// <see cref="DefaultFov"/>; see FovVersion.</summary>
+    private const float LegacyDefaultFov = 75f;
+
+    /// <summary>Bumped when <see cref="DefaultFov"/> changes, so an existing preferences.cfg does
+    /// not pin every user to the old default forever. Stored alongside the value itself.</summary>
+    private const int FovVersion = 1;
 
     public const float MinDistance = 1.0f;
     public const float MaxDistance = 20.0f;
@@ -47,7 +65,7 @@ public sealed class CameraSettings
     /// <summary>Zoom in / out buttons.</summary>
     public float ZoomSpeed { get; private set; } = 1.0f;
 
-    /// <summary>Vertical field of view in degrees (Godot Camera3D default is 75).</summary>
+    /// <summary>Vertical field of view in degrees — see <see cref="DefaultFov"/>.</summary>
     public float Fov { get; private set; } = DefaultFov;
 
     /// <summary>Resting third-person camera distance behind the avatar, applied on camera reset.</summary>
@@ -64,6 +82,14 @@ public sealed class CameraSettings
         PanSpeed = ClampMul((float)cfg.GetValue(Section, "pan_speed", 1.0));
         ZoomSpeed = ClampMul((float)cfg.GetValue(Section, "zoom_speed", 1.0));
         Fov = Mathf.Clamp((float)cfg.GetValue(Section, "fov", DefaultFov), MinFov, MaxFov);
+        // One-time migration off Godot's 75° default. Only touches a value that is EXACTLY the old
+        // default and was written before this version existed — a FOV the user actually picked is
+        // left alone, and once fov_version is stored this never runs again.
+        if ((int)cfg.GetValue(Section, "fov_version", 0) < FovVersion)
+        {
+            if (Mathf.IsEqualApprox(Fov, LegacyDefaultFov)) SetFov(DefaultFov);
+            Persist("fov_version", FovVersion, _ => { });
+        }
         RearDistance = Mathf.Clamp((float)cfg.GetValue(Section, "rear_distance", DefaultDistance), MinDistance, MaxDistance);
         FocusHeight = Mathf.Clamp((float)cfg.GetValue(Section, "focus_height", DefaultFocusHeight), MinFocusHeight, MaxFocusHeight);
     }

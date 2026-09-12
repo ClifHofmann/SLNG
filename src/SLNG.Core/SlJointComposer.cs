@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 
 namespace SLNG.Core;
@@ -33,10 +34,14 @@ public static class SlJointComposer
     /// <param name="positionOverrides">Per-bone LOCAL position override from a worn rigged mesh's
     /// alternate bind matrices — replaces the local position outright (viewer: LLJoint::updatePos),
     /// same rule the existing ApplyShape already applies.</param>
+    /// <param name="scaleLockedBones">Bones whose SCALE is pinned to the skeleton's default by a
+    /// worn rigged mesh that declares <c>lock_scale_if_joint_position</c> — see
+    /// <see cref="IsScaleLocked"/>.</param>
     public static Dictionary<string, JointPose> ComputePoses(
         AvatarSkeleton skeleton,
         IReadOnlyDictionary<string, (Vector3 Scale, Vector3 Position)>? distortions = null,
-        IReadOnlyDictionary<string, Vector3>? positionOverrides = null)
+        IReadOnlyDictionary<string, Vector3>? positionOverrides = null,
+        IReadOnlyCollection<string>? scaleLockedBones = null)
     {
         var poses = new Dictionary<string, JointPose>(skeleton.Bones.Count);
 
@@ -46,7 +51,7 @@ public static class SlJointComposer
             Vector3 localScale = bone.Scale;
             if (distortions != null && distortions.TryGetValue(bone.Name, out var dist))
             {
-                localScale += dist.Scale;
+                if (!IsScaleLocked(scaleLockedBones, bone.Name)) localScale += dist.Scale;
                 localPos += dist.Position;
             }
             if (positionOverrides != null && positionOverrides.TryGetValue(bone.Name, out var ov))
@@ -80,6 +85,33 @@ public static class SlJointComposer
         }
 
         return poses;
+    }
+
+    /// <summary>True when <paramref name="boneName"/>'s SCALE must stay at the skeleton's default,
+    /// i.e. every shape slider's skeletal scale distortion on it is discarded (BUG-AVATAR-07).
+    ///
+    /// <para>Viewer rule, verified in source: a worn rigged mesh whose skin section sets
+    /// <c>lock_scale_if_joint_position</c> makes <c>LLVOAvatar::addAttachmentOverridesForObject</c>
+    /// (indra/newview/llvoavatar.cpp) call <c>pJoint-&gt;addAttachmentScaleOverride(
+    /// pJoint-&gt;getDefaultScale(), mesh_id, ...)</c> for every joint it also gives an
+    /// above-threshold POSITION override. <c>LLPolySkeletalDistortion::apply</c> then writes the
+    /// shape's accumulated scale through <c>LLJoint::setScale(newScale, /*apply_attachment_
+    /// overrides=*/true)</c> (indra/llcharacter/lljoint.cpp), and that setter REPLACES the
+    /// requested scale with the active override — so the slider loses. <c>getDefaultScale()</c> is
+    /// <c>avatar_skeleton.xml</c>'s own <c>scale</c> for the bone (set once in
+    /// <c>LLAvatarAppearance::allocateCharacterJoints</c>), which is exactly this port's
+    /// <c>BoneDefinition.Scale</c> — hence "skip the distortion delta", not "force 1,1,1".</para>
+    ///
+    /// <para>The lock is a property of the JOINT, not of the mesh that asked for it: it applies to
+    /// every mesh skinned to that joint. A fitted mesh body (Maitreya Lara measured live: 51 of its
+    /// 52 joints above threshold, including mHead/mNeck/mChest/mTorso) therefore also freezes the
+    /// scale a worn mesh HEAD renders at.</para></summary>
+    public static bool IsScaleLocked(IReadOnlyCollection<string>? scaleLockedBones, string boneName)
+    {
+        if (scaleLockedBones == null || scaleLockedBones.Count == 0) return false;
+        // Prefer the O(1) path when the caller passed a real set; fall back to a scan otherwise.
+        return scaleLockedBones is IReadOnlySet<string> set ? set.Contains(boneName)
+                                                           : scaleLockedBones.Contains(boneName);
     }
 
     /// <summary>The world matrix a skinning bind should use for this pose — row-vector convention
@@ -133,7 +165,8 @@ public static class SlJointComposer
     public static BodySize ComputeBodySize(
         AvatarSkeleton skeleton,
         IReadOnlyDictionary<string, (Vector3 Scale, Vector3 Position)>? distortions = null,
-        IReadOnlyDictionary<string, Vector3>? positionOverrides = null)
+        IReadOnlyDictionary<string, Vector3>? positionOverrides = null,
+        IReadOnlyCollection<string>? scaleLockedBones = null)
     {
         float LocalZ(string name)
         {
@@ -150,7 +183,10 @@ public static class SlJointComposer
             var bone = skeleton.GetBone(name);
             if (bone == null) return 1f;
             var scale = bone.Scale;
-            if (distortions != null && distortions.TryGetValue(name, out var d)) scale += d.Scale;
+            // Same lock the render path honors (IsScaleLocked) — the viewer measures mBodySize off
+            // joint->getScale(), which an attachment scale override has already replaced by then.
+            if (distortions != null && !IsScaleLocked(scaleLockedBones, name) &&
+                distortions.TryGetValue(name, out var d)) scale += d.Scale;
             return scale.Z;
         }
 

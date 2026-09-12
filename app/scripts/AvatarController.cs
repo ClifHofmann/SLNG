@@ -1031,7 +1031,7 @@ public partial class AvatarController : Camera3D
                         // Push up out of terrain/object
                         transform.Position = new System.Numerics.Vector3(transform.Position.X, transform.Position.Y, clampTargetZ);
                     }
-                    else if (transform.Position.Z > clampTargetZ && groundMayLower)
+                    else if (transform.Position.Z > clampTargetZ && groundMayLower && !Diagnostics.NoGroundDrop)
                     {
                         // Fall down to terrain/object
                         float fallSpeed = 9.81f * (float)delta;

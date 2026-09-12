@@ -32,10 +32,20 @@ public readonly record struct VertexBoneWeights(
     float Weight0, float Weight1, float Weight2, float Weight3);
 
 /// <summary>Skinning data from a mesh asset's <c>skin</c> section. Joint names map to avatar
-/// skeleton bones; the bind matrices position the mesh in the skeleton's rest pose.</summary>
+/// skeleton bones; the bind matrices position the mesh in the skeleton's rest pose.
+///
+/// <para><see cref="LockScaleIfJointPosition"/> is the asset's <c>lock_scale_if_joint_position</c>
+/// flag (the uploader's "Lock scale if joint position defined" box). When set, every joint this
+/// mesh gives an above-threshold POSITION override also has its SCALE pinned to the skeleton's
+/// default — the viewer discards the shape sliders' skeletal scale distortions on those joints
+/// entirely (LLVOAvatar::addAttachmentOverridesForObject -> LLJoint::addAttachmentScaleOverride,
+/// which LLPolySkeletalDistortion::apply's setScale(..., apply_attachment_overrides: true) then
+/// loses to). It is how a fitted mesh body keeps its authored proportions instead of being
+/// re-scaled by the shape underneath it. Absent in the LLSD means false.</para></summary>
 public sealed record MeshSkin(
     string[] JointNames,
     System.Numerics.Matrix4x4[] InverseBindMatrices,
     System.Numerics.Matrix4x4 BindShapeMatrix,
     float PelvisOffset,
-    System.Numerics.Matrix4x4[]? AltInverseBindMatrices = null);
+    System.Numerics.Matrix4x4[]? AltInverseBindMatrices = null,
+    bool LockScaleIfJointPosition = false);

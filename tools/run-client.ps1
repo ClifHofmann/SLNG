@@ -74,7 +74,25 @@ param(
     # node the instant it is selected, edited, animated or leaves draw distance. This switch is the
     # A/B: run the same spot with and without it and compare `draws` / `process` ms / FPS in the
     # perf overlay (and the [Instancing] line in logs/slng-perf.log). Passes --no-instancing.
-    [switch]$NoInstancing
+    [switch]$NoInstancing,
+
+    # BUG-AVATAR-07: stop AvatarController's ground clamp from pulling the local agent DOWN to its
+    # own ground reading (pushing UP out of geometry still happens). The reference viewer has no
+    # equivalent of that downward pull -- the simulator owns the agent's Z, and
+    # LLWorld::resolveStepHeightGlobal's foot-plane maths feeds foot IK and shadows, never the
+    # avatar's position. Measured live: the sim placed the agent at Z 1037.41, the clamp dragged it
+    # to groundHeight 1035.84 + halfBody 0.885 = 1036.725, and the whole avatar rendered 0.69 m
+    # low -- which reads as "my avatar and my head are too small" against anything at head height.
+    # Run the same spot with and without it and compare against a second viewer. Passes
+    # --no-ground-drop.
+    [switch]$NoGroundDrop,
+
+    # BUG-AVATAR-07: suppress the login Current-Outfit attachment reconcile -- the one thing this
+    # client does to a live avatar's outfit on its own (re-attaching restarts the object's scripts,
+    # e.g. an AO or an ankle lock, which every viewer sees). A Current-Outfit item the simulator
+    # genuinely fails to rez then stays missing for the session, so this is for A/B testing against
+    # a second viewer, not for everyday use. Passes --no-reattach.
+    [switch]$NoReattach
 )
 
 $ErrorActionPreference = 'Stop'
@@ -152,6 +170,14 @@ if ($AlphaSortFreeze) {
 if ($NoInstancing) {
     Write-Host "      MultiMesh instancing OFF (--no-instancing)" -ForegroundColor Yellow
     $userArgs += '--no-instancing'
+}
+if ($NoGroundDrop) {
+    Write-Host "      ground clamp will not pull the avatar DOWN (--no-ground-drop)" -ForegroundColor Magenta
+    $userArgs += '--no-ground-drop'
+}
+if ($NoReattach) {
+    Write-Host "      login outfit reconcile OFF -- missing attachments stay missing (--no-reattach)" -ForegroundColor Magenta
+    $userArgs += '--no-reattach'
 }
 if ($userArgs.Count -gt 0) {
     $clientArgs += @('--') + $userArgs

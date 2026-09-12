@@ -26,12 +26,40 @@ public static class Diagnostics
     /// plain static bool rather than anything that re-reads the command line.</summary>
     public static bool Enabled { get; private set; }
 
+    /// <summary>True when the client was started with <c>--no-reattach</c>: the login
+    /// Current-Outfit attachment reconcile is not armed at all. See <see cref="Initialize"/>.</summary>
+    public static bool NoReattach { get; private set; }
+
+    /// <summary>True when the client was started with <c>--no-ground-drop</c>. See
+    /// <see cref="Initialize"/>.</summary>
+    public static bool NoGroundDrop { get; private set; }
+
     /// <summary>Call once at startup, before anything that logs. Godot puts arguments after a bare
     /// <c>--</c> into GetCmdlineUserArgs and the rest into GetCmdlineArgs; both are checked so the
     /// flag works whether or not it is passed after the separator.</summary>
     public static void Initialize()
     {
         Enabled = HasFlag(OS.GetCmdlineArgs()) || HasFlag(OS.GetCmdlineUserArgs());
+
+        // --no-reattach: suppress the login attachment reconcile (GridSession's
+        // ReattachMissingCofAttachments). That pass is the ONE thing this client does to a live
+        // avatar's outfit on its own, and it decides from LibreMetaverse's object cache 6 s after
+        // login — on a busy Agni sim with a heavy mesh avatar that can be before every attachment
+        // has been identified, and the re-attach then restarts the object's scripts (AO, ankle
+        // lock, body) for everyone, not just here. BUG-AVATAR-07's A/B switch: relog with this and
+        // a second viewer says whether the difference it sees is caused by us.
+        NoReattach = HasFlag(OS.GetCmdlineArgs(), "--no-reattach")
+                  || HasFlag(OS.GetCmdlineUserArgs(), "--no-reattach");
+
+        // --no-ground-drop: stop AvatarController's ground clamp from pulling the local agent DOWN
+        // to its own ground reading. Pushing UP out of geometry still happens. The reference viewer
+        // has no equivalent of the downward pull at all — the simulator owns the agent's Z, and
+        // LLWorld::resolveStepHeightGlobal's foot-plane maths feeds foot IK and shadows, never the
+        // avatar's position. Measured live (BUG-AVATAR-07): the sim placed the agent at Z 1037.41,
+        // the clamp dragged it to groundHeight 1035.84 + halfBody 0.885 = 1036.725, and the whole
+        // avatar rendered 0.69 m low as a result.
+        NoGroundDrop = HasFlag(OS.GetCmdlineArgs(), "--no-ground-drop")
+                    || HasFlag(OS.GetCmdlineUserArgs(), "--no-ground-drop");
 
         // BUG-RENDER-16: read once here, alongside --diag, since this is already the "parse the
         // command line at startup" site. See RenderConfig.HighFrequencyFoliageAlpha for what each

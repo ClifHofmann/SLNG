@@ -275,4 +275,119 @@ public class SlJointComposerTests
         Assert.Equal(baseline.PelvisToFoot, withBogusPelvisOverride.PelvisToFoot);
         Assert.Equal(baseline.BodySizeZ, withBogusPelvisOverride.BodySizeZ);
     }
+
+    // ---- BUG-AVATAR-07: lock_scale_if_joint_position ----------------------------------------
+    // A worn rigged mesh whose skin section sets lock_scale_if_joint_position pins the SCALE of
+    // every joint it position-overrides to the skeleton default, and the shape sliders' skeletal
+    // scale distortion on those joints is discarded (viewer: LLVOAvatar::
+    // addAttachmentOverridesForObject -> LLJoint::addAttachmentScaleOverride, which
+    // LLPolySkeletalDistortion::apply's setScale(..., apply_attachment_overrides: true) loses to).
+
+    [Fact]
+    public void Scale_locked_bone_ignores_its_shape_scale_distortion()
+    {
+        var skel = MakeSkeleton(("mHead", null, Vector3.Zero, Vector3.Zero));
+        var distortions = new Dictionary<string, (Vector3 Scale, Vector3 Position)>
+        {
+            ["mHead"] = (new Vector3(-0.0757f, -0.0757f, -0.0757f), Vector3.Zero),
+        };
+
+        var unlocked = SlJointComposer.ComputePoses(skel, distortions);
+        var locked = SlJointComposer.ComputePoses(
+            skel, distortions, positionOverrides: null,
+            scaleLockedBones: new HashSet<string> { "mHead" });
+
+        // Without the lock the real "Head Size" slider at its DEFAULT (682 = 0.5 -> driven 655 =
+        // -0.0757) already shrinks mHead ~7.6%; with it the joint stays at the skeleton default.
+        Assert.True((unlocked["mHead"].OwnScale - new Vector3(0.9243f, 0.9243f, 0.9243f)).Length() < 1e-4f);
+        Assert.True((locked["mHead"].OwnScale - Vector3.One).Length() < 1e-6f);
+    }
+
+    [Fact]
+    public void Scale_lock_leaves_the_position_distortion_alone()
+    {
+        // The viewer keeps position overrides and scale overrides on separate maps — locking the
+        // scale must not also freeze the joint's shape-driven position offset.
+        var skel = MakeSkeleton(("mSkull", null, new Vector3(0, 0, 0.1f), Vector3.Zero));
+        var distortions = new Dictionary<string, (Vector3 Scale, Vector3 Position)>
+        {
+            ["mSkull"] = (new Vector3(-0.5f, -0.5f, -0.5f), new Vector3(0, 0, -0.0076f)),
+        };
+
+        var poses = SlJointComposer.ComputePoses(
+            skel, distortions, positionOverrides: null,
+            scaleLockedBones: new HashSet<string> { "mSkull" });
+
+        Assert.True((poses["mSkull"].OwnScale - Vector3.One).Length() < 1e-6f);
+        Assert.True((poses["mSkull"].WorldPosition - new Vector3(0, 0, 0.0924f)).Length() < 1e-5f);
+    }
+
+    [Fact]
+    public void Scale_lock_only_affects_the_bones_it_names()
+    {
+        var skel = MakeSkeleton(
+            ("mTorso", null, Vector3.Zero, Vector3.Zero),
+            ("mChest", "mTorso", new Vector3(0, 0, 0.2f), Vector3.Zero));
+        var distortions = new Dictionary<string, (Vector3 Scale, Vector3 Position)>
+        {
+            ["mTorso"] = (new Vector3(-0.2f, -0.2f, -0.2f), Vector3.Zero),
+            ["mChest"] = (new Vector3(-0.1f, -0.1f, -0.1f), Vector3.Zero),
+        };
+
+        var poses = SlJointComposer.ComputePoses(
+            skel, distortions, positionOverrides: null,
+            scaleLockedBones: new HashSet<string> { "mTorso" });
+
+        Assert.True((poses["mTorso"].OwnScale - Vector3.One).Length() < 1e-6f);
+        Assert.True((poses["mChest"].OwnScale - new Vector3(0.9f, 0.9f, 0.9f)).Length() < 1e-5f);
+        // mChest's local (0,0,0.2) is offset by its parent's OWN scale, which the lock restored to
+        // 1 — so the lock propagates to child POSITIONS exactly the way the viewer's does.
+        Assert.True((poses["mChest"].WorldPosition - new Vector3(0, 0, 0.2f)).Length() < 1e-5f);
+    }
+
+    [Fact]
+    public void ComputeBodySize_honors_the_same_scale_lock()
+    {
+        var skel = MakeSkeleton(
+            ("mPelvis", null, new Vector3(0, 0, 1.0f), Vector3.Zero),
+            ("mHipLeft", "mPelvis", new Vector3(0, 0.1f, -0.08f), Vector3.Zero),
+            ("mKneeLeft", "mHipLeft", new Vector3(0, 0, -0.49f), Vector3.Zero),
+            ("mAnkleLeft", "mKneeLeft", new Vector3(0, 0, -0.49f), Vector3.Zero),
+            ("mFootLeft", "mAnkleLeft", new Vector3(0.1f, 0, -0.05f), Vector3.Zero));
+        var distortions = new Dictionary<string, (Vector3 Scale, Vector3 Position)>
+        {
+            ["mPelvis"] = (new Vector3(0, 0, -0.3f), Vector3.Zero),
+        };
+
+        var shrunk = SlJointComposer.ComputeBodySize(skel, distortions);
+        var lockedSize = SlJointComposer.ComputeBodySize(
+            skel, distortions, positionOverrides: null,
+            scaleLockedBones: new HashSet<string> { "mPelvis" });
+        var undistorted = SlJointComposer.ComputeBodySize(skel);
+
+        // mPelvis' Z scale multiplies mHipLeft's Z in the PelvisToFoot term, so shrinking it moves
+        // the number; locking it must land back exactly on the undistorted measurement.
+        Assert.NotEqual(shrunk.PelvisToFoot, lockedSize.PelvisToFoot, 5);
+        Assert.Equal(undistorted.PelvisToFoot, lockedSize.PelvisToFoot, 5);
+    }
+
+    [Fact]
+    public void No_scale_lock_set_changes_nothing()
+    {
+        var skel = MakeSkeleton(("mHead", null, Vector3.Zero, Vector3.Zero));
+        var distortions = new Dictionary<string, (Vector3 Scale, Vector3 Position)>
+        {
+            ["mHead"] = (new Vector3(-0.1f, -0.1f, -0.1f), Vector3.Zero),
+        };
+
+        var none = SlJointComposer.ComputePoses(skel, distortions, null, new HashSet<string>());
+        var nullSet = SlJointComposer.ComputePoses(skel, distortions);
+
+        Assert.Equal(nullSet["mHead"].OwnScale, none["mHead"].OwnScale);
+        Assert.False(SlJointComposer.IsScaleLocked(null, "mHead"));
+        Assert.False(SlJointComposer.IsScaleLocked(new HashSet<string>(), "mHead"));
+        Assert.True(SlJointComposer.IsScaleLocked(new HashSet<string> { "mHead" }, "mHead"));
+        // A plain collection (not IReadOnlySet) must still resolve correctly.
+        Assert.True(SlJointComposer.IsScaleLocked(new List<string> { "mHead" }, "mHead"));
+    }
 }

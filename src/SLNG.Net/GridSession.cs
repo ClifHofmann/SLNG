@@ -4232,6 +4232,90 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     ///
     /// <para>Returns false when the COF yields no usable wearables, in which case the on-disk cache
     /// is still the fallback.</para></summary>
+    /// <summary>Diagnostic only — changes nothing, sends nothing. Re-derives the self shape from
+    /// the WORN wearable assets (what the reference viewer actually renders itself from) and
+    /// reports where it disagrees with the simulator's <c>AvatarAppearance</c> echo, which is what
+    /// SLNG currently prefers.
+    ///
+    /// <para>The two are the same shape only as long as the server's stored copy still matches the
+    /// worn Shape asset. It is the stored copy, so anything that ever wrote a wrong one — another
+    /// viewer, an interrupted bake, one of this project's own earlier appearance sends — leaves
+    /// SLNG rendering a shape the reference viewer never shows, which reads exactly like "the face
+    /// is wrong and the head is the wrong size" (BUG-AVATAR-07). Until this has been seen to agree
+    /// in the field, "SLNG's shape source is fine" is an assumption, not a fact.</para></summary>
+    private async Task<bool> CompareSelfShapeSourcesAsync(CancellationToken ct)
+    {
+        var relay = _lastSelfRelayVisualParams;
+        if (relay is not { Length: > 0 }) return false;
+
+        try
+        {
+            var worn = await CollectWornWearablesForBakeAsync(verbose: false, ct).ConfigureAwait(false);
+            foreach (var w in worn)
+            {
+                if (w.Asset != null) continue;
+                if (w.AssetType is not (LibreMetaverse.AssetType.Bodypart or LibreMetaverse.AssetType.Clothing))
+                    continue;
+                try
+                {
+                    var asset = await _client.Assets
+                        .RequestAssetAsync(w.AssetID, w.AssetType, priority: false, ct).ConfigureAwait(false);
+                    if (asset is LibreMetaverse.Assets.AssetWearable aw && aw.Decode()) w.Asset = aw;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch { /* one missing wearable must not cost the whole comparison */ }
+            }
+
+            var ordered = OrderWearablesAsTheViewerDoes(worn.Where(w => w.Asset != null).ToList(), verbose: false);
+            var wearableParams = ordered
+                .Where(w => w.Asset != null)
+                .Select(w => (IReadOnlyDictionary<int, float>)w.Asset!.Params)
+                .ToList();
+            if (wearableParams.Count == 0)
+            {
+                Console.Error.WriteLine("[ShapeSource] cannot compare: no worn wearable assets decoded");
+                return false;
+            }
+
+            var fromWearables = AgentAppearanceParams.BuildWireArray(wearableParams);
+            var ids = LibreMetaverse.VisualParams.Group0ParamIds;
+
+            int differing = 0;
+            var worst = new List<(int Id, string Name, float Sim, float Worn, float Diff)>();
+            for (int i = 0; i < ids.Length && i < relay.Length && i < fromWearables.Length; i++)
+            {
+                if (relay[i] == fromWearables[i]) continue;
+                differing++;
+                if (!LibreMetaverse.VisualParams.Params.TryGetValue(ids[i], out var vp)) continue;
+                float simW = LibreMetaverse.Utils.ByteToFloat(relay[i], vp.MinValue, vp.MaxValue);
+                float wornW = LibreMetaverse.Utils.ByteToFloat(fromWearables[i], vp.MinValue, vp.MaxValue);
+                worst.Add((ids[i], vp.Name, simW, wornW, Math.Abs(simW - wornW)));
+            }
+
+            if (differing == 0)
+            {
+                Console.Error.WriteLine(
+                    $"[ShapeSource] sim echo and worn wearables AGREE on all {Math.Min(relay.Length, fromWearables.Length)} params " +
+                    "— the rendered shape is not a stale-server-copy problem");
+                return true;
+            }
+
+            Console.Error.WriteLine(
+                $"[ShapeSource] sim echo and worn wearables DISAGREE on {differing} of " +
+                $"{Math.Min(relay.Length, fromWearables.Length)} params — SLNG renders the SIM's copy, the reference " +
+                "viewer renders the worn wearables. Largest differences (param: sim -> worn):");
+            foreach (var d in worst.OrderByDescending(x => x.Diff).Take(12))
+                Console.Error.WriteLine($"[ShapeSource]   {d.Id,4} {d.Name,-28} {d.Sim,8:0.0000} -> {d.Worn,8:0.0000}  (delta {d.Diff:0.0000})");
+            return true;
+        }
+        catch (OperationCanceledException) { return false; }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[ShapeSource] comparison failed: {ex.Message}");
+            return false;
+        }
+    }
+
     private async Task<bool> TryDeriveSelfShapeFromWearablesAsync(CancellationToken ct)
     {
         try
@@ -4483,6 +4567,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     Console.Error.WriteLine(
                         $"[Appearance] login summary: shape FROM SIM ({_lastSelfRelayVisualParams!.Length} params), " +
                         $"{_lastSelfRelayBakes.Count} bake id(s){DescribeAppearanceCacheAge()}");
+                    await CompareSelfShapeSourcesAsync(CancellationToken.None).ConfigureAwait(false);
                     return;
                 }
 
@@ -6123,6 +6208,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     private readonly HashSet<Guid> _attachmentsSeenWornThisSession = new();
     private int _attachmentReconcileArmed;
 
+    /// <summary>When false, the login Current-Outfit attachment reconcile never runs — nothing is
+    /// attached on this client's own initiative. Set from the <c>--no-reattach</c> command-line
+    /// flag; defaults to the normal behaviour. See <see cref="ArmAttachmentReconcile"/>.</summary>
+    public bool ReattachMissingAttachments { get; set; } = true;
+
     /// <summary>The simulator sometimes fails to rez one or two Current-Outfit attachments on
     /// login (a COF/asset race, worse for freshly-made <c>#Library</c> copies): the item is in the
     /// COF but never appears in-world, so the Angezogen tab shows it "(nicht aktiv)". The
@@ -6132,6 +6222,19 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     private void ArmAttachmentReconcile()
     {
         if (System.Threading.Interlocked.Exchange(ref _attachmentReconcileArmed, 1) != 0) return;
+
+        // BUG-AVATAR-07: this pass is the only thing the client does to a live avatar's outfit on
+        // its own initiative, and it is therefore the only thing that can make the avatar look
+        // different in OTHER people's viewers — re-attaching restarts the object's scripts (an AO,
+        // an ankle lock, a mesh body's own scripts), which everyone sees, not just us. The switch
+        // exists so that can be A/B tested against a second viewer instead of argued about.
+        if (!ReattachMissingAttachments)
+        {
+            Console.Error.WriteLine(
+                "[Appearance] login attachment reconcile DISABLED (--no-reattach) — nothing will be " +
+                "re-attached; a Current-Outfit item the sim failed to rez stays missing this session");
+            return;
+        }
 
         _ = Task.Run(async () =>
         {

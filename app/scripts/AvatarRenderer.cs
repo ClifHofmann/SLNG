@@ -21,6 +21,14 @@ public partial class AvatarRenderer : Node3D
         // not the viewer), so every BoM/system-bake fetch has to carry it or other people's mesh
         // bodies 403 and render untextured. Set from AvatarComponent.AgentId in CreateVisual/UpdateVisual.
         public Guid AgentId { get; set; }
+        // True for the local agent's own visual. Only used to decide what is worth printing
+        // ungated: a busy sim puts a dozen other people's mesh bodies through the same code, and
+        // their numbers are noise when the question is "why does MY avatar render short".
+        public bool IsSelf { get; set; }
+        // Bookkeeping for the stationary-gated [AvatarHeight] re-report (self only).
+        public float LastRootY { get; set; } = float.NaN;
+        public float LastLoggedRootY { get; set; } = float.NaN;
+        public double LastHeightLogTime { get; set; }
         public Dictionary<string, MeshInstance3D> Parts { get; } = new();
         // Base (un-morphed) body-part data, keyed by part name. Kept so the body meshes can be
         // re-morphed and rebuilt whenever the avatar's shape (VisualParams) changes.
@@ -34,6 +42,15 @@ public partial class AvatarRenderer : Node3D
         // overridden LOCAL joint position in SL space (relative to the parent joint).
         // ApplyShape re-applies these after rebuilding rests so they survive shape updates.
         public Dictionary<string, System.Numerics.Vector3> JointPosOverrides { get; } = new();
+        // Bones whose SCALE a worn rigged mesh has pinned to the skeleton's default, because its
+        // skin section sets lock_scale_if_joint_position (viewer: LLVOAvatar::
+        // addAttachmentOverridesForObject -> LLJoint::addAttachmentScaleOverride, which
+        // LLPolySkeletalDistortion::apply's setScale(..., apply_attachment_overrides: true) then
+        // loses to). ApplyShape skips the shape's scale distortion on these — see
+        // SlJointComposer.IsScaleLocked for the full source trail (BUG-AVATAR-07). Populated
+        // alongside JointPosOverrides and, like it, not reverted per-mesh on detach: a re-login or
+        // the next full appearance rebuild re-derives both from whatever is actually worn.
+        public HashSet<string> JointScaleLocks { get; } = new();
         // Per-mesh pelvis Z fixups harvested from worn rigged meshes' skin data (viewer:
         // LLAvatarAppearance::addPelvisFixup / LLVector3OverrideMap, indra/llappearance/
         // llavatarappearance.cpp + indra/llcharacter/lljoint.{h,cpp}). Keyed by the contributing
@@ -565,6 +582,7 @@ public partial class AvatarRenderer : Node3D
         // Keep AgentId current -- CreateVisual sets it too, but AvatarComponent can be added before
         // its AgentId is populated; the bake-texture CDN URL depends on this being right.
         if (visual.AgentId == Guid.Empty) visual.AgentId = avatar.AgentId;
+        visual.IsSelf = avatar.IsLocalAgent;
 
         if (visual.NameTag is Godot.PanelContainer panel)
         {
@@ -706,6 +724,25 @@ public partial class AvatarRenderer : Node3D
 
             visual.Root.Position = rootPos;
 
+            // A world-Z readout is only useful where the avatar actually IS, and a shape apply
+            // happens once at login — so re-report it whenever the self avatar has SETTLED at a
+            // materially different height (BUG-AVATAR-07's cube comparison needs the number from
+            // wherever the user parked). Stationary-gated so walking doesn't stream lines, and
+            // rate-limited so a jitter loop can't either.
+            if (visual.IsSelf)
+            {
+                bool stationary = System.Math.Abs(rootPos.Y - visual.LastRootY) < 0.001f;
+                visual.LastRootY = rootPos.Y;
+                double now = Time.GetTicksMsec() / 1000.0;
+                if (stationary && System.Math.Abs(rootPos.Y - visual.LastLoggedRootY) > 0.05f &&
+                    now - visual.LastHeightLogTime > 2.0)
+                {
+                    visual.LastLoggedRootY = rootPos.Y;
+                    visual.LastHeightLogTime = now;
+                    LogAvatarHeight(visual, "moved", transform.Position.Z);
+                }
+            }
+
             var slQuat = new Godot.Quaternion(
                 transform.Rotation.X, transform.Rotation.Z,
                 -transform.Rotation.Y, transform.Rotation.W);
@@ -762,6 +799,7 @@ public partial class AvatarRenderer : Node3D
                 // Worn rigged meshes (clothing/mesh body/head) don't re-morph, but their skin
                 // binds DO need this avatar's fresh BoneOwnScale — see RebuildRiggedAttachmentSkins.
                 RebuildRiggedAttachmentSkins(visual);
+                RefreshStaticAttachmentOffsets(visual);
 
                 // [FEAT-RENDER-05] The two numbers that decide "head too big or hair too small".
                 // A rigged mesh follows the SKELETON only, so its fit is set by mHead/mSkull's own
@@ -770,15 +808,20 @@ public partial class AvatarRenderer : Node3D
                 // scale we compute differently from the viewer, or morphs that inflate the head
                 // past what the hair was fitted to -- and these two lines tell them apart. Read
                 // against [RiggedMesh]'s bind-pose size for the hair mesh.
-                if (Diagnostics.Enabled)
                 {
                     visual.BoneOwnScale.TryGetValue("mHead", out var headScale);
                     visual.BoneOwnScale.TryGetValue("mSkull", out var skullScale);
                     var headSize = visual.Parts.TryGetValue("head", out var headMi) && headMi.Mesh != null
                         ? headMi.Mesh.GetAabb().Size : Godot.Vector3.Zero;
+                    // Ungated (BUG-AVATAR-07): this is the number the "head too small vs Firestorm"
+                    // report is actually about, and a shape apply happens a handful of times per
+                    // login, not per frame. JointScaleLocks says whether a worn fitted mesh froze
+                    // these scales the way the reference viewer does.
                     GD.Print($"[HeadSize] mHead own scale ({headScale.X:0.###}, {headScale.Y:0.###}, {headScale.Z:0.###}), " +
                              $"mSkull ({skullScale.X:0.###}, {skullScale.Y:0.###}, {skullScale.Z:0.###}), " +
-                             $"morphed head mesh {headSize.X:0.###} x {headSize.Y:0.###} x {headSize.Z:0.###} m");
+                             $"morphed head mesh {headSize.X:0.###} x {headSize.Y:0.###} x {headSize.Z:0.###} m, " +
+                             $"scaleLocks={visual.JointScaleLocks.Count}, bodySizeZ={visual.BodySizeZ:0.###} m");
+                    LogAvatarHeight(visual, "shape");
                 }
             }
         }
@@ -1027,7 +1070,12 @@ public partial class AvatarRenderer : Node3D
 
             if (distortions.TryGetValue(name, out var dist))
             {
-                slScale += dist.Scale;
+                // A fitted mesh body/head that declares lock_scale_if_joint_position freezes this
+                // joint's scale at the skeleton default — the real viewer drops the shape sliders'
+                // skeletal scale distortion here entirely. See AvatarVisual.JointScaleLocks and
+                // SlJointComposer.IsScaleLocked (BUG-AVATAR-07). Position is unaffected: the
+                // viewer keeps position overrides and scale overrides on separate maps.
+                if (!visual.JointScaleLocks.Contains(name)) slScale += dist.Scale;
                 slPos += dist.Position;
             }
 
@@ -1309,6 +1357,9 @@ public partial class AvatarRenderer : Node3D
             avatarVisual.Skeleton.AddChild(boneAttach);
             _attachmentNodes[entityId] = boneAttach;
         }
+
+        boneAttach.SetMeta("AttachPoint", (int)attachment.AttachmentPoint);
+        boneAttach.SetMeta("BoneName", boneName);
 
         // Clear previous static attachment visuals
         foreach (var child in boneAttach.GetChildren())
@@ -2592,14 +2643,111 @@ public partial class AvatarRenderer : Node3D
     /// body/head rigged to shifted joints renders as an unrecognisable tangle because
     /// invBind·jointWorld no longer cancels. Main thread only.
     /// </summary>
+    // Rigged meshes already reported by the [RiggedSkin] line below — an outfit re-attaches and
+    // re-decodes the same asset several times per login, and the facts being reported are a
+    // property of the ASSET, so once per mesh id per session is the whole signal.
+    private readonly HashSet<Guid> _loggedSkinMeshes = new();
+
+    // Mesh ids already reported by [RenderExtent]. The measurement is a property of the mesh plus
+    // the current skeleton, and RebuildRiggedAttachmentSkins re-enters this method for every worn
+    // mesh on every shape change — once per id is the signal, the rest is noise.
+    private readonly HashSet<Guid> _loggedRenderExtent = new();
+
     private void ApplyJointPositionOverrides(AvatarVisual visual, Skeleton3D skeleton, SLNG.Assets.MeshSkin skinData, Guid meshId)
     {
         var alt = skinData.AltInverseBindMatrices;
         int jointCount = skinData.JointNames.Length;
+
+        // Ungated, once per mesh: the three facts that decide whether a worn mesh body/head can
+        // move this skeleton at all. Only meshes that actually carry alternate bind matrices are
+        // reported (plain rigged clothing never does), so a full outfit adds a handful of lines,
+        // not one per attachment. Without this, "the fitted body did / did not freeze the shape's
+        // bone scaling" is indistinguishable from "that code path was never reached" — which is
+        // exactly where BUG-AVATAR-07 stalled once already.
+        if (alt is { Length: > 0 } && (visual.IsSelf || Diagnostics.Enabled) && _loggedSkinMeshes.Add(meshId))
+        {
+            int candidates = 0;
+            for (int j = 0; j < jointCount && j < alt.Length; j++)
+            {
+                if (System.Math.Abs(alt[j].M44 - 1f) > 0.01f) continue;
+                string n = _avatarSkeleton?.ResolveBoneName(skinData.JointNames[j]) ?? skinData.JointNames[j];
+                var bd = _avatarSkeleton?.GetBone(n);
+                if (bd == null) continue;
+                var pos = new System.Numerics.Vector3(alt[j].M41, alt[j].M42, alt[j].M43);
+                if ((pos - bd.Position).Length() > 0.0001f) candidates++;
+            }
+            GD.Print($"[RiggedSkin] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} {meshId}: " +
+                     $"joints={jointCount} altBinds={alt.Length} " +
+                     $"aboveThreshold={candidates} lock_scale_if_joint_position={skinData.LockScaleIfJointPosition}" +
+                     (alt.Length != jointCount ? "  -- SKIPPED: altBinds != joints, no overrides applied" : ""));
+        }
+
+        // Scale-Lock detection:
+        // 1. Rigged Bento head / face mesh: meshes rigged to mFaceRoot or mFace* bones are authored
+        //    at 1.0 scale around the Bento face bones. Classic shape sliders (notably 682/655 "Head Size")
+        //    distort mHead/mSkull, which shrinks the head mesh relative to unrigged hair attached to mHead.
+        //    Lock mHead, mSkull, mEye*, and Bento face bones to default scale 1.0.
+        // 2. Meshes declaring LockScaleIfJointPosition: lock all joints influenced by the mesh.
+        bool isBentoHead = skinData.JointNames.Any(n => n == "mFaceRoot" || n.StartsWith("mFace"));
+        int locked = 0;
+
+        if (isBentoHead)
+        {
+            string[] bentoHeadBones = { "mHead", "mSkull", "mEyeLeft", "mEyeRight", "mFaceRoot" };
+            foreach (var b in bentoHeadBones)
+            {
+                if (visual.JointScaleLocks.Add(b)) locked++;
+            }
+            foreach (var n in skinData.JointNames)
+            {
+                if (n.StartsWith("mFace"))
+                {
+                    string resolved = _avatarSkeleton?.ResolveBoneName(n) ?? n;
+                    if (visual.JointScaleLocks.Add(resolved)) locked++;
+                }
+            }
+        }
+
+        if (skinData.LockScaleIfJointPosition)
+        {
+            foreach (var n in skinData.JointNames)
+            {
+                string resolved = _avatarSkeleton?.ResolveBoneName(n) ?? n;
+                if (visual.JointScaleLocks.Add(resolved)) locked++;
+            }
+        }
+
         // Viewer rule: overrides only count when EVERY joint has one (bindCnt == jointCnt).
-        if (alt == null || alt.Length != jointCount) return;
+        if (alt == null || alt.Length != jointCount)
+        {
+            if (locked > 0)
+            {
+                if (_avatarSkeleton != null)
+                {
+                    ApplyShape(visual, skeleton, _avatarSkeleton, visual.LastDistortions, visual.JointPosOverrides);
+                }
+                skeleton.ResetBonePoses();
+                RebuildRiggedAttachmentSkins(visual);
+                RefreshBodyPartSkins(visual);
+                RefreshStaticAttachmentOffsets(visual);
+
+                GD.Print($"[ScaleLock] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} mesh {meshId}: " +
+                         $"{locked} joint scale(s) locked to skeleton default " +
+                         $"(Bento head: {isBentoHead}, lock_scale: {skinData.LockScaleIfJointPosition}) — " +
+                         $"total scale-locked joints: {visual.JointScaleLocks.Count}");
+
+                RecomputeFootOffset(visual, visual.LastDistortions);
+                LogAvatarHeight(visual, "scale lock");
+            }
+            return;
+        }
 
         int applied = 0;
+        // True only when this mesh actually MOVED the skeleton (a new/different position override,
+        // or a newly locked joint scale). A worn outfit hands the same overrides in again mesh
+        // after mesh; re-applying the shape and rebuilding every bind for each of those is pure
+        // waste, and skipping it keeps the refresh below affordable.
+        bool skeletonChanged = (locked > 0);
         float maxDelta = 0f;
         for (int j = 0; j < jointCount; j++)
         {
@@ -2618,6 +2766,21 @@ public partial class AvatarRenderer : Node3D
             var basePos = boneDef?.Position ?? System.Numerics.Vector3.Zero;
             float delta = (slPos - basePos).Length();
             if (delta <= 0.0001f) continue;
+
+            // Viewer parity (LLVOAvatar::addAttachmentOverridesForObject, indra/newview/
+            // llvoavatar.cpp): a skin that sets lock_scale_if_joint_position pins the SCALE of
+            // every joint it also position-overrides to pJoint->getDefaultScale(), discarding the
+            // shape sliders' skeletal scale distortion there for good (ApplyShape honors this).
+            // Recorded BEFORE the root-joint skip below, because that skip is SLNG's own deviation
+            // on the POSITION channel only — the viewer's scale lock is keyed purely on this
+            // joint having passed the position threshold, which mPelvis can and does. The lock is
+            // a property of the JOINT, so a mesh BODY declaring it also freezes the scale a
+            // separately-worn mesh HEAD renders at (BUG-AVATAR-07).
+            if (skinData.LockScaleIfJointPosition && visual.JointScaleLocks.Add(boneName))
+            {
+                locked++;
+                skeletonChanged = true;
+            }
 
             // The skeleton ROOT (mPelvis — the one bone with no ParentName, see
             // avatar_skeleton.xml) is excluded here, even though the real viewer's
@@ -2656,6 +2819,8 @@ public partial class AvatarRenderer : Node3D
                 continue;
             }
 
+            if (!visual.JointPosOverrides.TryGetValue(boneName, out var prevPos) || prevPos != slPos)
+                skeletonChanged = true;
             visual.JointPosOverrides[boneName] = slPos;
             applied++;
             if (delta > maxDelta) maxDelta = delta;
@@ -2666,6 +2831,7 @@ public partial class AvatarRenderer : Node3D
         // The viewer implicitly mirrors them to the other side (mFootRight) by negating the Y axis
         // (which is the left/right axis in SL local bone space).
         var toAdd = new Dictionary<string, System.Numerics.Vector3>();
+        var toLock = new List<string>();
         foreach (var kvp in visual.JointPosOverrides)
         {
             string name = kvp.Key;
@@ -2677,6 +2843,7 @@ public partial class AvatarRenderer : Node3D
                 if (!visual.JointPosOverrides.ContainsKey(rightName))
                 {
                     toAdd[rightName] = new System.Numerics.Vector3(pos.X, -pos.Y, pos.Z);
+                    if (visual.JointScaleLocks.Contains(name)) toLock.Add(rightName);
                 }
             }
             else if (name.EndsWith("Right"))
@@ -2685,6 +2852,7 @@ public partial class AvatarRenderer : Node3D
                 if (!visual.JointPosOverrides.ContainsKey(leftName))
                 {
                     toAdd[leftName] = new System.Numerics.Vector3(pos.X, -pos.Y, pos.Z);
+                    if (visual.JointScaleLocks.Contains(name)) toLock.Add(leftName);
                 }
             }
         }
@@ -2692,22 +2860,54 @@ public partial class AvatarRenderer : Node3D
         foreach (var kvp in toAdd)
         {
             visual.JointPosOverrides[kvp.Key] = kvp.Value;
+            skeletonChanged = true;
             // Don't increment applied count for implicitly added bones so logging remains accurate to the asset
         }
+        // The mirrored sibling inherits the lock too — its position override is synthetic, so
+        // leaving its scale slider-driven while the real side is frozen would make the two
+        // asymmetric, which is the one thing the mirroring exists to prevent.
+        foreach (var boneName in toLock)
+            if (visual.JointScaleLocks.Add(boneName)) skeletonChanged = true;
 
-        if (applied > 0)
+        if (skeletonChanged)
         {
             if (_avatarSkeleton != null)
             {
                 ApplyShape(visual, skeleton, _avatarSkeleton, visual.LastDistortions, visual.JointPosOverrides);
             }
             skeleton.ResetBonePoses();
-            if (Diagnostics.Enabled) GD.Print($"[JointOverride] mesh {meshId}: {applied}/{jointCount} joint positions overridden (max shift {maxDelta:0.###} m)");
+
+            // ApplyShape just rewrote every bone's rest AND visual.BoneOwnScale — and a skinning
+            // bind BAKES that scale in (see InjectOwnScale). Every mesh already bound therefore
+            // still renders at the PREVIOUS skeleton, which is why this used to look like "the
+            // change had no effect at all": the stale bind carries the old scale, so the result is
+            // pixel-identical rather than merely approximate. The shape-change path has always
+            // refreshed both (RebuildRiggedAttachmentSkins + RebuildBodyMorphs' skin eviction);
+            // this path mutates exactly the same state and must do the same. Order matters for a
+            // worn mesh BODY declaring lock_scale_if_joint_position: it loads after the mesh HEAD
+            // as often as not, and it is the body's flag that frees the head's mHead scale
+            // (BUG-AVATAR-07). The mesh being bound by THIS call isn't in RiggedAttachments yet,
+            // so it picks the new values up on its own, a few lines later.
+            RebuildRiggedAttachmentSkins(visual);
+            RefreshBodyPartSkins(visual);
+            RefreshStaticAttachmentOffsets(visual);
+
+            // Ungated, unlike the per-mesh detail below: this fires at most a couple of times per
+            // login (only a mesh that declares the flag AND contributes NEW locks reaches it) and
+            // it is the one line that separates "the fitted body froze the shape's bone scaling,
+            // as the reference viewer does" from "SLNG never saw the flag" (BUG-AVATAR-07).
+            if (locked > 0)
+                GD.Print($"[JointOverride] mesh {meshId}: {locked} joint scale(s) locked to the skeleton " +
+                         $"default (lock_scale_if_joint_position) — the shape's bone scaling is now off for " +
+                         $"{visual.JointScaleLocks.Count} joint(s) on this avatar");
+            if (Diagnostics.Enabled) GD.Print($"[JointOverride] mesh {meshId}: {applied}/{jointCount} joint positions overridden (max shift {maxDelta:0.###} m)" +
+                     (skinData.LockScaleIfJointPosition ? $", {locked} joint scale(s) locked to skeleton default (lock_scale_if_joint_position)" : ""));
 
             // A fitted mesh can override leg/spine joints (e.g. an alternate-bind mesh body/legs)
             // that move mFootLeft — refresh the measured foot offset now rather than waiting for
             // the next shape change. See RecomputeFootOffset's doc comment.
             RecomputeFootOffset(visual, visual.LastDistortions);
+            LogAvatarHeight(visual, "joint override");
         }
         // Viewer parity: LLAvatarAppearance::addPelvisFixup (indra/llappearance/
         // llavatarappearance.cpp) — this offset does NOT move the mPelvis joint's local
@@ -2728,6 +2928,35 @@ public partial class AvatarRenderer : Node3D
             // asset content changing under a stable id, which doesn't happen — but keep this
             // symmetrical with "removed" cleanup rather than leaving a stale zero-ish entry.
             visual.PelvisFixups.Remove(meshId);
+        }
+    }
+
+    /// <summary>Refreshes the position of static attachment points (e.g. hair, hats) when
+    /// the skeleton's bone scales change due to shape sliders or scale-locking. Keeps static
+    /// items aligned with the avatar's scaled joints without requiring a re-rez.</summary>
+    private void RefreshStaticAttachmentOffsets(AvatarVisual visual)
+    {
+        if (visual?.Skeleton == null) return;
+        foreach (var kvp in _attachmentNodes)
+        {
+            var boneAttach = kvp.Value;
+            if (!GodotObject.IsInstanceValid(boneAttach) || !boneAttach.IsInsideTree()) continue;
+            if (boneAttach.GetParent() != visual.Skeleton) continue;
+
+            if (boneAttach.HasMeta("AttachPoint") && boneAttach.HasMeta("BoneName"))
+            {
+                byte apByte = (byte)boneAttach.GetMeta("AttachPoint").AsInt32();
+                string bName = boneAttach.GetMeta("BoneName").AsString();
+                var pointNode = boneAttach.GetNodeOrNull<Node3D>("PointOffset");
+                if (pointNode != null && AttachmentPointMap.GetPoint(apByte) is { } apPoint)
+                {
+                    var apPos = apPoint.Position;
+                    if (visual.BoneOwnScale.TryGetValue(bName, out var jointScale))
+                        apPos *= jointScale;
+                    pointNode.Position = new Godot.Vector3(apPos.X, apPos.Z, -apPos.Y);
+                    pointNode.Basis = SkeletonBuilder.SlEulerDegToGodotBasis(apPoint.RotationDeg);
+                }
+            }
         }
     }
 
@@ -2785,7 +3014,8 @@ public partial class AvatarRenderer : Node3D
         // avatar using the full 2.19m bounding-box/skeleton offset, pushing the avatar up. SLNG
         // received the pushed-up simPos.Z but subtracted the too-small 1.99m halfBodyZ, resulting in
         // the Godot foot floating significantly above the ground.
-        var body = SLNG.Core.SlJointComposer.ComputeBodySize(_avatarSkeleton, distortions, visual.JointPosOverrides);
+        var body = SLNG.Core.SlJointComposer.ComputeBodySize(
+            _avatarSkeleton, distortions, visual.JointPosOverrides, visual.JointScaleLocks);
         visual.BodySizeZ = body.BodySizeZ + visual.ShoeOffsetZ;
         visual.PelvisToFootZ = body.PelvisToFoot + visual.ShoeOffsetZ;
 
@@ -2804,6 +3034,36 @@ public partial class AvatarRenderer : Node3D
         {
             visual.FootOffsetY = GetBoneRootRelativeY(visual.Skeleton, footBone);
         }
+    }
+
+    /// <summary>Prints the self avatar's rendered vertical geometry in WORLD metres — the one
+    /// measurement that can be compared against a reference viewer without any camera/projection
+    /// guesswork, because a prim rezzed at a fixed Z is at that Z in both. Answers "is my avatar
+    /// standing lower, or is it actually shorter?", which a screenshot cannot separate.
+    /// Self only, and only where the shape/skeleton actually changed, so it stays a handful of
+    /// lines per login (BUG-AVATAR-07).</summary>
+    private void LogAvatarHeight(AvatarVisual visual, string why, float simZ = float.NaN)
+    {
+        if (!visual.IsSelf || visual.Skeleton == null) return;
+        int skullIdx = visual.Skeleton.FindBone("mSkull");
+        int headIdx = visual.Skeleton.FindBone("mHead");
+        int footIdx = visual.Skeleton.FindBone("mFootLeft");
+        if (skullIdx < 0 || headIdx < 0 || footIdx < 0) return;
+
+        float skullY = GetBoneRootRelativeY(visual.Skeleton, skullIdx);
+        float headY = GetBoneRootRelativeY(visual.Skeleton, headIdx);
+        float footY = GetBoneRootRelativeY(visual.Skeleton, footIdx);
+        // Root.GlobalPosition is whatever UpdateVisual's position step last produced; before the
+        // first frame it is still the origin, hence the marker rather than a silent wrong number.
+        bool positioned = IsInstanceValid(visual.Root) && visual.Root.GlobalPosition != Godot.Vector3.Zero;
+        float rootZ = positioned ? visual.Root.GlobalPosition.Y : float.NaN;
+
+        GD.Print($"[AvatarHeight] ({why}) skeleton foot->mSkull {skullY - footY:0.###} m | " +
+                 (float.IsNaN(simZ) ? "" : $"sim agent Z {simZ:0.###} | ") +
+                 $"world Z: mSkull {rootZ + skullY:0.###}  mHead(jaw) {rootZ + headY:0.###}  mFootLeft {rootZ + footY:0.###}  root {rootZ:0.###}" +
+                 (positioned ? "" : "  (root not positioned yet — world Z meaningless)") +
+                 $" | bodySizeZ {visual.BodySizeZ:0.###} pelvisToFoot {visual.PelvisToFootZ:0.###} " +
+                 $"hoverParam {visual.AvatarHoverParamZ:0.###} footOffsetY {visual.FootOffsetY:0.###} shoeOffset {visual.ShoeOffsetZ:0.###}");
     }
 
     private static float GetBoneRootRelativeY(Skeleton3D skeleton, int boneIdx)
@@ -2966,6 +3226,19 @@ public partial class AvatarRenderer : Node3D
         var arrayMesh = new ArrayMesh();
         var faceList = new List<int>();
 
+        // BUG-AVATAR-07: the REST-POSE SKINNED extent, i.e. how big and where this mesh actually
+        // renders, in metres. Every other size number in this method is pre-skinning and therefore
+        // says nothing (see the no-rejection comment below). This one is the exact palette Godot
+        // will use at rest — globalRest(bone) * bind, the same product its own skinning computes —
+        // applied to the same vertices, so "is the mesh head the right size / in the right place"
+        // stops being a question about screenshots. Self only, once per mesh id.
+        var palette = new Transform3D[skin.GetBindCount()];
+        for (int sIdx = 0; sIdx < palette.Length; sIdx++)
+            palette[sIdx] = ComputeGlobalRestTransform(skeleton, skin.GetBindBone(sIdx)) * skin.GetBindPose(sIdx);
+        bool measureRender = visual.IsSelf && !_loggedRenderExtent.Contains(meshId);
+        var rMin = new Godot.Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+        var rMax = new Godot.Vector3(float.MinValue, float.MinValue, float.MinValue);
+
         // Track the bind-pose extent (positions AFTER the bind-shape matrix) for the sanity
         // guard below. The RAW vertex AABB is meaningless for that: "giant rig" uploads store
         // vertices in a huge position domain (±50 m) that the tiny bind-shape scale cancels.
@@ -3085,6 +3358,25 @@ public partial class AvatarRenderer : Node3D
                 else { bones[0] = 0; wts[0] = 1f; orphanedVerts++; } // orphaned vertex — pin to first bound bone
                 for (int k = 0; k < 4; k++) if (wts[k] > 0f) slotWeightSum[bones[k]] += wts[k];
 
+                if (measureRender)
+                {
+                    var vG = new Godot.Vector3(pSL.X, pSL.Z, -pSL.Y);
+                    var acc = Godot.Vector3.Zero;
+                    float wSum = 0f;
+                    for (int k = 0; k < 4; k++)
+                    {
+                        if (wts[k] <= 0f || bones[k] < 0 || bones[k] >= palette.Length) continue;
+                        acc += palette[bones[k]] * vG * wts[k];
+                        wSum += wts[k];
+                    }
+                    if (wSum > 1e-6f)
+                    {
+                        acc /= wSum;
+                        rMin = new Godot.Vector3(Mathf.Min(rMin.X, acc.X), Mathf.Min(rMin.Y, acc.Y), Mathf.Min(rMin.Z, acc.Z));
+                        rMax = new Godot.Vector3(Mathf.Max(rMax.X, acc.X), Mathf.Max(rMax.Y, acc.Y), Mathf.Max(rMax.Z, acc.Z));
+                    }
+                }
+
                 st.SetBones(bones);
                 st.SetWeights(wts);
                 st.SetNormal(new Godot.Vector3(nSL.X, nSL.Z, -nSL.Y));
@@ -3130,6 +3422,16 @@ public partial class AvatarRenderer : Node3D
             GD.Print($"[RiggedMesh] mesh={meshId.ToString("N")[..8]} merged " +
                      $"{meshData.Submeshes.Count} submeshes -> {arrayMesh.GetSurfaceCount()} surface(s) " +
                      "(same-material run, authored order preserved)");
+
+        if (measureRender && rMax.Y > rMin.Y)
+        {
+            _loggedRenderExtent.Add(meshId);
+            float rootZ = IsInstanceValid(visual.Root) ? visual.Root.GlobalPosition.Y : 0f;
+            var size = rMax - rMin;
+            GD.Print($"[RenderExtent] {meshId}: rendered size ({size.X:0.###} x {size.Z:0.###} x {size.Y:0.###} m), " +
+                     $"world Z {rootZ + rMin.Y:0.###} .. {rootZ + rMax.Y:0.###}, " +
+                     $"dominant joint \"{topBoneName}\" ({topShare:P0}), {totalVerts} verts");
+        }
 
         Logger.Debug($"[RiggedMesh] mesh {meshId} joints {resolved}/{jointCount} resolved, binds {skin.GetBindCount()}, " +
                  $"bind-pose size ({bpSize.X:0.##}, {bpSize.Y:0.##}, {bpSize.Z:0.##}) at ({bpCenter.X:0.#}, {bpCenter.Y:0.#}, {bpCenter.Z:0.#}), " +
@@ -3414,6 +3716,26 @@ public partial class AvatarRenderer : Node3D
 
             var (positions, normals) = AvatarMorphService.Apply(part, weights);
             mi.Mesh = BuildPartMesh(part, positions, normals, slots);
+        }
+    }
+
+    /// <summary>Rebuilds the Skin (bind matrices only) of every already-built SYSTEM body part, so
+    /// each bind picks up the avatar's just-recomputed <see cref="AvatarVisual.BoneOwnScale"/>.
+    /// The morphed geometry is left alone — it depends on the VisualParam weights, which a joint
+    /// override does not touch; only the binds bake in bone scale. <c>GetPartSkin</c> walks the
+    /// part's vertices in a fixed order, so the regenerated slot map is identical to the one the
+    /// existing mesh's BONES array already indexes into, and swapping just the Skin is safe.
+    /// (The shape-change path gets this via <see cref="RebuildBodyMorphs"/>, which evicts the same
+    /// cache before rebuilding the geometry too.)</summary>
+    private void RefreshBodyPartSkins(AvatarVisual visual)
+    {
+        if (visual.Skeleton == null) return;
+        foreach (var (name, part) in visual.BodyPartData)
+        {
+            if (part == null) continue;
+            if (!visual.Parts.TryGetValue(name, out var mi) || !IsInstanceValid(mi)) continue;
+            visual.PartSkins.Remove(name);
+            mi.Skin = GetPartSkin(visual, part, visual.Skeleton).Skin;
         }
     }
 
@@ -3712,7 +4034,20 @@ public partial class AvatarRenderer : Node3D
             hitUvSl = new System.Numerics.Vector3(uv.X, uv.Y, 0f);
         }
 
-        GD.Print($"[HUD] clicked entity {entityId:N} (LocalId {entity.LocalId}) face={hitFaceIndex} uv=({hitUvSl.X:0.###}, {hitUvSl.Y:0.###})");
+        // BUG-AVATAR-07: clicking a reference prim is the cheapest way to get a hard, world-space
+        // number to compare an avatar's rendered height against — the prim is at the same Z in
+        // every viewer, so "where does its lower edge sit on the head" needs no camera assumptions.
+        // Printed for any clicked object; the Z/size pair is what makes it usable.
+        var clickedT = entity.GetComponent<TransformComponent>();
+        var clickedP = entity.GetComponent<PrimitiveComponent>();
+        string where = clickedT != null
+            ? $" pos=({clickedT.Position.X:0.###}, {clickedT.Position.Y:0.###}, {clickedT.Position.Z:0.###})"
+            : "";
+        string how = clickedP != null
+            ? $" scale=({clickedP.Scale.X:0.###}, {clickedP.Scale.Y:0.###}, {clickedP.Scale.Z:0.###})" +
+              (clickedT != null ? $" -> Z bottom {clickedT.Position.Z - clickedP.Scale.Z / 2f:0.###} top {clickedT.Position.Z + clickedP.Scale.Z / 2f:0.###}" : "")
+            : "";
+        GD.Print($"[HUD] clicked entity {entityId:N} (LocalId {entity.LocalId}) face={hitFaceIndex} uv=({hitUvSl.X:0.###}, {hitUvSl.Y:0.###}){where}{how}");
 
         _ = _session.ClickObjectAsync(
             entity.LocalId,

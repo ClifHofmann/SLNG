@@ -491,7 +491,8 @@ public class AssetService
     /// null when the mesh is not rigged. LMV stores matrices as flat row-major float[16]
     /// (row-vector convention), which maps directly onto <see cref="System.Numerics.Matrix4x4"/>.
     /// <c>AltInverseBindMatrices</c> carry the mesh's joint-position overrides (their translation
-    /// = the joint's overridden local position) — see the renderer's ApplyJointPositionOverrides.</summary>
+    /// = the joint's overridden local position) — see the renderer's ApplyJointPositionOverrides,
+    /// which also consumes <c>LockScaleIfJointPosition</c> (BUG-AVATAR-07).</summary>
     private static MeshSkin? ConvertSkin(MeshSkinData? skin)
     {
         if (skin?.JointNames == null || skin.JointNames.Length == 0) return null;
@@ -521,7 +522,8 @@ public class AssetService
             ? ToMatrix(skin.BindShapeMatrix, 0)
             : System.Numerics.Matrix4x4.Identity;
 
-        return new MeshSkin(skin.JointNames, inverseBinds, bindShape, skin.PelvisOffset, altInverseBinds);
+        return new MeshSkin(skin.JointNames, inverseBinds, bindShape, skin.PelvisOffset, altInverseBinds,
+            skin.LockScaleIfJointPosition);
     }
 
     private static System.Numerics.Matrix4x4 ToMatrix(float[] m, int o) => new(
