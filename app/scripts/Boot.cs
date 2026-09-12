@@ -213,7 +213,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.75-alpha";
+    public const string AppVersion = "v0.22.76-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1086,24 +1086,32 @@ public partial class Boot : Control
             BoxProjection = false,
             EnableShadows = false,
 
-            // 4.0, derived not guessed. Godot weights a probe's reflection by the material's own
-            // Fresnel term, and a prim face carries SPECULAR 0.5 -- the standard 4% dielectric F0
-            // FEAT-RENDER-19 deliberately calibrated. SL's legacy Shiny is NOT energy-conserving:
-            // applyGlossEnv (reflectionProbeF.glsl:893) weights the radiance sample by
-            // `0.25 * fresnel^2 * spec.a`, peaking at 0.25 * 0.75 = ~0.19 of the environment at
-            // Shiny HIGH. 0.19 / 0.04 = ~4.7, so a probe intensity in that range reproduces the
-            // reference viewer's weighting without touching SPECULAR/METALLIC -- which is what
-            // makes this the knob BUG-RENDER-20 spent four rounds missing: it scales the
-            // REFLECTION ONLY, leaving the sun highlight and the diffuse response exactly where
-            // FEAT-RENDER-19 calibrated them.
+            // Was 4.0, from comparing Godot's 4% dielectric F0 against applyGlossEnv's ~19% peak
+            // (reflectionProbeF.glsl:893) and taking the ratio. That derivation was wrong, and the
+            // live result showed exactly how: a blown-out halo around every shiny silhouette.
             //
-            // Known trade-off, deliberately taken: intensity is per-PROBE, not per-material, so
-            // genuinely physical glTF/PBR content in range is amplified by the same factor and
-            // will read slightly over-reflective. Correcting that needs a per-material weight
-            // (a metallic/specular term scaled by shininess, with its own colour-tinting
-            // consequences) rather than a probe-wide one -- worth doing if PBR content ever looks
-            // wrong, not worth blocking a reflection that is currently far too weak to see.
-            Intensity = 4.0f,
+            // The error was comparing the two models at ONE angle. At normal incidence Godot is
+            // indeed the weaker: F0 0.04 against the viewer's 0.25 * 0.3^2 * 0.75 = ~0.017... but
+            // the two curves diverge in opposite directions from there. Godot applies Schlick, so
+            // its reflection climbs to a full 1.0 at grazing angles. The viewer's weight is
+            // `0.25 * fresnel^2 * spec.a` with fresnel clamped to [0.3, 1.0], so it CANNOT exceed
+            // 0.25 * 0.75 = 0.1875 -- at the silhouette Godot is already ~5x the reference before
+            // any boost at all. Multiplying that by 4 is what produced the halo, and the probe
+            // sweep shows it numerically: the limb saturates to 1.0 at intensity 4, sits at 0.80
+            // at 2, and 0.60 at 1.
+            //
+            // 1.5 keeps some of the compensation the centre genuinely needs -- our captured sky is
+            // LDR-clamped (sky.gdshader ends on clamp(sky_color, 0, 1)) where the viewer samples an
+            // HDR radiance map, so equal weights do not mean equal brightness -- while staying well
+            // clear of saturation at the limb.
+            //
+            // The real mismatch is curve SHAPE, not scale: no single multiplier can flatten
+            // Schlick into the viewer's capped ramp. Fixing that properly needs the reflection
+            // weight applied in our own shader, which Godot does not expose for probe data.
+            //
+            // Known trade-off, unchanged: intensity is per-PROBE, so genuinely physical glTF/PBR
+            // content in range is scaled by the same factor.
+            Intensity = 1.5f,
         };
         AddChild(reflectionProbe);
         _reflectionProbe = reflectionProbe;
