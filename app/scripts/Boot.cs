@@ -206,7 +206,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.72-alpha";
+    public const string AppVersion = "v0.22.73-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1078,6 +1078,25 @@ public partial class Boot : Control
             UpdateMode = ReflectionProbe.UpdateModeEnum.Once,
             BoxProjection = false,
             EnableShadows = false,
+
+            // 4.0, derived not guessed. Godot weights a probe's reflection by the material's own
+            // Fresnel term, and a prim face carries SPECULAR 0.5 -- the standard 4% dielectric F0
+            // FEAT-RENDER-19 deliberately calibrated. SL's legacy Shiny is NOT energy-conserving:
+            // applyGlossEnv (reflectionProbeF.glsl:893) weights the radiance sample by
+            // `0.25 * fresnel^2 * spec.a`, peaking at 0.25 * 0.75 = ~0.19 of the environment at
+            // Shiny HIGH. 0.19 / 0.04 = ~4.7, so a probe intensity in that range reproduces the
+            // reference viewer's weighting without touching SPECULAR/METALLIC -- which is what
+            // makes this the knob BUG-RENDER-20 spent four rounds missing: it scales the
+            // REFLECTION ONLY, leaving the sun highlight and the diffuse response exactly where
+            // FEAT-RENDER-19 calibrated them.
+            //
+            // Known trade-off, deliberately taken: intensity is per-PROBE, not per-material, so
+            // genuinely physical glTF/PBR content in range is amplified by the same factor and
+            // will read slightly over-reflective. Correcting that needs a per-material weight
+            // (a metallic/specular term scaled by shininess, with its own colour-tinting
+            // consequences) rather than a probe-wide one -- worth doing if PBR content ever looks
+            // wrong, not worth blocking a reflection that is currently far too weak to see.
+            Intensity = 4.0f,
         };
         AddChild(reflectionProbe);
         _reflectionProbe = reflectionProbe;
