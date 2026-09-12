@@ -16,7 +16,7 @@ public partial class ObjectRenderer : Node3D
     // disabling their CollisionShape3D outright -- Disabled would also block the object-selection
     // raycast (ObjectSelectionController), which queries all layers by default, so a phantom
     // object would become unclickable/un-editable, not just un-standable-on.
-    private const uint PhantomLayer = 1u << 2;
+    private const uint PhantomLayer = PhysicsLayers.Phantom;
 
     // BUG-RENDER-06 follow-up (answered, reverted): flipped on to settle whether the "still
     // flips" trees have a legacy (Blinn-Phong) material -- they don't (zero [LegacyMaterial]

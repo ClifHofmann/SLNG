@@ -64,26 +64,33 @@ public partial class DepthOfFieldController : Node
     // --- Focus-point marker (BUG-RENDER-22 diagnostic) ---------------------------------------
     // A blurred frame cannot tell you WHERE the focal plane is, only that the subject is not on
     // it, so "auto-focus picked the hillside behind the avatar" and "the blur is misconfigured"
-    // look identical. These draw the answer. Two markers on purpose:
+    // look identical. These draw the answer. Two crosshairs on purpose:
     //   cyan  -- the focal plane itself: camera position + view axis * CurrentFocusDistance. It
     //            is by construction the one thing in frame that MUST be sharp, so if the cyan
-    //            sphere is crisp while the avatar is not, the focal plane is simply elsewhere.
+    //            crosshair is crisp while the avatar is not, the focal plane is simply elsewhere.
     //   amber -- the camera's own look-at target (AvatarController.CameraTargetPoint): the
     //            avatar's head while following, or the Alt+LMB focus point. The gap between the
-    //            two markers is the bug, measured.
-    // Unshaded and depth-test-free so they stay visible inside geometry, and never given a
-    // collider -- SampleAutoFocus raycasts Objects|Avatars, and a marker that focused the camera
-    // on itself would be a very fine feedback loop.
+    //            two is what BUG-RENDER-22 was, measured.
+    // Hairline crosshairs rather than spheres, and no text: this sits on top of the very image the
+    // user is judging sharpness on, so it has to be readable without covering the subject or
+    // dragging the eye. Line primitives are one pixel wide at any distance, which is as quiet as
+    // an overlay gets. Billboarded so the cross always faces the viewer, unshaded and
+    // depth-test-free so it stays visible inside geometry, and never given a collider --
+    // SampleAutoFocus raycasts Objects|Avatars, and a marker that focused the camera on itself
+    // would be a very fine feedback loop.
     private Node3D? _markerRoot;
     private MeshInstance3D? _focusMarker;
     private MeshInstance3D? _targetMarker;
-    private Label3D? _markerLabel;
 
-    // Apparent size: the markers scale with distance so they stay readable at 2 m and at 200 m,
-    // clamped so they neither vanish up close nor swallow the frame far away.
+    // Apparent size: the crosshairs scale with distance so they stay the same size on screen at
+    // 2 m and at 200 m, clamped so they neither vanish up close nor span the frame far away.
     private const float MarkerAngularSize = 0.014f;
     private const float MarkerMinRadius = 0.03f;
     private const float MarkerMaxRadius = 1.2f;
+
+    // Fraction of the crosshair's half-width left empty in the middle. The gap is the point: it
+    // keeps the thing being focused on visible through the marker instead of under it.
+    private const float MarkerGapFraction = 0.35f;
 
     public void Initialize(Camera3D camera, DofSettings settings, SLNG.Core.ECS.World? world = null)
     {
@@ -127,13 +134,56 @@ public partial class DepthOfFieldController : Node
         UpdateFocusMarker();
     }
 
-    /// <summary>Casts through the centre of the viewport and records the distance to whatever is
-    /// there. With no hit the target eases back to the manual <see cref="DofSettings.FocusDistance"/>
+    /// <summary>BUG-RENDER-22: the distance to the camera's own subject -- the avatar's head while
+    /// the rig follows it, or the Alt+LMB focus point once the user has aimed somewhere. Returns
+    /// false when there is no such subject to focus on, which is also how first person falls
+    /// through: at zoom 0 the camera sits AT the target, and a focal plane 5 cm in front of the
+    /// lens is not a focus, so anything below <see cref="DofSettings.MinFocusDistance"/> is
+    /// declined and the centre-of-frame ray takes over.</summary>
+    private bool TrySubjectFocus(Vector3 origin, Vector3 forward, out float distance)
+    {
+        distance = 0f;
+        if (_camera is not AvatarController rig) return false;
+
+        var subject = rig.CameraTargetPoint;
+        if (subject == Vector3.Zero || !subject.IsFinite()) return false;
+
+        // View-space depth, for the same reason the raycast below uses it: the blur is keyed off
+        // depth along the view axis, not euclidean distance from the lens.
+        float d = (subject - origin).Dot(forward);
+        if (d < DofSettings.MinFocusDistance) return false;
+
+        distance = Mathf.Min(d, DofSettings.MaxFocusDistance);
+        return true;
+    }
+
+    /// <summary>Picks the focal plane. The camera's subject wins whenever there is one -- see
+    /// <see cref="TrySubjectFocus"/> -- and only otherwise does this cast through the centre of the
+    /// viewport and take whatever is there.
+    ///
+    /// BUG-RENDER-22: it used to be the centre ray and nothing else, which is why a camera reset
+    /// left the avatar soft. The rig frames the avatar's head at <c>CameraSettings.FocusHeight</c>
+    /// (1.8 m) while the avatar's collision capsule ends at 1.9 m, so the centre ray grazes the top
+    /// of the capsule and, at any upward pitch, sails clean over it and focuses on the landscape
+    /// 256 m behind. A subject the camera is already pointed at does not need to be re-discovered
+    /// by probing the scene -- the rig knows where it is. Alt+LMB is covered by the same path
+    /// rather than by an exception to it: focusing somewhere moves <c>CameraTargetPoint</c> there,
+    /// so the focal plane follows the user's aim.
+    ///
+    /// With no hit the target eases back to the manual <see cref="DofSettings.FocusDistance"/>
     /// rather than jumping to infinity -- pointing the camera at empty sky should not throw the
     /// whole frame out of focus.</summary>
     private void SampleAutoFocus()
     {
         if (_camera == null || _settings == null) return;
+
+        var camXform = _camera.GlobalTransform;
+        if (TrySubjectFocus(camXform.Origin, -camXform.Basis.Z, out float subjectDistance))
+        {
+            AutoFocusHasTarget = true;
+            _autoFocusTarget = subjectDistance;
+            return;
+        }
 
         var world = _camera.GetWorld3D();
         if (world?.DirectSpaceState is not { } spaceState)
@@ -156,7 +206,10 @@ public partial class DepthOfFieldController : Node
         // when an angled ray crosses an unstreamed cell, printing "Vector3 cannot be normalized"
         // every single time. At 20 Hz this flooded the console. We raycast objects/avatars
         // natively, then manually trace the terrain heightmap below.
-        query.CollisionMask = PhysicsLayers.Objects | PhysicsLayers.Avatars;
+        // Phantom included for the same reason as the Alt+Click focus ray (BUG-UI-09): focusing
+        // on a bush is a normal thing to photograph, and most SL foliage is phantom, so without
+        // this bit the centre ray shoots through it and focuses the ground behind.
+        query.CollisionMask = PhysicsLayers.Objects | PhysicsLayers.Phantom | PhysicsLayers.Avatars;
 
         var hit = spaceState.IntersectRay(query);
         float depth = MaxFocusRayLength;
@@ -303,7 +356,7 @@ public partial class DepthOfFieldController : Node
         }
 
         EnsureMarkers();
-        if (_markerRoot == null || _focusMarker == null || _targetMarker == null || _markerLabel == null) return;
+        if (_markerRoot == null || _focusMarker == null || _targetMarker == null) return;
         _markerRoot.Visible = true;
 
         var camXform = _camera.GlobalTransform;
@@ -311,18 +364,17 @@ public partial class DepthOfFieldController : Node
         var forward = -camXform.Basis.Z;
 
         float focus = _settings.AutoFocus ? CurrentFocusDistance : _settings.FocusDistance;
-        var focusPoint = origin + forward * focus;
-        _focusMarker.GlobalPosition = focusPoint;
+        _focusMarker.GlobalPosition = origin + forward * focus;
         _focusMarker.Scale = Vector3.One * MarkerRadius(focus);
 
         // The camera target only exists in the third-person rig. In free-camera mode, or before
         // login, AvatarController never writes it, and a marker parked at the world origin would
-        // be a lie -- hide it instead.
-        float targetDistance = -1f;
+        // be a lie -- hide it instead. Drawn smaller than the focal-plane cross so the two read as
+        // subject and focus rather than as two equal things.
         if (_camera is AvatarController rig && rig.CameraTargetPoint != Vector3.Zero)
         {
             var targetPoint = rig.CameraTargetPoint;
-            targetDistance = (targetPoint - origin).Dot(forward);
+            float targetDistance = (targetPoint - origin).Dot(forward);
             _targetMarker.Visible = true;
             _targetMarker.GlobalPosition = targetPoint;
             _targetMarker.Scale = Vector3.One * (MarkerRadius(Mathf.Max(targetDistance, 0.1f)) * 0.6f);
@@ -331,21 +383,6 @@ public partial class DepthOfFieldController : Node
         {
             _targetMarker.Visible = false;
         }
-
-        // Just in front of the focal plane, so the readout is never the first thing the blur eats.
-        _markerLabel.GlobalPosition = focusPoint - forward * (MarkerRadius(focus) * 2.5f);
-
-        string mode = _settings.AutoFocus
-            ? (AutoFocusHasTarget ? L10n.Tr("ui.snapshot.dof_marker_auto") : L10n.Tr("ui.snapshot.dof_no_target"))
-            : L10n.Tr("ui.snapshot.dof_marker_manual");
-        string text = $"{L10n.Tr("ui.snapshot.dof_marker_focus")}: {focus:0.0} m  ({mode})";
-        if (targetDistance > 0f)
-        {
-            text += "\n"
-                  + $"{L10n.Tr("ui.snapshot.dof_marker_target")}: {targetDistance:0.0} m"
-                  + $"  (delta {focus - targetDistance:+0.0;-0.0;0.0} m)";
-        }
-        if (_markerLabel.Text != text) _markerLabel.Text = text;
     }
 
     private static float MarkerRadius(float distance)
@@ -366,30 +403,18 @@ public partial class DepthOfFieldController : Node
         _markerRoot = new Node3D { Name = "DofFocusMarker", TopLevel = true };
         AddChild(_markerRoot);
 
-        _focusMarker = BuildSphere("DofFocalPlane", new Color(0.1f, 0.9f, 1f));
+        _focusMarker = BuildCrosshair("DofFocalPlane", new Color(0.1f, 0.9f, 1f, 0.75f));
         _markerRoot.AddChild(_focusMarker);
 
-        _targetMarker = BuildSphere("DofCameraTarget", new Color(1f, 0.65f, 0.1f));
+        _targetMarker = BuildCrosshair("DofCameraTarget", new Color(1f, 0.65f, 0.1f, 0.6f));
         _markerRoot.AddChild(_targetMarker);
-
-        _markerLabel = new Label3D
-        {
-            Name = "DofFocusReadout",
-            TopLevel = true,
-            Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
-            FixedSize = true,
-            NoDepthTest = true,
-            PixelSize = 0.0006f,
-            FontSize = 48,
-            OutlineSize = 12,
-            Modulate = new Color(0.1f, 0.9f, 1f),
-            OutlineModulate = new Color(0f, 0f, 0f, 0.8f),
-            HorizontalAlignment = HorizontalAlignment.Center,
-        };
-        _markerRoot.AddChild(_markerLabel);
     }
 
-    private static MeshInstance3D BuildSphere(string name, Color color)
+    /// <summary>Builds one hairline crosshair: four line segments in the XY plane, reaching from
+    /// <see cref="MarkerGapFraction"/> out to 1, so the centre stays empty and whatever is being
+    /// focused on is still visible through it. Unit-sized, because the per-frame <c>Scale</c> in
+    /// <see cref="UpdateFocusMarker"/> is what turns it into metres.</summary>
+    private static MeshInstance3D BuildCrosshair(string name, Color color)
     {
         var material = new StandardMaterial3D
         {
@@ -398,14 +423,28 @@ public partial class DepthOfFieldController : Node
             NoDepthTest = true,
             Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
             CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            // BillboardKeepScale: without it Godot's billboard rewrite drops the node's own scale,
+            // and every crosshair would render at unit size regardless of distance.
+            BillboardMode = BaseMaterial3D.BillboardModeEnum.Enabled,
+            BillboardKeepScale = true,
+            VertexColorUseAsAlbedo = false,
         };
+
+        var mesh = new ImmediateMesh();
+        mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, material);
+        float gap = MarkerGapFraction;
+        mesh.SurfaceAddVertex(new Vector3(-1f, 0f, 0f)); mesh.SurfaceAddVertex(new Vector3(-gap, 0f, 0f));
+        mesh.SurfaceAddVertex(new Vector3(gap, 0f, 0f)); mesh.SurfaceAddVertex(new Vector3(1f, 0f, 0f));
+        mesh.SurfaceAddVertex(new Vector3(0f, -1f, 0f)); mesh.SurfaceAddVertex(new Vector3(0f, -gap, 0f));
+        mesh.SurfaceAddVertex(new Vector3(0f, gap, 0f)); mesh.SurfaceAddVertex(new Vector3(0f, 1f, 0f));
+        mesh.SurfaceEnd();
+
         return new MeshInstance3D
         {
             Name = name,
             TopLevel = true,
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-            // Radius 1 / height 2 -- the unit sphere the per-frame Scale above works on in metres.
-            Mesh = new SphereMesh { Radius = 1f, Height = 2f, RadialSegments = 16, Rings = 8, Material = material },
+            Mesh = mesh,
         };
     }
 

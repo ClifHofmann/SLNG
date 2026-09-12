@@ -207,6 +207,40 @@ public partial class AvatarController : Camera3D
         AimOrbitAt(target, target + approachDir * portraitDistance, portraitDistance);
     }
 
+    /// <summary>BUG-UI-09: turns a raw raycast hit into the point the user actually meant.
+    ///
+    /// An avatar's physics proxy is a capsule of radius 0.45 m (<c>AvatarRenderer</c>), so a ray
+    /// aimed at someone's chest stops on the front of that cylinder — up to half a metre in FRONT
+    /// of the body, which is what "I clicked the avatar and the focus point landed 50 cm ahead of
+    /// her" is. Nothing is wrong with the hit; it is simply the surface of a proxy that is much
+    /// fatter than the person inside it. So for an avatar hit we do not use the surface point at
+    /// all: we take the point on the ray closest to the capsule's vertical AXIS, which lands on the
+    /// body's centre line no matter which side it was clicked from, and is stable as the camera
+    /// orbits (the surface point slides around the capsule, the axis does not).
+    ///
+    /// Everything else keeps its hit verbatim — prim colliders follow the visible geometry, so
+    /// their surface point IS what was clicked.</summary>
+    private static Vector3 RefineFocusHit(Godot.Collections.Dictionary hit, Vector3 rayOrigin, Vector3 rayDir)
+    {
+        var point = hit["position"].AsVector3();
+        if (hit["collider"].AsGodotObject() is not CollisionObject3D body) return point;
+        if ((body.CollisionLayer & PhysicsLayers.Avatars) == 0) return point;
+
+        // Closest approach between the ray and the capsule's vertical axis, solved in the
+        // horizontal plane (the axis is vertical, so Y drops out of the distance entirely).
+        var axis = body.GlobalPosition;
+        var d = new Vector2(rayDir.X, rayDir.Z);
+        float dd = d.LengthSquared();
+        if (dd < 0.000001f) return point; // looking straight down the axis -- nothing to refine
+
+        var toAxis = new Vector2(axis.X - rayOrigin.X, axis.Z - rayOrigin.Z);
+        float t = toAxis.Dot(d) / dd;
+        if (t <= 0f) return point; // the avatar is behind the camera; keep the hit we have
+
+        var refined = rayOrigin + rayDir * t;
+        return refined.IsFinite() ? refined : point;
+    }
+
     private void FocusOn(Vector3 target)
     {
         // Keep the camera in the exact same physical spot, but look at the new target.
@@ -651,17 +685,24 @@ public partial class AvatarController : Camera3D
 
             var spaceState = GetWorld3D().DirectSpaceState;
             var rayOrigin = ProjectRayOrigin(_altZoomAnchorPos);
-            var rayEnd = rayOrigin + ProjectRayNormal(_altZoomAnchorPos) * 1000f;
+            var rayDir = ProjectRayNormal(_altZoomAnchorPos);
+            var rayEnd = rayOrigin + rayDir * 1000f;
             var query = PhysicsRayQueryParameters3D.Create(rayOrigin, rayEnd);
             // Terrain moved to its own layer (PhysicsLayers.Terrain) so CursorManager's
             // hover raycast could stop paying its console-warning cost on unstreamed
             // patches; this orbit-target raycast still needs terrain, so it's listed
             // explicitly alongside objects and avatars rather than relying on a shared bit.
-            query.CollisionMask = PhysicsLayers.Objects | PhysicsLayers.Terrain | PhysicsLayers.Avatars;
+            //
+            // BUG-UI-09: Phantom is in the mask too. This ray answers "what is the user pointing
+            // at", not "what can be walked into", and most SL foliage is phantom -- leaving the
+            // bit out meant a click into a bush passed straight through it and focused the ground
+            // behind, which is exactly what the user reported.
+            query.CollisionMask = PhysicsLayers.Objects | PhysicsLayers.Phantom
+                                | PhysicsLayers.Terrain | PhysicsLayers.Avatars;
             var result = spaceState.IntersectRay(query);
             if (result.Count > 0)
             {
-                FocusOn(result["position"].AsVector3());
+                FocusOn(RefineFocusHit(result, rayOrigin, rayDir));
             }
         }
         else if (!wantOrbit && _altOrbitActive)

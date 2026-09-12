@@ -18,7 +18,14 @@ public static class PhysicsLayers
     /// raycast can identify which avatar it hit.</summary>
     public const uint Avatars = 1u << 1;
 
-    // Bit 2 (value 4) is ObjectRenderer.PhantomLayer -- reserved, not redeclared here.
+    /// <summary>Phantom prims -- <see cref="ObjectRenderer"/> puts them here instead of disabling
+    /// their <c>CollisionShape3D</c>, so they stay clickable while staying walk-through.
+    ///
+    /// A ray that asks "what is the user LOOKING at" must include this bit; one that asks "what
+    /// can the avatar stand on or bump into" must not. Most SL foliage is phantom, which is why
+    /// leaving it out of the Alt+Click focus ray put the focus point on the ground behind the
+    /// bush the user clicked (BUG-UI-09).</summary>
+    public const uint Phantom = 1u << 2;
 
     /// <summary>Terrain's <c>HeightMapShape3D</c>. Deliberately its OWN layer, separate from
     /// <see cref="Objects"/>.
