@@ -2467,9 +2467,11 @@ public partial class ObjectRenderer : Node3D
         material.SetShaderParameter(PrimShaderFamily.Fullbright, ft.Fullbright);
 
         // FEAT-RENDER-19: the build tool's legacy Shiny. Set unconditionally -- the shader gives a
-        // specular MAP precedence, matching the viewer, which packs shininess into the vertex
-        // alpha only when there is no map. Zero here means genuinely matte, and the viewer skips
-        // its entire specular branch for such a face.
+        // legacy MATERIAL precedence (BUG-RENDER-21 corrected this from "a specular MAP"), matching
+        // the viewer: llface.cpp packs shininess into the vertex alpha whenever there is no
+        // specular map, but a materialed face is drawn by the deferred material shader, which reads
+        // glossiness from the material's SpecExp and never looks at that vertex alpha. Zero here
+        // means genuinely matte, and the viewer skips its entire specular branch for such a face.
         material.SetShaderParameter(PrimShaderFamily.LegacyShininess, ft.ShinyGlossiness);
 
         material.SetShaderParameter(PrimShaderFamily.PrimScale,
@@ -2559,6 +2561,24 @@ public partial class ObjectRenderer : Node3D
                     ? $"legacyMat={lm.Id.ToString()[..8]} mode={lm.DiffuseAlphaMode} cutoff={lm.AlphaMaskCutoff} tintA={colorTint.A:0.###} -> {PrimShaderKindName(material.Shader)}"
                     : $"legacyMat={lm.Id.ToString()[..8]} mode=Default (defers to DetectAlpha) tintA={colorTint.A:0.###}");
 
+                // BUG-RENDER-21: the material's own specular scalars, set because the MATERIAL
+                // exists -- not because it assigns a specular map. The viewer's material shader is
+                // selected by LLMaterial::getShaderMask(), whose SPEC_BIT is the only part that
+                // looks at getSpecularID(); mask 0 (no maps at all) still lands on PASS_MATERIAL
+                // and still reads `glossiness = specular_color.a` and `env = env_intensity * 1.0`
+                // (getSpecular()'s `#else` substitutes an opaque white spec for the missing map).
+                // Raising Shininess or Environment Intensity in the Build floater without
+                // assigning a map is an ordinary authoring case, and Environment Intensity is the
+                // control that gives content its mirror-like look; gating these on the map dropped
+                // both silently. SL transmits them as bytes and the shader wants them normalised;
+                // the viewer's own defaults are SpecExp 0.2*255 and EnvIntensity 0
+                // (llmaterial.h:55-57, llmaterial.cpp:55).
+                material.SetShaderParameter(PrimShaderFamily.HasSpecularMaterial, true);
+                material.SetShaderParameter(PrimShaderFamily.SpecularTint,
+                    new Godot.Vector3(lm.SpecularColor.X, lm.SpecularColor.Y, lm.SpecularColor.Z));
+                material.SetShaderParameter(PrimShaderFamily.SpecularGlossiness, lm.SpecularExponent / 255f);
+                material.SetShaderParameter(PrimShaderFamily.SpecularEnvironment, lm.EnvironmentIntensity / 255f);
+
                 if (lm.NormalMap != Guid.Empty)
                 {
                     used.Add(lm.NormalMap);
@@ -2593,24 +2613,6 @@ public partial class ObjectRenderer : Node3D
                     }, label: "prim.normal_map");
                 }
 
-                // SL's Environment Intensity does NOT require a specular map -- the Build floater's
-                // Texture tab offers it on its own, and it is the slider that turns a prim into a
-                // mirror. Everything below is gated on SpecularMap != Empty, so for a face without
-                // one the value never reached the shader and a mirror rendered as a flat dark
-                // rectangle. Hoisted out here, deliberately as the ONE value rather than by
-                // restructuring the block: the shader's mirror handling
-                // (prim_common.gdshaderinc, the env_intensity block) is gated purely on this
-                // uniform, so this is all it needs, and a separate task owns the wider question of
-                // what else a map-less legacy material should contribute.
-                //
-                // Set unconditionally, including the zero case, so a material edited from
-                // "mirror" back to "matte" actually stops mirroring instead of keeping the last
-                // non-zero value it was given.
-                float environmentIntensity = lm.EnvironmentIntensity / 255f;
-                MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
-                    () => material.SetShaderParameter(PrimShaderFamily.SpecularEnvironment, environmentIntensity),
-                    label: "prim.env_intensity");
-
                 if (lm.SpecularMap != Guid.Empty)
                 {
                     used.Add(lm.SpecularMap);
@@ -2619,12 +2621,8 @@ public partial class ObjectRenderer : Node3D
                     var sOffset = new Godot.Vector2(
                         0.5f - 0.5f * sScale.X + lm.SpecularOffset.X,
                         0.5f - 0.5f * sScale.Y - lm.SpecularOffset.Y);
-                    // SL transmits both as bytes; the shader wants them normalised, and the
-                    // viewer's own defaults are SpecExp 0.2*255 and EnvIntensity 0.
-                    float glossiness = lm.SpecularExponent / 255f;
-                    float environment = lm.EnvironmentIntensity / 255f;
-                    var tint = new Godot.Vector3(lm.SpecularColor.X, lm.SpecularColor.Y, lm.SpecularColor.Z);
-
+                    // Only the MAP and its placement belong in here. The tint/glossiness/environment
+                    // scalars are set above, unconditionally -- see BUG-RENDER-21.
                     var specTex = await GetOrCreateGpuTextureAsync(lm.SpecularMap, screenPixelArea, priority);
                     MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                     {
@@ -2635,9 +2633,6 @@ public partial class ObjectRenderer : Node3D
                         }
                         material.SetShaderParameter(PrimShaderFamily.SpecularTexture, specTex);
                         material.SetShaderParameter(PrimShaderFamily.HasSpecularTexture, true);
-                        material.SetShaderParameter(PrimShaderFamily.SpecularTint, tint);
-                        material.SetShaderParameter(PrimShaderFamily.SpecularGlossiness, glossiness);
-                        material.SetShaderParameter(PrimShaderFamily.SpecularEnvironment, environment);
                         material.SetShaderParameter(PrimShaderFamily.SpecularUvScale, sScale);
                         material.SetShaderParameter(PrimShaderFamily.SpecularUvOffset, sOffset);
                         material.SetShaderParameter(PrimShaderFamily.SpecularUvRotation, lm.SpecularRotation);
