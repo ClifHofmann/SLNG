@@ -2593,6 +2593,24 @@ public partial class ObjectRenderer : Node3D
                     }, label: "prim.normal_map");
                 }
 
+                // SL's Environment Intensity does NOT require a specular map -- the Build floater's
+                // Texture tab offers it on its own, and it is the slider that turns a prim into a
+                // mirror. Everything below is gated on SpecularMap != Empty, so for a face without
+                // one the value never reached the shader and a mirror rendered as a flat dark
+                // rectangle. Hoisted out here, deliberately as the ONE value rather than by
+                // restructuring the block: the shader's mirror handling
+                // (prim_common.gdshaderinc, the env_intensity block) is gated purely on this
+                // uniform, so this is all it needs, and a separate task owns the wider question of
+                // what else a map-less legacy material should contribute.
+                //
+                // Set unconditionally, including the zero case, so a material edited from
+                // "mirror" back to "matte" actually stops mirroring instead of keeping the last
+                // non-zero value it was given.
+                float environmentIntensity = lm.EnvironmentIntensity / 255f;
+                MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
+                    () => material.SetShaderParameter(PrimShaderFamily.SpecularEnvironment, environmentIntensity),
+                    label: "prim.env_intensity");
+
                 if (lm.SpecularMap != Guid.Empty)
                 {
                     used.Add(lm.SpecularMap);

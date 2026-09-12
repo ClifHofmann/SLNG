@@ -372,6 +372,53 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
         out_metallic = metallic_factor * orm.b;
     }
 
+    // SL's Environment Intensity -- the slider that makes a prim a MIRROR. Reported live as a
+    // mirror rendering near-black and "extrem blurry" against Firestorm's sharp room reflection.
+    //
+    // Folding it into metalness alone (which the branch above still does, and which was the whole
+    // of our handling before this) is wrong in two separate ways, both reproduced in an isolated
+    // render through this very shader before changing anything:
+    //
+    //   BLURRY -- a metallic reflection is sampled from the probe at a mip chosen by ROUGHNESS.
+    //             The viewer does not do that for this term: it samples at a forced `lod 0.0`,
+    //             the sharpest mip, regardless of glossiness
+    //             (`legacyenv = sampleProbes(pos, normalize(refnormpersp), 0.0)`,
+    //             reflectionProbeF.glsl:862-865) -- contrast the `glossenv` sample three lines
+    //             above it, which does use `(1.0 - glossiness) * reflection_lods`.
+    //   BLACK  -- and this is the one that actually hid the reflection: Godot tints a METALLIC
+    //             surface's reflection by its ALBEDO. Rendered side by side, `metallic 0.9,
+    //             roughness 0` gives a pure black rectangle at albedo 0.05 and a working mirror
+    //             at albedo 0.9. Mirrors are dark-textured almost by definition, so the more
+    //             Environment Intensity we folded into metalness, the less there was to see.
+    //
+    // The viewer's model is not a tinted reflection at all, it REPLACES the surface
+    // (`applyLegacyEnv`, reflectionProbeF.glsl:904-913):
+    //
+    //     fresnel = min(fresnel + envIntensity, 1.0);        // full-surface, not a grazing rim
+    //     reflected_color *= (envIntensity * fresnel);
+    //     color = mix(color.rgb, reflected_color * 0.5, envIntensity);
+    //
+    // Godot offers no way to add a probe sample additively from a spatial shader, so the three
+    // built-ins are driven together instead, which reproduces all three properties: roughness to 0
+    // is the `lod 0.0`; metallic to 1 is the full-surface response the forced Fresnel gives; and
+    // albedo toward a mid grey is what makes the result albedo-INDEPENDENT -- a dark mirror stops
+    // eating its own reflection -- with 0.5 standing in for the viewer's own `* 0.5`.
+    //
+    // Deliberately placed AFTER the ORM block so a glTF material's own roughness/metallic cannot
+    // undo it, and gated purely on the uniform so it starts working for materials with no specular
+    // map the moment that plumbing is restored (a separate task owns that fix; this one owns the
+    // model, and the two meet here).
+    //
+    // Overriding out_albedo does discard the atmospherics already applied to it. That is the
+    // viewer's behaviour too -- its mix replaces the shaded colour outright -- and on an indoor
+    // mirror there is nothing to lose; on a distant outdoor one it costs a little haze tint.
+    float env_intensity = clamp(specular_environment, 0.0, 1.0);
+    if (env_intensity > 0.0) {
+        out_roughness = mix(out_roughness, 0.0, env_intensity);
+        out_metallic = mix(out_metallic, 1.0, env_intensity);
+        out_albedo = mix(out_albedo, vec3(0.5), env_intensity);
+    }
+
     // A flat normal (0.5, 0.5, 1.0) with zero depth is a no-op, so the variants can assign
     // unconditionally instead of needing a second "has normal" flag threaded through.
     out_normal_map = vec3(0.5, 0.5, 1.0);
