@@ -32,6 +32,16 @@ public partial class AvatarController : Camera3D
     private double _timeSinceLastStandRequest = double.MaxValue;
     private const double StandRequestCooldownSeconds = 1.0;
     private Vector3 _lastCameraRot;
+
+    /// <summary>The world-space point the third-person camera is currently looking at (avatar
+    /// follow target, or the Alt+LMB focus point), after the pan-pad offset. Written once per
+    /// frame in <c>_Process</c>; consumed by the DoF focus marker (BUG-RENDER-22).</summary>
+    public Vector3 CameraTargetPoint { get; private set; }
+
+    /// <summary>True while the camera orbits a user-set Alt+LMB focus point rather than following
+    /// the avatar -- i.e. the user deliberately aimed somewhere else.</summary>
+    public bool HasManualFocusTarget { get; private set; }
+
     private float _zoom = 4.0f;
     private Vector3 _panOffset = Vector3.Zero;
 
@@ -1046,6 +1056,13 @@ public partial class AvatarController : Camera3D
                 // local axes, so "pan left" stays screen-left regardless of where the camera looks.
                 targetPos += Transform.Basis.X * _panOffset.X;
                 targetPos += Transform.Basis.Y * _panOffset.Y;
+
+                // Published for the DoF focus-point marker (BUG-RENDER-22): the point the camera
+                // actually looks at, after the pan offset, whether that is the avatar's head or an
+                // Alt+LMB focus point. Read-only to everyone else -- nothing may steer the camera
+                // through it.
+                CameraTargetPoint = targetPos;
+                HasManualFocusTarget = _orbitTarget.HasValue;
 
                 // Third-person camera: pull back along the camera's Z axis
                 Position = targetPos + Transform.Basis.Z * _zoom;

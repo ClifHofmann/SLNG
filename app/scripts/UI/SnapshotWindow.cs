@@ -55,6 +55,7 @@ public partial class SnapshotWindow : SLNGWindow
     private CheckButton _dofEnable = null!;
     private VBoxContainer _dofControls = null!;
     private CheckBox _dofAutoFocus = null!;
+    private CheckBox _dofShowMarker = null!;
     private CheckBox _dofNearBlur = null!;
     private HSlider _dofFocusSlider = null!;
     private HSlider _dofRangeSlider = null!;
@@ -424,6 +425,22 @@ public partial class SnapshotWindow : SLNGWindow
         };
         footer.AddChild(_dofNearBlur);
 
+        // BUG-RENDER-22: the diagnostic toggle. Lives with the DoF controls rather than in the
+        // Developer menu because it is only meaningful while DoF is on, and _dofControls is
+        // already hidden whenever it is off.
+        _dofShowMarker = new CheckBox
+        {
+            Text = L10n.Tr("ui.snapshot.dof_show_marker"),
+            TooltipText = L10n.Tr("ui.snapshot.dof_show_marker_tooltip"),
+            FocusMode = FocusModeEnum.None,
+        };
+        _dofShowMarker.Toggled += on =>
+        {
+            if (_refreshingDof || _dof == null) return;
+            _dof.SetShowFocusMarker(on);
+        };
+        _dofControls.AddChild(_dofShowMarker);
+
         var reset = new Button
         {
             Text = L10n.Tr("ui.snapshot.dof_reset"),
@@ -513,6 +530,7 @@ public partial class SnapshotWindow : SLNGWindow
             _dofControls.Visible = _dof.Enabled;
             _dofAutoFocus.ButtonPressed = _dof.AutoFocus;
             _dofNearBlur.ButtonPressed = _dof.NearBlur;
+            _dofShowMarker.ButtonPressed = _dof.ShowFocusMarker;
             _dofFocusSlider.Value = _dof.FocusDistance;
             _dofRangeSlider.Value = _dof.FocusRange;
             _dofFalloffSlider.Value = _dof.Falloff;

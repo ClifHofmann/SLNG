@@ -98,6 +98,12 @@
       "dof_blur": "Blur",
       "dof_near_blur": "Blur foreground",
       "dof_near_blur_tooltip": "Blur what is nearer than the sharp band too, not just what is behind it.",
+      "dof_show_marker": "Show focus point (debug)",
+      "dof_show_marker_tooltip": "Draws two markers in the world: cyan is the focal plane (what stays sharp), amber is what the camera looks at — the avatar, or the Alt+LMB focus point. When the two are apart, the camera is focusing past its subject.",
+      "dof_marker_focus": "Focus",
+      "dof_marker_target": "Camera target",
+      "dof_marker_auto": "auto focus",
+      "dof_marker_manual": "manual",
       "dof_reset": "Reset",
       "dof_no_target": "nothing in the centre of frame"
     },

@@ -73,6 +73,12 @@ public sealed class DofSettings
     /// "sharp subject, blurred background only" look; on is the full cinematic one.</summary>
     public bool NearBlur { get; private set; } = true;
 
+    /// <summary>BUG-RENDER-22 diagnostic: draw the focal plane, and the camera's own look-at
+    /// target, as markers in the world. Off by default and deliberately NOT a photography
+    /// setting -- it exists because "the avatar looks soft" and "the focal plane sits 40 m behind
+    /// the avatar" produce the same blurred image, and only one of them is a bug.</summary>
+    public bool ShowFocusMarker { get; private set; }
+
     public void Load()
     {
         var cfg = new ConfigFile();
@@ -84,11 +90,13 @@ public sealed class DofSettings
         BlurAmount = ClampBlur((float)cfg.GetValue(Section, "blur_amount", DefaultBlurAmount));
         Falloff = ClampFalloff((float)cfg.GetValue(Section, "falloff", DefaultFalloff));
         NearBlur = (bool)cfg.GetValue(Section, "near_blur", true);
+        ShowFocusMarker = (bool)cfg.GetValue(Section, "show_focus_marker", false);
     }
 
     public void SetEnabled(bool value) => Persist("enabled", value, () => Enabled = value);
     public void SetAutoFocus(bool value) => Persist("auto_focus", value, () => AutoFocus = value);
     public void SetNearBlur(bool value) => Persist("near_blur", value, () => NearBlur = value);
+    public void SetShowFocusMarker(bool value) => Persist("show_focus_marker", value, () => ShowFocusMarker = value);
 
     // The three sliders take a `persist` flag the checkboxes don't need. An HSlider raises
     // ValueChanged on every step of a drag, and every one of those would otherwise be a
@@ -130,6 +138,7 @@ public sealed class DofSettings
         SetBlurAmount(DefaultBlurAmount);
         SetFalloff(DefaultFalloff);
         SetNearBlur(true);
+        SetShowFocusMarker(false);
     }
 
     private static void Persist(string key, Variant clamped, Action assign, bool write = true)

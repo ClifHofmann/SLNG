@@ -61,6 +61,30 @@ public partial class DepthOfFieldController : Node
 
     private float _autoFocusTarget = DofSettings.DefaultFocusDistance;
 
+    // --- Focus-point marker (BUG-RENDER-22 diagnostic) ---------------------------------------
+    // A blurred frame cannot tell you WHERE the focal plane is, only that the subject is not on
+    // it, so "auto-focus picked the hillside behind the avatar" and "the blur is misconfigured"
+    // look identical. These draw the answer. Two markers on purpose:
+    //   cyan  -- the focal plane itself: camera position + view axis * CurrentFocusDistance. It
+    //            is by construction the one thing in frame that MUST be sharp, so if the cyan
+    //            sphere is crisp while the avatar is not, the focal plane is simply elsewhere.
+    //   amber -- the camera's own look-at target (AvatarController.CameraTargetPoint): the
+    //            avatar's head while following, or the Alt+LMB focus point. The gap between the
+    //            two markers is the bug, measured.
+    // Unshaded and depth-test-free so they stay visible inside geometry, and never given a
+    // collider -- SampleAutoFocus raycasts Objects|Avatars, and a marker that focused the camera
+    // on itself would be a very fine feedback loop.
+    private Node3D? _markerRoot;
+    private MeshInstance3D? _focusMarker;
+    private MeshInstance3D? _targetMarker;
+    private Label3D? _markerLabel;
+
+    // Apparent size: the markers scale with distance so they stay readable at 2 m and at 200 m,
+    // clamped so they neither vanish up close nor swallow the frame far away.
+    private const float MarkerAngularSize = 0.014f;
+    private const float MarkerMinRadius = 0.03f;
+    private const float MarkerMaxRadius = 1.2f;
+
     public void Initialize(Camera3D camera, DofSettings settings, SLNG.Core.ECS.World? world = null)
     {
         _camera = camera;
@@ -78,6 +102,7 @@ public partial class DepthOfFieldController : Node
         if (!_settings.Enabled)
         {
             Detach();
+            SetMarkerVisible(false);
             return;
         }
 
@@ -99,6 +124,7 @@ public partial class DepthOfFieldController : Node
         }
 
         Apply();
+        UpdateFocusMarker();
     }
 
     /// <summary>Casts through the centre of the viewport and records the distance to whatever is
@@ -261,6 +287,126 @@ public partial class DepthOfFieldController : Node
         _attributes.DofBlurNearEnabled = _settings.NearBlur;
         _attributes.DofBlurNearDistance = near;
         _attributes.DofBlurNearTransition = Mathf.Max(Mathf.Min(falloff, near), 0.1f);
+    }
+
+    /// <summary>Places the focal-plane and camera-target markers for this frame, building them on
+    /// first use. Cheap enough to run per frame (two transform writes and a label string), and it
+    /// only runs at all while the user has the toggle on.</summary>
+    private void UpdateFocusMarker()
+    {
+        if (_camera == null || _settings == null) return;
+
+        if (!_settings.ShowFocusMarker)
+        {
+            SetMarkerVisible(false);
+            return;
+        }
+
+        EnsureMarkers();
+        if (_markerRoot == null || _focusMarker == null || _targetMarker == null || _markerLabel == null) return;
+        _markerRoot.Visible = true;
+
+        var camXform = _camera.GlobalTransform;
+        var origin = camXform.Origin;
+        var forward = -camXform.Basis.Z;
+
+        float focus = _settings.AutoFocus ? CurrentFocusDistance : _settings.FocusDistance;
+        var focusPoint = origin + forward * focus;
+        _focusMarker.GlobalPosition = focusPoint;
+        _focusMarker.Scale = Vector3.One * MarkerRadius(focus);
+
+        // The camera target only exists in the third-person rig. In free-camera mode, or before
+        // login, AvatarController never writes it, and a marker parked at the world origin would
+        // be a lie -- hide it instead.
+        float targetDistance = -1f;
+        if (_camera is AvatarController rig && rig.CameraTargetPoint != Vector3.Zero)
+        {
+            var targetPoint = rig.CameraTargetPoint;
+            targetDistance = (targetPoint - origin).Dot(forward);
+            _targetMarker.Visible = true;
+            _targetMarker.GlobalPosition = targetPoint;
+            _targetMarker.Scale = Vector3.One * (MarkerRadius(Mathf.Max(targetDistance, 0.1f)) * 0.6f);
+        }
+        else
+        {
+            _targetMarker.Visible = false;
+        }
+
+        // Just in front of the focal plane, so the readout is never the first thing the blur eats.
+        _markerLabel.GlobalPosition = focusPoint - forward * (MarkerRadius(focus) * 2.5f);
+
+        string mode = _settings.AutoFocus
+            ? (AutoFocusHasTarget ? L10n.Tr("ui.snapshot.dof_marker_auto") : L10n.Tr("ui.snapshot.dof_no_target"))
+            : L10n.Tr("ui.snapshot.dof_marker_manual");
+        string text = $"{L10n.Tr("ui.snapshot.dof_marker_focus")}: {focus:0.0} m  ({mode})";
+        if (targetDistance > 0f)
+        {
+            text += "\n"
+                  + $"{L10n.Tr("ui.snapshot.dof_marker_target")}: {targetDistance:0.0} m"
+                  + $"  (delta {focus - targetDistance:+0.0;-0.0;0.0} m)";
+        }
+        if (_markerLabel.Text != text) _markerLabel.Text = text;
+    }
+
+    private static float MarkerRadius(float distance)
+        => Mathf.Clamp(distance * MarkerAngularSize, MarkerMinRadius, MarkerMaxRadius);
+
+    private void SetMarkerVisible(bool visible)
+    {
+        if (_markerRoot != null) _markerRoot.Visible = visible;
+    }
+
+    private void EnsureMarkers()
+    {
+        if (_markerRoot != null) return;
+
+        // TopLevel: the markers are positioned in world space, and this controller is a plain Node
+        // under Boot (a Control), so there is no Node3D ancestor to inherit from anyway -- saying
+        // so explicitly keeps that true if the tree ever changes.
+        _markerRoot = new Node3D { Name = "DofFocusMarker", TopLevel = true };
+        AddChild(_markerRoot);
+
+        _focusMarker = BuildSphere("DofFocalPlane", new Color(0.1f, 0.9f, 1f));
+        _markerRoot.AddChild(_focusMarker);
+
+        _targetMarker = BuildSphere("DofCameraTarget", new Color(1f, 0.65f, 0.1f));
+        _markerRoot.AddChild(_targetMarker);
+
+        _markerLabel = new Label3D
+        {
+            Name = "DofFocusReadout",
+            TopLevel = true,
+            Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
+            FixedSize = true,
+            NoDepthTest = true,
+            PixelSize = 0.0006f,
+            FontSize = 48,
+            OutlineSize = 12,
+            Modulate = new Color(0.1f, 0.9f, 1f),
+            OutlineModulate = new Color(0f, 0f, 0f, 0.8f),
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        _markerRoot.AddChild(_markerLabel);
+    }
+
+    private static MeshInstance3D BuildSphere(string name, Color color)
+    {
+        var material = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = color,
+            NoDepthTest = true,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+        };
+        return new MeshInstance3D
+        {
+            Name = name,
+            TopLevel = true,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            // Radius 1 / height 2 -- the unit sphere the per-frame Scale above works on in metres.
+            Mesh = new SphereMesh { Radius = 1f, Height = 2f, RadialSegments = 16, Rings = 8, Material = material },
+        };
     }
 
     private void Detach()

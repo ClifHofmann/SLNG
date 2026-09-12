@@ -98,6 +98,12 @@
       "dof_blur": "Unschärfe",
       "dof_near_blur": "Vordergrund weichzeichnen",
       "dof_near_blur_tooltip": "Zeichnet auch das weich, was näher als der Schärfebereich liegt, nicht nur den Hintergrund.",
+      "dof_show_marker": "Fokuspunkt anzeigen (Debug)",
+      "dof_show_marker_tooltip": "Zeichnet zwei Marker in die Welt: türkis die Fokusebene (dort ist das Bild scharf), orange das Ziel, auf das die Kamera blickt — der Avatar bzw. der mit Alt+Linksklick gesetzte Punkt. Liegen beide auseinander, fokussiert die Kamera am Motiv vorbei.",
+      "dof_marker_focus": "Fokus",
+      "dof_marker_target": "Kamera-Ziel",
+      "dof_marker_auto": "Autofokus",
+      "dof_marker_manual": "manuell",
       "dof_reset": "Zurücksetzen",
       "dof_no_target": "nichts in der Bildmitte"
     },
