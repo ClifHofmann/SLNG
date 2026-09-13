@@ -65,12 +65,35 @@ public static class AvatarShapeService
         return map;
     }
 
+    /// <summary>Decodes one transmitted byte into a parameter weight the way the REAL VIEWER does —
+    /// <c>U8_to_F32</c> (indra/llmath/llquantize.h:110-122), which is not a plain linear map:
+    ///
+    /// <code>
+    /// F32 max_error = delta*OOU8MAX;
+    /// // make sure that zero's come through as zero
+    /// if (fabsf(val) &lt; max_error) val = 0.f;
+    /// </code>
+    ///
+    /// <para>A byte can only land on 255 steps, so a symmetric range like Hover's [-2, 2] has no
+    /// byte that maps to exactly 0: 127 gives -0.00784 and 128 gives +0.00784. Both the viewer and
+    /// LibreMetaverse's own <c>Utils.ByteToFloat</c> snap anything inside one quantisation step of
+    /// zero back to zero, so a slider the user left untouched stays untouched. This service used a
+    /// plain linear map and therefore turned every centred slider into a small non-zero weight.
+    /// Measured live (BUG-AVATAR-07): "Hover" decoded to -0.0078 instead of 0, which lowered the
+    /// whole avatar by 7.8 mm against a reference prim measured at 8.3 mm — and the same error
+    /// applies to EVERY centred shape slider, each nudging its own skeletal distortion.</para>
+    ///
+    /// <para>Delegates to <c>Utils.ByteToFloat</c> rather than re-implementing it: that is the same
+    /// function <see cref="SLNG.Net"/>'s wire encoder round-trips against, so encoder and decoder
+    /// cannot drift apart.</para></summary>
+    private static float ByteToWeight(byte raw, float min, float max) => Utils.ByteToFloat(raw, min, max);
+
     private static float ReadRawValue(int paramId, byte[]? visualParams, int[] group0)
     {
         int idx = Array.IndexOf(group0, paramId);
         if (idx < 0 || !VisualParams.Params.TryGetValue(paramId, out var vp)) return 0f;
         if (visualParams != null && idx < visualParams.Length)
-            return vp.MinValue + (visualParams[idx] / 255.0f) * (vp.MaxValue - vp.MinValue);
+            return ByteToWeight(visualParams[idx], vp.MinValue, vp.MaxValue);
         return vp.DefaultValue;
     }
 
@@ -168,7 +191,7 @@ public static class AvatarShapeService
             // defaults to -0.5). Sex-gating + clamping happen in EffectiveWeight.
             float rawWeight;
             if (visualParams != null && i < visualParams.Length)
-                rawWeight = param.MinValue + (visualParams[i] / 255.0f) * (param.MaxValue - param.MinValue);
+                rawWeight = ByteToWeight(visualParams[i], param.MinValue, param.MaxValue);
             else
                 rawWeight = param.DefaultValue;
 

@@ -210,4 +210,64 @@ public class AvatarShapeServiceTests
         Assert.True(System.Math.Abs(wMin - driven.MinValue) < 0.001f, $"expected driven weight {driven.MinValue} at driver min, got {wMin}");
         Assert.True(System.Math.Abs(wMax - driven.MaxValue) < 0.001f, $"expected driven weight {driven.MaxValue} at driver max, got {wMax}");
     }
+
+    // ---- BUG-AVATAR-07: U8_to_F32's zero snap ------------------------------------------------
+    // indra/llmath/llquantize.h:110-122 — "make sure that zero's come through as zero": anything
+    // within one quantisation step of zero decodes to exactly zero. A byte has 255 steps, so a
+    // symmetric range has NO byte that lands on 0 without it (127 -> -0.00784, 128 -> +0.00784 for
+    // Hover's [-2,2]), and every centred slider would otherwise carry a small spurious weight.
+
+    [Fact]
+    public void Centred_byte_decodes_to_exactly_zero_for_a_symmetric_param()
+    {
+        int[] group0 = LibreMetaverse.VisualParams.Group0ParamIds;
+        const int HoverId = 11001;
+        int slot = System.Array.IndexOf(group0, HoverId);
+        Assert.True(slot >= 0, "Hover (11001) must be a transmitted param");
+
+        var vp = new byte[group0.Length];
+        for (int i = 0; i < vp.Length; i++)
+        {
+            // Every slider centred: the byte nearest the middle of its own range.
+            if (!LibreMetaverse.VisualParams.Params.TryGetValue(group0[i], out var p)) continue;
+            vp[i] = LibreMetaverse.Utils.FloatToByte(0f, p.MinValue, p.MaxValue);
+        }
+
+        var weights = AvatarShapeService.ComputeEffectiveWeights(vp);
+
+        Assert.True(weights.TryGetValue(HoverId, out float hover));
+        Assert.Equal(0f, hover);
+    }
+
+    [Theory]
+    [InlineData(127)]
+    [InlineData(128)]
+    public void Both_midpoint_bytes_snap_to_zero(byte raw)
+    {
+        int[] group0 = LibreMetaverse.VisualParams.Group0ParamIds;
+        const int HoverId = 11001;
+        int slot = System.Array.IndexOf(group0, HoverId);
+
+        var vp = new byte[group0.Length];
+        vp[slot] = raw;
+
+        var weights = AvatarShapeService.ComputeEffectiveWeights(vp);
+        Assert.Equal(0f, weights[HoverId]);
+    }
+
+    [Fact]
+    public void One_step_off_centre_is_not_snapped_away()
+    {
+        // The snap must be exactly one quantisation step wide, not a general "small values are
+        // zero" rule — a slider the user genuinely nudged has to survive.
+        int[] group0 = LibreMetaverse.VisualParams.Group0ParamIds;
+        const int HoverId = 11001;
+        int slot = System.Array.IndexOf(group0, HoverId);
+
+        var vp = new byte[group0.Length];
+        vp[slot] = 130;
+
+        var weights = AvatarShapeService.ComputeEffectiveWeights(vp);
+        Assert.True(weights[HoverId] > 0.02f, $"expected a real weight, got {weights[HoverId]}");
+    }
 }
