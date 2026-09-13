@@ -51,6 +51,11 @@ public partial class AvatarRenderer : Node3D
         // alongside JointPosOverrides and, like it, not reverted per-mesh on detach: a re-login or
         // the next full appearance rebuild re-derives both from whatever is actually worn.
         public HashSet<string> JointScaleLocks { get; } = new();
+        /// <summary>True when a rigged Bento head mesh (influencing mFaceRoot or mFace* bones) is worn.
+        /// When true, all bones in the head rig (mSkull, mEyeLeft, mEyeRight, mFaceRoot, mFace*)
+        /// synchronize uniformly to mHead's shape scale (Head Size slider) to preserve authored
+        /// facial proportions and match Firestorm head height and width.</summary>
+        public bool HasBentoHead { get; set; }
         // Per-mesh pelvis Z fixups harvested from worn rigged meshes' skin data (viewer:
         // LLAvatarAppearance::addPelvisFixup / LLVector3OverrideMap, indra/llappearance/
         // llavatarappearance.cpp + indra/llcharacter/lljoint.{h,cpp}). Keyed by the contributing
@@ -1077,6 +1082,24 @@ public partial class AvatarRenderer : Node3D
                 // viewer keeps position overrides and scale overrides on separate maps.
                 if (!visual.JointScaleLocks.Contains(name)) slScale += dist.Scale;
                 slPos += dist.Position;
+            }
+
+            // Bento head synchronization:
+            // When a Bento mesh head is worn, all bones in the head rig (mSkull, mEyeLeft, mEyeRight,
+            // mFaceRoot, and all mFace* joints) scale uniformly with mHead's shape scale
+            // (driven by the avatar's Head Size slider).
+            // Legacy 2003 system avatar sliders (Egg Head, Head Stretch, Jaw Shaper) distort face bones
+            // non-uniformly and compound down the hierarchy, which shrivels the face mesh, pulls up the chin,
+            // and misaligns eyes.
+            // Synchronizing all head rig bones to mHead's scale preserves authored Bento face proportions,
+            // keeps eyelids and eyeballs at the identical scale so eyes remain open, and matches Firestorm head dimensions.
+            if (visual.HasBentoHead && (name == "mSkull" || name == "mEyeLeft" || name == "mEyeRight" || name == "mFaceRoot" || name.StartsWith("mFace")))
+            {
+                if (visual.BoneOwnScale.TryGetValue("mHead", out var headScale))
+                {
+                    slScale = headScale;
+                }
+                slPos = bone.Position;
             }
 
             // A zero / negative / non-finite scale component here — an extreme shape param, a
@@ -2695,22 +2718,23 @@ public partial class AvatarRenderer : Node3D
         //    while leaving mHead / mSkull to scale with the avatar's Head Size slider so hair
         //    attachment height and overall head placement remain in sync with Firestorm.
         // 2. Meshes declaring LockScaleIfJointPosition: lock all joints influenced by the mesh.
-        int locked = 0;
-
+        // Bento head synchronization:
+        // When a mesh rigged to Bento face bones (mFaceRoot / mFace*) is worn, the entire head rig
+        // (mSkull, mEyeLeft, mEyeRight, mFaceRoot, and all mFace* joints) is synchronized to mHead's
+        // shape scale (driven by the avatar's Head Size slider).
+        // This ensures the head scales down to the exact same size as in Firestorm (resolving the
+        // +2cm oversize from locking to 1.0), keeps eyes and eyelids at the same scale so eyes
+        // remain open and visible, and prevents legacy 2003 sliders (Egg Head, Jaw Shaper) from
+        // distorting and narrowing the face.
         bool isBentoHead = skinData.JointNames.Any(n => n == "mFaceRoot" || n.StartsWith("mFace"));
-        if (isBentoHead)
+        bool bentoHeadChanged = false;
+        if (isBentoHead && !visual.HasBentoHead)
         {
-            if (visual.JointScaleLocks.Add("mFaceRoot")) locked++;
-            foreach (var n in skinData.JointNames)
-            {
-                if (n.StartsWith("mFace"))
-                {
-                    string resolved = _avatarSkeleton?.ResolveBoneName(n) ?? n;
-                    if (visual.JointScaleLocks.Add(resolved)) locked++;
-                }
-            }
+            visual.HasBentoHead = true;
+            bentoHeadChanged = true;
         }
 
+        int locked = 0;
         if (skinData.LockScaleIfJointPosition)
         {
             foreach (var n in skinData.JointNames)
@@ -2723,7 +2747,7 @@ public partial class AvatarRenderer : Node3D
         // Viewer rule: overrides only count when EVERY joint has one (bindCnt == jointCnt).
         if (alt == null || alt.Length != jointCount)
         {
-            if (locked > 0)
+            if (bentoHeadChanged || locked > 0)
             {
                 if (_avatarSkeleton != null)
                 {
@@ -2736,7 +2760,7 @@ public partial class AvatarRenderer : Node3D
 
                 GD.Print($"[ScaleLock] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} mesh {meshId}: " +
                          $"{locked} joint scale(s) locked to skeleton default " +
-                         $"(Bento face: {isBentoHead}, lock_scale: {skinData.LockScaleIfJointPosition}) — " +
+                         $"(Bento head: {isBentoHead}, lock_scale: {skinData.LockScaleIfJointPosition}) — " +
                          $"total scale-locked joints: {visual.JointScaleLocks.Count}");
 
                 RecomputeFootOffset(visual, visual.LastDistortions);
@@ -2750,7 +2774,7 @@ public partial class AvatarRenderer : Node3D
         // or a newly locked joint scale). A worn outfit hands the same overrides in again mesh
         // after mesh; re-applying the shape and rebuilding every bind for each of those is pure
         // waste, and skipping it keeps the refresh below affordable.
-        bool skeletonChanged = (locked > 0);
+        bool skeletonChanged = bentoHeadChanged || (locked > 0);
         float maxDelta = 0f;
         for (int j = 0; j < jointCount; j++)
         {

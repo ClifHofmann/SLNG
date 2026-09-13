@@ -329,12 +329,18 @@ belongs with `BUG-AVATAR-06` (falling), which is the same block.
 - User tested `v0.22.103-alpha` side-by-side with Firestorm using the 20 cm reference cube: in Firestorm, Denise's head matched the cube exactly, but in SLNG the head was ~2 cm larger (*"was auffällt, der kopf ist jetzt ca 2cm größer als im fs (erkennt man am cube) ... aber jetzt nur noch im SLNG"*).
 - Forcing `mHead` and `mSkull` to 1.0 (22.2 cm) pushed the hair attachment point ~1 cm too high and dropped the chin ~1 cm too low. Reverted both in `v0.22.104-alpha`.
 
-### Round 9 — Decoupled `mHead`/`mSkull` slider scaling from Bento face rig (v0.22.105-alpha)
+### Round 10 — Uniform Bento head rig synchronization to `mHead` shape scale (v0.22.106-alpha)
 
-- User reported live on `v0.22.104-alpha` (*"Nö jetzt ist der kopf wieder zu klein, haare oben passen, kinn unten nicht, kopf ist zu schmal (siehe haare)"*):
-  - Hair on top correctly matched Firestorm (*"haare oben passen"*), confirming `mHead`'s own shape slider scale (~0.963) places static attachments at the right world-space height.
-  - However, the Bento face bones (`mFaceRoot` and ~65 child bones) were shrinking under legacy shape distortions (driven param 655, Egg Head, Jaw Shaper), compounding down the deep parent chain (`mHead -> mFaceRoot -> mFaceJaw -> mFaceChin`) and shrinking jaw width to 16.4 cm (a ~25% loss), creating a hollow void next to the hair strands and pulling the chin 2 cm above the cube bottom.
-- **Fix:** Bento face bones (`mFaceRoot` and all `mFace*` joints) are locked to default scale 1.0, preserving authored mesh head proportions (full cheeks/jaw filling the hair, chin extending to the jawline), while `mHead` and `mSkull` stay unlocked to follow the shape sliders so attachment height and head placement match Firestorm.
+- User reported live on `v0.22.105-alpha` (*"Die avatar höhe passt, der kopf ist jetztr zu lang? und due augen fehlen? 1. bild firestorm 2. bild SLNG"*):
+  - Avatar height was confirmed matching Firestorm.
+  - The head was stretched vertically ("zu lang") and the eyeballs were completely missing / covered by closed eyelids.
+  - **Root cause:** In `v0.22.105-alpha`, `mFaceRoot` and all `mFace*` joints were locked to 1.0, but `mHead` (~0.963) and `mEyeLeft`/`mEyeRight` (~0.888) were left unlocked. This caused a severe scale and position mismatch:
+    1. The eyeball attachments (rigged to `mEyeLeft`/`mEyeRight`) shrank and sat inside `mHead`, while the eyelids (rigged to `mFaceEyeLidUpperLeft`/`mFaceEyeLidLowerLeft`) stayed at 1.0 scale and swallowed the eyeballs.
+    2. The face bones under `mFaceRoot` (`mFaceJaw`, `mFaceChin`) stayed at 1.0 scale while the skull and head were at 0.963, stretching the face vertically.
+- **Fix:** Added `AvatarVisual.HasBentoHead`. When a Bento mesh head is detected, all bones belonging to the head rig (`mSkull`, `mEyeLeft`, `mEyeRight`, `mFaceRoot`, and all `mFace*` bones) synchronize uniformly to `headScale` (`visual.BoneOwnScale["mHead"]`), discarding legacy 2003 non-uniform squashing sliders (`Egg Head`, `Head Stretch`, `Jaw Shaper`):
+  1. Eyeballs and eyelids share the identical `headScale`, restoring open, visible eyes.
+  2. Face proportions scale uniformly with the head, eliminating vertical elongation and keeping the chin aligned with the reference cube bottom.
+  3. Cheeks and jaw width scale at `headScale` (identical to hair width), eliminating gaps and voids without overshooting Firestorm dimensions.
 
 ## Known limitation
 
@@ -342,5 +348,6 @@ Like the existing `JointPosOverrides`, `JointScaleLocks` is not reverted per-mes
 contributing mesh is un-worn (the viewer's `removeAttachmentOverridesForObject` does revert it).
 Detaching a lock-declaring mesh body therefore keeps its joints locked until the next full
 appearance rebuild. Worth fixing together with the same gap on the position channel.
+
 
 
