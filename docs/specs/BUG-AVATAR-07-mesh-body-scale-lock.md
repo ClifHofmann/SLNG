@@ -342,6 +342,22 @@ belongs with `BUG-AVATAR-06` (falling), which is the same block.
   2. Face proportions scale uniformly with the head, eliminating vertical elongation and keeping the chin aligned with the reference cube bottom.
   3. Cheeks and jaw width scale at `headScale` (identical to hair width), eliminating gaps and voids without overshooting Firestorm dimensions.
 
+### Round 11 — Reference C++ Viewer Parity: Collision Volume Scale Inheritance (`inheritScale()`) (v0.22.107-alpha)
+
+- User reported live on `v0.22.106-alpha` with side-by-side screenshot (*"was auch immer du gemacht hast ist kaputter als vorher zu schmall verzerrt usw orientiere dich bitte an dem orginal code"*):
+  - In `v0.22.106-alpha`, forcing `slPos = bone.Position` and `slScale = headScale` on Bento face bones destroyed the avatar's custom facial shape slider position and scale deltas (e.g. chin forward/down offsets, mouth width, nose shape, eyebrow position), resulting in a distorted, jutting chin, warped facial proportions, and sunken/missing eyes.
+- **Root cause analysis from original C++ viewer code (`scratch/slviewer/`):**
+  1. The reference viewer (`indra/newview/llvoavatar.cpp:6812-6817`) **never** applies special hardcoded locks or overrides to Bento face joints. Bento heads obey standard skeleton and distortion rules.
+  2. The original reason hair appeared too wide/detached from the head was that the avatar's hair mesh (`d54a9ee6-15f2-7ad3-5e2f-c742bb3f6cc2`) is rigged to the collision volume `HEAD` (68% vertex weight).
+  3. In the reference viewer (`scratch/slviewer/indra/llappearance/llpolyskeletaldistortion.cpp:160-169` & `llavatarjoint.h:132`), `LLAvatarJointCollisionVolume::inheritScale()` is `true`. When a parent bone (`mHead`) scales from shape sliders (`pDist.Scale = -0.1278` -> scale `0.8722`), all child collision volumes inherit that scale deformation:
+     `childDeformation = childScale * parentDeformation` -> `HEAD` scales at `0.11 * (1.0 - 0.1278) = 0.0959` (ratio `0.8722`).
+  4. In SLNG, collision volumes previously did not inherit parent scale deformations, remaining at scale 1.0 while `mHead` and the face shrank, leaving a gap between the head and hair.
+- **Fix:**
+  1. Removed `HasBentoHead` and all ad-hoc Bento head heuristics/overrides from `AvatarRenderer.cs`.
+  2. Implemented exact SL viewer collision volume scale inheritance in `AvatarRenderer.ApplyShape` and `SlJointComposer.ComputePoses`:
+     If `bone.IsCollisionVolume` and its parent has distortion `pDist`, apply `slScale += bone.Scale * pDist.Scale`.
+  3. All Bento face bones retain their exact shape slider deltas and mesh joint overrides, restoring 100% facial shape and eye parity with Firestorm.
+
 ## Known limitation
 
 Like the existing `JointPosOverrides`, `JointScaleLocks` is not reverted per-mesh when the

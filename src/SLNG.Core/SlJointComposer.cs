@@ -54,6 +54,17 @@ public static class SlJointComposer
                 if (!IsScaleLocked(scaleLockedBones, bone.Name)) localScale += dist.Scale;
                 localPos += dist.Position;
             }
+            // SL Viewer Parity (llpolyskeletaldistortion.cpp:160-169):
+            // LLAvatarJointCollisionVolume::inheritScale() is true.
+            // Child collision volumes inherit the parent bone's scale deformation:
+            // childDeformation = childScale * parentDeformation
+            if (bone.IsCollisionVolume && bone.ParentName != null && !IsScaleLocked(scaleLockedBones, bone.Name))
+            {
+                if (distortions != null && distortions.TryGetValue(bone.ParentName, out var pDist) && !IsScaleLocked(scaleLockedBones, bone.ParentName))
+                {
+                    localScale += bone.Scale * pDist.Scale;
+                }
+            }
             if (positionOverrides != null && positionOverrides.TryGetValue(bone.Name, out var ov))
                 localPos = ov;
 
