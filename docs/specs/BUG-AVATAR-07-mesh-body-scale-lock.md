@@ -327,10 +327,14 @@ belongs with `BUG-AVATAR-06` (falling), which is the same block.
 ### Round 8 — Reverted heuristic Bento head scale-lock to restore Firestorm slider parity (v0.22.104-alpha)
 
 - User tested `v0.22.103-alpha` side-by-side with Firestorm using the 20 cm reference cube: in Firestorm, Denise's head matched the cube exactly, but in SLNG the head was ~2 cm larger (*"was auffällt, der kopf ist jetzt ca 2cm größer als im fs (erkennt man am cube) ... aber jetzt nur noch im SLNG"*).
-- **Cause:** Bento heads (like LeLutka EvoX) do not declare `lock_scale_if_joint_position` in their mesh asset, and Firestorm does not artificially lock Bento face joints to 1.0. Firestorm genuinely honors the avatar's shape slider 682/655 "Head Size", which produces ~0.924 scale on `mHead` (~20.3 cm height) on this shape, perfectly fitting the 20 cm reference cube.
-- In `v0.22.103-alpha`, forcing `isBentoHead` to scale 1.0 (22.2 cm) inflated the head by 1.9 cm (~2 cm) relative to Firestorm.
-- **Fix:** Removed the artificial `isBentoHead` scale lock in `ApplyJointPositionOverrides`. Joints are only locked if explicitly requested by a mesh's `skinData.LockScaleIfJointPosition`. Retained `RefreshStaticAttachmentOffsets(visual)`.
-- Firestorm slider parity restored in SLNG; Denise's head scales identically in both viewers.
+- Forcing `mHead` and `mSkull` to 1.0 (22.2 cm) pushed the hair attachment point ~1 cm too high and dropped the chin ~1 cm too low. Reverted both in `v0.22.104-alpha`.
+
+### Round 9 — Decoupled `mHead`/`mSkull` slider scaling from Bento face rig (v0.22.105-alpha)
+
+- User reported live on `v0.22.104-alpha` (*"Nö jetzt ist der kopf wieder zu klein, haare oben passen, kinn unten nicht, kopf ist zu schmal (siehe haare)"*):
+  - Hair on top correctly matched Firestorm (*"haare oben passen"*), confirming `mHead`'s own shape slider scale (~0.963) places static attachments at the right world-space height.
+  - However, the Bento face bones (`mFaceRoot` and ~65 child bones) were shrinking under legacy shape distortions (driven param 655, Egg Head, Jaw Shaper), compounding down the deep parent chain (`mHead -> mFaceRoot -> mFaceJaw -> mFaceChin`) and shrinking jaw width to 16.4 cm (a ~25% loss), creating a hollow void next to the hair strands and pulling the chin 2 cm above the cube bottom.
+- **Fix:** Bento face bones (`mFaceRoot` and all `mFace*` joints) are locked to default scale 1.0, preserving authored mesh head proportions (full cheeks/jaw filling the hair, chin extending to the jawline), while `mHead` and `mSkull` stay unlocked to follow the shape sliders so attachment height and head placement match Firestorm.
 
 ## Known limitation
 
@@ -338,4 +342,5 @@ Like the existing `JointPosOverrides`, `JointScaleLocks` is not reverted per-mes
 contributing mesh is un-worn (the viewer's `removeAttachmentOverridesForObject` does revert it).
 Detaching a lock-declaring mesh body therefore keeps its joints locked until the next full
 appearance rebuild. Worth fixing together with the same gap on the position channel.
+
 

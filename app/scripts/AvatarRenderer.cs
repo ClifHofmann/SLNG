@@ -2683,9 +2683,33 @@ public partial class AvatarRenderer : Node3D
         }
 
         // Scale-Lock detection:
-        // Meshes declaring LockScaleIfJointPosition: lock all joints influenced by the mesh
-        // to default scale 1.0, discarding shape slider distortions for those joints.
+        // 1. Rigged Bento head / face mesh: meshes rigged to Bento face bones (mFaceRoot / mFace*)
+        //    are authored at default scale 1.0 around the Bento face skeleton. Classic shape
+        //    slider distortions (notably driven param 655 from Head Size, Egg Head, Jaw Shaper)
+        //    distort mFaceRoot and all mFace* bones, compounding down the deep face hierarchy
+        //    (mHead -> mFaceRoot -> mFaceJaw -> mFaceChin), which shrivels the face mesh,
+        //    making the head far too narrow and pulling the chin upward while unrigged hair
+        //    attached to mHead stays at mHead's height.
+        //    Lock mFaceRoot and all mFace* joints to default scale 1.0 to preserve authored
+        //    facial proportions (cheeks and jaw filling the hair, chin reaching the cube bottom),
+        //    while leaving mHead / mSkull to scale with the avatar's Head Size slider so hair
+        //    attachment height and overall head placement remain in sync with Firestorm.
+        // 2. Meshes declaring LockScaleIfJointPosition: lock all joints influenced by the mesh.
         int locked = 0;
+
+        bool isBentoHead = skinData.JointNames.Any(n => n == "mFaceRoot" || n.StartsWith("mFace"));
+        if (isBentoHead)
+        {
+            if (visual.JointScaleLocks.Add("mFaceRoot")) locked++;
+            foreach (var n in skinData.JointNames)
+            {
+                if (n.StartsWith("mFace"))
+                {
+                    string resolved = _avatarSkeleton?.ResolveBoneName(n) ?? n;
+                    if (visual.JointScaleLocks.Add(resolved)) locked++;
+                }
+            }
+        }
 
         if (skinData.LockScaleIfJointPosition)
         {
@@ -2712,7 +2736,7 @@ public partial class AvatarRenderer : Node3D
 
                 GD.Print($"[ScaleLock] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} mesh {meshId}: " +
                          $"{locked} joint scale(s) locked to skeleton default " +
-                         $"(lock_scale: {skinData.LockScaleIfJointPosition}) — " +
+                         $"(Bento face: {isBentoHead}, lock_scale: {skinData.LockScaleIfJointPosition}) — " +
                          $"total scale-locked joints: {visual.JointScaleLocks.Count}");
 
                 RecomputeFootOffset(visual, visual.LastDistortions);
