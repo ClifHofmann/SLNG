@@ -2683,30 +2683,9 @@ public partial class AvatarRenderer : Node3D
         }
 
         // Scale-Lock detection:
-        // 1. Rigged Bento head / face mesh: meshes rigged to mFaceRoot or mFace* bones are authored
-        //    at 1.0 scale around the Bento face bones. Classic shape sliders (notably 682/655 "Head Size")
-        //    distort mHead/mSkull, which shrinks the head mesh relative to unrigged hair attached to mHead.
-        //    Lock mHead, mSkull, mEye*, and Bento face bones to default scale 1.0.
-        // 2. Meshes declaring LockScaleIfJointPosition: lock all joints influenced by the mesh.
-        bool isBentoHead = skinData.JointNames.Any(n => n == "mFaceRoot" || n.StartsWith("mFace"));
+        // Meshes declaring LockScaleIfJointPosition: lock all joints influenced by the mesh
+        // to default scale 1.0, discarding shape slider distortions for those joints.
         int locked = 0;
-
-        if (isBentoHead)
-        {
-            string[] bentoHeadBones = { "mHead", "mSkull", "mEyeLeft", "mEyeRight", "mFaceRoot" };
-            foreach (var b in bentoHeadBones)
-            {
-                if (visual.JointScaleLocks.Add(b)) locked++;
-            }
-            foreach (var n in skinData.JointNames)
-            {
-                if (n.StartsWith("mFace"))
-                {
-                    string resolved = _avatarSkeleton?.ResolveBoneName(n) ?? n;
-                    if (visual.JointScaleLocks.Add(resolved)) locked++;
-                }
-            }
-        }
 
         if (skinData.LockScaleIfJointPosition)
         {
@@ -2733,7 +2712,7 @@ public partial class AvatarRenderer : Node3D
 
                 GD.Print($"[ScaleLock] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} mesh {meshId}: " +
                          $"{locked} joint scale(s) locked to skeleton default " +
-                         $"(Bento head: {isBentoHead}, lock_scale: {skinData.LockScaleIfJointPosition}) — " +
+                         $"(lock_scale: {skinData.LockScaleIfJointPosition}) — " +
                          $"total scale-locked joints: {visual.JointScaleLocks.Count}");
 
                 RecomputeFootOffset(visual, visual.LastDistortions);

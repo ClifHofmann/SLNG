@@ -324,9 +324,18 @@ belongs with `BUG-AVATAR-06` (falling), which is the same block.
 - Implemented `RefreshStaticAttachmentOffsets` to update static attachment offsets whenever bone scales change.
 - In-world confirmed by user: *"Sieht schon viel besser aus"*.
 
+### Round 8 — Reverted heuristic Bento head scale-lock to restore Firestorm slider parity (v0.22.104-alpha)
+
+- User tested `v0.22.103-alpha` side-by-side with Firestorm using the 20 cm reference cube: in Firestorm, Denise's head matched the cube exactly, but in SLNG the head was ~2 cm larger (*"was auffällt, der kopf ist jetzt ca 2cm größer als im fs (erkennt man am cube) ... aber jetzt nur noch im SLNG"*).
+- **Cause:** Bento heads (like LeLutka EvoX) do not declare `lock_scale_if_joint_position` in their mesh asset, and Firestorm does not artificially lock Bento face joints to 1.0. Firestorm genuinely honors the avatar's shape slider 682/655 "Head Size", which produces ~0.924 scale on `mHead` (~20.3 cm height) on this shape, perfectly fitting the 20 cm reference cube.
+- In `v0.22.103-alpha`, forcing `isBentoHead` to scale 1.0 (22.2 cm) inflated the head by 1.9 cm (~2 cm) relative to Firestorm.
+- **Fix:** Removed the artificial `isBentoHead` scale lock in `ApplyJointPositionOverrides`. Joints are only locked if explicitly requested by a mesh's `skinData.LockScaleIfJointPosition`. Retained `RefreshStaticAttachmentOffsets(visual)`.
+- Firestorm slider parity restored in SLNG; Denise's head scales identically in both viewers.
+
 ## Known limitation
 
 Like the existing `JointPosOverrides`, `JointScaleLocks` is not reverted per-mesh when the
 contributing mesh is un-worn (the viewer's `removeAttachmentOverridesForObject` does revert it).
 Detaching a lock-declaring mesh body therefore keeps its joints locked until the next full
 appearance rebuild. Worth fixing together with the same gap on the position channel.
+
