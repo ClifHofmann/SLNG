@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-INV-07`
 - **Track:** `net` (+ `ui`)
-- **Status:** `🧪 Review` — **Phase 1 implemented v0.22.147-alpha**, awaiting in-world verification. Phases 2-3 pending.
+- **Status:** `🚧 In Progress` — **Phase 1 done and confirmed in-world 2026-09-14 (v0.22.147-alpha)**. Phases 2 (background fetch) and 3 (in-memory search) still open.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -136,9 +136,9 @@ unknown, exactly as `llinventoryfilter.cpp:202-216` does.
 
 ## Acceptance Criteria
 
-- [ ] Second login to the same account serves unchanged folders from disk — no CAPS request per
+- [x] Second login to the same account serves unchanged folders from disk — no CAPS request per
       folder, provable from the log.
-- [ ] A folder changed by another viewer between sessions is refetched, and shows the new
+- [x] A folder changed by another viewer between sessions is refetched, and shows the new
       contents (version mismatch path).
 - [x] A folder with no known version is never served from cache.
 - [x] Cache is per account and per grid — logging into a different account or grid never reads
@@ -176,4 +176,4 @@ unknown, exactly as `llinventoryfilter.cpp:202-216` does.
 - [x] Phase 1: tests (5)
 - [ ] Phase 2: background fetch, rate-limiter aware
 - [ ] Phase 3: local search, drop the crawl caps
-- [ ] In-world verification: relog and confirm the folder fetches disappear from the log
+- [x] In-world verification: relog and confirm the folder fetches disappear from the log
