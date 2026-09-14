@@ -206,13 +206,12 @@ public sealed class AvatarAnimationPlayer
         }
 
         // Apply blended poses to skeleton.
+        // Rotation only: SL animation position keys (almost always just on mPelvis)
+        // are relative to mRoot in SL, whereas Godot's Skeleton3D pose position overrides
+        // the bone's rest position (1.067m), which drops the pelvis to 0m and sinks the avatar.
         foreach (var (boneIdx, pose) in boneRots)
         {
             _skeleton.SetBonePoseRotation(boneIdx, pose.rotation);
-        }
-        foreach (var (boneIdx, pose) in bonePositions)
-        {
-            _skeleton.SetBonePosePosition(boneIdx, pose.position);
         }
     }
 
