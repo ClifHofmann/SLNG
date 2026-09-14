@@ -5735,6 +5735,138 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// would replace a good cache with nothing, so a store still holding nothing but the skeleton
     /// is left alone.</para>
     /// </summary>
+    /// <summary>How many folders go into one <c>FetchInventoryDescendents2</c> POST. The CAPS
+    /// request takes a list, so this is one round trip for ten folders rather than ten. Matches the
+    /// reference viewer's own batch size (llinventorymodelbackgroundfetch.cpp:1092).</summary>
+    private const int PrefetchBatchSize = 10;
+
+    /// <summary>Pause between batches. The viewer keeps 12 requests in flight; SLNG deliberately
+    /// runs ONE at a time with a gap, because this shares a caps budget with texture and material
+    /// fetching and the log already shows the sim's rate limiter filling up under normal load. A
+    /// background fill that makes the world load slower has missed the point.</summary>
+    private static readonly TimeSpan PrefetchBatchPause = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>Stop after this many batches. A guard against a pathological inventory or a grid
+    /// that never clears a folder's flag — at ten folders a batch this still covers 50 000 folders,
+    /// far more than any real account has.</summary>
+    private const int PrefetchMaxBatches = 5000;
+
+    /// <summary>
+    /// FEAT-INV-07 Phase 2: fills the inventory in the background, so searching and browsing find
+    /// folders the user never opened by hand.
+    ///
+    /// <para>Phase 1 made a <i>revisited</i> folder free, but only folders that had been opened at
+    /// least once were ever in the cache — and on a first login it is empty. This walks everything
+    /// still flagged <c>NeedsUpdate</c> and fetches it, ten folders per request, so by the time the
+    /// user opens the inventory the answer is already local. Newly fetched folders reveal their own
+    /// subfolders, so the walk repeats until nothing is left.</para>
+    ///
+    /// <para>Deliberately <b>not</b> LibreMetaverse's <c>RequestFolderContentsAsync(folder, …)</c>
+    /// per folder: the CAPS payload takes a list of folders, and one POST for ten is the difference
+    /// between a background fill and a flood.</para>
+    ///
+    /// <para>The agent's own inventory only — the Library is shared, immutable and large, and
+    /// nobody searches it for their own things. Cancel via <paramref name="ct"/>; a cancelled or
+    /// failed run costs nothing, since anything not fetched simply stays flagged and is fetched on
+    /// demand as before.</para>
+    /// </summary>
+    /// <param name="progress">Called after each batch with (folders fetched so far, folders still
+    /// known to be pending). Both numbers move as the walk discovers new subfolders.</param>
+    /// <returns>How many folders were fetched.</returns>
+    public async Task<int> PrefetchInventoryAsync(
+        Action<int, int>? progress = null, CancellationToken ct = default)
+    {
+        var store = _client.Inventory.Store;
+        if (store?.RootNode == null || !_client.Network.Connected) return 0;
+
+        var cap = _client.Network.CurrentSim?.Caps?.CapabilityURI("FetchInventoryDescendents2");
+        if (cap == null)
+        {
+            Console.Error.WriteLine("[InvPrefetch] no FetchInventoryDescendents2 capability -- skipping");
+            return 0;
+        }
+
+        var agent = _client.Self.AgentID;
+        // Folders the grid would not fill in. Without this a folder whose flag never clears would
+        // be picked up by every single pass and the walk would never end.
+        var refused = new HashSet<UUID>();
+        int fetched = 0;
+
+        for (int batchNo = 0; batchNo < PrefetchMaxBatches; batchNo++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var pending = PendingFolders(store, refused);
+            if (pending.Count == 0) break;
+
+            var batch = pending.Take(PrefetchBatchSize).ToList();
+            try
+            {
+                await _client.Inventory.RequestFolderContentsAsync(
+                    batch, cap, fetchFolders: true, fetchItems: true,
+                    LibreMetaverse.InventorySortOrder.ByName, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[InvPrefetch] batch failed, stopping: {ex.Message}");
+                break;
+            }
+
+            // Whatever the grid did not clear, it is not going to clear on a retry either.
+            foreach (var folder in batch)
+            {
+                if (store.GetNodeOrDefault(folder.UUID) is { NeedsUpdate: false }) fetched++;
+                else refused.Add(folder.UUID);
+            }
+
+            progress?.Invoke(fetched, PendingFolders(store, refused).Count);
+            await Task.Delay(PrefetchBatchPause, ct).ConfigureAwait(false);
+        }
+
+        if (refused.Count > 0)
+            Console.Error.WriteLine($"[InvPrefetch] {refused.Count} folder(s) the grid would not fill");
+        Console.Error.WriteLine($"[InvPrefetch] done, {fetched} folder(s) fetched");
+        return fetched;
+
+        // Every folder under the agent's root still flagged as not-yet-fetched. Re-walked each
+        // batch on purpose: fetching a folder is how its subfolders become visible in the first
+        // place, so the set grows as the walk descends.
+        List<LibreMetaverse.InventoryFolder> PendingFolders(
+            LibreMetaverse.Inventory inv, HashSet<UUID> skip)
+        {
+            var result = new List<LibreMetaverse.InventoryFolder>();
+            var stack = new Stack<LibreMetaverse.InventoryNode>();
+            stack.Push(inv.RootNode);
+
+            while (stack.Count > 0)
+            {
+                var node = stack.Pop();
+                if (node.Data is LibreMetaverse.InventoryFolder folder &&
+                    node.NeedsUpdate && !skip.Contains(folder.UUID))
+                {
+                    // OwnerID is unset on folders the descendents parser created (only skeleton
+                    // folders carry one), and a zero owner makes the grid return nothing — the
+                    // same trap FetchInventoryChildrenAsync documents.
+                    result.Add(new LibreMetaverse.InventoryFolder(folder.UUID)
+                    {
+                        OwnerID = folder.OwnerID == UUID.Zero ? agent : folder.OwnerID,
+                    });
+                }
+
+                // The store is mutated by network threads while we walk it; a snapshot that throws
+                // mid-enumeration just means this pass sees less, and the next one picks it up.
+                try
+                {
+                    foreach (var child in node.Nodes.Values.ToList()) stack.Push(child);
+                }
+                catch (InvalidOperationException) { /* concurrently modified -- try again next pass */ }
+            }
+
+            return result;
+        }
+    }
+
     public void SaveInventoryCache()
     {
         if (_inventoryCachePath == null) return;

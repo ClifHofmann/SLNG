@@ -296,7 +296,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.147-alpha";
+    public const string AppVersion = "v0.22.148-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -2586,6 +2586,7 @@ public partial class Boot : Control
         // populates the root folders, and a fetch that starts before the restore lands would pay
         // for folders the cache was about to supply for free.
         _session.OpenInventoryCache(ProjectSettings.GlobalizePath("user://cache/inventory"));
+        StartInventoryPrefetch();
 
         _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, _gpuCache);
@@ -2944,6 +2945,66 @@ public partial class Boot : Control
         GD.Print($"[GroupInvite] {e.FromName} -> group {e.GroupId} fee L${e.MembershipFee}");
     }
 
+    // ---- FEAT-INV-07 Phase 2: background inventory fill ----------------------------------------
+
+    /// <summary>How long after login the background fill starts. Not immediately: the first
+    /// seconds in a region are the busiest the caps budget ever gets — terrain, meshes, textures
+    /// and the avatar bake all land at once — and a background fill that makes the world load
+    /// slower has missed the point. By half a minute in, the scene is settled and the user has
+    /// typically not opened the inventory yet.</summary>
+    private const float InventoryPrefetchDelaySeconds = 30f;
+
+    /// <summary>Cancels the fill when the session ends. Without it the walk would keep POSTing
+    /// against a simulator this client has already left.</summary>
+    private System.Threading.CancellationTokenSource? _inventoryPrefetchCts;
+
+    private void StartInventoryPrefetch()
+    {
+        CancelInventoryPrefetch();
+        _inventoryPrefetchCts = new System.Threading.CancellationTokenSource();
+        var ct = _inventoryPrefetchCts.Token;
+
+        var timer = GetTree().CreateTimer(InventoryPrefetchDelaySeconds);
+        timer.Timeout += () =>
+        {
+            if (!IsInstanceValid(this) || _session == null || ct.IsCancellationRequested) return;
+            var session = _session;
+
+            // Off the main thread entirely: this is a long sequence of HTTP round trips, and the
+            // only thing it touches is LibreMetaverse's store, which the fetch path already
+            // mutates from network threads.
+            _ = System.Threading.Tasks.Task.Run(async () =>
+            {
+                try
+                {
+                    int fetched = await session.PrefetchInventoryAsync(
+                        (done, pending) =>
+                        {
+                            // Every tenth batch: enough to see progress in a log, quiet enough not
+                            // to drown it (the console log is deliberately sparse).
+                            if (done % (10 * 10) == 0)
+                                GD.Print($"[InvPrefetch] {done} folder(s) fetched, {pending} to go");
+                        },
+                        ct).ConfigureAwait(false);
+
+                    if (fetched > 0) GD.Print($"[InvPrefetch] inventory is now local ({fetched} folders)");
+                }
+                catch (System.OperationCanceledException) { /* logged out mid-fill -- expected */ }
+                catch (System.Exception ex)
+                {
+                    GD.PrintErr($"[InvPrefetch] failed: {ex.Message}");
+                }
+            }, ct);
+        };
+    }
+
+    private void CancelInventoryPrefetch()
+    {
+        try { _inventoryPrefetchCts?.Cancel(); } catch { /* already disposed */ }
+        _inventoryPrefetchCts?.Dispose();
+        _inventoryPrefetchCts = null;
+    }
+
     // ---- BUG-INV-04: inventory offers ----------------------------------------------------------
 
     /// <summary>Open "X is offering you an item" prompts, keyed by the offer's transaction id so a
@@ -3254,6 +3315,11 @@ public partial class Boot : Control
 
         if (_session != null && _session.IsConnected)
         {
+            // FEAT-INV-07: stop the background fill before saving, so the walk is not still
+            // POSTing against a simulator we are about to leave. Whatever it already fetched is
+            // in the store and gets saved with everything else.
+            CancelInventoryPrefetch();
+
             // FEAT-INV-07: write the inventory cache while the store is still live. This covers
             // both exits -- QuitGracefully(true) from the window's × and from Exit, and
             // QuitGracefully(false) from Disconnect -- because a logout is just as much the end of

@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-INV-07`
 - **Track:** `net` (+ `ui`)
-- **Status:** `🚧 In Progress` — **Phase 1 done and confirmed in-world 2026-09-14 (v0.22.147-alpha)**. Phases 2 (background fetch) and 3 (in-memory search) still open.
+- **Status:** `🚧 In Progress` — Phase 1 done and confirmed in-world (v0.22.147-alpha); **Phase 2 implemented v0.22.148-alpha**, awaiting verification. Phase 3 (in-memory search) still open.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -120,12 +120,29 @@ Restore on login, serve clean folders from the store, save on quit and logout. B
 instant for unchanged folders, and the existing search crawl gets dramatically cheaper because
 most folders are already local.
 
-### Phase 2 — background fetch
+### Phase 2 — background fetch — 🧪 implemented v0.22.148-alpha
 
-After login, walk folders whose cached version is stale or missing, in batches (the viewer's
-10-at-a-time / 12-outstanding is a sane starting point) and off the critical path. Must respect
-the existing caps rate limiter — the log already shows `Caps rate limiter queue full` under
-normal load, so this cannot be a flood.
+`GridSession.PrefetchInventoryAsync` walks everything still flagged `NeedsUpdate` and fetches
+it, so a folder the user never opened by hand is local too — and a *first* login, where the
+cache is empty, benefits as well.
+
+- **Ten folders per request.** The `FetchInventoryDescendents2` payload takes a list of folders
+  (`InventoryManager.cs:377`, public on the pinned 3.1.3), so this is one POST per ten, not ten
+  POSTs. Same batch size as the reference viewer.
+- **One request at a time, 250 ms apart.** The viewer keeps twelve in flight; SLNG deliberately
+  does not, because this shares a caps budget with texture and material fetching and the live log
+  already shows the sim's rate limiter filling up under normal load. A background fill that slows
+  the world down has missed the point.
+- **Starts 30 s after login**, not immediately — the first seconds in a region are the busiest
+  the caps budget ever gets.
+- **Re-walks the tree each batch**, because fetching a folder is how its subfolders become
+  visible in the first place.
+- **Refused folders are remembered**, so a folder whose flag the grid never clears cannot spin
+  the walk forever.
+- **Agent inventory only.** The Library is shared, immutable and large, and nobody searches it
+  for their own things.
+- **Cancelled on logout and quit**, so the walk never POSTs against a simulator this client has
+  left.
 
 ### Phase 3 — in-memory search
 
@@ -174,6 +191,6 @@ unknown, exactly as `llinventoryfilter.cpp:202-216` does.
 - [x] Phase 1: restore on login, serve on `NeedsUpdate == false`, save on quit + logout
 - [x] Phase 1: verified the pinned LMV does the version comparison (not assumed from source)
 - [x] Phase 1: tests (5)
-- [ ] Phase 2: background fetch, rate-limiter aware
+- [x] Phase 2: background fetch, batched 10/request, one at a time, cancelled on logout
 - [ ] Phase 3: local search, drop the crawl caps
 - [x] In-world verification: relog and confirm the folder fetches disappear from the log
