@@ -636,8 +636,7 @@ public partial class AvatarRenderer : Node3D
                 // surface in Godot world space. If PelvisToFootZ is not yet available, falls back to sitPelvisY.
                 int sitPelvisBone = visual.Skeleton != null ? visual.Skeleton.FindBone("mPelvis") : -1;
                 float sitPelvisY = (sitPelvisBone >= 0 && visual.Skeleton != null) ? GetBoneRootRelativeY(visual.Skeleton, sitPelvisBone) : 1.046f;
-                float pelvisOffset = visual.PelvisToFootZ > 0.1f ? (visual.PelvisToFootZ + visual.FootOffsetY) : sitPelvisY;
-                rootPos.Y = transform.Position.Z - pelvisOffset + avatar.HoverOffsetZ;
+                rootPos.Y = transform.Position.Z - sitPelvisY + avatar.HoverOffsetZ;
             }
             else if (!avatar.IsLocalAgent)
             {
