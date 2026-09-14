@@ -297,7 +297,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.159-alpha";
+    public const string AppVersion = "v0.22.160-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -3304,6 +3304,14 @@ public partial class Boot : Control
         // already-destroyed RenderingServer is the documented cause of the "N RID allocations...
         // leaked at exit" / "RenderingServer::get_singleton() is null" pair seen at close).
         _gpuCache?.DisposeAll();
+
+        // Same reasoning, for the textures that are built once and kept in STATIC fields for the
+        // whole process: nothing ever drops those references, so without this they are left to the
+        // GC and show up in the "N RIDs of type Texture were leaked" line. The cache was already
+        // handled; these were not.
+        SLNG.App.TerrainRenderer.DisposeSharedTextures();
+        SLNG.App.ObjectParticles.DisposeSharedTextures();
+
         _worldSimulation?.Dispose();
         _session?.Dispose();
         

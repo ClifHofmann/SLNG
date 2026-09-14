@@ -973,4 +973,20 @@ public partial class TerrainRenderer : Node3D
         _terrainMaterial?.Dispose();
         _waterMaterial?.Dispose();
     }
+
+    /// <summary>Frees the textures this class builds once and keeps for the whole process.
+    ///
+    /// <para>Static caches never go out of scope, so nothing disposes them and cleanup falls to
+    /// whenever the .NET GC finalizes them — which is not guaranteed to happen before
+    /// RenderingServer itself is destroyed. That is the documented cause of the "N RIDs of type
+    /// Texture were leaked" line at shutdown, and the same reasoning as
+    /// <see cref="GpuCache.DisposeAll"/>. Called by Boot on the way out.</para>
+    ///
+    /// <para>The alpha ramp is deliberately left alone: it comes from <c>ResourceLoader</c> and
+    /// lives in Godot's own resource cache, which is not ours to tear down.</para></summary>
+    public static void DisposeSharedTextures()
+    {
+        if (_noiseLut != null && GodotObject.IsInstanceValid(_noiseLut)) _noiseLut.Dispose();
+        _noiseLut = null;
+    }
 }

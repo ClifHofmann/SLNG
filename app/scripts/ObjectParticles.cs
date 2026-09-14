@@ -49,6 +49,14 @@ public partial class ObjectParticles : CpuParticles3D
     /// round blob; a hard-edged quad reads as a bug, so this is a radial alpha falloff.</summary>
     private static Texture2D? _defaultTexture;
 
+    /// <summary>Frees the generated default particle texture. See
+    /// <see cref="TerrainRenderer.DisposeSharedTextures"/> for why a static texture needs this.</summary>
+    public static void DisposeSharedTextures()
+    {
+        if (_defaultTexture != null && GodotObject.IsInstanceValid(_defaultTexture)) _defaultTexture.Dispose();
+        _defaultTexture = null;
+    }
+
     /// <summary>The owning entity's id, for the diagnostic line only — set by
     /// <c>ObjectRenderer</c> so a "which emitter is object X" report is answerable from the log.</summary>
     public Guid EmitterEntityId { get; set; }
