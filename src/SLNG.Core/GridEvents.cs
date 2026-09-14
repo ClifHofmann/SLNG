@@ -307,8 +307,25 @@ public record RegionDisconnectedEvent(ulong RegionHandle) : IWorldEvent;
 /// existing call sites/tests that don't care about hover keep compiling unchanged.</summary>
 public record AvatarAppearanceEvent(ulong RegionHandle, Guid AgentId, byte[] VisualParams, Dictionary<int, Guid> BakedTextures, float HoverOffsetZ = 0f) : IWorldEvent;
 
+/// <summary>One playing animation and the object that started it (FEAT-ANIM-03). The
+/// <c>AvatarAnimation</c> packet carries an <c>AnimationSourceList</c> block alongside the id list,
+/// which is what makes it possible to tell a furniture pose from an AO HUD's — without it every
+/// animation on an avatar is anonymous.</summary>
+/// <param name="SourceObjectId"><see cref="Guid.Empty"/> when the agent itself is the source
+/// (a built-in SIT, a gesture, an <c>llSetAnimationOverride</c> result) rather than an object.</param>
+public readonly record struct AnimationSignal(Guid AnimId, Guid SourceObjectId);
+
 /// <summary>Represents the set of animations currently playing on an avatar.</summary>
-public record AvatarAnimationEvent(Guid AgentId, List<Guid> AnimationIds) : IWorldEvent;
+/// <param name="AnimationIds">The playing ids, in the order the simulator listed them. Kept as the
+/// primary field because every existing consumer reads it and the order matters to the blender's
+/// tie-break.</param>
+/// <param name="Sources">FEAT-ANIM-03: the same animations paired with the object that started
+/// each. Null when a producer does not carry sources (older test doubles), which every consumer
+/// must tolerate — the feature degrades to the previous behaviour rather than failing.</param>
+public record AvatarAnimationEvent(
+    Guid AgentId,
+    List<Guid> AnimationIds,
+    IReadOnlyList<AnimationSignal>? Sources = null) : IWorldEvent;
 
 /// <summary>An LSL <c>llDialog</c> popup request from an in-world object's script. Carries the
 /// simulator-assigned reply <paramref name="Channel"/> (not a dialog-session UUID -- LibreMetaverse's

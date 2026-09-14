@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-ANIM-03`
 - **Track:** `render` (+ `net` boundary, `core` state)
-- **Status:** `⏸️ Pending`
+- **Status:** `🧪 Review` — implemented v0.22.152-alpha, awaiting in-world verification.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -135,13 +135,21 @@ Fallbacks that must keep working:
 
 ## Sub-tasks / Progress
 
-- [ ] `viewer-parity`: object-sourced vs attachment-sourced animation handling while
-      seated in the reference viewer; sensible default for the toggle.
-- [ ] `SLNG.Net` boundary: widen `AvatarAnimationEvent` with `AnimationSignal`
-      (source), populate from LMV.
-- [ ] `SLNG.Core`: `AnimationSources` + resolved `SittingOnObjectId` on
-      `AvatarComponent`; fill in `ApplyAvatarAnimation`.
-- [ ] `app`: seat-vs-attachment resolver in `ApplyActiveAnimations` + grace window.
-- [ ] Preference toggle + locale strings + Preferences UI row.
-- [ ] Unit tests (resolver) + FEAT-ANIM-01/BUG-ANIM-01/BUG-ANIM-02 regression.
+- [x] `viewer-parity`: **the reference viewer has no such rule.** It keeps the same source map
+      (`LLVOAvatar::mAnimationSources`, filled llviewermessage.cpp:4051-4077) but uses it only to
+      stop an object's animations when that object goes away (`stopMotionFromSource`,
+      llvoavatarself.cpp:853-860) — never for precedence. There a furniture pose and an AO sit are
+      blended purely by priority, which is exactly why AO HUDs ship a "disable while seated" patch
+      script. This feature is therefore a deliberate viewer-local improvement, not parity, and the
+      toggle defaults **on**: defaulting off would ship the problem plus a switch to fix it.
+- [x] `SLNG.Net` boundary: `AnimationSignal` added to `AvatarAnimationEvent` (optional, so a
+      producer without sources degrades to the old behaviour), populated from LMV.
+- [x] `SLNG.Core`: `AnimationSources` + `SittingOnObjectId` on `AvatarComponent`, both filled in
+      `ApplyAvatarAnimation` — the seat is resolved there rather than where `SittingOnLocalId` is
+      set, because the seat prim may not have arrived yet at that moment.
+- [x] `app`: `SeatPoseResolver` called from `ApplyActiveAnimations`. **No grace window needed** —
+      the rule only fires once a seat-sourced animation is actually playing, so an AO pose arriving
+      first is simply the pre-seat state, not a flash to be debounced.
+- [x] Preference toggle (`AnimationSettings`, new **Animation** tab), locale strings both languages.
+- [x] 10 resolver tests; full suite green (740).
 - [ ] In-world: furniture pose vs AO, ground sit, poseball, stand-up, remote avatar.

@@ -56,6 +56,19 @@ public class AvatarComponent : IComponent
     public Dictionary<int, Guid>? BakedTextures { get; set; }
     public List<Guid>? ActiveAnimations { get; set; }
 
+    /// <summary>FEAT-ANIM-03: <see cref="ActiveAnimations"/> paired with the object that started
+    /// each one, so a furniture pose can be told apart from a worn AO HUD's. Null when the producer
+    /// carried no sources; every consumer must tolerate that and fall back to the unfiltered set.
+    /// </summary>
+    public IReadOnlyList<AnimationSignal>? AnimationSources { get; set; }
+
+    /// <summary>FEAT-ANIM-03: <see cref="SittingOnLocalId"/> resolved to the seat's persistent
+    /// object id, or <see cref="Guid.Empty"/> when not seated on an object (standing, or a ground
+    /// sit). Resolved in the simulation, which owns the local-id index, so the renderer does not
+    /// have to look it up itself. Stays empty while the seat prim has not arrived yet, which simply
+    /// means the rule does not fire for those frames.</summary>
+    public Guid SittingOnObjectId { get; set; }
+
     /// <summary>
     /// AppearanceHover Z offset from AvatarAppearance (see <see cref="SLNG.Core.AvatarAppearanceEvent"/>'s
     /// doc comment) — a per-avatar user-configured height nudge the real viewer adds directly onto

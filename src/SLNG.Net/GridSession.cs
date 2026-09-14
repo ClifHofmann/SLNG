@@ -4873,14 +4873,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     private void OnAvatarAnimation(object? sender, LibreMetaverse.AvatarAnimationEventArgs e)
     {
         var animIds = new List<Guid>(e.Animations.Count);
+        // FEAT-ANIM-03: the packet's AnimationSourceList says which object started each animation,
+        // which is the only way to tell a furniture pose from a worn AO's. Carried as neutral
+        // Guids -- no LibreMetaverse type crosses this boundary.
+        //
+        // This event, not AgentManager.AnimationsChanged: the self-agent event genuinely throws the
+        // source list away (see the FIXME in AgentManager.PacketHandlers.cs), while
+        // AvatarManager.AvatarAnimation fires for every avatar INCLUDING self and keeps it.
+        var signals = new List<AnimationSignal>(e.Animations.Count);
         foreach (var anim in e.Animations)
         {
             animIds.Add(anim.AnimationID.Guid);
+            signals.Add(new AnimationSignal(anim.AnimationID.Guid, anim.AnimationSourceObjectID.Guid));
         }
 
         AvatarAnimationReceived?.Invoke(this, new AvatarAnimationEvent(
             e.AvatarID.Guid,
-            animIds
+            animIds,
+            signals
         ));
     }
 

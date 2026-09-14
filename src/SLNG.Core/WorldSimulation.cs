@@ -810,6 +810,13 @@ public sealed class WorldSimulation : IDisposable
         {
             var avatar = entity.GetComponent<AvatarComponent>()!;
             avatar.ActiveAnimations = e.AnimationIds;
+            avatar.AnimationSources = e.Sources;
+            // FEAT-ANIM-03: resolve the seat here rather than where SittingOnLocalId is set -- the
+            // seat prim may not have arrived yet at that moment, and this runs on every animation
+            // change, which is exactly when the answer is needed.
+            avatar.SittingOnObjectId = avatar.SittingOnLocalId == 0
+                ? Guid.Empty
+                : _world.GetEntity(entity.RegionHandle, avatar.SittingOnLocalId)?.Id ?? Guid.Empty;
             entity.SetComponent(avatar);
             _world.NotifyComponentUpdated(entity, avatar);
         }

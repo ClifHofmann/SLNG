@@ -314,7 +314,11 @@
       "maturity_unsupported": "Dieses Grid unterstützt keine Inhaltseinstufung (OpenSim kennt Second Lifes Allgemein/Moderat/Adult-System nicht).",
       "maturity_account_max": "Dein Konto ist verifiziert bis: {0}",
       "maturity_set_to": "Inhaltseinstufung auf {0} gesetzt.",
-      "maturity_set_failed": "Inhaltseinstufung konnte nicht geändert werden: {0}"
+      "maturity_set_failed": "Inhaltseinstufung konnte nicht geändert werden: {0}",
+      "tab_animation": "Animation",
+      "animation_seating_heading": "Sitzen",
+      "seat_pose_overrides_ao": "Möbel-Posen haben beim Sitzen Vorrang vor dem AO",
+      "seat_pose_overrides_ao_hint": "Solange das Objekt, auf dem du sitzt, eine Pose abspielt, werden Animationen aus getragenen Anhängen (AO-HUDs, Halsbänder) nicht dargestellt. Das gilt nur in diesem Viewer — für andere ändert sich nichts, und kein Skript wird beeinflusst. Schalte es aus, wenn du etwas trägst, das dich beim Sitzen weiter animieren soll."
     },
     "about": {
       "title": "Über Puris Viewer",

@@ -254,6 +254,7 @@ public partial class Boot : Control
 
     // FEAT-AVATAR-03: hover height. Same startup-holder / post-login-application split as DoF.
     private SLNG.App.UI.AvatarHoverSettings _avatarHoverSettings = new();
+    private readonly SLNG.App.UI.AnimationSettings _animationSettings = new();
     private SLNG.App.UI.AvatarHoverWindow _avatarHoverWindow = null!;
 
     // M5-3 Tabbed Chat window
@@ -296,7 +297,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.151-alpha";
+    public const string AppVersion = "v0.22.152-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -943,6 +944,19 @@ public partial class Boot : Control
         var cameraPage = new SLNG.App.UI.CameraPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_camera"), cameraPage);
         cameraPage.Initialize(_cameraSettings);
+
+        // FEAT-ANIM-03: the seat-pose-over-AO switch. Applied to the renderer here and on every
+        // change, so the page never has to know the renderer exists.
+        _animationSettings.Load();
+        if (_avatarRenderer != null)
+            _avatarRenderer.SeatPoseOverridesAo = _animationSettings.SeatPoseOverridesAo;
+        var animationPage = new SLNG.App.UI.AnimationPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_animation"), animationPage);
+        animationPage.Initialize(_animationSettings);
+        animationPage.SeatPoseOverridesAoChanged += on =>
+        {
+            if (_avatarRenderer != null) _avatarRenderer.SeatPoseOverridesAo = on;
+        };
 
         _qualityPage = new SLNG.App.UI.QualityPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_quality") };
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_quality"), _qualityPage);

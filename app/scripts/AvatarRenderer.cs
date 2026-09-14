@@ -946,6 +946,11 @@ public partial class AvatarRenderer : Node3D
     /// goes down instead of after the round-trip. A custom AO animation is not a built-in id, so
     /// it stays in the set and wins per bone via its authored priority (matching the reference
     /// viewer, which also plays the built-in gait locally and lets the AO override it).</para></summary>
+    /// <summary>FEAT-ANIM-03 preference, pushed in by Boot at startup and when the user changes it.
+    /// A plain bool rather than a reference to the settings object, because this is read on every
+    /// animation change for every visible avatar.</summary>
+    public bool SeatPoseOverridesAo { get; set; } = true;
+
     private void ApplyActiveAnimations(Guid entityId, AvatarVisual visual, AvatarComponent avatar)
     {
         if (_assetService == null || visual.Skeleton == null) return;
@@ -966,7 +971,17 @@ public partial class AvatarRenderer : Node3D
             // Remote avatar, or the self avatar while sitting (prediction is null) -- the sim's
             // set is authoritative, including its SIT / stand-up animations.
             if (avatar.ActiveAnimations == null) return;
-            desired = new List<Guid>(avatar.ActiveAnimations);
+
+            // FEAT-ANIM-03: while the thing you are sitting on is posing you, a worn AO HUD does
+            // not get to fight it for the bones. Applies to remote avatars too -- an observer
+            // should see the furniture pose for the same reason the sitter does. Returns the input
+            // untouched whenever the rule does not apply, so this is a no-op when standing.
+            var animations = SeatPoseOverridesAo
+                ? SLNG.Core.SeatPoseResolver.Resolve(
+                    avatar.ActiveAnimations, avatar.AnimationSources, avatar.SittingOnObjectId)
+                : avatar.ActiveAnimations;
+
+            desired = new List<Guid>(animations);
         }
 
         // FEAT-ANIM-01: while the self avatar is moving, boost the predicted gait over a
