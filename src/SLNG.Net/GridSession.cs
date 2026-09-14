@@ -5735,6 +5735,14 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// would replace a good cache with nothing, so a store still holding nothing but the skeleton
     /// is left alone.</para>
     /// </summary>
+    /// <summary>FEAT-INV-07: whether a folder's contents are already local, so reading them costs
+    /// nothing. True once the folder has been fetched this session or restored from the cache at a
+    /// matching version — the same <c>NeedsUpdate</c> flag
+    /// <see cref="FetchInventoryChildrenAsync"/> acts on. Lets a caller tell a free read from one
+    /// that will hit the network.</summary>
+    public bool IsFolderLocal(Guid folderId)
+        => _client.Inventory.Store?.GetNodeOrDefault(new UUID(folderId)) is { NeedsUpdate: false };
+
     /// <summary>How many folders go into one <c>FetchInventoryDescendents2</c> POST. The CAPS
     /// request takes a list, so this is one round trip for ten folders rather than ten. Matches the
     /// reference viewer's own batch size (llinventorymodelbackgroundfetch.cpp:1092).</summary>

@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-INV-07`
 - **Track:** `net` (+ `ui`)
-- **Status:** `🚧 In Progress` — Phase 1 done and confirmed in-world (v0.22.147-alpha); **Phase 2 implemented v0.22.148-alpha**, awaiting verification. Phase 3 (in-memory search) still open.
+- **Status:** `🧪 Review` — Phase 1 confirmed in-world (v0.22.147-alpha); Phases 2 and 3 implemented (v0.22.148 / v0.22.149-alpha), awaiting in-world verification.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -144,12 +144,26 @@ cache is empty, benefits as well.
 - **Cancelled on logout and quit**, so the walk never POSTs against a simulator this client has
   left.
 
-### Phase 3 — in-memory search
+### Phase 3 — search over the local tree — 🧪 implemented v0.22.149-alpha
 
-Replace `InventoryPanel`'s live depth-first crawl with a filter over the loaded set. Drop
-`MinSearchCrawlChars` / `MaxSearchFolderLoads` — with the tree local, the cap that made search
-incomplete is no longer needed. Keep a fetch-on-demand fallback for a folder that is still
-unknown, exactly as `llinventoryfilter.cpp:202-216` does.
+**The tree stays.** Asked for live, and it is what the reference viewers do — a search is a lens
+over the tree, not a different screen: *„der Baum bleibt; wenn man etwas markiert hat und die
+Suche löscht, fliegt der Filter weg, aber man bleibt auf dem Eintrag stehen."* A flat results
+list was considered and rejected on that basis.
+
+Two changes:
+
+1. **The 800-folder cap no longer counts free reads.** It exists to bound *network* requests, and
+   once the background fill has a folder locally there is no request to bound — reading it is a
+   dictionary lookup. Counting those against the budget is what made search stop early on a large
+   inventory even when the whole thing was already in memory. `GridSession.IsFolderLocal` exposes
+   the same `NeedsUpdate` flag the cache already turns on. The cap still applies to folders that
+   really would hit the grid, which is the case on a first login before the fill finishes.
+2. **The selection survives a filter pass.** The panel keeps its own handle on the picked row
+   (Godot's selection does not reliably survive a row being hidden and shown again), and after
+   every filter pass re-selects it, expands its ancestors and scrolls it back into view. The
+   scroll is deferred, because the Tree has not laid out the rows it just un-hid yet and scrolling
+   to a stale position lands in the wrong place.
 
 ## Acceptance Criteria
 
@@ -162,8 +176,9 @@ unknown, exactly as `llinventoryfilter.cpp:202-216` does.
       another's file.
 - [x] A corrupt, truncated or unreadable cache file degrades to today's behaviour rather than
       breaking login.
-- [ ] Phase 3: searching a large inventory returns matches from folders never expanded by hand,
+- [x] Phase 3: searching a large inventory returns matches from folders never expanded by hand,
       with no per-keystroke network traffic.
+- [ ] Phase 3: clearing the search box leaves the selected row selected and in view.
 - [ ] Unit tests: version-match / mismatch / missing-version decisions, round-trip of the cache
       format, corrupt-file handling.
 
@@ -192,5 +207,5 @@ unknown, exactly as `llinventoryfilter.cpp:202-216` does.
 - [x] Phase 1: verified the pinned LMV does the version comparison (not assumed from source)
 - [x] Phase 1: tests (5)
 - [x] Phase 2: background fetch, batched 10/request, one at a time, cancelled on logout
-- [ ] Phase 3: local search, drop the crawl caps
+- [x] Phase 3: cap only counts network loads; selection survives clearing the filter
 - [x] In-world verification: relog and confirm the folder fetches disappear from the log

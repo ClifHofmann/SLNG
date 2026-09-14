@@ -178,6 +178,9 @@ public partial class InventoryPanel : SLNGWindow
         _tree.AddChild(_contextMenu);
         
         _tree.ItemCollapsed += OnItemCollapsed;
+        // FEAT-INV-07 Phase 3: remember the picked row so clearing the search box can put the user
+        // back on it instead of at the top of a freshly un-filtered tree.
+        _tree.ItemSelected += () => _lastSelectedRow = _tree.GetSelected();
         _tree.ItemActivated += OnItemActivated;
         _tree.GuiInput += OnTreeGuiInput;
         _inventoryView.AddChild(_tree);
@@ -1101,6 +1104,12 @@ public partial class InventoryPanel : SLNGWindow
                     // subtree is fetched.
                     SeedSearchCrawl(root);
                 FilterTree(root, query, ancestorMatched: false);
+                // FEAT-INV-07 Phase 3: keep the user's place. Filtering hides rows, and clearing
+                // the box un-hides them again -- but without this the row you had picked is left
+                // somewhere off-screen in a tree that just grew back to full size. The reference
+                // viewers keep the selection and scroll it back into view, which is what makes a
+                // search feel like a lens over the tree rather than a different screen.
+                RevealSelectedRow();
                 UpdateBusyStatus();
                 break;
             }
@@ -1117,6 +1126,43 @@ public partial class InventoryPanel : SLNGWindow
                 break;
             }
         }
+    }
+
+    /// <summary>The row the user last picked in the Inventar tree, remembered across a filter pass
+    /// (FEAT-INV-07 Phase 3). Godot's own selection does not reliably survive a row being hidden
+    /// and shown again, so the panel keeps its own handle on it.</summary>
+    private TreeItem? _lastSelectedRow;
+
+    /// <summary>Re-selects the remembered row, expands its ancestors so it is actually reachable,
+    /// and scrolls it into view — the behaviour asked for live: *„der Baum bleibt; wenn man etwas
+    /// markiert hat und die Suche löscht, fliegt der Filter weg, aber man bleibt auf dem Eintrag
+    /// stehen."*
+    ///
+    /// <para>Deferred because it runs straight after a visibility pass: the Tree has not laid out
+    /// the rows it just un-hid yet, and scrolling to a row whose position is still stale puts the
+    /// view in the wrong place.</para></summary>
+    private void RevealSelectedRow()
+    {
+        var row = _tree.GetSelected() ?? _lastSelectedRow;
+        if (row == null || !IsInstanceValid(row)) return;
+        _lastSelectedRow = row;
+
+        // A row the current filter hides cannot be shown -- leave the view alone until the query
+        // changes to something that matches it again (typically: until it is cleared).
+        if (!row.Visible) return;
+
+        for (var parent = row.GetParent(); parent != null; parent = parent.GetParent())
+            parent.Collapsed = false;
+
+        row.Select(0);
+        CallDeferred(nameof(ScrollSelectedRowIntoView));
+    }
+
+    private void ScrollSelectedRowIntoView()
+    {
+        if (!IsInstanceValid(this) || _lastSelectedRow == null || !IsInstanceValid(_lastSelectedRow)) return;
+        if (!_lastSelectedRow.Visible) return;
+        _tree.ScrollToItem(_lastSelectedRow, centerOnItem: true);
     }
 
     /// <summary>Kicks off a fetch for every not-yet-loaded folder row reachable in the tree
@@ -1143,12 +1189,22 @@ public partial class InventoryPanel : SLNGWindow
         // Folder rows store a bare guid; item rows a comma-joined string; placeholder / "(empty)" none.
         if (meta.Length == 0 || meta.Contains(',') || !Guid.TryParse(meta, out var folderId)) return;
         if (_loadedFolders.Contains(folderId)) return;
-        if (_searchLoadsIssued >= MaxSearchFolderLoads)
+
+        // FEAT-INV-07 Phase 3: the cap exists to bound NETWORK requests, and once the background
+        // fill has this folder locally there is no request to bound -- reading it costs a
+        // dictionary lookup. Counting a free read against the budget is what made search stop
+        // early on a large inventory even when the whole thing was already in memory.
+        bool free = _session?.IsFolderLocal(folderId) ?? false;
+        if (!free)
         {
-            _status.Text = "Suche: sehr großes Inventar — nicht alle Ordner geladen, Rest bitte manuell öffnen.";
-            return;
+            if (_searchLoadsIssued >= MaxSearchFolderLoads)
+            {
+                _status.Text = "Suche: sehr großes Inventar — nicht alle Ordner geladen, Rest bitte manuell öffnen.";
+                return;
+            }
+            _searchLoadsIssued++;
         }
-        _searchLoadsIssued++;
+
         LoadFolder(item, folderId);
     }
 
