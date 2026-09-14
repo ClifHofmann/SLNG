@@ -22,15 +22,6 @@ public partial class AvatarController : Camera3D
     // We store the last sent movement to avoid spamming the network
     private bool _lastFwd, _lastBack, _lastLeft, _lastRight, _lastUp, _lastDown;
 
-    // MVP2-1: throttles GridSession.Stand() re-sends while a movement key is held seated (Stand()
-    // pulses two real AgentUpdate packets, so every frame would spam the network) WITHOUT
-    // permanently latching -- a fixed one-shot-per-sit flag (the original design) meant that if
-    // the very first Stand() attempt didn't actually register server-side for any reason (packet
-    // loss, a transient race), the player could never stand up again for the rest of that sit, no
-    // matter how many more times they pressed a movement key (live-tested: reported exactly this).
-    // Retrying on a short cooldown instead means a held/repeated key keeps trying until it works.
-    private double _timeSinceLastStandRequest = double.MaxValue;
-    private const double StandRequestCooldownSeconds = 1.0;
     private Vector3 _lastCameraRot;
 
     /// <summary>The world-space point the third-person camera is currently looking at (avatar
@@ -765,7 +756,6 @@ public partial class AvatarController : Camera3D
         // resolves a seated avatar's wire-relative Position/Rotation to world space, so nothing
         // else here needs to change to "look at the seat" versus "look at standing avatar."
         bool isSitting = localAgent?.GetComponent<AvatarComponent>()?.SittingOnLocalId != 0;
-        if (!isSitting) _timeSinceLastStandRequest = double.MaxValue;
 
         if (localAgent != null)
         {
@@ -1187,19 +1177,19 @@ public partial class AvatarController : Camera3D
 
         _timeSinceLastUpdate += delta;
 
-        // MVP2-1: any movement key stands the seated avatar up, matching the real viewer's
-        // convention. Retries on a cooldown rather than a permanent per-sit latch -- see
-        // _timeSinceLastStandRequest's doc comment for why a one-shot flag left the player unable
-        // to ever stand again if the first attempt didn't take.
-        _timeSinceLastStandRequest += delta;
-        if (isSitting)
-        {
-            if ((fwd || back || left || right || up || down) && _timeSinceLastStandRequest >= StandRequestCooldownSeconds)
-            {
-                _timeSinceLastStandRequest = 0;
-                _session.Stand();
-            }
-        }
+        // Sitting is left ONLY through the Stand control -- a movement key does nothing while
+        // seated. This deliberately departs from the reference viewer, where a movement key sets a
+        // control flag and the SIMULATOR stands you up; asked for live: "wenn man sich setzt darf
+        // man nur aufstehen, wenn man den Aufstehen-Button drueckt".
+        //
+        // It also removes a real defect rather than just a preference. The old stand-on-movement
+        // path fired the request and then let the local prediction run as if it had worked, so a
+        // seat the simulator would not release produced an avatar that walked away in a walk
+        // animation and snapped back into the furniture's pose on stopping -- reported exactly
+        // like that. Nothing here now claims the avatar has stood up before the simulator says so.
+        //
+        // The movement flags themselves were already suppressed while seated (see SetMovement
+        // below), so a held key cannot reach the simulator either.
 
         // Send AgentUpdate at 10 Hz (every 0.1s)
         if (_timeSinceLastUpdate >= 0.1)
