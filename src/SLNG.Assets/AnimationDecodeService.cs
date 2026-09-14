@@ -79,6 +79,21 @@ public static class AnimationDecodeService
         return new Quaternion(x, y, z, wSq > 0f ? MathF.Sqrt(wSq) : 0f);
     }
 
+    /// <summary>
+    /// Converts a raw position vector decoded by LibreMetaverse's BinBVHAnimationReader
+    /// (which decodes with range [-0.5, 1.5], mapping neutral 0m to 0.5) back to Second Life meters
+    /// with range [-5.0, +5.0] meters (LL_MAX_PELVIS_OFFSET).
+    /// Formula: meters = (val - 0.5f) * 5.0f.
+    /// </summary>
+    internal static Vector3 UnpackPosition(float x, float y, float z)
+    {
+        return new Vector3(
+            (x - 0.5f) * 5.0f,
+            (y - 0.5f) * 5.0f,
+            (z - 0.5f) * 5.0f
+        );
+    }
+
     private static AnimationJointData ConvertJoint(binBVHJoint joint)
     {
         var rotKeys = new RotationKeyframe[joint.rotationkeys.Length];
@@ -96,7 +111,7 @@ public static class AnimationDecodeService
             ref var key = ref joint.positionkeys[i];
             posKeys[i] = new PositionKeyframe(
                 key.time,
-                new Vector3(key.key_element.X, key.key_element.Y, key.key_element.Z)
+                UnpackPosition(key.key_element.X, key.key_element.Y, key.key_element.Z)
             );
         }
 

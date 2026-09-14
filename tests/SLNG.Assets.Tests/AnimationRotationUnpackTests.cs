@@ -68,4 +68,41 @@ public class AnimationRotationUnpackTests
         Assert.Equal(-0.2f, q.Y, Tolerance);
         Assert.Equal(0.3f, q.Z, Tolerance);
     }
+
+    [Fact]
+    public void UnpackPosition_NeutralOffset_DecodesToZeroMeters()
+    {
+        // Second Life neutral 0m position is quantized to 32768, which LMV decodes to 0.5f.
+        var p = AnimationDecodeService.UnpackPosition(0.5f, 0.5f, 0.5f);
+        Assert.Equal(0f, p.X, Tolerance);
+        Assert.Equal(0f, p.Y, Tolerance);
+        Assert.Equal(0f, p.Z, Tolerance);
+    }
+
+    [Fact]
+    public void UnpackPosition_MinAndMaxRange_DecodesToPlusMinusFiveMeters()
+    {
+        // LL_MAX_PELVIS_OFFSET is 5.0m: min (-0.5f) -> -5.0m, max (1.5f) -> +5.0m.
+        var min = AnimationDecodeService.UnpackPosition(-0.5f, -0.5f, -0.5f);
+        Assert.Equal(-5.0f, min.X, Tolerance);
+        Assert.Equal(-5.0f, min.Y, Tolerance);
+        Assert.Equal(-5.0f, min.Z, Tolerance);
+
+        var max = AnimationDecodeService.UnpackPosition(1.5f, 1.5f, 1.5f);
+        Assert.Equal(5.0f, max.X, Tolerance);
+        Assert.Equal(5.0f, max.Y, Tolerance);
+        Assert.Equal(5.0f, max.Z, Tolerance);
+    }
+
+    [Fact]
+    public void UnpackPosition_ArbitraryOffset_ScalesAccurately()
+    {
+        // 0.6f -> (0.6 - 0.5) * 5.0 = +0.5m; 0.4f -> (0.4 - 0.5) * 5.0 = -0.5m.
+        var p = AnimationDecodeService.UnpackPosition(0.6f, 0.4f, 0.5f);
+        Assert.Equal(0.5f, p.X, Tolerance);
+        Assert.Equal(-0.5f, p.Y, Tolerance);
+        Assert.Equal(0f, p.Z, Tolerance);
+    }
 }
+
+

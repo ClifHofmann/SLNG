@@ -162,9 +162,10 @@ public sealed class AvatarAnimationPlayer
 
         // For each bone in the skeleton, find the highest-priority animation that
         // affects it and apply that animation's value.
-        //
-        // Key: bone index → (priority, rotation, position, hasPosition)
-        var bonePoses = new Dictionary<int, (int priority, Quaternion rotation, Vector3 position, bool hasPos)>();
+        // Rotation and position tracks are tracked separately so a rotation-only gesture
+        // does not wipe out an underlying furniture pose's pelvis position track.
+        var boneRots = new Dictionary<int, (int priority, Quaternion rotation)>();
+        var bonePositions = new Dictionary<int, (int priority, Vector3 position)>();
 
         foreach (var anim in _active)
         {
@@ -179,38 +180,39 @@ public sealed class AvatarAnimationPlayer
                 int effectivePriority = boosted ? LocomotionBoostPriority
                     : (joint.Priority >= 0 ? joint.Priority : animPriority);
 
-                if (bonePoses.TryGetValue(boneIdx, out var existing) && existing.priority > effectivePriority)
-                    continue;
-
-                // Evaluate rotation keyframes.
-                var rot = EvaluateRotation(joint.RotationKeys, anim.CurrentTime);
-
-                // Convert from SL space (Z-up) to Godot space (Y-up).
-                // SL quat(x, y, z, w) → Godot quat(x, z, -y, w)
-                var godotRot = new Quaternion(rot.X, rot.Z, -rot.Y, rot.W);
-
-                Vector3 pos = Vector3.Zero;
-                bool hasPos = false;
-                if (joint.PositionKeys.Length > 0)
+                // Rotation channel
+                if (joint.RotationKeys.Length > 0)
                 {
-                    var p = EvaluatePosition(joint.PositionKeys, anim.CurrentTime);
-                    // SL pos(x, y, z) → Godot pos(x, z, -y)
-                    pos = new Vector3(p.X, p.Z, -p.Y);
-                    hasPos = true;
+                    if (!boneRots.TryGetValue(boneIdx, out var existingRot) || effectivePriority >= existingRot.priority)
+                    {
+                        var rot = EvaluateRotation(joint.RotationKeys, anim.CurrentTime);
+                        var godotRot = new Quaternion(rot.X, rot.Z, -rot.Y, rot.W);
+                        boneRots[boneIdx] = (effectivePriority, godotRot);
+                    }
                 }
 
-                bonePoses[boneIdx] = (effectivePriority, godotRot, pos, hasPos);
+                // Position channel (almost always just mPelvis)
+                if (joint.PositionKeys.Length > 0)
+                {
+                    if (!bonePositions.TryGetValue(boneIdx, out var existingPos) || effectivePriority >= existingPos.priority)
+                    {
+                        var p = EvaluatePosition(joint.PositionKeys, anim.CurrentTime);
+                        // SL pos(x, y, z) → Godot pos(x, z, -y)
+                        var godotPos = new Vector3(p.X, p.Z, -p.Y);
+                        bonePositions[boneIdx] = (effectivePriority, godotPos);
+                    }
+                }
             }
         }
 
-        // Apply to skeleton. Rotation only for now: SL animation position keys (almost
-        // always just on mPelvis) use a reference frame that, applied directly, drops the
-        // pelvis to the avatar root and sinks the whole body into the ground. The rest
-        // pose already places every bone correctly, so rotation-only gives a correct
-        // standing/idle pose. Root motion (jumps, real translation) is deferred.
-        foreach (var (boneIdx, pose) in bonePoses)
+        // Apply blended poses to skeleton.
+        foreach (var (boneIdx, pose) in boneRots)
         {
             _skeleton.SetBonePoseRotation(boneIdx, pose.rotation);
+        }
+        foreach (var (boneIdx, pose) in bonePositions)
+        {
+            _skeleton.SetBonePosePosition(boneIdx, pose.position);
         }
     }
 

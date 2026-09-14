@@ -626,9 +626,18 @@ public partial class AvatarRenderer : Node3D
                 // with the pelvis (llappearance/llavatarappearance.cpp:878, :1021) — same conversion the
                 // remote standing branch below already applies (transform.Position.Z is a pelvis value),
                 // just without any of the ground-correction terms.
+                //
+                // Posestand & furniture seating parity:
+                // In SL/Firestorm, mRoot is at transform.Position.Z (the seat-resolved wire position).
+                // On a posestand or standing pose furniture, creators author sit_target so the avatar's
+                // feet touch the surface in Firestorm (sit_target.z = surface_z + PelvisToFootZ).
+                // In Godot, the geometric foot is at FootOffsetY above the avatar scene root.
+                // Using (PelvisToFootZ + FootOffsetY) aligns the avatar's feet flush with the authored
+                // surface in Godot world space. If PelvisToFootZ is not yet available, falls back to sitPelvisY.
                 int sitPelvisBone = visual.Skeleton != null ? visual.Skeleton.FindBone("mPelvis") : -1;
                 float sitPelvisY = (sitPelvisBone >= 0 && visual.Skeleton != null) ? GetBoneRootRelativeY(visual.Skeleton, sitPelvisBone) : 1.046f;
-                rootPos.Y = transform.Position.Z - sitPelvisY + avatar.HoverOffsetZ;
+                float pelvisOffset = visual.PelvisToFootZ > 0.1f ? (visual.PelvisToFootZ + visual.FootOffsetY) : sitPelvisY;
+                rootPos.Y = transform.Position.Z - pelvisOffset + avatar.HoverOffsetZ;
             }
             else if (!avatar.IsLocalAgent)
             {
