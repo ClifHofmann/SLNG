@@ -813,4 +813,60 @@ public class WorldSimulationTests
         Assert.Equal(new Vector3(5, 6, 7), transform.Position);
         Assert.True(Quaternion.Dot(transform.Rotation, rot) > 0.999f);
     }
+
+    /// <summary>
+    /// FEAT-ANIM-03: the seat an avatar is sitting on must be identified by the SIMULATOR's object
+    /// UUID, because that is what the animation source list carries.
+    ///
+    /// <para>The first implementation used <c>Entity.Id</c>, which is an internal ECS identity
+    /// (<c>Guid.NewGuid()</c> per entity) and therefore could never equal an animation's source.
+    /// The seat rule silently did nothing — for everyone, on every seat — and the failure was
+    /// invisible because "the rule kept everything" and "there was nothing to drop" look the same
+    /// from the outside. Found only by printing both the resolved seat and the sources side by side
+    /// while a user sat on a pose stand.</para>
+    /// </summary>
+    [Fact]
+    public void AvatarAnimationEvent_ResolvesTheSeatToTheSimulatorsObjectId()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        const ulong region = 123ul;
+        const uint seatLocalId = 77;
+        var seatObjectId = Guid.NewGuid();   // the simulator's UUID for the pose stand
+        var agentId = Guid.NewGuid();
+
+        // The seat prim arrives first, carrying its real object id.
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(
+            region, seatLocalId, Vector3.Zero, Quaternion.Identity, Vector3.One,
+            1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One,
+            ObjectId: seatObjectId));
+        simulation.Pump();
+
+        // The avatar sits on it.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(
+            region, 42, agentId, Vector3.Zero, Quaternion.Identity, "Test", "User", false,
+            SittingOnLocalId: seatLocalId));
+        simulation.Pump();
+
+        var pose = Guid.NewGuid();
+        session.RaiseAvatarAnimation(new AvatarAnimationEvent(
+            agentId,
+            new List<Guid> { pose },
+            new List<AnimationSignal> { new(pose, seatObjectId) }));
+        simulation.Pump();
+
+        var avatar = world.GetEntity(region, 42)!.GetComponent<AvatarComponent>()!;
+        var seatEntity = world.GetEntity(region, seatLocalId)!;
+
+        Assert.Equal(seatObjectId, avatar.SittingOnObjectId);
+        // The distinction that was got wrong: the entity's own id is NOT the seat id.
+        Assert.NotEqual(seatEntity.Id, avatar.SittingOnObjectId);
+
+        // And with it resolved, the rule can actually see the seat as the source.
+        Assert.Equal(
+            new[] { pose },
+            SeatPoseResolver.Resolve(avatar.ActiveAnimations!, avatar.AnimationSources, avatar.SittingOnObjectId));
+    }
 }

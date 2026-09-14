@@ -814,9 +814,16 @@ public sealed class WorldSimulation : IDisposable
             // FEAT-ANIM-03: resolve the seat here rather than where SittingOnLocalId is set -- the
             // seat prim may not have arrived yet at that moment, and this runs on every animation
             // change, which is exactly when the answer is needed.
+            //
+            // MetadataComponent.Id, NOT Entity.Id: the latter is an internal ECS identity
+            // (Guid.NewGuid() per entity), while the animation sources carry the simulator's real
+            // object UUID. Comparing the two could never match, so the seat rule never fired once
+            // -- for anyone, on any seat. ApplyObjectProperties above already documents this exact
+            // trap; it caught this one out anyway.
             avatar.SittingOnObjectId = avatar.SittingOnLocalId == 0
                 ? Guid.Empty
-                : _world.GetEntity(entity.RegionHandle, avatar.SittingOnLocalId)?.Id ?? Guid.Empty;
+                : _world.GetEntity(entity.RegionHandle, avatar.SittingOnLocalId)
+                    ?.GetComponent<MetadataComponent>()?.Id ?? Guid.Empty;
             entity.SetComponent(avatar);
             _world.NotifyComponentUpdated(entity, avatar);
         }
