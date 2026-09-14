@@ -47,19 +47,37 @@ public static class SeatPoseResolver
     /// no sources there is nothing to tell apart.</param>
     /// <param name="seatObjectId">The object this avatar is sitting on, or <see cref="Guid.Empty"/>
     /// when it is not seated on one.</param>
+    /// <param name="isBodyPose">Whether an animation actually poses the BODY — the pelvis, spine or
+    /// legs — as opposed to keying only the hands or the face. Return false for anything not yet
+    /// known: an unclassified animation is always kept.
+    ///
+    /// <para>This parameter is the difference between the rule working and the rule being
+    /// actively harmful, and it was added after a live report. A pose stand sources a small
+    /// <b>hand</b> animation while the body pose comes from a HUD. Without this test "the seat is
+    /// sourcing something" was true, the HUD's body pose was dropped as a rival, and the avatar
+    /// was left in the skeleton's bind pose — which in SL is a T-pose — with only the fingers
+    /// changing between poses. Both halves of the rule now ask about the body: the seat only
+    /// counts as posing you if it poses your body, and only a rival body pose is dropped, so a
+    /// worn hand pose or facial expression survives either way.</para></param>
     public static IReadOnlyList<Guid> Resolve(
         IReadOnlyList<Guid> animationIds,
         IReadOnlyList<AnimationSignal>? sources,
-        Guid seatObjectId)
+        Guid seatObjectId,
+        Func<Guid, bool>? isBodyPose = null)
     {
         if (seatObjectId == Guid.Empty) return animationIds;
         if (animationIds.Count == 0) return animationIds;
         if (sources == null || sources.Count == 0) return animationIds;
 
+        // With no classifier at all the rule cannot tell a body pose from a hand pose, and the
+        // live failure showed that guessing is worse than doing nothing.
+        if (isBodyPose == null) return animationIds;
+
         bool seatIsPosing = false;
         foreach (var signal in sources)
         {
             if (signal.SourceObjectId != seatObjectId) continue;
+            if (!isBodyPose(signal.AnimId)) continue;
             seatIsPosing = true;
             break;
         }
@@ -81,6 +99,11 @@ public static class SeatPoseResolver
 
         bool Keep(Guid id)
         {
+            // Only a rival BODY pose is dropped. A hand pose or a facial expression from an
+            // attachment does not compete with the seat's pose for the bones that matter, and
+            // taking it away is how the avatar ended up with nothing but fingers moving.
+            if (!isBodyPose(id)) return true;
+
             // An id the simulator listed with no source entry at all: treat as agent-sourced, i.e.
             // keep it. Dropping something we cannot classify would make the rule silently subtract
             // animations it was never meant to touch.

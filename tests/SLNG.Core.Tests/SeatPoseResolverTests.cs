@@ -21,6 +21,11 @@ public class SeatPoseResolverTests
     private static readonly Guid AoSit = Guid.Parse("aaaaaaaa-0000-0000-0000-000000000002");
     private static readonly Guid BuiltInSit = Guid.Parse("aaaaaaaa-0000-0000-0000-000000000003");
     private static readonly Guid CollarIdle = Guid.Parse("aaaaaaaa-0000-0000-0000-000000000004");
+    private static readonly Guid HandPose = Guid.Parse("aaaaaaaa-0000-0000-0000-000000000005");
+
+    /// <summary>Every animation in these tests poses the body unless a test says otherwise. The
+    /// real classifier reads the animation's joints; here it is the knob being tested.</summary>
+    private static bool AllBodyPoses(Guid _) => true;
 
     // The reported case: sitting on posing furniture while wearing an AO.
     [Fact]
@@ -33,7 +38,7 @@ public class SeatPoseResolverTests
             new(SeatPose, Seat),
         };
 
-        var kept = SeatPoseResolver.Resolve(ids, sources, Seat);
+        var kept = SeatPoseResolver.Resolve(ids, sources, Seat, AllBodyPoses);
 
         Assert.Equal(new[] { SeatPose }, kept);
     }
@@ -51,7 +56,7 @@ public class SeatPoseResolverTests
             new(SeatPose, Seat),
         };
 
-        var kept = SeatPoseResolver.Resolve(ids, sources, Seat);
+        var kept = SeatPoseResolver.Resolve(ids, sources, Seat, AllBodyPoses);
 
         Assert.Equal(new[] { BuiltInSit, SeatPose }, kept);
     }
@@ -68,7 +73,7 @@ public class SeatPoseResolverTests
             new(SeatPose, Seat),
         };
 
-        Assert.Equal(new[] { SeatPose }, SeatPoseResolver.Resolve(ids, sources, Seat));
+        Assert.Equal(new[] { SeatPose }, SeatPoseResolver.Resolve(ids, sources, Seat, AllBodyPoses));
     }
 
     // A plain chair that seats you without posing you. Whatever the AO plays is the only pose there
@@ -79,7 +84,7 @@ public class SeatPoseResolverTests
         var ids = new List<Guid> { AoSit };
         var sources = new List<AnimationSignal> { new(AoSit, AoHud) };
 
-        Assert.Same(ids, SeatPoseResolver.Resolve(ids, sources, Seat));
+        Assert.Same(ids, SeatPoseResolver.Resolve(ids, sources, Seat, AllBodyPoses));
     }
 
     // Ground sit (llSitOnGround): seated, but on nothing. The AO's ground sit must still play.
@@ -89,7 +94,7 @@ public class SeatPoseResolverTests
         var ids = new List<Guid> { AoSit };
         var sources = new List<AnimationSignal> { new(AoSit, AoHud) };
 
-        Assert.Same(ids, SeatPoseResolver.Resolve(ids, sources, Guid.Empty));
+        Assert.Same(ids, SeatPoseResolver.Resolve(ids, sources, Guid.Empty, AllBodyPoses));
     }
 
     // Standing, walking -- FEAT-ANIM-01's territory, which must stay untouched.
@@ -99,7 +104,7 @@ public class SeatPoseResolverTests
         var ids = new List<Guid> { AoSit, CollarIdle };
         var sources = new List<AnimationSignal> { new(AoSit, AoHud), new(CollarIdle, Collar) };
 
-        Assert.Same(ids, SeatPoseResolver.Resolve(ids, sources, Guid.Empty));
+        Assert.Same(ids, SeatPoseResolver.Resolve(ids, sources, Guid.Empty, AllBodyPoses));
     }
 
     // A producer that carries no sources (an older test double, or a grid that sends none) must get
@@ -109,8 +114,8 @@ public class SeatPoseResolverTests
     {
         var ids = new List<Guid> { AoSit, SeatPose };
 
-        Assert.Same(ids, SeatPoseResolver.Resolve(ids, null, Seat));
-        Assert.Same(ids, SeatPoseResolver.Resolve(ids, new List<AnimationSignal>(), Seat));
+        Assert.Same(ids, SeatPoseResolver.Resolve(ids, null, Seat, AllBodyPoses));
+        Assert.Same(ids, SeatPoseResolver.Resolve(ids, new List<AnimationSignal>(), Seat, AllBodyPoses));
     }
 
     // An id the simulator listed but did not classify must not be swept up. Dropping what cannot be
@@ -126,7 +131,7 @@ public class SeatPoseResolverTests
             new(SeatPose, Seat),
         };
 
-        Assert.Equal(new[] { mystery, SeatPose }, SeatPoseResolver.Resolve(ids, sources, Seat));
+        Assert.Equal(new[] { mystery, SeatPose }, SeatPoseResolver.Resolve(ids, sources, Seat, AllBodyPoses));
     }
 
     // Guard, not a path: the seat's own animation always survives, so this cannot normally happen.
@@ -143,7 +148,7 @@ public class SeatPoseResolverTests
             new(SeatPose, Seat),
         };
 
-        Assert.Same(ids, SeatPoseResolver.Resolve(ids, sources, Seat));
+        Assert.Same(ids, SeatPoseResolver.Resolve(ids, sources, Seat, AllBodyPoses));
     }
 
     // Simulator order is the blender's tie-break at equal priority, so the filter must not reorder.
@@ -160,6 +165,76 @@ public class SeatPoseResolverTests
             new(second, Seat),
         };
 
-        Assert.Equal(new[] { first, second }, SeatPoseResolver.Resolve(ids, sources, Seat));
+        Assert.Equal(new[] { first, second }, SeatPoseResolver.Resolve(ids, sources, Seat, AllBodyPoses));
+    }
+
+    // The live failure this parameter exists for: a pose stand whose own animation only keys the
+    // HANDS, while the body pose comes from a HUD. Before the classifier, "the seat is sourcing
+    // something" was true, the HUD's body pose was dropped as a rival, and the avatar was left in
+    // the bind pose -- a T-pose -- with only the fingers changing between poses.
+    [Fact]
+    public void A_seat_that_only_poses_the_hands_does_not_outrank_a_worn_body_pose()
+    {
+        var ids = new List<Guid> { HandPose, AoSit };
+        var sources = new List<AnimationSignal>
+        {
+            new(HandPose, Seat),
+            new(AoSit, AoHud),
+        };
+
+        // The stand's hand animation is not a body pose; the HUD's is.
+        bool IsBody(Guid id) => id != HandPose;
+
+        Assert.Same(ids, SeatPoseResolver.Resolve(ids, sources, Seat, IsBody));
+    }
+
+    // The other half: when the seat DOES pose the body, a worn hand pose still survives. Dropping
+    // it would take the fingers with the AO for no reason -- they never competed.
+    [Fact]
+    public void A_worn_hand_pose_survives_a_real_seat_pose()
+    {
+        var ids = new List<Guid> { HandPose, AoSit, SeatPose };
+        var sources = new List<AnimationSignal>
+        {
+            new(HandPose, AoHud),
+            new(AoSit, AoHud),
+            new(SeatPose, Seat),
+        };
+
+        bool IsBody(Guid id) => id != HandPose;
+
+        Assert.Equal(new[] { HandPose, SeatPose }, SeatPoseResolver.Resolve(ids, sources, Seat, IsBody));
+    }
+
+    // An animation nobody has classified yet (not loaded) must be kept. Unknown means "do not
+    // touch": the cost of keeping one too many is a blend, the cost of dropping one too many was
+    // a T-posed avatar.
+    [Fact]
+    public void An_unclassified_animation_is_never_dropped()
+    {
+        var unknown = Guid.Parse("aaaaaaaa-0000-0000-0000-0000000000ff");
+        var ids = new List<Guid> { unknown, AoSit, SeatPose };
+        var sources = new List<AnimationSignal>
+        {
+            new(unknown, AoHud),
+            new(AoSit, AoHud),
+            new(SeatPose, Seat),
+        };
+
+        // The real classifier answers false for anything it has not loaded.
+        bool IsBody(Guid id) => id != unknown;
+
+        Assert.Equal(new[] { unknown, SeatPose }, SeatPoseResolver.Resolve(ids, sources, Seat, IsBody));
+    }
+
+    // With no classifier the rule cannot tell a body pose from a hand pose, and guessing is what
+    // caused the T-pose. Doing nothing is the correct answer.
+    [Fact]
+    public void No_classifier_disables_the_rule()
+    {
+        var ids = new List<Guid> { AoSit, SeatPose };
+        var sources = new List<AnimationSignal> { new(AoSit, AoHud), new(SeatPose, Seat) };
+
+        Assert.Same(ids, SeatPoseResolver.Resolve(ids, sources, Seat, isBodyPose: null));
     }
 }

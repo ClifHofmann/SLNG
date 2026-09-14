@@ -867,6 +867,6 @@ public class WorldSimulationTests
         // And with it resolved, the rule can actually see the seat as the source.
         Assert.Equal(
             new[] { pose },
-            SeatPoseResolver.Resolve(avatar.ActiveAnimations!, avatar.AnimationSources, avatar.SittingOnObjectId));
+            SeatPoseResolver.Resolve(avatar.ActiveAnimations!, avatar.AnimationSources, avatar.SittingOnObjectId, _ => true));
     }
 }

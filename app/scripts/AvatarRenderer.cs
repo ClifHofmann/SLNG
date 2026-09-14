@@ -978,7 +978,8 @@ public partial class AvatarRenderer : Node3D
             // untouched whenever the rule does not apply, so this is a no-op when standing.
             var animations = SeatPoseOverridesAo
                 ? SLNG.Core.SeatPoseResolver.Resolve(
-                    avatar.ActiveAnimations, avatar.AnimationSources, avatar.SittingOnObjectId)
+                    avatar.ActiveAnimations, avatar.AnimationSources, avatar.SittingOnObjectId,
+                    IsBodyPoseAnimation)
                 : avatar.ActiveAnimations;
 
             // "I switch poses and nothing happens" has several possible culprits -- the sim not
@@ -4317,6 +4318,26 @@ void fragment() {
     /// re-sending is reported once rather than every time.</summary>
     private readonly HashSet<Guid> _animationsReportedUnavailable = new();
 
+    /// <summary>The joints that make an animation a <i>body</i> pose rather than a hand pose or a
+    /// facial expression. Pelvis, spine and legs: the chain a sit or a stand actually moves, and
+    /// the chain two poses fight over. An animation touching none of these does not compete with
+    /// a furniture pose and must never be dropped as a rival (FEAT-ANIM-03).</summary>
+    private static readonly HashSet<string> BodyPoseJoints = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "mPelvis", "mTorso", "mChest", "mSpine1", "mSpine2", "mSpine3", "mSpine4",
+        "mHipLeft", "mHipRight", "mKneeLeft", "mKneeRight", "mAnkleLeft", "mAnkleRight",
+    };
+
+    /// <summary>Animations classified once, when their data first arrives: true when the animation
+    /// keys at least one <see cref="BodyPoseJoints"/> joint. An id that has not been loaded yet is
+    /// simply absent, and the resolver treats absent as "not a body pose", i.e. keeps it — the safe
+    /// direction, since the cost of keeping one animation too many is a blend, while the cost of
+    /// dropping one too many was a T-posed avatar.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, bool> _animationIsBodyPose = new();
+
+    private bool IsBodyPoseAnimation(Guid animId)
+        => _animationIsBodyPose.TryGetValue(animId, out bool isBody) && isBody;
+
     private void WarnAnimationUnavailable(Guid animId, string why)
     {
         if (!_animationsReportedUnavailable.Add(animId)) return;
@@ -4339,6 +4360,17 @@ void fragment() {
                 {
                     loaded.Add((animId, data));
 
+                    // Classify it once, from what it actually keys. The seat rule reads this to
+                    // tell a body pose from a hand pose (FEAT-ANIM-03).
+                    bool isBodyPose = false;
+                    foreach (var joint in data.Joints)
+                    {
+                        if (!BodyPoseJoints.Contains(joint.JointName)) continue;
+                        isBodyPose = true;
+                        break;
+                    }
+                    _animationIsBodyPose[animId] = isBodyPose;
+
                     // What an animation actually contains, not just that it loaded. An animation
                     // that keys only a handful of joints leaves every other bone at the skeleton's
                     // bind pose -- which for SL IS the T-pose. With several animations playing that
@@ -4346,7 +4378,8 @@ void fragment() {
                     // wrong one" from "the one we kept is nearly empty" needs the joint count.
                     if (Diagnostics.Enabled)
                         GD.Print($"[AnimPlayer] loaded {animId.ToString()[..8]}: {data.Joints.Length} joint(s), " +
-                                 $"priority {data.Priority}, {data.Length:0.##}s, loop={data.Loop}");
+                                 $"priority {data.Priority}, {data.Length:0.##}s, loop={data.Loop}, " +
+                                 $"body={isBodyPose}");
                 }
                 else if (SelfLocomotion.All.Contains(animId))
                 {
