@@ -218,6 +218,11 @@ public partial class ObjectRenderer : Node3D
     /// the actual mirror in the room.</summary>
     private const float LegacyMirrorMinRadiusMeters = 0.4f;
 
+    /// <summary>BUG-RENDER-34: how far past the mirror's plane the agent must be before the front
+    /// face is allowed to swap sides. Walking along a mirror should not oscillate its
+    /// reflection.</summary>
+    private const float MirrorSideFlipMeters = 0.35f;
+
     /// <summary>BUG-RENDER-28: the visual layer the currently-chosen mirror is moved onto, so the
     /// hero probe can REPLACE its reflection instead of being averaged into it.
     ///
@@ -262,6 +267,11 @@ public partial class ObjectRenderer : Node3D
     /// mirror panel announces its own: the thinnest axis of its bounding box is the one nothing is
     /// built along, and the sign is whichever side the camera is on.</summary>
     public Godot.Vector3 MirrorNormal { get; private set; }
+
+    /// <summary>BUG-RENDER-34: the chosen mirror's WORLD-space bounding box extents, reported on
+    /// the state line. "Which way is this panel flat" is the one input the whole reflection rests
+    /// on, and reading it back is what turned a wrong normal from a theory into a measurement.</summary>
+    public Godot.Vector3 MirrorExtents { get; private set; }
 
     // FEAT-PERF-06: draw-call reduction. Groups of identical repeated static prims are drawn by
     // one MultiMeshInstance3D each; a prim is evicted the instant it is selected, edited or
@@ -621,7 +631,29 @@ public partial class ObjectRenderer : Node3D
             {
                 MirrorPosition = mirrorState.MeshInstance.GlobalPosition;
                 MirrorRadius = EffectiveBoundingRadius(mirrorState);
-                MirrorNormal = FrontFaceNormal(mirrorState, viewPos);
+                // BUG-RENDER-34 round 2: the side is decided by the AGENT, not the camera.
+                //
+                // A mirror's front face is a property of the object; the camera is not a witness to
+                // it. In third person the camera routinely swings back THROUGH the wall the mirror
+                // hangs on, and the previous version then read the back as the front: the live log
+                // showed `normal` alternating between (1,0,0) and (-1,0,0) frame by frame, and every
+                // frame it flipped, `cos` collapsed to its floor and the near plane blew out to 30 m
+                // -- which is a reflection of nothing but the far distance. The avatar stays in the
+                // room, so it is the stable witness.
+                //
+                // Plus hysteresis, because "stable witness" is not "never wrong": a flip is only
+                // accepted once the agent is clearly on the other side, so walking along the plane
+                // cannot oscillate the reflection.
+                var measured = FrontFaceNormal(mirrorState, agentPos);
+                if (measured != Godot.Vector3.Zero
+                    && MirrorNormal != Godot.Vector3.Zero
+                    && measured.Dot(MirrorNormal) < 0f
+                    && Mathf.Abs(measured.Dot(agentPos - mirrorState.MeshInstance.GlobalPosition)) < MirrorSideFlipMeters)
+                {
+                    measured = MirrorNormal;
+                }
+                MirrorNormal = measured;
+                MirrorExtents = (mirrorState.MeshInstance.GlobalTransform * mirrorState.MeshInstance.GetAabb()).Size;
                 SetActiveMirror(_mirrorScanBestId);
             }
             else
@@ -629,6 +661,7 @@ public partial class ObjectRenderer : Node3D
                 MirrorPosition = null;
                 MirrorRadius = 0f;
                 MirrorNormal = Godot.Vector3.Zero;
+                MirrorExtents = Godot.Vector3.Zero;
                 SetActiveMirror(Guid.Empty);
             }
             _mirrorScanBestId = Guid.Empty;
@@ -3671,22 +3704,43 @@ public partial class ObjectRenderer : Node3D
     /// geometry rather than assumed. A mirror is thin: the smallest axis of its bounding box is
     /// the one it has no depth along, which is its face normal. The sign is decided by which side
     /// the viewer is on, so a double-sided panel reflects whichever face is being looked at.</summary>
-    private static Godot.Vector3 FrontFaceNormal(VisualState state, Godot.Vector3 viewPos)
+    private static Godot.Vector3 FrontFaceNormal(VisualState state, Godot.Vector3 fromSide)
     {
         if (!IsInstanceValid(state.MeshInstance) || state.MeshInstance.Mesh == null)
             return Godot.Vector3.Zero;
 
-        var aabb = state.MeshInstance.GetAabb();
-        var extents = aabb.Size * state.MeshInstance.Scale;
-        var basis = state.MeshInstance.GlobalTransform.Basis;
+        // BUG-RENDER-34: measured in WORLD space, not by picking a basis column.
+        //
+        // The first version took the thinnest axis of the LOCAL aabb and then used the matching
+        // column of the global basis as the normal. That is only the same thing when the mesh's
+        // local axes line up with its bounding box, and for this content they do not: the live
+        // log reported `normal=(-1,0,0)` with `cos=0,05` on every frame -- the floor value, i.e.
+        // the view direction standing almost exactly PERPENDICULAR to the normal we had computed,
+        // with the sign flipping between frames because the camera sat (by that maths) inside the
+        // mirror's own plane. Everything downstream then divided by that cosine, which is where a
+        // near plane of 28 m came from.
+        //
+        // Transforming the box into world space and taking its thinnest axis there asks the
+        // question directly -- "which way is this panel flat?" -- and answers it in the frame the
+        // reflection maths actually uses. Exact for anything built against a wall, which is where
+        // mirrors hang; a panel rotated off the world axes gets the nearest axis, which is still
+        // far closer than a basis column chosen by a local extent.
+        var world = state.MeshInstance.GlobalTransform * state.MeshInstance.GetAabb();
+        var extents = world.Size;
 
-        Godot.Vector3 axis = extents.X <= extents.Y && extents.X <= extents.Z ? basis.X
-                           : extents.Y <= extents.Z ? basis.Y
-                           : basis.Z;
-        if (axis.LengthSquared() < 0.000001f) return Godot.Vector3.Zero;
-        axis = axis.Normalized();
+        Godot.Vector3 axis = extents.X <= extents.Y && extents.X <= extents.Z ? Godot.Vector3.Right
+                           : extents.Y <= extents.Z ? Godot.Vector3.Up
+                           : Godot.Vector3.Back;
 
-        return axis.Dot(viewPos - state.MeshInstance.GlobalPosition) < 0f ? -axis : axis;
+        var centre = world.GetCenter();
+        float side = axis.Dot(fromSide - centre);
+
+        // The deciding point standing IN the panel's plane gives no front face, and every number
+        // derived from it (the reflected camera, the near plane) degenerates. Say so with a zero
+        // normal rather than returning a coin flip -- MirrorReflection treats that as "no mirror".
+        if (Mathf.Abs(side) < 0.05f) return Godot.Vector3.Zero;
+
+        return side < 0f ? -axis : axis;
     }
 
     /// <summary>BUG-RENDER-32: turns the chosen mirror's qualifying surfaces into planar mirrors,

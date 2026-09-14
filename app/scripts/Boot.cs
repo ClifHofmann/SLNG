@@ -296,7 +296,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.138-alpha";
+    public const string AppVersion = "v0.22.142-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1336,7 +1336,9 @@ public partial class Boot : Control
                          (rendered && mirror.HasValue
                             ? $" at ({mirror.Value.X:0.#},{mirror.Value.Y:0.#},{mirror.Value.Z:0.#})" +
                               $" normal=({_objectRenderer.MirrorNormal.X:0.##},{_objectRenderer.MirrorNormal.Y:0.##},{_objectRenderer.MirrorNormal.Z:0.##})" +
-                              $" radius={_objectRenderer.MirrorRadius:0.##}"
+                              $" radius={_objectRenderer.MirrorRadius:0.##}" +
+                              $" near={_mirrorReflection.LastNear:0.##} cos={_mirrorReflection.LastCosTheta:0.##}" +
+                              $" extents=({_objectRenderer.MirrorExtents.X:0.##},{_objectRenderer.MirrorExtents.Y:0.##},{_objectRenderer.MirrorExtents.Z:0.##})"
                             : "") +
                          $" | mirrorFound={mirror.HasValue} planarSurfaces={_objectRenderer.PlanarMirrorActive}");
             }

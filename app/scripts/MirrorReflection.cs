@@ -44,6 +44,16 @@ public partial class MirrorReflection : Node
     /// <summary>Whether the last <see cref="UpdateFor"/> actually produced a reflection.</summary>
     public bool Active { get; private set; }
 
+    // BUG-RENDER-33: reported on the state line, because "the mirror shows the wall" and "the
+    // mirror shows nothing" are the two failure modes of this one number and look nothing alike.
+    private float _lastNear;
+    private float _lastCosTheta;
+
+    /// <summary>Near plane the reflection camera last used, and the cosine of the angle between
+    /// the view axis and the mirror normal that produced it.</summary>
+    public float LastNear => _lastNear;
+    public float LastCosTheta => _lastCosTheta;
+
     public override void _Ready()
     {
         _viewport = new SubViewport
@@ -140,12 +150,40 @@ public partial class MirrorReflection : Node
         _camera.Fov = main.Fov;
         _camera.Far = main.Far;
 
-        // Near clip AT the mirror plane, which is the cheap stand-in for an oblique frustum: it
-        // removes the wall the mirror hangs on, and everything else behind the glass, from the
-        // reflected render. Godot exposes no oblique projection, and the reference viewer solves
-        // the same problem with a clip plane in every shader (`mirrorClip`, reflectionProbeF) --
-        // a bigger change than this is worth before the geometry itself is confirmed right.
-        _camera.Near = Mathf.Max(0.05f, distance);
+        // BUG-RENDER-33: the near clip, measured ALONG THE VIEW AXIS rather than perpendicular.
+        //
+        // Godot's near plane is perpendicular to the camera's view direction; the mirror plane is
+        // not, unless you happen to be looking straight at it. The first version used the
+        // PERPENDICULAR distance, so the two coincided only at normal incidence -- and the further
+        // the view swung to the side, the more wall was left between the reflected camera and the
+        // glass. Reported exactly that way: straight on the reflection is right, "sobald ich etwas
+        // zur Seite rolle zeigt der Spiegel falsche Spiegelungen" -- the wall he hangs on, filling
+        // the frame.
+        //
+        // The distance from the reflected camera to the mirror plane along the view axis is
+        // `perpendicular / cos(theta)`, which grows without limit as the view flattens; the
+        // cosine is floored so a view parallel to the glass cannot push the near plane to
+        // infinity and empty the reflection instead.
+        //
+        // NO radius margin, and that was the mistake in the first attempt at this: a mirror hangs
+        // ON a wall, so the wall is at the SAME distance as the mirror plane. Backing the near
+        // plane off by the mirror's radius therefore stopped clipping the wall at all -- including
+        // head-on, where the previous version had been correct -- and the glass filled with wall
+        // from every angle. Measured live, reverted immediately.
+        //
+        // Clipping exactly at the centre's along-view distance does cut some room geometry seen
+        // through the nearer half of the glass at flat angles, because a plane perpendicular to
+        // the view axis touches the mirror plane at one point only. That is the lesser artefact:
+        // a little missing near the edge against a wall covering everything.
+        //
+        // The real fix is an oblique frustum, which Godot does not expose; the reference viewer
+        // solves the same problem with a clip plane in every shader (`mirrorClip`, and note that
+        // needs a per-VIEWPORT uniform, which a Godot shader global is not).
+        float cosTheta = Mathf.Max(reflectedForward.Dot(normal), 0.05f);
+        float alongView = distance / cosTheta;
+        _camera.Near = Mathf.Max(0.05f, alongView);
+        _lastNear = _camera.Near;
+        _lastCosTheta = cosTheta;
 
         Active = true;
         return true;
