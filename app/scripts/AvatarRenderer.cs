@@ -999,7 +999,14 @@ public partial class AvatarRenderer : Node3D
                         : string.Join(" ", avatar.AnimationSources.Select(s =>
                             $"{s.AnimId.ToString()[..8]}<-{(s.SourceObjectId == Guid.Empty ? "agent" : s.SourceObjectId.ToString()[..8])}"));
 
-                GD.Print($"[AnimPlayer] seated: seat={seat} kept={animations.Count}/{avatar.ActiveAnimations.Count} sources=[{sources}]");
+                string dropped = animations.Count == avatar.ActiveAnimations.Count
+                    ? "none"
+                    : string.Join(" ", avatar.ActiveAnimations
+                        .Where(id => !animations.Contains(id))
+                        .Select(id => id.ToString()[..8]));
+
+                GD.Print($"[AnimPlayer] seated: seat={seat} kept={animations.Count}/{avatar.ActiveAnimations.Count} " +
+                         $"dropped=[{dropped}] sources=[{sources}]");
             }
 
             desired = new List<Guid>(animations);
@@ -4331,6 +4338,15 @@ void fragment() {
                 if (data != null)
                 {
                     loaded.Add((animId, data));
+
+                    // What an animation actually contains, not just that it loaded. An animation
+                    // that keys only a handful of joints leaves every other bone at the skeleton's
+                    // bind pose -- which for SL IS the T-pose. With several animations playing that
+                    // is invisible; alone it is the whole avatar. Distinguishing "we dropped the
+                    // wrong one" from "the one we kept is nearly empty" needs the joint count.
+                    if (Diagnostics.Enabled)
+                        GD.Print($"[AnimPlayer] loaded {animId.ToString()[..8]}: {data.Joints.Length} joint(s), " +
+                                 $"priority {data.Priority}, {data.Length:0.##}s, loop={data.Loop}");
                 }
                 else if (SelfLocomotion.All.Contains(animId))
                 {
