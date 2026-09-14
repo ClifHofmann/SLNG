@@ -206,12 +206,19 @@ public sealed class AvatarAnimationPlayer
         }
 
         // Apply blended poses to skeleton.
-        // Rotation only: SL animation position keys (almost always just on mPelvis)
-        // are relative to mRoot in SL, whereas Godot's Skeleton3D pose position overrides
-        // the bone's rest position (1.067m), which drops the pelvis to 0m and sinks the avatar.
         foreach (var (boneIdx, pose) in boneRots)
         {
             _skeleton.SetBonePoseRotation(boneIdx, pose.rotation);
+        }
+
+        // Apply position channels (most commonly mPelvis offset authored into furniture/posestand/cuddle poses).
+        // In Godot's Skeleton3D, SetBonePosePosition overrides the bone's local position (normally initialized
+        // to bone rest). Second Life animation position keys are offsets relative to the neutral rest position,
+        // so adding the bone's rest origin applies the animation offset faithfully without collapsing the bone.
+        foreach (var (boneIdx, pose) in bonePositions)
+        {
+            var restPos = _skeleton.GetBoneRest(boneIdx).Origin;
+            _skeleton.SetBonePosePosition(boneIdx, restPos + pose.position);
         }
     }
 
