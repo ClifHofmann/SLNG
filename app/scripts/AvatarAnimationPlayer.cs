@@ -191,8 +191,11 @@ public sealed class AvatarAnimationPlayer
                     }
                 }
 
-                // Position channel (almost always just mPelvis)
-                if (joint.PositionKeys.Length > 0)
+                // Position channel: Second Life only animates translation for mPelvis
+                // (llbvhloader.cpp:781: "Animating position (via mNumChannels = 6) is only supported for mPelvis").
+                // Other joints (e.g. mFaceTongueBase) may contain unnormalized or dummy position tracks that
+                // must never be applied to bone local transforms.
+                if (joint.JointName == "mPelvis" && joint.PositionKeys.Length > 0)
                 {
                     if (!bonePositions.TryGetValue(boneIdx, out var existingPos) || effectivePriority >= existingPos.priority)
                     {

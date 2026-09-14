@@ -103,6 +103,44 @@ public class AnimationRotationUnpackTests
         Assert.Equal(-0.5f, p.Y, Tolerance);
         Assert.Equal(0f, p.Z, Tolerance);
     }
+
+    [Fact]
+    public void BinBvhReader_NeutralPositionKey_DecodesToZeroMeters()
+    {
+        using var ms = new System.IO.MemoryStream();
+        using var bw = new System.IO.BinaryWriter(ms);
+        bw.Write((ushort)1); // version
+        bw.Write((ushort)0); // subversion
+        bw.Write((int)3); // priority
+        bw.Write((float)1.0f); // duration
+        bw.Write((byte)0); // empty emote string
+        bw.Write((float)0f); // loop in
+        bw.Write((float)1f); // loop out
+        bw.Write((int)1); // loop
+        bw.Write((float)0f); // ease in
+        bw.Write((float)0f); // ease out
+        bw.Write((uint)0); // hand pose
+        bw.Write((int)1); // num joints
+
+        // Joint:
+        bw.Write(System.Text.Encoding.ASCII.GetBytes("mPelvis\0"));
+        bw.Write((int)3); // joint priority
+        bw.Write((int)0); // num rot keys
+        bw.Write((int)1); // num pos keys
+        // Pos key: time 0, pos X, Y, Z (uint16) = neutral 32768
+        bw.Write((ushort)0);
+        bw.Write((ushort)32768);
+        bw.Write((ushort)32768);
+        bw.Write((ushort)32768);
+
+        var reader = new LibreMetaverse.BinBVHAnimationReader(ms.ToArray());
+        var joint = reader.joints[0];
+        var key = joint.positionkeys[0];
+        var unpacked = AnimationDecodeService.UnpackPosition(key.key_element.X, key.key_element.Y, key.key_element.Z);
+        Assert.Equal(0f, unpacked.X, 1e-3f);
+        Assert.Equal(0f, unpacked.Y, 1e-3f);
+        Assert.Equal(0f, unpacked.Z, 1e-3f);
+    }
 }
 
 
