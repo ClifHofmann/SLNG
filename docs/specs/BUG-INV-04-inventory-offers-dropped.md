@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-INV-04`
 - **Track:** `net` (+ `ui`)
-- **Status:** `🧪 Review` — v0.22.144-alpha showed the window; v0.22.145-alpha discards on decline; v0.22.146-alpha makes the discard actually reach SL (AIS 400). Awaiting in-world re-test.
+- **Status:** `✅ Done` — confirmed in-world on SL 2026-09-14 (v0.22.146-alpha): the offer window appears, accepting shows the item without a relog, declining removes it, and inventory Delete works again. Took three rounds: v0.22.144 the window, v0.22.145 the discard, v0.22.146 the transport.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -145,13 +145,13 @@ LibreMetaverse type (`InstantMessage`, `AssetType`, `UUID`) crosses the `SLNG.Ne
 
 ## Acceptance Criteria
 
-- [ ] Receiving an item or folder from another avatar opens an accept/decline window naming
+- [x] Receiving an item or folder from another avatar opens an accept/decline window naming
       the giver and the item, before anything is answered.
-- [ ] **Accept** sends `InventoryAccepted` with the default folder for the asset type, and the
+- [x] **Accept** sends `InventoryAccepted` with the default folder for the asset type, and the
       item appears in the inventory tree **without a relog**.
-- [ ] **Decline** sends `InventoryDeclined` **and moves the item to Trash itself** — the grid
+- [x] **Decline** sends `InventoryDeclined` **and moves the item to Trash itself** — the grid
       has already filed it, so the message alone leaves it sitting in its default folder.
-- [ ] An offer from an in-world object (`TaskInventoryOffered`) is handled on the same path,
+- [x] An offer from an in-world object (`TaskInventoryOffered`) is handled on the same path,
       with no item id to fetch.
 - [x] Nothing subscribes to `InventoryManager.InventoryObjectOffered` (a regression there
       would silently auto-decline every offer).
@@ -182,4 +182,4 @@ LibreMetaverse type (`InstantMessage`, `AssetType`, `UUID`) crosses the `SLNG.Ne
 - [x] Tests
 - [x] Decline discards the item locally (`MoveToTrashAsync`, item vs folder)
 - [x] `MoveToTrashAsync` sends UDP `MoveInventoryItem`/`MoveInventoryFolder`, not AIS (SL 400s)
-- [ ] In-world verification: accept AND decline an item from a second account
+- [x] In-world verification: accept AND decline an item from a second account
