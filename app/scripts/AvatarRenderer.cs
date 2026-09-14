@@ -983,11 +983,24 @@ public partial class AvatarRenderer : Node3D
 
             // "I switch poses and nothing happens" has several possible culprits -- the sim not
             // sending it, the seat rule dropping it, the asset not loading, the blender losing it
-            // per bone. This line separates the first two from the rest.
-            if (Diagnostics.Enabled && animations.Count != avatar.ActiveAnimations.Count)
-                GD.Print($"[AnimPlayer] seat rule kept {animations.Count}/{avatar.ActiveAnimations.Count} " +
-                         $"for {(avatar.IsLocalAgent ? "SELF" : avatar.AgentId.ToString()[..8])} " +
-                         $"on seat {avatar.SittingOnObjectId.ToString()[..8]}");
+            // per bone. These lines separate the first two from the rest.
+            if (Diagnostics.Enabled && avatar.SittingOnLocalId != 0)
+            {
+                // Both preconditions of the rule, printed whether it fired or not: a seat that did
+                // not resolve to an object and a simulator that sent no sources look identical from
+                // the outside (the rule silently does nothing) but need opposite fixes.
+                string seat = avatar.SittingOnObjectId == Guid.Empty
+                    ? $"UNRESOLVED (localId {avatar.SittingOnLocalId})"
+                    : avatar.SittingOnObjectId.ToString()[..8];
+                string sources = avatar.AnimationSources == null
+                    ? "null"
+                    : avatar.AnimationSources.Count == 0
+                        ? "empty"
+                        : string.Join(" ", avatar.AnimationSources.Select(s =>
+                            $"{s.AnimId.ToString()[..8]}<-{(s.SourceObjectId == Guid.Empty ? "agent" : s.SourceObjectId.ToString()[..8])}"));
+
+                GD.Print($"[AnimPlayer] seated: seat={seat} kept={animations.Count}/{avatar.ActiveAnimations.Count} sources=[{sources}]");
+            }
 
             desired = new List<Guid>(animations);
         }
