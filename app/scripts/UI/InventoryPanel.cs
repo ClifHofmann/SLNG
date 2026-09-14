@@ -140,6 +140,12 @@ public partial class InventoryPanel : SLNGWindow
         _searchBox.AddThemeColorOverride("font_placeholder_color", new Color(0.5f, 0.5f, 0.5f));
         _searchBox.TextChanged += OnSearchTextChanged;
 
+        // FEAT-INV-07: the filter runs when typing pauses, not on every keystroke -- see
+        // SearchDebounceSeconds.
+        _searchDebounce = new Timer { WaitTime = SearchDebounceSeconds, Autostart = false, OneShot = true };
+        _searchDebounce.Timeout += () => { if (IsInstanceValid(this)) ApplyActiveFilter(); };
+        AddChild(_searchDebounce);
+
         searchContainer.AddChild(_searchBox);
         vbox.AddChild(searchContainer);
 
@@ -1078,7 +1084,66 @@ public partial class InventoryPanel : SLNGWindow
         // its normal place under "My Inventory" for anyone who wants the raw link list.
     }
 
-    private void OnSearchTextChanged(string newText) => ApplyActiveFilter();
+    /// <summary>How long typing has to pause before the tree is re-filtered. A filter pass walks
+    /// every row that exists, and applying it per keystroke meant typing "doux" did four full
+    /// passes — each of which also re-seeded the folder crawl across the whole tree. Short enough
+    /// to feel immediate, long enough that a word costs one pass instead of one per letter.</summary>
+    private const double SearchDebounceSeconds = 0.18;
+
+    private Timer _searchDebounce = null!;
+
+    /// <summary>Set when something has invalidated the current filter (a keystroke, or a folder's
+    /// contents arriving). The pass itself runs once on the next frame — see
+    /// <see cref="RequestFilterPass"/>.</summary>
+    private bool _filterPassQueued;
+
+    private void OnSearchTextChanged(string newText)
+    {
+        // Restart the countdown on every keystroke; the pass runs when typing stops.
+        _searchDebounce.Start(SearchDebounceSeconds);
+    }
+
+    /// <summary>Asks for one filter pass on the next frame, however many times it is called before
+    /// then. The crawl populates folders in bursts and each burst used to trigger its own full-tree
+    /// pass; coalescing turns hundreds of passes into one (FEAT-INV-07).</summary>
+    private void RequestFilterPass()
+    {
+        if (_filterPassQueued) return;
+        _filterPassQueued = true;
+        CallDeferred(nameof(RunQueuedFilterPass));
+    }
+
+    private void RunQueuedFilterPass()
+    {
+        _filterPassQueued = false;
+        if (!IsInstanceValid(this) || !IsInstanceValid(_tree)) return;
+
+        var root = _tree.GetRoot();
+        if (root == null) return;
+
+        FilterTreeTimed(root, FilterQuery);
+        RevealSelectedRow();
+        UpdateBusyStatus();
+    }
+
+    /// <summary>One visibility pass over the whole tree, timed. A pass touches every row that
+    /// exists, so on a large inventory it is the single most expensive thing this panel does —
+    /// and the reason search felt slow long after the network was out of the picture was that it
+    /// ran hundreds of times instead of once. The log line is how that gets caught again.</summary>
+    private void FilterTreeTimed(TreeItem root, string query)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        FilterTree(root, query, ancestorMatched: false);
+        sw.Stop();
+        _filterPasses++;
+        _filterMsTotal += sw.Elapsed.TotalMilliseconds;
+        if (sw.Elapsed.TotalMilliseconds >= 8.0)
+            GD.Print($"[InvFilter] pass {_filterPasses} took {sw.Elapsed.TotalMilliseconds:F1} ms " +
+                     $"(total {_filterMsTotal:F0} ms this session)");
+    }
+
+    private int _filterPasses;
+    private double _filterMsTotal;
 
     /// <summary>The filter box's current query, trimmed + lower-cased ("" when blank).</summary>
     private string FilterQuery => _searchBox?.Text.Trim().ToLowerInvariant() ?? "";
@@ -1103,7 +1168,7 @@ public partial class InventoryPanel : SLNGWindow
                     // Populate chains one level deeper (ContinueSearchCrawl) until the whole
                     // subtree is fetched.
                     SeedSearchCrawl(root);
-                FilterTree(root, query, ancestorMatched: false);
+                FilterTreeTimed(root, query);
                 // FEAT-INV-07 Phase 3: keep the user's place. Filtering hides rows, and clearing
                 // the box un-hides them again -- but without this the row you had picked is left
                 // somewhere off-screen in a tree that just grew back to full size. The reference
@@ -1766,9 +1831,12 @@ public partial class InventoryPanel : SLNGWindow
         if (_searchBox != null && !string.IsNullOrEmpty(_searchBox.Text))
         {
             var query = _searchBox.Text.Trim().ToLowerInvariant();
-            var root = _tree.GetRoot();
-            if (root != null)
-                FilterTree(root, query, ancestorMatched: false);
+            // Coalesced to one pass per frame instead of one per folder. This line used to
+            // re-filter the WHOLE tree every time any folder's contents landed, and the search
+            // crawl populates hundreds of folders -- 810 on the reported inventory -- so the cost
+            // was folders × rows on the main thread. That, not the network, is what kept search
+            // slow after the background fill had already made every folder local (FEAT-INV-07).
+            RequestFilterPass();
 
             // Keep the crawl going one level deeper now that this folder's children exist.
             if (query.Length >= MinSearchCrawlChars)
