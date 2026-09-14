@@ -296,7 +296,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.150-alpha";
+    public const string AppVersion = "v0.22.151-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1332,7 +1332,7 @@ public partial class Boot : Control
             if (_planarMirrorStateLogs < 12)
             {
                 _planarMirrorStateLogs++;
-                GD.Print($"[PlanarMirror] {(rendered ? "ON" : "off")}" +
+                if (Diagnostics.Enabled) GD.Print($"[PlanarMirror] {(rendered ? "ON" : "off")}" +
                          (rendered && mirror.HasValue
                             ? $" at ({mirror.Value.X:0.#},{mirror.Value.Y:0.#},{mirror.Value.Z:0.#})" +
                               $" normal=({_objectRenderer.MirrorNormal.X:0.##},{_objectRenderer.MirrorNormal.Y:0.##},{_objectRenderer.MirrorNormal.Z:0.##})" +
@@ -1589,7 +1589,7 @@ public partial class Boot : Control
             if (_roomProbeTransitionLogs < 20)
             {
                 _roomProbeTransitionLogs++;
-                GD.Print($"[ReflProbe] parallax {(inRoom ? "ON" : "off")} at bake #{_reflectionProbeBakeCount + 1}" +
+                if (Diagnostics.Enabled) GD.Print($"[ReflProbe] parallax {(inRoom ? "ON" : "off")} at bake #{_reflectionProbeBakeCount + 1}" +
                          (inRoom ? $" room=({room.Size.X:0.#}x{room.Size.Y:0.#}x{room.Size.Z:0.#})" : ""));
             }
         }
@@ -1634,7 +1634,7 @@ public partial class Boot : Control
         // (measured in BUG-RENDER-20's own table). First three bakes then every 20th, so a long
         // session does not drown the log.
         _reflectionProbeBakeCount++;
-        if (_reflectionProbeBakeCount <= 3 || _reflectionProbeBakeCount % 100 == 0)
+        if (Diagnostics.Enabled && (_reflectionProbeBakeCount <= 3 || _reflectionProbeBakeCount % 100 == 0))
         {
             var env = _worldEnvironment?.Environment;
             GD.Print(
@@ -2013,7 +2013,7 @@ public partial class Boot : Control
                     var container = _standUpButton.GetParent().GetParent().GetParent().GetParent<Control>();
                     if (container != null && container.Visible != isSitting)
                     {
-                        GD.Print($"[HUD] Toggling StandUp button. SittingOnLocalId={avatarComp.SittingOnLocalId}");
+                        if (Diagnostics.Enabled) GD.Print($"[HUD] Toggling StandUp button. SittingOnLocalId={avatarComp.SittingOnLocalId}");
                         container.Visible = isSitting;
                     }
                 }
@@ -2982,7 +2982,7 @@ public partial class Boot : Control
                         {
                             // Every tenth batch: enough to see progress in a log, quiet enough not
                             // to drown it (the console log is deliberately sparse).
-                            if (done % (10 * 10) == 0)
+                            if (Diagnostics.Enabled && done % (10 * 10) == 0)
                                 GD.Print($"[InvPrefetch] {done} folder(s) fetched, {pending} to go");
                         },
                         ct).ConfigureAwait(false);

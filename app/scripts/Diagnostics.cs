@@ -40,6 +40,9 @@ public static class Diagnostics
     public static void Initialize()
     {
         Enabled = HasFlag(OS.GetCmdlineArgs()) || HasFlag(OS.GetCmdlineUserArgs());
+        // Same switch on the other side of the engine boundary: src/ cannot see this class, so
+        // it reads SLNG.Core.Diag instead. One flag, two readers -- never two flags.
+        SLNG.Core.Diag.Verbose = Enabled;
 
         // --no-reattach: suppress the login attachment reconcile (GridSession's
         // ReattachMissingCofAttachments). That pass is the ONE thing this client does to a live

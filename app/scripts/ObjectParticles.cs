@@ -728,7 +728,7 @@ public partial class ObjectParticles : CpuParticles3D
         {
             if (_blendFuncLogged.Add(pair))
             {
-                GD.Print($"[Particles] blend func {pair} -> Godot {_drawMaterial.BlendMode}" +
+                if (Diagnostics.Enabled) GD.Print($"[Particles] blend func {pair} -> Godot {_drawMaterial.BlendMode}" +
                          (data.HasUnsupportedBlendFunc
                              ? " (NOT expressible as a Godot BlendMode -- drawn as Mix)"
                              : "") +

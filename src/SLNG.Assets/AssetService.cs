@@ -192,7 +192,7 @@ public class AssetService
         // the throttle capacities aren't otherwise visible anywhere at runtime. Printed once here
         // so a live client log can be checked against the values in this file's source directly,
         // instead of trusting a rebuild happened.
-        Console.WriteLine($"[AssetService] decorative fetch slots={_textureFetchThrottle.Capacity} sculpt fetch slots={_sculptFetchThrottle.Capacity}");
+        if (SLNG.Core.Diag.Verbose) Console.WriteLine($"[AssetService] decorative fetch slots={_textureFetchThrottle.Capacity} sculpt fetch slots={_sculptFetchThrottle.Capacity}");
     }
 
     /// <summary>

@@ -1137,7 +1137,7 @@ public partial class InventoryPanel : SLNGWindow
         sw.Stop();
         _filterPasses++;
         _filterMsTotal += sw.Elapsed.TotalMilliseconds;
-        if (sw.Elapsed.TotalMilliseconds >= 8.0)
+        if (Diagnostics.Enabled && sw.Elapsed.TotalMilliseconds >= 8.0)
             GD.Print($"[InvFilter] pass {_filterPasses} took {sw.Elapsed.TotalMilliseconds:F1} ms " +
                      $"(total {_filterMsTotal:F0} ms this session)");
     }

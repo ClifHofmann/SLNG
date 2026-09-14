@@ -2351,7 +2351,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             var vp = _client.Appearance.MyVisualParameters;
             if (vp == null || vp.Length == 0)
             {
-                Console.Error.WriteLine("[VisualParams] LibreMetaverse holds NO visual parameters — " +
+                if (Diag.Verbose) Console.Error.WriteLine("[VisualParams] LibreMetaverse holds NO visual parameters — " +
                     "an appearance send would have replaced the stored shape with defaults");
                 return;
             }
@@ -2366,7 +2366,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // 218 is the modern parameter count; a much shorter array means an incomplete set.
             // All-zero or all-128 is the tell-tale of a never-populated (default) array rather
             // than a real shape.
-            Console.Error.WriteLine($"[VisualParams] {vp.Length} params, {zero} zero, {mid} at 128 " +
+            if (Diag.Verbose) Console.Error.WriteLine($"[VisualParams] {vp.Length} params, {zero} zero, {mid} at 128 " +
                 $"(mid), first 12: {string.Join(",", vp.Take(12))}" +
                 ((zero + mid == vp.Length) ? "  <-- ALL DEFAULT: sending this would flatten the avatar" : ""));
         }
@@ -2415,7 +2415,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         _client.Appearance.MyVisualParameters = arr!;
         _visualParamsSeeded = true;
-        Console.Error.WriteLine($"[VisualParams] seeded {arr!.Length} params from {source} (diagnostic only)");
+        if (Diag.Verbose) Console.Error.WriteLine($"[VisualParams] seeded {arr!.Length} params from {source} (diagnostic only)");
     }
 
     /// <summary>Whether a "Wear" / "Detach" on an inventory item targets a system wearable
@@ -4448,6 +4448,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// in the field, "SLNG's shape source is fine" is an assumption, not a fact.</para></summary>
     private async Task<bool> CompareSelfShapeSourcesAsync(CancellationToken ct)
     {
+        // Pure diagnostic: it decodes every worn wearable just to print a comparison. Nothing acts
+        // on the result, so outside --diag it is work AND log noise for nothing.
+        if (!Diag.Verbose) return false;
+
         var relay = _lastSelfRelayVisualParams;
         if (relay is not { Length: > 0 }) return false;
 

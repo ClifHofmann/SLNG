@@ -332,7 +332,7 @@ public partial class AvatarRenderer : Node3D
         {
             _locomotionPrefetchStarted = true;
             var svc = _assetService;
-            GD.Print($"[Locomotion] prefetching {SelfLocomotion.Prefetch.Count} built-in locomotion animations");
+            if (Diagnostics.Enabled) GD.Print($"[Locomotion] prefetching {SelfLocomotion.Prefetch.Count} built-in locomotion animations");
             // Deferred + strictly sequential: firing 18 fetch/decode tasks at once during the
             // login texture storm starved the thread pool and coincided with an
             // Image.CreateFromData AccessViolation on a decode worker (v0.21.9). The prediction's
@@ -347,7 +347,7 @@ public partial class AvatarRenderer : Node3D
                     var data = await svc.GetAnimationAsync(id).ConfigureAwait(false);
                     if (data != null) ok++; else missing.Add(id.ToString()[..8]);
                 }
-                GD.Print($"[Locomotion] prefetch done: {ok}/{SelfLocomotion.Prefetch.Count} resolved" +
+                if (Diagnostics.Enabled) GD.Print($"[Locomotion] prefetch done: {ok}/{SelfLocomotion.Prefetch.Count} resolved" +
                          (missing.Count > 0 ? $" -- missing: {string.Join(" ", missing)}" : ""));
             });
         }
@@ -823,7 +823,7 @@ public partial class AvatarRenderer : Node3D
                     // report is actually about, and a shape apply happens a handful of times per
                     // login, not per frame. JointScaleLocks says whether a worn fitted mesh froze
                     // these scales the way the reference viewer does.
-                    GD.Print($"[HeadSize] mHead own scale ({headScale.X:0.###}, {headScale.Y:0.###}, {headScale.Z:0.###}), " +
+                    if (Diagnostics.Enabled) GD.Print($"[HeadSize] mHead own scale ({headScale.X:0.###}, {headScale.Y:0.###}, {headScale.Z:0.###}), " +
                              $"mSkull ({skullScale.X:0.###}, {skullScale.Y:0.###}, {skullScale.Z:0.###}), " +
                              $"morphed head mesh {headSize.X:0.###} x {headSize.Y:0.###} x {headSize.Z:0.###} m, " +
                              $"scaleLocks={visual.JointScaleLocks.Count}, bodySizeZ={visual.BodySizeZ:0.###} m");
@@ -881,7 +881,7 @@ public partial class AvatarRenderer : Node3D
                 {
                     _lastSelfBakeSig = line;
                     bool none = avatar.BakedTextures.Count == 0 || avatar.BakedTextures.Values.All(v => v == Guid.Empty);
-                    GD.Print("[SelfBake] channels  " + (line.Length == 0 ? "(none)" : line) +
+                    if (Diagnostics.Enabled) GD.Print("[SelfBake] channels  " + (line.Length == 0 ? "(none)" : line) +
                         (none ? "  -- NO BAKE AT ALL: the sim has not sent our own appearance. " +
                                 "System hair renders as an uncut helmet and the head blank until it does; " +
                                 "GridSession nudges a re-composite automatically, Ctrl+Alt+R forces one."
@@ -987,7 +987,7 @@ public partial class AvatarRenderer : Node3D
         // Behind --diag: fires on every gait change while walking through an AO and flooded the
         // log, burying the alpha diagnostics it competes with.
         if (avatar.IsLocalAgent && Diagnostics.Enabled)
-            GD.Print($"[Locomotion] self anim set -> [{string.Join(" ", desired.Select(d => d.ToString()[..8]))}] (predicted={_selfPredictedLocomotion?.ToString()[..8] ?? "none"})");
+            if (Diagnostics.Enabled) GD.Print($"[Locomotion] self anim set -> [{string.Join(" ", desired.Select(d => d.ToString()[..8]))}] (predicted={_selfPredictedLocomotion?.ToString()[..8] ?? "none"})");
 
         visual.LoadedAnimationIds = new List<Guid>(desired);
         _ = LoadAndStartAnimationsAsync(visual, desired);
@@ -1021,7 +1021,7 @@ public partial class AvatarRenderer : Node3D
             // a real "why isn't my avatar animating" signal, not per-step chatter.
             string from = previous?.ToString()[..8] ?? "(none)";
             string to = animId?.ToString()[..8] ?? "(none)";
-            GD.Print($"[Locomotion] predict {from} -> {to} (NOT applied: selfEntityId={(_selfEntityId == Guid.Empty ? "unset" : "set")}, haveVisual={haveVisual})");
+            if (Diagnostics.Enabled) GD.Print($"[Locomotion] predict {from} -> {to} (NOT applied: selfEntityId={(_selfEntityId == Guid.Empty ? "unset" : "set")}, haveVisual={haveVisual})");
         }
     }
 
@@ -2695,7 +2695,7 @@ public partial class AvatarRenderer : Node3D
                 var pos = new System.Numerics.Vector3(alt[j].M41, alt[j].M42, alt[j].M43);
                 if ((pos - bd.Position).Length() > 0.0001f) candidates++;
             }
-            GD.Print($"[RiggedSkin] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} {meshId}: " +
+            if (Diagnostics.Enabled) GD.Print($"[RiggedSkin] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} {meshId}: " +
                      $"joints={jointCount} altBinds={alt.Length} " +
                      $"aboveThreshold={candidates} lock_scale_if_joint_position={skinData.LockScaleIfJointPosition}" +
                      (alt.Length != jointCount ? "  -- SKIPPED: altBinds != joints, no overrides applied" : ""));
@@ -3056,7 +3056,7 @@ public partial class AvatarRenderer : Node3D
         bool positioned = IsInstanceValid(visual.Root) && visual.Root.GlobalPosition != Godot.Vector3.Zero;
         float rootZ = positioned ? visual.Root.GlobalPosition.Y : float.NaN;
 
-        GD.Print($"[AvatarHeight] ({why}) skeleton foot->mSkull {skullY - footY:0.###} m | " +
+        if (Diagnostics.Enabled) GD.Print($"[AvatarHeight] ({why}) skeleton foot->mSkull {skullY - footY:0.###} m | " +
                  (float.IsNaN(simZ) ? "" : $"sim agent Z {simZ:0.###} | ") +
                  $"world Z: mSkull {rootZ + skullY:0.###}  mHead(jaw) {rootZ + headY:0.###}  mFootLeft {rootZ + footY:0.###}  root {rootZ:0.###}" +
                  (positioned ? "" : "  (root not positioned yet — world Z meaningless)") +
@@ -3426,7 +3426,7 @@ public partial class AvatarRenderer : Node3D
             _loggedRenderExtent.Add(meshId);
             float rootZ = IsInstanceValid(visual.Root) ? visual.Root.GlobalPosition.Y : 0f;
             var size = rMax - rMin;
-            GD.Print($"[RenderExtent] {meshId}: rendered size ({size.X:0.###} x {size.Z:0.###} x {size.Y:0.###} m), " +
+            if (Diagnostics.Enabled) GD.Print($"[RenderExtent] {meshId}: rendered size ({size.X:0.###} x {size.Z:0.###} x {size.Y:0.###} m), " +
                      $"world Z {rootZ + rMin.Y:0.###} .. {rootZ + rMax.Y:0.###}, " +
                      $"dominant joint \"{topBoneName}\" ({topShare:P0}), {totalVerts} verts");
         }
@@ -3919,7 +3919,7 @@ public partial class AvatarRenderer : Node3D
                 // responding: the SubViewportContainer itself is set to MouseFilter.Ignore
                 // precisely so it never lands here, so anything reported is something else
                 // covering the screen.
-                GD.Print($"[HUD] click at {mb.Position} swallowed by GUI control "
+                if (Diagnostics.Enabled) GD.Print($"[HUD] click at {mb.Position} swallowed by GUI control "
                          + $"'{hovered.Name}' ({hovered.GetType().Name})");
             }
         }
@@ -3934,14 +3934,14 @@ public partial class AvatarRenderer : Node3D
     {
         if (_hudViewport == null || _session == null || _world == null)
         {
-            GD.Print($"[HUD] click ignored: viewport={_hudViewport != null} "
+            if (Diagnostics.Enabled) GD.Print($"[HUD] click ignored: viewport={_hudViewport != null} "
                      + $"session={_session != null} world={_world != null}");
             return false;
         }
         var cam = _hudViewport.GetCamera3D();
         if (cam == null)
         {
-            GD.Print("[HUD] click ignored: viewport has no Camera3D");
+            if (Diagnostics.Enabled) GD.Print("[HUD] click ignored: viewport has no Camera3D");
             return false;
         }
 
@@ -3977,26 +3977,26 @@ public partial class AvatarRenderer : Node3D
         // decision was about.
         if (hit.Count == 0)
         {
-            GD.Print($"[HUD] click at {screenPos}: ray missed every collider "
+            if (Diagnostics.Enabled) GD.Print($"[HUD] click at {screenPos}: ray missed every collider "
                      + $"({_hudPlacements.Count} HUD attachment(s) placed)");
             return false;
         }
 
         if (hit["collider"].As<Node>() is not { } collider || !collider.HasMeta("EntityId"))
         {
-            GD.Print("[HUD] click hit a body with no EntityId meta -- it is not one of ours");
+            if (Diagnostics.Enabled) GD.Print("[HUD] click hit a body with no EntityId meta -- it is not one of ours");
             return false;
         }
         if (!Guid.TryParse(collider.GetMeta("EntityId").AsString(), out var entityId))
         {
-            GD.Print($"[HUD] click hit '{collider.Name}' whose EntityId meta does not parse");
+            if (Diagnostics.Enabled) GD.Print($"[HUD] click hit '{collider.Name}' whose EntityId meta does not parse");
             return false;
         }
 
         var entity = _world.GetEntity(entityId);
         if (entity == null)
         {
-            GD.Print($"[HUD] click hit entity {entityId:N}, which is no longer in the world");
+            if (Diagnostics.Enabled) GD.Print($"[HUD] click hit entity {entityId:N}, which is no longer in the world");
             return false;
         }
 
@@ -4045,7 +4045,7 @@ public partial class AvatarRenderer : Node3D
             ? $" scale=({clickedP.Scale.X:0.###}, {clickedP.Scale.Y:0.###}, {clickedP.Scale.Z:0.###})" +
               (clickedT != null ? $" -> Z bottom {clickedT.Position.Z - clickedP.Scale.Z / 2f:0.###} top {clickedT.Position.Z + clickedP.Scale.Z / 2f:0.###}" : "")
             : "";
-        GD.Print($"[HUD] clicked entity {entityId:N} (LocalId {entity.LocalId}) face={hitFaceIndex} uv=({hitUvSl.X:0.###}, {hitUvSl.Y:0.###}){where}{how}");
+        if (Diagnostics.Enabled) GD.Print($"[HUD] clicked entity {entityId:N} (LocalId {entity.LocalId}) face={hitFaceIndex} uv=({hitUvSl.X:0.###}, {hitUvSl.Y:0.###}){where}{how}");
 
         _ = _session.ClickObjectAsync(
             entity.LocalId,
