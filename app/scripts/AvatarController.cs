@@ -465,9 +465,30 @@ public partial class AvatarController : Camera3D
     /// only a transition that loses height is a fall.</summary>
     private float _lastGroundZ;
 
+    /// <summary>How far ABOVE the feet the ground probe below may look for a surface to stand on,
+    /// i.e. the tallest step the avatar can walk up without jumping.
+    ///
+    /// <para>BUG-AVATAR-08. The reference viewer probes ground in a tiny window around the foot
+    /// position -- <c>LLVOAvatar::resolveHeightGlobal</c> (llvoavatar.cpp:5981) casts between
+    /// <c>inPos + 0.5</c> and <c>inPos - 0.5</c>, <c>getGround</c> uses +/-1.0 -- never from head
+    /// height. This probe used to start 2 m above <c>transform.Position</c>, which is the collision
+    /// CYLINDER CENTRE (see the clamp further down), so it actually started ~1 m above the head and
+    /// happily accepted a ceiling, a door lintel or a roof as "the floor". Combined with
+    /// BUG-AVATAR-05's "highest hit wins" rule that became a ladder: each frame the clamp lifted
+    /// the avatar onto the surface it had just found, which lifted the ray origin with it, which
+    /// found the next surface up. Walking into a house climbed to the roof in five frames --
+    /// locally only, since the self position is never sent to the simulator, so a second viewer
+    /// kept showing the avatar correctly inside the building.</para></summary>
+    private const float GroundProbeStepHeight = 0.5f;
+
+    /// <summary>Minimum upward component of a hit surface's normal for it to count as ground.
+    /// A downward ray also hits the UNDERSIDE of a ceiling slab and the inside face of a wall;
+    /// 0.5 admits slopes up to 60 degrees and rejects both.</summary>
+    private const float GroundProbeMinNormalY = 0.5f;
+
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
     // AvatarRenderer.BuildMarker's doc comment — same stale-assembly hazard applies here).
-    private const string BuildMarker = "2026-07-22-groundclamp-reverted-to-simple-clamp";
+    private const string BuildMarker = "2026-09-14-groundprobe-from-feet-one-step";
 
     public void Initialize(World world, GridSession session, AvatarRenderer? avatarRenderer = null)
     {
@@ -840,16 +861,27 @@ public partial class AvatarController : Camera3D
                         transform.Position.X, transform.Position.Y, transform.Position.Z + dz * (float)delta);
                 }
 
-                // Physics-based floor detection. We cast a ray straight down from above the avatar
-                // to find the highest floor point (terrain or object) on Layer 1.
+                // Physics-based floor detection. We cast a ray straight down from one step above the
+                // avatar's FEET to find the floor (terrain or object) it is standing on.
                 var spaceState = GetWorld3D().DirectSpaceState;
                 var godotPos = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
                 if (!godotPos.IsFinite()) return;
 
-                
-                // Cast from 2 meters above the avatar's feet, down to 100 meters below
-                var rayFrom = godotPos + new Godot.Vector3(0, 2.0f, 0);
-                var rayTo = godotPos - new Godot.Vector3(0, 100.0f, 0);
+
+                // The avatar's FEET, which is what the probe has to start from. transform.Position
+                // (and so godotPos) is the collision cylinder's CENTRE -- see the clamp below, which
+                // adds this same half-height back. Computed here rather than at the clamp because
+                // the ray window depends on it (BUG-AVATAR-08).
+                float halfBodyZ = 0.95f;
+                if (_avatarRenderer != null && _avatarRenderer.TryGetBodySizeZ(localAgent.Id, out float bodySizeZ))
+                {
+                    halfBodyZ = 0.5f * bodySizeZ;
+                }
+                float feetY = godotPos.Y - halfBodyZ;
+
+                // Cast from one step above the FEET, down to 100 meters below them.
+                var rayFrom = new Godot.Vector3(godotPos.X, feetY + GroundProbeStepHeight, godotPos.Z);
+                var rayTo = new Godot.Vector3(godotPos.X, feetY - 100.0f, godotPos.Z);
                 if (rayFrom == rayTo || !rayFrom.IsFinite() || !rayTo.IsFinite()) return;
                 
                 var query = PhysicsRayQueryParameters3D.Create(rayFrom, rayTo);
@@ -920,10 +952,21 @@ public partial class AvatarController : Camera3D
                 if (result.Count > 0)
                 {
                     float rayZ = result["position"].AsVector3().Y;
+
+                    // Only a surface you could actually stand on may override the simulator. A
+                    // straight-down ray also hits the underside of a ceiling and the inside face of
+                    // a wall, and BUG-AVATAR-05's "higher geometry wins" rule below would then lift
+                    // the avatar onto it -- see GroundProbeStepHeight for how that laddered onto a
+                    // roof. The ray window already bounds rayZ to at most one step above the feet;
+                    // this rejects the rest (BUG-AVATAR-08).
+                    var hitNormal = result.ContainsKey("normal")
+                        ? result["normal"].AsVector3()
+                        : Godot.Vector3.Up;
+
                     // If the raycast hit physical geometry higher than the coarse sim support plane
                     // (e.g. a child prim, wooden board, or step on top of a linkset base),
                     // the higher geometry is the actual surface the feet must stand on.
-                    if (!hasGround || rayZ > groundHeight)
+                    if (hitNormal.Y > GroundProbeMinNormalY && (!hasGround || rayZ > groundHeight))
                     {
                         groundHeight = rayZ;
                         hasGround = true;
@@ -1013,11 +1056,8 @@ public partial class AvatarController : Camera3D
                     // subtracted AvatarRenderer's RootOffsetZ here so AvatarRenderer could add it
                     // back at render time — that design was provably a no-op: clampTargetZ =
                     // groundHeight - correction, then Root.Y = clampTargetZ + correction, which
-                    float halfBodyZ = 0.95f;
-                    if (_avatarRenderer != null && _avatarRenderer.TryGetBodySizeZ(localAgent.Id, out float bodySizeZ))
-                    {
-                        halfBodyZ = 0.5f * bodySizeZ;
-                    }
+                    // halfBodyZ is computed above, with the ground probe -- the probe needs the feet
+                    // position, which is this same half-height under transform.Position.
 
                     // Second Life physics model: transform.Position.Z is the collision cylinder center.
                     // For a standing avatar whose feet sit at groundHeight, the cylinder center is groundHeight + halfBodyZ.
