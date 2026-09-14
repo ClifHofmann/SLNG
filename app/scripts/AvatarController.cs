@@ -917,21 +917,29 @@ public partial class AvatarController : Camera3D
                     groundSource = "sim-collision-plane";
                 }
 
-                if (!hasGround && result.Count > 0)
+                if (result.Count > 0)
                 {
-                    groundHeight = result["position"].AsVector3().Y;
-                    hasGround = true;
-                    if (result.ContainsKey("collider"))
+                    float rayZ = result["position"].AsVector3().Y;
+                    // If the raycast hit physical geometry higher than the coarse sim support plane
+                    // (e.g. a child prim, wooden board, or step on top of a linkset base),
+                    // the higher geometry is the actual surface the feet must stand on.
+                    if (!hasGround || rayZ > groundHeight)
                     {
-                        var colliderNode = result["collider"].AsGodotObject() as Node;
-                        groundSource = colliderNode != null
-                            ? $"collider:{colliderNode.Name}(path={colliderNode.GetPath()})"
-                            : "collider:<unnamed>";
-                        groundIsObject = colliderNode != null
-                            && colliderNode.GetPath().ToString().Contains("/Obj_");
+                        groundHeight = rayZ;
+                        hasGround = true;
+                        if (result.ContainsKey("collider"))
+                        {
+                            var colliderNode = result["collider"].AsGodotObject() as Node;
+                            groundSource = colliderNode != null
+                                ? $"collider:{colliderNode.Name}(path={colliderNode.GetPath()})"
+                                : "collider:<unnamed>";
+                            groundIsObject = colliderNode != null
+                                && colliderNode.GetPath().ToString().Contains("/Obj_");
+                        }
                     }
                 }
-                else if (!hasGround)
+
+                if (!hasGround)
                 {
                     // Fallback to terrain heightmap if raycast misses. Right after a landmark
                     // teleport, the physics raycast reliably misses for up to ~0.75s -- the new

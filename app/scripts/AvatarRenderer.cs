@@ -685,12 +685,10 @@ public partial class AvatarRenderer : Node3D
                   // so the LLVOAvatar formula below algebraically CANCELS OUT the missing offset and renders the 
                   // remote avatar perfectly (including recreating Firestorm's exact 5cm float). 
                   // 
-                  // BUT for the LOCAL avatar, SLNG generates simPos.Z locally WITHOUT parsing Shoe Base data. 
-                  // If we apply the LLVOAvatar formula locally, the missing Shoe Base data causes the local avatar 
-                  // to sink into the ground by ~20cm. The formula below uses the true live leg length 
-                  // (visual.FootOffsetY) to guarantee the foot sits exactly on the capsule floor, hiding the 
-                  // missing Shoe Base data and keeping the local avatar perfectly flush.
-                  rootPos.Y = transform.Position.Z + visual.AvatarHoverParamZ - halfBodyZ - visual.FootOffsetY;
+                  // For the local avatar, AvatarController sets transform.Position.Z = groundHeight + halfBodyZ.
+                  // Subtracting halfBodyZ places rootPos.Y exactly at groundHeight (the contact surface),
+                  // which keeps the foot/shoe soles perfectly flush with the ground or object surface.
+                  rootPos.Y = transform.Position.Z + visual.AvatarHoverParamZ - halfBodyZ;
               }
               else
               {
