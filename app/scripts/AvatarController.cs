@@ -33,6 +33,13 @@ public partial class AvatarController : Camera3D
     /// the avatar -- i.e. the user deliberately aimed somewhere else.</summary>
     public bool HasManualFocusTarget { get; private set; }
 
+    /// <summary>Radians per second the camera swings around a seated avatar on A/D, and metres
+    /// per second it zooms on W/S. Chosen to feel like a deliberate nudge rather than a flick: a
+    /// full half-turn takes about two seconds of held key, and the whole zoom range about eight.
+    /// Both are per-second, so they are frame-rate independent.</summary>
+    private const float SeatedCameraOrbitSpeed = 1.6f;
+    private const float SeatedCameraZoomSpeed = 6.0f;
+
     private float _zoom = 4.0f;
     private Vector3 _panOffset = Vector3.Zero;
 
@@ -790,6 +797,23 @@ public partial class AvatarController : Camera3D
                     _orbitYaw = 0f;
                     _orbitPitch = 0f;
                     _orbitTarget = null;
+                }
+
+                // While seated the movement keys drive the CAMERA instead of the avatar:
+                // A/D swing around it, W/S zoom in and out. Asked for as Firestorm's behaviour;
+                // this could not be checked against source, because the vendored viewer is
+                // Linden's, where a movement key while seated does nothing to the camera at all.
+                //
+                // Standing up stays exclusively the Stand control's job -- these keys must not
+                // reach the avatar, and they do not: SetMovement already suppresses the movement
+                // flags while seated, and the locomotion prediction returns null.
+                if (isSitting)
+                {
+                    float dt = (float)delta;
+                    if (isLeft) RotateCamera(new Vector2(SeatedCameraOrbitSpeed * dt, 0f));
+                    if (isRight) RotateCamera(new Vector2(-SeatedCameraOrbitSpeed * dt, 0f));
+                    if (isFwd) ZoomCamera(-SeatedCameraZoomSpeed * dt);
+                    if (isBack) ZoomCamera(SeatedCameraZoomSpeed * dt);
                 }
 
                 // FEAT-ANIM-01: drive the self avatar's locomotion animation from local input
