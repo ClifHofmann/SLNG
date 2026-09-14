@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-INV-04`
 - **Track:** `net` (+ `ui`)
-- **Status:** `🧪 Review` — v0.22.144-alpha showed the window; v0.22.145-alpha makes declining actually discard the item. Awaiting in-world re-test.
+- **Status:** `🧪 Review` — v0.22.144-alpha showed the window; v0.22.145-alpha discards on decline; v0.22.146-alpha makes the discard actually reach SL (AIS 400). Awaiting in-world re-test.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -82,6 +82,29 @@ identifies the item by `im.imSessionID`, not the bucket) and skips the move when
 already in Trash — so the viewer-side discard is correct on both grids rather than a
 double-move on one of them.
 
+### 5. The discard itself never reached the grid — AIS 400 on every move
+
+```
+warn: Move item 9496bd5d-… to 80c35254-…: Bad Request (400): Bad Request
+```
+
+`InventoryManager.MoveItem`/`MoveFolder` prefer AIS whenever it is available and PATCH
+`{cap}/item/{id}` with a bare `parent_id` (`InventoryAISClient.cs:566-595`). **Second Life
+answers that with HTTP 400.** So not only did the declined gift stay put — the inventory
+context menu's own *Delete* was a no-op on SL for the same reason, reported in the same
+breath: *„Item löschen geht nicht"*.
+
+The reference viewer never reparents through AIS. A move is the legacy UDP message on every
+grid, to this day: `LLViewerInventoryItem::updateParentOnServer` sends `MoveInventoryItem`
+(llviewerinventory.cpp:566-579) and `LLViewerInventoryCategory::updateParentOnServer` sends
+`MoveInventoryFolder` (:647-660). AIS is used for item *content* updates
+(`AISAPI::UpdateItem`, llviewerinventory.cpp:455) and for real deletion — not for reparenting.
+
+`MoveToTrashAsync` therefore builds and sends those two packets itself and updates
+LibreMetaverse's store the way its own `MoveItem` would. The UDP message is equally correct
+on OpenSim, so nothing branches on the grid. This fixes the decline path and the inventory
+Delete together, since both go through that one method.
+
 ## Wire protocol — confirmed, not guessed
 
 From `llimprocessing.cpp:895-935` and `llviewermessage.cpp:1590-1640`:
@@ -158,4 +181,5 @@ LibreMetaverse type (`InstantMessage`, `AssetType`, `UUID`) crosses the `SLNG.Ne
 - [x] `Boot` wiring: buffer, drain, folder refresh
 - [x] Tests
 - [x] Decline discards the item locally (`MoveToTrashAsync`, item vs folder)
+- [x] `MoveToTrashAsync` sends UDP `MoveInventoryItem`/`MoveInventoryFolder`, not AIS (SL 400s)
 - [ ] In-world verification: accept AND decline an item from a second account

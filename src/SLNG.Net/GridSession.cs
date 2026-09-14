@@ -5812,16 +5812,70 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>
-    /// Moves an inventory item (or folder) to the Trash folder.
+    /// Moves an inventory item (or folder) to the Trash folder — the viewer's Delete.
+    ///
+    /// <para><b>Sends the legacy UDP message on purpose, and does not call
+    /// <c>InventoryManager.MoveItem</c>/<c>MoveFolder</c>.</b> Those prefer AIS whenever it is
+    /// available and PATCH <c>{cap}/item/{id}</c> with a bare <c>parent_id</c>, which Second Life
+    /// answers with <b>HTTP 400</b> — so on SL every Delete silently failed and the item stayed put
+    /// (reported live 2026-09-14: „Item löschen geht nicht", and a declined gift that stayed in
+    /// Objects). The real viewer never moves through AIS either: a reparent is
+    /// <c>MoveInventoryItem</c> (llviewerinventory.cpp:566-579) or <c>MoveInventoryFolder</c>
+    /// (:647-660) over UDP, on every grid, to this day — AIS is used for item *content* updates
+    /// (<c>AISAPI::UpdateItem</c>) and for real deletion, not for reparenting. The UDP message is
+    /// equally correct on OpenSim, so there is nothing to branch on.</para>
+    ///
+    /// <para>LibreMetaverse's store is updated here too, exactly as its own <c>MoveItem</c> would,
+    /// so a UI reading the store does not keep drawing the item under its old parent.</para>
     /// </summary>
     public Task MoveToTrashAsync(Guid itemId, bool isFolder)
     {
         if (TrashFolderId is not { } trashId) return Task.CompletedTask;
+        if (!_client.Network.Connected) return Task.CompletedTask;
+
+        var id = new UUID(itemId);
+        var trash = new UUID(trashId);
+
+        // Keep the local store in step with what we are about to tell the grid.
+        if (_client.Inventory.Store?.GetNodeOrDefault(id)?.Data is { } node)
+        {
+            node.ParentUUID = trash;
+            _client.Inventory.Store.UpdateNodeFor(node);
+        }
 
         if (isFolder)
-            _client.Inventory.MoveFolder(new LibreMetaverse.UUID(itemId), new LibreMetaverse.UUID(trashId));
+        {
+            var move = new MoveInventoryFolderPacket
+            {
+                AgentData = { AgentID = _client.Self.AgentID, SessionID = _client.Self.SessionID, Stamp = false },
+                InventoryData = new[]
+                {
+                    new MoveInventoryFolderPacket.InventoryDataBlock { FolderID = id, ParentID = trash },
+                },
+            };
+            _client.Network.SendPacket(move);
+        }
         else
-            _client.Inventory.MoveItem(new LibreMetaverse.UUID(itemId), new LibreMetaverse.UUID(trashId));
+        {
+            var move = new MoveInventoryItemPacket
+            {
+                AgentData = { AgentID = _client.Self.AgentID, SessionID = _client.Self.SessionID, Stamp = false },
+                InventoryData = new[]
+                {
+                    // Empty NewName = "keep the name", the same as the viewer's addString("NewName", NULL).
+                    new MoveInventoryItemPacket.InventoryDataBlock
+                    {
+                        ItemID = id, FolderID = trash, NewName = Utils.EmptyBytes,
+                    },
+                },
+            };
+            _client.Network.SendPacket(move);
+        }
+
+        // UDP is fire-and-forget: unlike the AIS call this replaces, a failure here is silent, so
+        // say what was sent. This line is how the 400 that made Delete a no-op was found.
+        Console.Error.WriteLine(
+            $"[Inventory] MoveInventory{(isFolder ? "Folder" : "Item")} {id} -> Trash {trash}");
 
         return Task.CompletedTask;
     }
