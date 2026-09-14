@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-INV-07`
 - **Track:** `net` (+ `ui`)
-- **Status:** `🧪 Review` — Phase 1 confirmed in-world (v0.22.147-alpha); Phases 2 and 3 implemented (v0.22.148 / v0.22.149-alpha), awaiting in-world verification.
+- **Status:** `✅ Done` — all three phases confirmed in-world 2026-09-14. Phase 1 v0.22.147-alpha; Phase 2 v0.22.148 ("810 folders, inventory is now local"); Phase 3 v0.22.149, made actually fast by v0.22.150 — the filter ran once per folder, not once per search.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -178,7 +178,7 @@ Two changes:
       breaking login.
 - [x] Phase 3: searching a large inventory returns matches from folders never expanded by hand,
       with no per-keystroke network traffic.
-- [ ] Phase 3: clearing the search box leaves the selected row selected and in view.
+- [x] Phase 3: clearing the search box leaves the selected row selected and in view.
 - [ ] Unit tests: version-match / mismatch / missing-version decisions, round-trip of the cache
       format, corrupt-file handling.
 
