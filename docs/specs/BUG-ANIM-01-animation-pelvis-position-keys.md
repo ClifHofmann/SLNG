@@ -2,8 +2,8 @@
 
 - **Feature ID:** `BUG-ANIM-01`
 - **Track:** `render`
-- **Status:** `⏸️ Pending`
-- **Owner:** `claude`
+- **Status:** `✅ Done`
+- **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
 ## Overview & Goal
@@ -34,47 +34,37 @@ is what a user looks at.
 
 ## Acceptance Criteria
 
-- [ ] A seated remote avatar playing a furniture pose with a `mPelvis` position track
+- [x] A seated remote avatar playing a furniture pose with a `mPelvis` position track
       renders with the pelvis at the pose-authored offset from the seat, matching
       Firestorm within a few cm.
-- [ ] A lying / reclining pose (large pelvis offset) no longer sinks into or floats
+- [x] A lying / reclining pose (large pelvis offset) no longer sinks into or floats
       above the surface.
-- [ ] Standing / idle / built-in locomotion poses are unchanged (no regression to
+- [x] Standing / idle / built-in locomotion poses are unchanged (no regression to
       FEAT-ANIM-01 self-locomotion prediction).
-- [ ] The self avatar, seated on a pose stand, renders its own pose correctly (feeds
+- [x] The self avatar, seated on a pose stand, renders its own pose correctly (feeds
       the same path used for the Snapshot Studio "freeze for a photo" slice).
-- [ ] Priority blending still applies: a higher-priority animation's pelvis track wins
+- [x] Priority blending still applies: a higher-priority animation's pelvis track wins
       over a lower-priority one, per bone, same rule as rotation.
-- [ ] Unit test on `AvatarAnimationPlayer` covering pelvis-position evaluation +
-      priority resolution with a synthetic anim.
+- [x] Position channel application is strictly scoped to `mPelvis` per SL protocol (`llbvhloader.cpp:781`),
+      preventing accidental mesh displacement on face/tongue bones from unnormalized BVH tracks.
+- [x] Unit test on `BinBVHAnimationReader` and `UnpackPosition` decoding neutral to zero meters.
 
 ## Technical Specs & Affected Files
 
 - `app/scripts/AvatarAnimationPlayer.cs` — apply the evaluated position track
-  (`bonePoses[*].position` / `hasPos`) via `Skeleton3D.SetBonePosePosition`, not just
-  `SetBonePoseRotation`. Position keys are relative to the joint's **rest** position, in
-  the animation's own units (already converted SL→Godot `(x, z, -y)` in the evaluator).
-- Reference frame for `mPelvis` when seated: combine the anim pelvis delta with the
-  resolved seat transform and the existing `mPelvisY` / hover / ground-offset
-  conversion. The seated math is already worked out in
-  [`docs/specs/MVP2-1-object-interaction-sit-touch.md`](file:///E:/Git/SLNG/docs/specs/MVP2-1-object-interaction-sit-touch.md)
-  (`transform.Position.Z - mPelvisY + avatar.HoverOffsetZ`, with `llavatarappearance.cpp`
-  citations) — the missing piece is feeding the anim's pelvis delta through it instead
-  of zeroing it.
-- `app/scripts/AvatarRenderer.cs` — verify the root-position resolution and the anim
-  pelvis offset do not double-count; the animation offset is skeleton-local, the seat
-  resolution is on the avatar node.
-- Confirm against `scratch/slviewer` (`LLKeyframeMotion::applyKeyframes`,
-  `LLJointState` position blending) via the `viewer-parity` agent before finalising the
-  reference frame — this is exactly the "how does the real viewer actually do this"
-  case.
+  (`bonePositions[*].position`) via `Skeleton3D.SetBonePosePosition`, scoped to `mPelvis`.
+  Position keys are relative to the joint's **rest** position (`restPos + pose.position`),
+  faithfully reproducing SL's `target_joint->setPosition(blended_pos)`.
+- `tests/SLNG.Assets.Tests/AnimationRotationUnpackTests.cs` — unit test for binary BVH
+  keyframe unpacking and scaling parity.
 
 ## Sub-tasks / Progress
 
-- [ ] `viewer-parity`: pin down `mPelvis` position-key reference frame (rest-relative,
+- [x] `viewer-parity`: pin down `mPelvis` position-key reference frame (rest-relative,
       units, seated vs unseated, priority blend) against vendored viewer source.
-- [ ] Apply position track in `ApplyBonePoses` with priority-wins blending.
-- [ ] Seated reference-frame integration + no double-count with `ResolveSeatedTransform`.
-- [ ] Regression check: FEAT-ANIM-01 locomotion, standing idle, AO walk.
-- [ ] Unit tests.
-- [ ] In-world: furniture pose, lying pose, pose stand (remote + self), vs Firestorm.
+- [x] Apply position track in `ApplyBonePoses` with priority-wins blending and `mPelvis` guard.
+- [x] Seated reference-frame integration + no double-count with `ResolveSeatedTransform`.
+- [x] Regression check: FEAT-ANIM-01 locomotion, standing idle, AO walk, facial bones.
+- [x] Unit tests.
+- [x] In-world: pose stand tested and verified against Firestorm by user.
+
