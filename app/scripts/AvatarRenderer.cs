@@ -981,6 +981,14 @@ public partial class AvatarRenderer : Node3D
                     avatar.ActiveAnimations, avatar.AnimationSources, avatar.SittingOnObjectId)
                 : avatar.ActiveAnimations;
 
+            // "I switch poses and nothing happens" has several possible culprits -- the sim not
+            // sending it, the seat rule dropping it, the asset not loading, the blender losing it
+            // per bone. This line separates the first two from the rest.
+            if (Diagnostics.Enabled && animations.Count != avatar.ActiveAnimations.Count)
+                GD.Print($"[AnimPlayer] seat rule kept {animations.Count}/{avatar.ActiveAnimations.Count} " +
+                         $"for {(avatar.IsLocalAgent ? "SELF" : avatar.AgentId.ToString()[..8])} " +
+                         $"on seat {avatar.SittingOnObjectId.ToString()[..8]}");
+
             desired = new List<Guid>(animations);
         }
 
@@ -1001,8 +1009,11 @@ public partial class AvatarRenderer : Node3D
 
         // Behind --diag: fires on every gait change while walking through an AO and flooded the
         // log, burying the alpha diagnostics it competes with.
-        if (avatar.IsLocalAgent && Diagnostics.Enabled)
-            if (Diagnostics.Enabled) GD.Print($"[Locomotion] self anim set -> [{string.Join(" ", desired.Select(d => d.ToString()[..8]))}] (predicted={_selfPredictedLocomotion?.ToString()[..8] ?? "none"})");
+        if (Diagnostics.Enabled)
+            GD.Print($"[AnimPlayer] {(avatar.IsLocalAgent ? "SELF" : avatar.AgentId.ToString()[..8])} " +
+                     $"anim set -> [{string.Join(" ", desired.Select(d => d.ToString()[..8]))}]" +
+                     $" (predicted={_selfPredictedLocomotion?.ToString()[..8] ?? "none"}," +
+                     $" sitting={(avatar.SittingOnLocalId != 0 ? "yes" : "no")})");
 
         visual.LoadedAnimationIds = new List<Guid>(desired);
         _ = LoadAndStartAnimationsAsync(visual, desired);
@@ -4282,6 +4293,16 @@ void fragment() {
         }
     }
 
+    /// <summary>Animation ids already reported as unavailable, so a set the simulator keeps
+    /// re-sending is reported once rather than every time.</summary>
+    private readonly HashSet<Guid> _animationsReportedUnavailable = new();
+
+    private void WarnAnimationUnavailable(Guid animId, string why)
+    {
+        if (!_animationsReportedUnavailable.Add(animId)) return;
+        GD.PrintErr($"[AnimPlayer] animation {animId} will not play -- {why}");
+    }
+
     private async System.Threading.Tasks.Task LoadAndStartAnimationsAsync(AvatarVisual visual, List<Guid> animIds)
     {
         if (_assetService == null) return;
@@ -4305,9 +4326,22 @@ void fragment() {
                     // res:// bundled copy is needed.
                     GD.Print($"[Locomotion] anim {animId} did not resolve as an asset -- gait will not play");
                 }
+                else
+                {
+                    // Any OTHER animation that will not load is a pose the user asked for and will
+                    // not get: a pose stand's next pose, a dance, a furniture sit. It used to
+                    // vanish here without a word, which makes "I switch poses and nothing happens"
+                    // impossible to tell apart from a rule dropping it or the blender losing it.
+                    // Always logged, never behind --diag -- it is a failure, not a trace. Deduped
+                    // per id so a set that keeps being re-sent cannot flood.
+                    WarnAnimationUnavailable(animId, "asset did not resolve");
+                }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                // Was an empty catch. Swallowing the reason for an animation that does not play is
+                // the same hole as above, one layer down.
+                WarnAnimationUnavailable(animId, $"{ex.GetType().Name}: {ex.Message}");
             }
         }
 
