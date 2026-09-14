@@ -126,6 +126,34 @@ public record GroupChatJoinedEvent(Guid GroupId, string SessionName, bool Succes
 /// bucket, or 0 when the bucket is absent/malformed.</param>
 public record GroupInvitationEvent(Guid GroupId, Guid SessionId, string FromName, string Message, int MembershipFee);
 
+/// <summary>Somebody — another avatar, or an in-world object — offered the agent an inventory
+/// item or folder. Answer with <c>GridSession.RespondToInventoryOffer</c>; until then nothing is
+/// sent, which is what the real viewer does while its "X gave you Y" notification sits on screen.
+///
+/// <para>BUG-INV-04. Deliberately NOT LibreMetaverse's <c>InventoryManager.InventoryObjectOffered</c>:
+/// that event fires synchronously on the network thread and the very next line sends accept or
+/// decline from <c>InventoryObjectOfferedEventArgs.Accept</c>, which its constructor initialises to
+/// <c>false</c> (InventoryEventArgs.cs:49, InventoryManager.Handlers.cs:156-158). A handler that
+/// opens a window and returns — the only thing a UI can do — would therefore decline every offer
+/// before the user ever saw it. The same trap as <see cref="GroupInvitationEvent"/>.</para></summary>
+/// <param name="OfferId">The offer's IM session id — the viewer's <c>transaction_id</c>. The reply
+/// must echo it back or the simulator cannot match it to the offer.</param>
+/// <param name="FromId">Who offered it: the giving agent, or the owner of the giving object. The
+/// reply is addressed here.</param>
+/// <param name="FromName">Giver's name, for display.</param>
+/// <param name="ItemName">The offered item's name, as composed by the simulator.</param>
+/// <param name="ItemId">The offered item's inventory id, or <see cref="Guid.Empty"/> for an offer
+/// from an object. For an <b>agent</b> offer the simulator has already copied the item into the
+/// agent's inventory before the offer arrives (llviewermessage.cpp:1714-1717) — accepting files it,
+/// and the id is what the local inventory cache needs in order to see it without a relog.</param>
+/// <param name="AssetType">SL asset-type byte from the offer's binary bucket; picks the destination
+/// folder (llimprocessing.cpp:935).</param>
+/// <param name="FromTask">True when an in-world object made the offer (<c>TaskInventoryOffered</c>)
+/// rather than an avatar. Such an offer carries no item id and nothing exists server-side yet.</param>
+public record InventoryOfferEvent(
+    Guid OfferId, Guid FromId, string FromName, string ItemName,
+    Guid ItemId, int AssetType, bool FromTask);
+
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
 /// <param name="ParentLocalId">Local ID of the parent object, or 0 if unparented.</param>
 /// <param name="AttachmentPoint">SL AttachmentPoint enum byte value; non-zero when the object

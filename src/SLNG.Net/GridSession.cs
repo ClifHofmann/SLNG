@@ -158,6 +158,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<GroupChatJoinedEvent>? GroupChatJoined;
     /// <inheritdoc cref="GroupsUpdated"/>
     public event EventHandler<GroupInvitationEvent>? GroupInvitationReceived;
+    /// <summary>BUG-INV-04: another avatar or an in-world object offered the agent an inventory
+    /// item. Answer with <see cref="RespondToInventoryOffer"/>. Raised on a LibreMetaverse network
+    /// thread — marshal before touching a scene node.</summary>
+    public event EventHandler<InventoryOfferEvent>? InventoryOfferReceived;
 
     /// <summary>Avatar-profile replies (FEAT-UI-13). All fired off a LibreMetaverse network
     /// thread after <see cref="RequestAvatarProfile"/> — consumers must marshal before touching a
@@ -1588,6 +1592,45 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             return;
         }
 
+        // An inventory offer is its own dialog too (4 from an avatar, 9 from an object) and would
+        // otherwise fall through the MessageFromAgent guard at the bottom and vanish -- which is
+        // exactly what "die Landmarke war erst nach Relog im Inventar" was (BUG-INV-04).
+        //
+        // Deliberately NOT via LibreMetaverse's InventoryManager.InventoryObjectOffered, for the
+        // same reason GroupInvitation is handled by hand above: that event fires synchronously on
+        // this thread and the very next line sends accept-or-decline from
+        // InventoryObjectOfferedEventArgs.Accept, which its constructor sets to FALSE
+        // (InventoryEventArgs.cs:49, InventoryManager.Handlers.cs:156-158). Subscribing while
+        // asking the user first would auto-DECLINE every offer. Leaving it unsubscribed makes
+        // LibreMetaverse's handler a no-op (the whole block is gated on the event being non-null),
+        // so we decode the offer and answer it ourselves.
+        if (e.IM.Dialog is InstantMessageDialog.InventoryOffered or InstantMessageDialog.TaskInventoryOffered)
+        {
+            bool fromTask = e.IM.Dialog == InstantMessageDialog.TaskInventoryOffered;
+            if (!TryParseInventoryOfferBucket(e.IM.BinaryBucket, fromTask, out int assetType, out Guid itemId))
+            {
+                // llimprocessing.cpp:911-929 keeps showing the popup on a malformed bucket rather
+                // than dropping the offer. We can't file what we can't identify, so drop it -- but
+                // say so, because silence here is the bug this whole branch exists to fix.
+                Console.Error.WriteLine(
+                    $"[Inventory] Malformed inventory offer from {e.IM.FromAgentName} " +
+                    $"(dialog {e.IM.Dialog}, bucket {e.IM.BinaryBucket?.Length ?? 0} bytes) -- dropped.");
+                return;
+            }
+
+            InventoryOfferReceived?.Invoke(this, new InventoryOfferEvent(
+                e.IM.IMSessionID.Guid,
+                e.IM.FromAgentID.Guid,
+                e.IM.FromAgentName ?? string.Empty,
+                // The simulator puts the item name in the message body (llimprocessing.cpp:937
+                // info->mDesc = message).
+                e.IM.Message ?? string.Empty,
+                itemId,
+                assetType,
+                fromTask));
+            return;
+        }
+
         // Group chat first, and NOT by inspecting the dialog byte: it arrives as
         // InstantMessageDialog.SessionSend, not MessageFromAgent, and its GroupIM flag is only set
         // on the first message of a session -- a later one carries just the session id. Both the
@@ -1694,6 +1737,93 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         const int ExpectedSize = 4 + 16; // S32 membership_fee + UUID role_id
         if (bucket == null || bucket.Length != ExpectedSize) return 0;
         return (bucket[0] << 24) | (bucket[1] << 16) | (bucket[2] << 8) | bucket[3];
+    }
+
+    /// <summary>Asset type and item id out of an inventory offer's binary bucket (BUG-INV-04).
+    /// The two offer kinds pack it differently and the viewer size-checks each
+    /// (llimprocessing.cpp:895-929, mirrored by LibreMetaverse's own
+    /// InventoryManager.Handlers.cs:109-123):
+    /// <list type="bullet">
+    /// <item>agent offer — 17 bytes: <c>[0]</c> asset type, <c>[1..17]</c> the item id. The
+    /// simulator has already copied the item into the agent's inventory at this point.</item>
+    /// <item>object offer — 1 byte: asset type only. Nothing exists yet, so there is no id.</item>
+    /// </list>
+    /// Returns false for any other size — an offer we cannot file.</summary>
+    internal static bool TryParseInventoryOfferBucket(
+        byte[]? bucket, bool fromTask, out int assetType, out Guid itemId)
+    {
+        assetType = 0;
+        itemId = Guid.Empty;
+        if (bucket == null) return false;
+
+        if (fromTask)
+        {
+            if (bucket.Length != 1) return false;
+            assetType = bucket[0];
+            return true;
+        }
+
+        const int AgentBucketSize = 1 + 16; // asset type + item id
+        if (bucket.Length != AgentBucketSize) return false;
+        assetType = bucket[0];
+        itemId = new UUID(bucket, 1).Guid;
+        return true;
+    }
+
+    /// <summary>Accepts or declines a pending inventory offer (BUG-INV-04). Both answers are sent
+    /// — the simulator holds the offer open until one arrives, which is why an unanswered offer
+    /// only surfaced after a relog.
+    ///
+    /// <para>The reply is an <c>ImprovedInstantMessage</c> back to the giver whose dialog is the
+    /// offer's own +1 to accept and +2 to decline (llviewermessage.cpp:1604-1630 — "the math for
+    /// the dialog works"), carrying the destination folder id in its binary bucket: the default
+    /// folder for the asset type on accept, Trash on decline
+    /// (llviewermessage.cpp:1936-1957). The offer's IM session id is the transaction id and must
+    /// be echoed back or the simulator cannot match the answer to the offer.</para>
+    ///
+    /// <para>On accept the item is also fetched into the local inventory store. For an agent offer
+    /// the simulator copied it in before the offer was even sent (llviewermessage.cpp:1714-1717),
+    /// so without this the item exists server-side but no local view knows about it until the
+    /// whole folder is fetched again — i.e. after a relog.</para></summary>
+    /// <returns>The folder the item was filed into, so a UI can refresh exactly that one; or null
+    /// when nothing was sent, or when the offer was declined.</returns>
+    public Guid? RespondToInventoryOffer(
+        Guid offerId, Guid fromId, int assetType, Guid itemId, bool fromTask, bool accept)
+    {
+        if (fromId == Guid.Empty || !_client.Network.Connected) return null;
+
+        var offerDialog = fromTask
+            ? InstantMessageDialog.TaskInventoryOffered
+            : InstantMessageDialog.InventoryOffered;
+        var replyDialog = (InstantMessageDialog)((byte)offerDialog + (accept ? 1 : 2));
+
+        var destination = accept
+            ? _client.Inventory.FindFolderForType((AssetType)assetType)
+            : _client.Inventory.FindFolderForType(FolderType.Trash);
+
+        _client.Self.InstantMessage(
+            _client.Self.Name,
+            new UUID(fromId),
+            string.Empty,
+            new UUID(offerId),
+            replyDialog,
+            InstantMessageOnline.Offline,
+            _client.Self.SimPosition,
+            UUID.Zero,
+            // Decline carries an empty bucket (llviewermessage.cpp:1629).
+            accept ? destination.GetBytes() : Array.Empty<byte>());
+
+        if (!accept) return null;
+
+        // Pull the offered item into LibreMetaverse's store so the inventory UI can see it without
+        // a relog. Only an agent offer carries an id; an object's item is created server-side by
+        // the accept we just sent, and arrives by the usual BulkUpdateInventory route.
+        if (itemId != Guid.Empty)
+        {
+            _client.Inventory.RequestFetchInventory(new UUID(itemId), _client.Self.AgentID);
+        }
+
+        return destination == UUID.Zero ? null : destination.Guid;
     }
 
     /// <summary>Accepts or declines a pending group invitation. Both answers are sent — declining

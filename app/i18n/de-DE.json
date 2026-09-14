@@ -147,6 +147,15 @@
       "failed": "Teleport fehlgeschlagen.",
       "cancelled": "Teleport abgebrochen."
     },
+    "inventory_offer": {
+      "title": "INVENTARANGEBOT",
+      "from_agent": "{0} bietet dir ein Objekt an",
+      "from_object": "Ein Objekt namens \"{0}\" bietet dir etwas an",
+      "accept": "Annehmen",
+      "decline": "Ablehnen",
+      "accepted": "\"{0}\" angenommen.",
+      "declined": "\"{0}\" abgelehnt."
+    },
     "group_invite": {
       "title": "GRUPPENEINLADUNG",
       "from": "Einladung von {0}",

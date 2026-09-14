@@ -296,7 +296,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.143-alpha";
+    public const string AppVersion = "v0.22.144-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1794,6 +1794,9 @@ public partial class Boot : Control
         // M5-3: group invitations, same off-thread buffering reason.
         while (_pendingGroupInvites.TryDequeue(out var invite)) ShowGroupInvitation(invite);
 
+        // BUG-INV-04: inventory offers, same off-thread buffering reason.
+        while (_pendingInventoryOffers.TryDequeue(out var offer)) ShowInventoryOffer(offer);
+
         // MVP2-3 Phase 4: "Arrived in <region>" toast. RegionConnected only flags that we
         // arrived somewhere NEW -- the region's name usually isn't known yet at that exact
         // moment (it arrives via a later RegionHandshake), so this waits here until
@@ -2598,6 +2601,8 @@ public partial class Boot : Control
         _session.GroupChatMessageReceived += OnGroupChatMessageReceived;
         _session.GroupChatJoined += OnGroupChatJoinedResult;
         _session.GroupInvitationReceived += OnGroupInvitationReceived;
+        // BUG-INV-04: inventory offers. Same network-thread buffering as the invitations above.
+        _session.InventoryOfferReceived += OnInventoryOfferReceived;
         // FEAT-UI-13: profile replies + name resolution, routed to whichever profile window is open
         // for that avatar. All fire on a network thread -- marshal before touching the Control tree.
         _session.AvatarPropertiesReceived += OnAvatarProfilePropertiesReceived;
@@ -2932,6 +2937,72 @@ public partial class Boot : Control
         win.Initialize(_session, e);
 
         GD.Print($"[GroupInvite] {e.FromName} -> group {e.GroupId} fee L${e.MembershipFee}");
+    }
+
+    // ---- BUG-INV-04: inventory offers ----------------------------------------------------------
+
+    /// <summary>Open "X is offering you an item" prompts, keyed by the offer's transaction id so a
+    /// resent offer raises the existing window instead of stacking a second one.</summary>
+    private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.InventoryOfferWindow> _inventoryOfferWindows = new();
+
+    /// <summary>Offers buffered off the network thread — same reason as the group invitations
+    /// above: an InventoryOfferEvent is a plain record and so not Variant-safe for CallDeferred.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentQueue<SLNG.Core.InventoryOfferEvent> _pendingInventoryOffers = new();
+
+    private void OnInventoryOfferReceived(object? sender, SLNG.Core.InventoryOfferEvent e)
+        => _pendingInventoryOffers.Enqueue(e);
+
+    private void ShowInventoryOffer(SLNG.Core.InventoryOfferEvent e)
+    {
+        if (_session == null) return;
+        var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+        if (hudLayer == null) return;
+
+        if (_inventoryOfferWindows.TryGetValue(e.OfferId, out var existing) && IsInstanceValid(existing))
+        {
+            existing.MoveToFront();
+            return;
+        }
+
+        var win = new SLNG.App.UI.InventoryOfferWindow();
+        hudLayer.AddChild(win);
+        win.CascadeIndex = _inventoryOfferWindows.Count % 8;
+        win.Closed += () => _inventoryOfferWindows.Remove(e.OfferId);
+        win.Answered += (accept, folderId) => OnInventoryOfferAnswered(e, accept, folderId);
+        _inventoryOfferWindows[e.OfferId] = win;
+        win.Initialize(_session, e);
+
+        GD.Print($"[InvOffer] {e.FromName} -> \"{e.ItemName}\" type {e.AssetType} item {e.ItemId}");
+    }
+
+    /// <summary>An accepted offer has been answered. The simulator had already copied an agent's
+    /// gift into our inventory before the offer even arrived, so the item exists either way — what
+    /// was missing is a local view of it. GridSession has just asked for the item; refreshing the
+    /// destination folder is what puts it on screen without a relog (BUG-INV-04).
+    ///
+    /// <para>The refresh is deferred by a beat: RequestFetchInventory is a round trip, and a
+    /// refresh issued in the same frame would race it and redraw the folder as it was. One retry
+    /// covers a slow grid without turning this into a poll.</para></summary>
+    private void OnInventoryOfferAnswered(SLNG.Core.InventoryOfferEvent e, bool accept, System.Guid? folderId)
+    {
+        if (!accept)
+        {
+            LogMessage($"[color=gray]{SLNG.App.UI.L10n.TrFormat("ui.inventory_offer.declined", e.ItemName)}[/color]");
+            return;
+        }
+
+        LogMessage($"[color=lightgreen]{SLNG.App.UI.L10n.TrFormat("ui.inventory_offer.accepted", e.ItemName)}[/color]");
+        if (folderId is not { } folder) return;
+
+        foreach (var delay in new[] { 0.6f, 2.0f })
+        {
+            var timer = GetTree().CreateTimer(delay);
+            timer.Timeout += () =>
+            {
+                if (IsInstanceValid(this)) _inventoryPanel?.RefreshFolder(folder, e.ItemId);
+            };
+        }
     }
 
     // ---- FEAT-UI-13: avatar profile events -----------------------------------------------------
