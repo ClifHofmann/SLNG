@@ -53,7 +53,14 @@ public readonly record struct FaceTexture(
     /// This is a different system from <see cref="LegacyMaterialId"/>'s specular MAP, and the
     /// viewer treats them as alternatives: it packs shininess into the vertex alpha only
     /// "if we don't have a specular map" (llface.cpp:1412). The renderer must do the same --
-    /// a specular map wins, and this drives the highlight for every other face.
+    /// a specular MAP wins (a material without one does not, BUG-RENDER-23), and this drives
+    /// every other face.
+    ///
+    /// "Drives" means more than the highlight, which is how it was read until BUG-RENDER-23:
+    /// llvovolume.cpp:5543 hands this one value to the shader TWICE, as the glossiness and as
+    /// the ENVIRONMENT INTENSITY. Shiny HIGH is a 0.75-strength mirror in SL, not a shinier
+    /// matte surface, and a renderer that treats it as a specular lobe alone will never draw
+    /// the chrome the viewer draws.
     ///
     /// Until FEAT-RENDER-19 nothing read this at all, and prim_common handed every face
     /// Godot's default SPECULAR 0.5 instead: a 4% highlight on matte faces that SL says have

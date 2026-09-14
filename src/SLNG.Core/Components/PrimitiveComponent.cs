@@ -55,6 +55,12 @@ public class PrimitiveComponent : IComponent
     /// per-face entries.</summary>
     public bool Fullbright { get; set; }
 
+    /// <summary>SL's Reflection Probe block, or null when the object carries none. An object
+    /// whose <see cref="ReflectionProbeParams.IsMirror"/> is set is a MIRROR in the reference
+    /// viewer's sense -- the one object its real-time hero probe renders from -- and that is a
+    /// creator flag, not something derivable from the faces. See ReflectionProbeParams.</summary>
+    public ReflectionProbeParams? ReflectionProbe { get; set; }
+
     /// <summary>
     /// Procedural shape of a non-mesh prim. Used to regenerate real prim geometry
     /// (profile/path/cut/hollow/twist) instead of a box placeholder. Ignored when

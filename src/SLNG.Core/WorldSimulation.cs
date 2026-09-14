@@ -422,6 +422,10 @@ public sealed class WorldSimulation : IDisposable
             // starts moving.
             prim.TextureAnim = e.TextureAnim;
             prim.Particles = e.Particles;
+            // Same gate, same reason: the Reflection Probe block rides ExtraParams, which a terse
+            // update does not carry -- applying a terse-sourced null would un-mirror every mirror
+            // the moment something near it moved.
+            prim.ReflectionProbe = e.ReflectionProbe;
         }
         _world.NotifyComponentUpdated(entity, prim);
 

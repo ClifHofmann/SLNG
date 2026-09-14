@@ -92,6 +92,49 @@ public partial class Boot : Control
     /// reflection sitting at the old capture point.</summary>
     private const float ReflectionProbeMoveThresholdMeters = 3.0f;
 
+    // BUG-RENDER-26: half-extents the room measurement will accept. Below the minimum a "room" is
+    // a crate the camera is clipping into; above the maximum it is not a room at all and the
+    // parallax box would be worse than no box -- an outdoor sky corrected against a 12 m wall
+    // reflects the wrong part of the sky everywhere.
+    private const float RoomProbeMinHalfExtentMeters = 1.0f;
+    private const float RoomProbeMaxHalfExtentMeters = 12.0f;
+
+    // How many of the four horizontal rays must find a wall for this to count as a room. Four,
+    // after the live result disproved three.
+    //
+    // Three was chosen so that a room with an open doorway or a floor-to-ceiling window still
+    // counted. What it actually did was INVENT a wall at the 12 m clamp on the open axis, and the
+    // parallax box is only as good as the geometry it claims: the measured room came back as
+    // 7,5 x 4,1 x 12,1 (that 12,1 being "no wall found at all"), reflections were mapped onto a
+    // plane that is not there, and the result was a smeared image with the sky leaking in through
+    // the side the room is open on -- "ich kann Wolken sehen, obwohl ich im Haus bin".
+    //
+    // A box is now used only where all six directions were actually measured. An open-plan
+    // interior falls back to the infinite cubemap, which is wrong in a known and stable way rather
+    // than wrong in a way that invents geometry.
+    private const int RoomProbeMinWallHits = 4;
+
+    private bool _reflectionProbeBoxed;
+
+    // BUG-RENDER-26 round 2: how many CONSECUTIVE measurements must disagree with the current
+    // state before it flips. The room test is a six-ray sample of a world built by hand out of
+    // prims -- a step under a beam, past an open doorway or behind a sofa flips one ray, and with
+    // a one-sample decision that flipped the whole reflection between parallax-corrected and
+    // infinite. Since the probe's Size is also its influence volume in Godot, each flip changed
+    // both the SCALE of every reflection and WHICH objects had one, which is what the user saw
+    // while zooming out. Three samples at the re-bake cadence is about 1.5 s of steady state.
+    private const int RoomProbeStateSamples = 3;
+
+    // Re-measure freely, but only REPLACE a box that is already in use when the new one is
+    // materially different (25% on any axis). Without this the box breathes by tens of
+    // centimetres every half second as the avatar walks, and a parallax box that breathes moves
+    // every reflection in the room with it.
+    private const float RoomProbeBoxChangeFraction = 0.25f;
+
+    private int _roomProbeDisagreeCount;
+    private Godot.Aabb _roomProbeBox;
+    private int _roomProbeTransitionLogs;
+
     // FEAT-RENDER-22: the mirror probe. Separate node from the follow probe above, because it is a
     // different job with a different cost: this one sits ON a mirror-grade surface and re-captures
     // in real time, which is the only way a reflection can show what is BEHIND the viewer. SSR
@@ -105,8 +148,32 @@ public partial class Boot : Control
     /// not worth its cost, and the hero probe switches off entirely rather than idling.</summary>
     private const float HeroProbeMaxDistanceMeters = 24.0f;
 
+    /// <summary>BUG-RENDER-28: the hero probe lights the mirror and nothing else. Without the
+    /// mask it would also be averaged into every other surface inside its box -- the wall behind
+    /// the mirror, the floor under it -- with a capture taken from inside the mirror.</summary>
+    private const uint HeroProbeReflectionMask = ObjectRenderer.MirrorVisualLayer;
+
+    /// <summary>BUG-RENDER-29: walls the room measurement must find when it is taken FROM THE
+    /// MIRROR rather than from the avatar. Two, not four: a mirror hangs on a wall (that is one
+    /// ray answered at arm's length) and the rooms it hangs in are routinely open on a side. An
+    /// axis that finds nothing keeps the clamp distance, and on an open side that is roughly
+    /// right -- what is out there really is far away.
+    ///
+    /// The follow probe keeps its stricter four, because there the box also decides which objects
+    /// the probe lights at all. Here the mask has already decided that (the mirror, alone), so the
+    /// box is free to be nothing but a parallax volume.</summary>
+    private const int HeroProbeMinWallHits = 2;
+
     private bool _heroProbeActive;
     private int _heroProbeStateLogs;
+    private bool _heroProbeBoxed;
+    private bool _planarMirrorWasActive;
+    private int _planarMirrorStateLogs;
+
+    // BUG-RENDER-32: the planar mirror. Takes precedence over the hero probe for the same surface
+    // -- it is both more correct and cheaper (one scene render per frame against six cube faces),
+    // so running them together would pay twice for one reflection and blend two answers.
+    private MirrorReflection? _mirrorReflection;
 
     private double _reflectionProbeAccum;
     private Godot.Vector3 _reflectionProbeLastCapturePos;
@@ -229,7 +296,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.127-alpha";
+    public const string AppVersion = "v0.22.138-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1040,14 +1107,31 @@ public partial class Boot : Control
             // does exist (:753) guards the PBR path only, so an SL "Shiny High" prim gets SSR in
             // Firestorm today and did not here.
             //
-            // Deliberately modest settings. SSR only ever reflects what is already on screen, so
-            // it fades out at the frame edge and behind occluders; pushing max_steps higher buys
-            // longer traces at real per-pixel cost for reflections that mostly terminate early
-            // anyway in an outdoor scene. Measured cost is in the FEAT-RENDER-21 spec.
+            // BUG-RENDER-30: the settings below were chosen for an OUTDOOR scene, where an SSR ray
+            // terminates early or leaves the frame anyway. A mirror is the opposite case, and
+            // FadeOut in particular was doing real damage: 2.0 means the reflection is gone beyond
+            // two metres of ray travel, so an avatar standing a metre in front of a mirror was
+            // faded out before SSR could contribute anything, leaving the whole mirror to the
+            // cubemap -- which cannot place a nearby object at all (a box-projected probe only
+            // places geometry that lies ON its box; an avatar in the middle of the room does not).
+            //
+            // That is where Firestorm's correct-looking avatar in the same mirror comes from: the
+            // viewer lets SSR REPLACE the environment sample wherever it hits, in the legacy path
+            // and with no glossiness gate --
+            //     tapScreenSpaceReflection(1, tc, pos, norm, ssr, sceneMap, glossiness);
+            //     glossenv  = mix(glossenv,  ssr.rgb, ssr.a);
+            //     legacyenv = mix(legacyenv, ssr.rgb, ssr.a);      // reflectionProbeF.glsl:867-885
+            // Screen-space is the only one of the three techniques here that reproduces a NEARBY
+            // object in a mirror with the right size and perspective, because it traces the actual
+            // rendered frame instead of a cubemap captured from one point.
+            //
+            // Longer traces cost per pixel; FEAT-RENDER-21 measured +0.19 ms/frame at 32 steps, so
+            // this is roughly +0.5 ms on the same scene, and the whole feature stays behind the
+            // PostFxSsr toggle. Re-measure before treating that estimate as fact.
             SsrEnabled = true,
-            SsrMaxSteps = 32,
+            SsrMaxSteps = 96,
             SsrFadeIn = 0.15f,
-            SsrFadeOut = 2.0f,
+            SsrFadeOut = 24.0f,
 
 
             // Glow is deliberately restrained, because the sun's atmospheric halo is ALREADY
@@ -1174,15 +1258,31 @@ public partial class Boot : Control
         {
             Name = "HeroProbe",
             Size = new Godot.Vector3(8f, 8f, 8f),
-            MaxDistance = 40f,
+
+            // BUG-RENDER-31: 16 m, not 40. This probe re-renders six faces EVERY frame, and every
+            // metre of far plane is scene it draws six more times. A mirror reflects a room; the
+            // horizon behind the room is what the follow probe is for. Paired with the atlas going
+            // to 1024 in project.godot, this is what pays for the higher resolution.
+            MaxDistance = 16f,
             UpdateMode = ReflectionProbe.UpdateModeEnum.Always,
             BoxProjection = false,
             EnableShadows = false,
             Intensity = 1.0f,
             Visible = false,
+
+            // BUG-RENDER-28: the mirror and nothing else. Without this the probe would also be
+            // averaged into every other surface inside its box -- the wall it hangs on, the floor
+            // under it -- with a capture taken from inside the mirror.
+            ReflectionMask = HeroProbeReflectionMask,
         };
         AddChild(heroProbe);
         _heroProbe = heroProbe;
+
+        // BUG-RENDER-32. Idle until a mirror is actually chosen: its SubViewport renders the whole
+        // scene every frame it is enabled, whether or not anything samples it.
+        _mirrorReflection = new MirrorReflection { Name = "MirrorReflection" };
+        AddChild(_mirrorReflection);
+        _mirrorReflection.Idle();
     }
 
     /// <summary>
@@ -1194,6 +1294,55 @@ public partial class Boot : Control
     /// capture and moves the node. Deliberately cheap per frame: a null check, a distance compare,
     /// and a position write only while a mirror is actually in range.
     /// </summary>
+    /// <summary>
+    /// BUG-RENDER-32: aims the planar mirror's reflection camera at the chosen mirror, and hands
+    /// the resulting render to its material.
+    ///
+    /// Runs before <see cref="UpdateHeroProbe"/> on purpose -- the hero probe asks whether a
+    /// planar mirror already owns this surface, and that answer has to be this frame's.
+    /// </summary>
+    private void UpdatePlanarMirror()
+    {
+        if (_mirrorReflection == null || _objectRenderer == null) return;
+        using var _phase = MainThreadPhase.Enter("planar-mirror");
+
+        var camera = GetViewport()?.GetCamera3D();
+        var mirror = _objectRenderer.MirrorPosition;
+
+        bool rendered = camera != null
+                        && mirror.HasValue
+                        && _objectRenderer.PlanarMirrorActive
+                        && _mirrorReflection.UpdateFor(camera, mirror.Value,
+                                                       _objectRenderer.MirrorNormal,
+                                                       _objectRenderer.MirrorRadius);
+
+        if (rendered)
+        {
+            _mirrorReflection.Resume();
+            _objectRenderer.SetMirrorTexture(_mirrorReflection.Texture);
+        }
+        else
+        {
+            _mirrorReflection.Idle();
+        }
+
+        if (rendered != _planarMirrorWasActive)
+        {
+            _planarMirrorWasActive = rendered;
+            if (_planarMirrorStateLogs < 12)
+            {
+                _planarMirrorStateLogs++;
+                GD.Print($"[PlanarMirror] {(rendered ? "ON" : "off")}" +
+                         (rendered && mirror.HasValue
+                            ? $" at ({mirror.Value.X:0.#},{mirror.Value.Y:0.#},{mirror.Value.Z:0.#})" +
+                              $" normal=({_objectRenderer.MirrorNormal.X:0.##},{_objectRenderer.MirrorNormal.Y:0.##},{_objectRenderer.MirrorNormal.Z:0.##})" +
+                              $" radius={_objectRenderer.MirrorRadius:0.##}"
+                            : "") +
+                         $" | mirrorFound={mirror.HasValue} planarSurfaces={_objectRenderer.PlanarMirrorActive}");
+            }
+        }
+    }
+
     private void UpdateHeroProbe()
     {
         if (_heroProbe == null || _objectRenderer == null || _avatarController == null) return;
@@ -1201,21 +1350,77 @@ public partial class Boot : Control
         var mirror = _objectRenderer.MirrorPosition;
         bool want = _graphicsSettings.PostFxHeroProbe
                     && mirror.HasValue
-                    && mirror.Value.DistanceTo(_avatarController.GlobalPosition) <= HeroProbeMaxDistanceMeters;
+                    && mirror.Value.DistanceTo(_avatarController.GlobalPosition) <= HeroProbeMaxDistanceMeters
+                    // BUG-RENDER-32: not while the planar mirror has the same surface. Its
+                    // reflection is exact where the probe's is an approximation, and the probe
+                    // would cost six more scene renders to add a second, wrong answer on top.
+                    && !_objectRenderer.PlanarMirrorActive;
 
         if (want)
         {
-            _heroProbe.GlobalPosition = mirror!.Value;
-            // Sized to the surface it serves rather than to a guess: the box is what decides which
-            // geometry the probe's reflection applies to, and a mirror should not be re-lighting
-            // the whole room around it.
-            float extent = Mathf.Clamp(_objectRenderer.MirrorRadius * 2.5f, 2.0f, 16.0f);
-            _heroProbe.Size = new Godot.Vector3(extent, extent, extent);
+            // BUG-RENDER-29: parallax for the hero probe, measured FROM THE MIRROR.
+            //
+            // The reference viewer's own hero tap samples with the plain reflection vector and no
+            // correction at all (`textureLod(heroProbes, vec4(env_mat * refnormpersp, 0), ...)`,
+            // reflectionProbeF.glsl:724). But the viewer only ever grants a hero probe to an object
+            // a creator FLAGGED as a mirror, and answers everything else -- this fake mirror
+            // included -- from a dense field of automatic probes that ARE parallax-corrected
+            // (`boxIntersect`/`sphereWeight`, :705-717). Copying the hero path alone copied the
+            // half without the correction: an infinite cubemap captured at the mirror shows an
+            // object at the angular size it has FROM the mirror, S/c, where the real image is
+            // S/(a+c) with `a` the viewer's own distance to the glass. Standing 1.5 m from a mirror
+            // with a vase 2 m behind it, that is 1.75x too big -- "die Vase ist im Spiegel viel zu
+            // gross".
+            //
+            // The box is free to be a pure parallax volume here, because BUG-RENDER-28's mask has
+            // already decided what this probe lights (the chosen mirror, alone) -- unlike the
+            // follow probe, whose Size is also its reach.
+            if (TryMeasureRoomBox(mirror!.Value, HeroProbeMinWallHits, out var heroRoom))
+            {
+                var heroCentre = heroRoom.GetCenter();
+                _heroProbe.GlobalPosition = heroCentre;
+                _heroProbe.Size = heroRoom.Size;
+                // Godot captures at global_position + origin_offset, so the capture still happens
+                // at the mirror while the parallax box is the room around it.
+                _heroProbe.OriginOffset = mirror.Value - heroCentre;
+                _heroProbe.BoxProjection = true;
+                _heroProbeBoxed = true;
+            }
+            else
+            {
+                // No measurable room: an infinite cubemap at the mirror, which is what the viewer's
+                // hero probe does and is still far closer than a capture taken at the camera.
+                _heroProbe.GlobalPosition = mirror!.Value;
+                _heroProbe.OriginOffset = Godot.Vector3.Zero;
+                _heroProbe.BoxProjection = false;
+                _heroProbeBoxed = false;
+
+                // Sized to the surface it serves rather than to a guess.
+                float extent = Mathf.Clamp(_objectRenderer.MirrorRadius * 2.5f, 2.0f, 16.0f);
+                _heroProbe.Size = new Godot.Vector3(extent, extent, extent);
+            }
         }
 
         if (want == _heroProbeActive) return;
         _heroProbeActive = want;
         _heroProbe.Visible = want;
+
+        // BUG-RENDER-28: while the hero probe is live, take the chosen mirror away from the follow
+        // probe entirely. Godot averages every probe whose box contains a surface, so leaving both
+        // on the mirror rendered half a mirror-eye capture and half a camera-eye one. The mirror
+        // sits on its own visual layer (ObjectRenderer.MirrorVisualLayer) precisely so this mask
+        // can separate them; with the hero probe off it goes back to being lit like anything else,
+        // rather than losing its reflection altogether.
+        //
+        // Outside the log cap below, which is where an earlier revision of this put it -- the mask
+        // would then have stopped being maintained after the twelfth transition.
+        const uint allVisualLayers = 0xFFFFF;
+        if (_reflectionProbe != null)
+        {
+            _reflectionProbe.ReflectionMask = want
+                ? allVisualLayers & ~ObjectRenderer.MirrorVisualLayer
+                : allVisualLayers;
+        }
 
         // Logged on TRANSITION only -- this is the one thing about the feature that cannot be seen
         // in a screenshot (a mirror that is off and a mirror reflecting a dark room look alike),
@@ -1225,7 +1430,8 @@ public partial class Boot : Control
             _heroProbeStateLogs++;
             GD.Print($"[HeroProbe] {(want ? "ON" : "off")}" +
                      (want ? $" at ({mirror!.Value.X:0.#},{mirror.Value.Y:0.#},{mirror.Value.Z:0.#})" +
-                             $" radius={_objectRenderer.MirrorRadius:0.##} size={_heroProbe.Size.X:0.#}" : "") +
+                             $" radius={_objectRenderer.MirrorRadius:0.##} size={_heroProbe.Size.X:0.#}" +
+                             $" boxed={_heroProbeBoxed}" : "") +
                      $" | mirrorFound={mirror.HasValue} setting={_graphicsSettings.PostFxHeroProbe}");
         }
     }
@@ -1254,6 +1460,83 @@ public partial class Boot : Control
     /// throttled cadence keeps the steady-state cost between recaptures indistinguishable from no
     /// probe at all.
     /// </summary>
+    /// <summary>BUG-RENDER-26: measures the enclosing room around <paramref name="capturePos"/>
+    /// with six axis-aligned rays, so the reflection probe can be parallax-corrected against a
+    /// real volume instead of a guessed one. Returns false when the surroundings do not read as a
+    /// room, which is the outdoor case and most of a region.
+    ///
+    /// Six rays rather than a sampled sphere on purpose: the box the parallax correction needs IS
+    /// axis-aligned (Godot offers no oriented probe volume), so anything a diagonal ray found would
+    /// have to be flattened onto these six axes anyway. Runs on the re-bake cadence -- twice a
+    /// second at most, and only when the probe is due to re-capture, which is already the
+    /// expensive part of this frame.
+    ///
+    /// Solid geometry only (mask 1). Phantom prims are the region's curtains, foliage and
+    /// click-catchers; letting them define a wall would put the parallax box inside the room's
+    /// own decoration.</summary>
+    /// <summary>BUG-RENDER-26: is this measurement different enough from the box already in use to
+    /// be worth swapping in? Compared per axis against the CURRENT extent, so a 4 m room has to
+    /// change by a metre and a 12 m one by three -- the point is to ignore the centimetre-scale
+    /// drift of walking around, not to hold a stale box after walking into another room.</summary>
+    private static bool BoxDiffersMaterially(Godot.Aabb current, Godot.Aabb candidate)
+    {
+        var a = current.Size;
+        var b = candidate.Size;
+        return Mathf.Abs(a.X - b.X) > a.X * RoomProbeBoxChangeFraction
+            || Mathf.Abs(a.Y - b.Y) > a.Y * RoomProbeBoxChangeFraction
+            || Mathf.Abs(a.Z - b.Z) > a.Z * RoomProbeBoxChangeFraction
+            || current.GetCenter().DistanceTo(candidate.GetCenter()) > a.Length() * RoomProbeBoxChangeFraction;
+    }
+
+    private bool TryMeasureRoomBox(Godot.Vector3 capturePos, int minWallHits, out Godot.Aabb box)
+    {
+        box = default;
+        if (_avatarController == null) return false;
+
+        var space = _avatarController.GetWorld3D().DirectSpaceState;
+        if (space == null) return false;
+
+        var dirs = new Godot.Vector3[6]
+        {
+            Godot.Vector3.Right, Godot.Vector3.Left,
+            Godot.Vector3.Up, Godot.Vector3.Down,
+            Godot.Vector3.Back, Godot.Vector3.Forward,
+        };
+
+        var reach = new float[6];
+        int wallHits = 0;
+        bool ceiling = false, floor = false;
+
+        for (int i = 0; i < 6; i++)
+        {
+            var to = capturePos + dirs[i] * RoomProbeMaxHalfExtentMeters;
+            var query = PhysicsRayQueryParameters3D.Create(capturePos, to, collisionMask: 1u);
+            var hit = space.IntersectRay(query);
+
+            if (hit.Count > 0 && hit.TryGetValue("position", out var posVar))
+            {
+                float d = capturePos.DistanceTo(posVar.AsVector3());
+                reach[i] = Mathf.Max(d, RoomProbeMinHalfExtentMeters);
+                if (i == 2) ceiling = true;
+                else if (i == 3) floor = true;
+                else wallHits++;
+            }
+            else
+            {
+                reach[i] = RoomProbeMaxHalfExtentMeters;
+            }
+        }
+
+        // A ceiling is what separates a room from a courtyard, and a floor from a hole in one;
+        // without both, an infinite cubemap is the better approximation.
+        if (!ceiling || !floor || wallHits < minWallHits) return false;
+
+        var min = new Godot.Vector3(capturePos.X - reach[1], capturePos.Y - reach[3], capturePos.Z - reach[5]);
+        var max = new Godot.Vector3(capturePos.X + reach[0], capturePos.Y + reach[2], capturePos.Z + reach[4]);
+        box = new Godot.Aabb(min, max - min);
+        return true;
+    }
+
     private void UpdateReflectionProbe(double delta)
     {
         if (_reflectionProbe == null || _avatarController == null) return;
@@ -1271,7 +1554,71 @@ public partial class Boot : Control
         _reflectionProbeEverCaptured = true;
         _reflectionProbeLastCapturePos = camPos;
 
-        _reflectionProbe.GlobalPosition = camPos;
+        // BUG-RENDER-26: parallax. Reported live as a mirror whose reflection was right in content
+        // and wrong in SCALE -- "das Fenster riesig" next to Firestorm's small one.
+        //
+        // With BoxProjection off, Godot treats the captured cubemap as infinitely distant, so a
+        // reflection shows every object at the angular size it had FROM THE PROBE. The probe rides
+        // the avatar, a metre or two from the mirror, while the true mirror image travels camera ->
+        // mirror -> object: roughly (2*d_mirror + d_object) against the cubemap's d_object. At
+        // arm's length from a mirror in a small room that is a 2x magnification, which is exactly
+        // what the window looked like.
+        //
+        // The reference viewer never has this problem: every one of its probes carries an influence
+        // VOLUME and the sample is intersected against it (`boxIntersect`/`sphereWeight`,
+        // reflectionProbeF.glsl:705-717), so the reflected point lands on real geometry at its real
+        // distance. Godot's equivalent is BoxProjection plus a box that matches the room -- and the
+        // room is something we can measure rather than guess, with six rays.
+        //
+        // Only when a room is actually found. Outdoors the box would be a fiction and parallax
+        // against a fiction is worse than none: it would bend the sky reflection that
+        // BUG-RENDER-23 just got right.
+        bool inRoom = TryMeasureRoomBox(camPos, RoomProbeMinWallHits, out var room);
+
+        // Hysteresis, not a per-sample decision -- see RoomProbeStateSamples.
+        if (inRoom == _reflectionProbeBoxed)
+        {
+            _roomProbeDisagreeCount = 0;
+        }
+        else if (++_roomProbeDisagreeCount >= RoomProbeStateSamples)
+        {
+            _roomProbeDisagreeCount = 0;
+            _reflectionProbeBoxed = inRoom;
+            if (_roomProbeTransitionLogs < 20)
+            {
+                _roomProbeTransitionLogs++;
+                GD.Print($"[ReflProbe] parallax {(inRoom ? "ON" : "off")} at bake #{_reflectionProbeBakeCount + 1}" +
+                         (inRoom ? $" room=({room.Size.X:0.#}x{room.Size.Y:0.#}x{room.Size.Z:0.#})" : ""));
+            }
+        }
+
+        if (_reflectionProbeBoxed)
+        {
+            // Keep the box we are already using unless the new measurement is materially
+            // different; a breathing box moves every reflection in the room with it.
+            if (_roomProbeBox.Size == Godot.Vector3.Zero || (inRoom && BoxDiffersMaterially(_roomProbeBox, room)))
+            {
+                _roomProbeBox = inRoom ? room : new Godot.Aabb(camPos - Godot.Vector3.One * 4f, Godot.Vector3.One * 8f);
+            }
+
+            var centre = _roomProbeBox.GetCenter();
+            _reflectionProbe.GlobalPosition = centre;
+            _reflectionProbe.Size = _roomProbeBox.Size;
+            // Godot captures at global_position + origin_offset, so the node sits at the room's
+            // centre (which is what the parallax box is measured from) while the capture still
+            // happens where the viewer is.
+            _reflectionProbe.OriginOffset = camPos - centre;
+            _reflectionProbe.BoxProjection = true;
+        }
+        else
+        {
+            _roomProbeBox = default;
+            _reflectionProbe.GlobalPosition = camPos;
+            _reflectionProbe.Size = new Godot.Vector3(40f, 40f, 40f);
+            _reflectionProbe.OriginOffset = Godot.Vector3.Zero;
+            _reflectionProbe.BoxProjection = false;
+        }
+
         _reflectionProbe.UpdateMode = ReflectionProbe.UpdateModeEnum.Once;
 
         // FEAT-RENDER-20 diagnostic. The feature verified clean in an isolated probe scene through
@@ -1292,6 +1639,11 @@ public partial class Boot : Control
                 $"[ReflProbe] bake #{_reflectionProbeBakeCount} visible={_reflectionProbe.Visible} " +
                 $"pos=({camPos.X:0.#},{camPos.Y:0.#},{camPos.Z:0.#}) size={_reflectionProbe.Size.X:0.#} " +
                 $"maxDist={_reflectionProbe.MaxDistance:0.#} interior={_reflectionProbe.Interior} " +
+                $"boxed={_reflectionProbeBoxed} " +
+                (_reflectionProbeBoxed
+                    ? $"room=({_reflectionProbe.Size.X:0.#}x{_reflectionProbe.Size.Y:0.#}x{_reflectionProbe.Size.Z:0.#}) " +
+                      $"offset=({_reflectionProbe.OriginOffset.X:0.#},{_reflectionProbe.OriginOffset.Y:0.#},{_reflectionProbe.OriginOffset.Z:0.#}) "
+                    : "") +
                 $"intensity={_reflectionProbe.Intensity:0.###} " +
                 $"| ambientSource={env?.AmbientLightSource} ambientEnergy={env?.AmbientLightEnergy:0.###} " +
                 $"skyContribution={env?.AmbientLightSkyContribution:0.###} tonemap={env?.TonemapMode}");
@@ -1424,6 +1776,7 @@ public partial class Boot : Control
         UpdateReflectionProbe(delta);
         // FEAT-RENDER-22: cheap per frame (null check + distance compare); the probe only exists
         // at all while a mirror-grade surface is actually in range.
+        UpdatePlanarMirror();
         UpdateHeroProbe();
 
         // Drain the region-environment event buffered off-thread (see _pendingRegionEnvironment).

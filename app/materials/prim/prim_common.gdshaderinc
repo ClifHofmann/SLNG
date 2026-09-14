@@ -467,6 +467,11 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
     // Overriding out_albedo does discard the atmospherics already applied to it. That is the
     // viewer's behaviour too -- its mix replaces the shaded colour outright -- and on an indoor
     // mirror there is nothing to lose; on a distant outdoor one it costs a little haze tint.
+    // BUG-RENDER-25: the surface colour as it stands BEFORE the env block rewrites it toward mid
+    // grey. The fullbright branch at the end needs the real one for its unlit share -- feeding it
+    // the greyed value would wash out exactly the faces that carry the strongest reflection.
+    vec3 pre_env_albedo = out_albedo;
+
     env_intensity = clamp(env_intensity, 0.0, 1.0);
     if (env_intensity > 0.0) {
         // BUG-RENDER-23: roughness 0 FLAT, never interpolated by the intensity. The viewer takes
@@ -520,8 +525,31 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
     // correctly textured 512-1024px, drawn as solid black rectangles). The HUD variants therefore
     // fold emission back into ALBEDO themselves; see prim_opaque_hud.gdshader.
     if (fullbright) {
-        out_emission += out_albedo;
-        out_albedo = vec3(0.0);
+        // BUG-RENDER-25: a fullbright face is not automatically an unreflective one. SL's classic
+        // fake mirror is exactly this combination -- fullbright + Shiny HIGH, no material, no PBR
+        // -- and the viewer gives it its own shader, `class3/deferred/fullbrightShinyF.glsl`:
+        //
+        //     float env_intensity = vertex_color.a;        // the SHINY level, nothing else
+        //     vec4 spec = vec4(0,0,0,0);                   // no highlight at all
+        //     sampleReflectionProbesLegacy(..., spec.a, env_intensity, false, amblit);
+        //     color.rgb = srgb_to_linear(color.rgb);
+        //     applyLegacyEnv(color.rgb, legacyenv, spec, pos, norm, env_intensity);
+        //
+        // i.e. the unlit texture and the environment reflection are MIXED by the Shiny level
+        // (`color = mix(color, reflected*0.5, envIntensity)`), not chosen between. Zeroing albedo
+        // outright killed the reflection twice over: Godot tints a metallic reflection by the
+        // albedo, so albedo 0 reflects nothing, and the leftover flat EMISSION is then the entire
+        // surface. Reported live as a wall mirror rendering as a flat light-grey panel while
+        // Firestorm showed the room in it.
+        //
+        // Mapped onto Godot's built-ins rather than approximated: the (1 - env) share of the
+        // fullbright colour goes to EMISSION as before, and the reflective share stays a real
+        // METALLIC surface -- the env block above already set metallic/roughness -- with an albedo
+        // of `0.5 * env * env`, because Godot reflects `probe * albedo` where the viewer's two
+        // steps give `env * (env * 0.5) * probe`. Godot's own Fresnel stands in for
+        // applyLegacyEnv's `min(fresnel + envIntensity, 1.0)`.
+        out_emission += pre_env_albedo * (1.0 - env_intensity);
+        out_albedo = vec3(0.5 * env_intensity * env_intensity);
     }
 
     return albedo.a;

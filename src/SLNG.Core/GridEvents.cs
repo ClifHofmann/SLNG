@@ -176,7 +176,12 @@ public record ObjectUpdateEvent(
     ParticleSystemData? Particles = null,
     // The DEFAULT face's fullbright flag. Per-face entries in Faces carry their own; a prim
     // whose faces are all identical sends none, so this covers that case. See FaceTexture.Fullbright.
-    bool Fullbright = false
+    bool Fullbright = false,
+    // SL's Reflection Probe block (0x90) -- null when the object carries none, which is almost
+    // all of them. Read out of the raw ObjectUpdate bytes because LibreMetaverse skips this
+    // block; see ReflectionProbeParams for why it, and not a material heuristic, is what
+    // identifies a mirror. Subject to the same terse-update staleness as the light fields.
+    ReflectionProbeParams? ReflectionProbe = null
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY

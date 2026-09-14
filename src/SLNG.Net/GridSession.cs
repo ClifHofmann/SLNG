@@ -88,6 +88,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     // handler, since the high-level Primitive/PrimEventArgs API exposes no such signal.
     private readonly ConcurrentDictionary<uint, bool> _lightPresentByLocalId = new();
 
+    // The Reflection Probe (0x90) block of the most recent raw ObjectUpdate for a LocalID, or
+    // absent when that update carried none. Read here rather than off the Primitive because
+    // LibreMetaverse does not parse this block at all: ExtraParamType.ReflectionProbe = 0x90 is
+    // in its enum, but SetExtraParamsFromBytes has no branch for it and steps over the payload,
+    // so the high-level API cannot express "this object is a mirror". See ReflectionProbeParams.
+    private readonly ConcurrentDictionary<uint, SLNG.Core.ReflectionProbeParams?> _reflectionProbeByLocalId = new();
+
     /// <summary>The region's current sun direction, in SL coordinates, pointing FROM the region
     /// TOWARD the sun. Zero until the first SimulatorViewerTimeMessage arrives.
     ///
@@ -747,6 +754,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         foreach (var block in update.ObjectData)
         {
             _lightPresentByLocalId[block.ID] = ExtraParamsContainsLight(block.ExtraParams);
+            _reflectionProbeByLocalId[block.ID] = ExtraParamsReflectionProbe(block.ExtraParams);
         }
     }
 
@@ -775,6 +783,39 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             i += (int)len;
         }
         return false;
+    }
+
+    /// <summary>Reads the Reflection Probe (0x90) block out of the same raw ExtraParams scan, or
+    /// null when this update carries none. Payload is <c>LLReflectionProbeParams::pack</c>
+    /// (llprimitive.cpp:1837): F32 ambiance, F32 clip distance, U8 flags, little-endian.
+    ///
+    /// Length-checked against the payload the packet actually declares rather than assuming 9
+    /// bytes: the block is one Linden Lab could extend, and a short read of a longer future
+    /// block would silently produce nonsense flags -- which here means inventing or losing a
+    /// mirror.</summary>
+    internal static SLNG.Core.ReflectionProbeParams? ExtraParamsReflectionProbe(byte[]? data)
+    {
+        if (data == null || data.Length < 1) return null;
+
+        int i = 0;
+        byte count = data[i++];
+        for (int k = 0; k < count; k++)
+        {
+            if (i + 6 > data.Length) break;
+            ushort type = Utils.BytesToUInt16(data, i); i += 2;
+            uint len = Utils.BytesToUInt(data, i); i += 4;
+            if (type == 0x90) // ExtraParamType.ReflectionProbe
+            {
+                if (len < SLNG.Core.ReflectionProbeParams.WireSize
+                    || i + SLNG.Core.ReflectionProbeParams.WireSize > data.Length) return null;
+                return new SLNG.Core.ReflectionProbeParams(
+                    Utils.BytesToFloat(data, i),
+                    Utils.BytesToFloat(data, i + 4),
+                    data[i + 8]);
+            }
+            i += (int)len;
+        }
+        return null;
     }
 
     private void OnSimConnected(object? sender, LibreMetaverse.SimConnectedEventArgs e)
@@ -5059,7 +5100,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             ParticleSystemConverter.FromWire(prim.ParticleSys),
             // The DEFAULT face's fullbright flag -- see FaceTexture.Fullbright. Per-face entries
             // in `faces` carry their own; this is for prims that send no per-face entries.
-            defaultFace?.Fullbright ?? false));
+            defaultFace?.Fullbright ?? false,
+            _reflectionProbeByLocalId.TryGetValue(prim.LocalID, out var probe) ? probe : null));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)

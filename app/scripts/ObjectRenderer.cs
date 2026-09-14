@@ -73,6 +73,10 @@ public partial class ObjectRenderer : Node3D
         // of the level being picked once at first load and never revisited.
         public MeshDetailLevel? LoadedPrimDetailLevel;
 
+        // BUG-RENDER-32: surfaces currently swapped to the planar-mirror shader, with the shader
+        // each one had before. Null when this object is not the chosen mirror.
+        public List<(int Surface, Shader Original)>? MirrorSurfaces;
+
         // GpuCache key of the mesh this object currently references (Guid.Empty = none).
         // BUG-RENDER-16: this is the MERGED key -- geometry plus the surface-merge pattern the
         // object's own texturing implies -- so two objects that share geometry but not that
@@ -171,11 +175,79 @@ public partial class ObjectRenderer : Node3D
 
     private readonly HashSet<Guid> _mirrorMaterials = new();
 
+    /// <summary>BUG-RENDER-24: entities the SIM says are mirrors -- their Reflection Probe
+    /// ExtraParams block carries FLAG_MIRROR. This is how the reference viewer identifies its
+    /// hero-probe subject (<c>LLVOVolume::updateReflectionProbePtr</c> registers an object with
+    /// the hero-probe manager exactly when <c>getReflectionProbeIsMirror()</c> is true,
+    /// llvovolume.cpp:4536), and it is a creator flag, not anything readable off a face.
+    ///
+    /// <see cref="_mirrorMaterials"/> above guessed instead, from glTF roughness, which matches
+    /// nothing SL transmits: the region this was found in has 1289 legacy materials and zero glTF
+    /// ones, so the hero probe never armed once in an entire session while a mirror was in frame.
+    /// The guess is kept as a fallback for content that carries no probe block at all, but a
+    /// flagged mirror always wins -- see the sweep in _Process.
+    ///
+    /// Maintained here, where the component is already in hand, so the per-visual sweep stays one
+    /// hash lookup and never touches the world.</summary>
+    private readonly HashSet<Guid> _flaggedMirrors = new();
+
+    /// <summary>BUG-RENDER-27: objects carrying SL's CLASSIC fake mirror — a face that is both
+    /// FULLBRIGHT and Shiny HIGH, with no material and no probe block. That is not a guess about
+    /// what looks mirror-like; it is the exact recipe the reference viewer routes to
+    /// `fullbrightShinyF.glsl`, where the unlit texture and the environment reflection are mixed
+    /// by the Shiny level (BUG-RENDER-25). Every mirror sold in SL that predates PBR is built this
+    /// way, including the one this was reported on.
+    ///
+    /// Why these get the hero probe even though the reference viewer would not: the viewer answers
+    /// such a face from a DENSE field of automatic probes, each with its own influence volume, and
+    /// we afford exactly one probe. Spending it on the surface whose whole purpose is to reflect
+    /// beats spending it on the camera — measured the hard way in BUG-RENDER-26, where a camera
+    /// probe plus a guessed room box produced a smeared reflection with sky leaking through the
+    /// room's open side.
+    ///
+    /// Both conditions together, and a minimum size below: fullbright alone is signs and screens,
+    /// shiny alone is half the metal in any build, and neither is a mirror.</summary>
+    private readonly HashSet<Guid> _legacyMirrors = new();
+
+    /// <summary>Shiny HIGH as the viewer's SHININESS_TO_ALPHA value (llface.cpp:1420). Shiny
+    /// MEDIUM is 0.5, i.e. a half-strength reflection, which is polish rather than a mirror.</summary>
+    private const float LegacyMirrorMinShiny = 0.75f;
+
+    /// <summary>A mirror is a panel you can see yourself in. Smaller fullbright-shiny faces are
+    /// trim, buttons and jewellery, and handing one the single real-time probe would take it from
+    /// the actual mirror in the room.</summary>
+    private const float LegacyMirrorMinRadiusMeters = 0.4f;
+
+    /// <summary>BUG-RENDER-28: the visual layer the currently-chosen mirror is moved onto, so the
+    /// hero probe can REPLACE its reflection instead of being averaged into it.
+    ///
+    /// Godot blends every reflection probe whose box contains a surface -- `reflection_process`
+    /// accumulates each probe's contribution and divides by the accumulated weight. The follow
+    /// probe's box is 40 m and contains everything, so a mirror standing inside the 3 m hero box
+    /// was rendering the AVERAGE of a capture taken at the mirror and a capture taken at the
+    /// camera. That reads exactly as the user described it: "es sieht aus als zoomt der Spiegel".
+    ///
+    /// The reference viewer has no such problem because its hero tap is a replace, not an average:
+    /// `tapHeroProbe(legacyenv, pos, norm, 1.0)` ends in `mix(glossenv, tapped, w)` with w = 1
+    /// inside the hero volume (reflectionProbeF.glsl:698-726, 888). Godot exposes no per-probe
+    /// weight from a spatial shader, but it does expose which INSTANCES a probe may light:
+    /// `ReflectionProbe.ReflectionMask`. One layer, one mirror, no average.
+    ///
+    /// Only the chosen mirror moves -- a second mirror across the room keeps the follow probe,
+    /// because the hero probe's box does not reach it and a surface on this layer with no probe in
+    /// range would render with no reflection at all.</summary>
+    public const uint MirrorVisualLayer = 1u << 19;
+
+    private const uint DefaultVisualLayer = 1u;
+
+    private Guid _activeMirrorId;
+
     // Accumulated during a cull sweep, published when the sweep wraps -- "nearest" is only
     // meaningful once every visual has been visited, and the sweep is deliberately spread across
     // frames (see _Process).
     private Guid _mirrorScanBestId;
     private float _mirrorScanBestDSq = float.MaxValue;
+    private bool _mirrorScanBestFlagged;
 
     /// <summary>Position of the nearest visible mirror-grade surface, or null when there is none.
     /// Read by <c>Boot.UpdateHeroProbe</c>; updated once per completed cull sweep.</summary>
@@ -184,6 +256,12 @@ public partial class ObjectRenderer : Node3D
     /// <summary>Bounding radius of that surface, so the hero probe can be sized to it rather than
     /// to a guess.</summary>
     public float MirrorRadius { get; private set; }
+
+    /// <summary>BUG-RENDER-32: the chosen mirror's surface normal, pointing out of its front face,
+    /// or zero when there is none. A planar reflection needs the PLANE, not just a point, and a
+    /// mirror panel announces its own: the thinnest axis of its bounding box is the one nothing is
+    /// built along, and the sign is whichever side the camera is on.</summary>
+    public Godot.Vector3 MirrorNormal { get; private set; }
 
     // FEAT-PERF-06: draw-call reduction. Groups of identical repeated static prims are drawn by
     // one MultiMeshInstance3D each; a prim is evicted the instant it is selected, edited or
@@ -543,14 +621,19 @@ public partial class ObjectRenderer : Node3D
             {
                 MirrorPosition = mirrorState.MeshInstance.GlobalPosition;
                 MirrorRadius = EffectiveBoundingRadius(mirrorState);
+                MirrorNormal = FrontFaceNormal(mirrorState, viewPos);
+                SetActiveMirror(_mirrorScanBestId);
             }
             else
             {
                 MirrorPosition = null;
                 MirrorRadius = 0f;
+                MirrorNormal = Godot.Vector3.Zero;
+                SetActiveMirror(Guid.Empty);
             }
             _mirrorScanBestId = Guid.Empty;
             _mirrorScanBestDSq = float.MaxValue;
+            _mirrorScanBestFlagged = false;
 
             _cullOrder.Clear();
             _cullOrder.AddRange(_visuals.Keys);
@@ -682,11 +765,27 @@ public partial class ObjectRenderer : Node3D
                 // hash lookup against data the state already carries -- no entity or component
                 // access -- and only when a mirror-grade material has actually been seen at all,
                 // which for most scenes is never.
-                if (_mirrorMaterials.Count > 0 && state.MeshInstance.Visible && !state.ResourcesReleased
-                    && viewDSq < _mirrorScanBestDSq && _mirrorMaterials.Contains(state.LoadedMaterialId))
+                if ((_flaggedMirrors.Count > 0 || _legacyMirrors.Count > 0 || _mirrorMaterials.Count > 0)
+                    && state.MeshInstance.Visible && !state.ResourcesReleased)
                 {
-                    _mirrorScanBestDSq = viewDSq;
-                    _mirrorScanBestId = id;
+                    bool flagged = _flaggedMirrors.Contains(id);
+                    // BUG-RENDER-27: a fake mirror qualifies only once it is panel-sized. The
+                    // radius is the one the hero probe would be built at anyway, so this costs
+                    // nothing extra.
+                    bool legacy = _legacyMirrors.Contains(id)
+                                  && EffectiveBoundingRadius(state) >= LegacyMirrorMinRadiusMeters;
+                    bool qualifies = flagged || legacy || _mirrorMaterials.Contains(state.LoadedMaterialId);
+
+                    // BUG-RENDER-24: rank before distance. The reference viewer has no material
+                    // heuristic at all, so a surface that merely LOOKS mirror-grade must never
+                    // take the one probe away from an object the sim actually flagged, however
+                    // much closer it happens to be.
+                    if (qualifies && (flagged, -viewDSq).CompareTo((_mirrorScanBestFlagged, -_mirrorScanBestDSq)) > 0)
+                    {
+                        _mirrorScanBestDSq = viewDSq;
+                        _mirrorScanBestId = id;
+                        _mirrorScanBestFlagged = flagged;
+                    }
                 }
 
                 // BUG-RENDER-19: re-evaluate a procedural prim's tessellation as the viewpoint
@@ -894,6 +993,15 @@ public partial class ObjectRenderer : Node3D
                            .Append($"[{i}]{(f.TextureId == Guid.Empty ? "none" : f.TextureId.ToString()[..8])}");
                 if (f.LegacyMaterialId != Guid.Empty) faceSummary.Append($" mat={f.LegacyMaterialId.ToString()[..8]}");
                 if (f.RenderMaterialId != Guid.Empty) faceSummary.Append($" pbr={f.RenderMaterialId.ToString()[..8]}");
+                // BUG-RENDER-23: the Shiny level is not a detail of the highlight, it IS the
+                // environment reflection for every face without a specular map -- llvovolume.cpp:
+                // 5543 hands this one number to the shader as both the glossiness and the
+                // environment intensity. "Why is this not a mirror" and "why is this a mirror"
+                // are both answered by this value plus the [LegacyMaterial] line for mat= above,
+                // and neither was on the click dump. Printed only when non-zero, so a matte
+                // linkset's block stays as short as it was.
+                if (f.Shiny != 0) faceSummary.Append($" shiny={f.Shiny}({f.ShinyGlossiness:0.##})");
+                if (f.Fullbright) faceSummary.Append(" fullbright");
                 if (f.Color.W < 0.995f) faceSummary.Append($" a={f.Color.W:0.##}");
                 // A non-white RGB tint multiplies straight into the shader's albedo (ObjectRenderer.cs
                 // ~2355, `AlbedoColor = colorTint`) with no gamma step of its own -- a face
@@ -908,6 +1016,7 @@ public partial class ObjectRenderer : Node3D
             faceSummary.Append($"all={(prim.TextureId == Guid.Empty ? "none" : prim.TextureId.ToString()[..8])}");
             if (prim.LegacyMaterialId != Guid.Empty) faceSummary.Append($" mat={prim.LegacyMaterialId.ToString()[..8]}");
             if (prim.RenderMaterialId != Guid.Empty) faceSummary.Append($" pbr={prim.RenderMaterialId.ToString()[..8]}");
+            if (prim.Fullbright) faceSummary.Append(" fullbright");
             if (prim.ColorTint.W < 0.995f) faceSummary.Append($" a={prim.ColorTint.W:0.##}");
             if (prim.ColorTint.X < 0.99f || prim.ColorTint.Y < 0.99f || prim.ColorTint.Z < 0.99f)
                 faceSummary.Append($" rgb=({prim.ColorTint.X:0.##},{prim.ColorTint.Y:0.##},{prim.ColorTint.Z:0.##})");
@@ -933,6 +1042,81 @@ public partial class ObjectRenderer : Node3D
     /// different fixes: never streamed in (no visual at all), culled by draw distance
     /// (RESOURCES-RELEASED), or streamed and meshed but drawing nothing (NO MESH -- an asset that
     /// never arrived).</summary>
+    /// <summary>BUG-RENDER-23: what each linkset part's faces are made of, folded to one short
+    /// clause per part.
+    ///
+    /// The click dump prints full per-face detail for the part the ray HIT, and that is routinely
+    /// the wrong prim: SL builds put an invisible pane, a click-catcher or a rim in front of the
+    /// surface the user means. A mirror reported as "flat grey" resolved to a 45-face prim at
+    /// alpha 0 with no material and no shiny at all -- the reflective panel was a sibling the
+    /// mouse cannot reach, and nothing in the dump described it. So every part now says what it
+    /// is shaded BY, not just whether it is drawn.
+    ///
+    /// Folded rather than listed: parts routinely carry 45 identical faces, and the question is
+    /// "which part carries the mirror and what does its data say", not "what is face 31".
+    /// Distinct values only, at most three of each, and anything at its neutral default (no
+    /// material, shiny none, opaque white) is omitted so a plain part stays a short line.</summary>
+    private static string PartShadingSummary(PrimitiveComponent p)
+    {
+        var faces = p.Faces;
+        if (faces is not { Length: > 0 })
+        {
+            var single = new System.Text.StringBuilder($"1 face tex={Short(p.TextureId)}");
+            if (p.LegacyMaterialId != Guid.Empty) single.Append($" mat={Short(p.LegacyMaterialId)}");
+            if (p.RenderMaterialId != Guid.Empty) single.Append($" pbr={Short(p.RenderMaterialId)}");
+            if (p.ColorTint.W < 0.995f) single.Append($" a={p.ColorTint.W:0.##}");
+            if (p.Fullbright) single.Append(" fullbright");
+            single.Append(ProbeClause(p));
+            return single.ToString();
+        }
+
+        var textures = new List<string>();
+        var mats = new List<string>();
+        var pbrs = new List<string>();
+        var shinies = new List<byte>();
+        float minAlpha = 1f;
+        bool anyFullbright = false;
+        foreach (var f in faces)
+        {
+            string tex = Short(f.TextureId);
+            if (!textures.Contains(tex)) textures.Add(tex);
+            if (f.LegacyMaterialId != Guid.Empty)
+            {
+                string m = Short(f.LegacyMaterialId);
+                if (!mats.Contains(m)) mats.Add(m);
+            }
+            if (f.RenderMaterialId != Guid.Empty)
+            {
+                string m = Short(f.RenderMaterialId);
+                if (!pbrs.Contains(m)) pbrs.Add(m);
+            }
+            if (f.Shiny != 0 && !shinies.Contains(f.Shiny)) shinies.Add(f.Shiny);
+            if (f.Color.W < minAlpha) minAlpha = f.Color.W;
+            anyFullbright |= f.Fullbright;
+        }
+
+        var sb = new System.Text.StringBuilder($"{faces.Length} faces tex={Join(textures)}");
+        sb.Append(ProbeClause(p));
+        if (mats.Count > 0) sb.Append($" mat={Join(mats)}");
+        if (pbrs.Count > 0) sb.Append($" pbr={Join(pbrs)}");
+        if (shinies.Count > 0) sb.Append($" shiny={string.Join('/', shinies)}");
+        if (minAlpha < 0.995f) sb.Append($" minA={minAlpha:0.##}");
+        if (anyFullbright) sb.Append(" fullbright");
+        return sb.ToString();
+
+        // BUG-RENDER-24: the Reflection Probe block, and MIRROR in particular. This is the flag
+        // the reference viewer's hero probe selects on, so its absence is the answer to "why is
+        // this mirror not reflecting" just as much as its presence is.
+        static string ProbeClause(PrimitiveComponent prim) => prim.ReflectionProbe is { } rp
+            ? $" probe=[{(rp.IsMirror ? "MIRROR " : "")}{(rp.IsBox ? "box" : "sphere")}" +
+              $"{(rp.IsDynamic ? " dynamic" : "")} ambiance={rp.Ambiance:0.##} clip={rp.ClipDistance:0.##}]"
+            : "";
+
+        static string Short(Guid id) => id == Guid.Empty ? "none" : id.ToString()[..8];
+        static string Join(List<string> v) =>
+            v.Count <= 3 ? string.Join('/', v) : string.Join('/', v.GetRange(0, 3)) + $"/+{v.Count - 3}";
+    }
+
     private static void LogLinksetParts(Entity clicked)
     {
         var renderer = _instance;
@@ -1032,7 +1216,8 @@ public partial class ObjectRenderer : Node3D
             parts.Add((e.LocalId, $"[FaceParams]   part {e.LocalId}{(e.LocalId == rootLocalId ? " (root)" : "")}: " +
                                   $"{kind} scale=({p.Scale.X:0.#},{p.Scale.Y:0.#},{p.Scale.Z:0.#}) " +
                                   $"at <{pos.X:0.#}, {pos.Y:0.#}, {pos.Z:0.#}> " +
-                                  $"rot=({euler.X:0.#}°,{euler.Y:0.#}°,{euler.Z:0.#}°) -> {drawn}"));
+                                  $"rot=({euler.X:0.#}°,{euler.Y:0.#}°,{euler.Z:0.#}°) -> {drawn}" +
+                                  $" | {PartShadingSummary(p)}"));
         }
 
         GD.Print($"[FaceParams]   linkset root {rootLocalId}: {parts.Count} parts");
@@ -1335,6 +1520,11 @@ public partial class ObjectRenderer : Node3D
             _visuals.Remove(entityId);
             _texAnims.Remove(entityId);
             _instanceSuppressed.Remove(entityId);
+            // BUG-RENDER-24: a mirror that leaves the scene must stop being the hero probe's
+            // subject -- the sweep resolves the id back through _visuals, so a stale entry would
+            // simply never match, but leaving it would grow unboundedly over a long session.
+            _flaggedMirrors.Remove(entityId);
+            _legacyMirrors.Remove(entityId);
         }
     }
 
@@ -1993,6 +2183,26 @@ public partial class ObjectRenderer : Node3D
             // AvatarController's ground ray (masked to layer 1) passes through, while staying
             // selectable/editable (the object-selection raycast queries all layers).
             state.StaticBody.CollisionLayer = prim.IsPhantom ? PhantomLayer : 1u;
+
+            // BUG-RENDER-24: does the sim say this object is a mirror? Tracked here rather than
+            // in the sweep so the sweep keeps costing one hash lookup per visual. Removed as well
+            // as added: a probe block edited back to "not a mirror" must release the hero probe.
+            if (prim.ReflectionProbe is { IsMirror: true }) _flaggedMirrors.Add(entityId);
+            else _flaggedMirrors.Remove(entityId);
+
+            // BUG-RENDER-27: the classic fullbright + Shiny HIGH fake mirror. Same place and same
+            // reasoning as the flagged set above -- decided once per update where the faces are
+            // already in hand, so the cull sweep stays a hash lookup.
+            bool legacyMirror = false;
+            if (prim.Faces is { Length: > 0 })
+            {
+                foreach (var f in prim.Faces)
+                {
+                    if (f.Fullbright && f.ShinyGlossiness >= LegacyMirrorMinShiny) { legacyMirror = true; break; }
+                }
+            }
+            if (legacyMirror) _legacyMirrors.Add(entityId);
+            else _legacyMirrors.Remove(entityId);
 
             if (prim.LightEnabled)
             {
@@ -3453,6 +3663,136 @@ public partial class ObjectRenderer : Node3D
     /// (BUG-RENDER-16) — identical when nothing merges. Collision shapes stay on
     /// <paramref name="geometryKey"/>, since a merge regroups triangles into surfaces without
     /// changing them.</para></summary>
+    /// <summary>BUG-RENDER-28: moves the chosen mirror onto <see cref="MirrorVisualLayer"/> and the
+    /// previous one back, so exactly one surface at a time is served by the hero probe alone.
+    /// Split surfaces inherit their parent's layers when they are created, so a mirror that later
+    /// splits follows along.</summary>
+    /// <summary>BUG-RENDER-32: the outward normal of a mirror panel, derived from its own
+    /// geometry rather than assumed. A mirror is thin: the smallest axis of its bounding box is
+    /// the one it has no depth along, which is its face normal. The sign is decided by which side
+    /// the viewer is on, so a double-sided panel reflects whichever face is being looked at.</summary>
+    private static Godot.Vector3 FrontFaceNormal(VisualState state, Godot.Vector3 viewPos)
+    {
+        if (!IsInstanceValid(state.MeshInstance) || state.MeshInstance.Mesh == null)
+            return Godot.Vector3.Zero;
+
+        var aabb = state.MeshInstance.GetAabb();
+        var extents = aabb.Size * state.MeshInstance.Scale;
+        var basis = state.MeshInstance.GlobalTransform.Basis;
+
+        Godot.Vector3 axis = extents.X <= extents.Y && extents.X <= extents.Z ? basis.X
+                           : extents.Y <= extents.Z ? basis.Y
+                           : basis.Z;
+        if (axis.LengthSquared() < 0.000001f) return Godot.Vector3.Zero;
+        axis = axis.Normalized();
+
+        return axis.Dot(viewPos - state.MeshInstance.GlobalPosition) < 0f ? -axis : axis;
+    }
+
+    /// <summary>BUG-RENDER-32: turns the chosen mirror's qualifying surfaces into planar mirrors,
+    /// and turns them back.
+    ///
+    /// Qualifying is read off the material that is already bound rather than re-derived from the
+    /// face data: fullbright and Shiny HIGH is the recipe (BUG-RENDER-27), and the bound uniforms
+    /// are what the renderer will actually draw with. The original Shader is remembered per
+    /// surface so switching back is exact -- rebuilding the material instead would re-fetch
+    /// textures for a change the user makes by walking away from a mirror.</summary>
+    /// <summary>BUG-RENDER-32: hands the planar reflection to whichever surfaces are currently
+    /// mirrors. Called once per frame from Boot, which owns the SubViewport that produces it.</summary>
+    public void SetMirrorTexture(Texture2D? texture)
+    {
+        if (_activeMirrorId == Guid.Empty) return;
+        if (!_visuals.TryGetValue(_activeMirrorId, out var state)) return;
+        if (state.MirrorSurfaces == null) return;
+
+        foreach (var (surface, _) in state.MirrorSurfaces)
+        {
+            var mat = SurfaceMaterial(state, surface);
+            mat?.SetShaderParameter(PrimShaderFamily.MirrorTexture, texture);
+        }
+    }
+
+    /// <summary>Whether the chosen mirror actually has a surface running the planar shader. Boot
+    /// uses it to decide whether the hero probe still has work to do.</summary>
+    public bool PlanarMirrorActive =>
+        _activeMirrorId != Guid.Empty
+        && _visuals.TryGetValue(_activeMirrorId, out var s)
+        && s.MirrorSurfaces != null;
+
+    private void ApplyMirrorShader(VisualState state, bool on)
+    {
+        if (!IsInstanceValid(state.MeshInstance) || state.MeshInstance.Mesh == null) return;
+
+        if (!on)
+        {
+            if (state.MirrorSurfaces == null) return;
+            foreach (var (surface, original) in state.MirrorSurfaces)
+            {
+                var mat = SurfaceMaterial(state, surface);
+                if (mat != null && original != null) mat.Shader = original;
+            }
+            state.MirrorSurfaces = null;
+            return;
+        }
+
+        if (state.MirrorSurfaces != null) return;   // already on
+
+        List<(int, Shader)>? swapped = null;
+        int surfaces = state.MeshInstance.Mesh.GetSurfaceCount();
+        for (int i = 0; i < surfaces; i++)
+        {
+            var mat = SurfaceMaterial(state, i);
+            if (mat == null || mat.Shader == PrimShaderFamily.Mirror) continue;
+
+            var fullbright = mat.GetShaderParameter(PrimShaderFamily.Fullbright);
+            var shiny = mat.GetShaderParameter(PrimShaderFamily.LegacyShininess);
+            if (fullbright.VariantType == Variant.Type.Nil || !fullbright.AsBool()) continue;
+            if (shiny.VariantType == Variant.Type.Nil || shiny.AsSingle() < LegacyMirrorMinShiny) continue;
+
+            swapped ??= new List<(int, Shader)>();
+            swapped.Add((i, mat.Shader));
+            mat.Shader = PrimShaderFamily.Mirror;
+        }
+        state.MirrorSurfaces = swapped;
+    }
+
+    private void SetActiveMirror(Guid id)
+    {
+        // Not an early-out on "unchanged": a visual that was released and rebuilt comes back with
+        // a fresh MeshInstance at the default layer, so the assignment below is re-applied every
+        // sweep. Writing an unchanged property is free; silently losing the layer is not.
+        if (_activeMirrorId != id && _activeMirrorId != Guid.Empty
+            && _visuals.TryGetValue(_activeMirrorId, out var previous)
+            && IsInstanceValid(previous.MeshInstance))
+        {
+            ApplyMirrorShader(previous, false);
+            previous.MeshInstance.Layers = DefaultVisualLayer;
+            if (previous.SplitChildren != null)
+            {
+                foreach (var (_, child) in previous.SplitChildren)
+                {
+                    if (IsInstanceValid(child)) child.Layers = DefaultVisualLayer;
+                }
+            }
+        }
+
+        _activeMirrorId = id;
+
+        if (id != Guid.Empty && _visuals.TryGetValue(id, out var current)
+            && IsInstanceValid(current.MeshInstance))
+        {
+            current.MeshInstance.Layers = MirrorVisualLayer;
+            ApplyMirrorShader(current, true);
+            if (current.SplitChildren != null)
+            {
+                foreach (var (_, child) in current.SplitChildren)
+                {
+                    if (IsInstanceValid(child)) child.Layers = MirrorVisualLayer;
+                }
+            }
+        }
+    }
+
     private void AssignSharedMesh(VisualState state, Guid geometryKey, MeshData data, bool flipV)
     {
         // BUG-RENDER-16: decide the surface grouping BEFORE consulting the cache -- it is part of

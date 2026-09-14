@@ -57,6 +57,11 @@ public static class PrimShaderFamily
     // depth for fragments at or above core_alpha_threshold, nothing to colour. The reference
     // viewer's own alpha depth pass (lldrawpoolalpha.cpp:212-227). --foliage-alpha=blendcore.
     private const string DepthCorePath = "res://materials/prim/prim_depth_core.gdshader";
+    // BUG-RENDER-32: the planar mirror. Standalone rather than a member of the Kind/Surface
+    // matrix -- it answers one surface in the scene and shares none of the material pipeline,
+    // only the uniform NAMES, so a ShaderMaterial keeps its albedo and Shiny level across the
+    // swap and ObjectRenderer has one new value to set.
+    private const string MirrorPath = "res://materials/prim/prim_mirror.gdshader";
     // BUG-RENDER-16: draws nothing. Worn by a shared-mesh surface whose geometry now lives on its
     // own MeshInstance3D (ObjectRenderer.SplitSortedSurfaces).
     private const string HiddenPath = "res://materials/prim/prim_hidden.gdshader";
@@ -94,6 +99,7 @@ public static class PrimShaderFamily
     private static readonly Lazy<Shader> _blendPrepass = MakeLazy(BlendPrepassPath);
     private static readonly Lazy<Shader> _scissorEdge = MakeLazy(ScissorEdgePath);
     private static readonly Lazy<Shader> _blendDepth = MakeLazy(BlendDepthPath);
+    private static readonly Lazy<Shader> _mirror = MakeLazy(MirrorPath);
     private static readonly Lazy<Shader> _depthCore = MakeLazy(DepthCorePath);
     private static readonly Lazy<Shader> _hidden = MakeLazy(HiddenPath);
 
@@ -116,6 +122,10 @@ public static class PrimShaderFamily
     /// <summary>Fully opaque, back-face culled. Never writes ALPHA, so it stays in the opaque
     /// pass. Replaces <c>TransparencyEnum.Disabled</c>.</summary>
     public static Shader Opaque => _opaque.Value;
+
+    /// <summary>BUG-RENDER-32: the planar mirror. Assigned to the one chosen mirror's
+    /// qualifying surfaces and swapped back when it stops being chosen.</summary>
+    public static Shader Mirror => _mirror.Value;
 
     /// <summary>Binary alpha cutout (foliage, fences). Writes ALPHA_SCISSOR_THRESHOLD, which
     /// keeps it in the opaque pass. Replaces <c>TransparencyEnum.AlphaScissor</c>; pair it with
@@ -327,6 +337,9 @@ public static class PrimShaderFamily
     /// map this one value drives BOTH the glossiness and the environment intensity the shader
     /// sees, whether or not a legacy material exists (llvovolume.cpp:5543, BUG-RENDER-23).</summary>
     public static readonly StringName LegacyShininess = "legacy_shininess";
+
+    /// <summary>BUG-RENDER-32: the planar mirror's reflected render, set from Boot.</summary>
+    public static readonly StringName MirrorTexture = "mirror_texture";
 
     public static readonly StringName OrmTexture = "orm_texture";
     public static readonly StringName HasOrmTexture = "has_orm_texture";
