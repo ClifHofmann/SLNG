@@ -296,7 +296,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.146-alpha";
+    public const string AppVersion = "v0.22.147-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -2582,6 +2582,11 @@ public partial class Boot : Control
         // can reclaim under this cap.
         _gpuCache = new GpuCache((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024);
 
+        // FEAT-INV-07: restore the inventory cache BEFORE the panel is initialized -- Initialize
+        // populates the root folders, and a fetch that starts before the restore lands would pay
+        // for folders the cache was about to supply for free.
+        _session.OpenInventoryCache(ProjectSettings.GlobalizePath("user://cache/inventory"));
+
         _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, _gpuCache);
         _avatarRenderer?.Initialize(_world, _assetService, _gpuCache, _session);
@@ -3249,6 +3254,12 @@ public partial class Boot : Control
 
         if (_session != null && _session.IsConnected)
         {
+            // FEAT-INV-07: write the inventory cache while the store is still live. This covers
+            // both exits -- QuitGracefully(true) from the window's × and from Exit, and
+            // QuitGracefully(false) from Disconnect -- because a logout is just as much the end of
+            // a session as a quit, and only one of them was ever going to be remembered otherwise.
+            _session.SaveInventoryCache();
+
             // Hide all UI components for a clean screenshot
             var loginScreen = GetNodeOrNull<Control>("%LoginScreen");
             if (loginScreen != null) loginScreen.Visible = false;

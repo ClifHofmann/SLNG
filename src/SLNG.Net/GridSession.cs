@@ -5662,6 +5662,99 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// grid has no library).</summary>
     public Guid? LibraryRootId => _client.Inventory.Store?.LibraryFolder?.UUID.Guid;
 
+    // FEAT-INV-07: path of this account's inventory cache file, null until OpenInventoryCache.
+    // While it is null every fetch behaves exactly as before -- the cache is an optimisation,
+    // never a dependency.
+    private string? _inventoryCachePath;
+
+    /// <summary>
+    /// FEAT-INV-07: loads this account's on-disk inventory cache, so folders that have not changed
+    /// since the last session are drawn without a CAPS round trip. Call once per login, after the
+    /// inventory skeleton has arrived, with a directory the client owns (the app resolves
+    /// <c>user://</c> — <c>src/</c> must not know about Godot's virtual filesystem).
+    ///
+    /// <para><b>The version comparison is LibreMetaverse's, not ours.</b> <c>RestoreFromDisk</c>
+    /// implements exactly the algorithm the reference viewer uses in
+    /// <c>LLInventoryModel::loadSkeleton</c> (llinventorymodel.cpp:2929-2946): for every cached
+    /// folder it compares the cached version against the version the login skeleton just reported
+    /// and sets <c>InventoryNode.NeedsUpdate</c> accordingly, restoring contents only for folders
+    /// that match and dropping items whose parent is dirty (InventoryCache.cs:195-250). Verified
+    /// against the <i>pinned</i> 3.1.3 package by round-tripping a store, not merely read in the
+    /// newer vendored checkout — see <c>InventoryCacheTests</c>, which pins that behaviour so a
+    /// package bump that breaks it fails a test instead of serving a stale inventory.</para>
+    ///
+    /// <para>Ordering matters: the skeleton must already be in the store, or there are no server
+    /// versions to compare against and every cached folder is discarded as orphaned.</para>
+    /// </summary>
+    public void OpenInventoryCache(string directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory)) return;
+
+        var agent = _client.Self.AgentID;
+        if (agent == UUID.Zero) return; // not logged in yet -- nothing to key the file by
+
+        var store = _client.Inventory.Store;
+        if (store?.RootFolder == null)
+        {
+            Console.Error.WriteLine("[InvCache] skeleton not loaded yet -- not restoring the cache");
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(directory);
+            // Keyed by agent id: two accounts on one machine, or the same name on two grids,
+            // must never read each other's inventory.
+            _inventoryCachePath = System.IO.Path.Combine(directory, $"{agent.Guid:N}.inv.cache");
+
+            if (!File.Exists(_inventoryCachePath))
+            {
+                Console.Error.WriteLine("[InvCache] no cache yet -- this session builds one");
+                return;
+            }
+
+            // -1 on any problem (missing magic, wrong format version, corrupt payload); the store
+            // is simply left as the skeleton built it and everything is fetched as before.
+            int restored = store.RestoreFromDisk(_inventoryCachePath);
+            Console.Error.WriteLine(restored < 0
+                ? $"[InvCache] unreadable cache {_inventoryCachePath} -- fetching everything"
+                : $"[InvCache] restored {restored} item(s) from {_inventoryCachePath}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[InvCache] could not open cache in {directory}: {ex.Message}");
+            _inventoryCachePath = null;
+        }
+    }
+
+    /// <summary>
+    /// FEAT-INV-07: writes the inventory cache to disk. Call on quit <b>and</b> on explicit logout
+    /// — a clean quit is not the only way a session ends.
+    ///
+    /// <para>Only worth doing once something has actually been fetched; saving an empty store
+    /// would replace a good cache with nothing, so a store still holding nothing but the skeleton
+    /// is left alone.</para>
+    /// </summary>
+    public void SaveInventoryCache()
+    {
+        if (_inventoryCachePath == null) return;
+
+        var store = _client.Inventory.Store;
+        if (store?.RootFolder == null) return;
+
+        try
+        {
+            store.SaveToDisk(_inventoryCachePath);
+            var bytes = new FileInfo(_inventoryCachePath).Length;
+            Console.Error.WriteLine($"[InvCache] saved {store.Count} node(s), {bytes / 1024} KB");
+        }
+        catch (Exception ex)
+        {
+            // Losing a cache costs speed, never correctness.
+            Console.Error.WriteLine($"[InvCache] could not save {_inventoryCachePath}: {ex.Message}");
+        }
+    }
+
     /// <summary>Folder id of the Trash folder, or null until login.</summary>
     public Guid? TrashFolderId => _client.Inventory.FindFolderForType(FolderType.Trash).Guid;
 
@@ -5730,6 +5823,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (store == null) return Array.Empty<InventoryEntry>();
 
         var folderUuid = new LibreMetaverse.UUID(folderId);
+
+        // FEAT-INV-07. NeedsUpdate is LibreMetaverse's "these contents are trustworthy" flag: it
+        // starts true for every skeleton folder, and only two things clear it — a successful
+        // contents fetch this session, or RestoreFromDisk finding the cached folder at the same
+        // version the login skeleton just reported. Either way the store already holds the truth,
+        // so there is nothing to ask the grid for.
+        //
+        // This is also why re-expanding a folder is now free: today's code refetched on every
+        // expand even though the answer was already in the store.
+        var cachedNode = store.GetNodeOrDefault(folderUuid);
+        bool servedFromCache = cachedNode is { NeedsUpdate: false };
         // Library folders are owned by the library owner, not the agent — but do NOT trust the
         // stored node's own OwnerID for this: LibreMetaverse's descendents-reply parser creates
         // folders with OwnerID unset (UUID.Zero) — only login-SKELETON folders carry an owner.
@@ -5748,9 +5852,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
         }
 
-        var contents = await _client.Inventory.FolderContentsAsync(
-            folderUuid, owner, fetchFolders: true, fetchItems: true,
-            LibreMetaverse.InventorySortOrder.ByName, ct).ConfigureAwait(false);
+        var contents = servedFromCache
+            ? store.GetContents(folderUuid)
+            : await _client.Inventory.FolderContentsAsync(
+                folderUuid, owner, fetchFolders: true, fetchItems: true,
+                LibreMetaverse.InventorySortOrder.ByName, ct).ConfigureAwait(false);
         if (contents == null) return Array.Empty<InventoryEntry>();
 
         bool isLandmarksFolder = IsInLandmarksSubtree(folderId);

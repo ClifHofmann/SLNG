@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-INV-07`
 - **Track:** `net` (+ `ui`)
-- **Status:** `⏸️ Pending`
+- **Status:** `🧪 Review` — **Phase 1 implemented v0.22.147-alpha**, awaiting in-world verification. Phases 2-3 pending.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -69,55 +69,56 @@ something else.
 
 ## Design for SLNG
 
-**Cache SLNG's own neutral `InventoryEntry` DTOs, not LibreMetaverse objects.** The cache sits
-*in front of* `GridSession.FetchInventoryChildrenAsync`, which already returns
-`IReadOnlyList<InventoryEntry>`. Nothing has to be pushed back into LibreMetaverse's store for
-browsing or searching to work — a real fetch still populates it, which is what the wear/COF
-paths need.
+**Correction made while building this: LibreMetaverse already implements Phase 1.** The spec
+originally proposed caching SLNG's own neutral `InventoryEntry` records in a separate file. That
+would have been a parallel implementation of something the library already does — and does the
+same way the reference viewer does.
 
-**Trap, already verified:** do **not** serialize via LibreMetaverse's own OSD helpers.
-`InventoryFolder.GetOSD()` writes `item_id` / `type` and omits `descendents` and `owner_id`,
-while `InventoryFolder.FromOSD()` reads `category_id` / `folder_id` / `type_default` /
-`descendents` / `owner_id` (`InventoryBase.cs:857-873`, `:914-926`). **That pair does not round
-trip** — `FromOSD(GetOSD(f))` loses the type and throws on the missing keys. Serializing our own
-record sidesteps it entirely.
+`Inventory.SaveToDisk` / `RestoreFromDisk` (`InventoryCache.cs`) persist the whole store with
+MessagePack, and the restore is **version-aware**: for every cached folder it compares the cached
+version against the version the login skeleton just reported and sets
+`InventoryNode.NeedsUpdate` accordingly, restoring contents only for folders that match and
+dropping items whose parent is dirty (`InventoryCache.cs:195-250`). That is
+`LLInventoryModel::loadSkeleton` in C#.
+
+This was **verified against the pinned 3.1.3 package** by round-tripping a real store, not read
+from the newer vendored checkout — the distinction has cost this project real debugging before.
+`tests/SLNG.Net.Tests/InventoryCacheTests.cs` pins the behaviour, because it is now a dependency:
+if a package bump changed it, the cache would silently serve a **stale** inventory, which is far
+worse than a slow one.
+
+Using it also warms LibreMetaverse's store itself, so every consumer benefits, not only the
+browser.
+
+### What SLNG actually adds
+
+1. `GridSession.OpenInventoryCache(directory)` — after login, once the skeleton is in the store,
+   restore `<agent-id>.inv.cache`. Keyed by agent id so two accounts, or the same name on two
+   grids, never read each other's inventory. Ordering matters: with no skeleton there are no
+   server versions to compare against and every cached folder is discarded as orphaned.
+2. `FetchInventoryChildrenAsync` — serve from `store.GetContents(folder)` when the node's
+   `NeedsUpdate` is false, instead of calling `FolderContentsAsync`. `NeedsUpdate` starts **true**
+   for every skeleton folder and is cleared by exactly two things: a successful fetch this
+   session, or a cache restore at a matching version. That default is what makes the whole scheme
+   safe — the network is only skipped when something actively proved the contents good.
+3. `GridSession.SaveInventoryCache()` — on quit **and** on logout.
+
+**Side benefit:** re-expanding a folder is now free. The old code refetched on every expand even
+though the answer was already in the store.
 
 ### Layering
 
-`SLNG.Net` owns the cache and does the file IO; it is handed a directory by `app`, the same
-shape as the existing asset cache (`Boot.cs:957` passes
-`ProjectSettings.GlobalizePath("user://cache/assets")`). Suggested location:
-`user://cache/inventory/<agent-id>.json.gz`. No `using Godot;` crosses into `src/`, and no
-LibreMetaverse type crosses out of it.
-
-### Cache invalidation
-
-The version comparison is the whole contract:
-
-| cached version | skeleton version | action |
-|---|---|---|
-| present, equal | — | serve from cache, no network |
-| present, different | — | refetch that folder, rewrite its entry |
-| absent | — | fetch as today |
-| folder gone from skeleton | — | drop the cache entry |
-
-The version for a freshly fetched folder comes from the CAPS reply, which LibreMetaverse already
-records on the stored folder (`InventoryManager.cs:427-428`,
-`fetchedFolder.Version = res["version"]`). `GridSession` reads it back off the store node after
-a fetch and stores it with the cached contents.
-
-**Correctness rule:** a folder whose version is unknown after a fetch must **not** be written to
-the cache. An entry with no version can never be validated, and serving it would be a permanent
-stale read. Skipping it costs one refetch next session; writing it risks showing a wrong
-inventory forever.
+`SLNG.Net` owns the path and the calls; `app` hands it a real directory
+(`ProjectSettings.GlobalizePath("user://cache/inventory")`), the same shape as the existing asset
+cache. No `using Godot;` in `src/`, no LibreMetaverse type out of it.
 
 ## Phases
 
-### Phase 1 — versioned disk cache (the win)
+### Phase 1 — versioned disk cache (the win) — ✅ done, v0.22.147-alpha
 
-Persist per-folder `InventoryEntry` lists plus their version; on login, serve matching folders
-from the cache instead of the network. Browsing becomes instant for unchanged folders, and the
-existing search crawl gets dramatically cheaper because most folders are already local.
+Restore on login, serve clean folders from the store, save on quit and logout. Browsing is
+instant for unchanged folders, and the existing search crawl gets dramatically cheaper because
+most folders are already local.
 
 ### Phase 2 — background fetch
 
@@ -139,10 +140,10 @@ unknown, exactly as `llinventoryfilter.cpp:202-216` does.
       folder, provable from the log.
 - [ ] A folder changed by another viewer between sessions is refetched, and shows the new
       contents (version mismatch path).
-- [ ] A folder with no known version is never served from cache.
-- [ ] Cache is per account and per grid — logging into a different account or grid never reads
+- [x] A folder with no known version is never served from cache.
+- [x] Cache is per account and per grid — logging into a different account or grid never reads
       another's file.
-- [ ] A corrupt, truncated or unreadable cache file degrades to today's behaviour rather than
+- [x] A corrupt, truncated or unreadable cache file degrades to today's behaviour rather than
       breaking login.
 - [ ] Phase 3: searching a large inventory returns matches from folders never expanded by hand,
       with no per-keystroke network traffic.
@@ -151,29 +152,28 @@ unknown, exactly as `llinventoryfilter.cpp:202-216` does.
 
 ## Technical Specs & Affected Files
 
-- `src/SLNG.Net/InventoryCache.cs` — new. Load/save the gzipped per-folder entries, version
-  comparison, corruption handling.
-- `src/SLNG.Net/GridSession.cs` — read the skeleton versions off the store; consult the cache in
-  `FetchInventoryChildrenAsync`; record the post-fetch version; expose a save hook.
+- `src/SLNG.Net/GridSession.cs` — `OpenInventoryCache` / `SaveInventoryCache`; serve from the
+  store in `FetchInventoryChildrenAsync` when `NeedsUpdate` is false.
 - `app/scripts/Boot.cs` — supply the cache directory; save on `NotificationWMCloseRequest`
   (`Boot.cs:2068-2075`) **and** on explicit logout (`Boot.cs:524`), since a crash-free quit is
   not the only way a session ends.
 - `app/scripts/UI/InventoryPanel.cs` — Phase 3: filter locally, drop the crawl caps.
-- `tests/SLNG.Net.Tests/InventoryCacheTests.cs` — new.
+- `tests/SLNG.Net.Tests/InventoryCacheTests.cs` — pins LibreMetaverse's version-comparison
+  behaviour, which the cache now depends on.
 
 ## Open questions
 
 - **Library folders.** The viewer caches the Library separately and skips it for a second
   instance (`llappviewer.cpp:6180-6187`). The Library is identical for everyone and effectively
   immutable — cache it once, or skip it in Phase 1?
-- **Cache size.** 30 000 items of `InventoryEntry` gzipped is likely a few MB. Worth measuring
-  before choosing a format; JSON + gzip is the simple default.
+- **Cache size.** Resolved by using LibreMetaverse's MessagePack format — ~870 bytes for a
+  4-node store in the round-trip test. Worth re-measuring on a real 30 000-item inventory.
 
 ## Sub-tasks / Progress
 
-- [ ] Phase 1: cache format + load/save + version gate
-- [ ] Phase 1: wire into `FetchInventoryChildrenAsync`, save on quit and on logout
-- [ ] Phase 1: tests
+- [x] Phase 1: restore on login, serve on `NeedsUpdate == false`, save on quit + logout
+- [x] Phase 1: verified the pinned LMV does the version comparison (not assumed from source)
+- [x] Phase 1: tests (5)
 - [ ] Phase 2: background fetch, rate-limiter aware
 - [ ] Phase 3: local search, drop the crawl caps
 - [ ] In-world verification: relog and confirm the folder fetches disappear from the log
