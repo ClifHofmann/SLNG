@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-INV-04`
 - **Track:** `net` (+ `ui`)
-- **Status:** `🧪 Review` — implemented v0.22.144-alpha, awaiting in-world verification (give a landmark from a second account).
+- **Status:** `🧪 Review` — v0.22.144-alpha showed the window; v0.22.145-alpha makes declining actually discard the item. Awaiting in-world re-test.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -64,6 +64,24 @@ The viewer answers the offer **and** runs `LLOpenAgentOffer::startFetch()` — a
 about the item without a refetch of the whole tree. SLNG does neither, so the item is only
 discovered the next time the destination folder is fetched from scratch, i.e. after a relog.
 
+### 4. Declining sent the message but left the item where it was
+
+Reported live 2026-09-14 on the **real SL grid** (`agni`), after the window itself worked:
+*„Ich hab das abgelehnt, es liegt trotzdem unter Objekte."*
+
+Same root fact as (3), read the other way round: because the grid files an agent's gift
+**before** the offer arrives, the decline IM only tells the giver. Moving the item out is the
+**viewer's** job, and the reference viewer does exactly that — `LLDiscardAgentOffer::done`
+calls `LLInventoryModel::removeObject` (llviewermessage.cpp:1160-1173), which is
+`changeItemParent(item, Trash)` (llinventorymodel.cpp:4277-4292, :4333-4348). An offered
+*folder* takes the `removeCategory` branch of the same call, and announces itself as
+`AssetType.Folder` (8 = `AT_CATEGORY`, llassettype.h:69).
+
+OpenSim additionally trashes it server-side (`InventoryTransferModule.cs:348-390`, which
+identifies the item by `im.imSessionID`, not the bucket) and skips the move when the item is
+already in Trash — so the viewer-side discard is correct on both grids rather than a
+double-move on one of them.
+
 ## Wire protocol — confirmed, not guessed
 
 From `llimprocessing.cpp:895-935` and `llviewermessage.cpp:1590-1640`:
@@ -108,8 +126,8 @@ LibreMetaverse type (`InstantMessage`, `AssetType`, `UUID`) crosses the `SLNG.Ne
       the giver and the item, before anything is answered.
 - [ ] **Accept** sends `InventoryAccepted` with the default folder for the asset type, and the
       item appears in the inventory tree **without a relog**.
-- [ ] **Decline** sends `InventoryDeclined`, and the item does not appear in the destination
-      folder.
+- [ ] **Decline** sends `InventoryDeclined` **and moves the item to Trash itself** — the grid
+      has already filed it, so the message alone leaves it sitting in its default folder.
 - [ ] An offer from an in-world object (`TaskInventoryOffered`) is handled on the same path,
       with no item id to fetch.
 - [x] Nothing subscribes to `InventoryManager.InventoryObjectOffered` (a regression there
@@ -139,4 +157,5 @@ LibreMetaverse type (`InstantMessage`, `AssetType`, `UUID`) crosses the `SLNG.Ne
 - [x] `InventoryOfferWindow` + locale keys
 - [x] `Boot` wiring: buffer, drain, folder refresh
 - [x] Tests
-- [ ] In-world verification: give a landmark from a second account
+- [x] Decline discards the item locally (`MoveToTrashAsync`, item vs folder)
+- [ ] In-world verification: accept AND decline an item from a second account

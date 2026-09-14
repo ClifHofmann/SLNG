@@ -1784,9 +1784,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <para>On accept the item is also fetched into the local inventory store. For an agent offer
     /// the simulator copied it in before the offer was even sent (llviewermessage.cpp:1714-1717),
     /// so without this the item exists server-side but no local view knows about it until the
-    /// whole folder is fetched again — i.e. after a relog.</para></summary>
-    /// <returns>The folder the item was filed into, so a UI can refresh exactly that one; or null
-    /// when nothing was sent, or when the offer was declined.</returns>
+    /// whole folder is fetched again — i.e. after a relog.</para>
+    ///
+    /// <para><b>Declining is not just a message.</b> Because the item is already in inventory, the
+    /// decline IM only tells the giver; moving the item out is the <i>viewer's</i> job, and the
+    /// reference viewer does it itself — <c>LLDiscardAgentOffer::done</c> calls
+    /// <c>LLInventoryModel::removeObject</c>, which is <c>changeItemParent(item, Trash)</c>
+    /// (llviewermessage.cpp:1160-1173, llinventorymodel.cpp:4277-4292, :4333-4348). Without that
+    /// move a declined gift stays exactly where the grid put it, which on SL is the default folder
+    /// for its type — reported live: declined, "es liegt trotzdem unter Objekte". OpenSim happens
+    /// to trash it server-side as well (InventoryTransferModule.cs:348-390) and re-trashing an
+    /// already-trashed item is a no-op there, so the same code is right on both grids.</para>
+    /// </summary>
+    /// <returns>The folder the item ended up in — the default folder for its type on accept, Trash
+    /// on decline — so a UI can refresh exactly that one; or null when nothing was sent.</returns>
     public Guid? RespondToInventoryOffer(
         Guid offerId, Guid fromId, int assetType, Guid itemId, bool fromTask, bool accept)
     {
@@ -1813,17 +1824,38 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // Decline carries an empty bucket (llviewermessage.cpp:1629).
             accept ? destination.GetBytes() : Array.Empty<byte>());
 
-        if (!accept) return null;
-
-        // Pull the offered item into LibreMetaverse's store so the inventory UI can see it without
-        // a relog. Only an agent offer carries an id; an object's item is created server-side by
-        // the accept we just sent, and arrives by the usual BulkUpdateInventory route.
+        // Both answers need local work, and only an agent offer has an id to do it with: an
+        // object's item does not exist until the accept above is processed, and arrives by the
+        // usual BulkUpdateInventory route.
         if (itemId != Guid.Empty)
         {
-            _client.Inventory.RequestFetchInventory(new UUID(itemId), _client.Self.AgentID);
+            if (accept)
+            {
+                // Pull the offered item into LibreMetaverse's store so the inventory UI can see it
+                // without a relog.
+                _client.Inventory.RequestFetchInventory(new UUID(itemId), _client.Self.AgentID);
+            }
+            else
+            {
+                // ...and move a declined one out, because the grid already filed it. See the
+                // remarks above: this is LLDiscardAgentOffer, not an extra courtesy.
+                // AssetType.Folder (8) is how a whole offered folder announces itself
+                // (llassettype.h:69 AT_CATEGORY; InventoryTransferModule.cs:182).
+                _ = MoveToTrashAsync(itemId, isFolder: assetType == (int)AssetType.Folder);
+            }
         }
 
         return destination == UUID.Zero ? null : destination.Guid;
+    }
+
+    /// <summary>The folder an item of this SL asset type is filed into by default — the viewer's
+    /// <c>findCategoryUUIDForType(assetTypeToFolderType(type))</c> (llimprocessing.cpp:935). Null
+    /// before login or when the grid has no such folder. Used to refresh the folder a declined
+    /// gift has just been moved out of (BUG-INV-04).</summary>
+    public Guid? DefaultFolderForAssetType(int assetType)
+    {
+        var id = _client.Inventory.FindFolderForType((AssetType)assetType);
+        return id == UUID.Zero ? null : id.Guid;
     }
 
     /// <summary>Accepts or declines a pending group invitation. Both answers are sent — declining

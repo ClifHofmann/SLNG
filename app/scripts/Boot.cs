@@ -296,7 +296,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.144-alpha";
+    public const string AppVersion = "v0.22.145-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -2976,31 +2976,39 @@ public partial class Boot : Control
         GD.Print($"[InvOffer] {e.FromName} -> \"{e.ItemName}\" type {e.AssetType} item {e.ItemId}");
     }
 
-    /// <summary>An accepted offer has been answered. The simulator had already copied an agent's
-    /// gift into our inventory before the offer even arrived, so the item exists either way — what
-    /// was missing is a local view of it. GridSession has just asked for the item; refreshing the
-    /// destination folder is what puts it on screen without a relog (BUG-INV-04).
-    ///
-    /// <para>The refresh is deferred by a beat: RequestFetchInventory is a round trip, and a
-    /// refresh issued in the same frame would race it and redraw the folder as it was. One retry
-    /// covers a slow grid without turning this into a poll.</para></summary>
+    /// <summary>An offer has been answered. The simulator had already copied an agent's gift into
+    /// our inventory before the offer even arrived, so the item exists either way — what was
+    /// missing is a local view of it, and on a decline, its removal. GridSession has just fetched
+    /// or trashed it; this redraws the folders that changed, which is what makes either answer
+    /// visible without a relog (BUG-INV-04).</summary>
     private void OnInventoryOfferAnswered(SLNG.Core.InventoryOfferEvent e, bool accept, System.Guid? folderId)
     {
-        if (!accept)
-        {
-            LogMessage($"[color=gray]{SLNG.App.UI.L10n.TrFormat("ui.inventory_offer.declined", e.ItemName)}[/color]");
-            return;
-        }
+        GD.Print($"[InvOffer] {(accept ? "accepted" : "declined")} \"{e.ItemName}\" -> folder {folderId}");
 
-        LogMessage($"[color=lightgreen]{SLNG.App.UI.L10n.TrFormat("ui.inventory_offer.accepted", e.ItemName)}[/color]");
-        if (folderId is not { } folder) return;
+        LogMessage(accept
+            ? $"[color=lightgreen]{SLNG.App.UI.L10n.TrFormat("ui.inventory_offer.accepted", e.ItemName)}[/color]"
+            : $"[color=gray]{SLNG.App.UI.L10n.TrFormat("ui.inventory_offer.declined", e.ItemName)}[/color]");
 
+        // Accepting files the item into folderId; declining moves it OUT of the folder the grid had
+        // already put it in and into Trash (folderId), so that source folder has to be redrawn too
+        // or the declined gift keeps showing there.
+        var folders = new System.Collections.Generic.List<System.Guid>();
+        if (folderId is { } destination) folders.Add(destination);
+        if (!accept && _session?.DefaultFolderForAssetType(e.AssetType) is { } source && source != folderId)
+            folders.Add(source);
+        if (folders.Count == 0) return;
+
+        // Deferred by a beat: the fetch and the move are round trips, and a refresh issued in the
+        // same frame would race them and redraw the folder as it was. One retry covers a slow grid
+        // without turning this into a poll.
         foreach (var delay in new[] { 0.6f, 2.0f })
         {
             var timer = GetTree().CreateTimer(delay);
             timer.Timeout += () =>
             {
-                if (IsInstanceValid(this)) _inventoryPanel?.RefreshFolder(folder, e.ItemId);
+                if (!IsInstanceValid(this)) return;
+                foreach (var folder in folders)
+                    _inventoryPanel?.RefreshFolder(folder, accept ? e.ItemId : null);
             };
         }
     }

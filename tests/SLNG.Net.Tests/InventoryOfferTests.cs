@@ -188,6 +188,24 @@ public class InventoryOfferTests
         Assert.Equal(declined, (InstantMessageDialog)((byte)offer + 2));
     }
 
+    // A whole offered FOLDER announces itself as AssetType.Folder in the bucket's first byte
+    // (llassettype.h:69 AT_CATEGORY = 8, InventoryTransferModule.cs:182). RespondToInventoryOffer
+    // keys its move-to-Trash on exactly that value, so a folder gets MoveFolder and an item
+    // MoveItem -- getting it wrong would silently fail to discard a declined folder.
+    [Fact]
+    public void An_offered_folder_is_asset_type_eight()
+    {
+        Assert.Equal(8, (int)AssetType.Folder);
+
+        var folderId = UUID.Random();
+        Assert.True(GridSession.TryParseInventoryOfferBucket(
+            AgentBucket((byte)AssetType.Folder, folderId), fromTask: false,
+            out var assetType, out var parsedId));
+
+        Assert.Equal((int)AssetType.Folder, assetType);
+        Assert.Equal(folderId.Guid, parsedId);
+    }
+
     // Subscribing to LibreMetaverse's own offer event would decline every offer before the user
     // saw the window: InventoryManager.Self_IM fires it synchronously and then sends the reply
     // from args.Accept, which the constructor sets to false. This asserts that default, so a
