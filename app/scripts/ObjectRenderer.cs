@@ -27,7 +27,12 @@ public partial class ObjectRenderer : Node3D
     // lldrawpoolalpha.cpp: culling is lifted only for particles and mDoubleSided GLTF materials,
     // exactly what SLNG already does). See HANDOVER.md's BUG-RENDER-06 follow-up for the full
     // trail of ruled-out hypotheses before picking this back up.
-    private static readonly bool DebugLegacyMaterials = false;
+    // BUG-RENDER-23: no longer a constant to be edited and rebuilt. "Does this face carry a
+    // legacy material, and with what Glossiness/Environment Intensity?" is the first question
+    // every wrong-looking shiny surface raises, and answering it took a source edit + rebuild +
+    // relog every time. Tied to --diag instead (a property, not a static readonly field: the flag
+    // is parsed in Boot._Ready, which can run after this type is first touched).
+    private static bool DebugLegacyMaterials => Diagnostics.Enabled;
 
     private World? _world;
     private SLNG.Assets.AssetService? _assetService;
@@ -2509,11 +2514,12 @@ public partial class ObjectRenderer : Node3D
         material.SetShaderParameter(PrimShaderFamily.Fullbright, ft.Fullbright);
 
         // FEAT-RENDER-19: the build tool's legacy Shiny. Set unconditionally -- the shader gives a
-        // legacy MATERIAL precedence (BUG-RENDER-21 corrected this from "a specular MAP"), matching
-        // the viewer: llface.cpp packs shininess into the vertex alpha whenever there is no
-        // specular map, but a materialed face is drawn by the deferred material shader, which reads
-        // glossiness from the material's SpecExp and never looks at that vertex alpha. Zero here
-        // means genuinely matte, and the viewer skips its entire specular branch for such a face.
+        // specular MAP precedence (BUG-RENDER-23 put this back after BUG-RENDER-21 moved it to the
+        // material), matching the viewer twice over: llface.cpp:1412 packs shininess into the
+        // vertex alpha whenever there is no specular map, and llvovolume.cpp:5543 hands that same
+        // Shiny level to the shader as BOTH the glossiness and the environment intensity unless a
+        // map is present. Zero here means genuinely matte, and the viewer skips its entire
+        // specular branch for such a face.
         material.SetShaderParameter(PrimShaderFamily.LegacyShininess, ft.ShinyGlossiness);
 
         material.SetShaderParameter(PrimShaderFamily.PrimScale,
@@ -2603,19 +2609,18 @@ public partial class ObjectRenderer : Node3D
                     ? $"legacyMat={lm.Id.ToString()[..8]} mode={lm.DiffuseAlphaMode} cutoff={lm.AlphaMaskCutoff} tintA={colorTint.A:0.###} -> {PrimShaderKindName(material.Shader)}"
                     : $"legacyMat={lm.Id.ToString()[..8]} mode=Default (defers to DetectAlpha) tintA={colorTint.A:0.###}");
 
-                // BUG-RENDER-21: the material's own specular scalars, set because the MATERIAL
-                // exists -- not because it assigns a specular map. The viewer's material shader is
-                // selected by LLMaterial::getShaderMask(), whose SPEC_BIT is the only part that
-                // looks at getSpecularID(); mask 0 (no maps at all) still lands on PASS_MATERIAL
-                // and still reads `glossiness = specular_color.a` and `env = env_intensity * 1.0`
-                // (getSpecular()'s `#else` substitutes an opaque white spec for the missing map).
-                // Raising Shininess or Environment Intensity in the Build floater without
-                // assigning a map is an ordinary authoring case, and Environment Intensity is the
-                // control that gives content its mirror-like look; gating these on the map dropped
-                // both silently. SL transmits them as bytes and the shader wants them normalised;
-                // the viewer's own defaults are SpecExp 0.2*255 and EnvIntensity 0
-                // (llmaterial.h:55-57, llmaterial.cpp:55).
-                material.SetShaderParameter(PrimShaderFamily.HasSpecularMaterial, true);
+                // The material's own specular scalars. SL transmits them as bytes and the shader
+                // wants them normalised; the viewer's own defaults are SpecExp 0.2*255 and
+                // EnvIntensity 0 (llmaterial.h:55-57, llmaterial.cpp:55).
+                //
+                // BUG-RENDER-23: the shader reads these ONLY when the material also assigns a
+                // specular map, which is where llvovolume.cpp:5536-5557 puts the gate -- without
+                // one it fills specular_color and env_intensity from the prim's Shiny level and
+                // never looks at the material. Set unconditionally all the same, since that is
+                // the cheap half: the shader decides, and a material that later gains a map has
+                // its values already there. BUG-RENDER-21 read the gate off the shader's own
+                // `#else` and getShaderMask()'s SPEC_BIT instead, and those describe how the
+                // values are USED, not where they come from.
                 material.SetShaderParameter(PrimShaderFamily.SpecularTint,
                     new Godot.Vector3(lm.SpecularColor.X, lm.SpecularColor.Y, lm.SpecularColor.Z));
                 material.SetShaderParameter(PrimShaderFamily.SpecularGlossiness, lm.SpecularExponent / 255f);

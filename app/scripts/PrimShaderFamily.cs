@@ -315,13 +315,6 @@ public static class PrimShaderFamily
     public static readonly StringName SpecularTexture = "specular_texture";
     public static readonly StringName HasSpecularTexture = "has_specular_texture";
 
-    /// <summary>Whether the face carries a legacy Blinn-Phong material at all. This -- not
-    /// <see cref="HasSpecularTexture"/> -- is what selects the shader's material path, because the
-    /// viewer's own pool choice keys off <c>getMaterialParams()</c> while only the SPEC_BIT of
-    /// <c>LLMaterial::getShaderMask()</c> keys off <c>getSpecularID()</c>. A material with no
-    /// specular map still supplies <see cref="SpecularGlossiness"/> and
-    /// <see cref="SpecularEnvironment"/>; gating those on the map dropped both (BUG-RENDER-21).</summary>
-    public static readonly StringName HasSpecularMaterial = "has_specular_material";
     public static readonly StringName SpecularTint = "specular_tint";
     public static readonly StringName SpecularGlossiness = "specular_glossiness";
     public static readonly StringName SpecularEnvironment = "specular_environment";
@@ -330,9 +323,9 @@ public static class PrimShaderFamily
     public static readonly StringName SpecularUvRotation = "specular_uv_rotation";
 
     /// <summary>The build tool's legacy Shiny level, as glossiness (none 0, low 0.25, medium 0.5,
-    /// high 0.75). A face with a legacy MATERIAL ignores it -- map or no map -- exactly as the
-    /// viewer does, since the deferred material shader reads glossiness from the material's
-    /// SpecExp and never from the vertex alpha llface.cpp packed it into.</summary>
+    /// high 0.75). A face with a specular MAP ignores it, exactly as the viewer does; without a
+    /// map this one value drives BOTH the glossiness and the environment intensity the shader
+    /// sees, whether or not a legacy material exists (llvovolume.cpp:5543, BUG-RENDER-23).</summary>
     public static readonly StringName LegacyShininess = "legacy_shininess";
 
     public static readonly StringName OrmTexture = "orm_texture";

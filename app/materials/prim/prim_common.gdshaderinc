@@ -101,11 +101,22 @@ varying vec2 v_normal_uv;
 // all SL content ships -- is reproduced faithfully by that; a coloured one loses its tint.
 uniform sampler2D specular_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool has_specular_texture = false;
-// Whether this face carries a legacy Blinn-Phong MATERIAL at all -- independent of whether that
-// material assigns a specular map. This is the flag that selects the material path, mirroring the
-// viewer's pool/pass choice (which keys off getMaterialParams(), not getSpecularID()); the one
-// above only says whether there is a texture to modulate `specular_tint` with.
-uniform bool has_specular_material = false;
+// BUG-RENDER-23: the specular MAP is what selects the path, and BUG-RENDER-21's `has_specular_
+// material` is gone with the premise that introduced it. That premise came from the shader half
+// (getSpecular()'s `#else`, and getShaderMask()'s SPEC_BIT) and never checked where the values
+// it reads are FILLED. llvovolume.cpp:5536-5557 fills them, and the gate there is the map:
+//
+//     float spec = alpha[shiny & TEM_SHINY_MASK];   // 0 / 0.25 / 0.5 / 0.75
+//     specColor = vec4(spec, spec, spec, spec);
+//     draw_info->mSpecColor = specColor; draw_info->mEnvIntensity = spec;   // <- from SHINY
+//     ...
+//     if (!mat->getSpecularID().isNull())          // <- ONLY with a map
+//     {   specColor.mV[3] = mat->getSpecularLightExponent()/255; ...
+//         draw_info->mEnvIntensity = mat->getEnvironmentIntensity()/255; }
+//
+// So a material WITHOUT a specular map contributes neither glossiness nor Environment Intensity:
+// both come from the prim's Shiny level, exactly as for a face with no material at all. These
+// three uniforms are therefore read only inside the `has_specular_texture` branch.
 uniform vec3 specular_tint = vec3(1.0);
 uniform float specular_glossiness = 0.2;   // SpecExp/255; the viewer's default is 0.2*255
 uniform float specular_environment = 0.0;  // EnvIntensity/255
@@ -346,14 +357,16 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
     // path SL feeds.
     out_specular = 0.0;
 
-    // The presence of a legacy MATERIAL selects this path, not the presence of a specular MAP
-    // (BUG-RENDER-21). `specular_tint` is the material's SpecularColor, white by default, which is
-    // exactly what the viewer's `#else` branch of getSpecular() substitutes for the missing map.
-    if (has_specular_material) {
-        vec3 spec = specular_tint;
-        if (has_specular_texture) {
-            spec *= texture(specular_texture, v_specular_uv).rgb;
-        }
+    // A specular MAP selects this path (BUG-RENDER-23 put the gate back where llvovolume.cpp
+    // keeps it; see the uniform block above for the source that settles it).
+    //
+    // SL's environment reflection lives on BOTH paths, which is the half BUG-RENDER-20 was
+    // missing for its whole four-round history: `env_intensity` is a real per-face value even
+    // with no material anywhere in sight, because the viewer fills it from the Shiny level.
+    float env_intensity = 0.0;
+
+    if (has_specular_texture) {
+        vec3 spec = texture(specular_texture, v_specular_uv).rgb * specular_tint;
 
         // SL modulates glossiness PER TEXEL with the normal map's ALPHA channel
         // (materialF.glsl:227, `glossiness *= vNt.a`). Not an optional refinement: content is
@@ -370,29 +383,41 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
         // `color += lit * scol * sunlit * spec.rgb`. Godot has no per-texel specular colour, so
         // this is the one lossy step: a greyscale map (what nearly all SL content ships) is
         // reproduced faithfully, a coloured one loses its tint. Rec. 709 luminance.
-        out_specular = clamp(dot(spec, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+        //
+        // Zero at glossiness 0: the viewer wraps its entire specular branch in
+        // `if (glossiness > 0.0)` (materialF.glsl:367) and skips the gloss-env sample on the same
+        // test (reflectionProbeF.glsl:855-860), so such a face gets neither highlight nor
+        // reflection from this path.
+        out_specular = glossiness > 0.0
+            ? clamp(dot(spec, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0)
+            : 0.0;
 
-        // EnvIntensity is SL's "how mirror-like is this". Godot reaches the environment through
-        // metalness, so it folds in there, scaled by the same luminance so it only applies where
-        // the map says the surface is shiny at all.
-        out_metallic = clamp(metallic_factor + specular_environment * out_specular, 0.0, 1.0);
+        // The material's own EnvIntensity -- the Build floater's Environment slider. Only
+        // reachable here, because only a material WITH a specular map ever reaches the shader
+        // with its own value (llvovolume.cpp:5556).
+        env_intensity = specular_environment;
+        out_metallic = clamp(metallic_factor + env_intensity * out_specular, 0.0, 1.0);
     }
     else if (legacy_shininess > 0.0) {
-        // The build tool's Shiny, for a face with no legacy material at all. `else`, not a second
-        // `if`: llface.cpp:1412 packs shininess into the vertex alpha only when there is no
-        // specular map, but the deferred MATERIAL shader never reads vertex alpha for shininess --
-        // it uses specular_color.a -- so a material wins outright and the two never combine
-        // (BUG-RENDER-21; the branch above used to test for the map, which let a materialed face
-        // with no map fall through to here and be shaded by a value the viewer would ignore).
+        // No specular map -- with or without a legacy material. `legacy_shininess` is already the
+        // SHININESS_TO_ALPHA value the viewer packs (none 0, low 0.25, medium 0.5, high 0.75),
+        // and llvovolume.cpp:5543-5546 hands that ONE number to the shader twice: as the
+        // glossiness (specColor.a) and as the environment intensity (mEnvIntensity).
         //
-        // 0.5 is Godot's standard 4% dielectric F0. The viewer's legacy highlight is a
-        // Blinn-Phong lobe scaled by a white specular colour and is not energy-conserving, so
-        // there is no exact equivalent; what SL genuinely varies between low/medium/high is the
-        // TIGHTNESS of the lobe, and that is what the glossiness above carries. Taking the
-        // conservative physical value for the strength keeps a polished face polished without
-        // inventing brightness the protocol never sent.
+        // The env half is what BUG-RENDER-20 spent four rounds hand-tuning a sky-tint
+        // approximation for, and what FEAT-RENDER-20 then wired a real ReflectionProbe to --
+        // without ever routing this value into it, so a plain shiny prim still had no way to
+        // reflect anything. Shiny HIGH is a 0.75-strength mirror in SL, and that is the chrome
+        // ball the reference viewer draws.
+        //
+        // 0.5 for the highlight is Godot's standard 4% dielectric F0, left as FEAT-RENDER-19
+        // calibrated it against the probe sphere. The viewer's own spec.rgb here is
+        // vec3(legacy_shininess), i.e. the highlight strength varies with the Shiny level too --
+        // a smaller, separate question than the missing reflection, and one that needs its own
+        // A/B rather than a quiet change on the way past.
         out_specular = 0.5;
         out_roughness = slng_glossiness_to_roughness(legacy_shininess);
+        env_intensity = legacy_shininess;
     }
 
     // glTF ORM packing: occlusion in R, roughness in G, metallic in B.
@@ -435,16 +460,29 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
     // eating its own reflection -- with 0.5 standing in for the viewer's own `* 0.5`.
     //
     // Deliberately placed AFTER the ORM block so a glTF material's own roughness/metallic cannot
-    // undo it, and gated purely on the uniform so it starts working for materials with no specular
-    // map the moment that plumbing is restored (a separate task owns that fix; this one owns the
-    // model, and the two meet here).
+    // undo it, and gated purely on `env_intensity` -- which BUG-RENDER-23 made a real per-face
+    // value on BOTH paths: the material's own slider where there is a specular map, the prim's
+    // Shiny level where there is not.
     //
     // Overriding out_albedo does discard the atmospherics already applied to it. That is the
     // viewer's behaviour too -- its mix replaces the shaded colour outright -- and on an indoor
     // mirror there is nothing to lose; on a distant outdoor one it costs a little haze tint.
-    float env_intensity = clamp(specular_environment, 0.0, 1.0);
+    env_intensity = clamp(env_intensity, 0.0, 1.0);
     if (env_intensity > 0.0) {
-        out_roughness = mix(out_roughness, 0.0, env_intensity);
+        // BUG-RENDER-23: roughness 0 FLAT, never interpolated by the intensity. The viewer takes
+        // this sample at the sharpest mip whatever the slider says --
+        // `legacyenv = sampleProbes(pos, normalize(refnormpersp), 0.0)`
+        // (reflectionProbeF.glsl:862-865, and note the `glossenv` sample seven lines above it
+        // DOES use `(1.0 - glossiness) * reflection_lods`, so the two sharpnesses are deliberately
+        // independent) -- and the intensity then weighs only how much of that reflection replaces
+        // the surface (`color = mix(color.rgb, reflected_color * 0.5, envIntensity)`,
+        // applyLegacyEnv:912). Interpolating the ROUGHNESS by it made sharpness a function of
+        // intensity instead: a half-mirror came out half-blurred.
+        //
+        // Load-bearing now in a way it was not before: with `env_intensity` fed by the Shiny
+        // level, every shiny prim in the world takes this branch, and interpolating the roughness
+        // would have made shiny LOW a blurred smear and only shiny HIGH anything like a mirror.
+        out_roughness = 0.0;
         out_metallic = mix(out_metallic, 1.0, env_intensity);
         out_albedo = mix(out_albedo, vec3(0.5), env_intensity);
     }
