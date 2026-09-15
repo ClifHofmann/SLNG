@@ -17,19 +17,24 @@ public sealed class AnimationSettings
     /// <summary>
     /// Whether a furniture pose outranks a worn AO HUD while seated.
     ///
-    /// <para>Default <b>on</b>, and that is a deliberate departure from the reference viewer rather
-    /// than an imitation of it: there, the two are blended purely by priority and the AO commonly
-    /// wins, which is why AO HUDs ship a "disable while seated" patch script. Defaulting to off
-    /// would mean shipping the problem and a switch to fix it. The switch exists for the case this
-    /// rule guesses wrong — a worn animator that should keep playing while you sit.</para>
+    /// <para>Default <b>off</b>. It shipped on, and three rounds of live testing each turned up a
+    /// new case the rule read wrongly — a pose stand sourcing a hand animation, then a mesh body's
+    /// 2-joint deformer passing as a pose — each time leaving the avatar worse off than with no
+    /// rule at all. There is no signal in the animation stream that reliably separates "an AO
+    /// fighting the furniture" from "a HUD deliberately posing me", which is precisely why the
+    /// reference viewer does not try and why AO HUDs ship a "disable while seated" script instead.
+    /// Off by default means SLNG behaves like every other viewer until someone asks for more.</para>
+    ///
+    /// <para>The rule itself is kept, and is worth turning on for ordinary furniture: it is what
+    /// stops an AO stealing a couch's pose. It is opt-in because it cannot be trusted blind.</para>
     /// </summary>
-    public bool SeatPoseOverridesAo { get; private set; } = true;
+    public bool SeatPoseOverridesAo { get; private set; }
 
     public void Load()
     {
         var cfg = new ConfigFile();
         if (cfg.Load(ConfigPath) != Error.Ok) return;
-        SeatPoseOverridesAo = (bool)cfg.GetValue(Section, "seat_pose_overrides_ao", true);
+        SeatPoseOverridesAo = (bool)cfg.GetValue(Section, "seat_pose_overrides_ao", false);
     }
 
     public void SetSeatPoseOverridesAo(bool value)

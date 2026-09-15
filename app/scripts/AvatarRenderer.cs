@@ -948,8 +948,10 @@ public partial class AvatarRenderer : Node3D
     /// viewer, which also plays the built-in gait locally and lets the AO override it).</para></summary>
     /// <summary>FEAT-ANIM-03 preference, pushed in by Boot at startup and when the user changes it.
     /// A plain bool rather than a reference to the settings object, because this is read on every
-    /// animation change for every visible avatar.</summary>
-    public bool SeatPoseOverridesAo { get; set; } = true;
+    /// animation change for every visible avatar. Defaults to the same OFF as
+    /// <see cref="SLNG.App.UI.AnimationSettings.SeatPoseOverridesAo"/>, so a renderer that is never
+    /// told behaves like the setting rather than against it.</summary>
+    public bool SeatPoseOverridesAo { get; set; }
 
     private void ApplyActiveAnimations(Guid entityId, AvatarVisual visual, AvatarComponent avatar)
     {
@@ -4333,6 +4335,14 @@ void fragment() {
     /// simply absent, and the resolver treats absent as "not a body pose", i.e. keeps it — the safe
     /// direction, since the cost of keeping one animation too many is a blend, while the cost of
     /// dropping one too many was a T-posed avatar.</summary>
+    /// <summary>How many <see cref="BodyPoseJoints"/> an animation must key before it counts as a
+    /// body POSE rather than a deformer. Empirical, and stated as such: the deformers measured on a
+    /// live pose stand key 2 joints, the real poses and stands key 19 or more, so anything in
+    /// between is unclaimed territory. Erring high is the safe direction — a pose mistaken for a
+    /// deformer merely means the rule does not fire, while a deformer mistaken for a pose is what
+    /// produced a T-posed avatar.</summary>
+    private const int MinBodyJointsForPose = 6;
+
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, bool> _animationIsBodyPose = new();
 
     private bool IsBodyPoseAnimation(Guid animId)
@@ -4361,14 +4371,21 @@ void fragment() {
                     loaded.Add((animId, data));
 
                     // Classify it once, from what it actually keys. The seat rule reads this to
-                    // tell a body pose from a hand pose (FEAT-ANIM-03).
-                    bool isBodyPose = false;
+                    // tell a body POSE from a hand pose or a deformer (FEAT-ANIM-03).
+                    int bodyJoints = 0;
                     foreach (var joint in data.Joints)
                     {
-                        if (!BodyPoseJoints.Contains(joint.JointName)) continue;
-                        isBodyPose = true;
-                        break;
+                        if (BodyPoseJoints.Contains(joint.JointName)) bodyJoints++;
                     }
+
+                    // Touching a body joint is not enough. Measured on a live pose stand: a mesh
+                    // body's ankle lock and pelvis fix are 2-joint, priority-6, zero-length
+                    // animations that key mPelvis/mAnkle — real body joints, no pose at all. Those
+                    // counted, the rule fired, and it then discarded the AO's actual 19-joint
+                    // stand as a rival, leaving the avatar in the bind pose (a T-pose) while
+                    // Firestorm showed it standing normally. A pose moves a body; a deformer
+                    // pins a bone.
+                    bool isBodyPose = bodyJoints >= MinBodyJointsForPose;
                     _animationIsBodyPose[animId] = isBodyPose;
 
                     // What an animation actually contains, not just that it loaded. An animation
@@ -4379,7 +4396,7 @@ void fragment() {
                     if (Diagnostics.Enabled)
                         GD.Print($"[AnimPlayer] loaded {animId.ToString()[..8]}: {data.Joints.Length} joint(s), " +
                                  $"priority {data.Priority}, {data.Length:0.##}s, loop={data.Loop}, " +
-                                 $"body={isBodyPose}");
+                                 $"body={isBodyPose} ({bodyJoints} body joint(s))");
                 }
                 else if (SelfLocomotion.All.Contains(animId))
                 {

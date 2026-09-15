@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-ANIM-03`
 - **Track:** `render` (+ `net` boundary, `core` state)
-- **Status:** `🧪 Review` — implemented v0.22.152-alpha, awaiting in-world verification.
+- **Status:** `✅ Done (opt-in)` — works on ordinary furniture, **ships OFF by default** (v0.22.161-alpha). Three rounds of live testing each found a new case the rule read wrongly; see *Why it is opt-in* below. Turning it on is worth it for furniture, and it must not be trusted blind.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -59,6 +59,36 @@ Fallbacks that must keep working:
   they win (desired).
 - **Standing / walking** → not seated → rule does not fire; FEAT-ANIM-01 unchanged.
 
+## Why it is opt-in
+
+It shipped on. Three live rounds, three misreadings, each leaving the avatar worse off than with
+no rule at all:
+
+1. **The seat id was never the seat id.** `SittingOnObjectId` came from `Entity.Id`, an internal
+   ECS identity, while an animation's source is the simulator's object UUID — so the rule never
+   fired once, for anyone. Fixed v0.22.155.
+2. **A pose stand sourced a HAND animation.** "The seat is sourcing something" was true, so the
+   HUD's real body pose was dropped as a rival and the avatar stood in the bind pose — a T-pose —
+   with only the fingers changing. Narrowed to body poses, v0.22.157.
+3. **A mesh body's deformer passed as a body pose.** An ankle lock and a pelvis fix are 2-joint,
+   priority-6, zero-length animations keying `mPelvis`/`mAnkle` — real body joints, no pose. They
+   satisfied the narrowed test, the rule fired, and it discarded the AO's actual 19-joint stand.
+   Same T-pose, one layer down. A minimum joint count (v0.22.161) rejects them.
+
+**Not all content trips it.** A second pose stand, tested 2026-09-15, behaves identically in
+SLNG and Firestorm — so this is about particular objects, not about pose stands as a category.
+That is what makes it a defaults question rather than a dead end: the rule is right often enough
+to be worth having, and wrong often enough not to be forced on anyone.
+
+The pattern is still the point: **there is no signal in the animation stream that separates "an AO
+fighting the furniture" from "a HUD deliberately posing me".** Both are attachment-sourced body
+animations that start after a seat pose. That is exactly why the reference viewer does not try —
+it blends by priority and leaves it alone — and why AO HUDs ship a "disable while seated" patch
+script instead.
+
+So the rule stays, because it does the right thing on ordinary furniture, and it defaults off, so
+SLNG behaves like every other viewer until someone asks for more.
+
 ## Acceptance Criteria
 
 - [ ] Wearing a worn AO HUD, sitting on furniture that plays a pose: SLNG renders the
@@ -72,8 +102,8 @@ Fallbacks that must keep working:
       T-pose.
 - [ ] A remote avatar sitting on furniture while wearing an AO renders in the furniture
       pose for the observer too (same source check, remote path).
-- [ ] Preference toggle present (default **on**), label ~ "Möbel-Posen haben beim
-      Sitzen Vorrang vor dem AO" / "Furniture poses override the AO when seated".
+- [x] Preference toggle present (default **off** — see *Why it is opt-in*), label "Möbel-Posen
+      haben beim Sitzen Vorrang vor dem AO" / "Furniture poses override the AO when seated".
 - [ ] Unit test: given a synthetic animation set with seat / attachment / agent
       sources + a seated flag, the resolver excludes exactly the attachment-sourced
       entries and only while a seat-sourced entry is present.
