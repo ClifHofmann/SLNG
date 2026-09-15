@@ -297,7 +297,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.161-alpha";
+    public const string AppVersion = "v0.22.162-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -1811,6 +1811,9 @@ public partial class Boot : Control
         // BUG-INV-04: inventory offers, same off-thread buffering reason.
         while (_pendingInventoryOffers.TryDequeue(out var offer)) ShowInventoryOffer(offer);
 
+        // FEAT-NET-01: script permission requests, same reason again.
+        while (_pendingScriptPermissions.TryDequeue(out var ask)) ShowScriptPermissionRequest(ask);
+
         // MVP2-3 Phase 4: "Arrived in <region>" toast. RegionConnected only flags that we
         // arrived somewhere NEW -- the region's name usually isn't known yet at that exact
         // moment (it arrives via a later RegionHandshake), so this waits here until
@@ -2623,6 +2626,8 @@ public partial class Boot : Control
         _session.GroupInvitationReceived += OnGroupInvitationReceived;
         // BUG-INV-04: inventory offers. Same network-thread buffering as the invitations above.
         _session.InventoryOfferReceived += OnInventoryOfferReceived;
+        // FEAT-NET-01: llRequestPermissions. Same buffering; never answered without a click.
+        _session.ScriptPermissionRequested += OnScriptPermissionRequested;
         // FEAT-UI-13: profile replies + name resolution, routed to whichever profile window is open
         // for that avatar. All fire on a network thread -- marshal before touching the Control tree.
         _session.AvatarPropertiesReceived += OnAvatarProfilePropertiesReceived;
@@ -3017,6 +3022,40 @@ public partial class Boot : Control
         try { _inventoryPrefetchCts?.Cancel(); } catch { /* already disposed */ }
         _inventoryPrefetchCts?.Dispose();
         _inventoryPrefetchCts = null;
+    }
+
+    // ---- FEAT-NET-01: script permission requests ----------------------------------------------
+
+    /// <summary>Open permission prompts, keyed by the asking script item so a script that repeats
+    /// its request raises the existing window instead of stacking a second one.</summary>
+    private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ScriptPermissionWindow> _scriptPermissionWindows = new();
+
+    /// <summary>Requests buffered off the network thread — same reason as the offers above.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentQueue<SLNG.Core.ScriptPermissionRequestEvent> _pendingScriptPermissions = new();
+
+    private void OnScriptPermissionRequested(object? sender, SLNG.Core.ScriptPermissionRequestEvent e)
+        => _pendingScriptPermissions.Enqueue(e);
+
+    private void ShowScriptPermissionRequest(SLNG.Core.ScriptPermissionRequestEvent e)
+    {
+        if (_session == null) return;
+        var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+        if (hudLayer == null) return;
+
+        if (_scriptPermissionWindows.TryGetValue(e.ItemId, out var existing) && IsInstanceValid(existing))
+        {
+            existing.MoveToFront();
+            return;
+        }
+
+        var win = new SLNG.App.UI.ScriptPermissionWindow();
+        hudLayer.AddChild(win);
+        win.CascadeIndex = _scriptPermissionWindows.Count % 8;
+        win.Closed += () => _scriptPermissionWindows.Remove(e.ItemId);
+        _scriptPermissionWindows[e.ItemId] = win;
+        win.Initialize(_session, e);
+
+        GD.Print($"[ScriptPerm] \"{e.ObjectName}\" ({e.ObjectOwner}) asks for 0x{e.Permissions:X}");
     }
 
     // ---- BUG-INV-04: inventory offers ----------------------------------------------------------

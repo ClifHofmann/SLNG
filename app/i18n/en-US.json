@@ -347,6 +347,27 @@
       "continue": "Accept and log in",
       "cancel": "Cancel login",
       "declined": "Login cancelled — the grid's terms were not accepted."
+    },
+    "script_permission": {
+      "title": "PERMISSION REQUEST",
+      "from": "\"{0}\", owned by {1}, is asking for permission.",
+      "asks_for": "It wants to:",
+      "grant": "Grant",
+      "deny": "Deny",
+      "debit": "Take money from your account",
+      "take_controls": "Take over your movement controls",
+      "remap_controls": "Remap your movement controls",
+      "trigger_animation": "Animate your avatar",
+      "attach": "Attach itself to your avatar",
+      "teleport": "Teleport you",
+      "track_camera": "Track your camera",
+      "control_camera": "Control your camera",
+      "change_links": "Change how its parts are linked",
+      "change_permissions": "Change permissions on its contents",
+      "release_ownership": "Give itself away",
+      "change_joints": "Change joints",
+      "unknown": "Something this viewer does not recognise (flags {0})",
+      "nothing": "Nothing — it asked for no permissions at all."
     }
   }
 }

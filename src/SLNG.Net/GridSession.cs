@@ -149,6 +149,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<InstantMessageEvent>? InstantMessageReceived;
     public event EventHandler<ScriptDialogEvent>? ScriptDialogReceived;
 
+    /// <summary>An in-world script is asking for permission over the agent (llRequestPermissions).
+    /// Answer with <see cref="RespondToScriptPermissionRequest"/>. Raised on a LibreMetaverse
+    /// network thread — marshal before touching a scene node.</summary>
+    public event EventHandler<ScriptPermissionRequestEvent>? ScriptPermissionRequested;
+
     /// <summary>M5-3 Phase 2: the agent's group memberships, after <see cref="RequestGroups"/>.
     /// Raised on a LibreMetaverse network thread — marshal before touching a scene node.</summary>
     public event EventHandler<GroupsUpdatedEvent>? GroupsUpdated;
@@ -493,6 +498,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Friends.FriendOffline += OnFriendOffline;
         _client.Self.IM += OnInstantMessage;
         _client.Self.ScriptDialog += OnScriptDialog;
+        // Without this subscription the simulator's question is never even seen: LibreMetaverse's
+        // ScriptQuestionHandler early-returns when nothing is listening. A script that has to ask
+        // before it can act then waits forever -- which is what a pose stand whose menu does
+        // nothing actually is.
+        _client.Self.ScriptQuestion += OnScriptQuestion;
         // FEAT-UI-13: avatar profile replies. A single AvatarPropertiesRequest packet
         // (RequestAvatarProperties) makes the sim send Properties + Interests + Groups; Picks and
         // Classifieds have their own request/reply pairs (see RequestAvatarProfile).
@@ -2226,6 +2236,35 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             e.ObjectID.Guid, e.ObjectName, e.OwnerID.Guid,
             $"{e.FirstName} {e.LastName}".Trim(),
             e.Message, e.Channel, e.ButtonLabels));
+    }
+
+    private void OnScriptQuestion(object? sender, ScriptQuestionEventArgs e)
+    {
+        ScriptPermissionRequested?.Invoke(this, new ScriptPermissionRequestEvent(
+            e.TaskID.Guid, e.ItemID.Guid, e.ObjectName ?? string.Empty,
+            e.ObjectOwnerName ?? string.Empty, (int)e.Questions));
+    }
+
+    /// <summary>
+    /// Answers an <c>llRequestPermissions</c> question. <b>Only ever call this from a deliberate
+    /// user decision</b> — the flags include spending the agent's money.
+    ///
+    /// <para>A refusal is a real answer, not silence: the reference viewer always sends the reply
+    /// and simply zeroes the granted bits when the user says no (llviewermessage.cpp:5600-5632,
+    /// "if any other button was clicked, the permissions were denied" — then the same
+    /// <c>ScriptAnswerYes</c> goes out with <c>Questions = 0</c>). Sending it is what lets the
+    /// script stop waiting and tell the user it was refused.</para>
+    ///
+    /// <para><paramref name="granted"/> is a bit field, not a boolean, so a caller can grant a
+    /// subset — pass 0 to refuse everything.</para>
+    /// </summary>
+    public void RespondToScriptPermissionRequest(Guid taskId, Guid itemId, int granted)
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null || !_client.Network.Connected) return;
+
+        _client.Self.ScriptQuestionReply(
+            sim, new UUID(itemId), new UUID(taskId), (ScriptPermission)granted);
     }
 
     /// <summary>Answers an llDialog popup by sending the chosen button back over the proper

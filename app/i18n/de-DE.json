@@ -347,6 +347,27 @@
       "continue": "Akzeptieren und einloggen",
       "cancel": "Login abbrechen",
       "declined": "Login abgebrochen — die Bedingungen des Grids wurden nicht akzeptiert."
+    },
+    "script_permission": {
+      "title": "RECHTEANFRAGE",
+      "from": "„{0}“ von {1} bittet um Erlaubnis.",
+      "asks_for": "Das Objekt möchte:",
+      "grant": "Erlauben",
+      "deny": "Ablehnen",
+      "debit": "Geld von deinem Konto abbuchen",
+      "take_controls": "Deine Steuerung übernehmen",
+      "remap_controls": "Deine Steuerung umbelegen",
+      "trigger_animation": "Deinen Avatar animieren",
+      "attach": "Sich an deinen Avatar anhängen",
+      "teleport": "Dich teleportieren",
+      "track_camera": "Deine Kamera verfolgen",
+      "control_camera": "Deine Kamera steuern",
+      "change_links": "Seine Verknüpfungen ändern",
+      "change_permissions": "Rechte an seinem Inhalt ändern",
+      "release_ownership": "Sich selbst verschenken",
+      "change_joints": "Gelenke ändern",
+      "unknown": "Etwas, das dieser Viewer nicht kennt (Flags {0})",
+      "nothing": "Nichts — es wurden gar keine Rechte angefragt."
     }
   }
 }

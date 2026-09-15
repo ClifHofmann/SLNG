@@ -335,6 +335,47 @@ public record ScriptDialogEvent(
     Guid ObjectId, string ObjectName, Guid OwnerId, string OwnerName,
     string Message, int Channel, IReadOnlyList<string> ButtonLabels);
 
+/// <summary>An in-world script asking for permission over the agent — LSL's
+/// <c>llRequestPermissions</c>, surfaced by the simulator as a <c>ScriptQuestion</c>.
+///
+/// <para>SLNG ignored these entirely, which is not a missing dialog but a missing capability: a
+/// script that has to ask before it can act simply never gets an answer and never acts. That is
+/// what a pose stand looks like when its menu does nothing — sitting on an object grants it
+/// animation permission implicitly, so the seat's own pose plays, while everything the stand's
+/// script wants to do beyond that waits forever on a question nobody answered.</para>
+///
+/// <para><b>Never answer one of these without asking the user.</b> The flags include
+/// <c>Debit</c> (spend the agent's money), <c>TakeControls</c> and <c>Teleport</c>. Unlike the
+/// inventory-offer and group-invitation events, LibreMetaverse sends nothing on its own here
+/// (<c>ScriptQuestionHandler</c> only raises the event), so silence is a safe default and the only
+/// way to grant something is deliberately.</para></summary>
+/// <param name="TaskId">The object whose script is asking. Half of the reply address.</param>
+/// <param name="ItemId">The script item inside that object — the other half.</param>
+/// <param name="Permissions">Bit field of <see cref="ScriptPermissionFlags"/>.</param>
+public record ScriptPermissionRequestEvent(
+    Guid TaskId, Guid ItemId, string ObjectName, string ObjectOwner, int Permissions);
+
+/// <summary>LSL's <c>PERMISSION_*</c> constants, mirrored as neutral values so no LibreMetaverse
+/// enum crosses the boundary. Values are the wire bits, not our own numbering.</summary>
+[Flags]
+public enum ScriptPermissionFlags
+{
+    None = 0,
+    /// <summary>Take money from the agent's account. The one that costs real currency.</summary>
+    Debit = 2,
+    TakeControls = 4,
+    RemapControls = 8,
+    TriggerAnimation = 16,
+    Attach = 32,
+    ReleaseOwnership = 64,
+    ChangeLinks = 128,
+    ChangeJoints = 256,
+    ChangePermissions = 512,
+    TrackCamera = 1024,
+    ControlCamera = 2048,
+    Teleport = 4096,
+}
+
 /// <summary>MVP2-3: one avatar's compact position as reported by the region-wide radar packet
 /// (LibreMetaverse's <c>CoarseLocationUpdate</c> — every avatar the simulator knows about, not
 /// only the ones within draw distance). Position is REGION-LOCAL, not global — the same frame
