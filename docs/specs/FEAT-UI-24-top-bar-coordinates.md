@@ -25,7 +25,7 @@ The FPS readout is right-aligned on the far right and can be toggled on/off via 
 - `src/SLNG.Net/GridSession.cs`: Track `CurrentParcelName`, listen to `ParcelProperties`, provide `RequestCurrentParcelProperties`.
 - `app/scripts/UI/TopMenu.cs`: Left-align location readout next to menu bar, add `_copySlurlBtn`, add expanding spacer, add View menu check item for FPS toggle, add `SetShowFps`.
 - `app/scripts/UI/UiSettings.cs`: Add `ShowTopBarFps` persisted to `preferences.cfg`.
-- `app/scripts/Boot.cs`: Sample local agent `TransformComponent.Position` and pass parcel name, wire FPS preference, bump `AppVersion` to `v0.22.184-alpha`.
+- `app/scripts/Boot.cs`: Sample local agent `TransformComponent.Position` and pass parcel name, wire FPS preference, bump `AppVersion` to `v0.22.185-alpha`.
 - `app/i18n/en-US.json` & `app/i18n/de-DE.json`: Add localization keys for tooltips, copy feedback, and View menu toggle.
 - `docs/ROADMAP.md`: Update task status.
 
@@ -34,5 +34,5 @@ The FPS readout is right-aligned on the far right and can be toggled on/off via 
 - [x] Add left-aligned layout with `_copySlurlBtn` and expanding spacer in `TopMenu.cs`.
 - [x] Add FPS toggle in `ViewMenu` and persist in `UiSettings.cs`.
 - [x] Add localization keys in `en-US.json` and `de-DE.json`.
-- [x] Bump `AppVersion` to `v0.22.184-alpha`.
+- [x] Bump `AppVersion` to `v0.22.185-alpha`.
 - [x] Verify builds, unit tests, and Godot headless self-tests.
