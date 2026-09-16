@@ -17,6 +17,25 @@ public class AvatarShapeServiceTests
     private const int ShouldersParamId = 36;
 
     [Fact]
+    public void MaleParam_Index_and_IsMale_test()
+    {
+        int[] group0 = VisualParams.Group0ParamIds!;
+        int idx = System.Array.IndexOf(group0, 80);
+        Assert.Equal(31, idx);
+
+        Assert.True(AvatarShapeService.IsMale(null));
+        Assert.True(AvatarShapeService.IsMale(new byte[10]));
+
+        var maleBytes = new byte[group0.Length];
+        maleBytes[31] = 255;
+        Assert.True(AvatarShapeService.IsMale(maleBytes));
+
+        var femaleBytes = new byte[group0.Length];
+        femaleBytes[31] = 0;
+        Assert.False(AvatarShapeService.IsMale(femaleBytes));
+    }
+
+    [Fact]
     public void Raw_weight_zero_means_zero_distortion_for_that_param()
     {
         Assert.True(VisualParams.Params.TryGetValue(ShouldersParamId, out var shoulders));

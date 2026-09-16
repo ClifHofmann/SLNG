@@ -794,7 +794,11 @@ public sealed class WorldSimulation : IDisposable
             // A bake-completion event legitimately carries fresh textures but no shape of its own
             // (FEAT-AVATAR-01: GridSession.OnAppearanceSet), so keep whatever shape we already had.
             if (e.VisualParams is { Length: > 0 })
+            {
                 avatar.VisualParams = e.VisualParams;
+                if (e.VisualParams.Length > 31)
+                    avatar.IsMale = e.VisualParams[31] > 127;
+            }
             avatar.BakedTextures = e.BakedTextures;
             avatar.HoverOffsetZ = e.HoverOffsetZ;
             entity.SetComponent(avatar);

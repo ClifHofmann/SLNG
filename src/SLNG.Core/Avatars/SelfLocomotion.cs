@@ -45,7 +45,14 @@ public static class SelfLocomotion
 {
     public static readonly Guid Stand = new("2408fe9e-df1d-1d7d-f4ff-1384fa7b350f");
     public static readonly Guid Walk = new("6ed24bd8-91aa-4b12-ccc7-c97c857ab4e0");
+    public static readonly Guid WalkNew = new("33339176-7ddc-9397-94a4-bf3403cbc8f5");
+    public static readonly Guid FemaleWalk = new("f5fc7433-043d-e819-8298-f519a119b688");
+    public static readonly Guid FemaleWalkNew = new("d60c41d2-7c24-7074-d3fa-6101cea22a51");
     public static readonly Guid Run = new("05ddbff8-aaa9-92a1-2b74-8fe77a29b445");
+    public static readonly Guid RunNew = new("1ab1b236-cd08-21e6-0cbc-0d923fc6eca2");
+    public static readonly Guid FemaleRun = new("85995026-eade-5d78-d364-94a64512cb66"); // ANIM_AGENT_FEMALE_RUN_NEW
+    public static readonly Guid Sit = new("1a5fe8ac-a804-8a5d-7cbd-56bd83184568");
+    public static readonly Guid SitFemale = new("b1709c8d-ecd3-54a1-4f28-d55ac0840782");
     public static readonly Guid TurnLeft = new("56e0ba0d-4a9f-7f27-6117-32f2ebbf6135");
     public static readonly Guid TurnRight = new("2d6daa51-3192-6794-8e2e-a15f8338ec30");
     public static readonly Guid Fly = new("aec4610c-757f-bc4e-c092-c6e9caf18daf");
@@ -72,6 +79,7 @@ public static class SelfLocomotion
     {
         Stand, Walk, Run, TurnLeft, TurnRight, Fly, FlySlow, Hover, HoverUp, HoverDown,
         FallDown, PreJump, Jump, Land, MediumLand, Crouch, CrouchWalk,
+        FemaleWalk, FemaleWalkNew, FemaleRun, WalkNew, RunNew,
     };
 
     /// <summary>The set to warm the animation cache with at login so the first prediction is never
@@ -80,6 +88,7 @@ public static class SelfLocomotion
     {
         Stand, Walk, Run, TurnLeft, TurnRight, Fly, FlySlow, Hover, HoverUp, HoverDown,
         FallDown, PreJump, Jump, Land, MediumLand, Crouch, CrouchWalk, Standup,
+        FemaleWalk, FemaleWalkNew, FemaleRun, WalkNew, RunNew, Sit, SitFemale,
     };
 
     /// <summary>SL's default agent walk speed is ~3.2 m/s and run ~5.2 m/s; this separates them.</summary>
@@ -97,12 +106,53 @@ public static class SelfLocomotion
     /// / <c>Crouch</c> is not boosted (a resting AO pose should win there).</summary>
     public static bool IsMoving(Guid id)
         => id == Walk || id == Run || id == TurnLeft || id == TurnRight
-        || id == CrouchWalk || id == Fly || id == HoverUp || id == HoverDown;
+        || id == CrouchWalk || id == Fly || id == HoverUp || id == HoverDown
+        || id == FemaleWalk || id == FemaleWalkNew || id == FemaleRun
+        || id == WalkNew || id == RunNew;
+
+    /// <summary>
+    /// Remaps built-in locomotion / sit animation IDs based on the avatar's sex, exactly matching
+    /// Linden reference viewer's <c>LLVOAvatar::remapMotionID</c>.
+    /// </summary>
+    public static Guid RemapForSex(Guid id, bool isMale)
+    {
+        if (!isMale)
+        {
+            if (id == Walk) return FemaleWalk;
+            if (id == WalkNew) return FemaleWalkNew;
+            if (id == Run || id == RunNew) return FemaleRun;
+            if (id == Sit) return SitFemale;
+        }
+        else
+        {
+            if (id == FemaleWalk) return Walk;
+            if (id == FemaleWalkNew) return WalkNew;
+            if (id == FemaleRun) return Run;
+            if (id == SitFemale) return Sit;
+        }
+        return id;
+    }
+
+    /// <summary>
+    /// Returns the neutral equivalent for a sex-specific animation, used as a graceful fallback
+    /// if a grid does not carry the sex-specific asset (preventing T-pose).
+    /// </summary>
+    public static Guid GetNeutralFallback(Guid id)
+    {
+        if (id == FemaleWalk || id == FemaleWalkNew) return Walk;
+        if (id == FemaleRun) return Run;
+        if (id == SitFemale) return Sit;
+        return id;
+    }
+
+    /// <summary>Returns true if the animation ID is sex-specific (female walk/run/sit).</summary>
+    public static bool IsSexSpecific(Guid id)
+        => id == FemaleWalk || id == FemaleWalkNew || id == FemaleRun || id == SitFemale;
 
     /// <summary>The locomotion animation the self avatar should play this frame, or
     /// <see langword="null"/> when it is sitting (the server drives the sit pose) — nothing to
     /// predict.</summary>
-    public static Guid? Predict(in LocomotionState s)
+    public static Guid? Predict(in LocomotionState s, bool isMale = true)
     {
         if (s.Sitting) return null;
 
@@ -124,7 +174,11 @@ public static class SelfLocomotion
 
         if (s.Crouching) return moving ? CrouchWalk : Crouch;
 
-        if (moving) return s.SpeedHoriz > RunSpeedThreshold ? Run : Walk;
+        if (moving)
+        {
+            Guid anim = s.SpeedHoriz > RunSpeedThreshold ? Run : Walk;
+            return isMale ? anim : RemapForSex(anim, false);
+        }
 
         if (s.TurningLeft) return TurnLeft;
         if (s.TurningRight) return TurnRight;

@@ -77,9 +77,60 @@ public class SelfLocomotionTests
     public void Crouch_key_while_moving_is_CrouchWalk()
         => Assert.Equal(SelfLocomotion.CrouchWalk, SelfLocomotion.Predict(State(crouch: true, fwd: true)));
 
+    [Fact]
+    public void Female_avatar_predicts_female_walk_and_female_run()
+    {
+        Assert.Equal(SelfLocomotion.FemaleWalk, SelfLocomotion.Predict(State(fwd: true), isMale: false));
+        Assert.Equal(SelfLocomotion.FemaleRun, SelfLocomotion.Predict(State(fwd: true, speedH: 5.5f), isMale: false));
+    }
+
+    [Fact]
+    public void Male_avatar_predicts_neutral_walk_and_run()
+    {
+        Assert.Equal(SelfLocomotion.Walk, SelfLocomotion.Predict(State(fwd: true), isMale: true));
+        Assert.Equal(SelfLocomotion.Run, SelfLocomotion.Predict(State(fwd: true, speedH: 5.5f), isMale: true));
+    }
+
+    [Fact]
+    public void RemapForSex_maps_correctly_both_directions()
+    {
+        // Female
+        Assert.Equal(SelfLocomotion.FemaleWalk, SelfLocomotion.RemapForSex(SelfLocomotion.Walk, isMale: false));
+        Assert.Equal(SelfLocomotion.FemaleWalkNew, SelfLocomotion.RemapForSex(SelfLocomotion.WalkNew, isMale: false));
+        Assert.Equal(SelfLocomotion.FemaleRun, SelfLocomotion.RemapForSex(SelfLocomotion.Run, isMale: false));
+        Assert.Equal(SelfLocomotion.FemaleRun, SelfLocomotion.RemapForSex(SelfLocomotion.RunNew, isMale: false));
+        Assert.Equal(SelfLocomotion.SitFemale, SelfLocomotion.RemapForSex(SelfLocomotion.Sit, isMale: false));
+
+        // Male
+        Assert.Equal(SelfLocomotion.Walk, SelfLocomotion.RemapForSex(SelfLocomotion.FemaleWalk, isMale: true));
+        Assert.Equal(SelfLocomotion.WalkNew, SelfLocomotion.RemapForSex(SelfLocomotion.FemaleWalkNew, isMale: true));
+        Assert.Equal(SelfLocomotion.Run, SelfLocomotion.RemapForSex(SelfLocomotion.FemaleRun, isMale: true));
+        Assert.Equal(SelfLocomotion.Sit, SelfLocomotion.RemapForSex(SelfLocomotion.SitFemale, isMale: true));
+
+        // Unrelated/custom
+        var custom = System.Guid.NewGuid();
+        Assert.Equal(custom, SelfLocomotion.RemapForSex(custom, isMale: false));
+        Assert.Equal(custom, SelfLocomotion.RemapForSex(custom, isMale: true));
+    }
+
+    [Fact]
+    public void Neutral_fallback_resolves_female_to_neutral()
+    {
+        Assert.Equal(SelfLocomotion.Walk, SelfLocomotion.GetNeutralFallback(SelfLocomotion.FemaleWalk));
+        Assert.Equal(SelfLocomotion.Walk, SelfLocomotion.GetNeutralFallback(SelfLocomotion.FemaleWalkNew));
+        Assert.Equal(SelfLocomotion.Run, SelfLocomotion.GetNeutralFallback(SelfLocomotion.FemaleRun));
+        Assert.Equal(SelfLocomotion.Sit, SelfLocomotion.GetNeutralFallback(SelfLocomotion.SitFemale));
+        Assert.Equal(SelfLocomotion.Walk, SelfLocomotion.GetNeutralFallback(SelfLocomotion.Walk));
+    }
+
     [Theory]
     [InlineData("Walk", true)]
     [InlineData("Run", true)]
+    [InlineData("FemaleWalk", true)]
+    [InlineData("FemaleWalkNew", true)]
+    [InlineData("FemaleRun", true)]
+    [InlineData("WalkNew", true)]
+    [InlineData("RunNew", true)]
     [InlineData("TurnLeft", true)]
     [InlineData("TurnRight", true)]
     [InlineData("CrouchWalk", true)]
@@ -109,8 +160,11 @@ public class SelfLocomotionTests
             State(grounded: false), State(crouch: true), State(crouch: true, fwd: true),
         })
         {
-            var id = SelfLocomotion.Predict(s);
-            Assert.True(id == null || SelfLocomotion.All.Contains(id.Value), $"{id} not in All");
+            var idMale = SelfLocomotion.Predict(s, isMale: true);
+            Assert.True(idMale == null || SelfLocomotion.All.Contains(idMale.Value), $"{idMale} not in All");
+
+            var idFemale = SelfLocomotion.Predict(s, isMale: false);
+            Assert.True(idFemale == null || SelfLocomotion.All.Contains(idFemale.Value), $"{idFemale} not in All");
         }
     }
 }

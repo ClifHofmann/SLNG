@@ -866,7 +866,8 @@ public partial class AvatarController : Camera3D
                     SpeedVert: vel.Z);
                 if (_avatarRenderer != null)
                 {
-                    _avatarRenderer.SetSelfPredictedLocomotion(SelfLocomotion.Predict(locomotion));
+                    bool isMale = localAgent.GetComponent<AvatarComponent>()?.IsMale ?? true;
+                    _avatarRenderer.SetSelfPredictedLocomotion(SelfLocomotion.Predict(locomotion, isMale));
                 }
                 else if (!_locomotionRendererNullLogged)
                 {

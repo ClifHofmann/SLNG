@@ -155,13 +155,18 @@ public static class AvatarShapeService
         return max2 >= driverMax ? drivenMax : drivenMin;
     }
 
-    /// <summary>Resolves the EFFECTIVE weight of every VisualParam reachable from a transmitted
-    /// appearance: each directly-transmitted Group0 param (from its raw byte, or its DefaultValue
-    /// when the array is short/null) plus every param DRIVEN by one (weight derived through
-    /// <see cref="GetDrivenWeight"/>). Both are sex-gated and clamped via
-    /// <see cref="EffectiveWeight"/>. The result — <c>paramId → weight</c> — is the single source
-    /// of truth shared by the skeletal-distortion path (<see cref="ComputeDistortions"/>) and the
-    /// vertex-morph path, so the two can never disagree on how strongly a slider is applied.</summary>
+    /// <summary>Checks whether the avatar is male based on visual param 80 ('male', group0 index 31).
+    /// Returns true if male (weight >= 0.5f), false if female.</summary>
+    public static bool IsMale(byte[]? visualParams)
+    {
+        if (visualParams == null || visualParams.Length <= 31) return true;
+        int[]? group0 = VisualParams.Group0ParamIds;
+        if (group0 == null) return true;
+        return ReadRawValue(MaleParamId, visualParams, group0) >= 0.5f;
+    }
+
+    /// <summary>Decodes the avatar's worn-shape parameter bytes into the effective weight map
+    /// used by both skeletal distortions and vertex morphs. Returns an empty map on bad input.</summary>
     /// <param name="visualParams">Raw per-avatar VisualParams byte array (Group0, in
     /// Group0ParamIds order).</param>
     /// <param name="charDir">Directory containing avatar_lad.xml, used to read each param's sex
@@ -177,7 +182,7 @@ public static class AvatarShapeService
         var paramSex = GetParamSexMap(charDir);
         // "male" (id 80) is a Group0 param like any other — its own DefaultValue there is female,
         // matching the real viewer using getDefaultWeight() as the fallback for a non-matching sex.
-        bool avatarIsMale = ReadRawValue(MaleParamId, visualParams, group0) >= 0.5f;
+        bool avatarIsMale = IsMale(visualParams);
 
         for (int i = 0; i < group0.Length; i++)
         {

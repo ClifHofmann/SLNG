@@ -50,6 +50,9 @@ public class AvatarComponent : IComponent
     /// </summary>
     public byte[]? VisualParams { get; set; }
 
+    /// <summary>Derived from VisualParams (param 80 'male', group0 index 31 > 127). Defaults to true if VisualParams is missing or &lt; 32 bytes.</summary>
+    public bool IsMale { get; set; } = true;
+
     /// <summary>
     /// The latest baked textures received from AvatarAppearance.
     /// </summary>

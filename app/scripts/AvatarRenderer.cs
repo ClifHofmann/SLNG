@@ -987,6 +987,10 @@ public partial class AvatarRenderer : Node3D
             if (needsApply)
             {
                 visual.LastAppliedVisualParams = avatar.VisualParams;
+                if (avatar.VisualParams.Length > 31)
+                {
+                    avatar.IsMale = avatar.VisualParams[31] > 127;
+                }
                 // Same "linden/character" directory the skeleton/body meshes load from (see
                 // CreateVisual) — needed here too so ComputeDistortions can read avatar_lad.xml's
                 // per-param sex tags (LibreMetaverse's generated VisualParam struct drops that
@@ -1204,10 +1208,13 @@ public partial class AvatarRenderer : Node3D
                     IsBodyPoseAnimation)
                 : avatar.ActiveAnimations;
 
-            // "I switch poses and nothing happens" has several possible culprits -- the sim not
-            // sending it, the seat rule dropping it, the asset not loading, the blender losing it
-            // per bone. These lines separate the first two from the rest.
-            desired = new List<Guid>(animations);
+            // FEAT-ANIM-05: remap built-in locomotion / sit animations based on the avatar's sex
+            // (parity with LLVOAvatar::remapMotionID).
+            desired = new List<Guid>(animations.Count);
+            foreach (var id in animations)
+            {
+                desired.Add(SelfLocomotion.RemapForSex(id, avatar.IsMale));
+            }
         }
 
         // FEAT-ANIM-01: while the self avatar is moving, boost the predicted gait over a
@@ -4591,9 +4598,24 @@ void fragment() {
             try
             {
                 var data = await _assetService.GetAnimationAsync(animId);
+                var effectiveAnimId = animId;
+                if (data == null && SelfLocomotion.IsSexSpecific(animId))
+                {
+                    var fallbackId = SelfLocomotion.GetNeutralFallback(animId);
+                    if (fallbackId != animId)
+                    {
+                        data = await _assetService.GetAnimationAsync(fallbackId);
+                        if (data != null)
+                        {
+                            effectiveAnimId = fallbackId;
+                            if (Diagnostics.Enabled)
+                                GD.Print($"[Locomotion] anim {animId} did not resolve, fell back to neutral {fallbackId}");
+                        }
+                    }
+                }
                 if (data != null)
                 {
-                    loaded.Add((animId, data));
+                    loaded.Add((effectiveAnimId, data));
 
                     // Classify it once, from what it actually keys. The seat rule reads this to
                     // tell a body POSE from a hand pose or a deformer (FEAT-ANIM-03).
