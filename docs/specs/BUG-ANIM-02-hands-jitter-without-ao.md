@@ -2,9 +2,12 @@
 
 - **Feature ID:** `BUG-ANIM-02`
 - **Track:** `render`
-- **Status:** `⏸️ Pending`
+- **Status:** `⏸️ Pending (Deferred / Waiting for Repro)`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
+
+> [!NOTE]
+> **Status 2026-09-16:** Bei aktuellen In-World-Tests längere Zeit nicht mehr beobachtet / derzeit nicht reproduzierbar. Nach Absprache nach hinten geschoben / pausiert, bis ein reproduzierbarer Fall vorliegt.
 
 ## Overview & Goal
 
