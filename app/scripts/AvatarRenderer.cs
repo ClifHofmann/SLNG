@@ -569,7 +569,7 @@ public partial class AvatarRenderer : Node3D
 
     /// <summary>
     /// FEAT-AVATAR-02 / FEAT-ANIM-04: Immediately halts all currently active animations on the
-    /// local avatar and resets bone poses to rest.
+    /// local avatar, stops them server-side, and resumes the default stand pose without staying in T-pose.
     /// </summary>
     public void StopSelfAnimations()
     {
@@ -579,13 +579,19 @@ public partial class AvatarRenderer : Node3D
 #pragma warning disable CS0618
         visual.Skeleton?.ForceUpdateAllBoneTransforms();
 #pragma warning restore CS0618
-        GD.Print("[AvatarHealth] Stopped all animations on self avatar");
+        visual.LoadedAnimationIds = null;
+        var avatar = _world?.GetEntity(_selfEntityId)?.GetComponent<AvatarComponent>();
+        if (avatar != null)
+        {
+            ApplyActiveAnimations(_selfEntityId, visual, avatar);
+        }
+        GD.Print("[AvatarHealth] Stopped all animations on self avatar and resumed default stand");
     }
 
     /// <summary>
-    /// FEAT-AVATAR-02 / FEAT-ANIM-04: Undeforms the local avatar by halting stuck animations,
-    /// resetting bone poses to rest, reapplying current shape distortions and joint overrides to the
-    /// skeleton's bone rests, and rebuilding rigged/body skins and attachment offsets.
+    /// FEAT-AVATAR-02 / FEAT-ANIM-04: Undeforms the local avatar by resetting bone poses to rest,
+    /// reapplying current shape distortions and joint overrides to the skeleton's bone rests,
+    /// rebuilding rigged/body skins and attachment offsets, and immediately resuming active animations.
     /// </summary>
     public void ResetSelfSkeleton()
     {
@@ -603,7 +609,16 @@ public partial class AvatarRenderer : Node3D
         RefreshStaticAttachmentOffsets(visual);
         RecomputeFootOffset(visual, visual.LastDistortions);
         LogAvatarHeight(visual, "undeform / reset skeleton");
-        GD.Print("[AvatarHealth] Reset skeleton and undeformed self avatar");
+
+        // Re-evaluate active animations so avatar immediately resumes idle/stand instead of staying in T-pose
+        visual.LoadedAnimationIds = null;
+        var avatar = _world?.GetEntity(_selfEntityId)?.GetComponent<AvatarComponent>();
+        if (avatar != null)
+        {
+            ApplyActiveAnimations(_selfEntityId, visual, avatar);
+        }
+
+        GD.Print("[AvatarHealth] Reset skeleton and undeformed self avatar (resumed animations)");
     }
 
     /// <summary>
