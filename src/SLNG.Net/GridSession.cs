@@ -5780,6 +5780,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         return _client.Self.Stand();
     }
     public void StopAnimation(Guid animId) => _client.Self.AnimationStop(new UUID(animId), true);
+    public void StartAnimation(Guid animId) => _client.Self.AnimationStart(new UUID(animId), true);
 
     /// <summary>
     /// Stops all animations on the self avatar that were triggered by any of the given source object IDs

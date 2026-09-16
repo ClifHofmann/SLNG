@@ -26,16 +26,20 @@ public sealed class AvatarAnimationPlayer
         public AnimationData Data;
         public float CurrentTime;
         public Guid AnimationId;
+        public string? Name;
 
-        public PlayingAnimation(AnimationData data, Guid animId)
+        public PlayingAnimation(AnimationData data, Guid animId, string? name = null)
         {
             Data = data;
             AnimationId = animId;
+            Name = name;
             CurrentTime = data.InPoint; // start at InPoint
         }
     }
 
     private readonly List<PlayingAnimation> _active = new();
+    // FEAT-ANIM-06: local inventory / machinima animation overlay, independent of sim network updates
+    private readonly List<PlayingAnimation> _localOverlay = new();
     private Skeleton3D? _skeleton;
 
     // FEAT-ANIM-01: for a short window after a predicted MOVING gait starts, force it above any
@@ -51,8 +55,51 @@ public sealed class AvatarAnimationPlayer
     private IReadOnlyList<(Guid id, AnimationData data)>? _pendingAnimations;
     private AvatarHoldMode _holdMode = AvatarHoldMode.None;
 
-    /// <summary>True if any animations are currently loaded and playing.</summary>
-    public bool IsPlaying => _active.Count > 0;
+    /// <summary>True if any animations (network or local) are currently loaded and playing.</summary>
+    public bool IsPlaying => _active.Count > 0 || _localOverlay.Count > 0;
+
+    /// <summary>FEAT-ANIM-06: Plays an animation as a local overlay.</summary>
+    public void PlayLocal(Guid animId, AnimationData data, string? name = null)
+    {
+        for (int i = 0; i < _localOverlay.Count; i++)
+        {
+            if (_localOverlay[i].AnimationId == animId)
+            {
+                _localOverlay[i].CurrentTime = data.InPoint;
+                _localOverlay[i].Data = data;
+                if (!string.IsNullOrEmpty(name)) _localOverlay[i].Name = name;
+                return;
+            }
+        }
+        _localOverlay.Add(new PlayingAnimation(data, animId, name));
+    }
+
+    /// <summary>FEAT-ANIM-06: Stops a specific local overlay animation.</summary>
+    public bool StopLocal(Guid animId)
+    {
+        int removed = _localOverlay.RemoveAll(a => a.AnimationId == animId);
+        if (removed > 0 && _active.Count == 0 && _localOverlay.Count == 0)
+        {
+            ResetToRestPose();
+        }
+        return removed > 0;
+    }
+
+    /// <summary>FEAT-ANIM-06: Clears all local overlay animations.</summary>
+    public void ClearLocal()
+    {
+        _localOverlay.Clear();
+        if (_active.Count == 0)
+        {
+            ResetToRestPose();
+        }
+    }
+
+    /// <summary>FEAT-ANIM-06: Returns info on all currently active local overlay animations.</summary>
+    public IReadOnlyList<(Guid id, string name, int priority)> GetLocalAnimationInfos()
+    {
+        return _localOverlay.Select(a => (a.AnimationId, a.Name ?? a.AnimationId.ToString()[..8], a.Data.Priority)).ToList();
+    }
 
     /// <summary>FEAT-ANIM-09: True if animation playback is frozen at its current frame.</summary>
     public bool IsFrozen
@@ -131,7 +178,7 @@ public sealed class AvatarAnimationPlayer
             return true;
         });
 
-        if (_active.Count == 0 && removed > 0)
+        if (_active.Count == 0 && _localOverlay.Count == 0 && removed > 0)
         {
             if (Diagnostics.Enabled) GD.Print("[AnimPlayer] Active count is 0, resetting to rest pose");
             ResetToRestPose();
@@ -158,6 +205,7 @@ public sealed class AvatarAnimationPlayer
         _isFrozen = false;
         _pendingAnimations = null;
         _active.Clear();
+        _localOverlay.Clear();
         ResetToRestPose();
     }
 
@@ -247,35 +295,46 @@ public sealed class AvatarAnimationPlayer
             return;
         }
 
-        if (_active.Count == 0) return;
+        if (_active.Count == 0 && _localOverlay.Count == 0) return;
 
         if (_locomotionBoostId != System.Guid.Empty) _locomotionBoostElapsed += delta;
 
         // Advance time for each playing animation.
         foreach (var anim in _active)
         {
-            anim.CurrentTime += delta;
+            AdvanceAnimTime(anim, delta);
+        }
 
-            float loopEnd = anim.Data.OutPoint > 0 ? anim.Data.OutPoint : anim.Data.Length;
-            float loopStart = anim.Data.InPoint;
-
-            if (anim.Data.Loop && loopEnd > loopStart)
-            {
-                while (anim.CurrentTime > loopEnd)
-                {
-                    anim.CurrentTime -= (loopEnd - loopStart);
-                }
-            }
-            else
-            {
-                // Clamp non-looping animations.
-                if (anim.CurrentTime > loopEnd)
-                    anim.CurrentTime = loopEnd;
-            }
+        // FEAT-ANIM-06: Advance time for each local overlay animation.
+        foreach (var anim in _localOverlay)
+        {
+            AdvanceAnimTime(anim, delta);
         }
 
         // Evaluate and apply per-bone, highest-priority-wins blending.
         ApplyBonePoses();
+    }
+
+    private static void AdvanceAnimTime(PlayingAnimation anim, float delta)
+    {
+        anim.CurrentTime += delta;
+
+        float loopEnd = anim.Data.OutPoint > 0 ? anim.Data.OutPoint : anim.Data.Length;
+        float loopStart = anim.Data.InPoint;
+
+        if (anim.Data.Loop && loopEnd > loopStart)
+        {
+            while (anim.CurrentTime > loopEnd)
+            {
+                anim.CurrentTime -= (loopEnd - loopStart);
+            }
+        }
+        else
+        {
+            // Clamp non-looping animations.
+            if (anim.CurrentTime > loopEnd)
+                anim.CurrentTime = loopEnd;
+        }
     }
 
     private void ApplyBonePoses()
@@ -312,6 +371,12 @@ public sealed class AvatarAnimationPlayer
                 bool boosted = BoostActive(anim.AnimationId);
                 int animPriority = boosted ? LocomotionBoostPriority : anim.Data.Priority;
                 ApplyAnimationToBones(anim.Data, anim.CurrentTime, animPriority, boosted, boneRots, bonePositions);
+            }
+
+            // FEAT-ANIM-06: Apply local overlay animations into the bone priority blend
+            foreach (var anim in _localOverlay)
+            {
+                ApplyAnimationToBones(anim.Data, anim.CurrentTime, anim.Data.Priority, false, boneRots, bonePositions);
             }
         }
 

@@ -48,6 +48,7 @@
       "always_run": "Always Run (Ctrl+R)",
       "hover_height": "Hover Height...",
       "stop_animations": "Stop Animations",
+      "active_animations": "Active Animations...",
       "reset_skeleton": "Reset Skeleton (Undeform)",
       "resync_animations": "Resync Animations",
       "resync_all_animations": "Resync All Avatars",
@@ -420,9 +421,35 @@
       "click_action_play": "Play",
       "click_action_open_media": "Open media"
     },
+    "inventory": {
+      "context": {
+        "wear_attach": "Wear / Attach",
+        "copy": "Copy",
+        "edit": "Edit",
+        "delete": "Delete",
+        "teleport": "Teleport",
+        "detach": "Detach",
+        "play_local": "Play Locally",
+        "play_inworld": "Play Inworld",
+        "stop_animation": "Stop"
+      }
+    },
+    "active_animations": {
+      "title": "Active Animations",
+      "stop_all_local": "Stop All Local",
+      "stop_all": "Stop All",
+      "refresh": "Refresh",
+      "stop": "Stop",
+      "no_animations": "No active animations.",
+      "badge_local": "[Local]",
+      "badge_inworld": "[Inworld]"
+    },
     "hint": {
       "always_run_on": "Always Run: Enabled (Ctrl+R)",
-      "always_run_off": "Always Run: Disabled (Ctrl+R)"
+      "always_run_off": "Always Run: Disabled (Ctrl+R)",
+      "anim_playing_local": "Playing locally: {0}",
+      "anim_playing_inworld": "Playing inworld: {0}",
+      "anim_stopped": "Animation stopped: {0}"
     }
   }
 }

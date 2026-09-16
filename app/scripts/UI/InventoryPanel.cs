@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using SLNG.Net;
 using System;
 using System.Collections.Generic;
@@ -53,6 +53,11 @@ public partial class InventoryPanel : SLNGWindow
     private PopupMenu _wornMenu = null!;
     private Timer _wornTimer = null!;
     private Button _wornCleanupBtn = null!;
+
+    /// <summary>FEAT-ANIM-06: Handler to play an inventory animation locally on the self avatar.</summary>
+    public Func<Guid, string, System.Threading.Tasks.Task<bool>>? PlayAnimationLocalHandler;
+    /// <summary>FEAT-ANIM-06: Handler to stop a locally playing animation on the self avatar.</summary>
+    public Action<Guid>? StopAnimationLocalHandler;
 
     // FEAT-INV-04: Outfits tab.
     private VBoxContainer _outfitsView = null!;
@@ -166,12 +171,15 @@ public partial class InventoryPanel : SLNGWindow
         // copy/modify/transfer alone, which is exactly the excluded shortcut; it had no handler
         // in OnContextMenuIdPressed (a dead menu item), so removing it changes no behaviour.
         _contextMenu = new PopupMenu();
-        _contextMenu.AddItem("Wear / Attach", 0);
-        _contextMenu.AddItem("Copy", 1);
-        _contextMenu.AddItem("Edit", 2);
-        _contextMenu.AddItem("Delete", 4);
-        _contextMenu.AddItem("Teleport", 5);
-        _contextMenu.AddItem("Detach", 6);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory.context.wear_attach"), 0);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory.context.copy"), 1);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory.context.edit"), 2);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory.context.delete"), 4);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory.context.teleport"), 5);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory.context.detach"), 6);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory.context.play_local"), 7);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory.context.play_inworld"), 8);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory.context.stop_animation"), 9);
         _contextMenu.IdPressed += OnContextMenuIdPressed;
         
         _tree = new InventoryTree 
@@ -217,7 +225,7 @@ public partial class InventoryPanel : SLNGWindow
         _wornView.AddChild(cleanupMargin);
 
         _wornMenu = new PopupMenu();
-        _wornMenu.AddItem("Ablegen", 0);
+        _wornMenu.AddItem(L10n.Tr("ui.inventory.context.detach"), 0);
         _wornMenu.IdPressed += OnWornMenuPressed;
 
         _wornTree = new Tree
@@ -1489,17 +1497,18 @@ public partial class InventoryPanel : SLNGWindow
                         }
                     }
 
-                    // SetItemDisabled takes an INDEX, not an item id -- and this menu's ids
-                    // (0,1,2,4,5,6) stop matching their indices (0..5) at "Delete". Passing the id
-                    // straight through disabled the wrong rows from "Delete" on and ran off the
-                    // end for "Detach" (id 6, only 6 items) -> "Index 6 is out of bounds" and a
-                    // permanently-greyed Detach. Resolve id -> index.
-                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(0), isWorn); // Wear / Attach
+                    bool isAnimation = assetType == SLNG.Core.AssetTypeIds.Animation;
+
+                    // SetItemDisabled takes an INDEX, not an item id -- resolve id -> index.
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(0), isWorn || isAnimation || isLandmark); // Wear / Attach
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(1), !canCopy); // Copy
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(2), !canModify); // Edit
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(4), false); // Delete
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(5), !isLandmark); // Teleport
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(6), !isWorn); // Detach
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(7), !isAnimation); // Play Locally
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(8), !isAnimation); // Play Inworld
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(9), !isAnimation); // Stop
 
                     _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
                     _contextMenu.Popup();
@@ -1575,6 +1584,38 @@ public partial class InventoryPanel : SLNGWindow
             var parts = metaStr.Split(',');
             _ = DetachAndRefreshAsync(itemId, parts);
         }
+        else if (id == 7) // FEAT-ANIM-06: Play Locally
+        {
+            if (isFolder) return;
+            var parts = metaStr.Split(',');
+            if (parts.Length >= 6 && Guid.TryParse(parts[5], out var assetId))
+            {
+                string animName = item.GetText(0);
+                if (PlayAnimationLocalHandler != null)
+                {
+                    _ = PlayAnimationLocalHandler(assetId, animName);
+                }
+            }
+        }
+        else if (id == 8) // FEAT-ANIM-06: Play Inworld
+        {
+            if (isFolder) return;
+            var parts = metaStr.Split(',');
+            if (parts.Length >= 6 && Guid.TryParse(parts[5], out var assetId))
+            {
+                _session?.StartAnimation(assetId);
+            }
+        }
+        else if (id == 9) // FEAT-ANIM-06: Stop
+        {
+            if (isFolder) return;
+            var parts = metaStr.Split(',');
+            if (parts.Length >= 6 && Guid.TryParse(parts[5], out var assetId))
+            {
+                StopAnimationLocalHandler?.Invoke(assetId);
+                _session?.StopAnimation(assetId);
+            }
+        }
     }
 
     /// <summary>Double-click activation on a Tree row -- teleports immediately if it's a landmark,
@@ -1584,6 +1625,23 @@ public partial class InventoryPanel : SLNGWindow
         var item = _tree.GetSelected();
         if (item == null || _session == null) return;
         TryTeleportFromItem(item);
+        TryPlayAnimationFromItem(item);
+    }
+
+    private void TryPlayAnimationFromItem(TreeItem item)
+    {
+        var metaStr = item.GetMetadata(0).AsString();
+        if (!metaStr.Contains(',')) return;
+        var parts = metaStr.Split(',');
+        if (parts.Length < 6) return;
+        if (!int.TryParse(parts[4], out var assetType) || assetType != SLNG.Core.AssetTypeIds.Animation) return;
+        if (!Guid.TryParse(parts[5], out var assetId)) return;
+
+        string animName = item.GetText(0);
+        if (PlayAnimationLocalHandler != null)
+        {
+            _ = PlayAnimationLocalHandler(assetId, animName);
+        }
     }
 
     /// <summary>Parses a row's metadata and starts teleporting if it's a (non-link) landmark --

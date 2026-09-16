@@ -769,6 +769,111 @@ public partial class AvatarRenderer : Node3D
         }
     }
 
+    /// <summary>
+    /// FEAT-ANIM-06: Plays an animation locally on the self avatar from an asset UUID.
+    /// Fetches via AssetService, then adds to self visual's AnimPlayer local overlay.
+    /// </summary>
+    public async System.Threading.Tasks.Task<bool> PlaySelfAnimationLocalAsync(Guid assetId, string? animName = null)
+    {
+        if (_selfEntityId == Guid.Empty || !_visuals.TryGetValue(_selfEntityId, out var visual)) return false;
+        if (_assetService == null) return false;
+
+        var animData = await _assetService.GetAnimationAsync(assetId).ConfigureAwait(false);
+        if (animData == null)
+        {
+            GD.PrintErr($"[FEAT-ANIM-06] Failed to fetch/decode animation asset {assetId}");
+            return false;
+        }
+
+        Callable.From(() =>
+        {
+            if (_visuals.TryGetValue(_selfEntityId, out var v))
+            {
+                v.AnimPlayer.PlayLocal(assetId, animData, animName);
+                if (Diagnostics.Enabled) GD.Print($"[FEAT-ANIM-06] Playing local animation {assetId} ({animName ?? "unnamed"})");
+            }
+        }).CallDeferred();
+
+        return true;
+    }
+
+    /// <summary>
+    /// FEAT-ANIM-06: Stops a locally playing animation on the self avatar.
+    /// </summary>
+    public void StopSelfAnimationLocal(Guid assetId)
+    {
+        if (_selfEntityId == Guid.Empty || !_visuals.TryGetValue(_selfEntityId, out var visual)) return;
+        visual.AnimPlayer.StopLocal(assetId);
+        if (Diagnostics.Enabled) GD.Print($"[FEAT-ANIM-06] Stopped local animation {assetId}");
+    }
+
+    /// <summary>
+    /// FEAT-ANIM-06: Stops all locally playing animations on the self avatar.
+    /// </summary>
+    public void StopAllSelfAnimationsLocal()
+    {
+        if (_selfEntityId == Guid.Empty || !_visuals.TryGetValue(_selfEntityId, out var visual)) return;
+        visual.AnimPlayer.ClearLocal();
+        if (Diagnostics.Enabled) GD.Print("[FEAT-ANIM-06] Stopped all local animations");
+    }
+
+    /// <summary>
+    /// FEAT-ANIM-06: Returns all currently playing animations on the self avatar
+    /// (both network/inworld and local overlays) for UI display and individual stopping.
+    /// </summary>
+    public IReadOnlyList<(Guid Id, string Name, int Priority, bool IsLocal, string Source)> GetSelfAllActiveAnimations()
+    {
+        var result = new List<(Guid Id, string Name, int Priority, bool IsLocal, string Source)>();
+
+        if (_selfEntityId != Guid.Empty && _visuals.TryGetValue(_selfEntityId, out var visual))
+        {
+            // 1. Local overlay animations
+            foreach (var local in visual.AnimPlayer.GetLocalAnimationInfos())
+            {
+                result.Add((local.id, local.name, local.priority, true, "Lokal"));
+            }
+
+            // 2. Network-driven active animations
+            var avatar = _world?.GetEntity(_selfEntityId)?.GetComponent<AvatarComponent>();
+            if (avatar != null && avatar.ActiveAnimations != null)
+            {
+                foreach (var animId in avatar.ActiveAnimations)
+                {
+                    string name = GetBuiltinAnimName(animId) ?? animId.ToString()[..8];
+                    string source = "System";
+                    if (avatar.AnimationSources != null)
+                    {
+                        foreach (var sig in avatar.AnimationSources)
+                        {
+                            if (sig.AnimId == animId && sig.SourceObjectId != Guid.Empty)
+                            {
+                                source = sig.SourceObjectId.ToString()[..8];
+                                break;
+                            }
+                        }
+                    }
+                    result.Add((animId, name, 0, false, source));
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static string? GetBuiltinAnimName(Guid id)
+    {
+        if (id == SelfLocomotion.Stand) return "Stand";
+        if (id == SelfLocomotion.Walk || id == SelfLocomotion.WalkNew) return "Walk";
+        if (id == SelfLocomotion.FemaleWalk || id == SelfLocomotion.FemaleWalkNew) return "Female Walk";
+        if (id == SelfLocomotion.Run || id == SelfLocomotion.RunNew) return "Run";
+        if (id == SelfLocomotion.FemaleRun) return "Female Run";
+        if (id == SelfLocomotion.Sit) return "Sit";
+        if (id == SelfLocomotion.SitFemale) return "Female Sit";
+        if (id == SelfLocomotion.Hover) return "Hover";
+        if (id == SelfLocomotion.Fly) return "Fly";
+        return null;
+    }
+
     public void UpdateVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;

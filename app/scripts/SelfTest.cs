@@ -66,6 +66,7 @@ public static class SelfTest
         results.Add(CheckAvatarAnimationPlayer());
         results.Add(CheckAvatarHoldMode());
         results.Add(CheckAvatarAnimationFreeze());
+        results.Add(CheckAvatarAnimationLocalOverlay());
 
         foreach (var r in results)
         {
@@ -557,6 +558,63 @@ public static class SelfTest
 
         return new Check("avatar animation freeze", problems.Count == 0,
             problems.Count == 0 ? "Freeze halts time, stepFrame nudges time, updates buffer cleanly" : string.Join("; ", problems));
+    }
+
+    private static Check CheckAvatarAnimationLocalOverlay()
+    {
+        var problems = new List<string>();
+        var player = new AvatarAnimationPlayer();
+
+        var localId = Guid.NewGuid();
+        var rotKeys = new[] { new RotationKeyframe { Time = 0f, Rotation = System.Numerics.Quaternion.CreateFromYawPitchRoll(0, 0, 1.5f) } };
+        var localJoint = new AnimationJointData
+        {
+            JointName = "mHead",
+            Priority = 5,
+            RotationKeys = rotKeys,
+            PositionKeys = Array.Empty<PositionKeyframe>()
+        };
+        var localData = new AnimationData
+        {
+            Length = 2.0f,
+            InPoint = 0f,
+            OutPoint = 2.0f,
+            Loop = true,
+            Priority = 5,
+            Joints = new[] { localJoint }
+        };
+
+        // 1. PlayLocal marks IsPlaying true
+        player.PlayLocal(localId, localData, "PreviewDance");
+        if (!player.IsPlaying)
+            problems.Add("IsPlaying should be true after PlayLocal");
+
+        var localInfos = player.GetLocalAnimationInfos();
+        if (localInfos.Count != 1 || localInfos[0].id != localId || localInfos[0].name != "PreviewDance")
+            problems.Add("GetLocalAnimationInfos did not report local overlay");
+
+        // 2. SetActiveAnimations (e.g. sim echo) does not prune local overlay
+        var simId = Guid.NewGuid();
+        var simData = new AnimationData
+        {
+            Length = 1.0f,
+            InPoint = 0f,
+            OutPoint = 1.0f,
+            Loop = true,
+            Priority = 2,
+            Joints = Array.Empty<AnimationJointData>()
+        };
+        player.SetActiveAnimations(new[] { (simId, simData) });
+        if (player.GetLocalAnimationInfos().Count != 1)
+            problems.Add("SetActiveAnimations cleared local overlay");
+
+        // 3. StopLocal removes local overlay
+        player.StopLocal(localId);
+        if (player.GetLocalAnimationInfos().Count != 0)
+            problems.Add("StopLocal did not remove local overlay");
+
+        return new Check("avatar animation local overlay", problems.Count == 0,
+            problems.Count == 0 ? "Local overlay plays, blends priority, survives sim echo, stops cleanly" : string.Join("; ", problems));
     }
 
     /// <summary>

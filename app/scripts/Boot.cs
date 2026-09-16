@@ -222,6 +222,7 @@ public partial class Boot : Control
     /// <summary>The one About window, created on first open and hidden rather than freed so it
     /// keeps its position (PersistId "about_window").</summary>
     private SLNG.App.UI.AboutWindow? _aboutWindow;
+    private SLNG.App.UI.ActiveAnimationsWindow? _activeAnimationsWindow;
     // Created lazily on first use -- see the Developer menu wiring below. Dev tooling only,
     // costs nothing until someone actually takes a measurement.
     private RenderBaselineSampler? _renderBaselineSampler;
@@ -299,7 +300,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.178-alpha";
+    public const string AppVersion = "v0.22.179-alpha";
 
     public void ShowToast(string message, float duration = 2.0f)
     {
@@ -597,9 +598,24 @@ public partial class Boot : Control
 
         _topMenu.OnRebakeAvatar = RebakeAvatar;
         _topMenu.OnOpenHoverHeight = () => ActivateLauncher(_avatarHoverWindow, _avatarHoverWindow.Toggle);
+        _topMenu.OnOpenActiveAnimations = () => {
+            _activeAnimationsWindow ??= new SLNG.App.UI.ActiveAnimationsWindow();
+            if (_activeAnimationsWindow.GetParent() == null)
+            {
+                var hud = GetNodeOrNull<CanvasLayer>("HudLayer");
+                if (hud != null) hud.AddChild(_activeAnimationsWindow);
+                else AddChild(_activeAnimationsWindow);
+            }
+            _activeAnimationsWindow.Initialize(_avatarRenderer, _session);
+            _activeAnimationsWindow.Unminimize();
+            _activeAnimationsWindow.Visible = true;
+            _activeAnimationsWindow.EnsureOnScreen();
+            _activeAnimationsWindow.BringToFront();
+        };
         _topMenu.OnStopAnimations = () => {
             _session?.StopAllSelfAnimations();
             _avatarRenderer?.StopSelfAnimations();
+            _avatarRenderer?.StopAllSelfAnimationsLocal();
             _avatarRenderer?.FreezeAllAvatars(false);
             _avatarRenderer?.FreezeSelfAnimation(false);
             _avatarController?.SetHoldMode(AvatarHoldMode.None);
@@ -757,6 +773,23 @@ public partial class Boot : Control
 
         _inventoryPanel = new SLNG.App.UI.InventoryPanel { Name = "InventoryPanel" };
         hudLayer.AddChild(_inventoryPanel);
+        _inventoryPanel.PlayAnimationLocalHandler = async (assetId, animName) =>
+        {
+            if (_avatarRenderer != null)
+            {
+                bool ok = await _avatarRenderer.PlaySelfAnimationLocalAsync(assetId, animName);
+                if (ok)
+                {
+                    ShowToast(SLNG.App.UI.L10n.TrFormat("ui.hint.anim_playing_local", animName));
+                    return true;
+                }
+            }
+            return false;
+        };
+        _inventoryPanel.StopAnimationLocalHandler = (assetId) =>
+        {
+            _avatarRenderer?.StopSelfAnimationLocal(assetId);
+        };
 
         _inWorldContextMenu = new SLNG.App.UI.InWorldContextMenu();
         hudLayer.AddChild(_inWorldContextMenu);
@@ -3579,6 +3612,8 @@ public partial class Boot : Control
             if (hudLayer != null) hudLayer.Visible = false;
             if (_chatWindow != null) _chatWindow.Visible = false;
             if (_inventoryPanel != null) { _inventoryPanel.QueueFree(); _inventoryPanel = null; }
+            if (_activeAnimationsWindow != null) { _activeAnimationsWindow.QueueFree(); _activeAnimationsWindow = null; }
+            _avatarRenderer?.StopAllSelfAnimationsLocal();
             _avatarRenderer?.FreezeAllAvatars(false);
             _avatarRenderer?.FreezeSelfAnimation(false);
             _topMenu?.SetFreezeUI(false, false);

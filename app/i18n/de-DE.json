@@ -48,6 +48,7 @@
       "always_run": "Immer rennen (Strg+R)",
       "hover_height": "Schwebehöhe...",
       "stop_animations": "Animationen stoppen",
+      "active_animations": "Aktive Animationen...",
       "reset_skeleton": "Skelett zurücksetzen (Undeform)",
       "resync_animations": "Animationen synchronisieren",
       "resync_all_animations": "Alle Avatare synchronisieren",
@@ -420,9 +421,35 @@
       "click_action_play": "Abspielen",
       "click_action_open_media": "Medien öffnen"
     },
+    "inventory": {
+      "context": {
+        "wear_attach": "Anziehen / Anhängen",
+        "copy": "Kopieren",
+        "edit": "Bearbeiten",
+        "delete": "Löschen",
+        "teleport": "Teleportieren",
+        "detach": "Ablegen",
+        "play_local": "Lokal abspielen",
+        "play_inworld": "Inworld abspielen",
+        "stop_animation": "Stoppen"
+      }
+    },
+    "active_animations": {
+      "title": "Aktive Animationen",
+      "stop_all_local": "Alle lokalen stoppen",
+      "stop_all": "Alle stoppen",
+      "refresh": "Aktualisieren",
+      "stop": "Stoppen",
+      "no_animations": "Keine aktiven Animationen.",
+      "badge_local": "[Lokal]",
+      "badge_inworld": "[Inworld]"
+    },
     "hint": {
       "always_run_on": "Immer rennen: Aktiviert (Strg+R)",
-      "always_run_off": "Immer rennen: Deaktiviert (Strg+R)"
+      "always_run_off": "Immer rennen: Deaktiviert (Strg+R)",
+      "anim_playing_local": "Spiele lokal: {0}",
+      "anim_playing_inworld": "Spiele Inworld: {0}",
+      "anim_stopped": "Animation gestoppt: {0}"
     }
   }
 }

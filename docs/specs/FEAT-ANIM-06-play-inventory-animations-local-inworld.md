@@ -2,8 +2,8 @@
 
 - **Feature ID:** `FEAT-ANIM-06`
 - **Track:** `render` (+ `net`, `ui`)
-- **Status:** `⏸️ Pending`
-- **Owner:** `claude`
+- **Status:** `✅ Done`
+- **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
 ## Overview & Goal
@@ -45,20 +45,20 @@ SLNG has all the pieces: inventory browser (M5-1 / MVP3-1), asset fetch
 
 ## Acceptance Criteria
 
-- [ ] Right-click an animation inventory item → "Lokal abspielen", "Inworld abspielen",
+- [x] Right-click an animation inventory item → "Lokal abspielen", "Inworld abspielen",
       "Stoppen" (context-menu entries only for the Animation asset type).
-- [ ] "Lokal abspielen": the anim plays on the self avatar in SLNG; a second SLNG /
+- [x] "Lokal abspielen": the anim plays on the self avatar in SLNG; a second SLNG /
       Firestorm client sees nothing.
-- [ ] "Inworld abspielen": a second client sees the anim; SLNG itself also shows it.
-- [ ] A locally-played anim survives incoming network `AvatarAnimation` updates (not
+- [x] "Inworld abspielen": a second client sees the anim; SLNG itself also shows it.
+- [x] A locally-played anim survives incoming network `AvatarAnimation` updates (not
       pruned by the reconcile) until explicitly stopped.
-- [ ] Stopping a local anim removes it without disturbing network / inworld anims.
-- [ ] Inworld play of an asset the sim rejects reports a visible error, no silent
+- [x] Stopping a local anim removes it without disturbing network / inworld anims.
+- [x] Inworld play of an asset the sim rejects reports a visible error, no silent
       no-op.
-- [ ] The playing-now panel lists local + network + inworld anims with working Stop.
-- [ ] Unit tests: local overlay add/remove is independent of `SetActiveAnimations`;
+- [x] The playing-now panel lists local + network + inworld anims with working Stop.
+- [x] Unit tests: local overlay add/remove is independent of `SetActiveAnimations`;
       overlay clip participates in the priority blend.
-- [ ] No regression: FEAT-ANIM-01/03/04, BUG-ANIM-01/02.
+- [x] No regression: FEAT-ANIM-01/03/04, BUG-ANIM-01/02.
 
 ## Technical Specs & Affected Files
 
@@ -81,11 +81,11 @@ SLNG has all the pieces: inventory browser (M5-1 / MVP3-1), asset fetch
 
 ## Sub-tasks / Progress
 
-- [ ] `AvatarAnimationPlayer` local-overlay support + unit tests.
-- [ ] `GridSession.PlayAnimationInworld` / stop.
-- [ ] `AvatarRenderer` local play/stop entry points.
-- [ ] `InventoryPanel` context menu + locale strings.
-- [ ] Playing-now panel (shared with FEAT-ANIM-04).
-- [ ] `AppVersion` bump.
-- [ ] In-world: local vs inworld visibility across two clients; overlay survives echo;
+- [x] `AvatarAnimationPlayer` local-overlay support + unit tests.
+- [x] `GridSession.PlayAnimationInworld` / stop.
+- [x] `AvatarRenderer` local play/stop entry points.
+- [x] `InventoryPanel` context menu + locale strings.
+- [x] Playing-now panel (shared with FEAT-ANIM-04).
+- [x] `AppVersion` bump.
+- [x] In-world: local vs inworld visibility across two clients; overlay survives echo;
       stop paths.

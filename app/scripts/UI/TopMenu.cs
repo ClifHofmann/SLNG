@@ -49,6 +49,7 @@ namespace SLNG.App.UI
         public Action? OnCreateTestSkin;
         public Action? OnBakeTestPattern;
         public Action? OnToggleAlwaysRun;
+        public Action? OnOpenActiveAnimations;
 
         private PopupMenu? _avatarMenu;
         private PopupMenu? _holdPoseMenu;
@@ -185,6 +186,7 @@ namespace SLNG.App.UI
             avatarMenu.AddCheckItem(L10n.Tr("ui.menu.always_run"), 10);
             avatarMenu.AddSeparator();
             avatarMenu.AddItem(L10n.Tr("ui.menu.stop_animations"), 4);
+            avatarMenu.AddItem(L10n.Tr("ui.menu.active_animations"), 11);
             avatarMenu.AddItem(L10n.Tr("ui.menu.reset_skeleton"), 5);
             avatarMenu.AddItem(L10n.Tr("ui.menu.resync_animations"), 6);
             avatarMenu.AddItem(L10n.Tr("ui.menu.resync_all_animations"), 7);
@@ -252,6 +254,7 @@ namespace SLNG.App.UI
                 else if (id == 6) OnResyncAnimations?.Invoke();
                 else if (id == 7) OnResyncAllAnimations?.Invoke();
                 else if (id == 10) OnToggleAlwaysRun?.Invoke();
+                else if (id == 11) OnOpenActiveAnimations?.Invoke();
             };
             menuBar.AddChild(avatarMenu);
 
