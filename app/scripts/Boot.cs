@@ -1,11 +1,11 @@
+using System.Collections.Generic;
+using System.Linq;
 using Godot;
+using SLNG.App;
 using SLNG.Core;
 using SLNG.Core.Avatars;
 using SLNG.Core.Components;
 using SLNG.Net;
-using SLNG.App;
-using System.Linq;
-using System.Collections.Generic;
 
 public partial class Boot : Control
 {
@@ -56,7 +56,7 @@ public partial class Boot : Control
     private SLNG.Assets.AssetService? _assetService;
     private AvatarController? _avatarController;
     private VBoxContainer _vboxContainer = null!;
-    
+
     private WorldEnvironment? _worldEnvironment;
     private DirectionalLight3D? _sun;
 
@@ -228,8 +228,7 @@ public partial class Boot : Control
     private RenderBaselineSampler? _renderBaselineSampler;
     private SLNG.App.UI.StatsOverlay? _statsOverlay;
     private SLNG.App.UI.GraphicsSettings _graphicsSettings = new();
-    private SLNG.App.UI.QualityPreferencesPage? _qualityPage;
-    private SLNG.App.UI.DesignPreferencesPage? _designPage;
+    private SLNG.App.UI.GraphicsPreferencesPage? _graphicsPage;
     private SLNG.App.UI.MaturityPreferencesPage? _maturityPage;
 
     /// <summary>Threshold for the [AgentGap] log. Below the 0.8 s extrapolation cutoff, so a gap
@@ -276,7 +275,7 @@ public partial class Boot : Control
     private readonly System.Collections.Concurrent.ConcurrentQueue<SLNG.Core.TeleportProgressEvent> _pendingTeleportProgress = new();
     private readonly WindlightPresetLibrary _windlightPresets = new();
     private SLNG.Core.Services.ChatLogger _chatLogger = null!;
-    
+
     // M5-2 Object Editing UI
     private ObjectSelectionController _objectSelectionController = null!;
     private SLNG.App.CursorManager _cursorManager = null!;
@@ -300,7 +299,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.186-alpha";
+    public const string AppVersion = "v0.22.187-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -380,7 +379,7 @@ public partial class Boot : Control
         GD.Print($"[Boot] {AppVersion}");
 
         // Background is standard at startup. User-specific screenshot is loaded in OnLoginPressed.
-        
+
         _vboxContainer = GetNode<VBoxContainer>("%VBoxContainer");
         _profileDropdown = GetNode<OptionButton>("%ProfileDropdown");
         _gridDropdown = GetNode<OptionButton>("%GridDropdown");
@@ -401,8 +400,8 @@ public partial class Boot : Control
         _gridDropdown.SetItemMetadata(2, LoginCredentials.SecondLifeBetaLoginUri);
         _gridDropdown.AddItem(SLNG.App.UI.L10n.Tr("ui.login.grid_sl"));
         _gridDropdown.SetItemMetadata(3, LoginCredentials.SecondLifeLoginUri);
-        
-        _gridDropdown.ItemSelected += (index) => 
+
+        _gridDropdown.ItemSelected += (index) =>
         {
             _gridInput.Text = (string)_gridDropdown.GetItemMetadata((int)index);
         };
@@ -462,10 +461,10 @@ public partial class Boot : Control
 
         _objectRenderer = new ObjectRenderer();
         AddChild(_objectRenderer);
-        
+
         _avatarRenderer = new AvatarRenderer();
         AddChild(_avatarRenderer);
-        
+
         SetupEnvironment();
         SetupHud();
         SetupTopMenu();
@@ -540,29 +539,34 @@ public partial class Boot : Control
             ShowToast(SLNG.App.UI.L10n.TrFormat("ui.topmenu.slurl_copied", slurl));
         };
 
-        _topMenu.OnDisconnect = () => {
+        _topMenu.OnDisconnect = () =>
+        {
             QuitGracefully(false);
         };
 
-        _topMenu.OnExit = () => {
+        _topMenu.OnExit = () =>
+        {
             QuitGracefully(true);
         };
 
-        _topMenu.OnToggleHud = () => {
+        _topMenu.OnToggleHud = () =>
+        {
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) hudLayer.Visible = !hudLayer.Visible;
         };
 
         _topMenu.OnToggleCameraHud = () => InvokeLauncher("camera");
 
-        _topMenu.OnCameraMode = (mode) => {
+        _topMenu.OnCameraMode = (mode) =>
+        {
             // Future integration with FreeCamera/AvatarController
             LogMessage($"Camera mode changed to {mode}");
         };
 
         _topMenu.OnToggleStats = () => _statsOverlay?.Toggle();
 
-        _topMenu.OnToggleWireframe = () => {
+        _topMenu.OnToggleWireframe = () =>
+        {
             var vp = GetViewport();
             vp.DebugDraw = vp.DebugDraw == Viewport.DebugDrawEnum.Wireframe
                 ? Viewport.DebugDrawEnum.Disabled
@@ -572,22 +576,23 @@ public partial class Boot : Control
         // FEAT-RENDER-01: capture a comparable before/after render measurement -- see
         // RenderBaselineSampler for why it is manual and stationary. The label records the
         // build so two log lines can never be mixed up when comparing runs.
-        _topMenu.OnMeasureRenderBaseline = () => {
+        _topMenu.OnMeasureRenderBaseline = () =>
+        {
             _renderBaselineSampler ??= new RenderBaselineSampler { Name = "RenderBaselineSampler" };
             if (_renderBaselineSampler.GetParent() == null) AddChild(_renderBaselineSampler);
             _renderBaselineSampler.StartSample(AppVersion);
         };
 
 
-        _topMenu.OnOpenPreferences = () => {
+        _topMenu.OnOpenPreferences = () =>
+        {
             // Re-read on open: F3/F4 change quality/design settings from outside the
             // dialog, so controls built once at startup would otherwise show stale values.
             // MaturityPreferencesPage has a different reason for the same fix -- see its own
             // Refresh() doc comment: SupportsMaturityPreference can read false right after login,
             // before the region's capability seed has actually resolved, and nothing was asking
             // it again once that settled. Measured live on Aditi.
-            _qualityPage?.Refresh();
-            _designPage?.Refresh();
+            _graphicsPage?.Refresh();
             _maturityPage?.Refresh();
             _preferencesWindow.Unminimize();
             _preferencesWindow.Visible = true;
@@ -601,14 +606,16 @@ public partial class Boot : Control
         _topMenu.OnOpenWorldMap = () => InvokeLauncher("worldmap");
         _topMenu.OnOpenMinimap = () => InvokeLauncher("minimap");
 
-        _topMenu.OnCreateLandmark = () => {
+        _topMenu.OnCreateLandmark = () =>
+        {
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) OpenCreateLandmarkWindow(hudLayer);
         };
 
         _topMenu.OnRebakeAvatar = RebakeAvatar;
         _topMenu.OnOpenHoverHeight = () => ActivateLauncher(_avatarHoverWindow, _avatarHoverWindow.Toggle);
-        _topMenu.OnOpenActiveAnimations = () => {
+        _topMenu.OnOpenActiveAnimations = () =>
+        {
             _activeAnimationsWindow ??= new SLNG.App.UI.ActiveAnimationsWindow();
             if (_activeAnimationsWindow.GetParent() == null)
             {
@@ -622,7 +629,8 @@ public partial class Boot : Control
             _activeAnimationsWindow.EnsureOnScreen();
             _activeAnimationsWindow.BringToFront();
         };
-        _topMenu.OnStopAnimations = () => {
+        _topMenu.OnStopAnimations = () =>
+        {
             _session?.StopAllSelfAnimations();
             _avatarRenderer?.StopSelfAnimations();
             _avatarRenderer?.StopAllSelfAnimationsLocal();
@@ -633,7 +641,8 @@ public partial class Boot : Control
             _topMenu.SetFreezeUI(false, false);
             _snapshotWindow?.SetFreezeState(false, false);
         };
-        _topMenu.OnResetSkeleton = () => {
+        _topMenu.OnResetSkeleton = () =>
+        {
             _avatarRenderer?.ResetSelfSkeleton();
             _avatarRenderer?.FreezeAllAvatars(false);
             _avatarRenderer?.FreezeSelfAnimation(false);
@@ -642,25 +651,31 @@ public partial class Boot : Control
             _topMenu.SetFreezeUI(false, false);
             _snapshotWindow?.SetFreezeState(false, false);
         };
-        _topMenu.OnResyncAnimations = () => {
+        _topMenu.OnResyncAnimations = () =>
+        {
             _avatarRenderer?.ResyncSelfAnimations();
         };
-        _topMenu.OnResyncAllAnimations = () => {
+        _topMenu.OnResyncAllAnimations = () =>
+        {
             _avatarRenderer?.ResyncAllAnimations();
         };
-        _topMenu.OnHoldPoseChanged = (mode) => {
+        _topMenu.OnHoldPoseChanged = (mode) =>
+        {
             _avatarRenderer?.SetSelfHoldMode(mode);
             _avatarController?.SetHoldMode(mode);
         };
-        _topMenu.OnFreezeSelfChanged = (on) => {
+        _topMenu.OnFreezeSelfChanged = (on) =>
+        {
             _avatarRenderer?.FreezeSelfAnimation(on);
             _snapshotWindow?.SetFreezeState(_avatarRenderer?.IsSelfFrozen ?? false, _avatarRenderer?.IsAllFrozen ?? false);
         };
-        _topMenu.OnFreezeAllChanged = (on) => {
+        _topMenu.OnFreezeAllChanged = (on) =>
+        {
             _avatarRenderer?.FreezeAllAvatars(on);
             _snapshotWindow?.SetFreezeState(_avatarRenderer?.IsSelfFrozen ?? false, _avatarRenderer?.IsAllFrozen ?? false);
         };
-        _topMenu.OnStepFrameRequested = (dir) => {
+        _topMenu.OnStepFrameRequested = (dir) =>
+        {
             _avatarRenderer?.StepAllFrames(dir);
         };
         _topMenu.OnCreateTestSkin = CreateTestSkin;
@@ -668,7 +683,8 @@ public partial class Boot : Control
 
         // Escape hatch for a stuck attachment/HUD that inventory "Detach"
         // (DetachAttachmentIntoInv) can't shift -- ObjectDetach by localId instead.
-        _topMenu.OnDetachAttachments = (hudOnly) => {
+        _topMenu.OnDetachAttachments = (hudOnly) =>
+        {
             int n = _session?.DetachAllAttachments(hudOnly) ?? 0;
             string msg = $"Detach: sent ObjectDetach for {n} {(hudOnly ? "HUD " : "")}attachment(s).";
             // NOT LogMessage: that writes to the boot LogPanel, which FEAT-UI-09 hides once the
@@ -731,24 +747,24 @@ public partial class Boot : Control
         standUpMargin.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         standUpMargin.MouseFilter = Control.MouseFilterEnum.Ignore;
         standUpMargin.Visible = false; // Hide the container by default
-        
+
         var vBox = new VBoxContainer();
         vBox.Alignment = BoxContainer.AlignmentMode.End;
         vBox.MouseFilter = Control.MouseFilterEnum.Ignore;
-        
+
         var hBox = new HBoxContainer();
         hBox.Alignment = BoxContainer.AlignmentMode.Center;
         hBox.MouseFilter = Control.MouseFilterEnum.Ignore;
-        
+
         var paddingMargin = new MarginContainer();
         paddingMargin.AddThemeConstantOverride("margin_bottom", 60);
         paddingMargin.MouseFilter = Control.MouseFilterEnum.Ignore;
-        
+
         vBox.AddChild(hBox);
         hBox.AddChild(paddingMargin);
-        
-        _standUpButton = new Button 
-        { 
+
+        _standUpButton = new Button
+        {
             Text = SLNG.App.UI.L10n.Tr("ui.hud.stand_up"),
             CustomMinimumSize = new Godot.Vector2(120, 32)
         };
@@ -757,7 +773,7 @@ public partial class Boot : Control
         standUpMargin.AddChild(vBox);
         hudLayer.AddChild(standUpMargin);
 
-        _standUpButton.Pressed += () => 
+        _standUpButton.Pressed += () =>
         {
             if (_localAgent != null)
             {
@@ -1079,13 +1095,10 @@ public partial class Boot : Control
             ShowToast(on ? SLNG.App.UI.L10n.Tr("ui.hint.always_run_on") : SLNG.App.UI.L10n.Tr("ui.hint.always_run_off"));
         };
 
-        _qualityPage = new SLNG.App.UI.QualityPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_quality") };
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_quality"), _qualityPage);
-        _qualityPage.Initialize(_graphicsSettings, ApplyGraphicsSettings, () => _gpuCache?.CurrentSizeBytes ?? 0);
-
-        _designPage = new SLNG.App.UI.DesignPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_design") };
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_design"), _designPage);
-        _designPage.Initialize(_graphicsSettings, ApplyGraphicsSettings);
+        _graphicsPage = new SLNG.App.UI.GraphicsPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_graphics") };
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_graphics"), _graphicsPage);
+        _graphicsPage.Initialize(_graphicsSettings, ApplyGraphicsSettings, _dofSettings,
+                                 () => _dofController?.Apply(), () => _gpuCache?.CurrentSizeBytes ?? 0);
 
         var networkPage = new SLNG.App.UI.NetworkPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);
@@ -1219,12 +1232,12 @@ public partial class Boot : Control
             // active sky every frame from here on and switches to Aces for one that carries it --
             // see the TonemapMode assignment there for what changed and why.
             TonemapMode = Godot.Environment.ToneMapper.Linear,
-            
+
             // Post-FX (M2-5)
             SsaoEnabled = true,
             SsaoRadius = 1.0f,
             SsaoIntensity = 2.0f,
-            
+
             SsilEnabled = true,
 
             // FEAT-RENDER-21: screen-space reflections. This is the piece a reflection PROBE
@@ -1887,10 +1900,10 @@ public partial class Boot : Control
         // points toward the sun, so the light travels the other way and the light node's forward
         // (-Z, which is what LookAt aims) is the negated vector.
         var toSun = new Godot.Vector3(d.X, d.Z, -d.Y);
-        
+
         if (toSun.LengthSquared() < 0.0001f)
             return;
-            
+
         toSun = toSun.Normalized();
 
         // Straight down would make LookAt's up-vector degenerate; skip that one frame rather than
@@ -1961,10 +1974,10 @@ public partial class Boot : Control
 
         // FEAT-ENV-02: Use the server's synced time if we have received a SimulatorViewerTimeMessage,
         // otherwise fall back to local UtcNow.
-        var simTime = _session?.SimUnixTime > 0 
+        var simTime = _session?.SimUnixTime > 0
             ? System.DateTimeOffset.FromUnixTimeSeconds((long)(_session.SimUnixTime / 1000000UL))
             : System.DateTimeOffset.UtcNow;
-            
+
         var sunDir = GetSunDirection();
         _environmentDriver.Update(
             _worldEnvironment, _sun, _terrainRenderer?.WaterMaterial,
@@ -2329,7 +2342,7 @@ public partial class Boot : Control
     private void OnProfileSelected(long index)
     {
         if (index == 0) return; // The "--- Select Profile ---" placeholder
-        
+
         string profile = _savedProfiles[(int)index - 1];
         _gridInput.Text = (string)_loginsConfig.GetValue(profile, "grid", "");
         _firstInput.Text = (string)_loginsConfig.GetValue(profile, "first", "");
@@ -2676,10 +2689,10 @@ public partial class Boot : Control
     private async void OnLoginPressed()
     {
         _loginButton.Disabled = true;
-        
+
         var firstName = _firstInput.Text.Trim();
         var lastName = _lastInput.Text.Trim();
-        
+
         LogMessage($"Connecting to {_gridInput.Text} as {firstName} {lastName}...");
 
         // Load the user's specific last session screenshot as the loading background (FEAT-UI-21)
@@ -2965,10 +2978,10 @@ public partial class Boot : Control
             _cursorManager.Initialize(_world, _avatarController, _session);
 
             ulong regionHandle = _session.CurrentRegionHandle;
-            
+
             // Start near the region centre at a reasonable height (before AvatarUpdate arrives).
             _avatarController.Position = RenderConfig.ToGodot(regionHandle, new System.Numerics.Vector3(128f, 128f, 50f));
-            
+
             // Assign the environment directly to the camera to ensure the sky renders
             var worldEnv = GetNodeOrNull<WorldEnvironment>("WorldEnvironment");
             if (worldEnv != null)
@@ -3527,7 +3540,7 @@ public partial class Boot : Control
             _worldSimulation.Dispose();
         }
         _session?.Dispose();
-        
+
         // Force GC now while the RenderingServer is still alive, so any floating Godot wrappers
         // (like evicted cache entries) run their finalizers safely.
         System.GC.Collect();
@@ -3564,25 +3577,25 @@ public partial class Boot : Control
             // Hide all UI components for a clean screenshot
             var loginScreen = GetNodeOrNull<Control>("%LoginScreen");
             if (loginScreen != null) loginScreen.Visible = false;
-            
+
             var bg = GetNodeOrNull<Control>("%Background");
             if (bg != null) bg.Visible = false;
-            
+
             var loadingScreen = GetNodeOrNull<Control>("%LoadingScreen");
             if (loadingScreen != null) loadingScreen.Visible = false;
-            
+
             var loadingBlur = GetNodeOrNull<Control>("%LoadingScreenBlur");
             if (loadingBlur != null) loadingBlur.Visible = false;
-            
+
             if (_topMenu != null)
             {
                 _topMenu.Visible = false;
                 _topMenu.ClearLocation();
             }
-            
+
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) hudLayer.Visible = false;
-            
+
             if (_chatWindow != null) _chatWindow.Visible = false;
             if (_inventoryPanel != null) _inventoryPanel.Visible = false;
             _teleportOverlay?.ForceHide();
@@ -3638,12 +3651,12 @@ public partial class Boot : Control
                 _session.Dispose();
                 _session = null;
             }
-            
+
             var loginScreen = GetNodeOrNull<Control>("%LoginScreen");
             if (loginScreen != null) loginScreen.Visible = true;
-            
+
             var bg = GetNodeOrNull<TextureRect>("%Background");
-            if (bg != null) 
+            if (bg != null)
             {
                 bg.Visible = true;
                 var firstName = _firstInput.Text.Trim();
@@ -3658,7 +3671,7 @@ public partial class Boot : Control
                     }
                 }
             }
-            
+
             if (_topMenu != null)
             {
                 _topMenu.Visible = false;
@@ -3678,12 +3691,12 @@ public partial class Boot : Control
             _teleportActive = false;
             _teleportCameraResetPending = false;
             _teleportOverlay?.ForceHide();
-            
+
             var loadingBlur = GetNodeOrNull<Control>("%LoadingScreenBlur");
             if (loadingBlur != null) loadingBlur.Visible = false;
             var loadingScreenNode = GetNodeOrNull<Control>("%LoadingScreen");
             if (loadingScreenNode != null) loadingScreenNode.Visible = false;
-            
+
             var stepList = GetNodeOrNull<Container>("%StepList");
             if (stepList != null)
             {
@@ -3694,7 +3707,7 @@ public partial class Boot : Control
                     if (child is Control c) c.Visible = true;
                 }
             }
-            
+
             _isQuitting = false;
         }
     }

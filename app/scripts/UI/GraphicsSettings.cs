@@ -1,6 +1,17 @@
+using System;
+using System.Collections.Generic;
 using Godot;
 
 namespace SLNG.App.UI;
+
+public enum GraphicsPreset
+{
+    Custom = -1,
+    Low = 0,
+    Medium = 1,
+    High = 2,
+    Ultra = 3,
+}
 
 /// <summary>
 /// Graphics options, persisted to user://preferences.cfg under a "graphics" section -- same
@@ -23,6 +34,7 @@ public sealed class GraphicsSettings
 {
     private const string ConfigPath = "user://preferences.cfg";
     private const string Section = "graphics";
+    private const string ProfileSectionPrefix = "graphics_profile_";
 
     /// <summary>Matches DisplayServer.VSyncMode: 0 disabled, 1 enabled, 2 adaptive, 3 mailbox.</summary>
     public int VSyncMode { get; private set; } = (int)DisplayServer.VSyncMode.Enabled;
@@ -176,6 +188,249 @@ public sealed class GraphicsSettings
     public void SetSmallObjectShadows(bool on) { SmallObjectShadows = on; Save(); }
     public void SetVolumeLodFactor(float factor) { VolumeLodFactor = factor; Save(); }
 
+    public void ApplyPreset(GraphicsPreset preset)
+    {
+        switch (preset)
+        {
+            case GraphicsPreset.Low:
+                DrawDistance = 64f;
+                Msaa = 0;
+                Shadows = false;
+                ShadowSplits = 1;
+                ShadowResolution = 1024;
+                ShadowDistance = 50f;
+                SmallObjectShadows = false;
+                PostFxSsao = false;
+                PostFxSsil = false;
+                PostFxGlow = false;
+                PostFxReflectionProbe = false;
+                PostFxProbeAmbient = false;
+                PostFxSsr = false;
+                PostFxHeroProbe = false;
+                VolumeLodFactor = 1.0f;
+                break;
+            case GraphicsPreset.Medium:
+                DrawDistance = 128f;
+                Msaa = (int)Viewport.Msaa.Msaa2X;
+                Shadows = true;
+                ShadowSplits = 1;
+                ShadowResolution = 2048;
+                ShadowDistance = 70f;
+                SmallObjectShadows = false;
+                PostFxSsao = false;
+                PostFxSsil = false;
+                PostFxGlow = true;
+                PostFxReflectionProbe = true;
+                PostFxProbeAmbient = false;
+                PostFxSsr = false;
+                PostFxHeroProbe = false;
+                VolumeLodFactor = 1.25f;
+                break;
+            case GraphicsPreset.High:
+                DrawDistance = 176f;
+                Msaa = (int)Viewport.Msaa.Msaa4X;
+                Shadows = true;
+                ShadowSplits = 2;
+                ShadowResolution = 4096;
+                ShadowDistance = 90f;
+                SmallObjectShadows = false;
+                PostFxSsao = true;
+                PostFxSsil = false;
+                PostFxGlow = true;
+                PostFxReflectionProbe = true;
+                PostFxProbeAmbient = false;
+                PostFxSsr = true;
+                PostFxHeroProbe = true;
+                VolumeLodFactor = 2.0f;
+                break;
+            case GraphicsPreset.Ultra:
+                DrawDistance = 256f;
+                Msaa = (int)Viewport.Msaa.Msaa8X;
+                Shadows = true;
+                ShadowSplits = 2;
+                ShadowResolution = 4096;
+                ShadowDistance = 120f;
+                SmallObjectShadows = true;
+                PostFxSsao = true;
+                PostFxSsil = true;
+                PostFxGlow = true;
+                PostFxReflectionProbe = true;
+                PostFxProbeAmbient = false;
+                PostFxSsr = true;
+                PostFxHeroProbe = true;
+                VolumeLodFactor = 3.0f;
+                break;
+        }
+        Save();
+    }
+
+    public GraphicsPreset DetectPreset()
+    {
+        if (MatchesPreset(GraphicsPreset.Low)) return GraphicsPreset.Low;
+        if (MatchesPreset(GraphicsPreset.Medium)) return GraphicsPreset.Medium;
+        if (MatchesPreset(GraphicsPreset.High)) return GraphicsPreset.High;
+        if (MatchesPreset(GraphicsPreset.Ultra)) return GraphicsPreset.Ultra;
+        return GraphicsPreset.Custom;
+    }
+
+    private bool MatchesPreset(GraphicsPreset preset)
+    {
+        return preset switch
+        {
+            GraphicsPreset.Low =>
+                Math.Abs(DrawDistance - 64f) < 1f &&
+                Msaa == 0 &&
+                !Shadows &&
+                !PostFxSsao &&
+                !PostFxSsil &&
+                !PostFxGlow &&
+                !PostFxReflectionProbe &&
+                !PostFxProbeAmbient &&
+                !PostFxSsr &&
+                !PostFxHeroProbe &&
+                !SmallObjectShadows &&
+                Math.Abs(VolumeLodFactor - 1.0f) < 0.05f,
+            GraphicsPreset.Medium =>
+                Math.Abs(DrawDistance - 128f) < 1f &&
+                Msaa == (int)Viewport.Msaa.Msaa2X &&
+                Shadows &&
+                ShadowSplits == 1 &&
+                !PostFxSsao &&
+                !PostFxSsil &&
+                PostFxGlow &&
+                PostFxReflectionProbe &&
+                !PostFxProbeAmbient &&
+                !PostFxSsr &&
+                !PostFxHeroProbe &&
+                !SmallObjectShadows &&
+                Math.Abs(VolumeLodFactor - 1.25f) < 0.05f,
+            GraphicsPreset.High =>
+                Math.Abs(DrawDistance - 176f) < 1f &&
+                Msaa == (int)Viewport.Msaa.Msaa4X &&
+                Shadows &&
+                ShadowSplits == 2 &&
+                PostFxSsao &&
+                !PostFxSsil &&
+                PostFxGlow &&
+                PostFxReflectionProbe &&
+                !PostFxProbeAmbient &&
+                PostFxSsr &&
+                PostFxHeroProbe &&
+                !SmallObjectShadows &&
+                Math.Abs(VolumeLodFactor - 2.0f) < 0.05f,
+            GraphicsPreset.Ultra =>
+                Math.Abs(DrawDistance - 256f) < 1f &&
+                Msaa == (int)Viewport.Msaa.Msaa8X &&
+                Shadows &&
+                ShadowSplits == 2 &&
+                PostFxSsao &&
+                PostFxSsil &&
+                PostFxGlow &&
+                PostFxReflectionProbe &&
+                !PostFxProbeAmbient &&
+                PostFxSsr &&
+                PostFxHeroProbe &&
+                SmallObjectShadows &&
+                Math.Abs(VolumeLodFactor - 3.0f) < 0.05f,
+            _ => false
+        };
+    }
+
+    public static string[] GetProfileNames()
+    {
+        var cfg = new ConfigFile();
+        if (cfg.Load(ConfigPath) != Error.Ok) return Array.Empty<string>();
+        var list = new List<string>();
+        foreach (string section in cfg.GetSections())
+        {
+            if (section.StartsWith(ProfileSectionPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                string name = section.Substring(ProfileSectionPrefix.Length).Trim();
+                if (!string.IsNullOrEmpty(name))
+                {
+                    list.Add(name);
+                }
+            }
+        }
+        list.Sort(StringComparer.OrdinalIgnoreCase);
+        return list.ToArray();
+    }
+
+    public bool SaveProfile(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        name = name.Trim();
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        string section = ProfileSectionPrefix + name;
+        cfg.SetValue(section, "vsync_mode", VSyncMode);
+        cfg.SetValue(section, "max_fps", MaxFps);
+        cfg.SetValue(section, "draw_distance", DrawDistance);
+        cfg.SetValue(section, "msaa", Msaa);
+        cfg.SetValue(section, "texture_memory_mb", TextureMemoryMb);
+        cfg.SetValue(section, "post_fx_ssao", PostFxSsao);
+        cfg.SetValue(section, "post_fx_ssil", PostFxSsil);
+        cfg.SetValue(section, "post_fx_glow", PostFxGlow);
+        cfg.SetValue(section, "post_fx_reflection_probe", PostFxReflectionProbe);
+        cfg.SetValue(section, "post_fx_probe_ambient", PostFxProbeAmbient);
+        cfg.SetValue(section, "post_fx_ssr", PostFxSsr);
+        cfg.SetValue(section, "post_fx_hero_probe", PostFxHeroProbe);
+        cfg.SetValue(section, "shadows", Shadows);
+        cfg.SetValue(section, "shadow_blur", ShadowBlur);
+        cfg.SetValue(section, "shadow_resolution", ShadowResolution);
+        cfg.SetValue(section, "shadow_distance", ShadowDistance);
+        cfg.SetValue(section, "shadow_opacity", ShadowOpacity);
+        cfg.SetValue(section, "shadow_splits", ShadowSplits);
+        cfg.SetValue(section, "small_object_shadows", SmallObjectShadows);
+        cfg.SetValue(section, "volume_lod_factor", VolumeLodFactor);
+        return cfg.Save(ConfigPath) == Error.Ok;
+    }
+
+    public bool LoadProfile(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        name = name.Trim();
+        var cfg = new ConfigFile();
+        if (cfg.Load(ConfigPath) != Error.Ok) return false;
+        string section = ProfileSectionPrefix + name;
+        if (!cfg.HasSection(section)) return false;
+
+        VSyncMode = (int)cfg.GetValue(section, "vsync_mode", VSyncMode);
+        MaxFps = (int)cfg.GetValue(section, "max_fps", MaxFps);
+        DrawDistance = (float)cfg.GetValue(section, "draw_distance", DrawDistance);
+        Msaa = (int)cfg.GetValue(section, "msaa", Msaa);
+        TextureMemoryMb = (int)cfg.GetValue(section, "texture_memory_mb", TextureMemoryMb);
+        PostFxSsao = (bool)cfg.GetValue(section, "post_fx_ssao", PostFxSsao);
+        PostFxSsil = (bool)cfg.GetValue(section, "post_fx_ssil", PostFxSsil);
+        PostFxGlow = (bool)cfg.GetValue(section, "post_fx_glow", PostFxGlow);
+        PostFxReflectionProbe = (bool)cfg.GetValue(section, "post_fx_reflection_probe", PostFxReflectionProbe);
+        PostFxProbeAmbient = (bool)cfg.GetValue(section, "post_fx_probe_ambient", PostFxProbeAmbient);
+        PostFxSsr = (bool)cfg.GetValue(section, "post_fx_ssr", PostFxSsr);
+        PostFxHeroProbe = (bool)cfg.GetValue(section, "post_fx_hero_probe", PostFxHeroProbe);
+        Shadows = (bool)cfg.GetValue(section, "shadows", Shadows);
+        ShadowBlur = (float)cfg.GetValue(section, "shadow_blur", ShadowBlur);
+        ShadowResolution = (int)cfg.GetValue(section, "shadow_resolution", ShadowResolution);
+        ShadowDistance = (float)cfg.GetValue(section, "shadow_distance", ShadowDistance);
+        ShadowOpacity = (float)cfg.GetValue(section, "shadow_opacity", ShadowOpacity);
+        ShadowSplits = (int)cfg.GetValue(section, "shadow_splits", ShadowSplits);
+        SmallObjectShadows = (bool)cfg.GetValue(section, "small_object_shadows", SmallObjectShadows);
+        VolumeLodFactor = (float)cfg.GetValue(section, "volume_lod_factor", VolumeLodFactor);
+        Save();
+        return true;
+    }
+
+    public static bool DeleteProfile(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        name = name.Trim();
+        var cfg = new ConfigFile();
+        if (cfg.Load(ConfigPath) != Error.Ok) return false;
+        string section = ProfileSectionPrefix + name;
+        if (!cfg.HasSection(section)) return false;
+        cfg.EraseSection(section);
+        return cfg.Save(ConfigPath) == Error.Ok;
+    }
+
     /// <summary>
     /// Pushes the current values into the engine. Safe to call repeatedly and with nulls -- during
     /// startup the environment and sun do not exist yet, and the window-level settings should still
@@ -229,7 +484,8 @@ public sealed class GraphicsSettings
             sun.ShadowBlur = ShadowBlur;
             sun.DirectionalShadowMaxDistance = ShadowDistance;
             sun.ShadowOpacity = ShadowOpacity;
-            sun.DirectionalShadowMode = ShadowSplits switch {
+            sun.DirectionalShadowMode = ShadowSplits switch
+            {
                 0 => DirectionalLight3D.ShadowMode.Orthogonal,
                 1 => DirectionalLight3D.ShadowMode.Parallel2Splits,
                 _ => DirectionalLight3D.ShadowMode.Parallel4Splits
