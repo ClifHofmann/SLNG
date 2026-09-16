@@ -114,14 +114,31 @@ stabilisation. It is *not* established that they alone explain an arms-out T-pos
 only difference left after everything above was ruled out, and they are missing regardless of
 this bug.
 
-### Suggested next step
+### Root cause & resolution (v0.22.163-alpha)
 
-Implement the seven built-in motions as a scoped feature. `hand_motion` is independently
-interesting: it is what applies an animation's `hand_pose` field, and this stand sets
-`hand_pose = 1`.
-
-If that does not resolve it, the next move is a **measurement, not another guess** — a
-side-by-side of SLNG's and Firestorm's rendered skeleton on the same stand, joint by joint.
+The reason the stand was stuck in `StandNormal*` (the T-pose reset animation): **the pose could not
+be changed in SLNG**. In Firestorm the user clicks the stand while standing on it to switch poses.
+In SLNG:
+1. **`ClickAction.Sit` while seated:** Object `566c54f7` has `ClickAction = Sit`. In
+   `ObjectSelectionController`, a left-click unconditionally sent `RequestSit(localId)`. When
+   already sitting on an object, clicking it must execute **Touch** (`ClickObjectAsync`) — sitting
+   again makes no sense and prevents the script's `touch_start` from firing to open the pose menu.
+   (The second pose stand `e598b886` used `ClickAction.Touch`, which is why it worked).
+2. **Left-click on avatar collision:** Clicking the stand through/near the avatar hit the avatar's
+   1.9m capsule and was dropped. Left-clicks now penetrate through avatar colliders.
+3. **Child prim targeting:** Touches now target `rawLocalId` instead of resolving to the linkset
+   root, so child prim buttons receive touches properly.
+4. **Context menu touch:** `_inWorldContextMenu.OnTouchClicked` in `Boot.cs` was an empty stub
+   (`/* Touch logic later */`); wired to `ClickObjectAsync`.
+5. **Script dialog button replies (BUG-UI-10):** `ScriptDialogWindow` sends chosen button via
+   `GridSession.ReplyToScriptDialog` -> `_client.Self.ReplyToScriptDialog` (sends
+   `ScriptDialogReplyPacket`). Dialog menus now answer reliably.
+6. **BVH Keyframe Timestamps (v0.22.165-alpha):** LibreMetaverse `BinBVHAnimationReader` mapped key
+   times across `[InPoint, OutPoint]`. When `InPoint == OutPoint = 0.1s` (common on pose stands and holds),
+   all keyframe timestamps were collapsed to `0.1s`, causing `AvatarAnimationPlayer` to evaluate only
+   Keyframe 0 (bind T-pose) and never reach Keyframe 1 (authored pose). `AnimationDecodeService` now decodes
+   raw bytes directly with `(tShort / 65535.0f) * Length`, matching the reference viewer's
+   `U16_to_F32(time_short, 0.f, joint_motion_list->mDuration)`.
 
 ---
 

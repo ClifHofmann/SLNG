@@ -370,6 +370,28 @@
       "change_joints": "Change joints",
       "unknown": "Something this viewer does not recognise (flags {0})",
       "nothing": "Nothing — it asked for no permissions at all."
+    },
+    "build": {
+      "title": "Build / Inspector",
+      "edit_title": "Edit: {0}",
+      "tab_general": "General",
+      "tab_object": "Object",
+      "tab_features": "Features",
+      "tab_texture": "Texture",
+      "tab_content": "Content",
+      "name": "Name:",
+      "description": "Description:",
+      "creator": "Creator:",
+      "owner": "Owner:",
+      "group": "Group:",
+      "click_action": "When Left-Clicked:",
+      "click_action_touch": "Touch (default)",
+      "click_action_sit": "Sit on object",
+      "click_action_buy": "Buy object",
+      "click_action_pay": "Pay object",
+      "click_action_open": "Open",
+      "click_action_play": "Play",
+      "click_action_open_media": "Open media"
     }
   }
 }

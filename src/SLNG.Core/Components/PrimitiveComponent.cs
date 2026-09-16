@@ -104,6 +104,8 @@ public class PrimitiveComponent : IComponent
     public bool IsTemporary { get; set; }
     public bool IsPhantom { get; set; }
     public bool CastsShadows { get; set; } = true;
+    /// <summary>True when an in-world script on this prim registers touch_start/touch/touch_end.</summary>
+    public bool IsTouch { get; set; }
 
     /// <summary>SL's point-light ("Light") prim property. Mirrors LibreMetaverse's
     /// Primitive.LightData ExtraParams block, which the wire protocol has no separate enable

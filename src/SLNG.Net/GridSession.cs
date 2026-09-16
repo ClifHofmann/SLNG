@@ -5316,7 +5316,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // The DEFAULT face's fullbright flag -- see FaceTexture.Fullbright. Per-face entries
             // in `faces` carry their own; this is for prims that send no per-face entries.
             defaultFace?.Fullbright ?? false,
-            _reflectionProbeByLocalId.TryGetValue(prim.LocalID, out var probe) ? probe : null));
+            _reflectionProbeByLocalId.TryGetValue(prim.LocalID, out var probe) ? probe : null,
+            prim.Flags.HasFlag(PrimFlags.Touch)));
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)
@@ -5664,6 +5665,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         var sim = _client.Network.CurrentSim;
         if (sim == null) return;
+
+        Console.WriteLine($"[Touch] ClickObjectAsync: localId={localId}, sim={sim.Name}, pos={position}");
 
         await _client.Objects.ClickObjectAsync(
             sim, localId,
@@ -8501,6 +8504,28 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
         _client.Objects.SetMaterial(_client.Network.CurrentSim, localId, (Material)(byte)material);
+    }
+
+    public void SetObjectClickAction(uint localId, byte clickAction)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+        var packet = new ObjectClickActionPacket
+        {
+            AgentData =
+            {
+                AgentID = _client.Self.AgentID,
+                SessionID = _client.Self.SessionID
+            },
+            ObjectData = new ObjectClickActionPacket.ObjectDataBlock[]
+            {
+                new()
+                {
+                    ObjectLocalID = localId,
+                    ClickAction = clickAction
+                }
+            }
+        };
+        _client.Network.CurrentSim.SendPacket(packet);
     }
 
     /// <summary>Rezzes a new basic-shape prim at the given region-local position. The sim only

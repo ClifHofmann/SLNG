@@ -141,6 +141,34 @@ public class AnimationRotationUnpackTests
         Assert.Equal(0f, unpacked.Y, 1e-3f);
         Assert.Equal(0f, unpacked.Z, 1e-3f);
     }
+
+    [Fact]
+    public void TestRealAsset138b9d92()
+    {
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var path = System.IO.Path.Combine(appData, "Godot", "app_userdata", "Puris Viewer", "cache", "assets", "944447f1-0769-13a8-bf4b-d8649a001362.anim");
+        Assert.True(System.IO.File.Exists(path), $"File not found at {path}");
+
+        var path138 = System.IO.Path.Combine(appData, "Godot", "app_userdata", "Puris Viewer", "cache", "assets", "138b9d92-3cca-7403-9dcf-ea5e6b2abe82.anim");
+        Assert.True(System.IO.File.Exists(path138), $"File not found at {path138}");
+        var bytes138 = System.IO.File.ReadAllBytes(path138);
+
+        var data = AnimationDecodeService.Decode(bytes138);
+        Assert.NotNull(data);
+        Assert.Equal(19, data.Joints.Length);
+
+        var shoulder = data.Joints.First(j => j.JointName == "mShoulderLeft");
+        Assert.Equal(2, shoulder.RotationKeys.Length);
+        // Previously, LibreMetaverse collapsed both keys to InPoint (0.09999s).
+        // Correct SL decode scales across [0, Length], giving distinct times.
+        Assert.True(shoulder.RotationKeys[0].Time < shoulder.RotationKeys[1].Time);
+        Assert.InRange(shoulder.RotationKeys[0].Time, 0.06f, 0.07f);
+        Assert.InRange(shoulder.RotationKeys[1].Time, 0.09f, 0.11f);
+
+        // Terminal rotation is the actual authored pose, not identity rest pose
+        Assert.InRange(shoulder.RotationKeys[1].Rotation.X, 0.25f, 0.30f);
+    }
+
 }
 
 

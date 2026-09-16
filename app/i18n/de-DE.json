@@ -370,6 +370,28 @@
       "change_joints": "Gelenke ändern",
       "unknown": "Etwas, das dieser Viewer nicht kennt (Flags {0})",
       "nothing": "Nichts — es wurden gar keine Rechte angefragt."
+    },
+    "build": {
+      "title": "Bauen / Inspektor",
+      "edit_title": "Bearbeiten: {0}",
+      "tab_general": "Allgemein",
+      "tab_object": "Objekt",
+      "tab_features": "Merkmale",
+      "tab_texture": "Textur",
+      "tab_content": "Inhalt",
+      "name": "Name:",
+      "description": "Beschreibung:",
+      "creator": "Ersteller:",
+      "owner": "Eigentümer:",
+      "group": "Gruppe:",
+      "click_action": "Bei Linksklick:",
+      "click_action_touch": "Berühren (Standard)",
+      "click_action_sit": "Auf Objekt sitzen",
+      "click_action_buy": "Objekt kaufen",
+      "click_action_pay": "Objekt bezahlen",
+      "click_action_open": "Öffnen",
+      "click_action_play": "Abspielen",
+      "click_action_open_media": "Medien öffnen"
     }
   }
 }

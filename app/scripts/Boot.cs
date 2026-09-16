@@ -297,7 +297,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.168-alpha";
+    public const string AppVersion = "v0.22.169-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -2792,7 +2792,7 @@ public partial class Boot : Control
 
             _cursorManager = new SLNG.App.CursorManager();
             AddChild(_cursorManager);
-            _cursorManager.Initialize(_world, _avatarController);
+            _cursorManager.Initialize(_world, _avatarController, _session);
 
             ulong regionHandle = _session.CurrentRegionHandle;
             

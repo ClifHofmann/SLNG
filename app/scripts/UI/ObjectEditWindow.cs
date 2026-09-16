@@ -60,6 +60,8 @@ namespace SLNG.App.UI
         // Same dirty-check role, for the classic Material dropdown (Stone/Metal/.../Rubber).
         private PrimMaterial _knownMaterial = PrimMaterial.Wood;
         private PrimMaterial? _pendingMaterial;
+        private byte _knownClickAction;
+        private byte? _pendingClickAction;
 
         // Physics Shape Type + Gravity/Friction/Density/Bounciness (Features tab "Physics"
         // section) share ObjectFlagUpdate's wire message with Physical/Temporary/Phantom -- every
@@ -110,6 +112,7 @@ namespace SLNG.App.UI
         // Index order matches PrimPhysicsShapeType's declaration order (Prim=0, None=1,
         // ConvexHull=2), same direct-cast reasoning as _materialOption.
         private OptionButton _physicsShapeOption = null!;
+        private OptionButton _clickActionOption = null!;
         private LineEdit _physicsGravityInput = null!, _physicsFrictionInput = null!, _physicsDensityInput = null!, _physicsRestitutionInput = null!;
 
         public void Initialize(GridSession session, World world)
@@ -139,7 +142,7 @@ namespace SLNG.App.UI
         {
             base._Ready(); // set up SLNGWindow styling
             OnCloseRequested = RequestClose;
-            Title = "Build / Inspector";
+            Title = L10n.Tr("ui.build.title");
             Visible = false;
             CustomMinimumSize = new Vector2(320, 400);
 
@@ -147,7 +150,7 @@ namespace SLNG.App.UI
             ContentContainer.AddChild(tabContainer);
 
             // General Tab
-            var generalTab = new MarginContainer { Name = "General" };
+            var generalTab = new MarginContainer { Name = L10n.Tr("ui.build.tab_general") };
             var generalVBox = new VBoxContainer();
             generalTab.AddChild(generalVBox);
             tabContainer.AddChild(generalTab);
@@ -158,12 +161,23 @@ namespace SLNG.App.UI
             _ownerLabel = new Label { Text = "Loading..." };
             _groupLabel = new Label { Text = "Loading..." };
 
+            _clickActionOption = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            _clickActionOption.AddItem(L10n.Tr("ui.build.click_action_touch"), 0);
+            _clickActionOption.AddItem(L10n.Tr("ui.build.click_action_sit"), 1);
+            _clickActionOption.AddItem(L10n.Tr("ui.build.click_action_buy"), 2);
+            _clickActionOption.AddItem(L10n.Tr("ui.build.click_action_pay"), 3);
+            _clickActionOption.AddItem(L10n.Tr("ui.build.click_action_open"), 4);
+            _clickActionOption.AddItem(L10n.Tr("ui.build.click_action_play"), 5);
+            _clickActionOption.AddItem(L10n.Tr("ui.build.click_action_open_media"), 6);
+            _clickActionOption.ItemSelected += idx => SendObjectClickAction((byte)idx);
+
             var genGrid = new GridContainer { Columns = 2 };
-            genGrid.AddChild(new Label { Text = "Name:" }); genGrid.AddChild(_nameInput);
-            genGrid.AddChild(new Label { Text = "Description:" }); genGrid.AddChild(_descInput);
-            genGrid.AddChild(new Label { Text = "Creator:" }); genGrid.AddChild(_creatorLabel);
-            genGrid.AddChild(new Label { Text = "Owner:" }); genGrid.AddChild(_ownerLabel);
-            genGrid.AddChild(new Label { Text = "Group:" }); genGrid.AddChild(_groupLabel);
+            genGrid.AddChild(new Label { Text = L10n.Tr("ui.build.name") }); genGrid.AddChild(_nameInput);
+            genGrid.AddChild(new Label { Text = L10n.Tr("ui.build.description") }); genGrid.AddChild(_descInput);
+            genGrid.AddChild(new Label { Text = L10n.Tr("ui.build.creator") }); genGrid.AddChild(_creatorLabel);
+            genGrid.AddChild(new Label { Text = L10n.Tr("ui.build.owner") }); genGrid.AddChild(_ownerLabel);
+            genGrid.AddChild(new Label { Text = L10n.Tr("ui.build.group") }); genGrid.AddChild(_groupLabel);
+            genGrid.AddChild(new Label { Text = L10n.Tr("ui.build.click_action") }); genGrid.AddChild(_clickActionOption);
             generalVBox.AddChild(genGrid);
 
             // Read-only indicators (Disabled, not user-togglable here): show why an edit might
@@ -191,7 +205,7 @@ namespace SLNG.App.UI
             generalVBox.AddChild(_copyAssetUuidBtn);
 
             // Object (Transform) Tab
-            var objectTab = new MarginContainer { Name = "Object" };
+            var objectTab = new MarginContainer { Name = L10n.Tr("ui.build.tab_object") };
             var transformVBox = new VBoxContainer();
             objectTab.AddChild(transformVBox);
             tabContainer.AddChild(objectTab);
@@ -238,7 +252,7 @@ namespace SLNG.App.UI
             transformVBox.AddChild(applyBtn);
 
             // Features Tab
-            var featuresTab = new MarginContainer { Name = "Features" };
+            var featuresTab = new MarginContainer { Name = L10n.Tr("ui.build.tab_features") };
             var featVBox = new VBoxContainer();
             featuresTab.AddChild(featVBox);
             tabContainer.AddChild(featuresTab);
@@ -297,7 +311,7 @@ namespace SLNG.App.UI
             featVBox.AddChild(physicsApplyBtn);
 
             // Texture Tab
-            var textureTab = new MarginContainer { Name = "Texture" };
+            var textureTab = new MarginContainer { Name = L10n.Tr("ui.build.tab_texture") };
             var texVBox = new VBoxContainer();
             textureTab.AddChild(texVBox);
             tabContainer.AddChild(textureTab);
@@ -312,7 +326,7 @@ namespace SLNG.App.UI
             blinnTab.AddChild(new Label { Text = "Diffuse, Specular maps..." });
 
             // Content Tab
-            var contentTab = new MarginContainer { Name = "Content" };
+            var contentTab = new MarginContainer { Name = L10n.Tr("ui.build.tab_content") };
             contentTab.AddChild(new Label { Text = "Inventory inside object...\n(Loading functionality coming in M6)" });
             tabContainer.AddChild(contentTab);
         }
@@ -373,6 +387,7 @@ namespace SLNG.App.UI
             _pendingLightColor = null;
             _pendingLightIntensity = _pendingLightRadius = _pendingLightFalloff = null;
             _pendingMaterial = null;
+            _pendingClickAction = null;
             _pendingPhysicsShapeType = null;
             _pendingPhysicsGravity = _pendingPhysicsFriction = _pendingPhysicsDensity = _pendingPhysicsRestitution = null;
             // Physics data is per-object and fetched asynchronously (see the field comment on
@@ -392,6 +407,10 @@ namespace SLNG.App.UI
                 _physicalCheck.SetPressedNoSignal(primitive.IsPhysical);
                 _tempCheck.SetPressedNoSignal(primitive.IsTemporary);
                 _phantomCheck.SetPressedNoSignal(primitive.IsPhantom);
+
+                _knownClickAction = primitive.ClickAction;
+                int clickIdx = primitive.ClickAction <= 6 ? primitive.ClickAction : 0;
+                _clickActionOption.Selected = clickIdx;
 
                 _knownLightEnabled = primitive.LightEnabled;
                 _knownLightColor = primitive.LightColor;
@@ -450,7 +469,7 @@ namespace SLNG.App.UI
                 UpdatePermissionCheckboxes(System.Guid.Empty, false, false, false, false);
             }
 
-            Title = $"Edit: {titleName}";
+            Title = L10n.TrFormat("ui.build.edit_title", titleName);
             Visible = true;
             MoveToFront();
             CallDeferred(MethodName.CenterWindow);
@@ -672,6 +691,19 @@ namespace SLNG.App.UI
             _pendingMaterial = material;
         }
 
+        private void SendObjectClickAction(byte clickAction)
+        {
+            if (_currentLocalId == 0 || _session == null) return;
+
+            _session.SetObjectClickAction(_currentLocalId, clickAction);
+
+            var prim = _currentEntity?.GetComponent<PrimitiveComponent>();
+            if (prim != null) prim.ClickAction = clickAction;
+
+            _knownClickAction = clickAction;
+            _pendingClickAction = clickAction;
+        }
+
         /// <summary>Sends Physics Shape Type + Gravity/Friction/Density/Bounciness via the same
         /// ObjectFlagUpdate message Physical/Temporary/Phantom use -- carries the current known
         /// flag state through unchanged, same bundling reasoning as SendObjectFlags.</summary>
@@ -744,14 +776,14 @@ namespace SLNG.App.UI
                     prim.LightEnabled, prim.LightColor.X, prim.LightColor.Y, prim.LightColor.Z,
                     prim.LightIntensity, prim.LightRadius, prim.LightFalloff, (int)prim.Material,
                     (int)prim.PhysicsShapeType, prim.PhysicsGravity, prim.PhysicsFriction, prim.PhysicsDensity, prim.PhysicsRestitution,
-                    prim.HasPhysicsProperties);
+                    prim.HasPhysicsProperties, (int)prim.ClickAction);
             }
         }
 
         private void UpdatePrimStateUI(bool physical, bool temporary, bool phantom,
             bool lightEnabled, float lightR, float lightG, float lightB, float lightIntensity, float lightRadius, float lightFalloff,
             int materialInt, int physicsShapeInt, float physicsGravity, float physicsFriction, float physicsDensity, float physicsRestitution,
-            bool hasPhysicsProperties)
+            bool hasPhysicsProperties, int clickActionInt)
         {
             var material = (PrimMaterial)materialInt;
             var physicsShape = (PrimPhysicsShapeType)physicsShapeInt;
@@ -816,6 +848,14 @@ namespace SLNG.App.UI
                 _pendingMaterial = null;
             }
 
+            byte clickAction = (byte)(clickActionInt <= 6 ? clickActionInt : 0);
+            if (_pendingClickAction is null || _pendingClickAction == clickAction)
+            {
+                _clickActionOption.Selected = clickAction;
+                _knownClickAction = clickAction;
+                _pendingClickAction = null;
+            }
+
             // hasPhysicsProperties distinguishes "this notify carries a real, server-confirmed
             // physics update" from "this notify fired for an unrelated PrimitiveComponent change
             // (position, texture, ...) that happens to share the same event" -- PrimitiveComponent
@@ -874,7 +914,7 @@ namespace SLNG.App.UI
             ResolveNameLabel(_groupLabel, _currentGroupId, isGroup: true, emptyPlaceholder: "(none)");
             UpdatePermissionCheckboxes(_currentOwnerId, ownerCanModify, ownerCanCopy, ownerCanTransfer, !locked);
 
-            Title = $"Edit: {(string.IsNullOrEmpty(name) ? "Object" : name)}";
+            Title = L10n.TrFormat("ui.build.edit_title", string.IsNullOrEmpty(name) ? "Object" : name);
         }
 
         /// <summary>Read-only Owner-permission indicators (Modify/Copy/Transfer/Move) -- "Move" is

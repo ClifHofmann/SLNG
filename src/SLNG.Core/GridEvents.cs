@@ -209,7 +209,9 @@ public record ObjectUpdateEvent(
     // all of them. Read out of the raw ObjectUpdate bytes because LibreMetaverse skips this
     // block; see ReflectionProbeParams for why it, and not a material heuristic, is what
     // identifies a mirror. Subject to the same terse-update staleness as the light fields.
-    ReflectionProbeParams? ReflectionProbe = null
+    ReflectionProbeParams? ReflectionProbe = null,
+    // PrimFlags.Touch bit: true when an in-world script on this prim registers touch_start/touch/touch_end.
+    bool IsTouch = false
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY

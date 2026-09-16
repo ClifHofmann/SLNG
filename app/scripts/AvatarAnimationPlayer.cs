@@ -235,8 +235,8 @@ public sealed class AvatarAnimationPlayer
         if (keys.Length == 1) return ToGodotQuat(keys[0].Rotation);
 
         // Find the two bounding keyframes.
-        if (time <= keys[0].Time) return ToGodotQuat(keys[0].Rotation);
         if (time >= keys[^1].Time) return ToGodotQuat(keys[^1].Rotation);
+        if (time <= keys[0].Time) return ToGodotQuat(keys[0].Rotation);
 
         for (int i = 0; i < keys.Length - 1; i++)
         {
@@ -262,8 +262,8 @@ public sealed class AvatarAnimationPlayer
         if (keys.Length == 0) return System.Numerics.Vector3.Zero;
         if (keys.Length == 1) return keys[0].Position;
 
-        if (time <= keys[0].Time) return keys[0].Position;
         if (time >= keys[^1].Time) return keys[^1].Position;
+        if (time <= keys[0].Time) return keys[0].Position;
 
         for (int i = 0; i < keys.Length - 1; i++)
         {

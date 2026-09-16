@@ -55,7 +55,21 @@ namespace SLNG.App
 
                 if (mouseBtn.ButtonIndex == MouseButton.Right || mouseBtn.ButtonIndex == MouseButton.Left)
                 {
-                    var result = RaycastFromMouse(mouseBtn.Position);
+                    var exclude = new Godot.Collections.Array<Rid>();
+                    var result = RaycastFromMouse(mouseBtn.Position, exclude);
+
+                    // If left-click hit an avatar collider, penetrate through so we can click the object underneath (e.g. seated on pose stand)
+                    while (mouseBtn.ButtonIndex == MouseButton.Left && result.Count > 0 && result.ContainsKey("collider"))
+                    {
+                        var col = result["collider"].As<Node>();
+                        if (col is StaticBody3D sb && sb.HasMeta("LocalId") && sb.GetMeta("LocalId").AsString() == "Avatar")
+                        {
+                            exclude.Add(sb.GetRid());
+                            result = RaycastFromMouse(mouseBtn.Position, exclude);
+                            continue;
+                        }
+                        break;
+                    }
 
                     if (result.Count > 0)
                     {
@@ -106,14 +120,14 @@ namespace SLNG.App
                         if (collider is StaticBody3D staticBody && staticBody.HasMeta("LocalId"))
                         {
                             var localIdStr = staticBody.GetMeta("LocalId").AsString();
-                            if (uint.TryParse(localIdStr, out uint localId))
+                            if (uint.TryParse(localIdStr, out uint rawLocalId))
                             {
                                 var entityIdStr = staticBody.GetMeta("EntityId").AsString();
                                 
                                 if (System.Guid.TryParse(entityIdStr, out var guid))
                                 {
-                                    var entity = _world.GetEntity(guid);
-                                    if (entity != null)
+                                    var rawEntity = _world.GetEntity(guid);
+                                    if (rawEntity != null)
                                     {
                                         // Texture-placement diagnostic (FEAT-RENDER-01 Phase 2).
                                         // Deliberately here, on the RAW hit, and before both the
@@ -123,17 +137,19 @@ namespace SLNG.App
                                         // and with Edit Linked Parts off the selection resolves to
                                         // the linkset ROOT, so it would have reported some other
                                         // prim's faces than the one actually clicked.
-                                        ObjectRenderer.LogFaceTextureParams(entity);
+                                        ObjectRenderer.LogFaceTextureParams(rawEntity);
 
                                         // Edit Linked Parts OFF (default): resolve up to the
                                         // linkset's root, matching pre-existing behavior. ON:
                                         // leave the specifically-clicked part as-is (FEAT-UI-06).
+                                        var entity = rawEntity;
+                                        uint localId = rawLocalId;
                                         if (!SelectionSettings.EditLinkedParts)
                                         {
-                                            var transform = entity.GetComponent<TransformComponent>();
+                                            var transform = rawEntity.GetComponent<TransformComponent>();
                                             if (transform != null && transform.ParentLocalId != 0)
                                             {
-                                                var parent = _world.GetEntity(entity.RegionHandle, transform.ParentLocalId);
+                                                var parent = _world.GetEntity(rawEntity.RegionHandle, transform.ParentLocalId);
                                                 if (parent != null)
                                                 {
                                                     entity = parent;
@@ -147,30 +163,33 @@ namespace SLNG.App
                                             if (_lastClicked != null && !_pinnedEntityIds.Contains(_lastClicked.Id))
                                             {
                                                 _world.DeselectEntity(_lastClicked);
-                                                // We don't have localId for deselect here easily, but LibreMetaverse handles it
                                                 _lastClicked = null;
                                             }
 
-                                            // MVP2-1: a plain left-click executes the object's ClickAction,
-                                            // same as the real viewer -- SL's ClickAction.Sit (byte 1) means
-                                            // sit down instead of touch, so a sit-target prim (chair, vehicle
-                                            // seat) doesn't fire a touch script it may not even have.
-                                            // Everything else still defaults to "touch" (grab/de-grab pair),
-                                            // which is what fires touch_start/touch_end on the object's
-                                            // script (e.g. a vendor menu that calls llDialog, M5-4). Right-
-                                            // click still owns selection/Edit via the context menu below;
-                                            // this was previously a dead end that only deselected and never
-                                            // touched at all.
-                                            var prim = entity.GetComponent<PrimitiveComponent>();
-                                            if (prim != null && prim.ClickAction == 1)
+                                            // MVP2-1: a plain left-click executes the object's ClickAction (Sit vs. Touch).
+                                            // Parity rule: if the avatar is ALREADY sitting on this object / linkset,
+                                            // clicking it is ALWAYS a Touch, never Sit -- you cannot sit on what you're
+                                            // already seated on (e.g. pose stand pose switching).
+                                            uint sittingOn = _session.SittingOnLocalId;
+                                            bool isSittingOnThisObject = sittingOn != 0 &&
+                                                (sittingOn == rawLocalId || sittingOn == localId ||
+                                                 rawEntity.GetComponent<TransformComponent>()?.ParentLocalId == sittingOn ||
+                                                 entity.GetComponent<TransformComponent>()?.ParentLocalId == sittingOn);
+
+                                            var rawPrim = rawEntity.GetComponent<PrimitiveComponent>();
+                                            var rootPrim = entity != rawEntity ? entity.GetComponent<PrimitiveComponent>() : null;
+                                            byte clickAction = (rawPrim != null && rawPrim.ClickAction != 0) ? rawPrim.ClickAction : (rootPrim?.ClickAction ?? 0);
+                                            bool wantSit = clickAction == 1 && !isSittingOnThisObject;
+
+                                            if (wantSit)
                                             {
-                                                GD.Print($"[Sit] sitting on entity {guid:N} (LocalId {localId})");
-                                                _session.RequestSit(localId);
+                                                _session.RequestSit(rawLocalId);
                                             }
                                             else
                                             {
-                                                GD.Print($"[Touch] touched entity {guid:N} (LocalId {localId})");
-                                                _ = _session.ClickObjectAsync(localId);
+                                                var hitPosGodot = result.ContainsKey("position") ? result["position"].AsVector3() : Vector3.Zero;
+                                                var hitPosSl = RenderConfig.FromGodot(rawEntity.RegionHandle, hitPosGodot);
+                                                _ = _session.ClickObjectAsync(rawLocalId, position: hitPosSl);
                                             }
                                             return;
                                         }
@@ -218,13 +237,17 @@ namespace SLNG.App
             }
         }
 
-        private Godot.Collections.Dictionary RaycastFromMouse(Vector2 mousePos)
+        private Godot.Collections.Dictionary RaycastFromMouse(Vector2 mousePos, Godot.Collections.Array<Rid>? exclude = null)
         {
             var spaceState = _camera.GetWorld3D().DirectSpaceState;
             var from = _camera.ProjectRayOrigin(mousePos);
             var to = from + _camera.ProjectRayNormal(mousePos) * 1000f;
 
             var query = PhysicsRayQueryParameters3D.Create(from, to);
+            if (exclude != null && exclude.Count > 0)
+            {
+                query.Exclude = exclude;
+            }
             // No mask set -- deliberately hits every layer, INCLUDING PhysicsLayers.Terrain: the
             // right-click "ground menu" (ShowGroundMenu above) depends on hitting terrain to get
             // a world position. Don't narrow this to PhysicsLayers.Objects the way CursorManager

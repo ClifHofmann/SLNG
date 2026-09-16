@@ -987,31 +987,6 @@ public partial class AvatarRenderer : Node3D
             // "I switch poses and nothing happens" has several possible culprits -- the sim not
             // sending it, the seat rule dropping it, the asset not loading, the blender losing it
             // per bone. These lines separate the first two from the rest.
-            if (Diagnostics.Enabled && avatar.SittingOnLocalId != 0)
-            {
-                // Both preconditions of the rule, printed whether it fired or not: a seat that did
-                // not resolve to an object and a simulator that sent no sources look identical from
-                // the outside (the rule silently does nothing) but need opposite fixes.
-                string seat = avatar.SittingOnObjectId == Guid.Empty
-                    ? $"UNRESOLVED (localId {avatar.SittingOnLocalId})"
-                    : avatar.SittingOnObjectId.ToString()[..8];
-                string sources = avatar.AnimationSources == null
-                    ? "null"
-                    : avatar.AnimationSources.Count == 0
-                        ? "empty"
-                        : string.Join(" ", avatar.AnimationSources.Select(s =>
-                            $"{s.AnimId.ToString()[..8]}<-{(s.SourceObjectId == Guid.Empty ? "agent" : s.SourceObjectId.ToString()[..8])}"));
-
-                string dropped = animations.Count == avatar.ActiveAnimations.Count
-                    ? "none"
-                    : string.Join(" ", avatar.ActiveAnimations
-                        .Where(id => !animations.Contains(id))
-                        .Select(id => id.ToString()[..8]));
-
-                GD.Print($"[AnimPlayer] seated: seat={seat} kept={animations.Count}/{avatar.ActiveAnimations.Count} " +
-                         $"dropped=[{dropped}] sources=[{sources}]");
-            }
-
             desired = new List<Guid>(animations);
         }
 
@@ -1033,10 +1008,34 @@ public partial class AvatarRenderer : Node3D
         // Behind --diag: fires on every gait change while walking through an AO and flooded the
         // log, burying the alpha diagnostics it competes with.
         if (Diagnostics.Enabled)
+        {
+            if (avatar.SittingOnLocalId != 0)
+            {
+                string seat = avatar.SittingOnObjectId == Guid.Empty
+                    ? $"UNRESOLVED (localId {avatar.SittingOnLocalId})"
+                    : avatar.SittingOnObjectId.ToString()[..8];
+                string sources = avatar.AnimationSources == null
+                    ? "null"
+                    : avatar.AnimationSources.Count == 0
+                        ? "empty"
+                        : string.Join(" ", avatar.AnimationSources.Select(s =>
+                            $"{s.AnimId.ToString()[..8]}<-{(s.SourceObjectId == Guid.Empty ? "agent" : s.SourceObjectId.ToString()[..8])}"));
+
+                string dropped = desired.Count == avatar.ActiveAnimations.Count
+                    ? "none"
+                    : string.Join(" ", avatar.ActiveAnimations
+                        .Where(id => !desired.Contains(id))
+                        .Select(id => id.ToString()[..8]));
+
+                GD.Print($"[AnimPlayer] seated: seat={seat} kept={desired.Count}/{avatar.ActiveAnimations.Count} " +
+                         $"dropped=[{dropped}] sources=[{sources}]");
+            }
+
             GD.Print($"[AnimPlayer] {(avatar.IsLocalAgent ? "SELF" : avatar.AgentId.ToString()[..8])} " +
                      $"anim set -> [{string.Join(" ", desired.Select(d => d.ToString()[..8]))}]" +
                      $" (predicted={_selfPredictedLocomotion?.ToString()[..8] ?? "none"}," +
                      $" sitting={(avatar.SittingOnLocalId != 0 ? "yes" : "no")})");
+        }
 
         visual.LoadedAnimationIds = new List<Guid>(desired);
         _ = LoadAndStartAnimationsAsync(visual, desired);

@@ -412,6 +412,7 @@ public sealed class WorldSimulation : IDisposable
             prim.IsTemporary = e.IsTemporary;
             prim.IsPhantom = e.IsPhantom;
             prim.CastsShadows = e.CastsShadows;
+            prim.IsTouch = e.IsTouch;
             prim.LightEnabled = e.LightEnabled;
             prim.LightColor = e.LightColor;
             prim.LightIntensity = e.LightIntensity;
