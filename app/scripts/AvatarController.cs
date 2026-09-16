@@ -92,6 +92,37 @@ public partial class AvatarController : Camera3D
         _zoom = Mathf.Clamp(_zoom, 0.5f, 50.0f);
     }
 
+    // FEAT-ANIM-07: Sustained hold mode & position/rotation lock for PoseStand
+    private AvatarHoldMode _holdMode = AvatarHoldMode.None;
+    private System.Numerics.Vector3? _lockedPosition;
+    private System.Numerics.Quaternion? _lockedRotation;
+
+    public AvatarHoldMode HoldMode => _holdMode;
+
+    public void SetHoldMode(AvatarHoldMode mode)
+    {
+        if (_holdMode == mode) return;
+        _holdMode = mode;
+
+        if (mode == AvatarHoldMode.PoseStand)
+        {
+            var localAgent = _world?.GetAllEntities()
+                .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+            var transform = localAgent?.GetComponent<TransformComponent>();
+            if (transform != null)
+            {
+                _lockedPosition = transform.Position;
+                _lockedRotation = transform.Rotation;
+            }
+        }
+        else
+        {
+            _lockedPosition = null;
+            _lockedRotation = null;
+        }
+        GD.Print($"[AvatarController] Hold mode changed to: {mode}");
+    }
+
     /// <summary>Zooms by <paramref name="zoomDelta"/> while keeping whatever is currently under
     /// the mouse cursor visually anchored on screen, instead of always re-centring on the avatar.
     /// Approximates a raycast-based "zoom to point" without needing a physics query: projects the
@@ -751,6 +782,8 @@ public partial class AvatarController : Camera3D
             _orbitLastMousePos = currentPos;
         }
 
+        bool isPoseStand = _holdMode == AvatarHoldMode.PoseStand;
+
         // 1. Follow the Avatar
         var localAgent = _world.GetAllEntities()
             .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
@@ -770,12 +803,12 @@ public partial class AvatarController : Camera3D
             if (transform != null)
             {
                 // Local movement prediction
-                bool isFwd = (Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W)) && !hasUiFocus;
-                bool isBack = (Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S)) && !hasUiFocus;
-                bool isLeft = (Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A)) && !hasUiFocus;
-                bool isRight = (Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D)) && !hasUiFocus;
-                bool isUp = (Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up")) && !hasUiFocus;
-                bool isDown = (Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
+                bool isFwd = !isPoseStand && (Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W)) && !hasUiFocus;
+                bool isBack = !isPoseStand && (Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S)) && !hasUiFocus;
+                bool isLeft = !isPoseStand && (Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A)) && !hasUiFocus;
+                bool isRight = !isPoseStand && (Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D)) && !hasUiFocus;
+                bool isUp = !isPoseStand && (Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up")) && !hasUiFocus;
+                bool isDown = !isPoseStand && (Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
 
                 // Pressing up engages fly automatically (matches the "E = go up" instinct);
                 // Home toggles it off. See _Input. Suspended while sitting -- see isSitting's
@@ -783,15 +816,15 @@ public partial class AvatarController : Camera3D
                 if (isUp && !_flying && !isSitting) _flying = true;
 
                 // In SL/Firestorm, A and D turn the avatar when not strafing -- not while
-                // sitting, where facing is the seat's, not the player's.
-                if (!isSitting)
+                // sitting, where facing is the seat's, not the player's, and not while in PoseStand.
+                if (!isSitting && !isPoseStand)
                 {
                     if (isLeft) _yaw += 2.5f * (float)delta;
                     if (isRight) _yaw -= 2.5f * (float)delta;
                 }
 
                 // Any movement/turn snaps the orbit camera back behind the avatar.
-                if (!isSitting && (isFwd || isBack || isLeft || isRight))
+                if (!isSitting && !isPoseStand && (isFwd || isBack || isLeft || isRight))
                 {
                     _transitioning = false;
                     _orbitYaw = 0f;
@@ -1114,7 +1147,18 @@ public partial class AvatarController : Camera3D
                 // reading as left/right jitter. Same yaw-only quaternion the SetMovement send uses
                 // (see the 10 Hz block); WorldSimulation.ExtrapolateMovement deliberately skips the
                 // rotation slerp for the local agent so this per-frame write is the sole authority.
-                transform.Rotation = ComputeBodyRotation();
+                if (isPoseStand && _lockedRotation.HasValue)
+                {
+                    transform.Rotation = _lockedRotation.Value;
+                    if (_lockedPosition.HasValue)
+                    {
+                        transform.Position = _lockedPosition.Value;
+                    }
+                }
+                else
+                {
+                    transform.Rotation = ComputeBodyRotation();
+                }
 
                 } // !isSitting
 
@@ -1190,12 +1234,12 @@ public partial class AvatarController : Camera3D
         }
 
         // 2. Handle Movement Input
-        bool fwd = (Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W)) && !hasUiFocus;
-        bool back = (Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S)) && !hasUiFocus;
-        bool left = (Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A)) && !hasUiFocus;
-        bool right = (Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D)) && !hasUiFocus;
-        bool up = (Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up")) && !hasUiFocus;
-        bool down = (Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
+        bool fwd = !isPoseStand && (Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W)) && !hasUiFocus;
+        bool back = !isPoseStand && (Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S)) && !hasUiFocus;
+        bool left = !isPoseStand && (Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A)) && !hasUiFocus;
+        bool right = !isPoseStand && (Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D)) && !hasUiFocus;
+        bool up = !isPoseStand && (Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up")) && !hasUiFocus;
+        bool down = !isPoseStand && (Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
 
         var curRot = Rotation;
 
@@ -1246,7 +1290,8 @@ public partial class AvatarController : Camera3D
             _session.SetMovement(
                 !isSitting && fwd, !isSitting && back, false, false,
                 !isSitting && up, !isSitting && down,
-                ComputeBodyRotation(), !isSitting && _flying,
+                isPoseStand && _lockedRotation.HasValue ? _lockedRotation.Value : ComputeBodyRotation(),
+                !isSitting && _flying,
                 camSimPos, camSimForward, camFar);
         }
     }

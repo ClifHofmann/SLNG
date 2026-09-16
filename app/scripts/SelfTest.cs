@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Godot;
+using SLNG.Assets;
 using SLNG.Core;
 
 namespace SLNG.App;
@@ -63,6 +64,7 @@ public static class SelfTest
         results.AddRange(CheckWindlightPresets());
         results.Add(CheckInstanceSlotMap());
         results.Add(CheckAvatarAnimationPlayer());
+        results.Add(CheckAvatarHoldMode());
 
         foreach (var r in results)
         {
@@ -390,6 +392,79 @@ public static class SelfTest
 
         return new Check("animation player reset & resync", problems.Count == 0,
             problems.Count == 0 ? "Stop clears active and Resync handles time" : string.Join("; ", problems));
+    }
+
+    private static Check CheckAvatarHoldMode()
+    {
+        var problems = new List<string>();
+        var player = new AvatarAnimationPlayer();
+        var skeleton = new Skeleton3D();
+        skeleton.AddBone("mPelvis");
+        skeleton.SetBoneRest(0, new Transform3D(Basis.Identity, new Vector3(0, 1, 0)));
+        skeleton.ResetBonePoses();
+        player.SetSkeleton(skeleton);
+
+        var animId = Guid.NewGuid();
+        var rotKeys = new[] { new RotationKeyframe { Time = 0f, Rotation = System.Numerics.Quaternion.CreateFromYawPitchRoll(0, 0, 1.5f) } };
+        var joint = new AnimationJointData
+        {
+            JointName = "mPelvis",
+            Priority = 3,
+            RotationKeys = rotKeys,
+            PositionKeys = Array.Empty<PositionKeyframe>()
+        };
+        var activeData = new AnimationData
+        {
+            Length = 2.0f,
+            InPoint = 0f,
+            OutPoint = 2.0f,
+            Loop = true,
+            Priority = 3,
+            Joints = new[] { joint }
+        };
+        player.SetActiveAnimations(new[] { (animId, activeData) });
+
+        // Normal mode: Advance applies rotation
+        player.Advance(0.1f);
+        if (skeleton.GetBonePoseRotation(0) == Quaternion.Identity)
+            problems.Add("Normal mode did not pose bone");
+
+        // BindPose mode: Advance resets to rest pose
+        player.HoldMode = SLNG.Core.Avatars.AvatarHoldMode.BindPose;
+        player.Advance(0.1f);
+        if (skeleton.GetBonePoseRotation(0) != Quaternion.Identity)
+            problems.Add("BindPose did not reset bone to identity rest");
+
+        // PoseStand mode with StandAnimation
+        var standJoint = new AnimationJointData
+        {
+            JointName = "mPelvis",
+            Priority = 1,
+            RotationKeys = new[] { new RotationKeyframe { Time = 0f, Rotation = System.Numerics.Quaternion.CreateFromYawPitchRoll(0.5f, 0, 0) } },
+            PositionKeys = Array.Empty<PositionKeyframe>()
+        };
+        player.StandAnimation = new AnimationData
+        {
+            Length = 1.0f,
+            InPoint = 0f,
+            OutPoint = 1.0f,
+            Loop = true,
+            Priority = 1,
+            Joints = new[] { standJoint }
+        };
+        player.HoldMode = SLNG.Core.Avatars.AvatarHoldMode.PoseStand;
+        player.Advance(0.1f);
+        if (skeleton.GetBonePoseRotation(0) == Quaternion.Identity)
+            problems.Add("PoseStand did not apply StandAnimation");
+
+        // Back to None
+        player.HoldMode = SLNG.Core.Avatars.AvatarHoldMode.None;
+        player.Advance(0.1f);
+        if (skeleton.GetBonePoseRotation(0) == Quaternion.Identity)
+            problems.Add("None mode did not resume active animation");
+
+        return new Check("avatar hold mode", problems.Count == 0,
+            problems.Count == 0 ? "BindPose and PoseStand override active animations" : string.Join("; ", problems));
     }
 
     /// <summary>

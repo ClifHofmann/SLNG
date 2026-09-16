@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Godot;
 using SLNG.Assets;
+using SLNG.Core.Avatars;
 
 namespace SLNG.App;
 
@@ -47,6 +48,12 @@ public sealed class AvatarAnimationPlayer
 
     /// <summary>True if any animations are currently loaded and playing.</summary>
     public bool IsPlaying => _active.Count > 0;
+
+    /// <summary>FEAT-ANIM-07: Current sustained hold mode (None, BindPose, PoseStand).</summary>
+    public AvatarHoldMode HoldMode { get; set; } = AvatarHoldMode.None;
+
+    /// <summary>FEAT-ANIM-07: Built-in STAND clip evaluated when in <see cref="AvatarHoldMode.PoseStand"/>.</summary>
+    public AnimationData? StandAnimation { get; set; }
 
     /// <summary>Bind this player to a skeleton. Must be called before Advance.</summary>
     public void SetSkeleton(Skeleton3D skeleton) => _skeleton = skeleton;
@@ -117,10 +124,12 @@ public sealed class AvatarAnimationPlayer
 
     /// <summary>
     /// FEAT-ANIM-04: Resynchronizes all active animations by resetting their playback
-    /// time to InPoint in the same frame.
+    /// time to InPoint in the same frame. No-op while in a sustained hold mode.
     /// </summary>
     public void Resync()
     {
+        if (HoldMode != AvatarHoldMode.None) return;
+
         foreach (var anim in _active)
         {
             anim.CurrentTime = anim.Data.InPoint;
@@ -134,7 +143,23 @@ public sealed class AvatarAnimationPlayer
     /// </summary>
     public void Advance(float delta)
     {
-        if (_skeleton == null || _active.Count == 0) return;
+        if (_skeleton == null) return;
+
+        // FEAT-ANIM-07: Bind pose holds raw skeleton rest every frame.
+        if (HoldMode == AvatarHoldMode.BindPose)
+        {
+            ResetToRestPose();
+            return;
+        }
+
+        // FEAT-ANIM-07: Pose stand evaluates the fixed stand frame without advancing time.
+        if (HoldMode == AvatarHoldMode.PoseStand)
+        {
+            ApplyBonePoses();
+            return;
+        }
+
+        if (_active.Count == 0) return;
 
         if (_locomotionBoostId != System.Guid.Empty) _locomotionBoostElapsed += delta;
 
@@ -173,6 +198,11 @@ public sealed class AvatarAnimationPlayer
         // (Avatar shape deformations are baked into the bone rests, so this only clears animations).
         ResetToRestPose();
 
+        if (HoldMode == AvatarHoldMode.BindPose)
+        {
+            return;
+        }
+
         // For each bone in the skeleton, find the highest-priority animation that
         // affects it and apply that animation's value.
         // Rotation and position tracks are tracked separately so a rotation-only gesture
@@ -180,44 +210,20 @@ public sealed class AvatarAnimationPlayer
         var boneRots = new Dictionary<int, (int priority, Quaternion rotation)>();
         var bonePositions = new Dictionary<int, (int priority, Vector3 position)>();
 
-        foreach (var anim in _active)
+        if (HoldMode == AvatarHoldMode.PoseStand)
         {
-            bool boosted = BoostActive(anim.AnimationId);
-            int animPriority = boosted ? LocomotionBoostPriority : anim.Data.Priority;
-
-            foreach (var joint in anim.Data.Joints)
+            if (StandAnimation != null)
             {
-                int boneIdx = _skeleton.FindBone(joint.JointName);
-                if (boneIdx < 0) continue;
-
-                int effectivePriority = boosted ? LocomotionBoostPriority
-                    : (joint.Priority >= 0 ? joint.Priority : animPriority);
-
-                // Rotation channel
-                if (joint.RotationKeys.Length > 0)
-                {
-                    if (!boneRots.TryGetValue(boneIdx, out var existingRot) || effectivePriority >= existingRot.priority)
-                    {
-                        var rot = EvaluateRotation(joint.RotationKeys, anim.CurrentTime);
-                        var godotRot = new Quaternion(rot.X, rot.Z, -rot.Y, rot.W);
-                        boneRots[boneIdx] = (effectivePriority, godotRot);
-                    }
-                }
-
-                // Position channel: Second Life only animates translation for mPelvis
-                // (llbvhloader.cpp:781: "Animating position (via mNumChannels = 6) is only supported for mPelvis").
-                // Other joints (e.g. mFaceTongueBase) may contain unnormalized or dummy position tracks that
-                // must never be applied to bone local transforms.
-                if (joint.JointName == "mPelvis" && joint.PositionKeys.Length > 0)
-                {
-                    if (!bonePositions.TryGetValue(boneIdx, out var existingPos) || effectivePriority >= existingPos.priority)
-                    {
-                        var p = EvaluatePosition(joint.PositionKeys, anim.CurrentTime);
-                        // SL pos(x, y, z) → Godot pos(x, z, -y)
-                        var godotPos = new Vector3(p.X, p.Z, -p.Y);
-                        bonePositions[boneIdx] = (effectivePriority, godotPos);
-                    }
-                }
+                ApplyAnimationToBones(StandAnimation, StandAnimation.InPoint, StandAnimation.Priority, false, boneRots, bonePositions);
+            }
+        }
+        else
+        {
+            foreach (var anim in _active)
+            {
+                bool boosted = BoostActive(anim.AnimationId);
+                int animPriority = boosted ? LocomotionBoostPriority : anim.Data.Priority;
+                ApplyAnimationToBones(anim.Data, anim.CurrentTime, animPriority, boosted, boneRots, bonePositions);
             }
         }
 
@@ -235,6 +241,48 @@ public sealed class AvatarAnimationPlayer
         {
             var restPos = _skeleton.GetBoneRest(boneIdx).Origin;
             _skeleton.SetBonePosePosition(boneIdx, restPos + pose.position);
+        }
+    }
+
+    private void ApplyAnimationToBones(AnimationData data, float time, int animPriority, bool boosted,
+        Dictionary<int, (int priority, Quaternion rotation)> boneRots,
+        Dictionary<int, (int priority, Vector3 position)> bonePositions)
+    {
+        if (_skeleton == null) return;
+
+        foreach (var joint in data.Joints)
+        {
+            int boneIdx = _skeleton.FindBone(joint.JointName);
+            if (boneIdx < 0) continue;
+
+            int effectivePriority = boosted ? LocomotionBoostPriority
+                : (joint.Priority >= 0 ? joint.Priority : animPriority);
+
+            // Rotation channel
+            if (joint.RotationKeys.Length > 0)
+            {
+                if (!boneRots.TryGetValue(boneIdx, out var existingRot) || effectivePriority >= existingRot.priority)
+                {
+                    var rot = EvaluateRotation(joint.RotationKeys, time);
+                    var godotRot = new Quaternion(rot.X, rot.Z, -rot.Y, rot.W);
+                    boneRots[boneIdx] = (effectivePriority, godotRot);
+                }
+            }
+
+            // Position channel: Second Life only animates translation for mPelvis
+            // (llbvhloader.cpp:781: "Animating position (via mNumChannels = 6) is only supported for mPelvis").
+            // Other joints (e.g. mFaceTongueBase) may contain unnormalized or dummy position tracks that
+            // must never be applied to bone local transforms.
+            if (joint.JointName == "mPelvis" && joint.PositionKeys.Length > 0)
+            {
+                if (!bonePositions.TryGetValue(boneIdx, out var existingPos) || effectivePriority >= existingPos.priority)
+                {
+                    var p = EvaluatePosition(joint.PositionKeys, time);
+                    // SL pos(x, y, z) → Godot pos(x, z, -y)
+                    var godotPos = new Vector3(p.X, p.Z, -p.Y);
+                    bonePositions[boneIdx] = (effectivePriority, godotPos);
+                }
+            }
         }
     }
 

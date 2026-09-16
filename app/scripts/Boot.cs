@@ -1,5 +1,6 @@
 using Godot;
 using SLNG.Core;
+using SLNG.Core.Avatars;
 using SLNG.Core.Components;
 using SLNG.Net;
 using SLNG.App;
@@ -297,7 +298,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.172-alpha";
+    public const string AppVersion = "v0.22.173-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -593,15 +594,23 @@ public partial class Boot : Control
         _topMenu.OnStopAnimations = () => {
             _session?.StopAllSelfAnimations();
             _avatarRenderer?.StopSelfAnimations();
+            _avatarController?.SetHoldMode(AvatarHoldMode.None);
+            _topMenu.SetHoldModeUI(AvatarHoldMode.None);
         };
         _topMenu.OnResetSkeleton = () => {
             _avatarRenderer?.ResetSelfSkeleton();
+            _avatarController?.SetHoldMode(AvatarHoldMode.None);
+            _topMenu.SetHoldModeUI(AvatarHoldMode.None);
         };
         _topMenu.OnResyncAnimations = () => {
             _avatarRenderer?.ResyncSelfAnimations();
         };
         _topMenu.OnResyncAllAnimations = () => {
             _avatarRenderer?.ResyncAllAnimations();
+        };
+        _topMenu.OnHoldPoseChanged = (mode) => {
+            _avatarRenderer?.SetSelfHoldMode(mode);
+            _avatarController?.SetHoldMode(mode);
         };
         _topMenu.OnCreateTestSkin = CreateTestSkin;
         _topMenu.OnBakeTestPattern = BakeTestPattern;

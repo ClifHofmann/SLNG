@@ -1,5 +1,6 @@
 using Godot;
 using System;
+using SLNG.Core.Avatars;
 
 namespace SLNG.App.UI
 {
@@ -37,8 +38,22 @@ namespace SLNG.App.UI
         public Action? OnResyncAnimations;
         /// <summary>FEAT-ANIM-04: resynchronizes active looping animations for all avatars in region.</summary>
         public Action? OnResyncAllAnimations;
+        /// <summary>FEAT-ANIM-07: sets avatar hold mode (None, BindPose, PoseStand).</summary>
+        public Action<AvatarHoldMode>? OnHoldPoseChanged;
         public Action? OnCreateTestSkin;
         public Action? OnBakeTestPattern;
+
+        private PopupMenu? _holdPoseMenu;
+
+        /// <summary>Updates the checked state of the Hold Pose submenu items.</summary>
+        public void SetHoldModeUI(AvatarHoldMode mode)
+        {
+            if (_holdPoseMenu == null) return;
+            for (int i = 0; i < 3; i++)
+            {
+                _holdPoseMenu.SetItemChecked(i, i == (int)mode);
+            }
+        }
 
         public override void _Ready()
         {
@@ -141,6 +156,24 @@ namespace SLNG.App.UI
             avatarMenu.AddItem(L10n.Tr("ui.menu.reset_skeleton"), 5);
             avatarMenu.AddItem(L10n.Tr("ui.menu.resync_animations"), 6);
             avatarMenu.AddItem(L10n.Tr("ui.menu.resync_all_animations"), 7);
+            
+            // FEAT-ANIM-07: Hold pose selector (Off / T-Pose / Pose Stand)
+            _holdPoseMenu = new PopupMenu();
+            _holdPoseMenu.Name = "HoldPoseMenu";
+            _holdPoseMenu.AddRadioCheckItem(L10n.Tr("ui.menu.hold_pose_none"), 0);
+            _holdPoseMenu.AddRadioCheckItem(L10n.Tr("ui.menu.hold_pose_tpose"), 1);
+            _holdPoseMenu.AddRadioCheckItem(L10n.Tr("ui.menu.hold_pose_stand"), 2);
+            _holdPoseMenu.SetItemChecked(0, true);
+            _holdPoseMenu.IdPressed += (id) => {
+                for (int i = 0; i < 3; i++)
+                {
+                    _holdPoseMenu.SetItemChecked(i, i == id);
+                }
+                OnHoldPoseChanged?.Invoke((AvatarHoldMode)id);
+            };
+            avatarMenu.AddChild(_holdPoseMenu);
+            avatarMenu.AddSubmenuNodeItem(L10n.Tr("ui.menu.hold_pose"), _holdPoseMenu, 8);
+
             avatarMenu.AddSeparator();
             avatarMenu.AddItem(L10n.Tr("ui.menu.detach_all_huds"), 1);
             avatarMenu.AddItem(L10n.Tr("ui.menu.detach_all_attachments"), 2);

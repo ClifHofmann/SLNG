@@ -50,6 +50,10 @@
       "reset_skeleton": "Skelett zurücksetzen (Undeform)",
       "resync_animations": "Animationen synchronisieren",
       "resync_all_animations": "Alle Avatare synchronisieren",
+      "hold_pose": "Pose halten",
+      "hold_pose_none": "Aus",
+      "hold_pose_tpose": "T-Pose (Bind-Pose)",
+      "hold_pose_stand": "Pose Stand (Neutraler Stand)",
       "about": "Über Puris Viewer..."
     },
     "avatar_hover": {

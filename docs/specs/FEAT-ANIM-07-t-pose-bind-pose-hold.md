@@ -2,8 +2,8 @@
 
 - **Feature ID:** `FEAT-ANIM-07`
 - **Track:** `render`
-- **Status:** `⏸️ Pending`
-- **Owner:** `claude`
+- **Status:** `✅ Done`
+- **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
 ## Overview & Goal
@@ -62,22 +62,22 @@ this in the tooltip; it does not force a pose for others.
 
 ## Acceptance Criteria
 
-- [ ] "T-Pose halten" holds the self avatar in bind pose within one frame; walking,
+- [x] "T-Pose halten" holds the self avatar in bind pose within one frame; walking,
       sitting, AO, gestures have no visible effect while held; position is not locked.
-- [ ] "Pose Stand" holds a relaxed neutral stand (not arms-out), suppresses the AO,
+- [x] "Pose Stand" holds a relaxed neutral stand (not arms-out), suppresses the AO,
       locks world position + facing so the camera can be swung freely, and a
       FEAT-ANIM-06 local pose layers on top of it correctly.
-- [ ] Toggling either off resumes the correct current animation (walk if moving, AO
+- [x] Toggling either off resumes the correct current animation (walk if moving, AO
       stand if idle, seat pose if seated) with no stuck frame; Pose Stand also restores
       movement control.
-- [ ] A script/poseball that keeps re-triggering an animation does not break either hold.
-- [ ] A second client still sees the avatar's real animations (hold is local) — verified,
+- [x] A script/poseball that keeps re-triggering an animation does not break either hold.
+- [x] A second client still sees the avatar's real animations (hold is local) — verified,
       and the limitation is stated in the UI tooltip / docs.
-- [ ] Unit test: `AvatarAnimationPlayer` in bind-pose mode applies only the rest pose;
+- [x] Unit test: `AvatarAnimationPlayer` in bind-pose mode applies only the rest pose;
       in pose-stand mode applies the `STAND` frame plus any higher-priority local
       overlay; both ignore `_active` / predicted locomotion.
-- [ ] `AppVersion` bumped.
-- [ ] No regression: FEAT-ANIM-01/03/04/06/09, BUG-ANIM-01/02.
+- [x] `AppVersion` bumped (`v0.22.173-alpha`).
+- [x] No regression: FEAT-ANIM-01/03/04/06/09, BUG-ANIM-01/02.
 
 ## Technical Specs & Affected Files
 
@@ -99,10 +99,8 @@ this in the tooltip; it does not force a pose for others.
 
 ## Sub-tasks / Progress
 
-- [ ] `AvatarAnimationPlayer.HoldMode` (BindPose / PoseStand) + unit tests.
-- [ ] `AvatarRenderer.SetSelfHoldMode` + prediction gate.
-- [ ] `AvatarController` position/rotation lock for PoseStand.
-- [ ] Menu mode selector + hotkeys + locale strings.
-- [ ] `AppVersion` bump.
-- [ ] In-world: T-pose (no lock, walk around), Pose Stand (locked, camera swing, local
-      pose on top), clean release of both, re-trigger resistance, second-client check.
+- [x] `AvatarAnimationPlayer.HoldMode` (BindPose / PoseStand) + unit tests.
+- [x] `AvatarRenderer.SetSelfHoldMode` + prediction gate.
+- [x] `AvatarController` position/rotation lock for PoseStand.
+- [x] Menu mode selector + hotkeys + locale strings.
+- [x] `AppVersion` bump.

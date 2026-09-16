@@ -7,6 +7,7 @@ using SLNG.Assets;
 using System.Collections.Generic;
 using System.Linq;
 using System;
+using System.Threading.Tasks;
 
 namespace SLNG.App;
 
@@ -647,6 +648,54 @@ public partial class AvatarRenderer : Node3D
         GD.Print($"[AvatarHealth] Resynced animations for {count} avatar(s)");
     }
 
+    /// <summary>
+    /// FEAT-ANIM-07: Sets the sustained hold mode (None, BindPose, PoseStand) on the self avatar.
+    /// </summary>
+    public void SetSelfHoldMode(AvatarHoldMode mode)
+    {
+        if (_selfEntityId == Guid.Empty || !_visuals.TryGetValue(_selfEntityId, out var visual)) return;
+
+        visual.AnimPlayer.HoldMode = mode;
+
+        if (mode == AvatarHoldMode.PoseStand && visual.AnimPlayer.StandAnimation == null)
+        {
+            if (_assetService != null)
+            {
+                _ = Task.Run(async () =>
+                {
+                    var standAnim = await _assetService.GetAnimationAsync(SelfLocomotion.Stand).ConfigureAwait(false);
+                    if (standAnim != null)
+                    {
+                        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+                        {
+                            visual.AnimPlayer.StandAnimation = standAnim;
+                            if (visual.AnimPlayer.HoldMode == AvatarHoldMode.PoseStand)
+                            {
+                                visual.AnimPlayer.Advance(0f);
+                            }
+                        }, label: "avatar.stand_anim");
+                    }
+                });
+            }
+        }
+
+        if (mode == AvatarHoldMode.None)
+        {
+            visual.LoadedAnimationIds = null;
+            var avatar = _world?.GetEntity(_selfEntityId)?.GetComponent<AvatarComponent>();
+            if (avatar != null)
+            {
+                ApplyActiveAnimations(_selfEntityId, visual, avatar);
+            }
+        }
+        else
+        {
+            visual.AnimPlayer.Advance(0f);
+        }
+
+        GD.Print($"[AvatarHealth] Self hold mode set to: {mode}");
+    }
+
     public void UpdateVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
@@ -1156,6 +1205,12 @@ public partial class AvatarRenderer : Node3D
 
         AvatarVisual? visual = null;
         bool haveVisual = _selfEntityId != Guid.Empty && _visuals.TryGetValue(_selfEntityId, out visual);
+        if (haveVisual && visual != null && visual.AnimPlayer.HoldMode != AvatarHoldMode.None)
+        {
+            // FEAT-ANIM-07: While held in T-Pose or PoseStand, ignore locomotion prediction updates on the visual
+            return;
+        }
+
         var avatar = haveVisual ? _world?.GetEntity(_selfEntityId)?.GetComponent<AvatarComponent>() : null;
         if (haveVisual && visual != null && avatar != null)
         {
