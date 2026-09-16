@@ -8834,6 +8834,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private static readonly Lazy<IReadOnlyDictionary<LibreMetaverse.UUID, string>> _builtinAnimNames = new(() => LibreMetaverse.Animations.ToDictionary());
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, string> _knownAnimNames = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _unknownAnimIds = new();
+    private volatile bool _inventoryStoreIndexed;
 
     public void RegisterAnimationName(Guid assetId, string name)
     {
@@ -8848,13 +8850,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (_knownAnimNames.TryGetValue(id, out var known))
             return known;
 
+        if (_unknownAnimIds.ContainsKey(id))
+            return null;
+
         var uuid = new LibreMetaverse.UUID(id);
         if (_builtinAnimNames.Value.TryGetValue(uuid, out var builtinName))
-            return builtinName;
-
-        // Try lookup in inventory store by walking nodes
-        if (_client.Inventory?.Store?.RootNode != null)
         {
+            _knownAnimNames[id] = builtinName;
+            return builtinName;
+        }
+
+        // Try lookup in inventory store by indexing nodes once
+        if (!_inventoryStoreIndexed && _client.Inventory?.Store?.RootNode != null)
+        {
+            _inventoryStoreIndexed = true;
             var stack = new Stack<LibreMetaverse.InventoryNode>();
             stack.Push(_client.Inventory.Store.RootNode);
             if (_client.Inventory.Store.LibraryRootNode != null)
@@ -8870,11 +8879,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                         _knownAnimNames[item.AssetUUID.Guid] = item.Name;
                     }
                     _knownAnimNames[item.UUID.Guid] = item.Name;
-
-                    if (item.AssetUUID == uuid || item.UUID == uuid)
-                    {
-                        return item.Name;
-                    }
                 }
 
                 try
@@ -8883,8 +8887,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 }
                 catch (InvalidOperationException) { }
             }
+
+            if (_knownAnimNames.TryGetValue(id, out var foundAfterIndex))
+                return foundAfterIndex;
         }
 
+        _unknownAnimIds[id] = 1;
         return null;
     }
 

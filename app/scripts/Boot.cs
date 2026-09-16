@@ -300,8 +300,9 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.184-alpha";
-    private int _parcelRequestTick;
+    public const string AppVersion = "v0.22.185-alpha";
+    private int _parcelRequestAttempts;
+    private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
     public void ShowToast(string message, float duration = 2.0f)
     {
@@ -2150,13 +2151,12 @@ public partial class Boot : Control
                     int z = (int)System.Math.Round(transform.Position.Z);
                     _topMenu.UpdateLocation(_session.CurrentRegionName, _session.CurrentParcelName, x, y, z);
 
-                    if (string.IsNullOrEmpty(_session.CurrentParcelName))
+                    float distMoved = System.Numerics.Vector3.Distance(_lastParcelQueryPos, transform.Position);
+                    if ((string.IsNullOrEmpty(_session.CurrentParcelName) && _parcelRequestAttempts < 2) || distMoved > 10.0f)
                     {
-                        _parcelRequestTick++;
-                        if ((_parcelRequestTick % 15) == 1)
-                        {
-                            _session.RequestCurrentParcelProperties();
-                        }
+                        _parcelRequestAttempts++;
+                        _lastParcelQueryPos = transform.Position;
+                        _session.RequestCurrentParcelProperties();
                     }
                 }
                 else

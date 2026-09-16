@@ -71,12 +71,19 @@ namespace SLNG.App.UI
         private bool _freezeSelfChecked;
         private bool _freezeAllChecked;
 
+        private int _lastFps = -1;
+
         /// <summary>FEAT-UI-24: Updates the location readout in the top bar.</summary>
         public void UpdateLocation(string? regionName, string? parcelName, int x, int y, int z)
         {
             if (string.IsNullOrEmpty(regionName))
             {
                 ClearLocation();
+                return;
+            }
+            if (_currentRegion == regionName && _currentParcel == parcelName &&
+                _currentX == x && _currentY == y && _currentZ == z && _locationBtn.Visible)
+            {
                 return;
             }
             _currentRegion = regionName;
@@ -113,6 +120,7 @@ namespace SLNG.App.UI
         public void SetShowFps(bool show)
         {
             _showFps = show;
+            _lastFps = -1;
             if (_viewMenu != null)
             {
                 int idx = _viewMenu.GetItemIndex(6);
@@ -132,8 +140,14 @@ namespace SLNG.App.UI
             {
                 _fpsBtn.Visible = false;
                 _fpsSep.Visible = false;
+                _lastFps = -1;
                 return;
             }
+            if (fps == _lastFps && _fpsBtn.Visible)
+            {
+                return;
+            }
+            _lastFps = fps;
             _fpsBtn.Text = $"{fps} FPS";
             _fpsBtn.Visible = true;
             _fpsSep.Visible = true;
