@@ -4909,6 +4909,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             textures));
     }
 
+    private readonly Dictionary<Guid, Guid> _selfAnimationSources = new();
+
     private void OnAvatarAnimation(object? sender, LibreMetaverse.AvatarAnimationEventArgs e)
     {
         var animIds = new List<Guid>(e.Animations.Count);
@@ -4924,6 +4926,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         {
             animIds.Add(anim.AnimationID.Guid);
             signals.Add(new AnimationSignal(anim.AnimationID.Guid, anim.AnimationSourceObjectID.Guid));
+        }
+
+        if (e.AvatarID == _client.Self.AgentID)
+        {
+            lock (_selfAnimationSources)
+            {
+                _selfAnimationSources.Clear();
+                foreach (var anim in e.Animations)
+                {
+                    if (anim.AnimationSourceObjectID != LibreMetaverse.UUID.Zero)
+                    {
+                        _selfAnimationSources[anim.AnimationID.Guid] = anim.AnimationSourceObjectID.Guid;
+                    }
+                }
+            }
         }
 
         AvatarAnimationReceived?.Invoke(this, new AvatarAnimationEvent(
@@ -5322,6 +5339,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)
     {
+        CheckAndStopMotionOnKill(e.Simulator, e.ObjectLocalID);
         ObjectRemovedReceived?.Invoke(this, new ObjectRemovedEvent(e.Simulator.Handle, e.ObjectLocalID));
     }
 
@@ -5329,7 +5347,35 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         foreach (var localId in e.ObjectLocalIDs)
         {
+            CheckAndStopMotionOnKill(e.Simulator, localId);
             ObjectRemovedReceived?.Invoke(this, new ObjectRemovedEvent(e.Simulator.Handle, localId));
+        }
+    }
+
+    private void CheckAndStopMotionOnKill(LibreMetaverse.Simulator sim, uint localId)
+    {
+        if (sim?.ObjectsPrimitives == null) return;
+        if (sim.ObjectsPrimitives.TryGetValue(localId, out var prim) && prim != null)
+        {
+            bool isSource = false;
+            lock (_selfAnimationSources)
+            {
+                isSource = _selfAnimationSources.ContainsValue(prim.ID.Guid);
+            }
+            if (isSource || prim.ParentID == _client.Self.LocalID)
+            {
+                var candidateSourceIds = new HashSet<Guid> { prim.ID.Guid };
+                var attId = ExtractAttachItemId(prim);
+                if (attId != Guid.Empty) candidateSourceIds.Add(attId);
+                foreach (var child in sim.ObjectsPrimitives.Values)
+                {
+                    if (child != null && child.ParentID == prim.LocalID)
+                    {
+                        candidateSourceIds.Add(child.ID.Guid);
+                    }
+                }
+                StopMotionsFromSources(candidateSourceIds);
+            }
         }
     }
 
@@ -5706,8 +5752,73 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// a warning inside LibreMetaverse) only if agent updates are disabled entirely, which SLNG
     /// never does -- included for completeness rather than swallowed, matching LMV's own
     /// signature.</summary>
-    public bool Stand() => _client.Self.Stand();
+    public bool Stand()
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim != null && _client.Self.SittingOn != 0)
+        {
+            var seatLocalId = _client.Self.SittingOn;
+            var candidateSourceIds = new HashSet<Guid>();
+            if (sim.ObjectsPrimitives.TryGetValue(seatLocalId, out var seatPrim) && seatPrim != null)
+            {
+                candidateSourceIds.Add(seatPrim.ID.Guid);
+                uint rootId = seatPrim.ParentID == 0 ? seatPrim.LocalID : seatPrim.ParentID;
+                if (rootId != seatPrim.LocalID && sim.ObjectsPrimitives.TryGetValue(rootId, out var root) && root != null)
+                {
+                    candidateSourceIds.Add(root.ID.Guid);
+                }
+                foreach (var child in sim.ObjectsPrimitives.Values)
+                {
+                    if (child != null && (child.ParentID == rootId || child.ParentID == seatLocalId))
+                    {
+                        candidateSourceIds.Add(child.ID.Guid);
+                    }
+                }
+            }
+            StopMotionsFromSources(candidateSourceIds);
+        }
+        return _client.Self.Stand();
+    }
     public void StopAnimation(Guid animId) => _client.Self.AnimationStop(new UUID(animId), true);
+
+    /// <summary>
+    /// Stops all animations on the self avatar that were triggered by any of the given source object IDs
+    /// (e.g. when an attachment or seat object is detached or stood up from), matching Linden Lab's
+    /// LLVOAvatarSelf::stopMotionFromSource.
+    /// </summary>
+    public List<Guid> StopMotionsFromSources(IEnumerable<Guid> sourceIds)
+    {
+        var sourceSet = sourceIds is HashSet<Guid> set ? set : new HashSet<Guid>(sourceIds);
+        sourceSet.Remove(Guid.Empty);
+        if (sourceSet.Count == 0) return new List<Guid>();
+
+        var stopped = new List<Guid>();
+        lock (_selfAnimationSources)
+        {
+            foreach (var (animId, srcId) in _selfAnimationSources)
+            {
+                if (sourceSet.Contains(srcId))
+                {
+                    stopped.Add(animId);
+                }
+            }
+            foreach (var animId in stopped)
+            {
+                _selfAnimationSources.Remove(animId);
+            }
+        }
+
+        if (stopped.Count > 0)
+        {
+            foreach (var animId in stopped)
+            {
+                _client.Self.AnimationStop(new UUID(animId), true);
+            }
+            Console.Error.WriteLine($"[GridSession] StopMotionsFromSources: stopped {stopped.Count} animation(s) from {sourceSet.Count} source(s)");
+        }
+
+        return stopped;
+    }
 
     /// <summary>
     /// FEAT-AVATAR-02 / FEAT-ANIM-04: Stops all animations currently playing on the self avatar
@@ -6605,6 +6716,37 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
         catch { }
 
+        // LLVOAvatarSelf::detachObject: stop motions from candidate source IDs
+        var candidateSourceIds = new HashSet<Guid>();
+        if (itemId != Guid.Empty) candidateSourceIds.Add(itemId);
+        foreach (var u in uuidsToDetach)
+        {
+            if (u != LibreMetaverse.UUID.Zero) candidateSourceIds.Add(u.Guid);
+        }
+
+        var sim = _client.Network.CurrentSim;
+        if (sim != null)
+        {
+            foreach (var p in sim.ObjectsPrimitives.Values)
+            {
+                if (p == null || p.ParentID != _client.Self.LocalID) continue;
+                var attId = ExtractAttachItemId(p);
+                if (candidateSourceIds.Contains(p.ID.Guid) || (attId != Guid.Empty && candidateSourceIds.Contains(attId)))
+                {
+                    candidateSourceIds.Add(p.ID.Guid);
+                    foreach (var child in sim.ObjectsPrimitives.Values)
+                    {
+                        if (child != null && child.ParentID == p.LocalID)
+                        {
+                            candidateSourceIds.Add(child.ID.Guid);
+                        }
+                    }
+                }
+            }
+        }
+
+        StopMotionsFromSources(candidateSourceIds);
+
         // Send DetachAttachmentIntoInv packet for every candidate UUID
         foreach (var u in uuidsToDetach)
         {
@@ -6687,6 +6829,24 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     {
         var sim = _client.Network.CurrentSim;
         if (sim == null || localId == 0) return;
+
+        var candidateSourceIds = new HashSet<Guid>();
+        if (sim.ObjectsPrimitives.TryGetValue(localId, out var rootPrim) && rootPrim != null)
+        {
+            candidateSourceIds.Add(rootPrim.ID.Guid);
+            var attId = ExtractAttachItemId(rootPrim);
+            if (attId != Guid.Empty) candidateSourceIds.Add(attId);
+
+            foreach (var child in sim.ObjectsPrimitives.Values)
+            {
+                if (child != null && child.ParentID == rootPrim.LocalID)
+                {
+                    candidateSourceIds.Add(child.ID.Guid);
+                }
+            }
+        }
+        StopMotionsFromSources(candidateSourceIds);
+
         _client.Objects.DetachObjects(sim, new List<uint> { localId });
     }
 
@@ -6700,6 +6860,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         var ids = new List<uint>();
         var itemIds = new List<Guid>();
+        var candidateSourceIds = new HashSet<Guid>();
         var report = new List<(uint LocalId, LibreMetaverse.AttachmentPoint Point, string Name)>();
         foreach (var p in sim.ObjectsPrimitives.Values)
         {
@@ -6717,13 +6878,27 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // same field the sim matches DetachAttachmentIntoInv on. Needed to trash the COF link
             // so "Detach All" survives a relog.
             var attId = ExtractAttachItemId(p);
-            if (attId != Guid.Empty) itemIds.Add(attId);
+            if (attId != Guid.Empty)
+            {
+                itemIds.Add(attId);
+                candidateSourceIds.Add(attId);
+            }
+            candidateSourceIds.Add(p.ID.Guid);
+            foreach (var child in sim.ObjectsPrimitives.Values)
+            {
+                if (child != null && child.ParentID == p.LocalID)
+                {
+                    candidateSourceIds.Add(child.ID.Guid);
+                }
+            }
         }
 
         // Named, not just counted: "0 detached" and "3 detached but one is still on screen" are
         // the two outcomes this escape hatch has to be able to tell apart afterwards.
         foreach (var (localId, point, name) in report)
             Console.Error.WriteLine($"[Detach] localId={localId} point={point} \"{name}\"");
+
+        StopMotionsFromSources(candidateSourceIds);
 
         if (ids.Count > 0) _client.Objects.DetachObjects(sim, ids);
 

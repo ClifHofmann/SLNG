@@ -869,4 +869,122 @@ public class WorldSimulationTests
             new[] { pose },
             SeatPoseResolver.Resolve(avatar.ActiveAnimations!, avatar.AnimationSources, avatar.SittingOnObjectId, _ => true));
     }
+
+    [Fact]
+    public void AttachmentRemoval_StopsAndPurgesAnimationsFromRemovedAttachment()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        const ulong region = 123ul;
+        const uint avatarLocalId = 42;
+        const uint attachmentLocalId = 99;
+        var agentId = Guid.NewGuid();
+        var hudObjectId = Guid.NewGuid();
+        var animStand = Guid.NewGuid();
+        var animAo = Guid.NewGuid();
+
+        var stoppedRequests = new List<Guid>();
+        simulation.SelfAnimationStopRequested += animId => stoppedRequests.Add(animId);
+
+        // Avatar update (local agent)
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(
+            region, avatarLocalId, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true));
+        simulation.Pump();
+
+        // Attachment object update
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(
+            region, attachmentLocalId, Vector3.Zero, Quaternion.Identity, Vector3.One,
+            1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One,
+            ParentLocalId: avatarLocalId,
+            ObjectId: hudObjectId,
+            AttachmentPoint: 31));
+        simulation.Pump();
+
+        // Simulator broadcasts animations: stand (no source) and AO (sourced by HUD)
+        session.RaiseAvatarAnimation(new AvatarAnimationEvent(
+            agentId,
+            new List<Guid> { animStand, animAo },
+            new List<AnimationSignal> { new(animStand, Guid.Empty), new(animAo, hudObjectId) }));
+        simulation.Pump();
+
+        var avatar = world.GetEntity(region, avatarLocalId)!.GetComponent<AvatarComponent>()!;
+        Assert.Equal(2, avatar.ActiveAnimations!.Count);
+        Assert.Contains(animStand, avatar.ActiveAnimations);
+        Assert.Contains(animAo, avatar.ActiveAnimations);
+
+        // The HUD is detached / killed
+        session.RaiseObjectRemoved(new ObjectRemovedEvent(region, attachmentLocalId));
+        simulation.Pump();
+
+        // Entity is gone from world
+        Assert.Null(world.GetEntity(region, attachmentLocalId));
+
+        // SelfAnimationStopRequested fired for the AO animation
+        Assert.Single(stoppedRequests);
+        Assert.Equal(animAo, stoppedRequests[0]);
+
+        // Avatar's ActiveAnimations and AnimationSources only contain animStand
+        Assert.Single(avatar.ActiveAnimations);
+        Assert.Equal(animStand, avatar.ActiveAnimations[0]);
+        Assert.Single(avatar.AnimationSources!);
+        Assert.Equal(animStand, avatar.AnimationSources![0].AnimId);
+    }
+
+    [Fact]
+    public void StandingUp_StopsAndPurgesSeatAnimations()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        const ulong region = 123ul;
+        const uint avatarLocalId = 42;
+        const uint seatLocalId = 77;
+        var agentId = Guid.NewGuid();
+        var seatObjectId = Guid.NewGuid();
+        var seatAnim = Guid.NewGuid();
+
+        var stoppedRequests = new List<Guid>();
+        simulation.SelfAnimationStopRequested += animId => stoppedRequests.Add(animId);
+
+        // Seat prim arrives
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(
+            region, seatLocalId, Vector3.Zero, Quaternion.Identity, Vector3.One,
+            1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One,
+            ObjectId: seatObjectId));
+        simulation.Pump();
+
+        // Avatar sits
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(
+            region, avatarLocalId, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true,
+            SittingOnLocalId: seatLocalId));
+        simulation.Pump();
+
+        // Chair poses avatar
+        session.RaiseAvatarAnimation(new AvatarAnimationEvent(
+            agentId,
+            new List<Guid> { seatAnim },
+            new List<AnimationSignal> { new(seatAnim, seatObjectId) }));
+        simulation.Pump();
+
+        var avatar = world.GetEntity(region, avatarLocalId)!.GetComponent<AvatarComponent>()!;
+        Assert.Equal(seatObjectId, avatar.SittingOnObjectId);
+        Assert.Contains(seatAnim, avatar.ActiveAnimations!);
+
+        // Avatar stands up
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(
+            region, avatarLocalId, agentId, Vector3.Zero, Quaternion.Identity, "Local", "Agent", true,
+            SittingOnLocalId: 0));
+        simulation.Pump();
+
+        // Stop requested for seat animation
+        Assert.Single(stoppedRequests);
+        Assert.Equal(seatAnim, stoppedRequests[0]);
+
+        // Active animations and sitting object cleared
+        Assert.Empty(avatar.ActiveAnimations!);
+        Assert.Equal(Guid.Empty, avatar.SittingOnObjectId);
+    }
 }

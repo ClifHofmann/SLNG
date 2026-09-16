@@ -574,4 +574,12 @@ public class GridSessionTests
         // Disconnected session safely handles the call without throwing
         session.StopAllSelfAnimations();
     }
+
+    [Fact]
+    public void StopMotionsFromSources_without_connection_does_not_throw()
+    {
+        using var session = new GridSession();
+        var stopped = session.StopMotionsFromSources(new[] { Guid.NewGuid() });
+        Assert.Empty(stopped);
+    }
 }

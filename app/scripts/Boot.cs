@@ -298,7 +298,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.174-alpha";
+    public const string AppVersion = "v0.22.175-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -2606,7 +2606,11 @@ public partial class Boot : Control
         {
             _session.Dispose();
         }
-        if (_worldSimulation != null) _worldSimulation.Dispose();
+        if (_worldSimulation != null)
+        {
+            _worldSimulation.SelfAnimationStopRequested -= OnSelfAnimationStopRequested;
+            _worldSimulation.Dispose();
+        }
         _dialogQueueManager?.Dispose();
         // Relogging discards the whole cached GPU working set (new session, new region) -- dispose
         // explicitly rather than dropping the reference, same reasoning as DisposeAll's own doc
@@ -2639,6 +2643,7 @@ public partial class Boot : Control
         // encodes to a few hundred bytes of nothing.
         _session.UseBakeEncoder(new SLNG.Assets.J2KBakeTextureEncoder());
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
+        _worldSimulation.SelfAnimationStopRequested += OnSelfAnimationStopRequested;
 
         // Server-side deselect (M5-2 acceptance criterion): fires on any client-side
         // deselect path -- clicking empty space, selecting a different object, or
@@ -3406,7 +3411,11 @@ public partial class Boot : Control
         SLNG.App.TerrainRenderer.DisposeSharedTextures();
         SLNG.App.ObjectParticles.DisposeSharedTextures();
 
-        _worldSimulation?.Dispose();
+        if (_worldSimulation != null)
+        {
+            _worldSimulation.SelfAnimationStopRequested -= OnSelfAnimationStopRequested;
+            _worldSimulation.Dispose();
+        }
         _session?.Dispose();
         
         // Force GC now while the RenderingServer is still alive, so any floating Godot wrappers
@@ -3568,5 +3577,10 @@ public partial class Boot : Control
             
             _isQuitting = false;
         }
+    }
+
+    private void OnSelfAnimationStopRequested(System.Guid animId)
+    {
+        _session?.StopAnimation(animId);
     }
 }

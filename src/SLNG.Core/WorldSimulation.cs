@@ -26,6 +26,12 @@ public sealed class WorldSimulation : IDisposable
     // re-composed when the root arrives or moves. Touched only on the pump thread.
     private readonly Dictionary<(ulong, uint), HashSet<System.Guid>> _children = new();
 
+    /// <summary>
+    /// Raised when WorldSimulation determines that an animation on the local agent should be stopped
+    /// (e.g. its source attachment was detached/removed or the avatar stood up from a seat).
+    /// </summary>
+    public event System.Action<System.Guid>? SelfAnimationStopRequested;
+
     public WorldSimulation(World world, IWorldEventSource source)
     {
         _world = world;
@@ -717,7 +723,12 @@ public sealed class WorldSimulation : IDisposable
             if (!string.IsNullOrEmpty(e.LastName)) avatar.LastName = e.LastName;
             avatar.IsLocalAgent = e.IsLocalAgent;
             if (e.ScaleZ > 0f) avatar.ScaleZ = e.ScaleZ;
+            uint prevSittingOnLocalId = avatar.SittingOnLocalId;
             avatar.SittingOnLocalId = e.SittingOnLocalId;
+            if (prevSittingOnLocalId != 0 && e.SittingOnLocalId == 0)
+            {
+                HandleAvatarStoodUp(entity, avatar);
+            }
             // Kept, not overwritten with null. Only the 140- and 76-byte ObjectData layouts carry
             // a collision plane, so an update that used a shorter layout says nothing about the
             // support surface -- it did not report that the avatar is standing on nothing. Letting
@@ -918,7 +929,126 @@ public sealed class WorldSimulation : IDisposable
         // A removal event does not say whether it was an avatar, so assume it might have been.
         _avatarCacheDirty = true;
 
+        HandleAttachmentRemoved(e.RegionHandle, e.LocalId);
         RemoveEntityRecursive(e.RegionHandle, e.LocalId);
+    }
+
+    private void HandleAttachmentRemoved(ulong regionHandle, uint localId)
+    {
+        var rootEntity = _world.GetEntity(regionHandle, localId);
+        if (rootEntity == null) return;
+
+        var linksetEntities = new List<Entity> { rootEntity };
+        CollectChildrenEntities(regionHandle, localId, linksetEntities);
+
+        AttachmentComponent? attachment = null;
+        foreach (var ent in linksetEntities)
+        {
+            attachment = ent.GetComponent<AttachmentComponent>();
+            if (attachment != null) break;
+        }
+
+        if (attachment == null) return;
+
+        var avatarEntity = _world.GetEntity(attachment.AvatarEntityId);
+        var avatar = avatarEntity?.GetComponent<AvatarComponent>();
+        if (avatar == null || avatar.AnimationSources == null || avatar.AnimationSources.Count == 0) return;
+
+        var removedSourceIds = new HashSet<System.Guid>();
+        foreach (var ent in linksetEntities)
+        {
+            var metaId = ent.GetComponent<MetadataComponent>()?.Id ?? System.Guid.Empty;
+            if (metaId != System.Guid.Empty) removedSourceIds.Add(metaId);
+        }
+
+        if (removedSourceIds.Count == 0) return;
+
+        var animsToStop = new List<System.Guid>();
+        foreach (var signal in avatar.AnimationSources)
+        {
+            if (removedSourceIds.Contains(signal.SourceObjectId))
+            {
+                animsToStop.Add(signal.AnimId);
+            }
+        }
+
+        if (animsToStop.Count == 0) return;
+
+        var animsToStopSet = new HashSet<System.Guid>(animsToStop);
+
+        if (avatar.IsLocalAgent)
+        {
+            foreach (var animId in animsToStopSet)
+            {
+                SelfAnimationStopRequested?.Invoke(animId);
+            }
+        }
+
+        if (avatar.ActiveAnimations != null)
+        {
+            avatar.ActiveAnimations = avatar.ActiveAnimations.Where(id => !animsToStopSet.Contains(id)).ToList();
+        }
+        avatar.AnimationSources = avatar.AnimationSources.Where(s => !animsToStopSet.Contains(s.AnimId)).ToList();
+
+        avatarEntity!.SetComponent(avatar);
+        _world.NotifyComponentUpdated(avatarEntity, avatar);
+    }
+
+    private void CollectChildrenEntities(ulong regionHandle, uint localId, List<Entity> result)
+    {
+        var key = (regionHandle, localId);
+        if (_children.TryGetValue(key, out var childSet))
+        {
+            foreach (var childEntityId in childSet)
+            {
+                var childEntity = _world.GetEntity(childEntityId);
+                if (childEntity != null)
+                {
+                    result.Add(childEntity);
+                    CollectChildrenEntities(regionHandle, childEntity.LocalId, result);
+                }
+            }
+        }
+    }
+
+    private void HandleAvatarStoodUp(Entity avatarEntity, AvatarComponent avatar)
+    {
+        if (avatar.SittingOnObjectId == System.Guid.Empty) return;
+
+        var seatId = avatar.SittingOnObjectId;
+        avatar.SittingOnObjectId = System.Guid.Empty;
+
+        if (avatar.AnimationSources == null || avatar.AnimationSources.Count == 0) return;
+
+        var animsToStop = new List<System.Guid>();
+        foreach (var sig in avatar.AnimationSources)
+        {
+            if (sig.SourceObjectId == seatId)
+            {
+                animsToStop.Add(sig.AnimId);
+            }
+        }
+
+        if (animsToStop.Count == 0) return;
+
+        var animsToStopSet = new HashSet<System.Guid>(animsToStop);
+
+        if (avatar.IsLocalAgent)
+        {
+            foreach (var animId in animsToStopSet)
+            {
+                SelfAnimationStopRequested?.Invoke(animId);
+            }
+        }
+
+        if (avatar.ActiveAnimations != null)
+        {
+            avatar.ActiveAnimations = avatar.ActiveAnimations.Where(id => !animsToStopSet.Contains(id)).ToList();
+        }
+        avatar.AnimationSources = avatar.AnimationSources.Where(s => !animsToStopSet.Contains(s.AnimId)).ToList();
+
+        avatarEntity.SetComponent(avatar);
+        _world.NotifyComponentUpdated(avatarEntity, avatar);
     }
 
     private void RemoveEntityRecursive(ulong regionHandle, uint localId)
