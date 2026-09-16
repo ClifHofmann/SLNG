@@ -40,10 +40,19 @@ namespace SLNG.App.UI
         public Action? OnResyncAllAnimations;
         /// <summary>FEAT-ANIM-07: sets avatar hold mode (None, BindPose, PoseStand).</summary>
         public Action<AvatarHoldMode>? OnHoldPoseChanged;
+        /// <summary>FEAT-ANIM-09: toggles freezing playback of self avatar.</summary>
+        public Action<bool>? OnFreezeSelfChanged;
+        /// <summary>FEAT-ANIM-09: toggles freezing playback across all avatars.</summary>
+        public Action<bool>? OnFreezeAllChanged;
+        /// <summary>FEAT-ANIM-09: steps playback by delta frames (e.g. +1 or -1).</summary>
+        public Action<int>? OnStepFrameRequested;
         public Action? OnCreateTestSkin;
         public Action? OnBakeTestPattern;
 
         private PopupMenu? _holdPoseMenu;
+        private PopupMenu? _freezeMenu;
+        private bool _freezeSelfChecked;
+        private bool _freezeAllChecked;
 
         /// <summary>Updates the checked state of the Hold Pose submenu items.</summary>
         public void SetHoldModeUI(AvatarHoldMode mode)
@@ -53,6 +62,16 @@ namespace SLNG.App.UI
             {
                 _holdPoseMenu.SetItemChecked(i, i == (int)mode);
             }
+        }
+
+        /// <summary>FEAT-ANIM-09: Updates the checked state of the Freeze submenu items.</summary>
+        public void SetFreezeUI(bool selfFrozen, bool allFrozen)
+        {
+            _freezeSelfChecked = selfFrozen;
+            _freezeAllChecked = allFrozen;
+            if (_freezeMenu == null) return;
+            _freezeMenu.SetItemChecked(0, selfFrozen);
+            _freezeMenu.SetItemChecked(1, allFrozen);
         }
 
         public override void _Ready()
@@ -173,6 +192,39 @@ namespace SLNG.App.UI
             };
             avatarMenu.AddChild(_holdPoseMenu);
             avatarMenu.AddSubmenuNodeItem(L10n.Tr("ui.menu.hold_pose"), _holdPoseMenu, 8);
+
+            // FEAT-ANIM-09: Freeze animation submenu
+            _freezeMenu = new PopupMenu();
+            _freezeMenu.Name = "FreezeMenu";
+            _freezeMenu.AddCheckItem(L10n.Tr("ui.menu.freeze_self"), 0);
+            _freezeMenu.AddCheckItem(L10n.Tr("ui.menu.freeze_all"), 1);
+            _freezeMenu.AddSeparator();
+            _freezeMenu.AddItem(L10n.Tr("ui.menu.step_backward"), 2);
+            _freezeMenu.AddItem(L10n.Tr("ui.menu.step_forward"), 3);
+            _freezeMenu.IdPressed += (id) => {
+                if (id == 0)
+                {
+                    _freezeSelfChecked = !_freezeSelfChecked;
+                    _freezeMenu.SetItemChecked(0, _freezeSelfChecked);
+                    OnFreezeSelfChanged?.Invoke(_freezeSelfChecked);
+                }
+                else if (id == 1)
+                {
+                    _freezeAllChecked = !_freezeAllChecked;
+                    _freezeMenu.SetItemChecked(1, _freezeAllChecked);
+                    OnFreezeAllChanged?.Invoke(_freezeAllChecked);
+                }
+                else if (id == 2)
+                {
+                    OnStepFrameRequested?.Invoke(-1);
+                }
+                else if (id == 3)
+                {
+                    OnStepFrameRequested?.Invoke(1);
+                }
+            };
+            avatarMenu.AddChild(_freezeMenu);
+            avatarMenu.AddSubmenuNodeItem(L10n.Tr("ui.menu.freeze"), _freezeMenu, 9);
 
             avatarMenu.AddSeparator();
             avatarMenu.AddItem(L10n.Tr("ui.menu.detach_all_huds"), 1);

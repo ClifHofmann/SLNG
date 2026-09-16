@@ -298,7 +298,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.173-alpha";
+    public const string AppVersion = "v0.22.174-alpha";
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -594,13 +594,21 @@ public partial class Boot : Control
         _topMenu.OnStopAnimations = () => {
             _session?.StopAllSelfAnimations();
             _avatarRenderer?.StopSelfAnimations();
+            _avatarRenderer?.FreezeAllAvatars(false);
+            _avatarRenderer?.FreezeSelfAnimation(false);
             _avatarController?.SetHoldMode(AvatarHoldMode.None);
             _topMenu.SetHoldModeUI(AvatarHoldMode.None);
+            _topMenu.SetFreezeUI(false, false);
+            _snapshotWindow?.SetFreezeState(false, false);
         };
         _topMenu.OnResetSkeleton = () => {
             _avatarRenderer?.ResetSelfSkeleton();
+            _avatarRenderer?.FreezeAllAvatars(false);
+            _avatarRenderer?.FreezeSelfAnimation(false);
             _avatarController?.SetHoldMode(AvatarHoldMode.None);
             _topMenu.SetHoldModeUI(AvatarHoldMode.None);
+            _topMenu.SetFreezeUI(false, false);
+            _snapshotWindow?.SetFreezeState(false, false);
         };
         _topMenu.OnResyncAnimations = () => {
             _avatarRenderer?.ResyncSelfAnimations();
@@ -611,6 +619,17 @@ public partial class Boot : Control
         _topMenu.OnHoldPoseChanged = (mode) => {
             _avatarRenderer?.SetSelfHoldMode(mode);
             _avatarController?.SetHoldMode(mode);
+        };
+        _topMenu.OnFreezeSelfChanged = (on) => {
+            _avatarRenderer?.FreezeSelfAnimation(on);
+            _snapshotWindow?.SetFreezeState(_avatarRenderer?.IsSelfFrozen ?? false, _avatarRenderer?.IsAllFrozen ?? false);
+        };
+        _topMenu.OnFreezeAllChanged = (on) => {
+            _avatarRenderer?.FreezeAllAvatars(on);
+            _snapshotWindow?.SetFreezeState(_avatarRenderer?.IsSelfFrozen ?? false, _avatarRenderer?.IsAllFrozen ?? false);
+        };
+        _topMenu.OnStepFrameRequested = (dir) => {
+            _avatarRenderer?.StepAllFrames(dir);
         };
         _topMenu.OnCreateTestSkin = CreateTestSkin;
         _topMenu.OnBakeTestPattern = BakeTestPattern;
@@ -751,6 +770,20 @@ public partial class Boot : Control
         _snapshotWindow.Initialize(hudLayer);
         _snapshotWindow.InitializeDof(_dofSettings); // FEAT-RENDER-07; controller wired post-login
         _snapshotWindow.InitializeSettings(_snapshotSettings); // FEAT-UI-17 (partial)
+        _snapshotWindow.OnFreezeSelfRequested = (on) =>
+        {
+            _avatarRenderer?.FreezeSelfAnimation(on);
+            _topMenu?.SetFreezeUI(_avatarRenderer?.IsSelfFrozen ?? false, _avatarRenderer?.IsAllFrozen ?? false);
+        };
+        _snapshotWindow.OnFreezeAllRequested = (on) =>
+        {
+            _avatarRenderer?.FreezeAllAvatars(on);
+            _topMenu?.SetFreezeUI(_avatarRenderer?.IsSelfFrozen ?? false, _avatarRenderer?.IsAllFrozen ?? false);
+        };
+        _snapshotWindow.OnStepFrameRequested = (dir) =>
+        {
+            _avatarRenderer?.StepAllFrames(dir);
+        };
 
         // FEAT-ENV-02: the shipped Windlight presets. Loaded here (a directory listing, no
         // parsing) so the picker has its index before it is ever opened.
@@ -3508,6 +3541,10 @@ public partial class Boot : Control
             if (hudLayer != null) hudLayer.Visible = false;
             if (_chatWindow != null) _chatWindow.Visible = false;
             if (_inventoryPanel != null) { _inventoryPanel.QueueFree(); _inventoryPanel = null; }
+            _avatarRenderer?.FreezeAllAvatars(false);
+            _avatarRenderer?.FreezeSelfAnimation(false);
+            _topMenu?.SetFreezeUI(false, false);
+            _snapshotWindow?.SetFreezeState(false, false);
             Input.MouseMode = Input.MouseModeEnum.Visible;
             _teleportActive = false;
             _teleportCameraResetPending = false;

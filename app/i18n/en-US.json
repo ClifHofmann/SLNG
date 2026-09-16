@@ -54,6 +54,11 @@
       "hold_pose_none": "Off",
       "hold_pose_tpose": "T-Pose (Bind Pose)",
       "hold_pose_stand": "Pose Stand (Neutral Stand)",
+      "freeze": "Freeze Animation",
+      "freeze_self": "Self",
+      "freeze_all": "All Avatars",
+      "step_backward": "Step Backward (◀)",
+      "step_forward": "Step Forward (▶)",
       "about": "About Puris Viewer..."
     },
     "avatar_hover": {
@@ -121,7 +126,17 @@
       "dof_show_marker": "Show focus point (debug)",
       "dof_show_marker_tooltip": "Draws two markers in the world: cyan is the focal plane (what stays sharp), amber is what the camera looks at — the avatar, or the Alt+LMB focus point. When the two are apart, the camera is focusing past its subject.",
       "dof_reset": "Reset",
-      "dof_no_target": "nothing in the centre of frame"
+      "dof_no_target": "nothing in the centre of frame",
+      "anim_heading": "Avatar Animation / Pose",
+      "freeze_self": "Freeze Animation",
+      "freeze_self_tooltip": "Holds the current animation frame for photos. Other clients still see it playing.",
+      "freeze_all": "All Avatars",
+      "freeze_all_tooltip": "Freezes all visible avatars in the scene for group shots.",
+      "step_label": "Frame:",
+      "step_back": "◀ -1",
+      "step_back_tooltip": "Step one frame backward in the frozen animation.",
+      "step_forward": "+1 ▶",
+      "step_forward_tooltip": "Step one frame forward in the frozen animation."
     },
     "map": {
       "arrived_in": "Arrived in {0}"

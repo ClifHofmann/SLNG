@@ -481,6 +481,11 @@ public partial class AvatarRenderer : Node3D
             visual.Parts["root"] = capsule;
         }
 
+        if (_isAllFrozen)
+        {
+            visual.AnimPlayer.IsFrozen = true;
+        }
+
         _visuals[entityId] = visual;
 
         UpdateVisual(entityIdStr);
@@ -694,6 +699,74 @@ public partial class AvatarRenderer : Node3D
         }
 
         GD.Print($"[AvatarHealth] Self hold mode set to: {mode}");
+    }
+
+    private bool _isAllFrozen;
+
+    /// <summary>FEAT-ANIM-09: True if the local avatar's animations are frozen.</summary>
+    public bool IsSelfFrozen
+    {
+        get
+        {
+            if (_selfEntityId != Guid.Empty && _visuals.TryGetValue(_selfEntityId, out var visual))
+            {
+                return visual.AnimPlayer.IsFrozen;
+            }
+            return false;
+        }
+    }
+
+    /// <summary>FEAT-ANIM-09: True if all avatars in the region are currently frozen.</summary>
+    public bool IsAllFrozen => _isAllFrozen;
+
+    /// <summary>
+    /// FEAT-ANIM-09: Freezes or resumes animation playback on the self avatar.
+    /// </summary>
+    public void FreezeSelfAnimation(bool freeze)
+    {
+        if (_selfEntityId == Guid.Empty || !_visuals.TryGetValue(_selfEntityId, out var visual)) return;
+        visual.AnimPlayer.IsFrozen = freeze;
+        GD.Print($"[AvatarAnimation] Freeze self animation: {freeze}");
+    }
+
+    /// <summary>
+    /// FEAT-ANIM-09: Freezes or resumes animation playback across all visible avatars.
+    /// </summary>
+    public void FreezeAllAvatars(bool freeze)
+    {
+        _isAllFrozen = freeze;
+        foreach (var visual in _visuals.Values)
+        {
+            visual.AnimPlayer.IsFrozen = freeze;
+        }
+        GD.Print($"[AvatarAnimation] Freeze all avatars ({_visuals.Count} avatars): {freeze}");
+    }
+
+    /// <summary>
+    /// FEAT-ANIM-09: Steps playback frame for the self avatar (e.g. +1 or -1 frame).
+    /// </summary>
+    public void StepSelfFrame(int dir)
+    {
+        if (_selfEntityId == Guid.Empty || !_visuals.TryGetValue(_selfEntityId, out var visual)) return;
+        visual.AnimPlayer.StepFrame(dir);
+    }
+
+    /// <summary>
+    /// FEAT-ANIM-09: Steps playback frame across all avatars if all frozen, or self otherwise.
+    /// </summary>
+    public void StepAllFrames(int dir)
+    {
+        if (_isAllFrozen)
+        {
+            foreach (var visual in _visuals.Values)
+            {
+                visual.AnimPlayer.StepFrame(dir);
+            }
+        }
+        else
+        {
+            StepSelfFrame(dir);
+        }
     }
 
     public void UpdateVisual(string entityIdStr)
@@ -4408,7 +4481,7 @@ void fragment() {
                 if (visual.Root.Visible != visible) visual.Root.Visible = visible;
             }
 
-            if (visual.Root.Visible && visual.AnimPlayer.IsPlaying && !_tposeActive)
+            if (visual.Root.Visible && !_tposeActive && (visual.AnimPlayer.IsPlaying || visual.AnimPlayer.HoldMode != AvatarHoldMode.None || visual.AnimPlayer.IsFrozen))
             {
                 visual.AnimPlayer.Advance(dt);
             }

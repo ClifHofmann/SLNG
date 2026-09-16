@@ -54,6 +54,11 @@
       "hold_pose_none": "Aus",
       "hold_pose_tpose": "T-Pose (Bind-Pose)",
       "hold_pose_stand": "Pose Stand (Neutraler Stand)",
+      "freeze": "Animation einfrieren",
+      "freeze_self": "Eigener Avatar",
+      "freeze_all": "Alle Avatare",
+      "step_backward": "1 Frame zurück (◀)",
+      "step_forward": "1 Frame vor (▶)",
       "about": "Über Puris Viewer..."
     },
     "avatar_hover": {
@@ -121,7 +126,17 @@
       "dof_show_marker": "Fokuspunkt anzeigen (Debug)",
       "dof_show_marker_tooltip": "Zeichnet zwei Marker in die Welt: türkis die Fokusebene (dort ist das Bild scharf), orange das Ziel, auf das die Kamera blickt — der Avatar bzw. der mit Alt+Linksklick gesetzte Punkt. Liegen beide auseinander, fokussiert die Kamera am Motiv vorbei.",
       "dof_reset": "Zurücksetzen",
-      "dof_no_target": "nichts in der Bildmitte"
+      "dof_no_target": "nichts in der Bildmitte",
+      "anim_heading": "Avatar-Animation / Pose",
+      "freeze_self": "Animation einfrieren",
+      "freeze_self_tooltip": "Hält den aktuellen Animationsframe für Fotos an. Andere Viewer sehen die Animation weiter.",
+      "freeze_all": "Alle Avatare",
+      "freeze_all_tooltip": "Friert alle sichtbaren Avatare in der Szene für Gruppenaufnahmen ein.",
+      "step_label": "Frame:",
+      "step_back": "◀ -1",
+      "step_back_tooltip": "Einen Frame in der eingefrorenen Animation zurückspringen.",
+      "step_forward": "+1 ▶",
+      "step_forward_tooltip": "Einen Frame in der eingefrorenen Animation vorspringen."
     },
     "map": {
       "arrived_in": "Angekommen in {0}"

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 using SLNG.Assets;
 using SLNG.Core.Avatars;
@@ -46,11 +47,40 @@ public sealed class AvatarAnimationPlayer
     private const float LocomotionBoostSeconds = 2.0f;
     private const int LocomotionBoostPriority = 6; // above SL's normal max authored priority (~4)
 
+    private bool _isFrozen;
+    private IReadOnlyList<(Guid id, AnimationData data)>? _pendingAnimations;
+    private AvatarHoldMode _holdMode = AvatarHoldMode.None;
+
     /// <summary>True if any animations are currently loaded and playing.</summary>
     public bool IsPlaying => _active.Count > 0;
 
+    /// <summary>FEAT-ANIM-09: True if animation playback is frozen at its current frame.</summary>
+    public bool IsFrozen
+    {
+        get => _isFrozen;
+        set
+        {
+            if (_isFrozen == value) return;
+            _isFrozen = value;
+            if (!_isFrozen && _pendingAnimations != null)
+            {
+                var pending = _pendingAnimations;
+                _pendingAnimations = null;
+                SetActiveAnimations(pending);
+            }
+        }
+    }
+
     /// <summary>FEAT-ANIM-07: Current sustained hold mode (None, BindPose, PoseStand).</summary>
-    public AvatarHoldMode HoldMode { get; set; } = AvatarHoldMode.None;
+    public AvatarHoldMode HoldMode
+    {
+        get => _holdMode;
+        set
+        {
+            if (_isFrozen) return;
+            _holdMode = value;
+        }
+    }
 
     /// <summary>FEAT-ANIM-07: Built-in STAND clip evaluated when in <see cref="AvatarHoldMode.PoseStand"/>.</summary>
     public AnimationData? StandAnimation { get; set; }
@@ -80,9 +110,16 @@ public sealed class AvatarAnimationPlayer
     /// <summary>
     /// Replace the entire set of active animations. Animations not in the new set
     /// are stopped; new ones are started at InPoint.
+    /// If frozen, the incoming animation set is buffered and applied upon unfreezing.
     /// </summary>
     public void SetActiveAnimations(IReadOnlyList<(Guid id, AnimationData data)> animations)
     {
+        if (_isFrozen)
+        {
+            _pendingAnimations = animations.ToArray();
+            return;
+        }
+
         // Remove animations no longer active.
         int removed = _active.RemoveAll(p =>
         {
@@ -118,23 +155,67 @@ public sealed class AvatarAnimationPlayer
     /// <summary>Clear all playing animations and reset the skeleton to rest pose.</summary>
     public void Stop()
     {
+        _isFrozen = false;
+        _pendingAnimations = null;
         _active.Clear();
         ResetToRestPose();
     }
 
     /// <summary>
     /// FEAT-ANIM-04: Resynchronizes all active animations by resetting their playback
-    /// time to InPoint in the same frame. No-op while in a sustained hold mode.
+    /// time to InPoint in the same frame. No-op while in a sustained hold mode or frozen.
     /// </summary>
     public void Resync()
     {
-        if (HoldMode != AvatarHoldMode.None) return;
+        if (_holdMode != AvatarHoldMode.None || _isFrozen) return;
 
         foreach (var anim in _active)
         {
             anim.CurrentTime = anim.Data.InPoint;
         }
         ApplyBonePoses();
+    }
+
+    /// <summary>
+    /// FEAT-ANIM-09: Advances or rewinds the frozen playback time by <paramref name="dir"/> frames
+    /// (default 1/30 s per frame) and applies the new pose to the skeleton immediately.
+    /// Only active while <see cref="IsFrozen"/> is true.
+    /// </summary>
+    public void StepFrame(int dir, float stepSeconds = 1f / 30f)
+    {
+        if (!_isFrozen || _active.Count == 0) return;
+
+        foreach (var anim in _active)
+        {
+            float loopEnd = anim.Data.OutPoint > 0 ? anim.Data.OutPoint : anim.Data.Length;
+            float loopStart = anim.Data.InPoint;
+
+            anim.CurrentTime += dir * stepSeconds;
+
+            if (anim.Data.Loop && loopEnd > loopStart)
+            {
+                while (anim.CurrentTime > loopEnd) anim.CurrentTime -= (loopEnd - loopStart);
+                while (anim.CurrentTime < loopStart) anim.CurrentTime += (loopEnd - loopStart);
+            }
+            else
+            {
+                anim.CurrentTime = Mathf.Clamp(anim.CurrentTime, loopStart, loopEnd);
+            }
+        }
+
+        ApplyBonePoses();
+    }
+
+    /// <summary>
+    /// Returns the current playback time of the specified animation, or null if not playing.
+    /// </summary>
+    public float? GetAnimationTime(Guid animId)
+    {
+        foreach (var anim in _active)
+        {
+            if (anim.AnimationId == animId) return anim.CurrentTime;
+        }
+        return null;
     }
 
     /// <summary>
@@ -145,15 +226,22 @@ public sealed class AvatarAnimationPlayer
     {
         if (_skeleton == null) return;
 
+        // FEAT-ANIM-09: While frozen, time does not advance, but we evaluate bone poses to hold the pose.
+        if (_isFrozen)
+        {
+            ApplyBonePoses();
+            return;
+        }
+
         // FEAT-ANIM-07: Bind pose holds raw skeleton rest every frame.
-        if (HoldMode == AvatarHoldMode.BindPose)
+        if (_holdMode == AvatarHoldMode.BindPose)
         {
             ResetToRestPose();
             return;
         }
 
         // FEAT-ANIM-07: Pose stand evaluates the fixed stand frame without advancing time.
-        if (HoldMode == AvatarHoldMode.PoseStand)
+        if (_holdMode == AvatarHoldMode.PoseStand)
         {
             ApplyBonePoses();
             return;
@@ -198,7 +286,7 @@ public sealed class AvatarAnimationPlayer
         // (Avatar shape deformations are baked into the bone rests, so this only clears animations).
         ResetToRestPose();
 
-        if (HoldMode == AvatarHoldMode.BindPose)
+        if (!_isFrozen && HoldMode == AvatarHoldMode.BindPose)
         {
             return;
         }
@@ -210,7 +298,7 @@ public sealed class AvatarAnimationPlayer
         var boneRots = new Dictionary<int, (int priority, Quaternion rotation)>();
         var bonePositions = new Dictionary<int, (int priority, Vector3 position)>();
 
-        if (HoldMode == AvatarHoldMode.PoseStand)
+        if (!_isFrozen && HoldMode == AvatarHoldMode.PoseStand)
         {
             if (StandAnimation != null)
             {

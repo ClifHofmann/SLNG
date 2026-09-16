@@ -50,6 +50,16 @@ public partial class SnapshotWindow : SLNGWindow
     // doc comment) -- this is a separate, manual toggle so the user can compose the shot with
     // a clean view instead of only seeing the HUD-free result after pressing Capture.
 
+    // --- Animation Freeze (FEAT-ANIM-09) ---------------------------------------------------
+    public Action<bool>? OnFreezeSelfRequested;
+    public Action<bool>? OnFreezeAllRequested;
+    public Action<int>? OnStepFrameRequested;
+
+    private CheckButton _freezeSelfButton = null!;
+    private CheckBox _freezeAllCheckBox = null!;
+    private HBoxContainer _stepControls = null!;
+    private bool _updatingFreezeUi;
+
     // --- Depth of field (FEAT-RENDER-07) ---------------------------------------------------
     private DofSettings? _dof;
     // Null until login builds the camera. The controls still work before that: they write to
@@ -147,6 +157,8 @@ public partial class SnapshotWindow : SLNGWindow
         buttonRow.AddChild(_saveButton);
 
         BuildFolderRow(vbox);
+
+        BuildAnimationSection(vbox);
 
         BuildDofSection(vbox);
 
@@ -322,6 +334,100 @@ public partial class SnapshotWindow : SLNGWindow
             return;
         }
         OS.ShellShowInFileManager(dir);
+    }
+
+    // --- Animation Freeze (FEAT-ANIM-09) ---------------------------------------------------
+
+    private void BuildAnimationSection(VBoxContainer parent)
+    {
+        parent.AddChild(new HSeparator());
+
+        var header = new HBoxContainer();
+        header.AddThemeConstantOverride("separation", 8);
+        parent.AddChild(header);
+
+        var heading = new Label
+        {
+            Text = L10n.Tr("ui.snapshot.anim_heading"),
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+        };
+        heading.AddThemeFontSizeOverride("font_size", 12);
+        header.AddChild(heading);
+
+        _freezeSelfButton = new CheckButton
+        {
+            Text = L10n.Tr("ui.snapshot.freeze_self"),
+            TooltipText = L10n.Tr("ui.snapshot.freeze_self_tooltip"),
+            FocusMode = FocusModeEnum.None,
+        };
+        _freezeSelfButton.Toggled += on =>
+        {
+            if (_updatingFreezeUi) return;
+            _stepControls.Visible = on || _freezeAllCheckBox.ButtonPressed;
+            OnFreezeSelfRequested?.Invoke(on);
+        };
+        header.AddChild(_freezeSelfButton);
+
+        _stepControls = new HBoxContainer { Visible = false };
+        _stepControls.AddThemeConstantOverride("separation", 8);
+        parent.AddChild(_stepControls);
+
+        _freezeAllCheckBox = new CheckBox
+        {
+            Text = L10n.Tr("ui.snapshot.freeze_all"),
+            TooltipText = L10n.Tr("ui.snapshot.freeze_all_tooltip"),
+            FocusMode = FocusModeEnum.None,
+        };
+        _freezeAllCheckBox.Toggled += on =>
+        {
+            if (_updatingFreezeUi) return;
+            _stepControls.Visible = on || _freezeSelfButton.ButtonPressed;
+            OnFreezeAllRequested?.Invoke(on);
+        };
+        _stepControls.AddChild(_freezeAllCheckBox);
+
+        var stepLabel = new Label
+        {
+            Text = L10n.Tr("ui.snapshot.step_label"),
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        stepLabel.AddThemeFontSizeOverride("font_size", 11);
+        stepLabel.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+        _stepControls.AddChild(stepLabel);
+
+        var backButton = new Button
+        {
+            Text = L10n.Tr("ui.snapshot.step_back"),
+            TooltipText = L10n.Tr("ui.snapshot.step_back_tooltip"),
+            FocusMode = FocusModeEnum.None,
+        };
+        backButton.Pressed += () => OnStepFrameRequested?.Invoke(-1);
+        _stepControls.AddChild(backButton);
+
+        var fwdButton = new Button
+        {
+            Text = L10n.Tr("ui.snapshot.step_forward"),
+            TooltipText = L10n.Tr("ui.snapshot.step_forward_tooltip"),
+            FocusMode = FocusModeEnum.None,
+        };
+        fwdButton.Pressed += () => OnStepFrameRequested?.Invoke(1);
+        _stepControls.AddChild(fwdButton);
+    }
+
+    public void SetFreezeState(bool selfFrozen, bool allFrozen)
+    {
+        _updatingFreezeUi = true;
+        try
+        {
+            if (_freezeSelfButton != null) _freezeSelfButton.ButtonPressed = selfFrozen;
+            if (_freezeAllCheckBox != null) _freezeAllCheckBox.ButtonPressed = allFrozen;
+            if (_stepControls != null) _stepControls.Visible = selfFrozen || allFrozen;
+        }
+        finally
+        {
+            _updatingFreezeUi = false;
+        }
     }
 
     // --- Depth of field ---------------------------------------------------------------------

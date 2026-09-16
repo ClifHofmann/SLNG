@@ -65,6 +65,7 @@ public static class SelfTest
         results.Add(CheckInstanceSlotMap());
         results.Add(CheckAvatarAnimationPlayer());
         results.Add(CheckAvatarHoldMode());
+        results.Add(CheckAvatarAnimationFreeze());
 
         foreach (var r in results)
         {
@@ -465,6 +466,97 @@ public static class SelfTest
 
         return new Check("avatar hold mode", problems.Count == 0,
             problems.Count == 0 ? "BindPose and PoseStand override active animations" : string.Join("; ", problems));
+    }
+
+    private static Check CheckAvatarAnimationFreeze()
+    {
+        var problems = new List<string>();
+        var player = new AvatarAnimationPlayer();
+        var skeleton = new Skeleton3D();
+        skeleton.AddBone("mPelvis");
+        skeleton.SetBoneRest(0, new Transform3D(Basis.Identity, new Vector3(0, 1, 0)));
+        skeleton.ResetBonePoses();
+        player.SetSkeleton(skeleton);
+
+        var animId1 = Guid.NewGuid();
+        var rotKeys1 = new[] { new RotationKeyframe { Time = 0f, Rotation = System.Numerics.Quaternion.CreateFromYawPitchRoll(0, 0, 1.0f) } };
+        var joint1 = new AnimationJointData
+        {
+            JointName = "mPelvis",
+            Priority = 3,
+            RotationKeys = rotKeys1,
+            PositionKeys = Array.Empty<PositionKeyframe>()
+        };
+        var data1 = new AnimationData
+        {
+            Length = 2.0f,
+            InPoint = 0f,
+            OutPoint = 2.0f,
+            Loop = true,
+            Priority = 3,
+            Joints = new[] { joint1 }
+        };
+
+        player.SetActiveAnimations(new[] { (animId1, data1) });
+        player.Advance(0.2f);
+        float? tNormal = player.GetAnimationTime(animId1);
+        if (!tNormal.HasValue || Math.Abs(tNormal.Value - 0.2f) > 0.001f)
+            problems.Add($"Normal Advance did not advance time to 0.2s (got {tNormal})");
+
+        // Freeze playback
+        player.IsFrozen = true;
+        player.Advance(0.5f);
+        float? tFrozen = player.GetAnimationTime(animId1);
+        if (!tFrozen.HasValue || Math.Abs(tFrozen.Value - 0.2f) > 0.001f)
+            problems.Add($"Frozen Advance advanced time from {tNormal} to {tFrozen}");
+
+        // Step forward 1 frame (+1/30 s)
+        player.StepFrame(1, 1f / 30f);
+        float? tSteppedFwd = player.GetAnimationTime(animId1);
+        float expectedFwd = 0.2f + (1f / 30f);
+        if (!tSteppedFwd.HasValue || Math.Abs(tSteppedFwd.Value - expectedFwd) > 0.002f)
+            problems.Add($"StepFrame(1) did not advance by 1/30s (expected {expectedFwd}, got {tSteppedFwd})");
+
+        // Step back 1 frame (-1/30 s)
+        player.StepFrame(-1, 1f / 30f);
+        float? tSteppedBack = player.GetAnimationTime(animId1);
+        if (!tSteppedBack.HasValue || Math.Abs(tSteppedBack.Value - 0.2f) > 0.002f)
+            problems.Add($"StepFrame(-1) did not step back to 0.2s (got {tSteppedBack})");
+
+        // Network update arriving while frozen: buffered, not applied
+        var animId2 = Guid.NewGuid();
+        var rotKeys2 = new[] { new RotationKeyframe { Time = 0f, Rotation = System.Numerics.Quaternion.CreateFromYawPitchRoll(0, 0, 2.0f) } };
+        var joint2 = new AnimationJointData
+        {
+            JointName = "mPelvis",
+            Priority = 4,
+            RotationKeys = rotKeys2,
+            PositionKeys = Array.Empty<PositionKeyframe>()
+        };
+        var data2 = new AnimationData
+        {
+            Length = 1.0f,
+            InPoint = 0f,
+            OutPoint = 1.0f,
+            Loop = true,
+            Priority = 4,
+            Joints = new[] { joint2 }
+        };
+        player.SetActiveAnimations(new[] { (animId2, data2) });
+        if (player.GetAnimationTime(animId2).HasValue)
+            problems.Add("SetActiveAnimations swapped active clip while frozen (should be buffered)");
+        if (!player.GetAnimationTime(animId1).HasValue)
+            problems.Add("Old clip animId1 was removed while frozen");
+
+        // Unfreeze: buffered update applied cleanly
+        player.IsFrozen = false;
+        if (!player.GetAnimationTime(animId2).HasValue)
+            problems.Add("Unfreeze did not apply buffered animId2");
+        if (player.GetAnimationTime(animId1).HasValue)
+            problems.Add("Unfreeze did not remove stale animId1");
+
+        return new Check("avatar animation freeze", problems.Count == 0,
+            problems.Count == 0 ? "Freeze halts time, stepFrame nudges time, updates buffer cleanly" : string.Join("; ", problems));
     }
 
     /// <summary>
