@@ -86,3 +86,4 @@ Findings:
 - [x] Remote remap in `ApplyActiveAnimations`.
 - [x] Unit tests + regression testing.
 - [x] Verified build (`dotnet build SLNG.sln`, `dotnet build app/SLNG.App.csproj`, `dotnet test`, 42/42 self-tests).
+- [x] Locomotion running enhancements: Double-tap Forward, Shift hold, Always Run toggle (`Ctrl+R`), on-screen toast hint (`ToastOverlay`), Preferences checkbox (`AnimationPreferencesPage`), and TopMenu sync (`v0.22.177-alpha`, `v0.22.178-alpha`).
