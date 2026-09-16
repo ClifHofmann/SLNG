@@ -305,10 +305,21 @@ public sealed class AvatarAnimationPlayer
             AdvanceAnimTime(anim, delta);
         }
 
-        // FEAT-ANIM-06: Advance time for each local overlay animation.
-        foreach (var anim in _localOverlay)
+        // FEAT-ANIM-06: Advance time for each local overlay animation. Remove non-looping ones once complete.
+        for (int i = _localOverlay.Count - 1; i >= 0; i--)
         {
+            var anim = _localOverlay[i];
             AdvanceAnimTime(anim, delta);
+
+            float loopEnd = anim.Data.OutPoint > 0 ? anim.Data.OutPoint : anim.Data.Length;
+            if (!anim.Data.Loop && anim.CurrentTime >= loopEnd)
+            {
+                _localOverlay.RemoveAt(i);
+                if (_active.Count == 0 && _localOverlay.Count == 0)
+                {
+                    ResetToRestPose();
+                }
+            }
         }
 
         // Evaluate and apply per-bone, highest-priority-wins blending.

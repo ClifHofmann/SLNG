@@ -773,7 +773,7 @@ public partial class AvatarRenderer : Node3D
     /// FEAT-ANIM-06: Plays an animation locally on the self avatar from an asset UUID.
     /// Fetches via AssetService, then adds to self visual's AnimPlayer local overlay.
     /// </summary>
-    public async System.Threading.Tasks.Task<bool> PlaySelfAnimationLocalAsync(Guid assetId, string? animName = null)
+    public async System.Threading.Tasks.Task<bool> PlaySelfAnimationLocalAsync(Guid assetId, string? animName = null, bool replaceExisting = true)
     {
         if (_selfEntityId == Guid.Empty || !_visuals.TryGetValue(_selfEntityId, out var visual)) return false;
         if (_assetService == null) return false;
@@ -789,6 +789,10 @@ public partial class AvatarRenderer : Node3D
         {
             if (_visuals.TryGetValue(_selfEntityId, out var v))
             {
+                if (replaceExisting)
+                {
+                    v.AnimPlayer.ClearLocal();
+                }
                 v.AnimPlayer.PlayLocal(assetId, animData, animName);
                 if (Diagnostics.Enabled) GD.Print($"[FEAT-ANIM-06] Playing local animation {assetId} ({animName ?? "unnamed"})");
             }

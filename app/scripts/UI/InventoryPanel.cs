@@ -58,6 +58,7 @@ public partial class InventoryPanel : SLNGWindow
     public Func<Guid, string, System.Threading.Tasks.Task<bool>>? PlayAnimationLocalHandler;
     /// <summary>FEAT-ANIM-06: Handler to stop a locally playing animation on the self avatar.</summary>
     public Action<Guid>? StopAnimationLocalHandler;
+    private Guid _lastInWorldAnimId;
 
     // FEAT-INV-04: Outfits tab.
     private VBoxContainer _outfitsView = null!;
@@ -1590,6 +1591,11 @@ public partial class InventoryPanel : SLNGWindow
             var parts = metaStr.Split(',');
             if (parts.Length >= 6 && Guid.TryParse(parts[5], out var assetId))
             {
+                if (_lastInWorldAnimId != Guid.Empty)
+                {
+                    _session?.StopAnimation(_lastInWorldAnimId);
+                    _lastInWorldAnimId = Guid.Empty;
+                }
                 string animName = item.GetText(0);
                 if (PlayAnimationLocalHandler != null)
                 {
@@ -1603,6 +1609,12 @@ public partial class InventoryPanel : SLNGWindow
             var parts = metaStr.Split(',');
             if (parts.Length >= 6 && Guid.TryParse(parts[5], out var assetId))
             {
+                StopAnimationLocalHandler?.Invoke(assetId);
+                if (_lastInWorldAnimId != Guid.Empty && _lastInWorldAnimId != assetId)
+                {
+                    _session?.StopAnimation(_lastInWorldAnimId);
+                }
+                _lastInWorldAnimId = assetId;
                 _session?.StartAnimation(assetId);
             }
         }
@@ -1614,6 +1626,7 @@ public partial class InventoryPanel : SLNGWindow
             {
                 StopAnimationLocalHandler?.Invoke(assetId);
                 _session?.StopAnimation(assetId);
+                if (_lastInWorldAnimId == assetId) _lastInWorldAnimId = Guid.Empty;
             }
         }
     }
