@@ -300,7 +300,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.185-alpha";
+    public const string AppVersion = "v0.22.186-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1294,11 +1294,11 @@ public partial class Boot : Control
             Name = "DirectionalLight3D",
             RotationDegrees = new Godot.Vector3(-50f, -130f, 0f),
             ShadowEnabled = true,
-            DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel2Splits,
+            DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel4Splits,
             DirectionalShadowBlendSplits = true,
-            DirectionalShadowSplit1 = 0.08f,
-            DirectionalShadowSplit2 = 0.22f,
-            DirectionalShadowSplit3 = 0.50f,
+            DirectionalShadowSplit1 = 0.12f,
+            DirectionalShadowSplit2 = 0.28f,
+            DirectionalShadowSplit3 = 0.55f,
             // FEAT-PERF-06: 150 -> 90. Beyond ~56 m objects stop casting (ShadowCasterDistance),
             // so a 150 m CSM range only spread the 4096 atlas thinner over empty distance; 90 m
             // (just under draw distance) puts that resolution on the near shadows you actually see.
@@ -1332,20 +1332,23 @@ public partial class Boot : Control
         // NOT every _Process tick -- see that method's own doc comment for why continuous
         // per-frame repositioning was measured to cost real, avoidable frame time).
         //
-        // Size/MaxDistance: generous "nearby content" extents for an open world with no fixed
-        // rooms to size a probe to, not a room-scale capture. BoxProjection off: box projection
-        // assumes a bounded interior to project against, which an open outdoor scene is not.
-        // EnableShadows off: a reflection this blurry cannot show shadow detail anyway, and
-        // shadows would roughly double the render cost of every one of the 6 face captures for no
-        // visible return.
+        // Size/MaxDistance: 256x128x256 m outdoor box so the probe covers the entire visible area
+        // around the camera smoothly without creating a small visible 20 m boundary bubble on walls.
+        // BoxProjection off: box projection assumes a bounded interior to project against, which an
+        // open outdoor scene is not. EnableShadows off: shadows would roughly double render cost of
+        // face captures. AmbientMode is switchable via PostFxProbeAmbient (disabled by default for
+        // Second Life / Firestorm parity on matte walls).
         var reflectionProbe = new ReflectionProbe
         {
             Name = "ReflectionProbe",
-            Size = new Godot.Vector3(40f, 40f, 40f),
-            MaxDistance = 60f,
+            Size = new Godot.Vector3(256f, 128f, 256f),
+            MaxDistance = 160f,
             UpdateMode = ReflectionProbe.UpdateModeEnum.Once,
             BoxProjection = false,
             EnableShadows = false,
+            AmbientMode = _graphicsSettings.PostFxProbeAmbient
+                ? ReflectionProbe.AmbientModeEnum.Environment
+                : ReflectionProbe.AmbientModeEnum.Disabled,
 
             // Was 4.0, from comparing Godot's 4% dielectric F0 against applyGlossEnv's ~19% peak
             // (reflectionProbeF.glsl:893) and taking the ratio. That derivation was wrong, and the
@@ -1751,7 +1754,7 @@ public partial class Boot : Control
         {
             _roomProbeBox = default;
             _reflectionProbe.GlobalPosition = camPos;
-            _reflectionProbe.Size = new Godot.Vector3(40f, 40f, 40f);
+            _reflectionProbe.Size = new Godot.Vector3(256f, 128f, 256f);
             _reflectionProbe.OriginOffset = Godot.Vector3.Zero;
             _reflectionProbe.BoxProjection = false;
         }

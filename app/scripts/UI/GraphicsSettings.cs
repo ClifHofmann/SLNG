@@ -47,11 +47,18 @@ public sealed class GraphicsSettings
     public bool PostFxGlow { get; private set; } = true;
 
     /// <summary>FEAT-RENDER-20: the real, camera-following <c>ReflectionProbe</c> that replaced
-    /// BUG-RENDER-20's hand-rolled sky-tint approximation. Toggleable per AGENTS.md's "make visual
-    /// features toggleable so they can be profiled and compared" -- off simply hides the node
-    /// (<see cref="ReflectionProbe.Visible"/>), which stops it capturing or contributing at all,
-    /// letting a shiny face fall back to Godot's plain sky-only IBL for an A/B comparison.</summary>
+    /// <summary>FEAT-RENDER-20: the camera-following ReflectionProbe. Toggleable per
+    /// AGENTS.md's "make visual features toggleable so they can be profiled and compared" -- off
+    /// simply hides the node (<see cref="ReflectionProbe.Visible"/>), which stops it capturing or
+    /// contributing at all, letting a shiny face fall back to Godot's plain sky-only IBL for an
+    /// A/B comparison.</summary>
     public bool PostFxReflectionProbe { get; private set; } = true;
+
+    /// <summary>Controls whether the ReflectionProbe contributes diffuse ambient irradiance in
+    /// addition to specular reflections. When disabled (default), the probe only provides specular
+    /// reflections on glossy/metallic surfaces (matching Second Life/Firestorm), leaving diffuse
+    /// ambient lighting to the global Windlight/EEP sky.</summary>
+    public bool PostFxProbeAmbient { get; private set; } = false;
 
     /// <summary>FEAT-RENDER-21: screen-space reflections. Separate from
     /// <see cref="PostFxReflectionProbe"/> on purpose -- they answer different halves of the same
@@ -108,6 +115,7 @@ public sealed class GraphicsSettings
         PostFxSsil = (bool)cfg.GetValue(Section, "post_fx_ssil", PostFxSsil);
         PostFxGlow = (bool)cfg.GetValue(Section, "post_fx_glow", PostFxGlow);
         PostFxReflectionProbe = (bool)cfg.GetValue(Section, "post_fx_reflection_probe", PostFxReflectionProbe);
+        PostFxProbeAmbient = (bool)cfg.GetValue(Section, "post_fx_probe_ambient", PostFxProbeAmbient);
         PostFxSsr = (bool)cfg.GetValue(Section, "post_fx_ssr", PostFxSsr);
         PostFxHeroProbe = (bool)cfg.GetValue(Section, "post_fx_hero_probe", PostFxHeroProbe);
         Shadows = (bool)cfg.GetValue(Section, "shadows", Shadows);
@@ -133,6 +141,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "post_fx_ssil", PostFxSsil);
         cfg.SetValue(Section, "post_fx_glow", PostFxGlow);
         cfg.SetValue(Section, "post_fx_reflection_probe", PostFxReflectionProbe);
+        cfg.SetValue(Section, "post_fx_probe_ambient", PostFxProbeAmbient);
         cfg.SetValue(Section, "post_fx_ssr", PostFxSsr);
         cfg.SetValue(Section, "post_fx_hero_probe", PostFxHeroProbe);
         cfg.SetValue(Section, "shadows", Shadows);
@@ -155,6 +164,7 @@ public sealed class GraphicsSettings
     public void SetPostFxSsil(bool on) { PostFxSsil = on; Save(); }
     public void SetPostFxGlow(bool on) { PostFxGlow = on; Save(); }
     public void SetPostFxReflectionProbe(bool on) { PostFxReflectionProbe = on; Save(); }
+    public void SetPostFxProbeAmbient(bool on) { PostFxProbeAmbient = on; Save(); }
     public void SetPostFxSsr(bool on) { PostFxSsr = on; Save(); }
     public void SetPostFxHeroProbe(bool on) { PostFxHeroProbe = on; Save(); }
     public void SetShadows(bool on) { Shadows = on; Save(); }
@@ -205,7 +215,13 @@ public sealed class GraphicsSettings
         // cadence last left it rather than starting the whole node over. A hidden ReflectionProbe
         // contributes nothing to the pipeline (same as if it were never placed), which is exactly
         // the A/B this toggle exists for.
-        if (reflectionProbe != null) reflectionProbe.Visible = PostFxReflectionProbe;
+        if (reflectionProbe != null)
+        {
+            reflectionProbe.Visible = PostFxReflectionProbe;
+            reflectionProbe.AmbientMode = PostFxProbeAmbient
+                ? ReflectionProbe.AmbientModeEnum.Environment
+                : ReflectionProbe.AmbientModeEnum.Disabled;
+        }
 
         if (sun != null)
         {
@@ -218,6 +234,22 @@ public sealed class GraphicsSettings
                 1 => DirectionalLight3D.ShadowMode.Parallel2Splits,
                 _ => DirectionalLight3D.ShadowMode.Parallel4Splits
             };
+
+            // Dynamically balance cascade splits to ensure the near cascade comfortably encompasses
+            // the 3rd-person avatar and its immediate shadow footprint.
+            if (ShadowSplits == 1)
+            {
+                // 2 Cascades: split 1 covers ~28% of total distance (e.g. ~22 m at 80 m), preventing
+                // the avatar from prematurely dropping into the coarse distant cascade on zoom.
+                sun.DirectionalShadowSplit1 = 0.28f;
+            }
+            else
+            {
+                // 4 Cascades: 12% near (~10 m at 80 m), 28% mid-near (~22 m), 55% mid (~44 m), 100% far.
+                sun.DirectionalShadowSplit1 = 0.12f;
+                sun.DirectionalShadowSplit2 = 0.28f;
+                sun.DirectionalShadowSplit3 = 0.55f;
+            }
         }
     }
 }

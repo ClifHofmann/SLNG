@@ -333,6 +333,7 @@
       "post_fx_ssil": "Indirekte Beleuchtung (SSIL)",
       "post_fx_glow": "Glühen / Bloom",
       "post_fx_reflection_probe": "Umgebungsreflexionen",
+      "post_fx_probe_ambient": "Sonden-Umgebungslicht",
       "post_fx_ssr": "Spiegelungen (Bildschirmraum)",
       "post_fx_hero_probe": "Echtzeit-Spiegel",
       "tab_licenses": "Lizenzen",

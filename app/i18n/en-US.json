@@ -333,6 +333,7 @@
       "post_fx_ssil": "Indirect Lighting (SSIL)",
       "post_fx_glow": "Glow / Bloom",
       "post_fx_reflection_probe": "Environment Reflections",
+      "post_fx_probe_ambient": "Probe Ambient Light",
       "post_fx_ssr": "Screen-Space Reflections",
       "post_fx_hero_probe": "Real-Time Mirrors",
       "tab_licenses": "Licences",

@@ -23,6 +23,7 @@ public partial class DesignPreferencesPage : VBoxContainer
     private CheckBox _postFxSsilCheck = null!;
     private CheckBox _postFxGlowCheck = null!;
     private CheckBox _postFxReflectionProbeCheck = null!;
+    private CheckBox _postFxProbeAmbientCheck = null!;
     private CheckBox _postFxSsrCheck = null!;
     private CheckBox _postFxHeroProbeCheck = null!;
 
@@ -77,6 +78,9 @@ public partial class DesignPreferencesPage : VBoxContainer
         _postFxReflectionProbeCheck = AddCheck(L10n.Tr("ui.preferences.post_fx_reflection_probe"), _settings.PostFxReflectionProbe,
                                 on => { if (!_refreshing) { _settings.SetPostFxReflectionProbe(on); _apply(); } });
 
+        _postFxProbeAmbientCheck = AddCheck(L10n.Tr("ui.preferences.post_fx_probe_ambient"), _settings.PostFxProbeAmbient,
+                                on => { if (!_refreshing) { _settings.SetPostFxProbeAmbient(on); _apply(); } });
+
         // FEAT-RENDER-21: SSR, kept separate from the probe above -- the two fail differently
         // (probe: covers everything, wrong direction for nearby objects; SSR: correct parallax,
         // only for what is on screen), so switching them independently is how an artefact gets
@@ -115,6 +119,7 @@ public partial class DesignPreferencesPage : VBoxContainer
             _postFxSsilCheck.ButtonPressed = _settings.PostFxSsil;
             _postFxGlowCheck.ButtonPressed = _settings.PostFxGlow;
             _postFxReflectionProbeCheck.ButtonPressed = _settings.PostFxReflectionProbe;
+            _postFxProbeAmbientCheck.ButtonPressed = _settings.PostFxProbeAmbient;
             _postFxSsrCheck.ButtonPressed = _settings.PostFxSsr;
             _postFxHeroProbeCheck.ButtonPressed = _settings.PostFxHeroProbe;
         }
