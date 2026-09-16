@@ -46,6 +46,10 @@
       "rebake_avatar": "Avatar neu backen (Strg+Alt+R)",
       "avatar": "Avatar",
       "hover_height": "Schwebehöhe...",
+      "stop_animations": "Animationen stoppen",
+      "reset_skeleton": "Skelett zurücksetzen (Undeform)",
+      "resync_animations": "Animationen synchronisieren",
+      "resync_all_animations": "Alle Avatare synchronisieren",
       "about": "Über Puris Viewer..."
     },
     "avatar_hover": {

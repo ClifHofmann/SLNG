@@ -566,4 +566,12 @@ public class GridSessionTests
         Assert.False(result.WearableRemoved);
         Assert.False(result.WasAttached);
     }
+
+    [Fact]
+    public void StopAllSelfAnimations_without_connection_does_not_throw()
+    {
+        using var session = new GridSession();
+        // Disconnected session safely handles the call without throwing
+        session.StopAllSelfAnimations();
+    }
 }

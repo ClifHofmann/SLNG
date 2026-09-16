@@ -567,6 +567,71 @@ public partial class AvatarRenderer : Node3D
         UpdateVisual(selfEntity.Id.ToString());
     }
 
+    /// <summary>
+    /// FEAT-AVATAR-02 / FEAT-ANIM-04: Immediately halts all currently active animations on the
+    /// local avatar and resets bone poses to rest.
+    /// </summary>
+    public void StopSelfAnimations()
+    {
+        if (_selfEntityId == Guid.Empty || !_visuals.TryGetValue(_selfEntityId, out var visual)) return;
+        visual.AnimPlayer.Stop();
+        visual.Skeleton?.ResetBonePoses();
+#pragma warning disable CS0618
+        visual.Skeleton?.ForceUpdateAllBoneTransforms();
+#pragma warning restore CS0618
+        GD.Print("[AvatarHealth] Stopped all animations on self avatar");
+    }
+
+    /// <summary>
+    /// FEAT-AVATAR-02 / FEAT-ANIM-04: Undeforms the local avatar by halting stuck animations,
+    /// resetting bone poses to rest, reapplying current shape distortions and joint overrides to the
+    /// skeleton's bone rests, and rebuilding rigged/body skins and attachment offsets.
+    /// </summary>
+    public void ResetSelfSkeleton()
+    {
+        if (_selfEntityId == Guid.Empty || !_visuals.TryGetValue(_selfEntityId, out var visual)) return;
+        if (visual.Skeleton == null || _avatarSkeleton == null) return;
+
+        visual.AnimPlayer.Stop();
+        visual.Skeleton.ResetBonePoses();
+
+        ApplyShape(visual, visual.Skeleton, _avatarSkeleton, visual.LastDistortions, visual.JointPosOverrides);
+        visual.Skeleton.ResetBonePoses();
+
+        RebuildRiggedAttachmentSkins(visual);
+        RefreshBodyPartSkins(visual);
+        RefreshStaticAttachmentOffsets(visual);
+        RecomputeFootOffset(visual, visual.LastDistortions);
+        LogAvatarHeight(visual, "undeform / reset skeleton");
+        GD.Print("[AvatarHealth] Reset skeleton and undeformed self avatar");
+    }
+
+    /// <summary>
+    /// FEAT-ANIM-04: Resynchronizes all currently playing looping animations on the local avatar
+    /// by resetting their playback to InPoint.
+    /// </summary>
+    public void ResyncSelfAnimations()
+    {
+        if (_selfEntityId == Guid.Empty || !_visuals.TryGetValue(_selfEntityId, out var visual)) return;
+        visual.AnimPlayer.Resync();
+        GD.Print("[AvatarHealth] Resynced animations for self avatar");
+    }
+
+    /// <summary>
+    /// FEAT-ANIM-04: Resynchronizes all currently playing looping animations across all visible
+    /// avatars in the region.
+    /// </summary>
+    public void ResyncAllAnimations()
+    {
+        int count = 0;
+        foreach (var visual in _visuals.Values)
+        {
+            visual.AnimPlayer.Resync();
+            count++;
+        }
+        GD.Print($"[AvatarHealth] Resynced animations for {count} avatar(s)");
+    }
+
     public void UpdateVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;

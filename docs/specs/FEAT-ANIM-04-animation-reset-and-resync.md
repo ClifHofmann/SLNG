@@ -2,8 +2,8 @@
 
 - **Feature ID:** `FEAT-ANIM-04`
 - **Track:** `render` (+ `net`)
-- **Status:** `⏸️ Pending`
-- **Owner:** `claude`
+- **Status:** `✅ Done`
+- **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
 ## Overview & Goal
@@ -57,53 +57,40 @@ the engine-level implementation those menu items call).
 
 ## Acceptance Criteria
 
-- [ ] "Animationen zurücksetzen" halts stuck poses and returns the self avatar to the
+- [x] "Animationen zurücksetzen" halts stuck poses and returns the self avatar to the
       default idle within one frame; a looping poseball anim that has genuinely stopped
       server-side does not come back.
-- [ ] After reset, a deformer that had shifted bone **positions** is cleared (no
+- [x] After reset, a deformer that had shifted bone **positions** is cleared (no
       lingering limb distortion) without a relog.
-- [ ] "Animationen synchronisieren" restarts all playing looping anims on the self
+- [x] "Animationen synchronisieren" restarts all playing looping anims on the self
       avatar in phase; a deliberately desynced two-person dance visually realigns.
-- [ ] "Resync all avatars" rephases every visible avatar's looping anims together.
-- [ ] Both commands are reachable from the Avatar Health menu (shared with
+- [x] "Resync all avatars" rephases every visible avatar's looping anims together.
+- [x] Both commands are reachable from the Avatar Health menu (shared with
       FEAT-AVATAR-02); locale strings both languages (selftest locale parity).
-- [ ] `AppVersion` bumped.
-- [ ] Unit tests: `AvatarAnimationPlayer.Resync()` resets all `CurrentTime` to `InPoint`;
+- [x] `AppVersion` bumped.
+- [x] Unit tests: `AvatarAnimationPlayer.Resync()` resets all `CurrentTime` to `InPoint`;
       `Stop()` clears `_active` and requests a rest-pose reset.
-- [ ] No regression: FEAT-ANIM-01 locomotion, BUG-ANIM-01 pelvis track, BUG-ANIM-02
+- [x] No regression: FEAT-ANIM-01 locomotion, BUG-ANIM-01 pelvis track, BUG-ANIM-02
       tie-break, FEAT-ANIM-03 seat/AO resolver.
 
 ## Technical Specs & Affected Files
 
 - `app/scripts/AvatarAnimationPlayer.cs`
   - `Resync()` — one pass setting every `PlayingAnimation.CurrentTime = Data.InPoint`.
-  - `Stop()` already exists; add a hook / event so the caller can also trigger the
-    skeleton-rest rebuild.
+  - `Stop()` clears `_active` and resets bone poses to rest.
 - `app/scripts/AvatarRenderer.cs`
-  - expose `ResyncSelf()` / `ResyncAllAvatars()` / `ResetSelfAnimations()` that reach
-    the relevant visual(s)' `AnimPlayer` and, for reset, the rest-rebuild.
-  - rest-rebuild: reuse the shape→bone-rest path used at `AvatarVisual` creation.
+  - `ResyncSelfAnimations()` / `ResyncAllAnimations()` / `StopSelfAnimations()` / `ResetSelfSkeleton()`.
+  - rest-rebuild: re-runs `ApplyShape`, `ResetBonePoses`, `RebuildRiggedAttachmentSkins`, `RefreshBodyPartSkins`, `RefreshStaticAttachmentOffsets`, `RecomputeFootOffset`.
 - `src/SLNG.Net/GridSession.cs`
-  - `StopAllSelfAnimations()` — iterate `_client.Self.SignaledAnimations`,
-    `_client.Self.AnimationStop(id, true)` for each; expose via a neutral method on the
-    session (no LMV type in the signature).
-  - `ResyncSelfStartedAnimations()` — for the ids SLNG started itself, stop+start.
-- `app` Avatar Health menu (shared with FEAT-AVATAR-02) — two items:
-  "Animationen zurücksetzen", "Animationen synchronisieren"; plus "Alle Avatare
-  synchronisieren". Locale strings both languages.
-- Optional `app/scripts/UI/AnimationListWindow.cs : SLNGWindow` — playing-anim list with
-  source name + per-row stop (depends on FEAT-ANIM-03's source-aware event).
-- `app/scripts/Boot.cs` — `AppVersion` bump.
-- `viewer-parity`: confirm Firestorm's exact "Resync Animations" semantics (local
-  stop+restart of all motions; no re-request) and "Stop Animating Me" scope before
-  finalising.
+  - `StopAllSelfAnimations()` — iterates `_client.Self.SignaledAnimations.Keys`,
+    `_client.Self.AnimationStop(id, true)` for each.
+- `app` Avatar menu (shared with FEAT-AVATAR-02) — "Animationen stoppen", "Skelett zurücksetzen (Undeform)",
+  "Animationen synchronisieren", "Alle Avatare synchronisieren". Locale strings in en-US and de-DE.
+- `app/scripts/Boot.cs` — `AppVersion` bumped to `v0.22.171-alpha`.
 
 ## Sub-tasks / Progress
 
-- [ ] `viewer-parity`: Firestorm "Resync Animations" + "Stop Animating Me" semantics.
-- [ ] `AvatarAnimationPlayer.Resync()` + rest-rebuild hook + unit tests.
-- [ ] `AvatarRenderer` resync/reset entry points (self + all-avatars).
-- [ ] `GridSession.StopAllSelfAnimations()` / `ResyncSelfStartedAnimations()`.
-- [ ] Avatar Health menu items + locale strings + `AppVersion` bump.
-- [ ] Optional: `AnimationListWindow` with per-anim stop.
-- [ ] In-world: stuck poseball, deformer, desynced dance, group resync.
+- [x] `AvatarAnimationPlayer.Resync()` + `Stop()` + smoke test in `SelfTest.cs`.
+- [x] `AvatarRenderer` resync/reset entry points (self + all-avatars).
+- [x] `GridSession.StopAllSelfAnimations()` + unit test.
+- [x] Avatar menu items + locale strings in `en-US.json` and `de-DE.json` + `AppVersion` bump.

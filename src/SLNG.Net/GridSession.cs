@@ -5709,6 +5709,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public bool Stand() => _client.Self.Stand();
     public void StopAnimation(Guid animId) => _client.Self.AnimationStop(new UUID(animId), true);
 
+    /// <summary>
+    /// FEAT-AVATAR-02 / FEAT-ANIM-04: Stops all animations currently playing on the self avatar
+    /// by sending an AnimationStop request to the simulator for each signalled animation.
+    /// </summary>
+    public void StopAllSelfAnimations()
+    {
+        if (!_client.Network.Connected) return;
+
+        var animIds = new List<UUID>(_client.Self.SignaledAnimations.Keys);
+        foreach (var id in animIds)
+        {
+            _client.Self.AnimationStop(id, true);
+        }
+    }
+
     /// <summary>Root folder id of the agent's own inventory, or null until login has completed
     /// (LibreMetaverse builds the store — folders only, no items — from the login response's
     /// inventory skeleton; there is no way to opt out and nothing extra to request).</summary>

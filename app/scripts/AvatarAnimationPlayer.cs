@@ -116,6 +116,19 @@ public sealed class AvatarAnimationPlayer
     }
 
     /// <summary>
+    /// FEAT-ANIM-04: Resynchronizes all active animations by resetting their playback
+    /// time to InPoint in the same frame.
+    /// </summary>
+    public void Resync()
+    {
+        foreach (var anim in _active)
+        {
+            anim.CurrentTime = anim.Data.InPoint;
+        }
+        ApplyBonePoses();
+    }
+
+    /// <summary>
     /// Advance all playing animations by <paramref name="delta"/> seconds and apply
     /// the blended result to the skeleton.
     /// </summary>

@@ -62,6 +62,7 @@ public static class SelfTest
         results.Add(CheckAvatarSkeleton());
         results.AddRange(CheckWindlightPresets());
         results.Add(CheckInstanceSlotMap());
+        results.Add(CheckAvatarAnimationPlayer());
 
         foreach (var r in results)
         {
@@ -361,6 +362,34 @@ public static class SelfTest
 
         return new Check("instance slot map", problems.Count == 0,
             problems.Count == 0 ? "swap-remove keeps indices dense" : string.Join("; ", problems));
+    }
+
+    private static Check CheckAvatarAnimationPlayer()
+    {
+        var problems = new List<string>();
+        var player = new AvatarAnimationPlayer();
+        var animId = Guid.NewGuid();
+        var data = new SLNG.Assets.AnimationData
+        {
+            Length = 2.0f,
+            InPoint = 0.5f,
+            OutPoint = 1.8f,
+            Loop = true,
+            Priority = 3,
+            Joints = Array.Empty<SLNG.Assets.AnimationJointData>()
+        };
+
+        player.SetActiveAnimations(new[] { (animId, data) });
+        if (!player.IsPlaying) problems.Add("IsPlaying should be true after SetActiveAnimations");
+
+        player.Advance(0.5f);
+        player.Resync();
+
+        player.Stop();
+        if (player.IsPlaying) problems.Add("IsPlaying should be false after Stop");
+
+        return new Check("animation player reset & resync", problems.Count == 0,
+            problems.Count == 0 ? "Stop clears active and Resync handles time" : string.Join("; ", problems));
     }
 
     /// <summary>

@@ -29,6 +29,14 @@ namespace SLNG.App.UI
         public Action? OnRebakeAvatar;
         /// <summary>FEAT-AVATAR-03: opens the Hover Height window.</summary>
         public Action? OnOpenHoverHeight;
+        /// <summary>FEAT-AVATAR-02 / FEAT-ANIM-04: halts all active animations on self avatar.</summary>
+        public Action? OnStopAnimations;
+        /// <summary>FEAT-AVATAR-02 / FEAT-ANIM-04: undeforms self avatar and resets bone rest transforms.</summary>
+        public Action? OnResetSkeleton;
+        /// <summary>FEAT-ANIM-04: resynchronizes active looping animations for self avatar.</summary>
+        public Action? OnResyncAnimations;
+        /// <summary>FEAT-ANIM-04: resynchronizes active looping animations for all avatars in region.</summary>
+        public Action? OnResyncAllAnimations;
         public Action? OnCreateTestSkin;
         public Action? OnBakeTestPattern;
 
@@ -129,6 +137,11 @@ namespace SLNG.App.UI
             avatarMenu.AddItem(L10n.Tr("ui.menu.rebake_avatar"), 0);
             avatarMenu.AddItem(L10n.Tr("ui.menu.hover_height"), 3);
             avatarMenu.AddSeparator();
+            avatarMenu.AddItem(L10n.Tr("ui.menu.stop_animations"), 4);
+            avatarMenu.AddItem(L10n.Tr("ui.menu.reset_skeleton"), 5);
+            avatarMenu.AddItem(L10n.Tr("ui.menu.resync_animations"), 6);
+            avatarMenu.AddItem(L10n.Tr("ui.menu.resync_all_animations"), 7);
+            avatarMenu.AddSeparator();
             avatarMenu.AddItem(L10n.Tr("ui.menu.detach_all_huds"), 1);
             avatarMenu.AddItem(L10n.Tr("ui.menu.detach_all_attachments"), 2);
             avatarMenu.IdPressed += (id) => {
@@ -136,6 +149,10 @@ namespace SLNG.App.UI
                 else if (id == 1) OnDetachAttachments?.Invoke(true);
                 else if (id == 2) OnDetachAttachments?.Invoke(false);
                 else if (id == 3) OnOpenHoverHeight?.Invoke();
+                else if (id == 4) OnStopAnimations?.Invoke();
+                else if (id == 5) OnResetSkeleton?.Invoke();
+                else if (id == 6) OnResyncAnimations?.Invoke();
+                else if (id == 7) OnResyncAllAnimations?.Invoke();
             };
             menuBar.AddChild(avatarMenu);
 
