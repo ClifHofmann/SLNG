@@ -22,6 +22,8 @@ public partial class QualityPreferencesPage : VBoxContainer
     private OptionButton _shadowResOption = null!;
     private OptionButton _shadowSplitsOption = null!;
     private CheckButton _smallShadowsToggle = null!;
+    private HSlider _lodSlider = null!;
+    private Label _lodValue = null!;
 
     private bool _refreshing;
 
@@ -191,6 +193,51 @@ public partial class QualityPreferencesPage : VBoxContainer
         _smallShadowsToggle = new CheckButton { ButtonPressed = _settings.SmallObjectShadows };
         _smallShadowsToggle.Toggled += pressed => { if (!_refreshing) { _settings.SetSmallObjectShadows(pressed); _apply(); } };
         AddRow(L10n.Tr("ui.preferences.small_object_shadows"), _smallShadowsToggle);
+
+        AddChild(new HSeparator());
+
+        // --- Object detail (FEAT-PERF-07) -----------------------------------------------------
+        // The real viewer's RenderVolumeLODFactor, under the name every SL viewer gives it.
+        // Belongs next to draw distance conceptually, but sits at the end because unlike the
+        // controls above it, it is the one whose effect appears over the following second rather
+        // than on the next frame -- the cull sweep re-levels the scene at ~4 Hz.
+        AddHeading(L10n.Tr("ui.preferences.object_detail_heading"));
+
+        var lodRow = new HBoxContainer();
+        lodRow.AddThemeConstantOverride("separation", 12);
+        AddChild(lodRow);
+
+        _lodSlider = new HSlider
+        {
+            // The viewer clamps RenderVolumeLODFactor to 0.01..MAX_LOD_FACTOR; 0.5..4.0 is the
+            // range that is actually useful -- below it even close objects drop to lowest_lod,
+            // above it nothing ever leaves high_lod and the setting stops saving anything.
+            MinValue = 0.5,
+            MaxValue = 4.0,
+            Step = 0.125,
+            Value = _settings.VolumeLodFactor,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(200, 0),
+        };
+        lodRow.AddChild(_lodSlider);
+
+        _lodValue = new Label
+        {
+            Text = $"{_settings.VolumeLodFactor:0.###}",
+            CustomMinimumSize = new Vector2(56, 0),
+        };
+        _lodValue.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
+        lodRow.AddChild(_lodValue);
+
+        _lodSlider.ValueChanged += value =>
+        {
+            _lodValue.Text = $"{value:0.###}";
+            if (_refreshing) return;
+            _settings.SetVolumeLodFactor((float)value);
+            _apply();
+        };
+
+        AddHint(L10n.Tr("ui.preferences.object_detail_hint"));
     }
 
     public override void _Process(double delta)
@@ -232,6 +279,9 @@ public partial class QualityPreferencesPage : VBoxContainer
 
             _shadowSplitsOption.Select(_settings.ShadowSplits switch { 0 => 0, 1 => 1, _ => 2 });
             _smallShadowsToggle.ButtonPressed = _settings.SmallObjectShadows;
+
+            _lodSlider.Value = _settings.VolumeLodFactor;
+            _lodValue.Text = $"{_settings.VolumeLodFactor:0.###}";
         }
         finally
         {

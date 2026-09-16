@@ -73,6 +73,13 @@ public partial class ObjectRenderer : Node3D
         // of the level being picked once at first load and never revisited.
         public MeshDetailLevel? LoadedPrimDetailLevel;
 
+        // FEAT-PERF-07: the same thing for an UPLOADED mesh asset -- which of the four baked LOD
+        // blocks this object currently draws. Kept separate from LoadedPrimDetailLevel because
+        // the two are never both live (an object is either a mesh or a procedural prim) and the
+        // levels mean different things: one selects a pre-baked block, the other a tessellation
+        // density. Null = nothing uploaded-mesh-shaped is loaded.
+        public MeshDetailLevel? LoadedMeshDetailLevel;
+
         // BUG-RENDER-32: surfaces currently swapped to the planar-mirror shader, with the shader
         // each one had before. Null when this object is not the chosen mirror.
         public List<(int Surface, Shader Original)>? MirrorSurfaces;
@@ -296,6 +303,12 @@ public partial class ObjectRenderer : Node3D
 
     // Same idea for sculpts: one GpuCache key per (sculpt map, sculpt type) pair. See KeyForSculpt.
     private readonly Dictionary<(Guid SculptId, byte SculptType), Guid> _sculptKeys = new();
+
+    // FEAT-PERF-07: and for uploaded mesh assets, one key per (asset, LOD). Before mesh LOD the
+    // asset id WAS the key, which is exactly the trap KeyForShape documents at length: the cache
+    // is trusted over the MeshData AssignSharedMesh was just handed, so a shared key would serve
+    // whichever level happened to load first to every instance of that asset forever.
+    private readonly Dictionary<(Guid MeshId, MeshDetailLevel Lod), Guid> _meshLodKeys = new();
 
     // Per shared-mesh key: the SL face number of each surface, so any instance can apply that
     // face's texture via SetSurfaceOverrideMaterial.
@@ -847,6 +860,34 @@ public partial class ObjectRenderer : Node3D
                     }
                 }
 
+                // FEAT-PERF-07: the same re-evaluation for an UPLOADED mesh asset, which is where
+                // the geometry actually is -- measured on one session's 3643 cached meshes,
+                // high_lod holds 28.2M triangles against medium_lod's 6.9M and low_lod's 0.8M.
+                //
+                // Rides this sweep rather than UpdateVisual for the reason the whole sweep exists:
+                // UpdateVisual fires on ObjectUpdate (i.e. when the OBJECT moves), and an object
+                // standing still while the CAMERA walks away from it would otherwise keep the
+                // level it was first loaded at forever -- which, for anything rezzed while the
+                // agent position was still unknown, is Highest.
+                //
+                // Instanced members are skipped for the same reason the prim branch skips them:
+                // FEAT-PERF-06 draws the whole group from one shared mesh, so swapping one
+                // member's LOD would fight its MultiMeshInstance3D rather than save anything.
+                if (state.MeshInstance.Visible && !state.ResourcesReleased
+                    && state.LoadedMeshDetailLevel.HasValue && state.LoadedMeshId != Guid.Empty
+                    && _assetService != null
+                    && (_instanceGroups == null || !_instanceGroups.IsInstanced(id)))
+                {
+                    var wantMeshLod = MeshDetailLevelWithHysteresis(
+                        Mathf.Sqrt(viewDSq), state.MeshInstance.Scale, state.LoadedMeshDetailLevel.Value);
+                    if (state.LoadedMeshDetailLevel.Value != wantMeshLod)
+                    {
+                        var meshId = state.LoadedMeshId;
+                        state.LoadedMeshDetailLevel = wantMeshLod;
+                        _ = LoadAndApplyMeshAsync(state, meshId, wantMeshLod);
+                    }
+                }
+
                 // FEAT-PERF-06: rides the same spread sweep -- offer this prim to an instancing
                 // group, or pull it out. Cheap for the common case (already tracked -> one
                 // HashSet lookup and return).
@@ -903,6 +944,7 @@ public partial class ObjectRenderer : Node3D
         state.LoadedMeshId = Guid.Empty;
         state.LoadedPrimShape = null;
         state.LoadedPrimDetailLevel = null;
+        state.LoadedMeshDetailLevel = null;
         state.LoadedTextureId = VisualState.NotLoaded;
         state.LoadedMaterialId = VisualState.NotLoaded;
         state.LoadedColorTint = new System.Numerics.Vector4(float.NaN, float.NaN, float.NaN, float.NaN);
@@ -2139,7 +2181,9 @@ public partial class ObjectRenderer : Node3D
                         state.LoadedMeshId = prim.MeshId;
                         state.LoadedPrimShape = null;
                         state.LoadedPrimDetailLevel = null;
-                        _ = LoadAndApplyMeshAsync(state, prim.MeshId);
+                        var meshLod = PickMeshDetailLevel(entity, prim.Scale);
+                        state.LoadedMeshDetailLevel = meshLod;
+                        _ = LoadAndApplyMeshAsync(state, prim.MeshId, meshLod);
                     }
                 }
                 else if (prim.IsSculpt && _assetService != null && prim.SculptId != Guid.Empty)
@@ -2151,6 +2195,7 @@ public partial class ObjectRenderer : Node3D
                         state.LoadedSculptType = prim.SculptType;
                         state.LoadedPrimShape = null;
                         state.LoadedPrimDetailLevel = null;
+                        state.LoadedMeshDetailLevel = null;
                         _ = LoadAndApplySculptMeshAsync(state, prim.SculptId, prim.SculptType, prim.ProfileCurve);
                     }
                 }
@@ -2161,6 +2206,7 @@ public partial class ObjectRenderer : Node3D
                     // changes. Falls back to a primitive solid if meshing fails.
                     state.LoadedPrimShape = prim.Shape;
                     state.LoadedMeshId = Guid.Empty;
+                    state.LoadedMeshDetailLevel = null;
                     var lod = PickPrimDetailLevel(entity, prim.Scale);
                     state.LoadedPrimDetailLevel = lod;
                     _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve, lod);
@@ -2295,11 +2341,11 @@ public partial class ObjectRenderer : Node3D
         }
     }
 
-    private async System.Threading.Tasks.Task LoadAndApplyMeshAsync(VisualState state, Guid meshId)
+    private async System.Threading.Tasks.Task LoadAndApplyMeshAsync(VisualState state, Guid meshId, MeshDetailLevel lod)
     {
         if (_assetService == null) return;
 
-        var mesh = await _assetService.GetMeshAsync(meshId);
+        var mesh = await _assetService.GetMeshAsync(meshId, lod);
         if (mesh == null || mesh.Submeshes.Count == 0)
         {
             // A mesh object whose asset never arrives is drawn as NOTHING at all (the node keeps
@@ -2316,8 +2362,12 @@ public partial class ObjectRenderer : Node3D
         {
             if (!IsInstanceValid(state.MeshInstance)) return;
             if (state.LoadedMeshId != meshId) return; // shape/asset changed while loading
+            // FEAT-PERF-07: and drop a result for a level nobody wants any more -- the cull sweep
+            // may have re-evaluated while this was in flight. Same staleness guard
+            // LoadAndApplyPrimMeshAsync uses for BUG-RENDER-19.
+            if (state.LoadedMeshDetailLevel != lod) return;
 
-            AssignSharedMesh(state, meshId, mesh, flipV: true);
+            AssignSharedMesh(state, KeyForMesh(meshId, lod), mesh, flipV: true);
         }, label: "mesh.apply");
     }
 
@@ -2432,6 +2482,54 @@ public partial class ObjectRenderer : Node3D
         if (apparentSize > 0.1f) return MeshDetailLevel.High;
         if (apparentSize > 0.03f) return MeshDetailLevel.Medium;
         return MeshDetailLevel.Low;
+    }
+
+    /// <summary>FEAT-PERF-07: which of an uploaded mesh asset's four baked LOD blocks to draw.
+    /// The arithmetic is the reference viewer's own and lives in <see cref="SLNG.Core.VolumeLod"/>
+    /// -- engine-agnostic, and therefore unit-testable, which a viewer-parity formula has to be.
+    /// Only the scale's LENGTH is used, so it does not matter whether the caller passes SL axes or
+    /// the node's Y/Z-swapped Godot ones.</summary>
+    private static MeshDetailLevel MeshDetailLevelForViewerLod(float distance, Godot.Vector3 scale)
+        => VolumeLod.ForDistance(distance, scale.Length(), RenderConfig.VolumeLodFactor);
+
+    /// <summary>FEAT-PERF-07: as above, but refusing to move while the object is still inside the
+    /// dead band around its threshold -- see <see cref="SLNG.Core.VolumeLod.Hysteresis"/> for why
+    /// SLNG needs one where the reference viewer does not.</summary>
+    private static MeshDetailLevel MeshDetailLevelWithHysteresis(
+        float distance, Godot.Vector3 scale, MeshDetailLevel current)
+        => VolumeLod.ForDistanceWithHysteresis(
+            distance, scale.Length(), RenderConfig.VolumeLodFactor, current);
+
+    /// <summary>FEAT-PERF-07: the first-load pick, from the object's own world position. Mirrors
+    /// <see cref="PickPrimDetailLevel"/>'s shape: falls back to <see cref="MeshDetailLevel.Highest"/>
+    /// whenever the viewpoint is not known yet (during login the agent position is not placed), so
+    /// an object seen before the camera exists is never under-detailed -- the cull sweep drops it
+    /// a moment later if it turns out to be far away.</summary>
+    private MeshDetailLevel PickMeshDetailLevel(Entity entity, System.Numerics.Vector3 scale)
+    {
+        if (_world == null || !RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos))
+            return MeshDetailLevel.Highest;
+
+        var transform = entity.GetComponent<TransformComponent>();
+        if (transform == null) return MeshDetailLevel.Highest;
+
+        var objectPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
+        float distance = objectPos.DistanceTo(ViewpointFor(agentPos, objectPos));
+        return MeshDetailLevelForViewerLod(distance, new Godot.Vector3(scale.X, scale.Y, scale.Z));
+    }
+
+    /// <summary>The point mesh LOD measures from: the camera when there is one, otherwise the
+    /// avatar. The cull sweep already reasons about "nearer of avatar and camera" (BUG-NET-01)
+    /// because the two separate in mouselook and while cam-ing around; LOD has to agree with it,
+    /// or an object would load one level and be re-evaluated to another on the very next
+    /// sweep tick, re-meshing forever.</summary>
+    private Godot.Vector3 ViewpointFor(Godot.Vector3 agentPos, Godot.Vector3 objectPos)
+    {
+        var camera = GetViewport()?.GetCamera3D();
+        if (camera == null || !IsInstanceValid(camera)) return agentPos;
+        return objectPos.DistanceSquaredTo(camera.GlobalPosition) < objectPos.DistanceSquaredTo(agentPos)
+            ? camera.GlobalPosition
+            : agentPos;
     }
 
     private async System.Threading.Tasks.Task LoadAndApplyPrimMeshAsync(VisualState state, PrimShape shape, byte profileCurve, MeshDetailLevel lod)
@@ -3563,6 +3661,21 @@ public partial class ObjectRenderer : Node3D
         {
             key = Guid.NewGuid();
             _primShapeKeys[key2] = key;
+        }
+        return key;
+    }
+
+    /// <summary>FEAT-PERF-07: a stable GpuCache key per (mesh asset, LOD) pair. Same requirement
+    /// as <see cref="KeyForShape"/> and <see cref="KeyForSculpt"/> -- one asset now produces four
+    /// genuinely different geometries, and <see cref="AssignSharedMesh"/> returns the cached
+    /// ArrayMesh without ever looking at the <see cref="MeshData"/> it was handed.</summary>
+    private Guid KeyForMesh(Guid meshId, MeshDetailLevel lod)
+    {
+        var key2 = (meshId, lod);
+        if (!_meshLodKeys.TryGetValue(key2, out var key))
+        {
+            key = Guid.NewGuid();
+            _meshLodKeys[key2] = key;
         }
         return key;
     }

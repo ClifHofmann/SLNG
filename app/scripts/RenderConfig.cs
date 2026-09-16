@@ -18,6 +18,21 @@ public static class RenderConfig
     public static float DrawDistance = 96f;
 
     /// <summary>
+    /// FEAT-PERF-07: the real viewer's <c>RenderVolumeLODFactor</c> ("Object Detail"), the single
+    /// knob its LOD arithmetic exposes. Higher keeps objects at a higher level of detail further
+    /// away; lower drops them sooner. Feeds <see cref="SLNG.Core.VolumeLod.ForDistance"/>, the
+    /// port of <c>LLVOVolume::calcLOD</c> -- the factor is used THREE times in there (the tangent
+    /// numerator, the near ramp distance, and <c>sDistanceFactor = 1 - factor*0.1</c>), which is
+    /// why it is one number rather than a set of distances.
+    ///
+    /// <para>1.0 is Second Life's own shipped default (<c>app_settings/settings.xml</c>).
+    /// Firestorm ships higher and its users routinely raise it further, which is the usual reason
+    /// content "looks blockier in SLNG" — compare the two viewers' sliders before chasing a
+    /// rendering bug. Clamped to the viewer's own 0.01..MAX range by the settings UI.</para>
+    /// </summary>
+    public static float VolumeLodFactor = SLNG.Core.VolumeLod.DefaultLodFactor;
+
+    /// <summary>
     /// If false, objects with a bounding radius smaller than 0.5m will not cast shadows.
     /// This drastically reduces draw calls on dense regions with lots of small details (grass, rocks).
     /// </summary>

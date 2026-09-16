@@ -87,6 +87,13 @@ public sealed class GraphicsSettings
     public float ShadowOpacity { get; private set; } = 0.90f;
     public int ShadowSplits { get; private set; } = 2;
     public bool SmallObjectShadows { get; private set; } = false;
+
+    /// <summary>FEAT-PERF-07: the viewer's <c>RenderVolumeLODFactor</c> ("Object Detail"), which
+    /// decides which of an uploaded mesh's four baked LOD blocks each object draws. See
+    /// <see cref="RenderConfig.VolumeLodFactor"/> for the arithmetic it feeds. 1.0 is Second
+    /// Life's own default; the slider's range matches the viewer's own clamp.</summary>
+    public float VolumeLodFactor { get; private set; } = RenderConfig.VolumeLodFactor;
+
     public void Load()
     {
         var cfg = new ConfigFile();
@@ -110,6 +117,7 @@ public sealed class GraphicsSettings
         ShadowOpacity = (float)cfg.GetValue(Section, "shadow_opacity", ShadowOpacity);
         ShadowSplits = (int)cfg.GetValue(Section, "shadow_splits", ShadowSplits);
         SmallObjectShadows = (bool)cfg.GetValue(Section, "small_object_shadows", SmallObjectShadows);
+        VolumeLodFactor = (float)cfg.GetValue(Section, "volume_lod_factor", VolumeLodFactor);
     }
 
     private void Save()
@@ -134,6 +142,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "shadow_opacity", ShadowOpacity);
         cfg.SetValue(Section, "shadow_splits", ShadowSplits);
         cfg.SetValue(Section, "small_object_shadows", SmallObjectShadows);
+        cfg.SetValue(Section, "volume_lod_factor", VolumeLodFactor);
         cfg.Save(ConfigPath);
     }
 
@@ -155,6 +164,7 @@ public sealed class GraphicsSettings
     public void SetShadowOpacity(float opacity) { ShadowOpacity = opacity; Save(); }
     public void SetShadowSplits(int splits) { ShadowSplits = splits; Save(); }
     public void SetSmallObjectShadows(bool on) { SmallObjectShadows = on; Save(); }
+    public void SetVolumeLodFactor(float factor) { VolumeLodFactor = factor; Save(); }
 
     /// <summary>
     /// Pushes the current values into the engine. Safe to call repeatedly and with nulls -- during
@@ -173,6 +183,11 @@ public sealed class GraphicsSettings
 
         RenderConfig.DrawDistance = DrawDistance;
         RenderConfig.SmallObjectShadows = SmallObjectShadows;
+        // FEAT-PERF-07: takes effect gradually rather than at once, and that is deliberate -- the
+        // cull sweep re-evaluates every object's mesh LOD about four times a second, so moving
+        // this slider re-levels the scene over the next second instead of re-meshing thousands of
+        // objects inside one frame.
+        RenderConfig.VolumeLodFactor = VolumeLodFactor;
 
         if (viewport != null) viewport.Msaa3D = (Viewport.Msaa)Msaa;
 

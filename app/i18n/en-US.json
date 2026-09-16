@@ -294,6 +294,8 @@
       "shadow_splits_2": "2 Cascades",
       "shadow_splits_4": "4 Cascades",
       "small_object_shadows": "Shadows on Small Objects",
+      "object_detail_heading": "Object detail:",
+      "object_detail_hint": "How finely mesh objects are drawn. This is RenderVolumeLODFactor from the official viewer — 1.0 is its default. Higher keeps distant objects detailed and costs performance, lower saves triangles. Takes effect over the next second, not instantly.",
       "theme_heading": "Interface Theme",
       "post_fx": "Post-processing",
       "post_fx_ssao": "Ambient Occlusion (SSAO)",

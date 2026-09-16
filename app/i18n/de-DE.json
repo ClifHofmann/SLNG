@@ -294,6 +294,8 @@
       "shadow_splits_2": "2 Kaskaden",
       "shadow_splits_4": "4 Kaskaden",
       "small_object_shadows": "Schatten für kleine Objekte",
+      "object_detail_heading": "Objektdetails:",
+      "object_detail_hint": "Wie fein Mesh-Objekte gezeichnet werden. Entspricht RenderVolumeLODFactor im offiziellen Viewer — 1,0 ist dessen Standard. Höher hält weit entfernte Objekte detailliert und kostet Leistung, niedriger spart Dreiecke. Wirkt über die nächste Sekunde, nicht sofort.",
       "theme_heading": "Oberflächen-Design",
       "post_fx": "Nachbearbeitung",
       "post_fx_ssao": "Umgebungsverdeckung (SSAO)",

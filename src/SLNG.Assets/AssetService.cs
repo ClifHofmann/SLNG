@@ -40,7 +40,12 @@ public class AssetService
     // LibreMetaverse's own texture logger). A restart clears it.
     private readonly ConcurrentDictionary<Guid, byte> _goneTextures = new();
 
-    private readonly ConcurrentDictionary<Guid, Task<MeshData?>> _inflightMeshes = new();
+    // FEAT-PERF-07: keyed by (mesh id, LOD), for the same reason _inflightSculptMeshes is keyed by
+    // the sculpt type byte -- an SL mesh asset carries four independently-baked geometry blocks,
+    // and two objects sharing one asset at different distances legitimately want different ones.
+    // Keying by id alone would make the second request join the first's task and silently receive
+    // the wrong level.
+    private readonly ConcurrentDictionary<(Guid Id, MeshDetailLevel Lod), Task<MeshData?>> _inflightMeshes = new();
     // Lazy<Task<T>>, not a bare Task<T> -- see GetTextureAsync's comment for why this specific
     // dictionary needs a real single-execution guarantee under a concurrent first-touch race.
     private readonly ConcurrentDictionary<Guid, Lazy<Task<TextureData?>>> _inflightTextures = new();
@@ -292,32 +297,50 @@ public class AssetService
         return total > 0 ? total : 1;
     }
 
-    public Task<MeshData?> GetMeshAsync(Guid meshId)
+    /// <summary>
+    /// Fetches and decodes an uploaded LLMesh asset at the requested level of detail.
+    ///
+    /// <para>FEAT-PERF-07: an SL mesh asset ships FOUR independently-baked geometry blocks
+    /// (<c>high_lod</c> / <c>medium_lod</c> / <c>low_lod</c> / <c>lowest_lod</c>) and
+    /// <paramref name="lod"/> picks between them. This used to be hardcoded to
+    /// <see cref="MeshDetailLevel.Highest"/>, so every mesh in the world was loaded at maximum
+    /// detail whatever its size or distance. Measured across the 3643 assets one real session
+    /// cached, the four blocks hold 28.2M / 6.9M / 0.82M / 0.038M triangles -- i.e. the level
+    /// chosen here is worth up to two orders of magnitude of geometry, both on the GPU and in
+    /// the renderer's own main-thread <c>BuildArrayMesh</c> cost.</para>
+    ///
+    /// <para>The disk cache stores the WHOLE asset (all four blocks), so a second level of an
+    /// already-cached mesh costs a decode and no network at all.</para>
+    /// </summary>
+    public Task<MeshData?> GetMeshAsync(Guid meshId, MeshDetailLevel lod = MeshDetailLevel.Highest)
     {
-        if (_memCache.TryGetValue(meshId, out MeshData? cached))
+        // Composite cache key. The old key was the bare Guid, which cannot survive per-LOD
+        // decoding: the first level to load would answer every later request for any other.
+        object cacheKey = $"mesh:{meshId}:{lod}";
+        if (_memCache.TryGetValue(cacheKey, out MeshData? cached))
         {
             return Task.FromResult(cached);
         }
-        return _inflightMeshes.GetOrAdd(meshId, async id =>
+        return _inflightMeshes.GetOrAdd((meshId, lod), async k =>
         {
             try
             {
-                var result = await FetchAndDecodeMeshAsync(id).ConfigureAwait(false);
+                var result = await FetchAndDecodeMeshAsync(k.Id, k.Lod).ConfigureAwait(false);
                 if (result != null)
                 {
                     long size = 1024 * 10; // rough 10KB estimate per mesh
-                    _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
+                    _memCache.Set(cacheKey, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
                 }
                 return result;
             }
             finally
             {
-                _inflightMeshes.TryRemove(id, out _);
+                _inflightMeshes.TryRemove(k, out _);
             }
         });
     }
 
-    private async Task<MeshData?> FetchAndDecodeMeshAsync(Guid meshId)
+    private async Task<MeshData?> FetchAndDecodeMeshAsync(Guid meshId, MeshDetailLevel lod)
     {
         string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, meshId.ToString() + ".mesh");
 
@@ -327,7 +350,7 @@ public class AssetService
             try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
             if (cached != null && cached.Length > 0)
             {
-                var decodedFromCache = await Task.Run(() => Decode(meshId, cached)).ConfigureAwait(false);
+                var decodedFromCache = await Task.Run(() => Decode(meshId, cached, lod)).ConfigureAwait(false);
                 if (decodedFromCache != null) return decodedFromCache;
                 // Cached bytes don't decode -- most likely a previously-truncated fetch (see
                 // below) that got written to disk before this retry logic existed, or the cache
@@ -370,7 +393,7 @@ public class AssetService
                 MeshData? result = null;
                 try
                 {
-                    result = await Task.Run(() => Decode(meshId, bytes)).ConfigureAwait(false);
+                    result = await Task.Run(() => Decode(meshId, bytes, lod)).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -393,12 +416,50 @@ public class AssetService
         return null;
     }
 
-    private static MeshData? Decode(Guid meshId, byte[] bytes)
+    /// <summary>The LLSD key each detail level reads its geometry from. The names are offset by
+    /// one from the enum's own spelling -- LibreMetaverse's <c>DetailLevel.High</c> is the asset's
+    /// <c>medium_lod</c>, not its <c>high_lod</c> -- which is exactly the kind of near-miss that
+    /// silently decodes the wrong block. Matches LibreMetaverse's own mapping
+    /// (<c>MeshFoundry.LodKey</c>, and the switch in <c>FacetedMesh.TryDecodeFromAsset</c>).</summary>
+    internal static string LodKeyFor(MeshDetailLevel lod) => lod switch
+    {
+        MeshDetailLevel.Low => "lowest_lod",
+        MeshDetailLevel.Medium => "low_lod",
+        MeshDetailLevel.High => "medium_lod",
+        _ => "high_lod",
+    };
+
+    /// <summary>
+    /// FEAT-PERF-07: decodes <paramref name="lod"/>, falling back UPWARD toward
+    /// <see cref="MeshDetailLevel.Highest"/> when that level has nothing to draw.
+    ///
+    /// <para>Not every mesh ships all four blocks with geometry in them. A creator can upload a
+    /// single LOD, and a block that exists can still be entirely <c>NoGeometry</c> submeshes --
+    /// both cases reach this method as "decoded fine, zero submeshes". Falling back upward rather
+    /// than giving up matters because the alternative is an object drawn as NOTHING: the one
+    /// failure mode <c>[MeshFallback]</c> exists to make visible, now reachable from a routine
+    /// distance change rather than only from a dead asset.</para>
+    ///
+    /// <para>Deliberately never falls DOWNWARD. A lower level than asked for would silently
+    /// under-detail an object the camera is standing next to, and unlike the upward direction
+    /// that is a visual regression rather than a saving.</para>
+    /// </summary>
+    private static MeshData? Decode(Guid meshId, byte[] bytes, MeshDetailLevel lod)
     {
         var asset = new AssetMesh(new UUID(meshId), bytes);
+        for (var level = lod; ; level++)
+        {
+            var decoded = DecodeAt(asset, level);
+            if (decoded != null) return decoded;
+            if (level == MeshDetailLevel.Highest) return null;
+        }
+    }
+
+    private static MeshData? DecodeAt(AssetMesh asset, MeshDetailLevel lod)
+    {
         var prim = new Primitive { Scale = Vector3.One };
         prim.Textures = new Primitive.TextureEntry(UUID.Zero); // Prevent nullref in TryDecodeFromAsset
-        if (!FacetedMesh.TryDecodeFromAsset(prim, asset, DetailLevel.Highest, out var faceted) || faceted is null)
+        if (!FacetedMesh.TryDecodeFromAsset(prim, asset, ToLibreMetaverseDetailLevel(lod), out var faceted) || faceted is null)
         {
             return null;
         }
@@ -409,7 +470,13 @@ public class AssetService
         // weights in that submesh. Re-decode each face's weights from the raw submesh binary
         // with the viewer's exact reader semantics (see MeshSkinWeightDecoder). Faces are
         // matched by Face.ID, which is the original index into the LOD's submesh array.
-        var lodArray = asset.MeshData["high_lod"] as LibreMetaverse.StructuredData.OSDArray;
+        //
+        // FEAT-PERF-07: the block this reads MUST be the one that was just decoded. It was
+        // hardcoded to "high_lod" while the decode was too; now that the level varies, reading
+        // high_lod here against a medium_lod decode would hand every vertex of a lower LOD the
+        // weights of a differently-sized vertex array -- a rigged mesh shredded into spikes,
+        // with no error anywhere.
+        var lodArray = asset.MeshData[LodKeyFor(lod)] as LibreMetaverse.StructuredData.OSDArray;
 
         var submeshes = new List<MeshSubmesh>(faceted.Faces.Count);
 
