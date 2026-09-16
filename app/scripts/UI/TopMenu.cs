@@ -48,11 +48,21 @@ namespace SLNG.App.UI
         public Action<int>? OnStepFrameRequested;
         public Action? OnCreateTestSkin;
         public Action? OnBakeTestPattern;
+        public Action? OnToggleAlwaysRun;
 
+        private PopupMenu? _avatarMenu;
         private PopupMenu? _holdPoseMenu;
         private PopupMenu? _freezeMenu;
         private bool _freezeSelfChecked;
         private bool _freezeAllChecked;
+
+        /// <summary>Updates the checked state of the Always Run menu item.</summary>
+        public void SetAlwaysRunUI(bool run)
+        {
+            if (_avatarMenu == null) return;
+            int idx = _avatarMenu.GetItemIndex(10);
+            if (idx >= 0) _avatarMenu.SetItemChecked(idx, run);
+        }
 
         /// <summary>Updates the checked state of the Hold Pose submenu items.</summary>
         public void SetHoldModeUI(AvatarHoldMode mode)
@@ -167,9 +177,12 @@ namespace SLNG.App.UI
             // Rebake and Detach-All moved here from World, where they used to be the only avatar-
             // related entries scattered among unrelated World actions.
             var avatarMenu = new PopupMenu();
+            _avatarMenu = avatarMenu;
             avatarMenu.Name = L10n.Tr("ui.menu.avatar");
             avatarMenu.AddItem(L10n.Tr("ui.menu.rebake_avatar"), 0);
             avatarMenu.AddItem(L10n.Tr("ui.menu.hover_height"), 3);
+            avatarMenu.AddSeparator();
+            avatarMenu.AddCheckItem(L10n.Tr("ui.menu.always_run"), 10);
             avatarMenu.AddSeparator();
             avatarMenu.AddItem(L10n.Tr("ui.menu.stop_animations"), 4);
             avatarMenu.AddItem(L10n.Tr("ui.menu.reset_skeleton"), 5);
@@ -238,6 +251,7 @@ namespace SLNG.App.UI
                 else if (id == 5) OnResetSkeleton?.Invoke();
                 else if (id == 6) OnResyncAnimations?.Invoke();
                 else if (id == 7) OnResyncAllAnimations?.Invoke();
+                else if (id == 10) OnToggleAlwaysRun?.Invoke();
             };
             menuBar.AddChild(avatarMenu);
 

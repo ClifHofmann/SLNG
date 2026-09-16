@@ -11,6 +11,7 @@ namespace SLNG.App.UI;
 public partial class AnimationPreferencesPage : VBoxContainer
 {
     private AnimationSettings _settings = null!;
+    private CheckBox _alwaysRunCheck = null!;
 
     /// <summary>Raised when the user changes the seat-pose preference, so Boot can push it onto the
     /// renderer without this page knowing the renderer exists.</summary>
@@ -26,6 +27,43 @@ public partial class AnimationPreferencesPage : VBoxContainer
     {
         _settings = settings;
 
+        // Section: Movement / Locomotion
+        var moveHeading = new Label { Text = L10n.Tr("ui.preferences.locomotion_heading") };
+        moveHeading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
+        AddChild(moveHeading);
+
+        _alwaysRunCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.always_run"),
+            ButtonPressed = _settings.AlwaysRun,
+        };
+        _alwaysRunCheck.Toggled += on =>
+        {
+            _settings.SetAlwaysRun(on);
+        };
+        _settings.AlwaysRunChanged += on =>
+        {
+            if (_alwaysRunCheck != null && _alwaysRunCheck.ButtonPressed != on)
+            {
+                _alwaysRunCheck.SetPressedNoSignal(on);
+            }
+        };
+        AddChild(_alwaysRunCheck);
+
+        var moveHint = new Label
+        {
+            Text = L10n.Tr("ui.preferences.always_run_hint"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+        };
+        moveHint.AddThemeFontSizeOverride("font_size", 11);
+        moveHint.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        AddChild(moveHint);
+
+        var separator = new HSeparator();
+        separator.AddThemeConstantOverride("separation", 16);
+        AddChild(separator);
+
+        // Section: Sitting / Furniture
         var heading = new Label { Text = L10n.Tr("ui.preferences.animation_seating_heading") };
         heading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
         AddChild(heading);

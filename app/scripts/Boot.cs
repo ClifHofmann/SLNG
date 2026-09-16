@@ -257,6 +257,7 @@ public partial class Boot : Control
     private SLNG.App.UI.AvatarHoverSettings _avatarHoverSettings = new();
     private readonly SLNG.App.UI.AnimationSettings _animationSettings = new();
     private SLNG.App.UI.AvatarHoverWindow _avatarHoverWindow = null!;
+    private SLNG.App.UI.ToastOverlay _toastOverlay = null!;
 
     // M5-3 Tabbed Chat window
     private SLNG.App.UI.ChatWindow _chatWindow = null!;
@@ -298,7 +299,12 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.177-alpha";
+    public const string AppVersion = "v0.22.178-alpha";
+
+    public void ShowToast(string message, float duration = 2.0f)
+    {
+        _toastOverlay?.ShowToast(message, duration);
+    }
 
     // Reads res://i18n/*.json via Godot's DirAccess/FileAccess instead of System.IO +
     // ProjectSettings.GlobalizePath -- the latter only resolves to a real on-disk directory
@@ -646,6 +652,11 @@ public partial class Boot : Control
             GD.Print($"[Detach] {msg}");
             _chatWindow?.AppendLocalChatMessage("System", msg);
         };
+
+        _topMenu.OnToggleAlwaysRun = () =>
+        {
+            _animationSettings.SetAlwaysRun(!_animationSettings.AlwaysRun);
+        };
     }
 
     private void SetupHud()
@@ -682,6 +693,9 @@ public partial class Boot : Control
 
         var hudLayer = new CanvasLayer { Name = "HudLayer", Layer = 10, Visible = false };
         AddChild(hudLayer);
+
+        _toastOverlay = new SLNG.App.UI.ToastOverlay();
+        AddChild(_toastOverlay);
 
         var cameraHud = new SLNG.App.UI.CameraHUD();
         cameraHud.Name = "CameraHUD";
@@ -1011,6 +1025,15 @@ public partial class Boot : Control
         animationPage.SeatPoseOverridesAoChanged += on =>
         {
             if (_avatarRenderer != null) _avatarRenderer.SeatPoseOverridesAo = on;
+        };
+        _animationSettings.AlwaysRunChanged += on =>
+        {
+            if (_avatarController != null && _avatarController.AlwaysRun != on)
+            {
+                _avatarController.SetAlwaysRun(on);
+            }
+            _topMenu.SetAlwaysRunUI(on);
+            ShowToast(on ? SLNG.App.UI.L10n.Tr("ui.hint.always_run_on") : SLNG.App.UI.L10n.Tr("ui.hint.always_run_off"));
         };
 
         _qualityPage = new SLNG.App.UI.QualityPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_quality") };
@@ -2845,6 +2868,12 @@ public partial class Boot : Control
                 _avatarController.Initialize(_world, _session, _avatarRenderer);
             if (_cameraSettings != null)
                 _avatarController.SetCameraSettings(_cameraSettings); // FEAT-UI-12: persisted FOV / distance / focus height
+            _avatarController.SetAlwaysRun(_animationSettings.AlwaysRun);
+            _avatarController.AlwaysRunToggled += run =>
+            {
+                _animationSettings.SetAlwaysRun(run);
+            };
+            _topMenu.SetAlwaysRunUI(_animationSettings.AlwaysRun);
 
             _objectSelectionController = new ObjectSelectionController();
             AddChild(_objectSelectionController);

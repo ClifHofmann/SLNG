@@ -61,6 +61,16 @@ public partial class AvatarController : Camera3D
     private bool _alwaysRun;
     private bool _isRunning;
 
+    public bool AlwaysRun => _alwaysRun;
+    public event System.Action<bool>? AlwaysRunToggled;
+
+    public void SetAlwaysRun(bool run)
+    {
+        if (_alwaysRun == run) return;
+        _alwaysRun = run;
+        AlwaysRunToggled?.Invoke(_alwaysRun);
+    }
+
     /// <summary>Wire the persisted camera view settings. FOV and the resting third-person distance
     /// apply at once; <see cref="_Process"/> then re-applies each whenever the setting itself
     /// changes (so the Preferences sliders are live), and <see cref="ResetCamera"/> uses the
@@ -595,9 +605,9 @@ public partial class AvatarController : Camera3D
                 // back on Esc doesn't work cleanly, should jump to rear view."
                 ResetCamera();
             }
-            else if (keyEvt.Keycode == Key.R && keyEvt.CtrlPressed)
+            else if (keyEvt.Keycode == Key.R && keyEvt.CtrlPressed && !keyEvt.AltPressed)
             {
-                _alwaysRun = !_alwaysRun;
+                SetAlwaysRun(!_alwaysRun);
                 if (Diagnostics.Enabled) GD.Print($"[AvatarController] AlwaysRun: {(_alwaysRun ? "ON" : "off")}");
             }
         }

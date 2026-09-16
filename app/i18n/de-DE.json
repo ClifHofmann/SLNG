@@ -45,6 +45,7 @@
       "minimap": "Minikarte",
       "rebake_avatar": "Avatar neu backen (Strg+Alt+R)",
       "avatar": "Avatar",
+      "always_run": "Immer rennen (Strg+R)",
       "hover_height": "Schwebehöhe...",
       "stop_animations": "Animationen stoppen",
       "reset_skeleton": "Skelett zurücksetzen (Undeform)",
@@ -341,6 +342,9 @@
       "maturity_set_to": "Inhaltseinstufung auf {0} gesetzt.",
       "maturity_set_failed": "Inhaltseinstufung konnte nicht geändert werden: {0}",
       "tab_animation": "Animation",
+      "locomotion_heading": "Bewegung",
+      "always_run": "Immer rennen (Strg+R)",
+      "always_run_hint": "Lässt den Avatar beim Vorwärtsbewegen immer rennen statt gehen.",
       "animation_seating_heading": "Sitzen",
       "seat_pose_overrides_ao": "Möbel-Posen haben beim Sitzen Vorrang vor dem AO",
       "seat_pose_overrides_ao_hint": "Nur für normale Möbel gedacht und standardmäßig aus. Solange das Objekt, auf dem du sitzt, eine Pose abspielt, werden Animationen aus getragenen Anhängen nicht dargestellt — das verhindert, dass ein AO die Sofa-Pose klaut, macht aber Posestands kaputt, bei denen die Pose vom HUD kommt. Gilt nur in diesem Viewer; für andere ändert sich nichts, und kein Skript wird beeinflusst."
@@ -415,6 +419,10 @@
       "click_action_open": "Öffnen",
       "click_action_play": "Abspielen",
       "click_action_open_media": "Medien öffnen"
+    },
+    "hint": {
+      "always_run_on": "Immer rennen: Aktiviert (Strg+R)",
+      "always_run_off": "Immer rennen: Deaktiviert (Strg+R)"
     }
   }
 }

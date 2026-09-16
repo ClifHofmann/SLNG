@@ -30,11 +30,20 @@ public sealed class AnimationSettings
     /// </summary>
     public bool SeatPoseOverridesAo { get; private set; }
 
+    /// <summary>
+    /// Whether moving forward/backward always runs instead of walking (Ctrl+R / Firestorm movement pref).
+    /// </summary>
+    public bool AlwaysRun { get; private set; }
+
+    public event System.Action<bool>? SeatPoseOverridesAoChanged;
+    public event System.Action<bool>? AlwaysRunChanged;
+
     public void Load()
     {
         var cfg = new ConfigFile();
         if (cfg.Load(ConfigPath) != Error.Ok) return;
         SeatPoseOverridesAo = (bool)cfg.GetValue(Section, "seat_pose_overrides_ao", false);
+        AlwaysRun = (bool)cfg.GetValue(Section, "always_run", false);
     }
 
     public void SetSeatPoseOverridesAo(bool value)
@@ -45,5 +54,18 @@ public sealed class AnimationSettings
         cfg.Load(ConfigPath); // preserve sections owned by other features
         cfg.SetValue(Section, "seat_pose_overrides_ao", value);
         cfg.Save(ConfigPath);
+        SeatPoseOverridesAoChanged?.Invoke(value);
+    }
+
+    public void SetAlwaysRun(bool value)
+    {
+        if (AlwaysRun == value) return;
+        AlwaysRun = value;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "always_run", value);
+        cfg.Save(ConfigPath);
+        AlwaysRunChanged?.Invoke(value);
     }
 }
