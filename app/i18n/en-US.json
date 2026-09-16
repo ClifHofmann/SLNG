@@ -18,6 +18,7 @@
       "view": "View",
       "toggle_hud": "Toggle HUD",
       "performance_stats": "Performance Stats (Ctrl+Shift+1)",
+      "show_fps_in_top_bar": "Show FPS in Top Bar",
       "camera_controls": "Camera Controls",
       "first_person": "First Person",
       "third_person": "Third Person",

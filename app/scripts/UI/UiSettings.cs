@@ -15,6 +15,7 @@ public sealed class UiSettings
 
     public float Scale { get; private set; } = 1.0f;
     public string Language { get; private set; } = "en-US";
+    public bool ShowTopBarFps { get; private set; } = true;
 
     public void Load()
     {
@@ -23,8 +24,19 @@ public sealed class UiSettings
         {
             Scale = Mathf.Clamp((float)cfg.GetValue(Section, "ui_scale", 1.0), SLNGWindow.MinUiScale, SLNGWindow.MaxUiScale);
             Language = (string)cfg.GetValue(Section, "language", "en-US");
+            ShowTopBarFps = (bool)cfg.GetValue(Section, "show_top_bar_fps", true);
         }
         SLNGWindow.SetGlobalUiScale(Scale);
+    }
+
+    public void SetShowTopBarFps(bool show)
+    {
+        ShowTopBarFps = show;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "show_top_bar_fps", ShowTopBarFps);
+        cfg.Save(ConfigPath);
     }
 
     public void SetScale(float scale)

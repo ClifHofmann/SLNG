@@ -52,14 +52,19 @@ namespace SLNG.App.UI
         public Action? OnOpenActiveAnimations;
         /// <summary>FEAT-UI-24: Invoked when the user clicks the location readout to copy the SLURL.</summary>
         public Action<string>? OnCopySlurl;
+        /// <summary>FEAT-UI-24: Invoked when the user toggles the top-bar FPS display.</summary>
+        public Action<bool>? OnToggleShowFps;
 
         private Button _locationBtn = null!;
-        private VSeparator _locationSep = null!;
+        private Button _copySlurlBtn = null!;
         private Button _fpsBtn = null!;
         private VSeparator _fpsSep = null!;
         private string? _currentRegion;
+        private string? _currentParcel;
         private int _currentX, _currentY, _currentZ;
+        private bool _showFps = true;
 
+        private PopupMenu? _viewMenu;
         private PopupMenu? _avatarMenu;
         private PopupMenu? _holdPoseMenu;
         private PopupMenu? _freezeMenu;
@@ -67,7 +72,7 @@ namespace SLNG.App.UI
         private bool _freezeAllChecked;
 
         /// <summary>FEAT-UI-24: Updates the location readout in the top bar.</summary>
-        public void UpdateLocation(string? regionName, int x, int y, int z)
+        public void UpdateLocation(string? regionName, string? parcelName, int x, int y, int z)
         {
             if (string.IsNullOrEmpty(regionName))
             {
@@ -75,25 +80,60 @@ namespace SLNG.App.UI
                 return;
             }
             _currentRegion = regionName;
+            _currentParcel = parcelName;
             _currentX = x;
             _currentY = y;
             _currentZ = z;
-            _locationBtn.Text = $"📍 {regionName} ({x}, {y}, {z})";
+
+            if (!string.IsNullOrWhiteSpace(parcelName) && !string.Equals(parcelName, regionName, StringComparison.OrdinalIgnoreCase))
+            {
+                _locationBtn.Text = $"📍 {regionName} / {parcelName} ({x}, {y}, {z})";
+            }
+            else
+            {
+                _locationBtn.Text = $"📍 {regionName} ({x}, {y}, {z})";
+            }
             _locationBtn.Visible = true;
-            _locationSep.Visible = true;
+            _copySlurlBtn.Visible = true;
         }
+
+        /// <summary>FEAT-UI-24: Overload for backward compatibility without parcel name.</summary>
+        public void UpdateLocation(string? regionName, int x, int y, int z) => UpdateLocation(regionName, null, x, y, z);
 
         /// <summary>FEAT-UI-24: Hides the location readout.</summary>
         public void ClearLocation()
         {
             _currentRegion = null;
+            _currentParcel = null;
             _locationBtn.Visible = false;
-            _locationSep.Visible = false;
+            _copySlurlBtn.Visible = false;
+        }
+
+        /// <summary>FEAT-UI-24: Sets whether the FPS display in the top bar is enabled.</summary>
+        public void SetShowFps(bool show)
+        {
+            _showFps = show;
+            if (_viewMenu != null)
+            {
+                int idx = _viewMenu.GetItemIndex(6);
+                if (idx >= 0) _viewMenu.SetItemChecked(idx, show);
+            }
+            if (!show)
+            {
+                _fpsBtn.Visible = false;
+                _fpsSep.Visible = false;
+            }
         }
 
         /// <summary>FEAT-UI-24: Updates the FPS readout in the top bar.</summary>
         public void UpdateFps(int fps)
         {
+            if (!_showFps)
+            {
+                _fpsBtn.Visible = false;
+                _fpsSep.Visible = false;
+                return;
+            }
             _fpsBtn.Text = $"{fps} FPS";
             _fpsBtn.Visible = true;
             _fpsSep.Visible = true;
@@ -103,6 +143,16 @@ namespace SLNG.App.UI
                 _fpsBtn.AddThemeColorOverride("font_color", new Color(1.0f, 0.82f, 0.35f, 0.85f));
             else
                 _fpsBtn.AddThemeColorOverride("font_color", new Color(1.0f, 0.45f, 0.4f, 0.85f));
+        }
+
+        private void CopyCurrentLocationSlurl()
+        {
+            if (!string.IsNullOrEmpty(_currentRegion))
+            {
+                string slurl = $"secondlife://{Uri.EscapeDataString(_currentRegion)}/{_currentX}/{_currentY}/{_currentZ}";
+                DisplayServer.ClipboardSet(slurl);
+                OnCopySlurl?.Invoke(slurl);
+            }
         }
 
         /// <summary>Updates the checked state of the Always Run menu item.</summary>
@@ -157,11 +207,11 @@ namespace SLNG.App.UI
             panel.AddChild(margin);
             
             var hbox = new HBoxContainer();
-            hbox.AddThemeConstantOverride("separation", 10);
+            hbox.AddThemeConstantOverride("separation", 6);
             margin.AddChild(hbox);
 
             var menuBar = new MenuBar();
-            menuBar.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+            menuBar.SizeFlagsHorizontal = Control.SizeFlags.ShrinkBegin;
             hbox.AddChild(menuBar);
 
             _locationBtn = new Button
@@ -176,20 +226,30 @@ namespace SLNG.App.UI
             _locationBtn.AddThemeColorOverride("font_color", new Color(0.85f, 0.92f, 1.0f, 0.9f));
             _locationBtn.AddThemeColorOverride("font_hover_color", new Color(1.0f, 1.0f, 1.0f, 1.0f));
             _locationBtn.AddThemeColorOverride("font_pressed_color", new Color(0.4f, 0.8f, 1.0f, 1.0f));
-            _locationBtn.Pressed += () =>
-            {
-                if (!string.IsNullOrEmpty(_currentRegion))
-                {
-                    string slurl = $"secondlife://{Uri.EscapeDataString(_currentRegion)}/{_currentX}/{_currentY}/{_currentZ}";
-                    DisplayServer.ClipboardSet(slurl);
-                    OnCopySlurl?.Invoke(slurl);
-                }
-            };
+            _locationBtn.Pressed += CopyCurrentLocationSlurl;
             hbox.AddChild(_locationBtn);
 
-            _locationSep = new VSeparator { Visible = false };
-            _locationSep.AddThemeConstantOverride("separation", 6);
-            hbox.AddChild(_locationSep);
+            _copySlurlBtn = new Button
+            {
+                Text = "📋",
+                Flat = true,
+                Visible = false,
+                FocusMode = Control.FocusModeEnum.None,
+                TooltipText = L10n.Tr("ui.topmenu.copy_slurl_tooltip"),
+                SizeFlagsVertical = Control.SizeFlags.ShrinkCenter
+            };
+            _copySlurlBtn.AddThemeFontSizeOverride("font_size", 12);
+            _copySlurlBtn.AddThemeColorOverride("font_color", new Color(0.7f, 0.85f, 1.0f, 0.8f));
+            _copySlurlBtn.AddThemeColorOverride("font_hover_color", new Color(1.0f, 1.0f, 1.0f, 1.0f));
+            _copySlurlBtn.Pressed += CopyCurrentLocationSlurl;
+            hbox.AddChild(_copySlurlBtn);
+
+            var spacer = new Control
+            {
+                SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+                MouseFilter = Control.MouseFilterEnum.Ignore
+            };
+            hbox.AddChild(spacer);
 
             _fpsBtn = new Button
             {
@@ -237,10 +297,14 @@ namespace SLNG.App.UI
 
             // View Menu
             var viewMenu = new PopupMenu();
+            _viewMenu = viewMenu;
             viewMenu.Name = L10n.Tr("ui.menu.view");
             viewMenu.AddItem(L10n.Tr("ui.menu.toggle_hud"), 0);
             viewMenu.AddItem(L10n.Tr("ui.menu.camera_controls"), 4);
             viewMenu.AddItem(L10n.Tr("ui.menu.performance_stats"), 5);
+            viewMenu.AddCheckItem(L10n.Tr("ui.menu.show_fps_in_top_bar"), 6);
+            int fpsCheckIdx = viewMenu.GetItemIndex(6);
+            if (fpsCheckIdx >= 0) viewMenu.SetItemChecked(fpsCheckIdx, _showFps);
             viewMenu.AddSeparator();
             viewMenu.AddItem(L10n.Tr("ui.menu.first_person"), 1);
             viewMenu.AddItem(L10n.Tr("ui.menu.third_person"), 2);
@@ -249,6 +313,11 @@ namespace SLNG.App.UI
                 if (id == 0) OnToggleHud?.Invoke();
                 if (id == 4) OnToggleCameraHud?.Invoke();
                 if (id == 5) OnToggleStats?.Invoke();
+                if (id == 6)
+                {
+                    SetShowFps(!_showFps);
+                    OnToggleShowFps?.Invoke(_showFps);
+                }
                 if (id >= 1 && id <= 3) OnCameraMode?.Invoke((int)id - 1);
             };
             menuBar.AddChild(viewMenu);

@@ -18,6 +18,7 @@
       "view": "Ansicht",
       "toggle_hud": "HUD umschalten",
       "performance_stats": "Leistungsanzeige (Strg+Umschalt+1)",
+      "show_fps_in_top_bar": "FPS in Menüleiste anzeigen",
       "camera_controls": "Kamerasteuerung",
       "first_person": "Ego-Perspektive",
       "third_person": "Verfolgerkamera",

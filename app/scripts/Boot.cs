@@ -300,7 +300,8 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.183-alpha";
+    public const string AppVersion = "v0.22.184-alpha";
+    private int _parcelRequestTick;
 
     public void ShowToast(string message, float duration = 2.0f)
     {
@@ -529,6 +530,9 @@ public partial class Boot : Control
         _topMenu = new SLNG.App.UI.TopMenu();
         _topMenu.Visible = false; // Hide until logged in
         AddChild(_topMenu);
+
+        _topMenu.SetShowFps(_uiSettings.ShowTopBarFps);
+        _topMenu.OnToggleShowFps = (show) => _uiSettings.SetShowTopBarFps(show);
 
         _topMenu.OnCopySlurl = (slurl) =>
         {
@@ -2144,7 +2148,16 @@ public partial class Boot : Control
                     int x = (int)System.Math.Round(transform.Position.X);
                     int y = (int)System.Math.Round(transform.Position.Y);
                     int z = (int)System.Math.Round(transform.Position.Z);
-                    _topMenu.UpdateLocation(_session.CurrentRegionName, x, y, z);
+                    _topMenu.UpdateLocation(_session.CurrentRegionName, _session.CurrentParcelName, x, y, z);
+
+                    if (string.IsNullOrEmpty(_session.CurrentParcelName))
+                    {
+                        _parcelRequestTick++;
+                        if ((_parcelRequestTick % 15) == 1)
+                        {
+                            _session.RequestCurrentParcelProperties();
+                        }
+                    }
                 }
                 else
                 {

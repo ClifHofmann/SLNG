@@ -55,6 +55,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// ParcelProperties unprompted on a parcel crossing, so matching on the sequence id is what
     /// keeps an unrelated push from being read as our answer.</summary>
     private int _parcelSequenceId;
+    private volatile string? _currentParcelName;
 
     /// <summary>Guards <see cref="TeleportToAsync"/>/<see cref="TeleportToLandmarkAsync"/>/
     /// <see cref="TeleportToGlobalPosition"/> against running concurrently. LibreMetaverse's
@@ -516,6 +517,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // MVP2-3: region radar (minimap) and grid-map tile resolution.
         _client.Grid.CoarseLocationUpdate += OnCoarseLocationUpdate;
         _client.Grid.GridRegion += OnGridRegion;
+        _client.Parcels.ParcelProperties += OnParcelPropertiesReceived;
 
         // Coexists with ObjectManager's own internal ObjectUpdate handler (packet callbacks are
         // multicast) -- see _lightPresentByLocalId for why this is needed.
@@ -907,6 +909,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// disposed-texture continuations, NaN-transform flood). See the inline comment below.</summary>
     private void OnSimChanged(object? sender, LibreMetaverse.SimChangedEventArgs e)
     {
+        _currentParcelName = null;
         var oldSim = e.PreviousSimulator;
         var newSim = _client.Network.CurrentSim;
         if (oldSim == null || newSim == null || oldSim.Handle == newSim.Handle) return;
@@ -5410,6 +5413,27 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <summary>The name of the region the agent is currently in, or empty if not connected.</summary>
     public string CurrentRegionName => _client.Network.CurrentSim?.Name ?? string.Empty;
 
+    /// <summary>The name of the parcel the agent is currently standing on, or null/empty if unknown.</summary>
+    public string? CurrentParcelName => _currentParcelName;
+
+    /// <summary>Requests the simulator to push parcel properties for the agent's current position.</summary>
+    public void RequestCurrentParcelProperties()
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null || !_client.Network.Connected) return;
+        var pos = _client.Self.SimPosition;
+        int seq = Interlocked.Increment(ref _parcelSequenceId);
+        _client.Parcels.RequestParcelProperties(sim, pos.Y, pos.X, pos.Y, pos.X, seq, false);
+    }
+
+    private void OnParcelPropertiesReceived(object? sender, LibreMetaverse.ParcelPropertiesEventArgs e)
+    {
+        if (e.Result == LibreMetaverse.ParcelResult.Single && !string.IsNullOrWhiteSpace(e.Parcel.Name))
+        {
+            _currentParcelName = e.Parcel.Name.Trim();
+        }
+    }
+
     /// <summary>Agent UUID of the logged-in avatar, or empty until connected.</summary>
     public string AgentId => _client.Self.AgentID.ToString();
 
@@ -9487,6 +9511,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Avatars.AvatarClassifiedReply -= OnAvatarClassifiedReply;
         _client.Grid.CoarseLocationUpdate -= OnCoarseLocationUpdate;
         _client.Grid.GridRegion -= OnGridRegion;
+        _client.Parcels.ParcelProperties -= OnParcelPropertiesReceived;
+        _currentParcelName = null;
         _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
         Logout();
     }
