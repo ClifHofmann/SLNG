@@ -8753,11 +8753,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <param name="cameraForward">The render camera's forward direction (region-local, SL axes);
     /// only used when <paramref name="cameraPosition"/> is supplied.</param>
     /// <param name="cameraFar">Interest / draw distance in metres; ignored when &lt;= 0.</param>
+    /// <param name="fast">True when running (double-tap forward, Shift held, or Always Run mode).</param>
     public void SetMovement(bool forward, bool backward, bool left, bool right, bool up, bool down,
         System.Numerics.Quaternion cameraRotation, bool fly = false,
         System.Numerics.Vector3? cameraPosition = null,
         System.Numerics.Vector3? cameraForward = null,
-        float cameraFar = 0f)
+        float cameraFar = 0f,
+        bool fast = false)
     {
         if (!_client.Network.Connected) return;
 
@@ -8789,11 +8791,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
 
         _client.Self.Movement.AtPos = forward;
         _client.Self.Movement.AtNeg = backward;
+        _client.Self.Movement.FastAt = fast;
         _client.Self.Movement.LeftPos = left;
         _client.Self.Movement.LeftNeg = right;
         _client.Self.Movement.UpPos = up;
         _client.Self.Movement.UpNeg = down;
         _client.Self.Movement.Fly = fly;
+
+        if (_client.Self.Movement.AlwaysRun != fast)
+        {
+            _client.Self.Movement.AlwaysRun = fast;
+        }
 
         // Send the update to the server
         _client.Self.Movement.SendUpdate(false);

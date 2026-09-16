@@ -54,6 +54,13 @@ public partial class AvatarController : Camera3D
     // (see _Process) without fighting wheel/pad zoom, which never changes this value.
     private float _lastAppliedRearDistance = SLNG.App.UI.CameraSettings.DefaultDistance;
 
+    // Running state: double-tap forward, Shift key hold, or Always Run (Ctrl+R)
+    private bool _wasFwd;
+    private double _lastFwdPressTime = -10.0;
+    private bool _doubleTapRunActive;
+    private bool _alwaysRun;
+    private bool _isRunning;
+
     /// <summary>Wire the persisted camera view settings. FOV and the resting third-person distance
     /// apply at once; <see cref="_Process"/> then re-applies each whenever the setting itself
     /// changes (so the Preferences sliders are live), and <see cref="ResetCamera"/> uses the
@@ -588,6 +595,11 @@ public partial class AvatarController : Camera3D
                 // back on Esc doesn't work cleanly, should jump to rear view."
                 ResetCamera();
             }
+            else if (keyEvt.Keycode == Key.R && keyEvt.CtrlPressed)
+            {
+                _alwaysRun = !_alwaysRun;
+                if (Diagnostics.Enabled) GD.Print($"[AvatarController] AlwaysRun: {(_alwaysRun ? "ON" : "off")}");
+            }
         }
 
         if (@event is InputEventMouseButton mouseBtn)
@@ -849,6 +861,25 @@ public partial class AvatarController : Camera3D
                     if (isBack) ZoomCamera(SeatedCameraZoomSpeed * dt);
                 }
 
+                // Double-tap forward detection (tap W or Up arrow, then press and hold within 0.35s to run)
+                double now = Time.GetTicksMsec() / 1000.0;
+                if (isFwd && !_wasFwd)
+                {
+                    if (now - _lastFwdPressTime < 0.35)
+                    {
+                        _doubleTapRunActive = true;
+                    }
+                    _lastFwdPressTime = now;
+                }
+                else if (!isFwd)
+                {
+                    _doubleTapRunActive = false;
+                }
+                _wasFwd = isFwd;
+
+                bool isShift = !hasUiFocus && Input.IsKeyPressed(Key.Shift);
+                _isRunning = !isSitting && (isFwd || isBack) && (_doubleTapRunActive || isShift || _alwaysRun);
+
                 // FEAT-ANIM-01: drive the self avatar's locomotion animation from local input
                 // NOW, not after the sim echoes AvatarAnimation back (which slides the avatar
                 // forward in the stand pose under lag). Key state is the zero-latency signal;
@@ -863,7 +894,8 @@ public partial class AvatarController : Camera3D
                     TurningRight: !isSitting && isRight && !isFwd && !isBack,
                     Crouching: !isSitting && !_flying && isDown,
                     SpeedHoriz: System.MathF.Sqrt(vel.X * vel.X + vel.Y * vel.Y),
-                    SpeedVert: vel.Z);
+                    SpeedVert: vel.Z,
+                    Running: _isRunning);
                 if (_avatarRenderer != null)
                 {
                     bool isMale = localAgent.GetComponent<AvatarComponent>()?.IsMale ?? true;
@@ -1293,7 +1325,8 @@ public partial class AvatarController : Camera3D
                 !isSitting && up, !isSitting && down,
                 isPoseStand && _lockedRotation.HasValue ? _lockedRotation.Value : ComputeBodyRotation(),
                 !isSitting && _flying,
-                camSimPos, camSimForward, camFar);
+                camSimPos, camSimForward, camFar,
+                fast: _isRunning);
         }
     }
 

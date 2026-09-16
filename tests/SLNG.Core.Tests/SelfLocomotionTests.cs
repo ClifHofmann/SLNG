@@ -10,8 +10,8 @@ public class SelfLocomotionTests
     private static LocomotionState State(
         bool sitting = false, bool flying = false, bool grounded = true,
         bool fwd = false, bool left = false, bool right = false, bool crouch = false,
-        float speedH = 0f, float speedV = 0f)
-        => new(sitting, flying, grounded, fwd, left, right, crouch, speedH, speedV);
+        float speedH = 0f, float speedV = 0f, bool running = false)
+        => new(sitting, flying, grounded, fwd, left, right, crouch, speedH, speedV, running);
 
     [Fact]
     public void Idle_on_the_ground_is_Stand()
@@ -24,6 +24,13 @@ public class SelfLocomotionTests
     [Fact]
     public void Forward_key_walks_immediately_even_with_zero_reported_speed()
         => Assert.Equal(SelfLocomotion.Walk, SelfLocomotion.Predict(State(fwd: true, speedH: 0f)));
+
+    [Fact]
+    public void Running_flag_predicts_Run_immediately_even_with_zero_reported_speed()
+    {
+        Assert.Equal(SelfLocomotion.Run, SelfLocomotion.Predict(State(fwd: true, running: true), isMale: true));
+        Assert.Equal(SelfLocomotion.FemaleRun, SelfLocomotion.Predict(State(fwd: true, running: true), isMale: false));
+    }
 
     [Fact]
     public void Fast_horizontal_speed_is_Run()

@@ -23,7 +23,9 @@ public readonly record struct LocomotionState(
     /// the latency-critical signal is the key state.</summary>
     float SpeedHoriz,
     /// <summary>Vertical speed in m/s, + is up. Distinguishes hover-up / hover-down while flying.</summary>
-    float SpeedVert);
+    float SpeedVert,
+    /// <summary>Whether a run modifier (double-tap forward, Shift key, or Always Run) is active.</summary>
+    bool Running = false);
 
 /// <summary>
 /// Which built-in locomotion animation the SELF avatar should be playing right now, decided from
@@ -176,7 +178,7 @@ public static class SelfLocomotion
 
         if (moving)
         {
-            Guid anim = s.SpeedHoriz > RunSpeedThreshold ? Run : Walk;
+            Guid anim = (s.Running || s.SpeedHoriz > RunSpeedThreshold) ? Run : Walk;
             return isMale ? anim : RemapForSex(anim, false);
         }
 
