@@ -8828,14 +8828,36 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (_builtinAnimNames.Value.TryGetValue(uuid, out var builtinName))
             return builtinName;
 
-        // Try lookup in inventory store
-        if (_client.Inventory?.Store != null)
+        // Try lookup in inventory store by walking nodes
+        if (_client.Inventory?.Store?.RootNode != null)
         {
-            var node = _client.Inventory.Store.GetNodeOrDefault(uuid);
-            if (node?.Data is LibreMetaverse.InventoryItem item)
+            var stack = new Stack<LibreMetaverse.InventoryNode>();
+            stack.Push(_client.Inventory.Store.RootNode);
+            if (_client.Inventory.Store.LibraryRootNode != null)
+                stack.Push(_client.Inventory.Store.LibraryRootNode);
+
+            while (stack.Count > 0)
             {
-                _knownAnimNames[id] = item.Name;
-                return item.Name;
+                var node = stack.Pop();
+                if (node.Data is LibreMetaverse.InventoryItem item)
+                {
+                    if (item.AssetUUID != LibreMetaverse.UUID.Zero)
+                    {
+                        _knownAnimNames[item.AssetUUID.Guid] = item.Name;
+                    }
+                    _knownAnimNames[item.UUID.Guid] = item.Name;
+
+                    if (item.AssetUUID == uuid || item.UUID == uuid)
+                    {
+                        return item.Name;
+                    }
+                }
+
+                try
+                {
+                    foreach (var child in node.Nodes.Values) stack.Push(child);
+                }
+                catch (InvalidOperationException) { }
             }
         }
 

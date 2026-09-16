@@ -582,4 +582,23 @@ public class GridSessionTests
         var stopped = session.StopMotionsFromSources(new[] { Guid.NewGuid() });
         Assert.Empty(stopped);
     }
+
+    [Fact]
+    public void ResolveAnimationName_resolves_builtin_animation()
+    {
+        using var session = new GridSession();
+        var name = session.ResolveAnimationName(Animations.STAND.Guid);
+        Assert.NotNull(name);
+        Assert.Equal("STAND", name);
+    }
+
+    [Fact]
+    public void ResolveAnimationName_resolves_registered_name()
+    {
+        using var session = new GridSession();
+        var animId = Guid.NewGuid();
+        session.RegisterAnimationName(animId, "Club Dance 01");
+        var name = session.ResolveAnimationName(animId);
+        Assert.Equal("Club Dance 01", name);
+    }
 }
