@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-07`
 - **Track:** `assets` / `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done (Phase 1)`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -126,7 +126,7 @@ overrides, `lock_scale_if_joint_position`) that deserves its own verified pass.
 - [x] Phase 1a — `SLNG.Assets`: LOD-aware decode + cache + fallback, with tests.
 - [x] Phase 1b — `ObjectRenderer`: pick, key, re-evaluate.
 - [x] Phase 1c — the `VolumeLodFactor` setting + slider.
-- [ ] Phase 1d — in-world verification on Millenium: `tris=`, `queue=`, fps.
+- [x] Phase 1d — in-world verification on Millenium: `tris=`, `queue=`, fps (confirmed 2026-09-16).
 - [ ] Phase 2 — rigged mesh / attachments off the avatar's distance and extents.
 
 ## What shipped, and what it does not cover

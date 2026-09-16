@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-21`
 - **Track:** `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -140,7 +140,7 @@ sky gradient. Worth recording because the same picture would have been read as a
 - [x] A face with no legacy material renders bit-identically (measured, 0.00 per channel)
 - [x] Verified by rendered before/after PNGs that were actually examined, not by sampled numbers
       alone
-- [ ] **Live A/B against Firestorm on real materialed content** — see below
+- [x] **Live A/B against Firestorm on real materialed content** — in-world verifiziert und geschlossen 2026-09-16
 
 ## Known limitations, stated plainly
 

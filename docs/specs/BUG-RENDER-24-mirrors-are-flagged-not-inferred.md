@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-24`
 - **Track:** `render/net`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done`
 - **Owner:** `claude` (graphics-engineer)
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -131,4 +131,4 @@ next question is which OTHER object in that room is the flagged one.
 - [x] Root-caused against llheroprobemanager.cpp / llvovolume.cpp / llprimitive.h.
 - [x] Protocol gap confirmed by reading LibreMetaverse's own parser, not assumed.
 - [x] Decode + model + candidate selection + tests + diagnostic.
-- [ ] Confirmed in-world.
+- [x] Confirmed in-world (2026-09-16).

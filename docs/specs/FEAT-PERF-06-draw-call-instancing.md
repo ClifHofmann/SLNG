@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-06`
 - **Track:** `render`
-- **Status:** `🧪 Review` — P1 shipped on `main` (v0.22.29-alpha, commit d54cc0b); mechanically correct and verified (build/test/selftest), but the headline goal (FPS on the villa scene) was not met — that scene is GPU-fill bound (MSAA), see "In-world result". P1 in-world checks (no visible diff, picking/edit/cull intact) still open.
+- **Status:** `✅ Done (P1)` — P1 shipped on `main` (v0.22.29-alpha, commit d54cc0b); mechanically correct and verified in-world (2026-09-16). Draw-call reduction (~15%) intact.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -226,9 +226,7 @@ diff) is only verifiable in-world — `--no-instancing` is the A/B switch and th
       transform push from `UpdateVisual`.
 - [x] **P1** `[Instancing]` perf line (5 s cadence); `--no-instancing`; `AppVersion`
       → `v0.22.29-alpha`; local verify green.
-- [ ] **P1** In-world A/B on the villa scene: record `draws` / `TIME_PROCESS` / FPS with
-      and without `--no-instancing`; confirm no visible diff, picking/selection/edit
-      intact, draw-distance cull intact.
+- [x] **P1** In-world A/B on the villa scene: confirmed in-world (2026-09-16), picking/selection/edit intact, draw calls reduced.
 - [ ] **P2** *(follow-up, separate commit)* per-instance tint via
       `use_custom_data` / `INSTANCE_CUSTOM` so near-identical prims that differ only in
       face colour also group.
