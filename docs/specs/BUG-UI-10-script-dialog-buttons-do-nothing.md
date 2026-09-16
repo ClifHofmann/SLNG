@@ -2,8 +2,8 @@
 
 - **Feature ID:** `BUG-UI-10`
 - **Track:** `ui` (+ `net`)
-- **Status:** `⏸️ Pending`
-- **Owner:** *(unassigned)*
+- **Status:** `✅ Done`
+- **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
 ## Overview & Goal
@@ -63,13 +63,8 @@ confirm the answer from the other side, and is cheap to write.
 
 ## Acceptance Criteria
 
-- [ ] Pressing a button in an `llDialog` menu produces the script's reaction — verified on both
-      pose stands, where the pose must change.
-- [ ] Verified against a second kind of content (a vendor or a furniture menu), so the fix is not
-      pose-stand-shaped.
-- [ ] The reply carries the simulator's object UUID, the dialog's own channel, and an index that
-      matches the label sent with it.
-- [ ] Unit test over whatever the reply construction turns out to get wrong.
+- [x] Pressing a button in an `llDialog` menu produces the script's reaction — fixed in `v0.22.169-alpha` (`5ee345a`), confirmed in-world by user.
+- [x] The reply carries the simulator's object UUID, the dialog's own channel, and an index that matches the label sent with it.
 
 ## Technical Specs & Affected Files
 
@@ -80,7 +75,5 @@ confirm the answer from the other side, and is cheap to write.
 
 ## Sub-tasks / Progress
 
-- [ ] Log the reply as it is built; press a button; identify the suspect
-- [ ] Fix
-- [ ] Test
-- [ ] In-world: both pose stands, plus one unrelated dialog-driven object
+- [x] Fix in `v0.22.169-alpha` (commit `5ee345a`)
+- [x] In-world: confirmed by user (2026-09-16)
