@@ -205,10 +205,17 @@ public partial class ActiveAnimationsWindow : SLNGWindow
             : new Color(0.95f, 0.65f, 0.25f)); // Amber for inworld
         hbox.AddChild(badge);
 
+        string displayName = anim.Name;
+        if ((string.IsNullOrEmpty(displayName) || displayName.Length <= 8) && _session != null)
+        {
+            var resolved = _session.ResolveAnimationName(anim.Id);
+            if (!string.IsNullOrEmpty(resolved)) displayName = resolved;
+        }
+
         // Animation name
         var nameLabel = new Label
         {
-            Text = anim.Name,
+            Text = displayName,
             SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
             VerticalAlignment = VerticalAlignment.Center,
             ClipText = true,

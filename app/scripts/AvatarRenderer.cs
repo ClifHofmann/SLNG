@@ -864,8 +864,13 @@ public partial class AvatarRenderer : Node3D
         return result;
     }
 
-    private static string? GetBuiltinAnimName(Guid id)
+    private string? GetBuiltinAnimName(Guid id)
     {
+        if (_session != null)
+        {
+            var resolved = _session.ResolveAnimationName(id);
+            if (!string.IsNullOrEmpty(resolved)) return resolved;
+        }
         if (id == SelfLocomotion.Stand) return "Stand";
         if (id == SelfLocomotion.Walk || id == SelfLocomotion.WalkNew) return "Walk";
         if (id == SelfLocomotion.FemaleWalk || id == SelfLocomotion.FemaleWalkNew) return "Female Walk";

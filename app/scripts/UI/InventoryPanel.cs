@@ -1597,6 +1597,7 @@ public partial class InventoryPanel : SLNGWindow
                     _lastInWorldAnimId = Guid.Empty;
                 }
                 string animName = item.GetText(0);
+                _session?.RegisterAnimationName(assetId, animName);
                 if (PlayAnimationLocalHandler != null)
                 {
                     _ = PlayAnimationLocalHandler(assetId, animName);
@@ -1615,6 +1616,8 @@ public partial class InventoryPanel : SLNGWindow
                     _session?.StopAnimation(_lastInWorldAnimId);
                 }
                 _lastInWorldAnimId = assetId;
+                string animName = item.GetText(0);
+                _session?.RegisterAnimationName(assetId, animName);
                 _session?.StartAnimation(assetId);
             }
         }
@@ -1651,6 +1654,7 @@ public partial class InventoryPanel : SLNGWindow
         if (!Guid.TryParse(parts[5], out var assetId)) return;
 
         string animName = item.GetText(0);
+        _session?.RegisterAnimationName(assetId, animName);
         if (PlayAnimationLocalHandler != null)
         {
             _ = PlayAnimationLocalHandler(assetId, animName);

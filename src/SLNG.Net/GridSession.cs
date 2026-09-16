@@ -8808,6 +8808,40 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Self.Movement.SendUpdate(false);
     }
 
+    private static readonly Lazy<IReadOnlyDictionary<LibreMetaverse.UUID, string>> _builtinAnimNames = new(() => LibreMetaverse.Animations.ToDictionary());
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, string> _knownAnimNames = new();
+
+    public void RegisterAnimationName(Guid assetId, string name)
+    {
+        if (!string.IsNullOrEmpty(name))
+        {
+            _knownAnimNames[assetId] = name;
+        }
+    }
+
+    public string? ResolveAnimationName(Guid id)
+    {
+        if (_knownAnimNames.TryGetValue(id, out var known))
+            return known;
+
+        var uuid = new LibreMetaverse.UUID(id);
+        if (_builtinAnimNames.Value.TryGetValue(uuid, out var builtinName))
+            return builtinName;
+
+        // Try lookup in inventory store
+        if (_client.Inventory?.Store != null)
+        {
+            var node = _client.Inventory.Store.GetNodeOrDefault(uuid);
+            if (node?.Data is LibreMetaverse.InventoryItem item)
+            {
+                _knownAnimNames[id] = item.Name;
+                return item.Name;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// Fetches the raw bytes of a mesh asset from the simulator. Returns a neutral
     /// payload — no LibreMetaverse type crosses this boundary; decoding lives in

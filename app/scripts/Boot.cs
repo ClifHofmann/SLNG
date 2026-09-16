@@ -300,7 +300,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.180-alpha";
+    public const string AppVersion = "v0.22.181-alpha";
 
     public void ShowToast(string message, float duration = 2.0f)
     {
