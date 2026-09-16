@@ -58,15 +58,51 @@ namespace SLNG.App
                     var exclude = new Godot.Collections.Array<Rid>();
                     var result = RaycastFromMouse(mouseBtn.Position, exclude);
 
-                    // If left-click hit an avatar collider, penetrate through so we can click the object underneath (e.g. seated on pose stand)
-                    while (mouseBtn.ButtonIndex == MouseButton.Left && result.Count > 0 && result.ContainsKey("collider"))
+                    // Avatar penetration logic:
+                    // 1. Left-click always penetrates ALL avatars (avatars have no left-click touch/sit actions).
+                    // 2. Right-click on the LOCAL avatar penetrates if there is an interactive object (prim/mesh)
+                    //    or a remote avatar behind it, because in 3rd person the player's own avatar frequently
+                    //    occludes chairs, benches, pose stands, or tables the player wants to right-click.
+                    while (result.Count > 0 && result.ContainsKey("collider"))
                     {
                         var col = result["collider"].As<Node>();
                         if (col is StaticBody3D sb && sb.HasMeta("LocalId") && sb.GetMeta("LocalId").AsString() == "Avatar")
                         {
-                            exclude.Add(sb.GetRid());
-                            result = RaycastFromMouse(mouseBtn.Position, exclude);
-                            continue;
+                            if (mouseBtn.ButtonIndex == MouseButton.Left)
+                            {
+                                exclude.Add(sb.GetRid());
+                                result = RaycastFromMouse(mouseBtn.Position, exclude);
+                                continue;
+                            }
+
+                            if (mouseBtn.ButtonIndex == MouseButton.Right && sb.HasMeta("EntityId"))
+                            {
+                                if (System.Guid.TryParse(sb.GetMeta("EntityId").AsString(), out var avGuid))
+                                {
+                                    var avEntity = _world.GetEntity(avGuid);
+                                    if (avEntity?.GetComponent<AvatarComponent>()?.IsLocalAgent == true)
+                                    {
+                                        // It's the local avatar: peek behind to see if an object or remote avatar is occluded
+                                        var peekExclude = new Godot.Collections.Array<Rid>(exclude) { sb.GetRid() };
+                                        var peekResult = RaycastFromMouse(mouseBtn.Position, peekExclude);
+                                        if (peekResult.Count > 0 && peekResult.ContainsKey("collider"))
+                                        {
+                                            var peekCol = peekResult["collider"].As<Node>();
+                                            bool peekIsObject = peekCol is StaticBody3D tagged && tagged.HasMeta("LocalId")
+                                                && uint.TryParse(tagged.GetMeta("LocalId").AsString(), out _);
+                                            bool peekIsAvatar = peekCol is StaticBody3D peekAv && peekAv.HasMeta("LocalId")
+                                                && peekAv.GetMeta("LocalId").AsString() == "Avatar";
+
+                                            if (peekIsObject || peekIsAvatar)
+                                            {
+                                                exclude.Add(sb.GetRid());
+                                                result = peekResult;
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                         break;
                     }

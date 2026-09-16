@@ -16,6 +16,7 @@ public partial class AvatarRenderer : Node3D
     {
         public Node3D Root { get; }
         public Skeleton3D? Skeleton { get; set; }
+        public CollisionShape3D? CapsuleShape { get; set; }
         // BUG-AVATAR-02 follow-up: the id of the avatar this visual belongs to. Part of the SL
         // bake-texture CDN URL path (LLVOAvatar::getImageURL uses getID() -- the DISPLAYED avatar,
         // not the viewer), so every BoM/system-bake fetch has to carry it or other people's mesh
@@ -352,22 +353,24 @@ public partial class AvatarRenderer : Node3D
             });
         }
 
-        // Add a collision capsule so raycasts can identify the avatar
+        // Add a collision capsule so raycasts can identify the avatar.
+        // Radius is 0.22m (torso width) so objects next to the avatar aren't occluded by empty air.
         var staticBody = new Godot.StaticBody3D 
         { 
             Name = "AvatarPhysics",
-            CollisionLayer = 2,
-            CollisionMask = 2
+            CollisionLayer = PhysicsLayers.Avatars,
+            CollisionMask = PhysicsLayers.Avatars
         };
         var capsuleShape = new Godot.CollisionShape3D
         {
-            Shape = new Godot.CapsuleShape3D { Radius = 0.45f, Height = 1.9f },
+            Shape = new Godot.CapsuleShape3D { Radius = 0.22f, Height = 1.9f },
             Position = new Godot.Vector3(0, 0.95f, 0) // Shift up so bottom is at origin
         };
         staticBody.AddChild(capsuleShape);
         staticBody.SetMeta("EntityId", entityIdStr);
         staticBody.SetMeta("LocalId", "Avatar");
         visual.Root.AddChild(staticBody);
+        visual.CapsuleShape = capsuleShape;
 
         // Add the visual root to the tree first so all sub-nodes inherit the active scene tree lifecycle
         AddChild(visual.Root);
@@ -753,6 +756,21 @@ public partial class AvatarRenderer : Node3D
                 transform.Rotation.X, transform.Rotation.Z,
                 -transform.Rotation.Y, transform.Rotation.W);
             visual.Root.Quaternion = slQuat;
+
+            // Keep raycast collision capsule aligned with avatar height / sitting posture
+            if (visual.CapsuleShape?.Shape is CapsuleShape3D cap)
+            {
+                float targetHeight = (avatar.SittingOnLocalId != 0)
+                    ? (visual.BodySizeZ > 0.5f ? System.MathF.Min(visual.BodySizeZ * 0.6f, 1.1f) : 1.0f)
+                    : (visual.BodySizeZ > 0.5f ? visual.BodySizeZ : 1.9f);
+                const float targetRadius = 0.22f;
+                if (System.MathF.Abs(cap.Height - targetHeight) > 0.01f || System.MathF.Abs(cap.Radius - targetRadius) > 0.01f)
+                {
+                    cap.Height = targetHeight;
+                    cap.Radius = targetRadius;
+                    visual.CapsuleShape.Position = new Godot.Vector3(0, targetHeight * 0.5f, 0);
+                }
+            }
 
         }
 
