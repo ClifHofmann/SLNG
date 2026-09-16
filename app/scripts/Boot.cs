@@ -300,7 +300,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.182-alpha";
+    public const string AppVersion = "v0.22.183-alpha";
 
     public void ShowToast(string message, float duration = 2.0f)
     {
@@ -529,6 +529,11 @@ public partial class Boot : Control
         _topMenu = new SLNG.App.UI.TopMenu();
         _topMenu.Visible = false; // Hide until logged in
         AddChild(_topMenu);
+
+        _topMenu.OnCopySlurl = (slurl) =>
+        {
+            ShowToast(SLNG.App.UI.L10n.TrFormat("ui.topmenu.slurl_copied", slurl));
+        };
 
         _topMenu.OnDisconnect = () => {
             QuitGracefully(false);
@@ -2128,6 +2133,33 @@ public partial class Boot : Control
 
     private void UpdateHud()
     {
+        // FEAT-UI-24: coordinate and FPS readout in top bar.
+        if (_topMenu != null && _topMenu.Visible)
+        {
+            if (_session?.IsConnected == true)
+            {
+                var transform = GetLocalAgentTransform();
+                if (transform != null && !string.IsNullOrEmpty(_session.CurrentRegionName))
+                {
+                    int x = (int)System.Math.Round(transform.Position.X);
+                    int y = (int)System.Math.Round(transform.Position.Y);
+                    int z = (int)System.Math.Round(transform.Position.Z);
+                    _topMenu.UpdateLocation(_session.CurrentRegionName, x, y, z);
+                }
+                else
+                {
+                    _topMenu.ClearLocation();
+                }
+
+                int fps = (int)System.Math.Round(Engine.GetFramesPerSecond());
+                _topMenu.UpdateFps(fps);
+            }
+            else
+            {
+                _topMenu.ClearLocation();
+            }
+        }
+
         if (_standUpButton != null)
         {
             GetLocalAgentTransform(); // Ensure _localAgent is populated if available
@@ -3526,7 +3558,11 @@ public partial class Boot : Control
             var loadingBlur = GetNodeOrNull<Control>("%LoadingScreenBlur");
             if (loadingBlur != null) loadingBlur.Visible = false;
             
-            if (_topMenu != null) _topMenu.Visible = false;
+            if (_topMenu != null)
+            {
+                _topMenu.Visible = false;
+                _topMenu.ClearLocation();
+            }
             
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) hudLayer.Visible = false;
@@ -3607,7 +3643,11 @@ public partial class Boot : Control
                 }
             }
             
-            if (_topMenu != null) _topMenu.Visible = false;
+            if (_topMenu != null)
+            {
+                _topMenu.Visible = false;
+                _topMenu.ClearLocation();
+            }
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) hudLayer.Visible = false;
             if (_chatWindow != null) _chatWindow.Visible = false;

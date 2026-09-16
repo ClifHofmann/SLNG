@@ -50,12 +50,60 @@ namespace SLNG.App.UI
         public Action? OnBakeTestPattern;
         public Action? OnToggleAlwaysRun;
         public Action? OnOpenActiveAnimations;
+        /// <summary>FEAT-UI-24: Invoked when the user clicks the location readout to copy the SLURL.</summary>
+        public Action<string>? OnCopySlurl;
+
+        private Button _locationBtn = null!;
+        private VSeparator _locationSep = null!;
+        private Button _fpsBtn = null!;
+        private VSeparator _fpsSep = null!;
+        private string? _currentRegion;
+        private int _currentX, _currentY, _currentZ;
 
         private PopupMenu? _avatarMenu;
         private PopupMenu? _holdPoseMenu;
         private PopupMenu? _freezeMenu;
         private bool _freezeSelfChecked;
         private bool _freezeAllChecked;
+
+        /// <summary>FEAT-UI-24: Updates the location readout in the top bar.</summary>
+        public void UpdateLocation(string? regionName, int x, int y, int z)
+        {
+            if (string.IsNullOrEmpty(regionName))
+            {
+                ClearLocation();
+                return;
+            }
+            _currentRegion = regionName;
+            _currentX = x;
+            _currentY = y;
+            _currentZ = z;
+            _locationBtn.Text = $"📍 {regionName} ({x}, {y}, {z})";
+            _locationBtn.Visible = true;
+            _locationSep.Visible = true;
+        }
+
+        /// <summary>FEAT-UI-24: Hides the location readout.</summary>
+        public void ClearLocation()
+        {
+            _currentRegion = null;
+            _locationBtn.Visible = false;
+            _locationSep.Visible = false;
+        }
+
+        /// <summary>FEAT-UI-24: Updates the FPS readout in the top bar.</summary>
+        public void UpdateFps(int fps)
+        {
+            _fpsBtn.Text = $"{fps} FPS";
+            _fpsBtn.Visible = true;
+            _fpsSep.Visible = true;
+            if (fps >= 50)
+                _fpsBtn.AddThemeColorOverride("font_color", new Color(0.5f, 0.95f, 0.6f, 0.85f));
+            else if (fps >= 25)
+                _fpsBtn.AddThemeColorOverride("font_color", new Color(1.0f, 0.82f, 0.35f, 0.85f));
+            else
+                _fpsBtn.AddThemeColorOverride("font_color", new Color(1.0f, 0.45f, 0.4f, 0.85f));
+        }
 
         /// <summary>Updates the checked state of the Always Run menu item.</summary>
         public void SetAlwaysRunUI(bool run)
@@ -109,11 +157,57 @@ namespace SLNG.App.UI
             panel.AddChild(margin);
             
             var hbox = new HBoxContainer();
+            hbox.AddThemeConstantOverride("separation", 10);
             margin.AddChild(hbox);
 
             var menuBar = new MenuBar();
             menuBar.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
             hbox.AddChild(menuBar);
+
+            _locationBtn = new Button
+            {
+                Flat = true,
+                Visible = false,
+                FocusMode = Control.FocusModeEnum.None,
+                TooltipText = L10n.Tr("ui.topmenu.copy_slurl_tooltip"),
+                SizeFlagsVertical = Control.SizeFlags.ShrinkCenter
+            };
+            _locationBtn.AddThemeFontSizeOverride("font_size", 13);
+            _locationBtn.AddThemeColorOverride("font_color", new Color(0.85f, 0.92f, 1.0f, 0.9f));
+            _locationBtn.AddThemeColorOverride("font_hover_color", new Color(1.0f, 1.0f, 1.0f, 1.0f));
+            _locationBtn.AddThemeColorOverride("font_pressed_color", new Color(0.4f, 0.8f, 1.0f, 1.0f));
+            _locationBtn.Pressed += () =>
+            {
+                if (!string.IsNullOrEmpty(_currentRegion))
+                {
+                    string slurl = $"secondlife://{Uri.EscapeDataString(_currentRegion)}/{_currentX}/{_currentY}/{_currentZ}";
+                    DisplayServer.ClipboardSet(slurl);
+                    OnCopySlurl?.Invoke(slurl);
+                }
+            };
+            hbox.AddChild(_locationBtn);
+
+            _locationSep = new VSeparator { Visible = false };
+            _locationSep.AddThemeConstantOverride("separation", 6);
+            hbox.AddChild(_locationSep);
+
+            _fpsBtn = new Button
+            {
+                Flat = true,
+                Visible = false,
+                FocusMode = Control.FocusModeEnum.None,
+                TooltipText = L10n.Tr("ui.topmenu.fps_tooltip"),
+                SizeFlagsVertical = Control.SizeFlags.ShrinkCenter
+            };
+            _fpsBtn.AddThemeFontSizeOverride("font_size", 13);
+            _fpsBtn.AddThemeColorOverride("font_color", new Color(0.5f, 0.95f, 0.6f, 0.85f));
+            _fpsBtn.AddThemeColorOverride("font_hover_color", new Color(0.7f, 1.0f, 0.8f, 1.0f));
+            _fpsBtn.Pressed += () => OnToggleStats?.Invoke();
+            hbox.AddChild(_fpsBtn);
+
+            _fpsSep = new VSeparator { Visible = false };
+            _fpsSep.AddThemeConstantOverride("separation", 6);
+            hbox.AddChild(_fpsSep);
 
             var versionLabel = new Label
             {

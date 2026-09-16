@@ -63,6 +63,11 @@
       "step_forward": "1 Frame vor (▶)",
       "about": "Über Puris Viewer..."
     },
+    "topmenu": {
+      "copy_slurl_tooltip": "Klicken, um SLURL in die Zwischenablage zu kopieren",
+      "slurl_copied": "SLURL in Zwischenablage kopiert: {0}",
+      "fps_tooltip": "Bilder pro Sekunde (Klicken für Leistungsstatistik)"
+    },
     "avatar_hover": {
       "title": "Schwebehöhe",
       "description": "Verschiebt deinen Avatar nach oben oder unten -- praktisch, wenn ein Mesh-Body/Schuh nicht ganz am Boden aufsetzt.",

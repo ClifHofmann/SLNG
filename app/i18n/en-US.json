@@ -63,6 +63,11 @@
       "step_forward": "Step Forward (▶)",
       "about": "About Puris Viewer..."
     },
+    "topmenu": {
+      "copy_slurl_tooltip": "Click to copy SLURL to clipboard",
+      "slurl_copied": "SLURL copied to clipboard: {0}",
+      "fps_tooltip": "Frames per second (Click to toggle Performance Stats)"
+    },
     "avatar_hover": {
       "title": "Hover Height",
       "description": "Nudges your avatar up or down -- fixes a mesh body/shoe that doesn't quite touch the ground.",
