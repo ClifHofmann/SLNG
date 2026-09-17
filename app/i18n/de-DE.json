@@ -7,6 +7,7 @@
       "last_name": "Nachname",
       "password": "Passwort",
       "save_login": "Login speichern",
+      "password_saved": "gespeichert — zum Ändern tippen",
       "grid_sl": "Second Life (Agni)",
       "grid_sl_beta": "Second Life Beta (Aditi)"
     },
