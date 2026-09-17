@@ -88,4 +88,62 @@ public class MediaImageServiceTests
         var data = await MediaImageService.FetchAsync("not a url");
         Assert.Null(data);
     }
+
+    /// <summary>FEAT-SEC-01. <c>PrivateAddressPolicyTests</c> pins the policy itself; this pins
+    /// that it is actually WIRED INTO the HttpClient, which is the part that would silently stop
+    /// being true if someone rebuilt the handler.
+    ///
+    /// <para>Asserting on the log line rather than on the null return, because a null is what
+    /// comes back from an ordinary failed connection too — and "refused on purpose" versus
+    /// "nothing was listening" is exactly the distinction under test. Still no real network call:
+    /// the address is judged and rejected before a socket is opened.</para></summary>
+    [Fact]
+    public async Task FetchAsync_LoopbackHost_IsRefusedByThePolicyRatherThanAttempted()
+    {
+        var captured = new StringWriter();
+        var previous = Console.Error;
+        TextWriter? restore = null;
+        try
+        {
+            Console.SetError(captured);
+            restore = previous;
+
+            // Port 9 (discard) and a unique path so the failure cache from another test cannot
+            // answer this one.
+            var data = await MediaImageService.FetchAsync(
+                $"http://127.0.0.1:9/{Guid.NewGuid():N}.png");
+
+            Assert.Null(data);
+        }
+        finally
+        {
+            if (restore != null) Console.SetError(restore);
+        }
+
+        string log = captured.ToString();
+        Assert.Contains("private or reserved", log, StringComparison.Ordinal);
+        Assert.Contains("127.0.0.1", log, StringComparison.Ordinal);
+    }
+
+    /// <summary>The same guard, reached through a NAME rather than a literal address — the case a
+    /// URL-string check cannot catch, since nothing about "localhost" looks like an IP.</summary>
+    [Fact]
+    public async Task FetchAsync_HostnameResolvingToLoopback_IsAlsoRefused()
+    {
+        var captured = new StringWriter();
+        var previous = Console.Error;
+        try
+        {
+            Console.SetError(captured);
+            var data = await MediaImageService.FetchAsync(
+                $"http://localhost:9/{Guid.NewGuid():N}.png");
+            Assert.Null(data);
+        }
+        finally
+        {
+            Console.SetError(previous);
+        }
+
+        Assert.Contains("private or reserved", captured.ToString(), StringComparison.Ordinal);
+    }
 }

@@ -2749,6 +2749,19 @@ public partial class ObjectRenderer : Node3D
                 ? prim.MediaFaces[mediaFaceIdx] : null;
             if (probedMediaFace is { AutoPlay: true } mediaFace && !string.IsNullOrWhiteSpace(mediaFace.CurrentUrl))
             {
+                // FEAT-SEC-01: the creator's OWN whitelist, which SLNG had been ignoring --
+                // SLNG.Core.MediaWhitelist was written, tested against llmediaentry.cpp, and then
+                // never called from anywhere. When a face sets EnableWhiteList, a URL outside the
+                // list is one the creator declared this face must not show, so fetching it is
+                // wrong regardless of anything else. Empty list means no restriction, matching SL.
+                if (mediaFace.EnableWhiteList
+                    && !SLNG.Core.MediaWhitelist.IsAllowed(mediaFace.CurrentUrl, mediaFace.WhiteList))
+                {
+                    Logger.Info($"[MediaImage] {mediaFace.CurrentUrl}: outside the face's own " +
+                                "whitelist -- not fetching");
+                    continue;
+                }
+
                 // AutoScale ("fit the media into the display area", PRIM_MEDIA_AUTO_SCALE) is a
                 // real SL semantic, not a stretch-to-fill -- confirmed live against Firestorm's own
                 // black-letterboxed rendering of this exact face. WidthPixels/HeightPixels are the

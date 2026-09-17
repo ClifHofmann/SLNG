@@ -934,9 +934,19 @@ namespace SLNG.App.UI
             _permTransferCheck.SetPressedNoSignal(canTransfer);
             _permMoveCheck.SetPressedNoSignal(canMove);
 
-            bool isOwner = _session != null && ownerId != System.Guid.Empty
-                && string.Equals(_session.AgentId, ownerId.ToString(), System.StringComparison.OrdinalIgnoreCase);
-            _isOwnerLabel.Text = isOwner ? "Owner Permissions (you are the owner):" : "Owner Permissions (NOT yours -- shown for reference only):";
+            // FEAT-SEC-04: the simulator's own per-agent answer, not a guess. Comparing ownerId
+            // to the agent id -- what this did -- is wrong for a group-owned object, where the
+            // owner id IS the group's, and it could never speak to group- or everyone-editable
+            // objects at all. EditPermission reads the flags the sim already evaluated for us.
+            bool isOwner = EditPermission.IsOwner(_world!, _currentEntity);
+            bool youMayModify = EditPermission.CanModify(_world!, _currentEntity);
+            bool youMayMove = EditPermission.CanMove(_world!, _currentEntity);
+
+            _isOwnerLabel.Text = isOwner
+                ? "Owner Permissions (you are the owner):"
+                : youMayModify
+                    ? "Owner Permissions (not yours, but you may edit this):"
+                    : "Owner Permissions (NOT yours -- shown for reference only):";
 
             // See _canCopyAssetUuid's doc comment: only true for full-permission content the
             // local agent actually owns, never for someone else's restricted content.
@@ -952,12 +962,17 @@ namespace SLNG.App.UI
             // checks Modify first and only falls back to a Move-only check when Modify is absent,
             // so for a full-perm (Modify-granted) Locked object the server accepts the move
             // anyway; only a client-side disable actually enforces "Locked" here.
-            _posX.Editable = canMove;
-            _posY.Editable = canMove;
-            _posZ.Editable = canMove;
-            _rotX.Editable = canMove;
-            _rotY.Editable = canMove;
-            _rotZ.Editable = canMove;
+            //
+            // FEAT-SEC-04: gated on the AGENT's Move bit, not the owner's. `canMove` here is
+            // !meta.Locked -- the owner's Move permission -- which answers a different question
+            // and happened to coincide only while you were the owner. A transform on someone
+            // else's object needs FLAGS_OBJECT_MOVE for you, which is what youMayMove is.
+            _posX.Editable = youMayMove;
+            _posY.Editable = youMayMove;
+            _posZ.Editable = youMayMove;
+            _rotX.Editable = youMayMove;
+            _rotY.Editable = youMayMove;
+            _rotZ.Editable = youMayMove;
         }
 
         /// <summary>Copies this object's underlying content asset UUID (mesh, sculpt map, or
