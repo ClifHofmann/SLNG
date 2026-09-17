@@ -1,5 +1,8 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
+using Microsoft.Extensions.Caching.Memory;
 using SkiaSharp;
 
 namespace SLNG.Assets;
@@ -32,7 +35,26 @@ public static class MediaImageService
 
     private static HttpClient BuildHttpClient()
     {
-        var client = new HttpClient { Timeout = RequestTimeout };
+        // FEAT-SEC-01: the URL comes from in-world content, so the viewer must not be talked into
+        // reaching its own machine or LAN -- a router admin page, a local dev server, a cloud
+        // instance-metadata endpoint. The check lives in ConnectCallback rather than in front of
+        // the request for two reasons that a URL-level check cannot cover:
+        //
+        //   * it runs for EVERY connection the handler makes, redirect targets included, so a
+        //     public URL that 302s to 169.254.169.254 is refused at the second hop;
+        //   * it resolves the host itself and then connects to one of the addresses it just
+        //     checked, closing the gap where a name is resolved for the check and resolved again
+        //     -- to a different address -- for the connection.
+        var handler = new SocketsHttpHandler
+        {
+            ConnectCallback = ConnectToPublicAddressAsync,
+            // A media host that redirects more than a couple of times is not serving a still
+            // image; the default 50 is a lot of connections to make on a prim's say-so.
+            MaxAutomaticRedirections = 5,
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
+        };
+
+        var client = new HttpClient(handler) { Timeout = RequestTimeout };
         // Live-tested against a real MOAP probe (2026-09-17): a Wikimedia Commons URL answered
         // every request with a network-level failure until this was added. Several CDNs --
         // Wikimedia's among the better-documented ones -- reject or rate-limit requests that carry
@@ -43,7 +65,64 @@ public static class MediaImageService
         return client;
     }
 
-    private static readonly ConcurrentDictionary<(string Url, int FitWidth, int FitHeight), Task<TextureData?>> Cache = new();
+    /// <summary>Resolves the target host and connects only to a public address, refusing the
+    /// whole request when every address it resolves to is private or reserved. See
+    /// <see cref="SLNG.Core.PrivateAddressPolicy"/> for what counts and why the test is on the
+    /// address rather than the name.</summary>
+    private static async ValueTask<Stream> ConnectToPublicAddressAsync(
+        SocketsHttpConnectionContext context, CancellationToken token)
+    {
+        string host = context.DnsEndPoint.Host;
+        int port = context.DnsEndPoint.Port;
+
+        var resolved = await Dns.GetHostAddressesAsync(host, token).ConfigureAwait(false);
+        var permitted = resolved.Where(a => !SLNG.Core.PrivateAddressPolicy.IsPrivateOrReserved(a)).ToArray();
+
+        if (permitted.Length == 0)
+        {
+            // Logged with the addresses, because "media did not load" and "media was refused on
+            // purpose" have to be distinguishable -- and a prim aimed at the LAN is worth seeing.
+            Console.Error.WriteLine(
+                $"[MediaImage] {host}:{port}: refusing -- resolves only to private or reserved " +
+                $"addresses ({string.Join(", ", resolved.Select(a => a.ToString()))})");
+            throw new HttpRequestException(
+                $"refusing to connect to {host}: private or reserved address");
+        }
+
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            // Connects to one of the addresses just vetted, not to a fresh resolution of the name.
+            await socket.ConnectAsync(permitted, port, token).ConfigureAwait(false);
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>FEAT-SEC-03: decoded results, bounded. This was a <c>ConcurrentDictionary</c> that
+    /// was never cleared, keyed by URL and holding a full RGBA buffer — at the 2048x2048 display
+    /// cap that is 16 MB an entry, and a prim whose URL carries a changing query string
+    /// (<c>?t=1234</c>) would have filled the process with them, without anyone touching
+    /// anything. Same <c>MemoryCache</c>-with-a-size-limit shape <c>AssetService</c> already uses
+    /// for textures, just far smaller: media faces are rare next to textured ones.</summary>
+    private static readonly MemoryCache Decoded = new(new MemoryCacheOptions { SizeLimit = 32 * 1024 * 1024 });
+
+    /// <summary>Failures, remembered briefly. The old dictionary cached the <c>null</c> too, for
+    /// the life of the process, so a face whose host happened to be down at the moment it first
+    /// came into view never loaded again until a restart. A minute is long enough to stop a dead
+    /// URL being retried on every material rebuild and short enough that a transient outage
+    /// heals itself.</summary>
+    private static readonly MemoryCache Failures = new(new MemoryCacheOptions { SizeLimit = 4096 });
+
+    private static readonly TimeSpan FailureMemory = TimeSpan.FromMinutes(1);
+
+    /// <summary>In-flight requests, so a face rebuilt several times in one frame issues one GET.
+    /// Entries are removed on completion — this dedupes, it does not cache.</summary>
+    private static readonly ConcurrentDictionary<(string Url, int FitWidth, int FitHeight), Task<TextureData?>> InFlight = new();
 
     /// <summary>Fetches and decodes <paramref name="url"/>, or returns null when it isn't
     /// reachable, isn't actually an image, or exceeds <see cref="MaxContentBytes"/>. Never throws
@@ -64,8 +143,46 @@ public static class MediaImageService
     /// left untouched, rather than the naive stretch-to-fill a plain texture swap would otherwise
     /// produce. Confirmed live 2026-09-17 against Firestorm's own black-letterboxed rendering of
     /// the same face.</para></summary>
-    public static Task<TextureData?> FetchAsync(string url, int fitWidth = 0, int fitHeight = 0) =>
-        Cache.GetOrAdd((url, fitWidth, fitHeight), key => FetchCoreAsync(key.Url, key.FitWidth, key.FitHeight));
+    public static Task<TextureData?> FetchAsync(string url, int fitWidth = 0, int fitHeight = 0)
+    {
+        var key = (url, fitWidth, fitHeight);
+
+        if (Decoded.TryGetValue(key, out TextureData? hit)) return Task.FromResult(hit);
+        if (Failures.TryGetValue(key, out _)) return Task.FromResult<TextureData?>(null);
+
+        return InFlight.GetOrAdd(key, static k => FetchAndRememberAsync(k));
+    }
+
+    private static async Task<TextureData?> FetchAndRememberAsync((string Url, int FitWidth, int FitHeight) key)
+    {
+        try
+        {
+            var result = await FetchCoreAsync(key.Url, key.FitWidth, key.FitHeight).ConfigureAwait(false);
+
+            if (result != null)
+            {
+                Decoded.Set(key, result, new MemoryCacheEntryOptions
+                {
+                    Size = result.Rgba.Length,
+                    SlidingExpiration = TimeSpan.FromMinutes(10),
+                });
+            }
+            else
+            {
+                Failures.Set(key, true, new MemoryCacheEntryOptions
+                {
+                    Size = 1,
+                    AbsoluteExpirationRelativeToNow = FailureMemory,
+                });
+            }
+
+            return result;
+        }
+        finally
+        {
+            InFlight.TryRemove(key, out _);
+        }
+    }
 
     private static async Task<TextureData?> FetchCoreAsync(string url, int fitWidth, int fitHeight)
     {
