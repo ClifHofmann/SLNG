@@ -15,6 +15,22 @@ public partial class Boot : Control
     private LineEdit _firstInput = null!;
     private LineEdit _lastInput = null!;
     private LineEdit _passInput = null!;
+
+    /// <summary>FEAT-SEC-02: the selected profile's saved <c>$1$&lt;md5&gt;</c> credential, or empty
+    /// when none is stored. Used only when <see cref="_passInput"/> is left untouched — anything
+    /// typed wins, so there is no state to keep in sync with the field.</summary>
+    private string _storedPassHash = "";
+
+    /// <summary>Drops the saved credential. Called when the account or grid being logged into
+    /// changes, because the hash authenticates one account and sending it under another name
+    /// would be an authentication attempt with someone else's credential.</summary>
+    private void ForgetStoredPassword()
+    {
+        if (_storedPassHash.Length == 0) return;
+        _storedPassHash = "";
+        _passInput.PlaceholderText = "";
+    }
+
     private CheckBox _saveLoginCheck = null!;
     private Button _loginButton = null!;
     private RichTextLabel _logPanel = null!;
@@ -299,7 +315,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.3-alpha";
+    public const string AppVersion = "v0.23.6-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -406,6 +422,18 @@ public partial class Boot : Control
             _gridInput.Text = (string)_gridDropdown.GetItemMetadata((int)index);
         };
         _passInput = GetNode<LineEdit>("%PassInput");
+        // FEAT-SEC-02: a saved password is now a hash, so the field cannot be pre-filled with it.
+        // It stays EMPTY with an explanatory placeholder rather than showing dots: a fake mask
+        // would leak the real length, and any character of it left behind would be sent as the
+        // password. Typing simply wins over the stored hash (see the login handler), so there is
+        // no focus/clear dance to get wrong.
+        //
+        // Changing who is logging in must drop the stored hash -- it belongs to one account, and
+        // sending it under a different name would be an authentication attempt with someone
+        // else's credential.
+        _firstInput.TextChanged += _ => ForgetStoredPassword();
+        _lastInput.TextChanged += _ => ForgetStoredPassword();
+        _gridInput.TextChanged += _ => ForgetStoredPassword();
         _saveLoginCheck = GetNode<CheckBox>("%SaveLoginCheck");
         _loginButton = GetNode<Button>("%LoginButton");
         _logPanel = GetNode<RichTextLabel>("%LogPanel");
@@ -2337,6 +2365,8 @@ public partial class Boot : Control
 
         if (_loginsConfig.Load("user://logins.cfg") == Error.Ok)
         {
+            MigratePlaintextPasswords();
+
             var sections = _loginsConfig.GetSections();
             foreach (var profile in sections)
             {
@@ -2372,6 +2402,43 @@ public partial class Boot : Control
         }
     }
 
+    /// <summary>FEAT-SEC-02: rewrites every profile's plaintext <c>pass</c> as a
+    /// <c>$1$&lt;md5&gt;</c> <c>pass_hash</c> and removes the plaintext.
+    ///
+    /// <para>Runs once per start, before the dropdown is built, and is safe to run again: a
+    /// profile with no <c>pass</c> key is skipped, and <see cref="PasswordHash.Hash"/> is
+    /// idempotent, so a partially converted file (a crash mid-save) finishes correctly on the next
+    /// start. Each profile is self-contained, so nothing is left half-written either.</para>
+    ///
+    /// <para>One-way on purpose: the plaintext cannot be recovered from the hash. That is the
+    /// point — see <see cref="PasswordHash"/> for what this does and does not protect — but it
+    /// means the file is saved only if something actually changed, so a run that converts nothing
+    /// cannot damage it.</para></summary>
+    private void MigratePlaintextPasswords()
+    {
+        bool changed = false;
+
+        foreach (var profile in _loginsConfig.GetSections())
+        {
+            if (profile == "Settings" || profile == "Window") continue;
+            if (!_loginsConfig.HasSectionKey(profile, "pass")) continue;
+
+            string plaintext = (string)_loginsConfig.GetValue(profile, "pass", "");
+            if (plaintext.Length > 0)
+            {
+                _loginsConfig.SetValue(profile, "pass_hash", PasswordHash.Hash(plaintext));
+            }
+            _loginsConfig.EraseSectionKey(profile, "pass");
+            changed = true;
+        }
+
+        if (!changed) return;
+
+        _loginsConfig.Save("user://logins.cfg");
+        LogMessage($"[color=#2dd4bf]Saved passwords migrated[/color] - stored as a login hash, " +
+                   "the plaintext has been removed from logins.cfg");
+    }
+
     private void OnProfileSelected(long index)
     {
         if (index == 0) return; // The "--- Select Profile ---" placeholder
@@ -2380,7 +2447,31 @@ public partial class Boot : Control
         _gridInput.Text = (string)_loginsConfig.GetValue(profile, "grid", "");
         _firstInput.Text = (string)_loginsConfig.GetValue(profile, "first", "");
         _lastInput.Text = (string)_loginsConfig.GetValue(profile, "last", "");
-        _passInput.Text = (string)_loginsConfig.GetValue(profile, "pass", "");
+
+        // FEAT-SEC-02: only a hash is stored, so there is nothing to put in the field. It stays
+        // empty with a placeholder saying so; typing something replaces the stored credential
+        // (see OnLoginPressed), leaving it alone uses it.
+        _storedPassHash = (string)_loginsConfig.GetValue(profile, "pass_hash", "");
+        _passInput.Text = "";
+        _passInput.PlaceholderText = _storedPassHash.Length > 0
+            ? SLNG.App.UI.L10n.Tr("ui.login.password_saved")
+            : "";
+
+        // The checkbox has to SHOW that this profile is saved, not just decide whether to save it
+        // again. It defaults to unticked in Boot.tscn and nothing ever restored it, which was
+        // harmless only while unticking did nothing: selecting a saved profile and logging in
+        // without touching the box now means "stop keeping this", and it would delete the
+        // credential the user just successfully logged in with. Measured, not hypothetical --
+        // that is exactly what happened to a real saved profile the first time this shipped.
+        //
+        // Keyed on reaching this method at all, NOT on whether a credential happens to exist.
+        // One checkbox covers the whole profile here (grid, name and password together), and
+        // every profile in the dropdown is by definition a saved one. Keying it on the password
+        // instead looks more precise and is worse: a profile whose credential was lost unticks
+        // itself, so typing the password back in does not re-save it and the profile can never
+        // recover without the user noticing the box. That trap was walked into once already.
+        _saveLoginCheck.ButtonPressed = true;
+
         SyncGridDropdownToUri(_gridInput.Text);
 
         _loginsConfig.SetValue("Settings", "last_profile", profile);
@@ -2910,12 +3001,19 @@ public partial class Boot : Control
         // A refusal is not a failure -- it already carries the explanation, so it is shown as-is.
         _session.WearableEditRefused += (s, reason) => CallDeferred(nameof(NotifyBakeResult), reason);
 
+        // FEAT-SEC-02: anything typed wins over the saved credential -- that is how a password is
+        // changed, and how a wrong saved one is overridden. An untouched field means "use what is
+        // stored", which is the $1$<md5> hash LibreMetaverse passes straight through (it only
+        // hashes a password that does not already look hashed, Login.cs:963). Plaintext typed here
+        // is hashed by the library on its way out and never reaches disk in that form.
+        string password = _passInput.Text.Length > 0 ? _passInput.Text : _storedPassHash;
+
         var creds = new LoginCredentials
         {
             GridLoginUri = _gridInput.Text,
             FirstName = _firstInput.Text,
             LastName = _lastInput.Text,
-            Password = _passInput.Text,
+            Password = password,
 
             // The grid records this on every login and prints it in the region log
             // ("viewer SLNG 0.1.0, teleportflags ..."). It was never set, so LoginCredentials'
@@ -2970,7 +3068,26 @@ public partial class Boot : Control
                 _loginsConfig.SetValue(profileName, "grid", creds.GridLoginUri);
                 _loginsConfig.SetValue(profileName, "first", creds.FirstName);
                 _loginsConfig.SetValue(profileName, "last", creds.LastName);
-                _loginsConfig.SetValue(profileName, "pass", creds.Password);
+                // FEAT-SEC-02: the hash, never the plaintext. Hash() is idempotent, so this is
+                // correct whether creds.Password came from the field or was already the stored
+                // hash. The login has just succeeded, so what is saved is known to work.
+                _loginsConfig.SetValue(profileName, "pass_hash", PasswordHash.Hash(creds.Password));
+                _storedPassHash = PasswordHash.Hash(creds.Password);
+            }
+            else if (_loginsConfig.HasSection(profileName))
+            {
+                // Unticking "save login" used to leave a previously saved password sitting in the
+                // file untouched -- the one action a user takes to say "stop keeping this" did
+                // nothing. Both keys, because a file written before FEAT-SEC-02 may still carry
+                // the plaintext one if this profile was never selected (and so never migrated).
+                // Guarded on HasSection: erasing a key from a section that does not exist -- the
+                // ordinary case of a first login with the box unticked -- is an error in Godot,
+                // not a no-op.
+                if (_loginsConfig.HasSectionKey(profileName, "pass_hash"))
+                    _loginsConfig.EraseSectionKey(profileName, "pass_hash");
+                if (_loginsConfig.HasSectionKey(profileName, "pass"))
+                    _loginsConfig.EraseSectionKey(profileName, "pass");
+                _storedPassHash = "";
             }
             _loginsConfig.SetValue("Settings", "last_profile", profileName);
             _loginsConfig.Save("user://logins.cfg");
