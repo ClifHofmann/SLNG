@@ -2606,8 +2606,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _appearanceReadinessLogged = true;
         string region = _client.Network.CurrentSim?.Name ?? "?";
         Console.Error.WriteLine($"[Appearance] {region}: system-wearable edits enabled — every bake is " +
-            "followed by a corrected AgentSetAppearance: LibreMetaverse puts 195 of 218 visual " +
-            "params in the wrong slot AND truncates the wire array from 253 to 218 (FEAT-AVATAR-01)");
+            "followed by an AgentSetAppearance built by AgentAppearanceParams: all 253 transmitted " +
+            "visual params, in wire order (FEAT-AVATAR-01)");
     }
 
     /// <summary>FEAT-AVATAR-01: raised when the corrected <c>AgentSetAppearance</c> failed its
