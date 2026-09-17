@@ -315,7 +315,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.4-alpha";
+    public const string AppVersion = "v0.23.5-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -2456,6 +2456,14 @@ public partial class Boot : Control
         _passInput.PlaceholderText = _storedPassHash.Length > 0
             ? SLNG.App.UI.L10n.Tr("ui.login.password_saved")
             : "";
+
+        // The checkbox has to SHOW whether this profile is saved, not just decide whether to save
+        // it again. It defaults to unticked in Boot.tscn and nothing ever restored it, which was
+        // harmless only while unticking did nothing: selecting a saved profile and logging in
+        // without touching the box now means "stop keeping this", and it would delete the
+        // credential the user just successfully logged in with. Measured, not hypothetical --
+        // that is exactly what happened to a real saved profile the first time this shipped.
+        _saveLoginCheck.ButtonPressed = _storedPassHash.Length > 0;
 
         SyncGridDropdownToUri(_gridInput.Text);
 
