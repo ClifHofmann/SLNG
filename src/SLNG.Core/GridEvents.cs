@@ -211,7 +211,23 @@ public record ObjectUpdateEvent(
     // identifies a mirror. Subject to the same terse-update staleness as the light fields.
     ReflectionProbeParams? ReflectionProbe = null,
     // PrimFlags.Touch bit: true when an in-world script on this prim registers touch_start/touch/touch_end.
-    bool IsTouch = false
+    bool IsTouch = false,
+    // FEAT-SEC-04: the simulator's own answer to "may THIS agent do that to this object". These
+    // are not the object's permission masks -- those describe what its OWNER may do, which is a
+    // different question unless you are the owner. The sim evaluates the masks against the
+    // receiving agent (owner, active group, everyone) and ships the result as ObjectUpdate flags,
+    // which is why the reference viewer's LLViewerObject::permModify is a one-line flag read
+    // (llviewerobject.cpp:6988 -> flagObjectModify()) rather than permission arithmetic.
+    //
+    // object_flags.h: FLAGS_OBJECT_MODIFY 1<<2, FLAGS_OBJECT_COPY 1<<3, FLAGS_OBJECT_ANY_OWNER
+    // 1<<4, FLAGS_OBJECT_YOU_OWNER 1<<5, FLAGS_OBJECT_MOVE 1<<8, FLAGS_OBJECT_TRANSFER 1<<17 --
+    // bit-for-bit LibreMetaverse's PrimFlags.ObjectModify/ObjectCopy/ObjectAnyOwner/
+    // ObjectYouOwner/ObjectMove/ObjectTransfer, verified against v3.1.6.
+    //
+    // Same terse-update staleness as IsPhysical and friends: they ride the full ObjectUpdate
+    // only, so they are applied under IsFullUpdate.
+    bool YouCanModify = false, bool YouCanMove = false, bool YouCanCopy = false,
+    bool YouCanTransfer = false, bool YouAreOwner = false
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY
