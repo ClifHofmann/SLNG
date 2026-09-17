@@ -2744,7 +2744,8 @@ public partial class ObjectRenderer : Node3D
             // never blocking or gating it -- the media host is untrusted and potentially slow/dead,
             // and the object's normal appearance must never wait on it.
             int mediaFaceIdx = faceIndices[surf];
-            var probedMediaFace = (prim.MediaFaces != null && mediaFaceIdx >= 0 && mediaFaceIdx < prim.MediaFaces.Length)
+            var probedMediaFace = (MediaSettings.AutoLoadEnabled && prim.MediaFaces != null
+                && mediaFaceIdx >= 0 && mediaFaceIdx < prim.MediaFaces.Length)
                 ? prim.MediaFaces[mediaFaceIdx] : null;
             if (probedMediaFace is { AutoPlay: true } mediaFace && !string.IsNullOrWhiteSpace(mediaFace.CurrentUrl))
             {

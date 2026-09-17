@@ -72,6 +72,13 @@ namespace SLNG.App.UI
         private MenuButton _profileMenuBtn = null!;
         private VSeparator _profileSep = null!;
         private PopupMenu? _graphicsProfileMenu;
+
+        // MVP3-3: Firestorm-parity media control cluster. _audioMuteBtn has no audio source to
+        // affect yet -- see MediaSettings' own doc comment -- kept purely so the two-icon look
+        // doesn't need a second pass once one exists.
+        private Button _mediaAutoLoadBtn = null!;
+        private Button _audioMuteBtn = null!;
+        private VSeparator _mediaSep = null!;
         private GraphicsSettings? _graphicsSettings;
         private Action? _applyGraphicsSettings;
         private Action? _onGraphicsSettingsChanged;
@@ -324,6 +331,50 @@ namespace SLNG.App.UI
             _profileSep.AddThemeConstantOverride("separation", 6);
             hbox.AddChild(_profileSep);
 
+            // MVP3-3: media auto-load toggle (Firestorm's own media/audio icon cluster). The
+            // resident's kill switch for MOAP's IP-disclosure risk -- see MediaSettings.
+            _mediaAutoLoadBtn = new Button
+            {
+                Flat = true,
+                FocusMode = Control.FocusModeEnum.None,
+                SizeFlagsVertical = Control.SizeFlags.ShrinkCenter,
+                CustomMinimumSize = new Vector2(24, 22)
+            };
+            _mediaAutoLoadBtn.AddThemeFontSizeOverride("font_size", 14);
+            _mediaAutoLoadBtn.AddThemeColorOverride("font_color", new Color(0.9f, 0.9f, 0.95f, 0.95f));
+            _mediaAutoLoadBtn.AddThemeColorOverride("font_hover_color", new Color(1.0f, 1.0f, 1.0f, 1.0f));
+            _mediaAutoLoadBtn.Pressed += () =>
+            {
+                MediaSettings.SetAutoLoadEnabled(!MediaSettings.AutoLoadEnabled);
+                RefreshMediaButtons();
+            };
+            hbox.AddChild(_mediaAutoLoadBtn);
+
+            // Placeholder: no audio source exists yet (see MediaSettings), added now purely so
+            // the two-icon cluster matches Firestorm's without a second UI pass once one does.
+            _audioMuteBtn = new Button
+            {
+                Flat = true,
+                FocusMode = Control.FocusModeEnum.None,
+                SizeFlagsVertical = Control.SizeFlags.ShrinkCenter,
+                CustomMinimumSize = new Vector2(24, 22)
+            };
+            _audioMuteBtn.AddThemeFontSizeOverride("font_size", 14);
+            _audioMuteBtn.AddThemeColorOverride("font_color", new Color(0.9f, 0.9f, 0.95f, 0.95f));
+            _audioMuteBtn.AddThemeColorOverride("font_hover_color", new Color(1.0f, 1.0f, 1.0f, 1.0f));
+            _audioMuteBtn.Pressed += () =>
+            {
+                MediaSettings.SetAudioMuted(!MediaSettings.AudioMuted);
+                RefreshMediaButtons();
+            };
+            hbox.AddChild(_audioMuteBtn);
+            RefreshMediaButtons();
+            MediaSettings.Changed += RefreshMediaButtons;
+
+            _mediaSep = new VSeparator();
+            _mediaSep.AddThemeConstantOverride("separation", 6);
+            hbox.AddChild(_mediaSep);
+
             _fpsBtn = new Button
             {
                 Flat = true,
@@ -547,7 +598,20 @@ namespace SLNG.App.UI
             {
                 _graphicsSettings.Changed -= RefreshGraphicsProfilesUI;
             }
+            MediaSettings.Changed -= RefreshMediaButtons;
             base._ExitTree();
+        }
+
+        /// <summary>MVP3-3: reflects MediaSettings' current state onto the two icon buttons.</summary>
+        private void RefreshMediaButtons()
+        {
+            _mediaAutoLoadBtn.Text = MediaSettings.AutoLoadEnabled ? "▶" : "⏸";
+            _mediaAutoLoadBtn.TooltipText = L10n.Tr(MediaSettings.AutoLoadEnabled
+                ? "ui.topmenu.media_autoload_on_tooltip" : "ui.topmenu.media_autoload_off_tooltip");
+
+            _audioMuteBtn.Text = MediaSettings.AudioMuted ? "🔇" : "🔊";
+            _audioMuteBtn.TooltipText = L10n.Tr(MediaSettings.AudioMuted
+                ? "ui.topmenu.audio_muted_tooltip" : "ui.topmenu.audio_unmuted_tooltip");
         }
 
         public void RefreshGraphicsProfilesUI()
