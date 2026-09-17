@@ -2,10 +2,9 @@
 
 - **Feature ID:** `MVP3-3`
 - **Track:** `net` / `core` / `render`
-- **Status:** `🚧 In Progress` (Phase 1 — protocol + data model — landed and tested; not yet
-  confirmed in-world, since that requires a live session against a real grid. Phases 2–3
-  are scoped below but not started. Phase 4 — an embedded web browser — is split into its
-  own follow-up id, `FEAT-MEDIA-01`, gated on an ADR.)
+- **Status:** `🚧 In Progress` (Phases 1 and 3 landed and confirmed/tested; Phase 2 (click to
+  open in the system browser) is scoped below but not started. Phase 4 — an embedded web
+  browser — is split into its own follow-up id, `FEAT-MEDIA-01`, gated on an ADR.)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -35,9 +34,9 @@ one:
 
 | Phase | What ships | New dependency? | Status |
 |---|---|---|---|
-| **1** | Data model + protocol fetch + version-gated, throttled change detection | No | ✅ Landed this spec |
+| **1** | Data model + protocol fetch + version-gated, throttled change detection | No | ✅ Landed and confirmed in-world |
 | **2** | Object inspector display + click-a-media-face → confirm dialog (host + URL) → open in the system browser, permission/whitelist-checked | No | ⏸️ Pending — needs raycast-hit → SL-face-number resolution, which does not exist anywhere in the renderer yet (see Phase 2 notes) |
-| **3** | Direct-image (and Theora) textures rendered live on the face | No (ADR 0002 already covers uniform-driven face content) | ⏸️ Pending |
+| **3** | Direct-image (and, later, Theora) textures rendered live on AUTO_PLAY faces | No (ADR 0002 already covers uniform-driven face content; SkiaSharp/Magick.NET already referenced) | ✅ Landed — not yet confirmed in-world |
 | **4** (own id: `FEAT-MEDIA-01`) | Full embedded web browser | **Yes — needs an ADR** | ⏸️ Not started |
 
 Parcel-wide media (`ParcelMediaCommandMessage`/`ParcelMediaUpdateReply`) is a different,
@@ -172,7 +171,46 @@ carry an already-in-view MOAP prim — is the update most likely to race it.
    the moment caps are confirmed ready, rather than waiting for some later, incidental
    ObjectUpdate for that same prim that might not come for a long time.
 
-Not yet re-confirmed in-world after the fix (needs another live login on the same region).
+**Confirmed in-world 2026-09-17 (`v0.22.200-alpha`):** clean `[Media] object ... faces=2/6` on
+the very next login, no capability-race failure.
+
+## Phase 3 — direct-image face content (landed, `v0.22.201-alpha`)
+
+Renders a MOAP face's image directly onto the prim, for the common in-world case a full
+embedded browser is not needed for (vendor boards, gallery prims, webcam stills) — exactly the
+shape confirmed live: Firestorm itself only auto-renders the probe's AUTO_PLAY image face
+without any click, never the non-autoplay webpage face, so that is the realistic Phase 3
+target, not an arbitrary simplification.
+
+**`SLNG.Assets.MediaImageService`** (new): fetches `MediaFace.CurrentUrl` with a bare
+`HttpClient` — never `Client.HttpCapsClient`, a third-party media host must never see the
+session's caps URL, agent id or cookies — validates the response is actually `image/*`, caps
+the download at 8 MB, and decodes it with the SAME `SKBitmap` → exact-RGBA path
+`AssetService`'s own CoreJ2K fallback already uses, returning the same neutral `TextureData`
+every other texture path returns. Cached by URL for the process lifetime (a face's material
+rebuilds on ordinary scene churn far more often than its media actually changes). SkiaSharp and
+Magick.NET were already referenced in `SLNG.Assets` — no new dependency. One real trap this
+surfaced: `SKBitmap.Decode` does not return null for input it can't parse, it throws
+`ArgumentNullException` from inside its own codec lookup — caught by this session's own test
+for garbage bytes before it could reach a live host's malformed response.
+
+**`ObjectRenderer.ApplyMediaImageAsync`** (new, `app/`): fire-and-forget, applied strictly
+AFTER a face's ordinary material has already landed, so a slow/dead/non-image URL never blocks
+or breaks the object's normal appearance — only `AutoPlay` faces fetch automatically, matching
+what a reference viewer shows without interaction. Pixel decode stays off the main thread; only
+the final `ImageTexture.CreateFromImage` GPU upload is marshalled through `MainThreadWorkQueue`,
+the same split every other texture path (`GpuCache.cs`) already uses.
+
+**A real instancing leak, caught before landing, not after:** a MOAP face's material gets its
+albedo swapped live, well after `ObjectInstanceGroups` may have already put it in a shared
+`MultiMesh` group with other identical-looking instances — sharing that material would leak one
+prim's fetched media onto every other member. `FaceSurfaceMerge`'s `HasMedia`-based equality
+already stops a media face from merging into ONE surface with a differently-configured
+neighbour on the SAME object, which means a MOAP object usually has `GetSurfaceCount() > 1`
+and already fails instancing's existing single-surface check — but a single-face object
+entirely covered by one MOAP entry has nothing to differ from and would still pass it, so
+`EvaluateInstancing` now excludes any object with `PrimitiveComponent.MediaFaces != null`
+explicitly, regardless of surface count.
 
 ### Tests
 
@@ -189,6 +227,10 @@ Not yet re-confirmed in-world after the fix (needs another live login on the sam
   entity case `ApplyPhysicsProperties` already established the pattern for.
 - `FaceSurfaceMergeTests` — extended `DifferingFaces()`/the constructor-field-count guard
   with the new `HasMedia` field, proving a media face can't merge with a non-media one.
+- `MediaImageServiceTests` (`SLNG.Assets.Tests`) — the SKBitmap decode path against a real
+  1x1 PNG and against garbage bytes (catching the `SKBitmap.Decode` throws-don't-return-null
+  trap before it could reach a live host's malformed response), plus the non-http(s)/
+  unparseable-URL guards that must never make a network call.
 
 ## Phase 2 — click-to-open fallback (not started)
 
@@ -214,21 +256,39 @@ today and is this phase's real scope, not the dialog/`OS.ShellOpen` part.
 - Check `MediaPermissionEvaluator`/`MediaWhitelist` client-side before offering the dialog
   at all, not just server-side — TPV Non-negotiable #1 (honor creator permissions) applies
   regardless of what the sim also enforces.
-- No automatic fetch/open ever, even of just a thumbnail: MOAP is a known IP-disclosure/
-  griefing vector (a rezzed prim can point media at a server the griefer controls and log
-  every visitor's IP). Everything here is user-click-gated by design; do not add an
-  autoplay/auto-preview path.
+- No automatic OS-browser open, ever, not even of just a preview: opening an external
+  program is a materially bigger action than an in-scene texture, and MOAP is a known
+  IP-disclosure/griefing vector (a rezzed prim can point media at a server the griefer
+  controls and log every visitor's IP) — for THIS phase's click-to-`OS.ShellOpen` action,
+  everything must stay user-click-gated. This does not contradict Phase 3's auto-rendered
+  image: an in-scene texture swap is the lower-risk half of the same risk (still an IP
+  disclosure to whatever host the creator pointed the face at, but not also handing that host
+  an invitation to run in a full external browser process), it only ever fires for a face the
+  CREATOR explicitly flagged `AUTO_PLAY` (their declared intent, not SLNG inventing
+  auto-fetch), and it's exactly the behaviour a reference viewer already shows with zero
+  clicks — confirmed live: Firestorm auto-renders the probe's `AUTO_PLAY` image face and
+  shows nothing at all for the non-`AUTO_PLAY` webpage face until clicked.
 
-## Phase 3 — direct-image / Theora face content (not started)
+## Phase 3 — direct-image face content (landed, `v0.22.201-alpha`)
 
-For a face whose `CurrentUrl` resolves to `image/jpeg`/`image/png` (vendor boards, gallery
-prims, webcam stills) or a fully-downloadable `.ogv`, swap the face's albedo texture live —
-`PrimShaderFamily`'s existing per-surface texture parameter, not a material rebuild. Owned
-by `SLNG.Assets` (a bare `HttpClient`, **never** `Client.HttpCapsClient` — a third-party
-media host must never receive the session's caps URL/agent id) in a cache namespace
-separate from the J2K asset cache (media keys on URL+ETag, not a UUID).  Needs its own
-teardown discipline for the (rare) Theora case, matching `ObjectParticles`' node-lifetime
-pattern rather than inventing a new one.
+For a face whose `CurrentUrl` resolves to `image/*` (vendor boards, gallery prims, webcam
+stills) and whose `MediaFace.AutoPlay` is true, swap the face's albedo texture live —
+`PrimShaderFamily`'s existing per-surface texture parameter, not a material rebuild. Owned by
+`SLNG.Assets.MediaImageService` (a bare `HttpClient`, **never** `Client.HttpCapsClient` — a
+third-party media host must never receive the session's caps URL/agent id), decoding via the
+same `SKBitmap` path `AssetService`'s own CoreJ2K fallback already uses, cached by URL for the
+process lifetime — SkiaSharp and Magick.NET were already referenced in `SLNG.Assets`, no new
+dependency. `ObjectRenderer.ApplyMediaImageAsync` applies it strictly AFTER the face's ordinary
+material has already landed, fire-and-forget, so a slow/dead/non-image URL never blocks or
+breaks the object's normal appearance. See the in-world bug/fix log above this section for the
+one real trap it surfaced (`SKBitmap.Decode` throws rather than returning null on bad input)
+and the instancing-leak gap it closed before ever landing (`EvaluateInstancing` now excludes
+any MOAP-carrying object regardless of surface count).
+
+Video (Theora, for a fully-downloadable `.ogv`) is a smaller follow-up on the same seam once
+there's a real test case for it — needs its own teardown discipline, matching
+`ObjectParticles`' node-lifetime pattern rather than inventing a new one. Not started; no
+in-world MOAP video test target has been found yet.
 
 ## Phase 4 — embedded web browser (`FEAT-MEDIA-01`, not started)
 
@@ -241,7 +301,9 @@ CEF runs in a separate `SLPlugin` process specifically to isolate crashes and ke
 extension surface small), and should revisit "is this still needed" if Godot ever ships a
 first-class web view.
 
-## Acceptance Criteria (Phase 1, this spec)
+## Acceptance Criteria
+
+### Phase 1
 
 - [x] `ObjectMedia` fetch, per-face doorbell detection, and version-gated/throttled
       change-triggering implemented in `SLNG.Net`, with no LibreMetaverse type crossing the
@@ -254,7 +316,21 @@ first-class web view.
       version-string parsing, the LMV↔neutral conversion, and the end-to-end buffered-event
       path.
 - [x] `dotnet build` (solution + `app/`), `dotnet test`, `dotnet format` clean.
-- [ ] Confirmed against a live region (needs an interactive session with real grid access —
-      not available in the environment this phase was implemented in; the diagnostic
-      `[Media] object ... version=... faces=N/M` log line is the thing to watch for on a
-      known MOAP prim).
+- [x] Confirmed against a live region — `v0.22.198-alpha`, Agni: clean `[Media] object ...
+      faces=2/6` on login (after the cap-race fix; the first live attempt caught and fixed
+      that bug).
+
+### Phase 3
+
+- [x] `SLNG.Assets.MediaImageService`: fetch (bare `HttpClient`, image/* content-type
+      validated, 8 MB cap, URL-cached) and decode (SKBitmap → neutral `TextureData`) with no
+      LibreMetaverse or Godot type crossing the boundary.
+- [x] `ObjectRenderer.ApplyMediaImageAsync`: fire-and-forget, applied after the face's
+      ordinary material, `AutoPlay`-gated, pixel decode off the main thread / GPU upload on it.
+- [x] MOAP-carrying objects excluded from `MultiMesh` instancing regardless of surface count.
+- [x] Unit tests for the decode path (real PNG, garbage bytes, empty bytes) and the
+      non-network URL guards.
+- [x] `dotnet build` (solution + `app/`), `dotnet test`, `dotnet format`, shader-globals,
+      `--selftest` all clean.
+- [ ] Confirmed against a live region (needs a rebuild + a live session against the probe's
+      `AUTO_PLAY` image face).

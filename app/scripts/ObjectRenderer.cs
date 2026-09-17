@@ -2739,9 +2739,47 @@ public partial class ObjectRenderer : Node3D
                 // the next tick has to write its current frame back over it. See TexAnimNeedsReapply.
                 state.TexAnimNeedsReapply = true;
             }, label: "material.surface");
+
+            // MVP3-3 Phase 3: swap a MOAP face's live image on AFTER its ordinary material lands,
+            // never blocking or gating it -- the media host is untrusted and potentially slow/dead,
+            // and the object's normal appearance must never wait on it.
+            int mediaFaceIdx = faceIndices[surf];
+            if (prim.MediaFaces != null && mediaFaceIdx >= 0 && mediaFaceIdx < prim.MediaFaces.Length
+                && prim.MediaFaces[mediaFaceIdx] is { AutoPlay: true } mediaFace
+                && !string.IsNullOrWhiteSpace(mediaFace.CurrentUrl))
+            {
+                ApplyMediaImageAsync(material, mediaFace.CurrentUrl);
+            }
         }
 
         ApplyOnMainThread(state, null, allUsed.Distinct().ToList());
+    }
+
+    /// <summary>MVP3-3 Phase 3: fetches (or reuses the cached decode of) a MOAP face's direct-image
+    /// content and swaps it onto the face's already-applied material as the albedo texture.
+    /// Fire-and-forget on purpose -- <paramref name="material"/> already carries the object's
+    /// normal appearance by the time this is called, so a slow, dead or non-image URL simply never
+    /// updates it, exactly as if the media had not loaded (matching a reference viewer's own blank-
+    /// until-loaded MOAP face). Only the FINAL GPU upload touches the main thread; the fetch and
+    /// pixel decode (SLNG.Assets.MediaImageService) run entirely on worker threads, same split as
+    /// every other texture path (GpuCache.cs).</summary>
+    private void ApplyMediaImageAsync(ShaderMaterial material, string url)
+    {
+        _ = SLNG.Assets.MediaImageService.FetchAsync(url).ContinueWith(t =>
+        {
+            var data = t.Result;
+            if (data == null) return;
+
+            var image = Godot.Image.CreateFromData(data.Width, data.Height, false, Godot.Image.Format.Rgba8, data.Rgba);
+            if (image == null) return;
+
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+            {
+                if (!IsInstanceValid(material)) return;
+                material.SetShaderParameter(PrimShaderFamily.AlbedoTexture, ImageTexture.CreateFromImage(image));
+                material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
+            }, label: "prim.media_image");
+        });
     }
 
     /// <summary>Marshals texture ref-count bookkeeping (and an optional action) to the main thread,
@@ -4371,7 +4409,9 @@ public partial class ObjectRenderer : Node3D
     /// split — and never an alpha-discard kind either, i.e. no Scissor/ScissorEdge/Hash:
     /// BUG-RENDER-17 found MultiMesh instancing of those renders wrong, see
     /// <see cref="HasAlphaDiscard"/>), no running texture animation, no split children, no
-    /// light/particle child.</para></summary>
+    /// light/particle child, no MOAP media face (MVP3-3 — its material's albedo gets swapped
+    /// live, well after any grouping, which would leak one prim's fetched media onto every other
+    /// instance sharing it).</para></summary>
     private void EvaluateInstancing(VisualState state)
     {
         if (_instanceGroups == null || !RenderConfig.EnableInstancing)
@@ -4380,6 +4420,15 @@ public partial class ObjectRenderer : Node3D
             return;
         }
 
+        // MVP3-3 Phase 3: a MOAP face's material gets its AlbedoTexture swapped live, well after
+        // grouping would have already happened -- sharing that material via MultiMesh would leak
+        // one prim's fetched media onto every other instance in the group. FaceSurfaceMerge's
+        // HasMedia-based equality already keeps a media face from merging into ONE surface with a
+        // differently-configured neighbour on the SAME object (surface count > 1 already fails the
+        // check below), but a single-face object entirely covered by one MOAP entry has nothing to
+        // differ from and would otherwise still end up with GetSurfaceCount() == 1.
+        bool hasMedia = _world?.GetEntity(state.EntityId)?.GetComponent<PrimitiveComponent>()?.MediaFaces != null;
+
         bool disqualified =
             _instanceSuppressed.Contains(state.EntityId)
             || state.ResourcesReleased
@@ -4387,6 +4436,7 @@ public partial class ObjectRenderer : Node3D
             || state.LightNode != null
             || state.ParticlesNode != null
             || _texAnims.ContainsKey(state.EntityId)
+            || hasMedia
             || !IsInstanceValid(state.MeshInstance)
             || !state.MeshInstance.Visible;
 
