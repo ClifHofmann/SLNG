@@ -406,8 +406,16 @@ public sealed class WorldSimulation : IDisposable
         }
         prim.AttachmentPoint = e.AttachmentPoint;
         // Unlike the flags/light fields below, Material comes from the same PrimData block as
-        // Shape/ProfileCurve above -- current on every update, full or terse, so no IsFullUpdate
-        // guard is needed here.
+        // Shape/ProfileCurve above, which the network layer keeps current on a terse update by
+        // reading it off the cached, already-decoded object -- so no IsFullUpdate guard here.
+        //
+        // That holds only because GridSession.IsUnpopulatedPrimitive drops the one case where it
+        // would not: a terse update for an object LibreMetaverse has never decoded, where it hands
+        // over a manufactured Primitive whose PrimData is all zeros. Such an event used to reach
+        // this method and assign a default PrimShape over a perfectly good one (and a zero Scale,
+        // and empty Faces), which surfaced downstream as a placeholder cylinder and a
+        // [PrimMeshFallback] pathScale=(0,0) warning. Guarding the fields here would have been the
+        // wrong half of the fix -- the event should never have been raised.
         prim.Material = e.Material;
         prim.ClickAction = e.ClickAction;
         // Terse-sourced events (ImprovedTerseObjectUpdate -- fast position streaming for moving

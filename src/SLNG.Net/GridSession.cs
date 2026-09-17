@@ -5189,6 +5189,47 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             timeDilation: e.TimeDilation / 65535.0f);
     }
 
+    /// <summary>True for a <see cref="Primitive"/> LibreMetaverse manufactured rather than decoded
+    /// — one that carries no construction data, no scale and no textures.
+    ///
+    /// <para>ImprovedTerseObjectUpdate carries a localID and a position, nothing else, so
+    /// <c>ImprovedTerseObjectUpdateHandler</c> resolves the object with
+    /// <c>GetPrimitive(sim, localID, UUID.Zero)</c>. That helper is get-<b>or-create</b>: on a cache
+    /// miss it adds <c>new Primitive { LocalID, RegionHandle }</c> and assigns <c>ID = fullID</c> —
+    /// which the terse caller passes as <c>UUID.Zero</c> (ObjectManager.cs:2686-2726, identical in
+    /// v3.1.3 and v3.1.6 — this is long-standing behaviour, not something the 3.1.6 upgrade
+    /// introduced). A cache miss is routine, not exotic: an object moving into view, crossing a
+    /// region border, or whose full update was lost or simply has not arrived yet.</para>
+    ///
+    /// <para>Both signals mean the same thing and either one is conclusive. <c>ID</c> is
+    /// <c>UUID.Zero</c> only on an object LMV created for a terse update — a full ObjectUpdate
+    /// always supplies the real FullID. <c>PCode</c> is <c>None</c> (0) only on a default
+    /// <c>ConstructionData</c>; every renderable object is Prim (9), Avatar (47), Grass (95),
+    /// NewTree (111) or Tree (255).</para>
+    ///
+    /// <para>This is what produced <c>[PrimMeshFallback] profile=0 path=0 pathScale=(0,0) …</c>:
+    /// the default struct reached <c>PrimMeshService</c>, which correctly refused to mesh a prim
+    /// with a zero path scale, and the face came out as a placeholder cylinder. Pinned by
+    /// <c>TersePlaceholderPrimitiveTests</c>.</para></summary>
+    internal static bool IsUnpopulatedPrimitive(Primitive prim)
+        => prim.ID == LibreMetaverse.UUID.Zero || prim.PrimData.PCode == LibreMetaverse.PCode.None;
+
+    private int _unpopulatedPrimCount;
+
+    /// <summary>Reports the first dropped update in full and then every thousandth. A handful over
+    /// a session is the ordinary race and needs no attention; a stream of them would mean full
+    /// updates are not arriving at all, which is a different bug and has to be visible.</summary>
+    private void NoteUnpopulatedPrimitive(uint localId, bool isFullUpdate)
+    {
+        int n = System.Threading.Interlocked.Increment(ref _unpopulatedPrimCount);
+        if (n != 1 && n % 1000 != 0) return;
+
+        Console.Error.WriteLine(
+            $"[ObjectUpdate] dropped {(isFullUpdate ? "FULL" : "terse")} update for localId={localId}: " +
+            $"LibreMetaverse had no decoded object for it and manufactured an empty one " +
+            $"(no shape/scale/textures). Waiting for the full ObjectUpdate. Count so far: {n}");
+    }
+
     /// <summary>Builds and raises an ObjectUpdateEvent from a LibreMetaverse Primitive.
     /// <paramref name="positionOverride"/>, <paramref name="rotationOverride"/> and
     /// <paramref name="velocityOverride"/>, when set, are used instead of the same-named field on
@@ -5202,8 +5243,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// ObjectUpdateHandler stomps the Primitive synchronously before queuing its event (same file,
     /// ~line 371-385) -- so OnObjectUpdate's call leaves these null and reads straight off prim.
     /// Every other field (mesh, texture, flags, ...) always reads off prim regardless: terse updates
-    /// don't carry them on the wire at all, so prim already holds the last full update's values
-    /// either way, override or not.</summary>
+    /// don't carry them on the wire at all, so prim already holds the last full update's values --
+    /// but ONLY once a full update has actually populated it. See
+    /// <see cref="IsUnpopulatedPrimitive"/> for the case where it has not.</summary>
     private void RaiseObjectUpdate(
         LibreMetaverse.Simulator simulator, Primitive prim, bool isFullUpdate,
         System.Numerics.Vector3? positionOverride = null,
@@ -5211,6 +5253,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         System.Numerics.Vector3? velocityOverride = null,
         float timeDilation = 1f)
     {
+        // An object LibreMetaverse invented to answer a terse update carries no data at all --
+        // no shape, no scale, no textures. Publishing it would either create a world entity out
+        // of nothing or overwrite a good one with defaults. Drop it; the sim's full ObjectUpdate
+        // for the same localID follows and populates the very object LMV just cached.
+        if (IsUnpopulatedPrimitive(prim))
+        {
+            NoteUnpopulatedPrimitive(prim.LocalID, isFullUpdate);
+            return;
+        }
+
         // BUG-NET-03: neighbor sims (MultipleSims) replicate worn attachments as child-agent
         // copies with foreign LocalIds and a parent avatar we deliberately don't track (see
         // OnAvatarUpdate). Passing the local agent's copies through churned the skeleton
