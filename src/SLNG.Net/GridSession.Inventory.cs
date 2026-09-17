@@ -263,39 +263,50 @@ public sealed partial class GridSession
         }
     }
 
+    /// <summary>LibreMetaverse's <c>FindFolderForType</c> logs at ERROR level when the inventory
+    /// store does not exist yet ("Inventory is null, FindFolderForType() lookup cannot continue")
+    /// and returns <c>UUID.Zero</c>. Before login, and in any unit test that constructs a
+    /// GridSession without one, that is the ordinary state rather than a fault -- but it printed
+    /// three <c>fail:</c> lines into every CI test run, which is noise that makes a real failure
+    /// harder to find. Asking "what is my Trash folder" with no inventory should answer
+    /// "unknown", not raise an error.
+    ///
+    /// <para>Also normalises <c>UUID.Zero</c> to null. Several of these properties documented
+    /// themselves as "null until login" while in fact returning <c>Guid.Empty</c>, which is not
+    /// the same thing to a caller written against the doc comment.</para></summary>
+    private Guid? SystemFolderId(FolderType type)
+    {
+        if (_client.Inventory?.Store == null) return null;
+        var id = _client.Inventory.FindFolderForType(type);
+        return id == LibreMetaverse.UUID.Zero ? null : id.Guid;
+    }
+
     /// <summary>Folder id of the Trash folder, or null until login.</summary>
-    public Guid? TrashFolderId => _client.Inventory.FindFolderForType(FolderType.Trash).Guid;
+    public Guid? TrashFolderId => SystemFolderId(FolderType.Trash);
 
     /// <summary>Folder id of the Landmarks system folder, or null until login. Falls back to
     /// the inventory root (LibreMetaverse's own FindFolderForType behavior) if the grid never
     /// sent one — same fallback shape as <see cref="TrashFolderId"/>.</summary>
-    public Guid? LandmarksFolderId => _client.Inventory.FindFolderForType(FolderType.Landmark).Guid;
+    public Guid? LandmarksFolderId => SystemFolderId(FolderType.Landmark);
 
     /// <summary>Folder id of the Current Outfit system folder (COF), or null until login. Its
     /// children are LINK items pointing at whatever's actually worn/attached right now — the
     /// same folder Firestorm's "Worn Items" tab reads, and the fastest way to identify a worn
     /// attachment by name without a dedicated UI (browse to it in the existing inventory tree).</summary>
-    public Guid? CurrentOutfitFolderId => _client.Inventory.FindFolderForType(FolderType.CurrentOutfit).Guid;
+    public Guid? CurrentOutfitFolderId => SystemFolderId(FolderType.CurrentOutfit);
 
     /// <summary>The Body Parts folder — where <see cref="CreateTestSkinAsync"/> puts the skin, so the
     /// UI can refresh exactly that folder rather than making the user close and reopen the window to
     /// see an item it was just told about.</summary>
-    public Guid? BodyPartsFolderId => _client.Inventory.FindFolderForType(FolderType.BodyPart).Guid;
+    public Guid? BodyPartsFolderId => SystemFolderId(FolderType.BodyPart);
 
     /// <summary>The Textures folder — the other destination <see cref="CreateTestSkinAsync"/> writes
     /// to.</summary>
-    public Guid? TexturesFolderId => _client.Inventory.FindFolderForType(FolderType.Texture).Guid;
+    public Guid? TexturesFolderId => SystemFolderId(FolderType.Texture);
 
     /// <summary>Folder id of the <c>#Outfits</c> system folder (each direct subfolder is one saved
     /// outfit), or null if the grid doesn't have one / before login. FEAT-INV-04.</summary>
-    public Guid? MyOutfitsFolderId
-    {
-        get
-        {
-            var id = _client.Inventory.FindFolderForType(FolderType.MyOutfits);
-            return id == LibreMetaverse.UUID.Zero ? null : id.Guid;
-        }
-    }
+    public Guid? MyOutfitsFolderId => SystemFolderId(FolderType.MyOutfits);
 
     /// <summary>Checks if a folder is the Landmarks system folder or any descendant subfolder of it.</summary>
     public bool IsInLandmarksSubtree(Guid folderId)
