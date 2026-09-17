@@ -80,6 +80,14 @@ public static class MediaImageService
 
         if (permitted.Length == 0)
         {
+            // Counted, not just logged. A test proving the guard is WIRED IN has to observe it
+            // somehow, and asserting on captured Console.Error turned out to be flaky under
+            // xUnit's parallel runner -- Console.Error is process-global, so a concurrent class
+            // can swap it out between the redirect and the write. Caught by CI, green locally,
+            // which is the usual shape of that mistake. An interlocked counter is observable
+            // without touching global state.
+            System.Threading.Interlocked.Increment(ref _privateAddressRefusals);
+
             // Logged with the addresses, because "media did not load" and "media was refused on
             // purpose" have to be distinguishable -- and a prim aimed at the LAN is worth seeing.
             Console.Error.WriteLine(
@@ -119,6 +127,13 @@ public static class MediaImageService
     private static readonly MemoryCache Failures = new(new MemoryCacheOptions { SizeLimit = 4096 });
 
     private static readonly TimeSpan FailureMemory = TimeSpan.FromMinutes(1);
+
+    private static int _privateAddressRefusals;
+
+    /// <summary>How many fetches have been refused because the host resolved only to private or
+    /// reserved addresses. Test seam for <see cref="SLNG.Core.PrivateAddressPolicy"/> actually
+    /// being enforced by the HttpClient, rather than merely existing.</summary>
+    internal static int PrivateAddressRefusals => System.Threading.Volatile.Read(ref _privateAddressRefusals);
 
     /// <summary>In-flight requests, so a face rebuilt several times in one frame issues one GET.
     /// Entries are removed on completion — this dedupes, it does not cache.</summary>

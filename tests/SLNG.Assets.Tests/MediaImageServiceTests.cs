@@ -93,57 +93,40 @@ public class MediaImageServiceTests
     /// that it is actually WIRED INTO the HttpClient, which is the part that would silently stop
     /// being true if someone rebuilt the handler.
     ///
-    /// <para>Asserting on the log line rather than on the null return, because a null is what
-    /// comes back from an ordinary failed connection too — and "refused on purpose" versus
-    /// "nothing was listening" is exactly the distinction under test. Still no real network call:
-    /// the address is judged and rejected before a socket is opened.</para></summary>
+    /// <para>Asserts on the refusal COUNTER rather than the null return, because a null is what
+    /// comes back from an ordinary failed connection too — "refused on purpose" versus "nothing
+    /// was listening" is the distinction under test. An earlier version captured
+    /// <c>Console.Error</c> and matched the log line; that was flaky, because Console.Error is
+    /// process-global and xUnit runs test classes in parallel, so a concurrent class can swap it
+    /// out between the redirect and the write. It passed locally and failed in CI, which is the
+    /// usual shape of that mistake.</para>
+    ///
+    /// <para>Still no real network call: the address is judged and rejected before a socket is
+    /// opened.</para></summary>
     [Fact]
     public async Task FetchAsync_LoopbackHost_IsRefusedByThePolicyRatherThanAttempted()
     {
-        var captured = new StringWriter();
-        var previous = Console.Error;
-        TextWriter? restore = null;
-        try
-        {
-            Console.SetError(captured);
-            restore = previous;
+        int before = MediaImageService.PrivateAddressRefusals;
 
-            // Port 9 (discard) and a unique path so the failure cache from another test cannot
-            // answer this one.
-            var data = await MediaImageService.FetchAsync(
-                $"http://127.0.0.1:9/{Guid.NewGuid():N}.png");
+        // Port 9 (discard) and a unique path, so no cached result can answer this.
+        var data = await MediaImageService.FetchAsync($"http://127.0.0.1:9/{Guid.NewGuid():N}.png");
 
-            Assert.Null(data);
-        }
-        finally
-        {
-            if (restore != null) Console.SetError(restore);
-        }
-
-        string log = captured.ToString();
-        Assert.Contains("private or reserved", log, StringComparison.Ordinal);
-        Assert.Contains("127.0.0.1", log, StringComparison.Ordinal);
+        Assert.Null(data);
+        Assert.True(MediaImageService.PrivateAddressRefusals > before,
+            "the connect callback should have refused the loopback address");
     }
 
-    /// <summary>The same guard, reached through a NAME rather than a literal address — the case a
+    /// <summary>The same guard reached through a NAME rather than a literal address — the case a
     /// URL-string check cannot catch, since nothing about "localhost" looks like an IP.</summary>
     [Fact]
     public async Task FetchAsync_HostnameResolvingToLoopback_IsAlsoRefused()
     {
-        var captured = new StringWriter();
-        var previous = Console.Error;
-        try
-        {
-            Console.SetError(captured);
-            var data = await MediaImageService.FetchAsync(
-                $"http://localhost:9/{Guid.NewGuid():N}.png");
-            Assert.Null(data);
-        }
-        finally
-        {
-            Console.SetError(previous);
-        }
+        int before = MediaImageService.PrivateAddressRefusals;
 
-        Assert.Contains("private or reserved", captured.ToString(), StringComparison.Ordinal);
+        var data = await MediaImageService.FetchAsync($"http://localhost:9/{Guid.NewGuid():N}.png");
+
+        Assert.Null(data);
+        Assert.True(MediaImageService.PrivateAddressRefusals > before,
+            "localhost resolves only to loopback and should have been refused");
     }
 }
