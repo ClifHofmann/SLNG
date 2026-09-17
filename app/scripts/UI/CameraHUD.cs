@@ -21,10 +21,33 @@ public partial class CameraHUD : SLNGWindow
     private const float PanStep = 0.1f;
     private const float ZoomStep = 0.5f;
 
-    /// <summary>Speed multipliers from the Preferences "Camera" tab. Null until Boot wires it;
+    /// <summary>Speed multipliers and camera preferences from the Preferences "Camera" tab. Null until Boot wires it;
     /// treated as 1.0 (built-in defaults) while unset.</summary>
     private CameraSettings? _cameraSettings;
     public void SetCameraSettings(CameraSettings settings) => _cameraSettings = settings;
+
+    private DofSettings? _dofSettings;
+    private CheckBox? _focusMarkerCheck;
+
+    public void SetDofSettings(DofSettings settings)
+    {
+        if (_dofSettings != null) _dofSettings.Changed -= OnDofSettingsChanged;
+        _dofSettings = settings;
+        if (_dofSettings != null)
+        {
+            _dofSettings.Changed += OnDofSettingsChanged;
+            OnDofSettingsChanged();
+        }
+    }
+
+    private void OnDofSettingsChanged()
+    {
+        if (_focusMarkerCheck != null && _dofSettings != null)
+        {
+            _focusMarkerCheck.SetPressedNoSignal(_dofSettings.ShowFocusMarker);
+        }
+    }
+
     private Control _scaleHost = null!;
     private VBoxContainer _mainVBox = null!;
     private Vector2 _referenceSize;
@@ -38,9 +61,8 @@ public partial class CameraHUD : SLNGWindow
 
         Title = L10n.Tr("ui.camera.title");
         Visible = false;
-        // Room for the captioned groups and the preset row at 1:1 -- below this RescaleContent
-        // starts shrinking the pads, which is a fallback, not the intended size.
-        CustomMinimumSize = new Vector2(210, 190);
+        // Room for the captioned groups, preset row, and focus toggle at 1:1
+        CustomMinimumSize = new Vector2(210, 215);
         Position = new Vector2(100, 100);
 
         OnCloseRequested = Hide;
@@ -174,11 +196,32 @@ public partial class CameraHUD : SLNGWindow
         btnSide.Pressed += () => _cameraController?.SetPresetView("Side");
         btnRear.Pressed += () => _cameraController?.SetPresetView("Rear");
 
+        var focusRow = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+        mainVBox.AddChild(focusRow);
+
+        var chkMarker = new CheckBox
+        {
+            Text = L10n.Tr("ui.camera.show_focus_marker"),
+            TooltipText = L10n.Tr("ui.camera.show_focus_marker_tooltip"),
+            FocusMode = FocusModeEnum.None,
+        };
+        chkMarker.AddThemeFontSizeOverride("font_size", 11);
+        chkMarker.Toggled += on => _dofSettings?.SetShowFocusMarker(on);
+        _focusMarkerCheck = chkMarker;
+        focusRow.AddChild(chkMarker);
+        if (_dofSettings != null) chkMarker.SetPressedNoSignal(_dofSettings.ShowFocusMarker);
+
         // Natural, unscaled size of the whole button cluster -- the scale ratio in
         // RescaleContent is always relative to this, never to the previous frame's size.
         _referenceSize = mainVBox.GetCombinedMinimumSize();
         mainVBox.Size = _referenceSize;
         CallDeferred(nameof(RescaleContent));
+    }
+
+    public override void _ExitTree()
+    {
+        if (_dofSettings != null) _dofSettings.Changed -= OnDofSettingsChanged;
+        base._ExitTree();
     }
 
     /// <summary>Fits mainVBox to whatever room _scaleHost currently has, scaling (not just

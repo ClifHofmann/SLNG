@@ -19,6 +19,7 @@
       "toggle_hud": "Toggle HUD",
       "performance_stats": "Performance Stats (Ctrl+Shift+1)",
       "show_fps_in_top_bar": "Show FPS in Top Bar",
+      "show_focus_marker": "Show Look-At / Focus Point",
       "camera_controls": "Camera Controls",
       "first_person": "First Person",
       "third_person": "Third Person",
@@ -61,13 +62,16 @@
       "freeze_self": "Self",
       "freeze_all": "All Avatars",
       "step_backward": "Step Backward (◀)",
-      "step_forward": "Step Forward (▶)",
+      "step_forward": "Step 1 Frame Forward (▶)",
+      "graphics_profiles": "Graphics Profiles",
+      "no_custom_profiles": "(No saved profiles)",
       "about": "About Puris Viewer..."
     },
     "topmenu": {
       "copy_slurl_tooltip": "Click to copy SLURL to clipboard",
       "slurl_copied": "SLURL copied to clipboard: {0}",
-      "fps_tooltip": "Frames per second (Click to toggle Performance Stats)"
+      "fps_tooltip": "Frames per second (Click for performance stats)",
+      "graphics_profile_tooltip": "Select graphics profile"
     },
     "avatar_hover": {
       "title": "Hover Height",
@@ -102,7 +106,9 @@
       "view_rear": "Rear",
       "view_front_tooltip": "Camera in front of the avatar, looking back at them",
       "view_side_tooltip": "Camera beside the avatar",
-      "view_rear_tooltip": "Camera back behind the avatar (the default view)"
+      "view_rear_tooltip": "Camera back behind the avatar (the default view)",
+      "show_focus_marker": "Show Look-At / focus point",
+      "show_focus_marker_tooltip": "Shows the camera's Look-At target in 3D space. Remains anchored to the subject when moving or panning the camera."
     },
     "snapshot": {
       "title": "Snapshot",
@@ -131,8 +137,8 @@
       "dof_blur": "Blur",
       "dof_near_blur": "Blur foreground",
       "dof_near_blur_tooltip": "Blur what is nearer than the sharp band too, not just what is behind it.",
-      "dof_show_marker": "Show focus point (debug)",
-      "dof_show_marker_tooltip": "Draws two markers in the world: cyan is the focal plane (what stays sharp), amber is what the camera looks at — the avatar, or the Alt+LMB focus point. When the two are apart, the camera is focusing past its subject.",
+      "dof_show_marker": "Show focus point",
+      "dof_show_marker_tooltip": "Draws a high-contrast focus marker on screen at the 3D focal point. Stays sharp and locked to the subject when panning.",
       "dof_reset": "Reset",
       "dof_no_target": "nothing in the centre of frame",
       "anim_heading": "Avatar Animation / Pose",
@@ -308,7 +314,7 @@
       "preset_ultra": "Ultra",
       "preset_custom": "(Custom)",
       "current_preset": "Current preset:",
-      "preset_header": "Presets:",
+      "preset_header": "Graphics Profile:",
       "btn_save_preset": "Save",
       "btn_load_preset": "Load",
       "btn_delete_preset": "Delete",

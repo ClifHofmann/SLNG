@@ -54,6 +54,8 @@ namespace SLNG.App.UI
         public Action<string>? OnCopySlurl;
         /// <summary>FEAT-UI-24: Invoked when the user toggles the top-bar FPS display.</summary>
         public Action<bool>? OnToggleShowFps;
+        /// <summary>Invoked when the user toggles the focus marker display from the View menu.</summary>
+        public Action<bool>? OnToggleShowFocusMarker;
 
         private Button _locationBtn = null!;
         private Button _copySlurlBtn = null!;
@@ -63,6 +65,14 @@ namespace SLNG.App.UI
         private string? _currentParcel;
         private int _currentX, _currentY, _currentZ;
         private bool _showFps = true;
+        private bool _showFocusMarker = false;
+
+        private MenuButton _profileMenuBtn = null!;
+        private VSeparator _profileSep = null!;
+        private PopupMenu? _graphicsProfileMenu;
+        private GraphicsSettings? _graphicsSettings;
+        private Action? _applyGraphicsSettings;
+        private Action? _onGraphicsSettingsChanged;
 
         private PopupMenu? _viewMenu;
         private PopupMenu? _avatarMenu;
@@ -130,6 +140,17 @@ namespace SLNG.App.UI
             {
                 _fpsBtn.Visible = false;
                 _fpsSep.Visible = false;
+            }
+        }
+
+        /// <summary>Sets whether the focus marker display in the View menu is checked.</summary>
+        public void SetShowFocusMarker(bool show)
+        {
+            _showFocusMarker = show;
+            if (_viewMenu != null)
+            {
+                int idx = _viewMenu.GetItemIndex(7);
+                if (idx >= 0) _viewMenu.SetItemChecked(idx, show);
             }
         }
 
@@ -265,6 +286,26 @@ namespace SLNG.App.UI
             };
             hbox.AddChild(spacer);
 
+            _profileMenuBtn = new MenuButton
+            {
+                Text = "🖥",
+                Flat = true,
+                FocusMode = Control.FocusModeEnum.None,
+                TooltipText = L10n.Tr("ui.topmenu.graphics_profile_tooltip"),
+                SizeFlagsVertical = Control.SizeFlags.ShrinkCenter,
+                CustomMinimumSize = new Vector2(24, 22)
+            };
+            _profileMenuBtn.AddThemeFontSizeOverride("font_size", 14);
+            _profileMenuBtn.AddThemeColorOverride("font_color", new Color(0.9f, 0.9f, 0.95f, 0.95f));
+            _profileMenuBtn.AddThemeColorOverride("font_hover_color", new Color(1.0f, 1.0f, 1.0f, 1.0f));
+            _profileMenuBtn.GetPopup().IdPressed += id => OnProfileMenuItemSelected((int)id);
+            _profileMenuBtn.GetPopup().AboutToPopup += RefreshGraphicsProfilesUI;
+            hbox.AddChild(_profileMenuBtn);
+
+            _profileSep = new VSeparator();
+            _profileSep.AddThemeConstantOverride("separation", 6);
+            hbox.AddChild(_profileSep);
+
             _fpsBtn = new Button
             {
                 Flat = true,
@@ -319,6 +360,15 @@ namespace SLNG.App.UI
             viewMenu.AddCheckItem(L10n.Tr("ui.menu.show_fps_in_top_bar"), 6);
             int fpsCheckIdx = viewMenu.GetItemIndex(6);
             if (fpsCheckIdx >= 0) viewMenu.SetItemChecked(fpsCheckIdx, _showFps);
+            viewMenu.AddCheckItem(L10n.Tr("ui.menu.show_focus_marker"), 7);
+            int focusCheckIdx = viewMenu.GetItemIndex(7);
+            if (focusCheckIdx >= 0) viewMenu.SetItemChecked(focusCheckIdx, _showFocusMarker);
+            _graphicsProfileMenu = new PopupMenu();
+            _graphicsProfileMenu.Name = "GraphicsProfileMenu";
+            _graphicsProfileMenu.IdPressed += id => OnProfileMenuItemSelected((int)id);
+            _graphicsProfileMenu.AboutToPopup += RefreshGraphicsProfilesUI;
+            viewMenu.AddChild(_graphicsProfileMenu);
+            viewMenu.AddSubmenuNodeItem(L10n.Tr("ui.menu.graphics_profiles"), _graphicsProfileMenu, 8);
             viewMenu.AddSeparator();
             viewMenu.AddItem(L10n.Tr("ui.menu.first_person"), 1);
             viewMenu.AddItem(L10n.Tr("ui.menu.third_person"), 2);
@@ -331,6 +381,11 @@ namespace SLNG.App.UI
                 {
                     SetShowFps(!_showFps);
                     OnToggleShowFps?.Invoke(_showFps);
+                }
+                if (id == 7)
+                {
+                    SetShowFocusMarker(!_showFocusMarker);
+                    OnToggleShowFocusMarker?.Invoke(_showFocusMarker);
                 }
                 if (id >= 1 && id <= 3) OnCameraMode?.Invoke((int)id - 1);
             };
@@ -449,6 +504,144 @@ namespace SLNG.App.UI
                 else if (id == 1) OnMeasureRenderBaseline?.Invoke();
             };
             menuBar.AddChild(devMenu);
+        }
+
+        public void InitializeGraphicsProfiles(GraphicsSettings settings, Action applySettings, Action? onSettingsChanged = null)
+        {
+            if (_graphicsSettings != null)
+            {
+                _graphicsSettings.Changed -= RefreshGraphicsProfilesUI;
+            }
+            _graphicsSettings = settings;
+            _applyGraphicsSettings = applySettings;
+            _onGraphicsSettingsChanged = onSettingsChanged;
+            _graphicsSettings.Changed += RefreshGraphicsProfilesUI;
+            RefreshGraphicsProfilesUI();
+        }
+
+        public override void _ExitTree()
+        {
+            if (_graphicsSettings != null)
+            {
+                _graphicsSettings.Changed -= RefreshGraphicsProfilesUI;
+            }
+            base._ExitTree();
+        }
+
+        public void RefreshGraphicsProfilesUI()
+        {
+            if (_graphicsSettings == null) return;
+
+            string activeName;
+            if (!string.IsNullOrEmpty(_graphicsSettings.CurrentProfileName))
+            {
+                activeName = _graphicsSettings.CurrentProfileName;
+            }
+            else
+            {
+                var preset = _graphicsSettings.DetectPreset();
+                activeName = preset switch
+                {
+                    GraphicsPreset.Low => L10n.Tr("ui.preferences.preset_low"),
+                    GraphicsPreset.Medium => L10n.Tr("ui.preferences.preset_medium"),
+                    GraphicsPreset.High => L10n.Tr("ui.preferences.preset_high"),
+                    GraphicsPreset.Ultra => L10n.Tr("ui.preferences.preset_ultra"),
+                    _ => L10n.Tr("ui.preferences.preset_custom")
+                };
+            }
+
+            if (_profileMenuBtn != null && GodotObject.IsInstanceValid(_profileMenuBtn))
+            {
+                _profileMenuBtn.Text = "🖥";
+                _profileMenuBtn.TooltipText = $"{L10n.Tr("ui.topmenu.graphics_profile_tooltip")}: {activeName}";
+                PopulateProfileMenu(_profileMenuBtn.GetPopup());
+            }
+
+            if (_graphicsProfileMenu != null && GodotObject.IsInstanceValid(_graphicsProfileMenu))
+            {
+                PopulateProfileMenu(_graphicsProfileMenu);
+            }
+        }
+
+        private void PopulateProfileMenu(PopupMenu menu)
+        {
+            menu.Clear();
+            if (_graphicsSettings == null) return;
+
+            var preset = _graphicsSettings.DetectPreset();
+            string? curProfile = _graphicsSettings.CurrentProfileName;
+
+            // Presets
+            menu.AddRadioCheckItem(L10n.Tr("ui.preferences.preset_low"), 0);
+            menu.SetItemChecked(0, curProfile == null && preset == GraphicsPreset.Low);
+
+            menu.AddRadioCheckItem(L10n.Tr("ui.preferences.preset_medium"), 1);
+            menu.SetItemChecked(1, curProfile == null && preset == GraphicsPreset.Medium);
+
+            menu.AddRadioCheckItem(L10n.Tr("ui.preferences.preset_high"), 2);
+            menu.SetItemChecked(2, curProfile == null && preset == GraphicsPreset.High);
+
+            menu.AddRadioCheckItem(L10n.Tr("ui.preferences.preset_ultra"), 3);
+            menu.SetItemChecked(3, curProfile == null && preset == GraphicsPreset.Ultra);
+
+            menu.AddSeparator();
+
+            // Custom profiles
+            var customNames = GraphicsSettings.GetProfileNames();
+            if (customNames.Length > 0)
+            {
+                for (int i = 0; i < customNames.Length; i++)
+                {
+                    int id = 100 + i;
+                    menu.AddRadioCheckItem(customNames[i], id);
+                    int idx = menu.GetItemIndex(id);
+                    if (idx >= 0)
+                    {
+                        menu.SetItemChecked(idx, string.Equals(curProfile, customNames[i], StringComparison.OrdinalIgnoreCase));
+                    }
+                }
+            }
+            else
+            {
+                menu.AddItem(L10n.Tr("ui.menu.no_custom_profiles"), 999);
+                int noProfIdx = menu.GetItemIndex(999);
+                if (noProfIdx >= 0) menu.SetItemDisabled(noProfIdx, true);
+            }
+
+            menu.AddSeparator();
+            menu.AddItem(L10n.Tr("ui.preferences.tab_graphics") + "...", 900);
+        }
+
+        private void OnProfileMenuItemSelected(int id)
+        {
+            if (_graphicsSettings == null) return;
+            if (id >= 0 && id <= 3)
+            {
+                var preset = (GraphicsPreset)id;
+                _graphicsSettings.ApplyPreset(preset);
+                _applyGraphicsSettings?.Invoke();
+                _onGraphicsSettingsChanged?.Invoke();
+                RefreshGraphicsProfilesUI();
+            }
+            else if (id >= 100 && id < 900)
+            {
+                var names = GraphicsSettings.GetProfileNames();
+                int idx = id - 100;
+                if (idx >= 0 && idx < names.Length)
+                {
+                    string name = names[idx];
+                    if (_graphicsSettings.LoadProfile(name))
+                    {
+                        _applyGraphicsSettings?.Invoke();
+                        _onGraphicsSettingsChanged?.Invoke();
+                        RefreshGraphicsProfilesUI();
+                    }
+                }
+            }
+            else if (id == 900)
+            {
+                OnOpenPreferences?.Invoke();
+            }
         }
     }
 }

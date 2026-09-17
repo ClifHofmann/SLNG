@@ -19,6 +19,7 @@
       "toggle_hud": "HUD umschalten",
       "performance_stats": "Leistungsanzeige (Strg+Umschalt+1)",
       "show_fps_in_top_bar": "FPS in Menüleiste anzeigen",
+      "show_focus_marker": "Look-At / Fokuspunkt anzeigen",
       "camera_controls": "Kamerasteuerung",
       "first_person": "Ego-Perspektive",
       "third_person": "Verfolgerkamera",
@@ -62,12 +63,15 @@
       "freeze_all": "Alle Avatare",
       "step_backward": "1 Frame zurück (◀)",
       "step_forward": "1 Frame vor (▶)",
+      "graphics_profiles": "Grafikprofile",
+      "no_custom_profiles": "(Keine gespeicherten Profile)",
       "about": "Über Puris Viewer..."
     },
     "topmenu": {
       "copy_slurl_tooltip": "Klicken, um SLURL in die Zwischenablage zu kopieren",
       "slurl_copied": "SLURL in Zwischenablage kopiert: {0}",
-      "fps_tooltip": "Bilder pro Sekunde (Klicken für Leistungsstatistik)"
+      "fps_tooltip": "Bilder pro Sekunde (Klicken für Leistungsstatistik)",
+      "graphics_profile_tooltip": "Grafikprofil auswählen"
     },
     "avatar_hover": {
       "title": "Schwebehöhe",
@@ -102,7 +106,9 @@
       "view_rear": "Hinten",
       "view_front_tooltip": "Kamera vor den Avatar, mit Blick auf ihn",
       "view_side_tooltip": "Kamera seitlich neben den Avatar",
-      "view_rear_tooltip": "Kamera zurück hinter den Avatar (Standardansicht)"
+      "view_rear_tooltip": "Kamera zurück hinter den Avatar (Standardansicht)",
+      "show_focus_marker": "Look-At / Fokuspunkt anzeigen",
+      "show_focus_marker_tooltip": "Zeigt das Look-At-Ziel der Kamera im 3D-Raum an. Bleibt beim Bewegen oder Schwenken der Kamera am Zielobjekt verankert."
     },
     "snapshot": {
       "title": "Schnappschuss",
@@ -131,8 +137,8 @@
       "dof_blur": "Unschärfe",
       "dof_near_blur": "Vordergrund weichzeichnen",
       "dof_near_blur_tooltip": "Zeichnet auch das weich, was näher als der Schärfebereich liegt, nicht nur den Hintergrund.",
-      "dof_show_marker": "Fokuspunkt anzeigen (Debug)",
-      "dof_show_marker_tooltip": "Zeichnet zwei Marker in die Welt: türkis die Fokusebene (dort ist das Bild scharf), orange das Ziel, auf das die Kamera blickt — der Avatar bzw. der mit Alt+Linksklick gesetzte Punkt. Liegen beide auseinander, fokussiert die Kamera am Motiv vorbei.",
+      "dof_show_marker": "Fokuspunkt anzeigen",
+      "dof_show_marker_tooltip": "Zeigt eine scharfe Markierung auf dem Bildschirm am 3D-Fokuspunkt an. Bleibt beim Schwenken scharf und am Motiv fixiert.",
       "dof_reset": "Zurücksetzen",
       "dof_no_target": "nichts in der Bildmitte",
       "anim_heading": "Avatar-Animation / Pose",
@@ -308,7 +314,7 @@
       "preset_ultra": "Ultra",
       "preset_custom": "(Benutzerdefiniert)",
       "current_preset": "Aktuelle Voreinstellung:",
-      "preset_header": "Voreinstellungen:",
+      "preset_header": "Grafikprofil:",
       "btn_save_preset": "Speichern",
       "btn_load_preset": "Laden",
       "btn_delete_preset": "Löschen",

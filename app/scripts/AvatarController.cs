@@ -29,6 +29,12 @@ public partial class AvatarController : Camera3D
     /// frame in <c>_Process</c>; consumed by the DoF focus marker (BUG-RENDER-22).</summary>
     public Vector3 CameraTargetPoint { get; private set; }
 
+    /// <summary>The unpanned world-space position of the current subject being framed/focused
+    /// (the avatar's head at FocusHeight, or the manual Alt+Click _orbitTarget point).
+    /// Unlike CameraTargetPoint, this point is NOT offset by _panOffset, so it stays
+    /// anchored to the actual 3D subject in the world even when the camera is panned.</summary>
+    public Vector3 FocusSubjectPoint { get; private set; }
+
     /// <summary>True while the camera orbits a user-set Alt+LMB focus point rather than following
     /// the avatar -- i.e. the user deliberately aimed somewhere else.</summary>
     public bool HasManualFocusTarget { get; private set; }
@@ -841,17 +847,28 @@ public partial class AvatarController : Camera3D
                 // sitting, where facing is the seat's, not the player's, and not while in PoseStand.
                 if (!isSitting && !isPoseStand)
                 {
-                    if (isLeft) _yaw += 2.5f * (float)delta;
-                    if (isRight) _yaw -= 2.5f * (float)delta;
+                    float turnDelta = 0f;
+                    if (isLeft) turnDelta += 2.5f * (float)delta;
+                    if (isRight) turnDelta -= 2.5f * (float)delta;
+                    if (turnDelta != 0f)
+                    {
+                        _yaw += turnDelta;
+                        if (_orbitTarget.HasValue)
+                        {
+                            // If focused on an external target, keep camera orientation stable while avatar turns
+                            _orbitYaw -= turnDelta;
+                        }
+                    }
                 }
 
-                // Any movement/turn snaps the orbit camera back behind the avatar.
-                if (!isSitting && !isPoseStand && (isFwd || isBack || isLeft || isRight))
+                // Any movement/turn snaps the orbit camera back behind the avatar ONLY when orbiting self (no external target).
+                // In SL/Firestorm, when Alt-zoomed on an object/avatar, walking around does NOT cancel the focus target;
+                // the camera and look-at point stay anchored to the 3D object while the avatar walks.
+                if (!_orbitTarget.HasValue && !isSitting && !isPoseStand && (isFwd || isBack || isLeft || isRight))
                 {
                     _transitioning = false;
                     _orbitYaw = 0f;
                     _orbitPitch = 0f;
-                    _orbitTarget = null;
                 }
 
                 // While seated the movement keys drive the CAMERA instead of the avatar:
@@ -1238,6 +1255,9 @@ public partial class AvatarController : Camera3D
                     targetPos = RenderConfig.ToGodot(localAgent.RegionHandle, transform.Position);
                     targetPos.Y += _cameraSettings?.FocusHeight ?? 1.8f;
                 }
+
+                // Anchored 3D world position of the subject being focused, before pan-offset
+                FocusSubjectPoint = targetPos;
 
                 // BUG-UI-02: apply the Camera-Controls pan-pad offset for BOTH the avatar-follow
                 // and the Alt-click focus target. It used to live inside the else above, so the

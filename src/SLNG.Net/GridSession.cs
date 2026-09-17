@@ -2572,9 +2572,12 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(10), ct)).ConfigureAwait(false);
 
             int count = _client.Appearance.GetWearables().Count();
-            Console.Error.WriteLine(count > 0
-                ? $"[Appearance] worn wearables resolved: {count}"
-                : "[Appearance] no worn wearables returned — the Worn tab will show layers as inactive");
+            if (Diag.Verbose)
+            {
+                Console.Error.WriteLine(count > 0
+                    ? $"[Appearance] worn wearables resolved: {count}"
+                    : "[Appearance] no worn wearables returned -- the Worn tab will show layers as inactive");
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -5736,8 +5739,6 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         var sim = _client.Network.CurrentSim;
         if (sim == null) return;
 
-        Console.WriteLine($"[Touch] ClickObjectAsync: localId={localId}, sim={sim.Name}, pos={position}");
-
         await _client.Objects.ClickObjectAsync(
             sim, localId,
             ToOmv(uvCoord), ToOmv(stCoord), faceIndex,
@@ -8427,7 +8428,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                 var oldFolderLinks = cofNode.Nodes.Values.ToList()
                     .Where(n => n.Data is LibreMetaverse.InventoryItem it
                                 && it.AssetType == LibreMetaverse.AssetType.LinkFolder)
-                    .Select(n => n.Data.UUID)
+                    .Select(n => n.Data!.UUID)
                     .ToList();
                 if (oldFolderLinks.Count > 0)
                     await _client.Inventory.RemoveItemsAsync(oldFolderLinks, ct).ConfigureAwait(false);

@@ -108,14 +108,14 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         _applyDof = applyDof;
         _cacheBytes = cacheBytes;
 
+        BuildProfileHeader();
+        AddChild(new HSeparator());
         BuildMasterPresetHeader();
         AddChild(new HSeparator());
         BuildSubTabBar();
         BuildGeneralPanel();
         BuildHardwarePanel();
         BuildDofPanel();
-        AddChild(new HSeparator());
-        BuildProfileFooter();
 
         ShowSubTab(0);
         Refresh();
@@ -597,16 +597,16 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         _dofControls.AddChild(resetDofBtn);
     }
 
-    // --- Bottom Bar: Profiles ---------------------------------------------------------------
-    private void BuildProfileFooter()
+    // --- Top Bar: Profiles ------------------------------------------------------------------
+    private void BuildProfileHeader()
     {
-        var footerBox = new VBoxContainer();
-        footerBox.AddThemeConstantOverride("separation", 6);
-        AddChild(footerBox);
+        var headerBox = new VBoxContainer();
+        headerBox.AddThemeConstantOverride("separation", 6);
+        AddChild(headerBox);
 
         var actionRow = new HBoxContainer();
         actionRow.AddThemeConstantOverride("separation", 8);
-        footerBox.AddChild(actionRow);
+        headerBox.AddChild(actionRow);
 
         var header = new Label
         {
@@ -656,7 +656,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         _saveProfileRow = new HBoxContainer();
         _saveProfileRow.AddThemeConstantOverride("separation", 8);
         _saveProfileRow.Visible = false;
-        footerBox.AddChild(_saveProfileRow);
+        headerBox.AddChild(_saveProfileRow);
 
         _profileNameInput = new LineEdit
         {
@@ -685,7 +685,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         _profileStatusLabel = new Label { Text = "" };
         _profileStatusLabel.AddThemeColorOverride("font_color", new Color(0.4f, 0.9f, 0.5f));
         _profileStatusLabel.AddThemeFontSizeOverride("font_size", 12);
-        footerBox.AddChild(_profileStatusLabel);
+        headerBox.AddChild(_profileStatusLabel);
     }
 
     private void OnLoadProfile()
@@ -722,7 +722,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         int idx = _profileOption.Selected;
         if (idx < 0 || idx >= _profileNames.Count) return;
         string name = _profileNames[idx];
-        if (GraphicsSettings.DeleteProfile(name))
+        if (_settings.DeleteProfile(name))
         {
             RefreshProfiles();
             ShowStatus(string.Format(L10n.Tr("ui.preferences.profile_deleted"), name));
@@ -752,7 +752,13 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             {
                 _profileOption.AddItem(n);
             }
-            _profileOption.Select(0);
+            int selectIdx = 0;
+            if (!string.IsNullOrEmpty(_settings.CurrentProfileName))
+            {
+                int found = _profileNames.IndexOf(_settings.CurrentProfileName);
+                if (found >= 0) selectIdx = found;
+            }
+            _profileOption.Select(selectIdx);
         }
     }
 

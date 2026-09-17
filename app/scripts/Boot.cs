@@ -299,7 +299,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.187-alpha";
+    public const string AppVersion = "v0.22.194-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -533,6 +533,12 @@ public partial class Boot : Control
 
         _topMenu.SetShowFps(_uiSettings.ShowTopBarFps);
         _topMenu.OnToggleShowFps = (show) => _uiSettings.SetShowTopBarFps(show);
+
+        _topMenu.SetShowFocusMarker(_dofSettings.ShowFocusMarker);
+        _topMenu.OnToggleShowFocusMarker = (show) => _dofSettings.SetShowFocusMarker(show);
+        _dofSettings.Changed += () => _topMenu.SetShowFocusMarker(_dofSettings.ShowFocusMarker);
+
+        _topMenu.InitializeGraphicsProfiles(_graphicsSettings, ApplyGraphicsSettings, () => _graphicsPage?.Refresh());
 
         _topMenu.OnCopySlurl = (slurl) =>
         {
@@ -1017,6 +1023,10 @@ public partial class Boot : Control
     /// </summary>
     private void SetupButtonBarAndPreferences(CanvasLayer hudLayer, SLNG.App.UI.CameraHUD cameraHud)
     {
+        cameraHud.SetDofSettings(_dofSettings);
+        var focusOverlay = new SLNG.App.UI.CameraFocusOverlay(_dofSettings);
+        hudLayer.AddChild(focusOverlay);
+
         // Every click routes through ActivateLauncher so a merely-minimized window is expanded
         // instead of hidden (BUG-UI-07), and a freshly-shown one is pulled on-screen + raised.
         // The second lambda ("is it active") counts a minimized window as open, which is also

@@ -36,6 +36,10 @@ public sealed class GraphicsSettings
     private const string Section = "graphics";
     private const string ProfileSectionPrefix = "graphics_profile_";
 
+    public string? CurrentProfileName { get; private set; }
+    public event Action? Changed;
+    public void NotifyChanged() => Changed?.Invoke();
+
     /// <summary>Matches DisplayServer.VSyncMode: 0 disabled, 1 enabled, 2 adaptive, 3 mailbox.</summary>
     public int VSyncMode { get; private set; } = (int)DisplayServer.VSyncMode.Enabled;
 
@@ -262,6 +266,8 @@ public sealed class GraphicsSettings
                 break;
         }
         Save();
+        CurrentProfileName = null;
+        Changed?.Invoke();
     }
 
     public GraphicsPreset DetectPreset()
@@ -383,7 +389,13 @@ public sealed class GraphicsSettings
         cfg.SetValue(section, "shadow_splits", ShadowSplits);
         cfg.SetValue(section, "small_object_shadows", SmallObjectShadows);
         cfg.SetValue(section, "volume_lod_factor", VolumeLodFactor);
-        return cfg.Save(ConfigPath) == Error.Ok;
+        bool ok = cfg.Save(ConfigPath) == Error.Ok;
+        if (ok)
+        {
+            CurrentProfileName = name;
+            Changed?.Invoke();
+        }
+        return ok;
     }
 
     public bool LoadProfile(string name)
@@ -416,10 +428,12 @@ public sealed class GraphicsSettings
         SmallObjectShadows = (bool)cfg.GetValue(section, "small_object_shadows", SmallObjectShadows);
         VolumeLodFactor = (float)cfg.GetValue(section, "volume_lod_factor", VolumeLodFactor);
         Save();
+        CurrentProfileName = name;
+        Changed?.Invoke();
         return true;
     }
 
-    public static bool DeleteProfile(string name)
+    public bool DeleteProfile(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
         name = name.Trim();
@@ -428,7 +442,14 @@ public sealed class GraphicsSettings
         string section = ProfileSectionPrefix + name;
         if (!cfg.HasSection(section)) return false;
         cfg.EraseSection(section);
-        return cfg.Save(ConfigPath) == Error.Ok;
+        bool ok = cfg.Save(ConfigPath) == Error.Ok;
+        if (ok)
+        {
+            if (string.Equals(CurrentProfileName, name, StringComparison.OrdinalIgnoreCase))
+                CurrentProfileName = null;
+            Changed?.Invoke();
+        }
+        return ok;
     }
 
     /// <summary>

@@ -61,36 +61,9 @@ public partial class DepthOfFieldController : Node
 
     private float _autoFocusTarget = DofSettings.DefaultFocusDistance;
 
-    // --- Focus-point marker (BUG-RENDER-22 diagnostic) ---------------------------------------
-    // A blurred frame cannot tell you WHERE the focal plane is, only that the subject is not on
-    // it, so "auto-focus picked the hillside behind the avatar" and "the blur is misconfigured"
-    // look identical. These draw the answer. Two crosshairs on purpose:
-    //   cyan  -- the focal plane itself: camera position + view axis * CurrentFocusDistance. It
-    //            is by construction the one thing in frame that MUST be sharp, so if the cyan
-    //            crosshair is crisp while the avatar is not, the focal plane is simply elsewhere.
-    //   amber -- the camera's own look-at target (AvatarController.CameraTargetPoint): the
-    //            avatar's head while following, or the Alt+LMB focus point. The gap between the
-    //            two is what BUG-RENDER-22 was, measured.
-    // Hairline crosshairs rather than spheres, and no text: this sits on top of the very image the
-    // user is judging sharpness on, so it has to be readable without covering the subject or
-    // dragging the eye. Line primitives are one pixel wide at any distance, which is as quiet as
-    // an overlay gets. Billboarded so the cross always faces the viewer, unshaded and
-    // depth-test-free so it stays visible inside geometry, and never given a collider --
-    // SampleAutoFocus raycasts Objects|Avatars, and a marker that focused the camera on itself
-    // would be a very fine feedback loop.
-    private Node3D? _markerRoot;
-    private MeshInstance3D? _focusMarker;
-    private MeshInstance3D? _targetMarker;
-
-    // Apparent size: the crosshairs scale with distance so they stay the same size on screen at
-    // 2 m and at 200 m, clamped so they neither vanish up close nor span the frame far away.
-    private const float MarkerAngularSize = 0.014f;
-    private const float MarkerMinRadius = 0.03f;
-    private const float MarkerMaxRadius = 1.2f;
-
-    // Fraction of the crosshair's half-width left empty in the middle. The gap is the point: it
-    // keeps the thing being focused on visible through the marker instead of under it.
-    private const float MarkerGapFraction = 0.35f;
+    /// <summary>The world-space position that the camera is currently focused on.
+    /// Anchored to the subject (avatar head or Alt+Click point) and does not shift when panning.</summary>
+    public Vector3 CurrentFocusWorldPoint { get; private set; }
 
     public void Initialize(Camera3D camera, DofSettings settings, SLNG.Core.ECS.World? world = null)
     {
@@ -99,6 +72,7 @@ public partial class DepthOfFieldController : Node
         _world = world;
         CurrentFocusDistance = settings.FocusDistance;
         _autoFocusTarget = settings.FocusDistance;
+
         Apply();
     }
 
@@ -109,7 +83,6 @@ public partial class DepthOfFieldController : Node
         if (!_settings.Enabled)
         {
             Detach();
-            SetMarkerVisible(false);
             return;
         }
 
@@ -128,10 +101,18 @@ public partial class DepthOfFieldController : Node
             AutoFocusHasTarget = false;
             _autoFocusTarget = _settings.FocusDistance;
             CurrentFocusDistance = _settings.FocusDistance;
+            if (_camera is AvatarController rig && rig.FocusSubjectPoint != Vector3.Zero)
+            {
+                CurrentFocusWorldPoint = rig.FocusSubjectPoint;
+            }
+            else
+            {
+                var camXform = _camera.GlobalTransform;
+                CurrentFocusWorldPoint = camXform.Origin - camXform.Basis.Z * _settings.FocusDistance;
+            }
         }
 
         Apply();
-        UpdateFocusMarker();
     }
 
     /// <summary>BUG-RENDER-22: the distance to the camera's own subject -- the avatar's head while
@@ -140,20 +121,21 @@ public partial class DepthOfFieldController : Node
     /// through: at zoom 0 the camera sits AT the target, and a focal plane 5 cm in front of the
     /// lens is not a focus, so anything below <see cref="DofSettings.MinFocusDistance"/> is
     /// declined and the centre-of-frame ray takes over.</summary>
-    private bool TrySubjectFocus(Vector3 origin, Vector3 forward, out float distance)
+    private bool TrySubjectFocus(Vector3 origin, Vector3 forward, out float distance, out Vector3 subjectPoint)
     {
         distance = 0f;
+        subjectPoint = Vector3.Zero;
         if (_camera is not AvatarController rig) return false;
 
-        var subject = rig.CameraTargetPoint;
+        var subject = rig.FocusSubjectPoint != Vector3.Zero ? rig.FocusSubjectPoint : rig.CameraTargetPoint;
         if (subject == Vector3.Zero || !subject.IsFinite()) return false;
 
-        // View-space depth, for the same reason the raycast below uses it: the blur is keyed off
-        // depth along the view axis, not euclidean distance from the lens.
+        // View-space depth along view axis
         float d = (subject - origin).Dot(forward);
         if (d < DofSettings.MinFocusDistance) return false;
 
         distance = Mathf.Min(d, DofSettings.MaxFocusDistance);
+        subjectPoint = subject;
         return true;
     }
 
@@ -178,10 +160,11 @@ public partial class DepthOfFieldController : Node
         if (_camera == null || _settings == null) return;
 
         var camXform = _camera.GlobalTransform;
-        if (TrySubjectFocus(camXform.Origin, -camXform.Basis.Z, out float subjectDistance))
+        if (TrySubjectFocus(camXform.Origin, -camXform.Basis.Z, out float subjectDistance, out Vector3 subjectPoint))
         {
             AutoFocusHasTarget = true;
             _autoFocusTarget = subjectDistance;
+            CurrentFocusWorldPoint = subjectPoint;
             return;
         }
 
@@ -218,12 +201,9 @@ public partial class DepthOfFieldController : Node
         if (hit.Count > 0)
         {
             hitSomething = true;
-            // The blur is keyed off VIEW-SPACE depth, so the focal plane wants the hit's distance
-            // ALONG the view axis, not its euclidean distance from the camera. The two are identical
-            // dead ahead and diverge toward the edges of a wide FOV -- which is exactly where a
-            // euclidean reading would put the plane slightly too far and soften the subject it just
-            // focused on.
-            depth = (hit["position"].AsVector3() - origin).Dot(normal);
+            var hitPos = hit["position"].AsVector3();
+            depth = (hitPos - origin).Dot(normal);
+            CurrentFocusWorldPoint = hitPos;
         }
 
         if (_world != null)
@@ -251,6 +231,7 @@ public partial class DepthOfFieldController : Node
                                 depth = d;
                                 hitSomething = true;
                                 hitTerrain = true;
+                                CurrentFocusWorldPoint = pos;
                                 break;
                             }
                         }
@@ -265,6 +246,7 @@ public partial class DepthOfFieldController : Node
         {
             AutoFocusHasTarget = false;
             _autoFocusTarget = _settings.FocusDistance;
+            CurrentFocusWorldPoint = origin + normal * _settings.FocusDistance;
             return;
         }
 
@@ -340,112 +322,6 @@ public partial class DepthOfFieldController : Node
         _attributes.DofBlurNearEnabled = _settings.NearBlur;
         _attributes.DofBlurNearDistance = near;
         _attributes.DofBlurNearTransition = Mathf.Max(Mathf.Min(falloff, near), 0.1f);
-    }
-
-    /// <summary>Places the focal-plane and camera-target markers for this frame, building them on
-    /// first use. Cheap enough to run per frame (two transform writes and a label string), and it
-    /// only runs at all while the user has the toggle on.</summary>
-    private void UpdateFocusMarker()
-    {
-        if (_camera == null || _settings == null) return;
-
-        if (!_settings.ShowFocusMarker)
-        {
-            SetMarkerVisible(false);
-            return;
-        }
-
-        EnsureMarkers();
-        if (_markerRoot == null || _focusMarker == null || _targetMarker == null) return;
-        _markerRoot.Visible = true;
-
-        var camXform = _camera.GlobalTransform;
-        var origin = camXform.Origin;
-        var forward = -camXform.Basis.Z;
-
-        float focus = _settings.AutoFocus ? CurrentFocusDistance : _settings.FocusDistance;
-        _focusMarker.GlobalPosition = origin + forward * focus;
-        _focusMarker.Scale = Vector3.One * MarkerRadius(focus);
-
-        // The camera target only exists in the third-person rig. In free-camera mode, or before
-        // login, AvatarController never writes it, and a marker parked at the world origin would
-        // be a lie -- hide it instead. Drawn smaller than the focal-plane cross so the two read as
-        // subject and focus rather than as two equal things.
-        if (_camera is AvatarController rig && rig.CameraTargetPoint != Vector3.Zero)
-        {
-            var targetPoint = rig.CameraTargetPoint;
-            float targetDistance = (targetPoint - origin).Dot(forward);
-            _targetMarker.Visible = true;
-            _targetMarker.GlobalPosition = targetPoint;
-            _targetMarker.Scale = Vector3.One * (MarkerRadius(Mathf.Max(targetDistance, 0.1f)) * 0.6f);
-        }
-        else
-        {
-            _targetMarker.Visible = false;
-        }
-    }
-
-    private static float MarkerRadius(float distance)
-        => Mathf.Clamp(distance * MarkerAngularSize, MarkerMinRadius, MarkerMaxRadius);
-
-    private void SetMarkerVisible(bool visible)
-    {
-        if (_markerRoot != null) _markerRoot.Visible = visible;
-    }
-
-    private void EnsureMarkers()
-    {
-        if (_markerRoot != null) return;
-
-        // TopLevel: the markers are positioned in world space, and this controller is a plain Node
-        // under Boot (a Control), so there is no Node3D ancestor to inherit from anyway -- saying
-        // so explicitly keeps that true if the tree ever changes.
-        _markerRoot = new Node3D { Name = "DofFocusMarker", TopLevel = true };
-        AddChild(_markerRoot);
-
-        _focusMarker = BuildCrosshair("DofFocalPlane", new Color(0.1f, 0.9f, 1f, 0.75f));
-        _markerRoot.AddChild(_focusMarker);
-
-        _targetMarker = BuildCrosshair("DofCameraTarget", new Color(1f, 0.65f, 0.1f, 0.6f));
-        _markerRoot.AddChild(_targetMarker);
-    }
-
-    /// <summary>Builds one hairline crosshair: four line segments in the XY plane, reaching from
-    /// <see cref="MarkerGapFraction"/> out to 1, so the centre stays empty and whatever is being
-    /// focused on is still visible through it. Unit-sized, because the per-frame <c>Scale</c> in
-    /// <see cref="UpdateFocusMarker"/> is what turns it into metres.</summary>
-    private static MeshInstance3D BuildCrosshair(string name, Color color)
-    {
-        var material = new StandardMaterial3D
-        {
-            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            AlbedoColor = color,
-            NoDepthTest = true,
-            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-            // BillboardKeepScale: without it Godot's billboard rewrite drops the node's own scale,
-            // and every crosshair would render at unit size regardless of distance.
-            BillboardMode = BaseMaterial3D.BillboardModeEnum.Enabled,
-            BillboardKeepScale = true,
-            VertexColorUseAsAlbedo = false,
-        };
-
-        var mesh = new ImmediateMesh();
-        mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, material);
-        float gap = MarkerGapFraction;
-        mesh.SurfaceAddVertex(new Vector3(-1f, 0f, 0f)); mesh.SurfaceAddVertex(new Vector3(-gap, 0f, 0f));
-        mesh.SurfaceAddVertex(new Vector3(gap, 0f, 0f)); mesh.SurfaceAddVertex(new Vector3(1f, 0f, 0f));
-        mesh.SurfaceAddVertex(new Vector3(0f, -1f, 0f)); mesh.SurfaceAddVertex(new Vector3(0f, -gap, 0f));
-        mesh.SurfaceAddVertex(new Vector3(0f, gap, 0f)); mesh.SurfaceAddVertex(new Vector3(0f, 1f, 0f));
-        mesh.SurfaceEnd();
-
-        return new MeshInstance3D
-        {
-            Name = name,
-            TopLevel = true,
-            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-            Mesh = mesh,
-        };
     }
 
     private void Detach()

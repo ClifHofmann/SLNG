@@ -73,11 +73,11 @@ public sealed class DofSettings
     /// "sharp subject, blurred background only" look; on is the full cinematic one.</summary>
     public bool NearBlur { get; private set; } = true;
 
-    /// <summary>BUG-RENDER-22 diagnostic: draw the focal plane, and the camera's own look-at
-    /// target, as markers in the world. Off by default and deliberately NOT a photography
-    /// setting -- it exists because "the avatar looks soft" and "the focal plane sits 40 m behind
-    /// the avatar" produce the same blurred image, and only one of them is a bug.</summary>
+    /// <summary>Whether to draw the 3D look-at / camera focus point marker.</summary>
     public bool ShowFocusMarker { get; private set; }
+
+    /// <summary>Fired whenever any DoF setting changes.</summary>
+    public event Action? Changed;
 
     public void Load()
     {
@@ -141,9 +141,10 @@ public sealed class DofSettings
         SetShowFocusMarker(false);
     }
 
-    private static void Persist(string key, Variant clamped, Action assign, bool write = true)
+    private void Persist(string key, Variant clamped, Action assign, bool write = true)
     {
         assign();
+        Changed?.Invoke();
         if (!write) return;
 
         var cfg = new ConfigFile();

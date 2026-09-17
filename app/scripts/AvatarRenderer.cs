@@ -2287,8 +2287,11 @@ public partial class AvatarRenderer : Node3D
             // Not silent: an untextured face renders as flat AlbedoColor (usually white), which
             // is visually indistinguishable from a face-index mapping bug — that ambiguity cost a
             // whole diagnostic round on the HUD-texture investigation. One line per failed id.
-            GD.PrintErr($"[FaceTex] texture {texId} fetch/decode returned null — face renders untextured" +
-                (rejectDegraded ? " (degraded decodes refused for this surface)" : ""));
+            if (SLNG.Core.Diag.Verbose)
+            {
+                GD.PrintErr($"[FaceTex] texture {texId} fetch/decode returned null -- face renders untextured" +
+                    (rejectDegraded ? " (degraded decodes refused for this surface)" : ""));
+            }
             LogHudFace(surface, meshId, faceIndex, ft, tint, $"NULL from fetch/decode (tex {texId})");
 
             // This face references a REAL texture id (texId != Empty above) that hasn't loaded --
