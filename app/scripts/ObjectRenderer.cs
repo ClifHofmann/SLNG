@@ -2744,11 +2744,19 @@ public partial class ObjectRenderer : Node3D
             // never blocking or gating it -- the media host is untrusted and potentially slow/dead,
             // and the object's normal appearance must never wait on it.
             int mediaFaceIdx = faceIndices[surf];
-            if (prim.MediaFaces != null && mediaFaceIdx >= 0 && mediaFaceIdx < prim.MediaFaces.Length
-                && prim.MediaFaces[mediaFaceIdx] is { AutoPlay: true } mediaFace
-                && !string.IsNullOrWhiteSpace(mediaFace.CurrentUrl))
+            var probedMediaFace = (prim.MediaFaces != null && mediaFaceIdx >= 0 && mediaFaceIdx < prim.MediaFaces.Length)
+                ? prim.MediaFaces[mediaFaceIdx] : null;
+            if (probedMediaFace is { AutoPlay: true } mediaFace && !string.IsNullOrWhiteSpace(mediaFace.CurrentUrl))
             {
-                ApplyMediaImageAsync(material, mediaFace.CurrentUrl);
+                // AutoScale ("fit the media into the display area", PRIM_MEDIA_AUTO_SCALE) is a
+                // real SL semantic, not a stretch-to-fill -- confirmed live against Firestorm's own
+                // black-letterboxed rendering of this exact face. WidthPixels/HeightPixels are the
+                // creator's own declared media size, which is also the box the face's existing UV
+                // mapping already spans, so letterboxing onto exactly that canvas needs no shader
+                // or geometry change at all.
+                int fitWidth = mediaFace.AutoScale ? mediaFace.WidthPixels : 0;
+                int fitHeight = mediaFace.AutoScale ? mediaFace.HeightPixels : 0;
+                ApplyMediaImageAsync(material, mediaFace.CurrentUrl, fitWidth, fitHeight);
             }
         }
 
@@ -2760,14 +2768,15 @@ public partial class ObjectRenderer : Node3D
     /// Fire-and-forget on purpose -- <paramref name="material"/> already carries the object's
     /// normal appearance by the time this is called, so a slow, dead or non-image URL simply never
     /// updates it, exactly as if the media had not loaded (matching a reference viewer's own blank-
-    /// until-loaded MOAP face). Only the FINAL GPU upload touches the main thread; the fetch and
-    /// pixel decode (SLNG.Assets.MediaImageService) run entirely on worker threads, same split as
-    /// every other texture path (GpuCache.cs).</summary>
-    private void ApplyMediaImageAsync(ShaderMaterial material, string url)
+    /// until-loaded MOAP face; the reason for a rejection is logged from
+    /// <c>MediaImageService</c> itself, not repeated here). Only the FINAL GPU upload touches the
+    /// main thread; the fetch, decode and any letterbox compositing run entirely on worker threads,
+    /// same split as every other texture path (<c>GpuCache.cs</c>).</summary>
+    private void ApplyMediaImageAsync(ShaderMaterial material, string url, int fitWidth, int fitHeight)
     {
-        _ = SLNG.Assets.MediaImageService.FetchAsync(url).ContinueWith(t =>
+        _ = SLNG.Assets.MediaImageService.FetchAsync(url, fitWidth, fitHeight).ContinueWith(t =>
         {
-            var data = t.Result;
+            var data = t.IsFaulted ? null : t.Result;
             if (data == null) return;
 
             var image = Godot.Image.CreateFromData(data.Width, data.Height, false, Godot.Image.Format.Rgba8, data.Rgba);

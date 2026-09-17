@@ -36,7 +36,7 @@ one:
 |---|---|---|---|
 | **1** | Data model + protocol fetch + version-gated, throttled change detection | No | ✅ Landed and confirmed in-world |
 | **2** | Object inspector display + click-a-media-face → confirm dialog (host + URL) → open in the system browser, permission/whitelist-checked | No | ⏸️ Pending — needs raycast-hit → SL-face-number resolution, which does not exist anywhere in the renderer yet (see Phase 2 notes) |
-| **3** | Direct-image (and, later, Theora) textures rendered live on AUTO_PLAY faces | No (ADR 0002 already covers uniform-driven face content; SkiaSharp/Magick.NET already referenced) | ✅ Landed — not yet confirmed in-world |
+| **3** | Direct-image (and, later, Theora) textures rendered live on AUTO_PLAY faces | No (ADR 0002 already covers uniform-driven face content; SkiaSharp/Magick.NET already referenced) | ✅ Landed and confirmed in-world |
 | **4** (own id: `FEAT-MEDIA-01`) | Full embedded web browser | **Yes — needs an ADR** | ⏸️ Not started |
 
 Parcel-wide media (`ParcelMediaCommandMessage`/`ParcelMediaUpdateReply`) is a different,
@@ -212,6 +212,34 @@ entirely covered by one MOAP entry has nothing to differ from and would still pa
 `EvaluateInstancing` now excludes any object with `PrimitiveComponent.MediaFaces != null`
 explicitly, regardless of surface count.
 
+### In-world bugs found and fixed the same day (`v0.22.202-alpha`)
+
+First live test against the probe found two more real bugs before this phase could be called
+confirmed:
+
+1. **The fetch itself failed every time, silently.** By design every rejection reason inside
+   `MediaImageService` was a bare `return null` — correct in spirit (an untrusted URL failing
+   is routine), wrong in practice, because it made this ONE genuinely-ours bug undiagnosable
+   from the outside. Added a real `User-Agent` header (`BuildHttpClient`) — several CDNs,
+   Wikimedia among the better-documented ones, reject or rate-limit a request that carries
+   none, which is exactly what .NET's `HttpClient` sends by default — and a `[MediaImage]`
+   line (`Console.Error`, bridged into `godot.log` like every other net-boundary diagnostic
+   here) for every distinct rejection reason (scheme, HTTP status, content-type, size cap,
+   exception). The added logging is what actually found the cause in one round-trip.
+2. **The loaded image rendered stretched, not fit.** `PRIM_MEDIA_AUTO_SCALE` is a real
+   "contain" fit — the media scales to preserve its own aspect ratio, letterboxed with black
+   bars for the remainder — not the naive stretch a plain UV-filling texture swap produces.
+   Confirmed live: Firestorm pillarboxes the identical probe face with black bars; SLNG's
+   Phase 3 cut did not. `MediaImageService.FetchAsync` now takes optional `fitWidth`/
+   `fitHeight` (the creator's own declared `MediaFace.WidthPixels`/`HeightPixels`, passed only
+   when `AutoScale` is set) and letterboxes onto that canvas via SkiaSharp compositing before
+   ever reaching Godot — no shader or geometry change, since the face's existing UV mapping
+   already spans that declared box. The cache key grew to `(url, fitWidth, fitHeight)` since
+   two faces could reference the same image at different declared sizes.
+
+**Confirmed in-world 2026-09-17:** SLNG's and Firestorm's rendering of the probe's `AUTO_PLAY`
+face now match.
+
 ### Tests
 
 - `MediaWhitelistTests` — the whitelist matcher against real `checkUrlAgainstWhitelist`
@@ -229,8 +257,10 @@ explicitly, regardless of surface count.
   with the new `HasMedia` field, proving a media face can't merge with a non-media one.
 - `MediaImageServiceTests` (`SLNG.Assets.Tests`) — the SKBitmap decode path against a real
   1x1 PNG and against garbage bytes (catching the `SKBitmap.Decode` throws-don't-return-null
-  trap before it could reach a live host's malformed response), plus the non-http(s)/
-  unparseable-URL guards that must never make a network call.
+  trap before it could reach a live host's malformed response), the non-http(s)/
+  unparseable-URL guards that must never make a network call, and the letterbox math against a
+  non-square source (pins an actual "contain" fit with clean black bars, not just that
+  *something* got returned at the target size).
 
 ## Phase 2 — click-to-open fallback (not started)
 
@@ -332,5 +362,8 @@ first-class web view.
       non-network URL guards.
 - [x] `dotnet build` (solution + `app/`), `dotnet test`, `dotnet format`, shader-globals,
       `--selftest` all clean.
-- [ ] Confirmed against a live region (needs a rebuild + a live session against the probe's
-      `AUTO_PLAY` image face).
+- [x] `AutoScale` letterboxing (a "contain" fit, not a stretch) via SkiaSharp compositing onto
+      the creator's declared `WidthPixels`/`HeightPixels`.
+- [x] Confirmed against a live region — `v0.22.202-alpha`, Agni: SLNG's and Firestorm's
+      rendering of the probe's `AUTO_PLAY` face match (found and fixed two real bugs to get
+      there: a missing `User-Agent` header, and the missing letterbox fit).

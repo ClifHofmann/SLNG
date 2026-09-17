@@ -1,3 +1,4 @@
+using SkiaSharp;
 using SLNG.Assets;
 using Xunit;
 
@@ -39,6 +40,39 @@ public class MediaImageServiceTests
     {
         var data = MediaImageService.Decode(Array.Empty<byte>());
         Assert.Null(data);
+    }
+
+    /// <summary>PRIM_MEDIA_AUTO_SCALE ("fit the media into the display area") is a real "contain"
+    /// fit, not a stretch -- confirmed live 2026-09-17 against Firestorm's own black-letterboxed
+    /// rendering of a MOAP probe face. A 4x2 source into a 4x4 target scales by exactly 1 (the
+    /// limiting axis is height, 4/2=2, vs width 4/4=1) and centers with a clean 1px black bar top
+    /// and bottom -- integer offsets on purpose, so the assertions below aren't fighting
+    /// anti-aliasing at a fractional boundary.</summary>
+    [Fact]
+    public void Decode_WithFitDimensions_LetterboxesPreservingAspectRatio_NotAStretch()
+    {
+        using var source = new SKBitmap(4, 2, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using (var canvas = new SKCanvas(source)) canvas.Clear(SKColors.Red);
+        using var image = SKImage.FromBitmap(source);
+        using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
+
+        var data = MediaImageService.Decode(encoded.ToArray(), fitWidth: 4, fitHeight: 4);
+
+        Assert.NotNull(data);
+        Assert.Equal(4, data!.Width);
+        Assert.Equal(4, data.Height);
+
+        // Row-major RGBA8: pixel (x, y) starts at ((y * width) + x) * 4.
+        Assert.Equal((0, 0, 0, 255), PixelAt(data, x: 0, y: 0));   // top bar: black
+        Assert.Equal((255, 0, 0, 255), PixelAt(data, x: 0, y: 1)); // image: red
+        Assert.Equal((255, 0, 0, 255), PixelAt(data, x: 3, y: 2)); // image: red
+        Assert.Equal((0, 0, 0, 255), PixelAt(data, x: 0, y: 3));   // bottom bar: black
+    }
+
+    private static (byte R, byte G, byte B, byte A) PixelAt(TextureData data, int x, int y)
+    {
+        int i = ((y * data.Width) + x) * 4;
+        return (data.Rgba[i], data.Rgba[i + 1], data.Rgba[i + 2], data.Rgba[i + 3]);
     }
 
     [Fact]
