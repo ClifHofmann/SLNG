@@ -430,6 +430,15 @@ public sealed class WorldSimulation : IDisposable
             prim.IsPhantom = e.IsPhantom;
             prim.CastsShadows = e.CastsShadows;
             prim.IsTouch = e.IsTouch;
+            // FEAT-SEC-04: per-agent permissions ride the same ObjectUpdate flags word as
+            // IsPhysical above, so they carry the same terse-update staleness and belong under
+            // the same guard. Applying a terse-sourced default here would tell the edit UI the
+            // agent may do nothing, every time an object moved.
+            prim.YouCanModify = e.YouCanModify;
+            prim.YouCanMove = e.YouCanMove;
+            prim.YouCanCopy = e.YouCanCopy;
+            prim.YouCanTransfer = e.YouCanTransfer;
+            prim.YouAreOwner = e.YouAreOwner;
             prim.LightEnabled = e.LightEnabled;
             prim.LightColor = e.LightColor;
             prim.LightIntensity = e.LightIntensity;

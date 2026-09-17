@@ -649,7 +649,17 @@ public sealed partial class GridSession
             // in `faces` carry their own; this is for prims that send no per-face entries.
             defaultFace?.Fullbright ?? false,
             _reflectionProbeByLocalId.TryGetValue(prim.LocalID, out var probe) ? probe : null,
-            prim.Flags.HasFlag(PrimFlags.Touch)));
+            prim.Flags.HasFlag(PrimFlags.Touch),
+            // FEAT-SEC-04: the sim's per-agent permission answer, already computed for us. These
+            // bits sat in prim.Flags all along, next to the four read above, and were dropped --
+            // which is why the edit window could only report what the OWNER may do and had to
+            // label it "unknown whether these are yours". Bit values verified against the
+            // viewer's own object_flags.h.
+            prim.Flags.HasFlag(PrimFlags.ObjectModify),
+            prim.Flags.HasFlag(PrimFlags.ObjectMove),
+            prim.Flags.HasFlag(PrimFlags.ObjectCopy),
+            prim.Flags.HasFlag(PrimFlags.ObjectTransfer),
+            prim.Flags.HasFlag(PrimFlags.ObjectYouOwner)));
     }
 
     /// <summary>MVP3-3 Phase 1: notices the MOAP "doorbell" (<paramref name="anyFaceHasMedia"/>

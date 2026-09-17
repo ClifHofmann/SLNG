@@ -107,6 +107,33 @@ public class PrimitiveComponent : IComponent
     /// <summary>True when an in-world script on this prim registers touch_start/touch/touch_end.</summary>
     public bool IsTouch { get; set; }
 
+    /// <summary>FEAT-SEC-04: what the SIMULATOR says <b>this agent</b> may do to this object —
+    /// not what its owner may do. <see cref="MetadataComponent.OwnerCanModify"/> and friends
+    /// answer the owner's question, which is only the same question when you are the owner.
+    ///
+    /// <para>These come straight off the ObjectUpdate flags, already evaluated per-agent by the
+    /// sim against owner/group/everyone. That is also how the reference viewer answers it:
+    /// <c>LLViewerObject::permModify()</c> is <c>flagObjectModify()</c>, a bit test, not a
+    /// permissions computation (llviewerobject.cpp:6988). Anything gating an edit should ask
+    /// <see cref="YouCanModify"/> rather than reinvent the arithmetic.</para>
+    ///
+    /// <para>For a child prim the viewer delegates to the root (<c>permModify</c> recurses
+    /// through <c>getParent()</c>), so a linkset's answer is the root's answer — see
+    /// <c>World.ResolveEditPermission</c>.</para></summary>
+    public bool YouCanModify { get; set; }
+
+    /// <summary>Position/rotation/scale are gated by Move, not Modify — a no-modify object still
+    /// accepts transform edits. Distinct flags on the wire for exactly that reason.</summary>
+    public bool YouCanMove { get; set; }
+
+    public bool YouCanCopy { get; set; }
+    public bool YouCanTransfer { get; set; }
+
+    /// <summary>The sim's own "you are the owner" bit (FLAGS_OBJECT_YOU_OWNER). Cheaper and more
+    /// trustworthy than comparing <see cref="MetadataComponent.OwnerId"/> against the agent id:
+    /// it is correct for a group-owned object, where the owner id is the group's.</summary>
+    public bool YouAreOwner { get; set; }
+
     /// <summary>SL's point-light ("Light") prim property. Mirrors LibreMetaverse's
     /// Primitive.LightData ExtraParams block, which the wire protocol has no separate enable
     /// bit for -- Intensity == 0 means "off" by convention (see GridSession.SetObjectLight).</summary>
