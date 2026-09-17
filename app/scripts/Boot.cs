@@ -16,6 +16,13 @@ public partial class Boot : Control
     private LineEdit _lastInput = null!;
     private LineEdit _passInput = null!;
 
+    /// <summary>True for a <c>--selftest</c> run. Set as the very first statement of
+    /// <see cref="_Ready"/> and read wherever the boot path would otherwise touch
+    /// <c>user://</c> — the smoke test must leave the developer's saved logins, preferences and
+    /// snapshots exactly as it found them. Enforced, not merely intended: see
+    /// <c>SelfTest.SnapshotUserData</c>.</summary>
+    private bool IsSelfTest;
+
     /// <summary>FEAT-SEC-02: the selected profile's saved <c>$1$&lt;md5&gt;</c> credential, or empty
     /// when none is stored. Used only when <see cref="_passInput"/> is left untouched — anything
     /// typed wins, so there is no state to keep in sync with the field.</summary>
@@ -315,7 +322,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.6-alpha";
+    public const string AppVersion = "v0.23.7-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -363,6 +370,21 @@ public partial class Boot : Control
 
     public override void _Ready()
     {
+        // BEFORE anything else: --selftest boots the whole client and only then runs the checks
+        // (this scene is the main scene, and SelfTest is invoked at the end of this method), so a
+        // smoke test executes the entire login-screen setup -- including everything that writes
+        // to user://. On 2026-09-17 that quietly rewrote four real saved logins, because
+        // FEAT-SEC-02 had added a one-way password migration to LoadProfiles and "run the smoke
+        // test" does not sound like "and rewrite my credentials". CI never noticed: a fresh
+        // runner has an empty profile directory.
+        //
+        // Two halves. IsSelfTest below skips the user:// work, and this snapshot is what proves
+        // the skip is complete -- SelfTest's "user data untouched" check compares against it and
+        // fails the run, by name and path, if anything wrote. The next person to add a write here
+        // does not have to know the rule; the selftest tells them.
+        IsSelfTest = SelfTest.Requested;
+        if (IsSelfTest) SelfTest.SnapshotUserData();
+
         GetTree().AutoAcceptQuit = false;
         MouseFilter = MouseFilterEnum.Ignore;
 
@@ -482,7 +504,11 @@ public partial class Boot : Control
         _profileDropdown.ItemSelected += OnProfileSelected;
         GetTree().Root.SizeChanged += OnWindowSizeChanged;
 
-        LoadProfiles();
+        // Skipped under --selftest: LoadProfiles reads logins.cfg and writes it back in three
+        // places (the password migration, the window-geometry restore, and OnProfileSelected
+        // recording last_profile). None of it is needed to check shaders, locales and the
+        // skeleton, and all of it is the developer's real data. See IsSelfTest.
+        if (!IsSelfTest) LoadProfiles();
 
         _terrainRenderer = new TerrainRenderer();
         AddChild(_terrainRenderer);

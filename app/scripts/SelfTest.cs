@@ -48,6 +48,105 @@ public static class SelfTest
 
     private readonly record struct Check(string Name, bool Passed, string Detail);
 
+    /// <summary>Directories under <c>user://</c> the engine and the client own outright and write
+    /// to as a matter of course. Excluding them is not a loophole: <c>logs/</c> receives this very
+    /// run's <c>godot.log</c>, and the caches exist to be rewritten. What the check is for is
+    /// CONFIGURATION and user content -- <c>logins.cfg</c>, <c>preferences.cfg</c>, saved
+    /// snapshots -- none of which a smoke test has any business touching.</summary>
+    private static readonly string[] IgnoredUserDirs =
+    {
+        "logs", "cache", "shader_cache", "vulkan", "objectdb_snapshots",
+    };
+
+    /// <summary>Every file under <c>user://</c> as it stood before the boot path ran, keyed by
+    /// path, valued by size and modification time. Null outside a selftest run.</summary>
+    private static Dictionary<string, (long Size, ulong Modified)>? _userDataBefore;
+
+    /// <summary>Records the state of <c>user://</c> before <c>Boot._Ready</c> touches it.
+    ///
+    /// <para>Must be called as the FIRST thing in <c>_Ready</c>, ahead of anything that reads or
+    /// writes there. The snapshot is the evidence half of the isolation: <c>_Ready</c> skipping
+    /// its <c>user://</c> work is what keeps the developer's data intact, and
+    /// <see cref="CheckUserDataUntouched"/> is what keeps that true after the next person adds a
+    /// write without knowing the rule. A comment would not have survived; this fails the
+    /// build.</para>
+    ///
+    /// <para>The reason it exists: <c>--selftest</c> does not run the checks in isolation, it runs
+    /// the whole client and then the checks. On 2026-09-17 a one-way password migration added to
+    /// <c>LoadProfiles</c> therefore rewrote four real saved logins during what everyone involved
+    /// believed was a read-only smoke test. It was the wanted migration and a backup existed, but
+    /// nothing about "run the smoke test" implies "and rewrite my credentials".</para></summary>
+    public static void SnapshotUserData() => _userDataBefore = ScanUserData();
+
+    private static Dictionary<string, (long Size, ulong Modified)> ScanUserData()
+    {
+        var found = new Dictionary<string, (long, ulong)>();
+        Walk("user://", found, depth: 0);
+        return found;
+    }
+
+    private static void Walk(string dirPath, Dictionary<string, (long, ulong)> into, int depth)
+    {
+        // Deep enough for anything this project writes; a guard against a symlink loop rather
+        // than a real structural limit.
+        if (depth > 8) return;
+
+        using var dir = DirAccess.Open(dirPath);
+        if (dir == null) return;
+
+        foreach (string file in dir.GetFiles())
+        {
+            string path = dirPath.EndsWith('/') ? dirPath + file : dirPath + "/" + file;
+            long size = -1;
+            using (var f = FileAccess.Open(path, FileAccess.ModeFlags.Read))
+            {
+                if (f != null) size = (long)f.GetLength();
+            }
+            into[path] = (size, FileAccess.GetModifiedTime(path));
+        }
+
+        foreach (string sub in dir.GetDirectories())
+        {
+            if (depth == 0 && System.Array.IndexOf(IgnoredUserDirs, sub) >= 0) continue;
+            string path = dirPath.EndsWith('/') ? dirPath + sub : dirPath + "/" + sub;
+            Walk(path, into, depth + 1);
+        }
+    }
+
+    /// <summary>Fails when the boot path wrote anything under <c>user://</c> outside the
+    /// engine-owned directories. Names the offending paths, because "something wrote" is not
+    /// actionable and the whole point is that the write was invisible the first time.</summary>
+    private static Check CheckUserDataUntouched()
+    {
+        const string Name = "user data untouched";
+
+        if (_userDataBefore == null)
+        {
+            return new Check(Name, false,
+                "no snapshot was taken -- SelfTest.SnapshotUserData() must be the first thing " +
+                "Boot._Ready does, before anything reads or writes user://");
+        }
+
+        var after = ScanUserData();
+        var changed = new List<string>();
+
+        foreach (var (path, before) in _userDataBefore)
+        {
+            if (!after.TryGetValue(path, out var now)) { changed.Add($"removed {path}"); continue; }
+            if (now.Size != before.Size) changed.Add($"resized {path} ({before.Size} -> {now.Size} bytes)");
+            else if (now.Modified != before.Modified) changed.Add($"rewritten {path}");
+        }
+        foreach (var path in after.Keys)
+        {
+            if (!_userDataBefore.ContainsKey(path)) changed.Add($"created {path}");
+        }
+
+        return changed.Count == 0
+            ? new Check(Name, true, $"{after.Count} file(s) under user:// unchanged by the boot path")
+            : new Check(Name, false,
+                $"the boot path wrote to user:// during a smoke test: {string.Join("; ", changed)}");
+    }
+
     /// <summary>
     /// Runs every check, prints one line each plus a summary, and quits the tree with 0 or 1.
     /// Call it from <c>Boot._Ready</c> deferred: the checks load resources, and doing that inside
@@ -67,6 +166,8 @@ public static class SelfTest
         results.Add(CheckAvatarHoldMode());
         results.Add(CheckAvatarAnimationFreeze());
         results.Add(CheckAvatarAnimationLocalOverlay());
+        // Last, so it sees everything the run did.
+        results.Add(CheckUserDataUntouched());
 
         foreach (var r in results)
         {
