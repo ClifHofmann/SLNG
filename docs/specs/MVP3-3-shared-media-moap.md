@@ -145,6 +145,35 @@ ever *adds* `MediaFaces` data today, never clears it. Low-risk (a stale "this fa
 media" reading is far less harmful than missing one that just appeared) and cheap to add
 alongside Phase 2's UI once there's something visible to keep in sync.
 
+### In-world bug found and fixed the same day (`v0.22.198-alpha`)
+
+First live test on Agni surfaced `fail: SLNG[0] [PurisViewer Resident] ObjectMedia
+capability not available` (LibreMetaverse's own `ObjectManager.RequestObjectMediaAsync`
+logging, `ObjectManager.cs:2183`) on the region's **very first** ObjectUpdate — and the
+media was then never fetched again for the rest of the session.
+
+**Cause:** `RaiseObjectUpdate`'s `MaybeQueueMediaFetch` committed the prim's `x-mv:`
+version to `_lastMediaVersionByLocalId` **before** awaiting the fetch, so that one transient
+failure permanently marked the version "already handled". The failure itself is a real,
+known class of race — `CapabilityURI("ObjectMedia")` can read null for a few seconds right
+after region entry even on a region that has the capability, because the caps seed is not
+necessarily resolved yet (the same race `RegionHasServerSideBaking`'s own doc comment
+describes, and the reason the environment code hangs off `EventQueueRunning` rather than
+`SimConnected`). The very first ObjectUpdate for a region — exactly the one most likely to
+carry an already-in-view MOAP prim — is the update most likely to race it.
+
+**Fix, two parts:**
+1. The version is committed to `_lastMediaVersionByLocalId` only on actual fetch success.
+   `FetchAndPublishObjectMediaAsync` also now waits out a short capability-seeding window
+   itself (5 attempts, 1s apart) before giving up on one fetch.
+2. `RetryPendingMediaFetches` sweeps every primitive LibreMetaverse already knows about for
+   the sim once `RegionCapabilitiesReady` actually fires (wired into the existing
+   `OnEventQueueRunning` handler) — so a fetch that raced the very first update self-heals
+   the moment caps are confirmed ready, rather than waiting for some later, incidental
+   ObjectUpdate for that same prim that might not come for a long time.
+
+Not yet re-confirmed in-world after the fix (needs another live login on the same region).
+
 ### Tests
 
 - `MediaWhitelistTests` — the whitelist matcher against real `checkUrlAgainstWhitelist`
