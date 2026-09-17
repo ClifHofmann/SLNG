@@ -315,7 +315,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.5-alpha";
+    public const string AppVersion = "v0.23.6-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -2457,13 +2457,20 @@ public partial class Boot : Control
             ? SLNG.App.UI.L10n.Tr("ui.login.password_saved")
             : "";
 
-        // The checkbox has to SHOW whether this profile is saved, not just decide whether to save
-        // it again. It defaults to unticked in Boot.tscn and nothing ever restored it, which was
+        // The checkbox has to SHOW that this profile is saved, not just decide whether to save it
+        // again. It defaults to unticked in Boot.tscn and nothing ever restored it, which was
         // harmless only while unticking did nothing: selecting a saved profile and logging in
         // without touching the box now means "stop keeping this", and it would delete the
         // credential the user just successfully logged in with. Measured, not hypothetical --
         // that is exactly what happened to a real saved profile the first time this shipped.
-        _saveLoginCheck.ButtonPressed = _storedPassHash.Length > 0;
+        //
+        // Keyed on reaching this method at all, NOT on whether a credential happens to exist.
+        // One checkbox covers the whole profile here (grid, name and password together), and
+        // every profile in the dropdown is by definition a saved one. Keying it on the password
+        // instead looks more precise and is worse: a profile whose credential was lost unticks
+        // itself, so typing the password back in does not re-save it and the profile can never
+        // recover without the user noticing the box. That trap was walked into once already.
+        _saveLoginCheck.ButtonPressed = true;
 
         SyncGridDropdownToUri(_gridInput.Text);
 
