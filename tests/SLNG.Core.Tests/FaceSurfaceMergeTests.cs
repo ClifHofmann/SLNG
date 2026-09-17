@@ -19,10 +19,10 @@ public class FaceSurfaceMergeTests
         Guid? texture = null, Guid? renderMaterial = null, Guid? legacyMaterial = null,
         Vector4? color = null, float repeatU = 1f, float repeatV = 1f,
         float offsetU = 0f, float offsetV = 0f, float rotation = 0f,
-        byte texGen = 0, bool fullbright = false, byte shiny = 0) =>
+        byte texGen = 0, bool fullbright = false, byte shiny = 0, bool hasMedia = false) =>
         new(texture ?? TexA, renderMaterial ?? Guid.Empty, legacyMaterial ?? Guid.Empty,
             color ?? new Vector4(1, 1, 1, 1), repeatU, repeatV, offsetU, offsetV, rotation,
-            texGen, fullbright, shiny);
+            texGen, fullbright, shiny, hasMedia);
 
     private static (int Surfaces, bool[] RunStart) Plan(
         int[] submeshFaceIndices, FaceTexture[]? faces,
@@ -99,6 +99,9 @@ public class FaceSurfaceMergeTests
         // ROUGHNESS and SPECULAR from this, so a matte face merged with a polished one would
         // take whichever material the run happened to build.
         { "legacy shininess", Face(shiny: 2) },
+        // MVP3-3: a MOAP face must never merge with an otherwise-identical non-media face --
+        // see FaceSurfaceMerge's doc comment on why this keeps a future media texture swap safe.
+        { "has media", Face(hasMedia: true) },
     };
 
     [Theory]

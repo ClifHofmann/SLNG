@@ -73,7 +73,11 @@
       "copy_slurl_tooltip": "Click to copy SLURL to clipboard",
       "slurl_copied": "SLURL copied to clipboard: {0}",
       "fps_tooltip": "Frames per second (Click for performance stats)",
-      "graphics_profile_tooltip": "Select graphics profile"
+      "graphics_profile_tooltip": "Select graphics profile",
+      "media_autoload_on_tooltip": "Media auto-play is ON — click to disable loading AUTO_PLAY media on prims",
+      "media_autoload_off_tooltip": "Media auto-play is OFF — click to enable loading AUTO_PLAY media on prims",
+      "audio_unmuted_tooltip": "Audio (no in-world sound yet — reserved for future use)",
+      "audio_muted_tooltip": "Audio muted (no in-world sound yet — reserved for future use)"
     },
     "avatar_hover": {
       "title": "Hover Height",

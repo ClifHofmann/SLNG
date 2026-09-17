@@ -73,7 +73,11 @@
       "copy_slurl_tooltip": "Klicken, um SLURL in die Zwischenablage zu kopieren",
       "slurl_copied": "SLURL in Zwischenablage kopiert: {0}",
       "fps_tooltip": "Bilder pro Sekunde (Klicken für Leistungsstatistik)",
-      "graphics_profile_tooltip": "Grafikprofil auswählen"
+      "graphics_profile_tooltip": "Grafikprofil auswählen",
+      "media_autoload_on_tooltip": "Medien-Autoplay ist AN — klicken, um automatisches Laden von AUTO_PLAY-Medien auf Prims zu deaktivieren",
+      "media_autoload_off_tooltip": "Medien-Autoplay ist AUS — klicken, um automatisches Laden von AUTO_PLAY-Medien auf Prims zu aktivieren",
+      "audio_unmuted_tooltip": "Audio (noch kein Sound in der Welt — für zukünftige Nutzung reserviert)",
+      "audio_muted_tooltip": "Audio stummgeschaltet (noch kein Sound in der Welt — für zukünftige Nutzung reserviert)"
     },
     "avatar_hover": {
       "title": "Schwebehöhe",

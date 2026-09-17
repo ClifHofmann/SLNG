@@ -96,6 +96,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     // so the high-level API cannot express "this object is a mirror". See ReflectionProbeParams.
     private readonly ConcurrentDictionary<uint, SLNG.Core.ReflectionProbeParams?> _reflectionProbeByLocalId = new();
 
+    /// <summary>MVP3-3 Phase 1: the last <c>x-mv:</c> media-version string a fetch was already
+    /// queued for, per LocalID. LibreMetaverse raises no event when a prim's MOAP media changes
+    /// (verified: no <c>ObjectMedia</c> event is ever raised in the pinned 3.1.3), so this is the
+    /// gate that replicates LLVOVolume::processUpdateMessage's staleness check
+    /// (llvovolume.cpp:2640-2660) and keeps a region full of untouched media prims from re-fetching
+    /// every time they simply re-enter the interest list -- the same caps-flood lesson as
+    /// BUG-NET-11.</summary>
+    private readonly ConcurrentDictionary<uint, string> _lastMediaVersionByLocalId = new();
+
+    /// <summary>Bounds concurrent <c>ObjectMedia</c> GETs the same way <c>_textureFetchSemaphore</c>
+    /// bounds texture fetches -- lower than that one's 8 because MOAP prims are far rarer than
+    /// textured faces, so a whole region's worth arriving at once is a much smaller burst.</summary>
+    private static readonly System.Threading.SemaphoreSlim _mediaFetchSemaphore = new(4, 4);
+
     /// <summary>The region's current sun direction, in SL coordinates, pointing FROM the region
     /// TOWARD the sun. Zero until the first SimulatorViewerTimeMessage arrives.
     ///
@@ -131,6 +145,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public float SunPhase { get; private set; }
     public event EventHandler<ObjectPropertiesEvent>? ObjectPropertiesReceived;
     public event EventHandler<PhysicsPropertiesEvent>? PhysicsPropertiesReceived;
+    public event EventHandler<ObjectMediaEvent>? ObjectMediaReceived;
     public event EventHandler<NameResolvedEvent>? NameResolved;
     public event EventHandler<NameResolvedEvent>? DisplayNameResolved;
     public event EventHandler<AlertMessageEvent>? AlertMessageReceived;
@@ -252,6 +267,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
     internal void RaiseAvatarUpdate(AvatarUpdateEvent e) => AvatarUpdateReceived?.Invoke(this, e);
     internal void RaiseObjectRemoved(ObjectRemovedEvent e) => ObjectRemovedReceived?.Invoke(this, e);
+    internal void RaiseObjectMedia(ObjectMediaEvent e) => ObjectMediaReceived?.Invoke(this, e);
     internal void RaiseTerrainPatch(TerrainPatchEvent e) => TerrainPatchReceived?.Invoke(this, e);
     internal void RaiseTerrainSettings(TerrainSettingsEvent e) => TerrainSettingsReceived?.Invoke(this, e);
     internal void RaiseRegionDisconnected(RegionDisconnectedEvent e) => RegionDisconnectedReceived?.Invoke(this, e);
@@ -994,6 +1010,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // region is done now, unlike at RegionConnected.
         RegionCapabilitiesReady?.Invoke(this, e.Simulator.Handle);
 
+        // MVP3-3: the ObjectMedia cap races region entry the exact same way -- see
+        // FetchAndPublishObjectMediaAsync's doc comment. Caps are confirmed resolved now, so
+        // sweep every currently-known primitive once for any MOAP fetch that failed earlier.
+        RetryPendingMediaFetches(e.Simulator);
+
         _ = Task.Run(async () =>
         {
             try
@@ -1337,8 +1358,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (e.Simulator != _client.Network.CurrentSim) return;
 
         bool isLocalAgent = e.Avatar.ID == _client.Self.AgentID;
-        ResolveSeatedTransform(e.Simulator, e.Avatar.Position, e.Avatar.Rotation, e.Avatar.ParentID,
-            out var worldPos, out var worldRot);
+        if (!ResolveSeatedTransform(e.Simulator, e.Avatar.Position, e.Avatar.Rotation, e.Avatar.ParentID,
+            out var worldPos, out var worldRot))
+        {
+            RequestUnresolvedSeat(e.Simulator, e.Avatar.ParentID);
+        }
 
         AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
             e.Simulator.Handle,
@@ -1380,16 +1404,26 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// is the one seam where every avatar's transform gets converted to world space regardless of
     /// who it belongs to -- nothing downstream (WorldSimulation, the renderer, the camera) needs to
     /// know or special-case a seated avatar's transform at all. A no-op (returns the input
-    /// unchanged) when parentLocalId is 0.</summary>
-    private static void ResolveSeatedTransform(
+    /// unchanged, and true) when parentLocalId is 0.
+    ///
+    /// <b>Returns false when the seat prim itself is not yet in <c>sim.ObjectsPrimitives</c></b> --
+    /// a real race, not a hypothetical one: an avatar's own (Terse)ObjectUpdate can arrive before
+    /// the chair/vehicle it is sitting on has ever been seen, especially right after region entry
+    /// when many objects stream in in an arbitrary order. <paramref name="worldPos"/>/
+    /// <paramref name="worldRot"/> are still filled with the (wrong) relative values in that case
+    /// -- the caller decides what to do about a still-unresolved seat, this method only reports it
+    /// rather than silently handing back a value that LOOKS like a world position but is actually
+    /// a small offset from an unknown origin (reported live 2026-09-17: a seated avatar rezzing far
+    /// from her chair and only snapping to the right spot "after a while").</summary>
+    private static bool ResolveSeatedTransform(
         LibreMetaverse.Simulator sim, LibreMetaverse.Vector3 relPos, LibreMetaverse.Quaternion relRot,
         uint parentLocalId, out LibreMetaverse.Vector3 worldPos, out LibreMetaverse.Quaternion worldRot)
     {
         worldPos = relPos;
         worldRot = relRot;
-        if (parentLocalId == 0) return;
+        if (parentLocalId == 0) return true;
 
-        if (!sim.ObjectsPrimitives.TryGetValue(parentLocalId, out var seat) || seat == null) return;
+        if (!sim.ObjectsPrimitives.TryGetValue(parentLocalId, out var seat) || seat == null) return false;
 
         worldPos = seat.Position + relPos * seat.Rotation;
         worldRot = relRot * seat.Rotation;
@@ -1411,8 +1445,80 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             }
             else
             {
-                break;
+                // An ancestor in the chain (e.g. a vehicle's root, for a seat on one of its child
+                // parts) is unresolved too -- same race as the seat itself, one level up. worldPos
+                // is short by whatever offset that ancestor would have added, so it's just as
+                // untrustworthy as the seat-not-found case above.
+                return false;
             }
+        }
+        return true;
+    }
+
+    /// <summary>Per-LocalID cooldown so a burst of terse updates for a seated avatar whose seat is
+    /// still unresolved (they can arrive several times a second) sends ONE
+    /// <c>RequestMultipleObjects</c> packet, not one per packet, while still re-asking if the
+    /// first request was dropped rather than waiting indefinitely.</summary>
+    private readonly ConcurrentDictionary<uint, DateTime> _lastSeatRequestByLocalId = new();
+    private static readonly TimeSpan SeatRequestCooldown = TimeSpan.FromSeconds(2);
+
+    /// <summary>Actively asks the sim to (re)send a seat prim <see cref="ResolveSeatedTransform"/>
+    /// could not find, instead of passively waiting for it to show up on its own -- the object
+    /// might already be streaming in, but there is no reason to just hope it arrives before the
+    /// NEXT avatar update happens to need it again. Mirrors the real viewer's own behaviour of
+    /// requesting an unresolved parent (LLViewerObject's orphan-child handling serves the same
+    /// purpose from the other direction). This does not make the CURRENT packet's position
+    /// correct -- only shortens how long the wrong one persists before a follow-up update, now
+    /// far more likely to have the seat available, corrects it.</summary>
+    private void RequestUnresolvedSeat(LibreMetaverse.Simulator sim, uint parentLocalId)
+    {
+        var now = DateTime.UtcNow;
+        if (_lastSeatRequestByLocalId.TryGetValue(parentLocalId, out var last) && now - last < SeatRequestCooldown)
+            return;
+        _lastSeatRequestByLocalId[parentLocalId] = now;
+        Console.Error.WriteLine(
+            $"[Seat] parent {parentLocalId} unresolved for a seated avatar -- requesting it explicitly");
+        _client.Objects.RequestObject(sim, parentLocalId);
+    }
+
+    /// <summary>BUG-NET-16: runs on EVERY full ObjectUpdate, checking whether any avatar
+    /// LibreMetaverse already knows about is sitting on the prim that JUST updated (it might be a
+    /// seat <see cref="RequestUnresolvedSeat"/> asked for, or just an ordinary edit/move of an
+    /// already-known seat). A seated, otherwise-motionless avatar sends no packets of her own once
+    /// resolution has already gone wrong once -- her <c>AvatarComponent</c>/<c>TransformComponent</c>
+    /// would otherwise carry that one bad reading for the rest of the session, since nothing else
+    /// would ever ask again. Re-resolving and re-publishing here reuses the exact same
+    /// <see cref="ResolveSeatedTransform"/>/<see cref="AvatarUpdateEvent"/> path an ordinary packet
+    /// would take, so WorldSimulation's existing large-jump-snaps/small-jump-eases logic (see
+    /// ApplyAvatarUpdate) handles the correction the same way it would handle any other update.</summary>
+    private void ReapplySeatedAvatarsOn(LibreMetaverse.Simulator sim, uint seatLocalId)
+    {
+        foreach (var av in sim.ObjectsAvatars.Values)
+        {
+            if (av == null || av.ParentID != seatLocalId) continue;
+            if (!ResolveSeatedTransform(sim, av.Position, av.Rotation, av.ParentID, out var worldPos, out var worldRot))
+                continue; // still unresolved for some other reason -- nothing new to publish
+
+            // Only log when this local id was previously flagged unresolved -- an ordinary
+            // ObjectUpdate for an already-fine seat (a chair being edited, a vehicle just moving)
+            // takes this same path constantly and must not spam the console.
+            if (_lastSeatRequestByLocalId.TryRemove(seatLocalId, out _))
+            {
+                Console.Error.WriteLine(
+                    $"[Seat] parent {seatLocalId} resolved -- correcting avatar {av.LocalID}'s position");
+            }
+
+            bool isLocalAgent = av.ID == _client.Self.AgentID;
+            AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
+                sim.Handle,
+                av.LocalID,
+                av.ID.Guid,
+                new System.Numerics.Vector3(worldPos.X, worldPos.Y, worldPos.Z),
+                new System.Numerics.Quaternion(worldRot.X, worldRot.Y, worldRot.Z, worldRot.W),
+                av.FirstName,
+                av.LastName,
+                isLocalAgent,
+                SittingOnLocalId: seatLocalId));
         }
     }
 
@@ -5045,8 +5151,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             // e.Prim.ParentID (MVP2-1 seat lookup) does NOT race that write: ImprovedTerseObjectUpdate
             // never carries ParentID at all (only a full ObjectUpdate changes it), so unlike
             // Position/Rotation/Velocity above, the cached e.Prim's ParentID is always current here.
-            ResolveSeatedTransform(e.Simulator, e.Update.Position, e.Update.Rotation, e.Prim.ParentID,
-                out var worldPos, out var worldRot);
+            if (!ResolveSeatedTransform(e.Simulator, e.Update.Position, e.Update.Rotation, e.Prim.ParentID,
+                out var worldPos, out var worldRot))
+            {
+                RequestUnresolvedSeat(e.Simulator, e.Prim.ParentID);
+            }
 
             // From e.Update, not e.Prim -- the same race the comment above describes. The terse
             // update is where the plane actually moves: it rides every avatar movement packet,
@@ -5190,6 +5299,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // (its own entry, or the default) to a neutral FaceTexture indexed by face number.
         FaceTexture[]? faces = null;
         var faceArr = prim.Textures?.FaceTextures;
+        // MVP3-3 Phase 1: whether ANY face's TextureEntry byte carries the MOAP "has media" bit
+        // (TEM_MEDIA_MASK) right now, regardless of whether that changed on this update. Feeds
+        // MaybeQueueMediaFetch below -- the actual per-face content is fetched separately.
+        bool anyFaceHasMedia = defaultFace?.MediaFlags ?? false;
         if (faceArr != null && faceArr.Length > 0 && defaultFace != null)
         {
             // Each face carries TWO material ids: RenderMaterialID (glTF PBR) and MaterialID
@@ -5201,6 +5314,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             for (int i = 0; i < faceArr.Length; i++)
             {
                 var f = faceArr[i] ?? defaultFace;
+                if (f.MediaFlags) anyFaceHasMedia = true;
                 faces[i] = new FaceTexture(
                     f.TextureID.Guid,
                     f.RenderMaterialID.Guid,
@@ -5220,7 +5334,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     // carry. Casting straight across fed 64/128/192 into a 0-3 lookup, so every
                     // shiny level fell through to "none" and FEAT-RENDER-19 was inert on arrival:
                     // no highlight and no environment reflection on any face in the world.
-                    (byte)((byte)f.Shiny >> 6));
+                    (byte)((byte)f.Shiny >> 6),
+                    f.MediaFlags);
             }
         }
 
@@ -5281,6 +5396,18 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             prim.Light = new Primitive.LightData();
             lightEnabled = false;
         }
+
+        // MVP3-3 Phase 1: like TextureAnim/Light above, the media doorbell only exists on a full
+        // update -- ImprovedTerseObjectUpdate carries neither a TextureEntry nor a MediaURL.
+        if (isFullUpdate) MaybeQueueMediaFetch(simulator, prim, anyFaceHasMedia);
+
+        // BUG-NET-16 follow-up: THIS update might be the seat RequestUnresolvedSeat asked for.
+        // Any avatar already known to be sitting on this prim was resolved (wrongly, at the
+        // relative offset) from the ONE packet that raced it, and nothing else re-asks for a
+        // seated, otherwise-motionless avatar -- so without this, the corrected position sits in
+        // sim.ObjectsPrimitives now but never reaches World until she happens to move.
+        ReapplySeatedAvatarsOn(simulator, prim.LocalID);
+
         ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
             simulator.Handle,
             prim.LocalID,
@@ -5341,6 +5468,183 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             defaultFace?.Fullbright ?? false,
             _reflectionProbeByLocalId.TryGetValue(prim.LocalID, out var probe) ? probe : null,
             prim.Flags.HasFlag(PrimFlags.Touch)));
+    }
+
+    /// <summary>MVP3-3 Phase 1: notices the MOAP "doorbell" (<paramref name="anyFaceHasMedia"/>
+    /// plus <c>prim.MediaURL</c>'s <c>x-mv:</c> version string) and fires the <c>ObjectMedia</c>
+    /// GET ourselves -- LibreMetaverse raises no event for either half of this, so nothing else
+    /// will. Gated on the version string actually changing (see
+    /// <see cref="_lastMediaVersionByLocalId"/>, committed only on SUCCESS -- see
+    /// <see cref="FetchAndPublishObjectMediaAsync"/>'s doc comment for why) and de-duplicated
+    /// against an already in-flight fetch for the same version
+    /// (<see cref="_inFlightMediaFetchByLocalId"/>). Fire-and-forget, like <c>ClickObjectAsync</c>
+    /// callers elsewhere in this file -- the result arrives later via <see cref="ObjectMediaReceived"/>.</summary>
+    private void MaybeQueueMediaFetch(LibreMetaverse.Simulator simulator, Primitive prim, bool anyFaceHasMedia)
+    {
+        if (!anyFaceHasMedia) return;
+
+        string? version = prim.MediaURL;
+        if (!SLNG.Core.MediaVersionString.IsMediaVersion(version)) return;
+        if (_lastMediaVersionByLocalId.TryGetValue(prim.LocalID, out var applied) && applied == version) return;
+        if (_inFlightMediaFetchByLocalId.TryGetValue(prim.LocalID, out var inFlight) && inFlight == version) return;
+        _inFlightMediaFetchByLocalId[prim.LocalID] = version!;
+
+        _ = FetchAndPublishObjectMediaAsync(prim.ID.Guid, simulator.Handle, prim.LocalID, version!);
+    }
+
+    /// <summary>Per-LocalID version currently being fetched, so a burst of ObjectUpdates for the
+    /// same still-unresolved version (the fetch can take a while when it has to wait out the
+    /// caps race below) doesn't queue the same GET twice. Cleared, unconditionally, once the
+    /// fetch for that call finishes -- a rare race where a newer fetch's marker gets cleared by
+    /// an older one completing just queues one harmless extra GET, not a correctness bug.</summary>
+    private readonly ConcurrentDictionary<uint, string> _inFlightMediaFetchByLocalId = new();
+
+    /// <summary>How long to wait, and how many times, for the <c>ObjectMedia</c> capability to
+    /// resolve before giving up on one fetch. Same magnitude as the environment code's own
+    /// login-race workarounds elsewhere in this file (a few seconds), not a long background
+    /// poll -- <see cref="RetryPendingMediaFetches"/> is the real fallback once
+    /// <c>RegionCapabilitiesReady</c> fires, this just covers a fetch that started fractionally
+    /// before that point.</summary>
+    private const int MediaCapWaitRetries = 5;
+    private static readonly TimeSpan MediaCapWaitDelay = TimeSpan.FromSeconds(1);
+
+    /// <summary>Fetches and publishes one prim's media, tolerating the SAME capability-seeding
+    /// race documented on <see cref="RegionHasServerSideBaking"/>: <c>CapabilityURI("ObjectMedia")</c>
+    /// can read null for a few seconds right after region entry even on a region that has the
+    /// cap, because the caps seed isn't necessarily resolved yet. The very first ObjectUpdate for
+    /// a region -- exactly the one most likely to carry an already-in-view MOAP prim -- can race
+    /// this. Measured live on Agni 2026-09-17: LibreMetaverse's own
+    /// <c>ObjectManager.RequestObjectMediaAsync</c> logged "ObjectMedia capability not available"
+    /// and returned failure on that very first update.
+    ///
+    /// <b>The original Phase 1 cut got this wrong</b>: it committed the version to
+    /// <see cref="_lastMediaVersionByLocalId"/> BEFORE awaiting the fetch, so a transient
+    /// capability-race failure permanently marked that version "already handled" -- the media
+    /// was then silently never fetched for the rest of the session, because nothing else would
+    /// ever ask again for a prim whose ObjectUpdate does not repeat. Fixed two ways: this method
+    /// only commits the version on actual success, and it waits out a short capability-seeding
+    /// window itself rather than failing on the first miss.</summary>
+    private async Task FetchAndPublishObjectMediaAsync(Guid objectId, ulong regionHandle, uint localId, string version)
+    {
+        await _mediaFetchSemaphore.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var sim = _client.Network.CurrentSim;
+            if (sim == null || sim.Handle != regionHandle) return;
+
+            Uri? capUri = sim.Caps?.CapabilityURI("ObjectMedia");
+            for (int attempt = 0; capUri == null && attempt < MediaCapWaitRetries; attempt++)
+            {
+                await Task.Delay(MediaCapWaitDelay).ConfigureAwait(false);
+                if (!_client.Network.Connected || _client.Network.CurrentSim != sim) return;
+                capUri = sim.Caps?.CapabilityURI("ObjectMedia");
+            }
+            if (capUri == null)
+            {
+                // Leaves _lastMediaVersionByLocalId uncommitted -- RetryPendingMediaFetches
+                // sweeps every known primitive again once RegionCapabilitiesReady actually fires.
+                Console.Error.WriteLine(
+                    $"[Media] object {localId}: ObjectMedia capability did not appear on {sim.Name} " +
+                    $"after {MediaCapWaitRetries}s -- will retry once region capabilities are confirmed ready");
+                return;
+            }
+
+            var result = await RequestObjectMediaAsync(objectId).ConfigureAwait(false);
+            if (result == null) return; // also leaves the gate uncommitted; a real (non-race) failure just self-heals on the next natural ObjectUpdate
+
+            var (fetchedVersion, faces) = result.Value;
+            _lastMediaVersionByLocalId[localId] = fetchedVersion;
+
+            int withMedia = 0;
+            foreach (var f in faces) if (f != null) withMedia++;
+            Console.Error.WriteLine(
+                $"[Media] object {localId} ({objectId.ToString()[..8]}) version={fetchedVersion} faces={withMedia}/{faces.Length}");
+
+            ObjectMediaReceived?.Invoke(this, new SLNG.Core.ObjectMediaEvent(regionHandle, localId, objectId, fetchedVersion, faces));
+        }
+        finally
+        {
+            _inFlightMediaFetchByLocalId.TryRemove(localId, out _);
+            _mediaFetchSemaphore.Release();
+        }
+    }
+
+    /// <summary>Re-evaluates every primitive LibreMetaverse already knows about for this sim
+    /// against the MOAP doorbell, called once the region's capability handshake is confirmed done
+    /// (see <see cref="OnEventQueueRunning"/> / <see cref="RegionCapabilitiesReady"/>). Exists
+    /// because the doorbell otherwise only fires from <see cref="RaiseObjectUpdate"/>'s per-packet
+    /// path -- a prim whose ObjectUpdate raced the caps handshake and does not update again has no
+    /// other trigger to ever be asked about. Reads only LibreMetaverse's own per-sim cache and
+    /// never touches <c>World</c> directly, same as every other network-thread callback here.</summary>
+    private void RetryPendingMediaFetches(LibreMetaverse.Simulator sim)
+    {
+        if (sim.Caps?.CapabilityURI("ObjectMedia") == null) return;
+
+        foreach (var prim in sim.ObjectsPrimitives.Values)
+        {
+            if (prim?.Textures == null) continue;
+
+            bool anyFaceHasMedia = prim.Textures.DefaultTexture?.MediaFlags ?? false;
+            var faceArr = prim.Textures.FaceTextures;
+            if (faceArr != null)
+            {
+                foreach (var f in faceArr)
+                {
+                    if (f != null && f.MediaFlags) { anyFaceHasMedia = true; break; }
+                }
+            }
+
+            if (anyFaceHasMedia) MaybeQueueMediaFetch(sim, prim, anyFaceHasMedia);
+        }
+    }
+
+    /// <summary>MVP3-3 Phase 1: fetches one prim's per-face MOAP media from the region's
+    /// <c>ObjectMedia</c> capability, converted at the boundary -- no LibreMetaverse
+    /// <c>MediaEntry</c>/<c>UUID</c> crosses this method's return. Returns null when the region has
+    /// no cap, the fetch failed, or (OpenSim MoapModule.cs:286-346) the sim answered with a valid
+    /// empty response. <paramref name="objectId"/> is the persistent object UUID -- unlike most of
+    /// this file's other per-object calls, the <c>ObjectMedia</c> cap takes the full id, not the
+    /// scene-local one (verified against llmediadataclient.cpp:872-879).</summary>
+    public async Task<(string Version, SLNG.Core.MediaFace?[] Faces)?> RequestObjectMediaAsync(
+        Guid objectId, CancellationToken cancellationToken = default)
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null) return null;
+
+        var (success, version, faceMedia) = await _client.Objects
+            .RequestObjectMediaAsync(new LibreMetaverse.UUID(objectId), sim, cancellationToken)
+            .ConfigureAwait(false);
+        if (!success) return null;
+
+        if (faceMedia == null) return (version, Array.Empty<SLNG.Core.MediaFace?>());
+
+        var faces = new SLNG.Core.MediaFace?[faceMedia.Length];
+        for (int i = 0; i < faceMedia.Length; i++) faces[i] = ToMediaFace(faceMedia[i]);
+        return (version, faces);
+    }
+
+    /// <summary>Converts one wire <c>MediaEntry</c> (null = this face carries no media, the
+    /// GET response's positional-array convention, llmediadataclient.cpp:942-964) to the neutral
+    /// <see cref="SLNG.Core.MediaFace"/> DTO.</summary>
+    internal static SLNG.Core.MediaFace? ToMediaFace(LibreMetaverse.MediaEntry? entry)
+    {
+        if (entry == null) return null;
+        return new SLNG.Core.MediaFace(
+            entry.HomeURL ?? "",
+            entry.CurrentURL ?? "",
+            entry.AutoPlay,
+            entry.AutoLoop,
+            entry.AutoScale,
+            entry.AutoZoom,
+            entry.InteractOnFirstClick,
+            (SLNG.Core.MediaControlStyle)(byte)entry.Controls,
+            entry.Width,
+            entry.Height,
+            (SLNG.Core.MediaPermission)(byte)entry.ControlPermissions,
+            (SLNG.Core.MediaPermission)(byte)entry.InteractPermissions,
+            entry.EnableWhiteList,
+            entry.WhiteList ?? Array.Empty<string>(),
+            entry.EnableAlternativeImage);
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)
@@ -5660,6 +5964,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
+    /// <summary>BUG-NET-17: reported live 2026-09-17 on Agni -- a SAME-region ("local") teleport
+    /// moved the avatar's X/Y correctly but rendered her stuck at the OLD height, because
+    /// WorldSimulation deliberately holds the local agent's Z at its own ground-clamped value
+    /// during ordinary movement (to stop the network echo and the local ground-clamp fighting over
+    /// Z every frame -- see ApplyAvatarUpdate's doc comment) and never overwrites a known
+    /// SupportPlane with an absent one (a same-region teleport keeps the SAME entity, unlike a
+    /// cross-region one, so that plane -- a REAL surface reading for wherever the avatar used to
+    /// be -- survived and kept steering the ground clamp toward the old height). <c>IsTeleport:
+    /// true</c> tells ApplyAvatarUpdate to take this event's Position verbatim, snap to it
+    /// instantly, and clear the stale plane instead.</summary>
     private void SyncLocalAgentPositionAfterTeleport()
     {
         var sim = _client.Network.CurrentSim;
@@ -5676,7 +5990,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             _client.Self.FirstName,
             _client.Self.LastName,
             IsLocalAgent: true,
-            SittingOnLocalId: _client.Self.SittingOn));
+            SittingOnLocalId: _client.Self.SittingOn,
+            IsTeleport: true));
     }
 
     private async Task<ulong?> ResolveRegionHandleAsync(UUID regionId, CancellationToken ct)

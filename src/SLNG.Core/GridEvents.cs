@@ -253,7 +253,19 @@ public record ObjectUpdateEvent(
 ///
 /// Null means the simulator has not sent one (it is also cleared across a region change), which
 /// is NOT the same as "standing on nothing" and must not be treated as such.</summary>
-public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent, float ScaleZ = 0f, Vector3 Velocity = default, float TimeDilation = 1f, uint SittingOnLocalId = 0, Vector4? SupportPlane = null) : IWorldEvent;
+/// <param name="IsTeleport">BUG-NET-17: true only for the synthetic resync
+/// GridSession.SyncLocalAgentPositionAfterTeleport raises right after a teleport completes.
+/// Ordinary movement deliberately holds the local agent's Z at its own ground-clamped value and
+/// eases into a nearby TargetPosition (see ApplyAvatarUpdate's local-Z/judder comment) -- correct
+/// for walking, but wrong here: a same-region ("local") teleport keeps the SAME entity (unlike a
+/// cross-region one, which drops and recreates it), so without this flag a teleport whose
+/// destination is far above/below the old spot would have its real network Z silently discarded
+/// in favour of the stale pre-teleport ground height, and the avatar's SupportPlane (which
+/// ApplyAvatarUpdate otherwise deliberately never overwrites with an absent value) would keep
+/// describing a surface that no longer exists. True forces both: the network Position is taken
+/// verbatim and snapped to instantly, and SupportPlane is cleared when the teleport event itself
+/// carries none.</param>
+public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent, float ScaleZ = 0f, Vector3 Velocity = default, float TimeDilation = 1f, uint SittingOnLocalId = 0, Vector4? SupportPlane = null, bool IsTeleport = false) : IWorldEvent;
 
 /// <summary>Represents the removal of an object from the simulator's interest list.</summary>
 public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent;
@@ -265,6 +277,17 @@ public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent
 public record PhysicsPropertiesEvent(
     ulong RegionHandle, uint LocalId,
     PrimPhysicsShapeType ShapeType, float Density, float Friction, float Restitution, float GravityMultiplier
+) : IWorldEvent;
+
+/// <summary>MVP3-3 Phase 1: the <c>ObjectMedia</c> capability's per-face MediaEntry data for one
+/// prim, keyed by SL face number (matching <c>PrimitiveComponent.Faces</c> indexing) -- a null
+/// entry is a face with no media. Unlike ObjectProperties this does NOT ride along ObjectUpdate:
+/// the sim only ever hands over real media content from an explicit "ObjectMedia" GET, which
+/// <c>GridSession</c> triggers itself from the per-face <c>MediaFlags</c> doorbell bit plus a
+/// changed <c>x-mv:</c> version string (LibreMetaverse raises no event for either).</summary>
+public record ObjectMediaEvent(
+    ulong RegionHandle, uint LocalId, Guid ObjectId,
+    string Version, MediaFace?[] Faces
 ) : IWorldEvent;
 
 /// <summary>Represents the properties of an object (name, description, creator, owner, etc.).</summary>

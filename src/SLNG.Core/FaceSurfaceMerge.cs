@@ -33,7 +33,10 @@ namespace SLNG.Core;
 /// material is built from — texture id, both material ids, tint, repeats, offsets, rotation,
 /// texgen and fullbright. Two faces that compare equal cannot produce different materials, and
 /// the alpha kind is itself a function of that record plus per-texture cached properties, so a
-/// merged run cannot straddle two shader kinds either.</para>
+/// merged run cannot straddle two shader kinds either. This is also what keeps MVP3-3's
+/// <see cref="FaceTexture.HasMedia"/> safe by construction: a media face and a non-media face
+/// with an otherwise-identical texture never compare equal, so a future live media texture swap
+/// can never land on a Godot surface shared with an unrelated face.</para>
 /// </summary>
 public static class FaceSurfaceMerge
 {

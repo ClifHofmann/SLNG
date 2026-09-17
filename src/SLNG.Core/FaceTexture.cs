@@ -66,7 +66,15 @@ public readonly record struct FaceTexture(
     /// Godot's default SPECULAR 0.5 instead: a 4% highlight on matte faces that SL says have
     /// none, and the same 4% on faces SL says are polished. Both wrong, in opposite
     /// directions.</summary>
-    byte Shiny = 0)
+    byte Shiny = 0,
+    /// <summary>SL's per-face "has media" bit (LLTextureEntry's TEM_MEDIA_MASK, 0x01,
+    /// lltextureentry.h:64) -- packed into the same TextureEntry byte as <see cref="TexGen"/>.
+    /// This is only a DOORBELL: it says the face carries a MOAP <see cref="MediaFace"/>, never
+    /// the media itself (home/current URL, permissions, ...), which arrives separately via the
+    /// <c>ObjectMedia</c> capability and is stored on <c>PrimitiveComponent.MediaFaces</c>, not
+    /// here. True on every prim that has ever advertised media on this face, even before that
+    /// capability fetch has completed.</summary>
+    bool HasMedia = false)
 {
     /// <summary>The viewer's SHININESS_TO_ALPHA (llface.cpp:1420): the glossiness that a legacy
     /// shiny level feeds into the specular LUT. Index is the raw 0-3 value; anything out of
