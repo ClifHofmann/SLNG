@@ -14,6 +14,17 @@ namespace SLNG.Net;
 /// from index 23 on, so 195 of 218 values are written to the wrong parameter and the simulator
 /// persists that as the avatar's shape. Pinned by <c>SLNG.Assets.Tests.VisualParamOrderTests</c>.</para>
 ///
+/// <para><b>Fixed upstream in 3.1.5 — this class stays anyway.</b> LibreMetaverse commit
+/// <c>a7bf4641</c> rewrote <c>MakeAppearancePacket</c> to iterate <c>Group0ParamIds</c> and to
+/// allocate <c>Group0ParamIds.Length</c> slots, which is the same correction made here (and the
+/// same 253-vs-218 truncation). It changes nothing for SLNG: we never call
+/// <c>MakeAppearancePacket</c> — <see cref="BuildWireArray"/> composes the packet itself, so our
+/// output is unchanged by the upgrade and now merely agrees with upstream. Kept because it is
+/// tested, verified against <c>llprocessparams.cpp</c> rather than against LibreMetaverse, and
+/// carries the round-trip check (<see cref="VerifyRoundTrip"/>) that the upstream path has no
+/// equivalent of. <c>VisualParamOrderTests</c> still passes on 3.1.6: the fix touched the
+/// consumer, not the generated <c>VisualParams</c> data it asserts on.</para>
+///
 /// <para><b>What the real viewer does.</b> <c>llprocessparams.cpp:155-163</c> iterates every param
 /// too, but <i>filters by group</i>:
 /// <code>
