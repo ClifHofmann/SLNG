@@ -601,4 +601,53 @@ public class GridSessionTests
         var name = session.ResolveAnimationName(animId);
         Assert.Equal("Club Dance 01", name);
     }
+
+    [Fact]
+    public void HeadFollowsCamera_defaults_to_true_and_can_be_toggled()
+    {
+        using var session = new GridSession();
+        Assert.True(session.HeadFollowsCamera);
+        session.HeadFollowsCamera = false;
+        Assert.False(session.HeadFollowsCamera);
+        session.HeadFollowsCamera = true;
+        Assert.True(session.HeadFollowsCamera);
+    }
+
+    [Fact]
+    public void PlayTypingAnimation_defaults_to_true_and_can_be_toggled()
+    {
+        using var session = new GridSession();
+        Assert.True(session.PlayTypingAnimation);
+        session.PlayTypingAnimation = false;
+        Assert.False(session.PlayTypingAnimation);
+        session.PlayTypingAnimation = true;
+        Assert.True(session.PlayTypingAnimation);
+    }
+
+    [Fact]
+    public void StartTyping_and_StopTyping_without_connection_do_not_throw()
+    {
+        using var session = new GridSession();
+        session.StartTyping();
+        session.StopTyping();
+
+        session.PlayTypingAnimation = false;
+        session.StartTyping();
+        session.StopTyping();
+    }
+
+    [Fact]
+    public void SetMovement_with_body_and_camera_rotations_without_connection_does_not_throw()
+    {
+        using var session = new GridSession();
+        var bodyRot = System.Numerics.Quaternion.Identity;
+        var camRot = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitY, 0.5f);
+
+        session.HeadFollowsCamera = true;
+        session.SetMovement(false, false, false, false, false, false, bodyRot, camRot);
+
+        session.HeadFollowsCamera = false;
+        session.SetMovement(false, false, false, false, false, false, bodyRot, camRot);
+    }
 }
+

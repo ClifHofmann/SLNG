@@ -48,6 +48,8 @@
       "rebake_avatar": "Rebake avatar (Ctrl+Alt+R)",
       "avatar": "Avatar",
       "always_run": "Always Run (Ctrl+R)",
+      "play_typing_animation": "Play Typing Animation",
+      "head_follows_camera": "Head Follows Camera",
       "hover_height": "Hover Height...",
       "stop_animations": "Stop Animations",
       "active_animations": "Active Animations...",
@@ -385,7 +387,12 @@
       "always_run_hint": "Makes the avatar run instead of walk when moving forward.",
       "animation_seating_heading": "Sitting",
       "seat_pose_overrides_ao": "Furniture poses override the AO when seated",
-      "seat_pose_overrides_ao_hint": "Only for ordinary furniture, and off by default. While the object you sit on plays a pose, animations from worn attachments are not rendered — which stops an AO stealing a couch's pose, but also breaks pose stands, where the pose comes from a HUD. Local to this viewer; nothing changes for other people and no script is affected."
+      "seat_pose_overrides_ao_hint": "Only for ordinary furniture, and off by default. While the object you sit on plays a pose, animations from worn attachments are not rendered — which stops an AO stealing a couch's pose, but also breaks pose stands, where the pose comes from a HUD. Local to this viewer; nothing changes for other people and no script is affected.",
+      "avatar_behavior_heading": "Avatar Behavior",
+      "play_typing_animation": "Play typing animation",
+      "play_typing_animation_hint": "Plays the typing animation and broadcasts the typing indicator when composing local chat messages.",
+      "head_follows_camera": "Head follows camera",
+      "head_follows_camera_hint": "Turns the avatar's head toward the camera direction for observers in third person. Turn off for neutral forward portrait gaze."
     },
     "about": {
       "title": "About Puris Viewer",

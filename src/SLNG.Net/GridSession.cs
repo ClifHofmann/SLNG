@@ -5560,9 +5560,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>Logs out if connected. Safe to call when already disconnected.</summary>
-    /// <summary>Logs out if connected. Safe to call when already disconnected.</summary>
     public void Logout()
     {
+        _isTyping = false;
         if (_client.Network.Connected)
         {
             _client.Network.Logout();
@@ -5806,6 +5806,60 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
     public void StopAnimation(Guid animId) => _client.Self.AnimationStop(new UUID(animId), true);
     public void StartAnimation(Guid animId) => _client.Self.AnimationStart(new UUID(animId), true);
+
+    /// <summary>
+    /// FEAT-ANIM-10: When enabled (default), the avatar's head turns to look toward the camera's
+    /// direction in third person for other observers. When disabled, the head stays aligned with
+    /// the body (neutral forward gaze for portraits).
+    /// </summary>
+    public bool HeadFollowsCamera { get; set; } = true;
+
+    private bool _playTypingAnimation = true;
+
+    /// <summary>
+    /// FEAT-ANIM-10: When enabled (default), typing in local chat plays ANIM_AGENT_TYPE and sends
+    /// ChatType.StartTyping/StopTyping indicators to the simulator.
+    /// </summary>
+    public bool PlayTypingAnimation
+    {
+        get => _playTypingAnimation;
+        set
+        {
+            _playTypingAnimation = value;
+            if (!value && _isTyping)
+            {
+                StopTyping();
+            }
+        }
+    }
+
+    private bool _isTyping;
+
+    /// <summary>
+    /// FEAT-ANIM-10: Starts the typing animation and broadcasts the typing indicator if enabled.
+    /// </summary>
+    public void StartTyping()
+    {
+        if (!PlayTypingAnimation || !_client.Network.Connected) return;
+        if (_isTyping) return;
+        _isTyping = true;
+        _client.Self.AnimationStart(Animations.TYPE, true);
+        _client.Self.Chat(string.Empty, 0, ChatType.StartTyping);
+    }
+
+    /// <summary>
+    /// FEAT-ANIM-10: Stops the typing animation and clears the typing indicator.
+    /// </summary>
+    public void StopTyping()
+    {
+        if (!_isTyping) return;
+        _isTyping = false;
+        if (_client.Network.Connected)
+        {
+            _client.Self.AnimationStop(Animations.TYPE, true);
+            _client.Self.Chat(string.Empty, 0, ChatType.StopTyping);
+        }
+    }
 
     /// <summary>
     /// Stops all animations on the self avatar that were triggered by any of the given source object IDs
@@ -8771,6 +8825,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     }
 
     /// <summary>Sends an AgentUpdate to move the avatar.</summary>
+    /// <param name="bodyRotation">The avatar body-facing orientation (yaw-only, SL coordinates).</param>
+    /// <param name="cameraRotation">The render camera's full orientation in SL coordinates. Used for
+    /// HeadRotation when <see cref="HeadFollowsCamera"/> is true.</param>
     /// <param name="cameraPosition">The RENDER camera's region-local position (System.Numerics,
     /// SL Z-up axes), or null to keep anchoring the interest camera on the avatar's facing. The
     /// sim centres its interest list on <c>CameraCenter</c>, so without this it streams objects
@@ -8781,7 +8838,9 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     /// <param name="cameraFar">Interest / draw distance in metres; ignored when &lt;= 0.</param>
     /// <param name="fast">True when running (double-tap forward, Shift held, or Always Run mode).</param>
     public void SetMovement(bool forward, bool backward, bool left, bool right, bool up, bool down,
-        System.Numerics.Quaternion cameraRotation, bool fly = false,
+        System.Numerics.Quaternion bodyRotation,
+        System.Numerics.Quaternion? cameraRotation = null,
+        bool fly = false,
         System.Numerics.Vector3? cameraPosition = null,
         System.Numerics.Vector3? cameraForward = null,
         float cameraFar = 0f,
@@ -8790,8 +8849,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         if (!_client.Network.Connected) return;
 
         // Map Godot/SLNG axes to LibreMetaverse (which uses OpenSim/SL axes: X forward, Y left, Z up)
-        // For LibreMetaverse, we just pass the rotation directly.
-        var slQuat = new LibreMetaverse.Quaternion(cameraRotation.X, cameraRotation.Y, cameraRotation.Z, cameraRotation.W);
+        var slBodyQuat = new LibreMetaverse.Quaternion(bodyRotation.X, bodyRotation.Y, bodyRotation.Z, bodyRotation.W);
+        var slCameraQuat = cameraRotation.HasValue
+            ? new LibreMetaverse.Quaternion(cameraRotation.Value.X, cameraRotation.Value.Y, cameraRotation.Value.Z, cameraRotation.Value.W)
+            : slBodyQuat;
 
         // Interest camera. With a real render-camera pose, anchor CameraCenter there (BUG-NET-01);
         // otherwise fall back to the pre-existing "look along body facing from wherever the camera
@@ -8801,19 +8862,21 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             var slPos = new LibreMetaverse.Vector3(camPos.X, camPos.Y, camPos.Z);
             var slFwd = cameraForward is { } f
                 ? new LibreMetaverse.Vector3(f.X, f.Y, f.Z)
-                : LibreMetaverse.Vector3.UnitX * slQuat;
+                : LibreMetaverse.Vector3.UnitX * slCameraQuat;
             _client.Self.Movement.Camera.LookAt(slPos, slPos + slFwd);
         }
         else
         {
-            _client.Self.Movement.Camera.LookDirection(LibreMetaverse.Vector3.UnitX * slQuat);
+            _client.Self.Movement.Camera.LookDirection(LibreMetaverse.Vector3.UnitX * (HeadFollowsCamera ? slCameraQuat : slBodyQuat));
         }
 
         if (cameraFar > 0f)
             _client.Self.Movement.Camera.Far = cameraFar;
 
-        _client.Self.Movement.HeadRotation = slQuat;
-        _client.Self.Movement.BodyRotation = slQuat;
+        // FEAT-ANIM-10: BodyRotation is always the avatar's body facing; HeadRotation follows
+        // the camera rotation if HeadFollowsCamera is enabled, or stays aligned with the body if disabled.
+        _client.Self.Movement.BodyRotation = slBodyQuat;
+        _client.Self.Movement.HeadRotation = HeadFollowsCamera ? slCameraQuat : slBodyQuat;
 
         _client.Self.Movement.AtPos = forward;
         _client.Self.Movement.AtNeg = backward;

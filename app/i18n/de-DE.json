@@ -48,6 +48,8 @@
       "rebake_avatar": "Avatar neu backen (Strg+Alt+R)",
       "avatar": "Avatar",
       "always_run": "Immer rennen (Strg+R)",
+      "play_typing_animation": "Tipp-Animation zeigen",
+      "head_follows_camera": "Kopf folgt der Kamera",
       "hover_height": "Schwebehöhe...",
       "stop_animations": "Animationen stoppen",
       "active_animations": "Aktive Animationen...",
@@ -385,7 +387,12 @@
       "always_run_hint": "Lässt den Avatar beim Vorwärtsbewegen immer rennen statt gehen.",
       "animation_seating_heading": "Sitzen",
       "seat_pose_overrides_ao": "Möbel-Posen haben beim Sitzen Vorrang vor dem AO",
-      "seat_pose_overrides_ao_hint": "Nur für normale Möbel gedacht und standardmäßig aus. Solange das Objekt, auf dem du sitzt, eine Pose abspielt, werden Animationen aus getragenen Anhängen nicht dargestellt — das verhindert, dass ein AO die Sofa-Pose klaut, macht aber Posestands kaputt, bei denen die Pose vom HUD kommt. Gilt nur in diesem Viewer; für andere ändert sich nichts, und kein Skript wird beeinflusst."
+      "seat_pose_overrides_ao_hint": "Nur für normale Möbel gedacht und standardmäßig aus. Solange das Objekt, auf dem du sitzt, eine Pose abspielt, werden Animationen aus getragenen Anhängen nicht dargestellt — das verhindert, dass ein AO die Sofa-Pose klaut, macht aber Posestands kaputt, bei denen die Pose vom HUD kommt. Gilt nur in diesem Viewer; für andere ändert sich nichts, und kein Skript wird beeinflusst.",
+      "avatar_behavior_heading": "Avatar-Verhalten",
+      "play_typing_animation": "Tipp-Animation zeigen",
+      "play_typing_animation_hint": "Spielt die Tastatur-Tippanimation und sendet den Tipp-Indikator, wenn Nachrichten im lokalen Chat verfasst werden.",
+      "head_follows_camera": "Kopf folgt der Kamera",
+      "head_follows_camera_hint": "Dreht den Kopf des Avatars in der Third-Person-Ansicht für andere Beobachter in Kamerarichtung. Für neutrale Porträtaufnahmen deaktivieren."
     },
     "about": {
       "title": "Über Puris Viewer",

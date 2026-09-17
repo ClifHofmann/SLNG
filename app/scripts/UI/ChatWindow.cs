@@ -53,6 +53,7 @@ public partial class ChatWindow : SLNGWindow
     private Font _iconFont = null!;
     private FriendsPanel _friendsPanel = null!;
     private GroupsPanel _groupsPanel = null!;
+    private Timer? _typingDebounceTimer;
 
     private sealed class ChatTab
     {
@@ -95,6 +96,7 @@ public partial class ChatWindow : SLNGWindow
             {
                 ReleaseFocus();
                 AcceptEvent();
+                OwnerWindow?.StopTyping();
                 return;
             }
             base._GuiInput(@event);
@@ -539,6 +541,14 @@ public partial class ChatWindow : SLNGWindow
 
         inputRow.AddChild(BuildIconButton("attach_file", "Attach (not implemented)", null));
 
+        _typingDebounceTimer = new Timer
+        {
+            WaitTime = 5.0,
+            OneShot = true,
+        };
+        _typingDebounceTimer.Timeout += () => _session?.StopTyping();
+        AddChild(_typingDebounceTimer);
+
         _inputEdit = new ChatLineEdit
         {
             OwnerWindow = this,
@@ -546,6 +556,8 @@ public partial class ChatWindow : SLNGWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         _inputEdit.AddThemeFontSizeOverride("font_size", BodyFontSize);
+        _inputEdit.TextChanged += OnInputTextChanged;
+        _inputEdit.FocusExited += () => StopTyping();
         _inputEdit.TextSubmitted += (_) => OnSendPressed();
         inputRow.AddChild(_inputEdit);
 
@@ -716,6 +728,7 @@ public partial class ChatWindow : SLNGWindow
         }
 
         _inputEdit.Text = "";
+        StopTyping();
 
         // Keep keyboard focus in the input after sending. AvatarController disables movement and
         // camera rotation while a LineEdit/TextEdit holds Godot's control focus (hasUiFocus), so
@@ -863,6 +876,7 @@ public partial class ChatWindow : SLNGWindow
     private void SelectChatTab(ChatTab tab)
     {
         if (_activeChatTab == tab) return;
+        StopTyping();
         if (_activeChatTab != null) ApplyRowStyle(_activeChatTab, selected: false);
         _activeChatTab = tab;
         ApplyRowStyle(tab, selected: true);
@@ -1058,5 +1072,36 @@ public partial class ChatWindow : SLNGWindow
         box.AddChild(subLabel);
 
         return box;
+    }
+
+    private void OnInputTextChanged(string newText)
+    {
+        if (_activeChatTab?.Id == "main")
+        {
+            if (!string.IsNullOrEmpty(newText))
+            {
+                _session?.StartTyping();
+                _typingDebounceTimer?.Start();
+            }
+            else
+            {
+                StopTyping();
+            }
+        }
+    }
+
+    public void StopTyping()
+    {
+        _typingDebounceTimer?.Stop();
+        _session?.StopTyping();
+    }
+
+    public override void _Notification(int what)
+    {
+        base._Notification(what);
+        if (what == NotificationVisibilityChanged && !IsVisibleInTree())
+        {
+            StopTyping();
+        }
     }
 }

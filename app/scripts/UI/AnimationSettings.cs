@@ -35,8 +35,20 @@ public sealed class AnimationSettings
     /// </summary>
     public bool AlwaysRun { get; private set; }
 
+    /// <summary>
+    /// FEAT-ANIM-10: Whether typing in local chat plays the typing animation and broadcasts the typing indicator. Default true.
+    /// </summary>
+    public bool PlayTypingAnimation { get; private set; } = true;
+
+    /// <summary>
+    /// FEAT-ANIM-10: Whether the avatar's head turns to follow the camera orientation for other observers. Default true.
+    /// </summary>
+    public bool HeadFollowsCamera { get; private set; } = true;
+
     public event System.Action<bool>? SeatPoseOverridesAoChanged;
     public event System.Action<bool>? AlwaysRunChanged;
+    public event System.Action<bool>? PlayTypingAnimationChanged;
+    public event System.Action<bool>? HeadFollowsCameraChanged;
 
     public void Load()
     {
@@ -44,6 +56,8 @@ public sealed class AnimationSettings
         if (cfg.Load(ConfigPath) != Error.Ok) return;
         SeatPoseOverridesAo = (bool)cfg.GetValue(Section, "seat_pose_overrides_ao", false);
         AlwaysRun = (bool)cfg.GetValue(Section, "always_run", false);
+        PlayTypingAnimation = (bool)cfg.GetValue(Section, "play_typing_animation", true);
+        HeadFollowsCamera = (bool)cfg.GetValue(Section, "head_follows_camera", true);
     }
 
     public void SetSeatPoseOverridesAo(bool value)
@@ -67,5 +81,29 @@ public sealed class AnimationSettings
         cfg.SetValue(Section, "always_run", value);
         cfg.Save(ConfigPath);
         AlwaysRunChanged?.Invoke(value);
+    }
+
+    public void SetPlayTypingAnimation(bool value)
+    {
+        if (PlayTypingAnimation == value) return;
+        PlayTypingAnimation = value;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "play_typing_animation", value);
+        cfg.Save(ConfigPath);
+        PlayTypingAnimationChanged?.Invoke(value);
+    }
+
+    public void SetHeadFollowsCamera(bool value)
+    {
+        if (HeadFollowsCamera == value) return;
+        HeadFollowsCamera = value;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "head_follows_camera", value);
+        cfg.Save(ConfigPath);
+        HeadFollowsCameraChanged?.Invoke(value);
     }
 }

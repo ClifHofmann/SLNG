@@ -49,6 +49,8 @@ namespace SLNG.App.UI
         public Action? OnCreateTestSkin;
         public Action? OnBakeTestPattern;
         public Action? OnToggleAlwaysRun;
+        public Action? OnTogglePlayTypingAnimation;
+        public Action? OnToggleHeadFollowsCamera;
         public Action? OnOpenActiveAnimations;
         /// <summary>FEAT-UI-24: Invoked when the user clicks the location readout to copy the SLURL.</summary>
         public Action<string>? OnCopySlurl;
@@ -196,6 +198,22 @@ namespace SLNG.App.UI
             if (_avatarMenu == null) return;
             int idx = _avatarMenu.GetItemIndex(10);
             if (idx >= 0) _avatarMenu.SetItemChecked(idx, run);
+        }
+
+        /// <summary>FEAT-ANIM-10: Updates the checked state of the Play Typing Animation menu item.</summary>
+        public void SetPlayTypingAnimationUI(bool on)
+        {
+            if (_avatarMenu == null) return;
+            int idx = _avatarMenu.GetItemIndex(12);
+            if (idx >= 0) _avatarMenu.SetItemChecked(idx, on);
+        }
+
+        /// <summary>FEAT-ANIM-10: Updates the checked state of the Head Follows Camera menu item.</summary>
+        public void SetHeadFollowsCameraUI(bool on)
+        {
+            if (_avatarMenu == null) return;
+            int idx = _avatarMenu.GetItemIndex(13);
+            if (idx >= 0) _avatarMenu.SetItemChecked(idx, on);
         }
 
         /// <summary>Updates the checked state of the Hold Pose submenu items.</summary>
@@ -416,6 +434,8 @@ namespace SLNG.App.UI
             avatarMenu.AddItem(L10n.Tr("ui.menu.hover_height"), 3);
             avatarMenu.AddSeparator();
             avatarMenu.AddCheckItem(L10n.Tr("ui.menu.always_run"), 10);
+            avatarMenu.AddCheckItem(L10n.Tr("ui.menu.play_typing_animation"), 12);
+            avatarMenu.AddCheckItem(L10n.Tr("ui.menu.head_follows_camera"), 13);
             avatarMenu.AddSeparator();
             avatarMenu.AddItem(L10n.Tr("ui.menu.stop_animations"), 4);
             avatarMenu.AddItem(L10n.Tr("ui.menu.active_animations"), 11);
@@ -487,6 +507,8 @@ namespace SLNG.App.UI
                 else if (id == 7) OnResyncAllAnimations?.Invoke();
                 else if (id == 10) OnToggleAlwaysRun?.Invoke();
                 else if (id == 11) OnOpenActiveAnimations?.Invoke();
+                else if (id == 12) OnTogglePlayTypingAnimation?.Invoke();
+                else if (id == 13) OnToggleHeadFollowsCamera?.Invoke();
             };
             menuBar.AddChild(avatarMenu);
 

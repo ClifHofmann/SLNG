@@ -90,5 +90,62 @@ public partial class AnimationPreferencesPage : VBoxContainer
         hint.AddThemeFontSizeOverride("font_size", 11);
         hint.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
         AddChild(hint);
+
+        var separator2 = new HSeparator();
+        separator2.AddThemeConstantOverride("separation", 16);
+        AddChild(separator2);
+
+        // Section: Avatar Behavior (FEAT-ANIM-10)
+        var behavHeading = new Label { Text = L10n.Tr("ui.preferences.avatar_behavior_heading") };
+        behavHeading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
+        AddChild(behavHeading);
+
+        var typingCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.play_typing_animation"),
+            ButtonPressed = _settings.PlayTypingAnimation,
+        };
+        typingCheck.Toggled += on => _settings.SetPlayTypingAnimation(on);
+        _settings.PlayTypingAnimationChanged += on =>
+        {
+            if (typingCheck != null && typingCheck.ButtonPressed != on)
+            {
+                typingCheck.SetPressedNoSignal(on);
+            }
+        };
+        AddChild(typingCheck);
+
+        var typingHint = new Label
+        {
+            Text = L10n.Tr("ui.preferences.play_typing_animation_hint"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+        };
+        typingHint.AddThemeFontSizeOverride("font_size", 11);
+        typingHint.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        AddChild(typingHint);
+
+        var gazeCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.head_follows_camera"),
+            ButtonPressed = _settings.HeadFollowsCamera,
+        };
+        gazeCheck.Toggled += on => _settings.SetHeadFollowsCamera(on);
+        _settings.HeadFollowsCameraChanged += on =>
+        {
+            if (gazeCheck != null && gazeCheck.ButtonPressed != on)
+            {
+                gazeCheck.SetPressedNoSignal(on);
+            }
+        };
+        AddChild(gazeCheck);
+
+        var gazeHint = new Label
+        {
+            Text = L10n.Tr("ui.preferences.head_follows_camera_hint"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+        };
+        gazeHint.AddThemeFontSizeOverride("font_size", 11);
+        gazeHint.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        AddChild(gazeHint);
     }
 }

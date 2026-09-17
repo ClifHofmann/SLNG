@@ -1350,10 +1350,14 @@ public partial class AvatarController : Camera3D
             // We pass false for left/right because A/D are turning now, not strafing. While seated,
             // the walk/fly flags are meaningless (the seat, not agent locomotion, owns position) --
             // suppress them so a held key doesn't keep telling the sim we're trying to walk.
+            var bodyRot = isPoseStand && _lockedRotation.HasValue ? _lockedRotation.Value : ComputeBodyRotation();
+            var camRot = ComputeCameraRotation();
+
             _session.SetMovement(
                 !isSitting && fwd, !isSitting && back, false, false,
                 !isSitting && up, !isSitting && down,
-                isPoseStand && _lockedRotation.HasValue ? _lockedRotation.Value : ComputeBodyRotation(),
+                bodyRot,
+                camRot,
                 !isSitting && _flying,
                 camSimPos, camSimForward, camFar,
                 fast: _isRunning);
@@ -1393,6 +1397,17 @@ public partial class AvatarController : Camera3D
     private System.Numerics.Quaternion ComputeBodyRotation()
     {
         var godotQuat = Quaternion.FromEuler(new Vector3(0, _yaw, 0));
+        var slQuat = new System.Numerics.Quaternion(godotQuat.X, -godotQuat.Z, godotQuat.Y, godotQuat.W);
+        var offset = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, (float)System.Math.PI / 2.0f);
+        return offset * slQuat;
+    }
+
+    /// <summary>The camera's full orientation in SL coordinates (X forward, Y left, Z up).
+    /// Used when <see cref="GridSession.HeadFollowsCamera"/> is enabled so other viewers see the
+    /// avatar's head look where the player aims the camera in third person.</summary>
+    private System.Numerics.Quaternion ComputeCameraRotation()
+    {
+        var godotQuat = Quaternion.FromEuler(Rotation);
         var slQuat = new System.Numerics.Quaternion(godotQuat.X, -godotQuat.Z, godotQuat.Y, godotQuat.W);
         var offset = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, (float)System.Math.PI / 2.0f);
         return offset * slQuat;

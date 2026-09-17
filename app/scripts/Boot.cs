@@ -299,7 +299,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.194-alpha";
+    public const string AppVersion = "v0.22.195-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -705,6 +705,14 @@ public partial class Boot : Control
         {
             _animationSettings.SetAlwaysRun(!_animationSettings.AlwaysRun);
         };
+        _topMenu.OnTogglePlayTypingAnimation = () =>
+        {
+            _animationSettings.SetPlayTypingAnimation(!_animationSettings.PlayTypingAnimation);
+        };
+        _topMenu.OnToggleHeadFollowsCamera = () =>
+        {
+            _animationSettings.SetHeadFollowsCamera(!_animationSettings.HeadFollowsCamera);
+        };
     }
 
     private void SetupHud()
@@ -1103,6 +1111,16 @@ public partial class Boot : Control
             }
             _topMenu.SetAlwaysRunUI(on);
             ShowToast(on ? SLNG.App.UI.L10n.Tr("ui.hint.always_run_on") : SLNG.App.UI.L10n.Tr("ui.hint.always_run_off"));
+        };
+        _animationSettings.PlayTypingAnimationChanged += on =>
+        {
+            if (_session != null) _session.PlayTypingAnimation = on;
+            _topMenu.SetPlayTypingAnimationUI(on);
+        };
+        _animationSettings.HeadFollowsCameraChanged += on =>
+        {
+            if (_session != null) _session.HeadFollowsCamera = on;
+            _topMenu.SetHeadFollowsCameraUI(on);
         };
 
         _graphicsPage = new SLNG.App.UI.GraphicsPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_graphics") };
@@ -2765,6 +2783,8 @@ public partial class Boot : Control
         _session = new GridSession();
         // BUG-AVATAR-07 A/B switch — see Diagnostics.NoReattach.
         _session.ReattachMissingAttachments = !Diagnostics.NoReattach;
+        _session.HeadFollowsCamera = _animationSettings.HeadFollowsCamera;
+        _session.PlayTypingAnimation = _animationSettings.PlayTypingAnimation;
         // FEAT-AVATAR-01: the JPEG2000 codec lives in SLNG.Assets and SLNG.Net may not reference it,
         // so the composition root supplies it. Without this a bake composites correctly and then
         // encodes to a few hundred bytes of nothing.
@@ -2978,6 +2998,8 @@ public partial class Boot : Control
                 _animationSettings.SetAlwaysRun(run);
             };
             _topMenu.SetAlwaysRunUI(_animationSettings.AlwaysRun);
+            _topMenu.SetPlayTypingAnimationUI(_animationSettings.PlayTypingAnimation);
+            _topMenu.SetHeadFollowsCameraUI(_animationSettings.HeadFollowsCamera);
 
             _objectSelectionController = new ObjectSelectionController();
             AddChild(_objectSelectionController);

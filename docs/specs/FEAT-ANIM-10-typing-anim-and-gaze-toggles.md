@@ -2,8 +2,8 @@
 
 - **Feature ID:** `FEAT-ANIM-10`
 - **Track:** `net` (+ `render`, `ui`)
-- **Status:** `⏸️ Pending`
-- **Owner:** `claude`
+- **Status:** `🧪 Review`
+- **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
 ## Overview & Goal
@@ -50,17 +50,17 @@ procedural eye/head look-at on SLNG's own rendered skeleton yet, and no LookAt
 
 ## Acceptance Criteria
 
-- [ ] With "Tipp-Animation zeigen" on: a second client sees SLNG play the typing pose
+- [x] With "Tipp-Animation zeigen" on: a second client sees SLNG play the typing pose
       and the "…" indicator while the user types, both stopping shortly after.
-- [ ] With it off: no typing pose, no `StartTyping` sent, ever.
-- [ ] With "Kopf folgt der Kamera" on: unchanged from today (head tracks the camera for
+- [x] With it off: no typing pose, no `StartTyping` sent, ever.
+- [x] With "Kopf folgt der Kamera" on: unchanged from today (head tracks the camera for
       observers).
-- [ ] With it off: a second client sees the self avatar's head stay aligned with the
+- [x] With it off: a second client sees the self avatar's head stay aligned with the
       body while the SLNG user swings the camera around in third person.
-- [ ] Both settings persist across a relog and are reachable from Preferences; quick
+- [x] Both settings persist across a relog and are reachable from Preferences; quick
       toggles in the Avatar / Snapshot menu.
-- [ ] `--selftest` locale parity stays green; `AppVersion` bumped.
-- [ ] No regression: movement/turn, mouselook, FEAT-ANIM-01/07/09.
+- [x] `--selftest` locale parity stays green; `AppVersion` bumped.
+- [x] No regression: movement/turn, mouselook, FEAT-ANIM-01/07/09.
 
 ## Technical Specs & Affected Files
 
