@@ -1481,6 +1481,47 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         _client.Objects.RequestObject(sim, parentLocalId);
     }
 
+    /// <summary>BUG-NET-16: runs on EVERY full ObjectUpdate, checking whether any avatar
+    /// LibreMetaverse already knows about is sitting on the prim that JUST updated (it might be a
+    /// seat <see cref="RequestUnresolvedSeat"/> asked for, or just an ordinary edit/move of an
+    /// already-known seat). A seated, otherwise-motionless avatar sends no packets of her own once
+    /// resolution has already gone wrong once -- her <c>AvatarComponent</c>/<c>TransformComponent</c>
+    /// would otherwise carry that one bad reading for the rest of the session, since nothing else
+    /// would ever ask again. Re-resolving and re-publishing here reuses the exact same
+    /// <see cref="ResolveSeatedTransform"/>/<see cref="AvatarUpdateEvent"/> path an ordinary packet
+    /// would take, so WorldSimulation's existing large-jump-snaps/small-jump-eases logic (see
+    /// ApplyAvatarUpdate) handles the correction the same way it would handle any other update.</summary>
+    private void ReapplySeatedAvatarsOn(LibreMetaverse.Simulator sim, uint seatLocalId)
+    {
+        foreach (var av in sim.ObjectsAvatars.Values)
+        {
+            if (av == null || av.ParentID != seatLocalId) continue;
+            if (!ResolveSeatedTransform(sim, av.Position, av.Rotation, av.ParentID, out var worldPos, out var worldRot))
+                continue; // still unresolved for some other reason -- nothing new to publish
+
+            // Only log when this local id was previously flagged unresolved -- an ordinary
+            // ObjectUpdate for an already-fine seat (a chair being edited, a vehicle just moving)
+            // takes this same path constantly and must not spam the console.
+            if (_lastSeatRequestByLocalId.TryRemove(seatLocalId, out _))
+            {
+                Console.Error.WriteLine(
+                    $"[Seat] parent {seatLocalId} resolved -- correcting avatar {av.LocalID}'s position");
+            }
+
+            bool isLocalAgent = av.ID == _client.Self.AgentID;
+            AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
+                sim.Handle,
+                av.LocalID,
+                av.ID.Guid,
+                new System.Numerics.Vector3(worldPos.X, worldPos.Y, worldPos.Z),
+                new System.Numerics.Quaternion(worldRot.X, worldRot.Y, worldRot.Z, worldRot.W),
+                av.FirstName,
+                av.LastName,
+                isLocalAgent,
+                SittingOnLocalId: seatLocalId));
+        }
+    }
+
     private void OnObjectPropertiesFamily(object? sender, ObjectPropertiesFamilyEventArgs e)
     {
         // ObjectPropertiesFamily never carries CreatorID (LibreMetaverse leaves
@@ -5359,6 +5400,13 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // MVP3-3 Phase 1: like TextureAnim/Light above, the media doorbell only exists on a full
         // update -- ImprovedTerseObjectUpdate carries neither a TextureEntry nor a MediaURL.
         if (isFullUpdate) MaybeQueueMediaFetch(simulator, prim, anyFaceHasMedia);
+
+        // BUG-NET-16 follow-up: THIS update might be the seat RequestUnresolvedSeat asked for.
+        // Any avatar already known to be sitting on this prim was resolved (wrongly, at the
+        // relative offset) from the ONE packet that raced it, and nothing else re-asks for a
+        // seated, otherwise-motionless avatar -- so without this, the corrected position sits in
+        // sim.ObjectsPrimitives now but never reaches World until she happens to move.
+        ReapplySeatedAvatarsOn(simulator, prim.LocalID);
 
         ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
             simulator.Handle,
