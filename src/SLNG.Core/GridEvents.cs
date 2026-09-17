@@ -267,6 +267,17 @@ public record PhysicsPropertiesEvent(
     PrimPhysicsShapeType ShapeType, float Density, float Friction, float Restitution, float GravityMultiplier
 ) : IWorldEvent;
 
+/// <summary>MVP3-3 Phase 1: the <c>ObjectMedia</c> capability's per-face MediaEntry data for one
+/// prim, keyed by SL face number (matching <c>PrimitiveComponent.Faces</c> indexing) -- a null
+/// entry is a face with no media. Unlike ObjectProperties this does NOT ride along ObjectUpdate:
+/// the sim only ever hands over real media content from an explicit "ObjectMedia" GET, which
+/// <c>GridSession</c> triggers itself from the per-face <c>MediaFlags</c> doorbell bit plus a
+/// changed <c>x-mv:</c> version string (LibreMetaverse raises no event for either).</summary>
+public record ObjectMediaEvent(
+    ulong RegionHandle, uint LocalId, Guid ObjectId,
+    string Version, MediaFace?[] Faces
+) : IWorldEvent;
+
 /// <summary>Represents the properties of an object (name, description, creator, owner, etc.).</summary>
 public record ObjectPropertiesEvent(
     ulong RegionHandle,

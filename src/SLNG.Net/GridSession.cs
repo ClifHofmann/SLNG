@@ -96,6 +96,20 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     // so the high-level API cannot express "this object is a mirror". See ReflectionProbeParams.
     private readonly ConcurrentDictionary<uint, SLNG.Core.ReflectionProbeParams?> _reflectionProbeByLocalId = new();
 
+    /// <summary>MVP3-3 Phase 1: the last <c>x-mv:</c> media-version string a fetch was already
+    /// queued for, per LocalID. LibreMetaverse raises no event when a prim's MOAP media changes
+    /// (verified: no <c>ObjectMedia</c> event is ever raised in the pinned 3.1.3), so this is the
+    /// gate that replicates LLVOVolume::processUpdateMessage's staleness check
+    /// (llvovolume.cpp:2640-2660) and keeps a region full of untouched media prims from re-fetching
+    /// every time they simply re-enter the interest list -- the same caps-flood lesson as
+    /// BUG-NET-11.</summary>
+    private readonly ConcurrentDictionary<uint, string> _lastMediaVersionByLocalId = new();
+
+    /// <summary>Bounds concurrent <c>ObjectMedia</c> GETs the same way <c>_textureFetchSemaphore</c>
+    /// bounds texture fetches -- lower than that one's 8 because MOAP prims are far rarer than
+    /// textured faces, so a whole region's worth arriving at once is a much smaller burst.</summary>
+    private static readonly System.Threading.SemaphoreSlim _mediaFetchSemaphore = new(4, 4);
+
     /// <summary>The region's current sun direction, in SL coordinates, pointing FROM the region
     /// TOWARD the sun. Zero until the first SimulatorViewerTimeMessage arrives.
     ///
@@ -131,6 +145,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public float SunPhase { get; private set; }
     public event EventHandler<ObjectPropertiesEvent>? ObjectPropertiesReceived;
     public event EventHandler<PhysicsPropertiesEvent>? PhysicsPropertiesReceived;
+    public event EventHandler<ObjectMediaEvent>? ObjectMediaReceived;
     public event EventHandler<NameResolvedEvent>? NameResolved;
     public event EventHandler<NameResolvedEvent>? DisplayNameResolved;
     public event EventHandler<AlertMessageEvent>? AlertMessageReceived;
@@ -252,6 +267,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
     internal void RaiseAvatarUpdate(AvatarUpdateEvent e) => AvatarUpdateReceived?.Invoke(this, e);
     internal void RaiseObjectRemoved(ObjectRemovedEvent e) => ObjectRemovedReceived?.Invoke(this, e);
+    internal void RaiseObjectMedia(ObjectMediaEvent e) => ObjectMediaReceived?.Invoke(this, e);
     internal void RaiseTerrainPatch(TerrainPatchEvent e) => TerrainPatchReceived?.Invoke(this, e);
     internal void RaiseTerrainSettings(TerrainSettingsEvent e) => TerrainSettingsReceived?.Invoke(this, e);
     internal void RaiseRegionDisconnected(RegionDisconnectedEvent e) => RegionDisconnectedReceived?.Invoke(this, e);
@@ -5190,6 +5206,10 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         // (its own entry, or the default) to a neutral FaceTexture indexed by face number.
         FaceTexture[]? faces = null;
         var faceArr = prim.Textures?.FaceTextures;
+        // MVP3-3 Phase 1: whether ANY face's TextureEntry byte carries the MOAP "has media" bit
+        // (TEM_MEDIA_MASK) right now, regardless of whether that changed on this update. Feeds
+        // MaybeQueueMediaFetch below -- the actual per-face content is fetched separately.
+        bool anyFaceHasMedia = defaultFace?.MediaFlags ?? false;
         if (faceArr != null && faceArr.Length > 0 && defaultFace != null)
         {
             // Each face carries TWO material ids: RenderMaterialID (glTF PBR) and MaterialID
@@ -5201,6 +5221,7 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             for (int i = 0; i < faceArr.Length; i++)
             {
                 var f = faceArr[i] ?? defaultFace;
+                if (f.MediaFlags) anyFaceHasMedia = true;
                 faces[i] = new FaceTexture(
                     f.TextureID.Guid,
                     f.RenderMaterialID.Guid,
@@ -5220,7 +5241,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
                     // carry. Casting straight across fed 64/128/192 into a 0-3 lookup, so every
                     // shiny level fell through to "none" and FEAT-RENDER-19 was inert on arrival:
                     // no highlight and no environment reflection on any face in the world.
-                    (byte)((byte)f.Shiny >> 6));
+                    (byte)((byte)f.Shiny >> 6),
+                    f.MediaFlags);
             }
         }
 
@@ -5281,6 +5303,11 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             prim.Light = new Primitive.LightData();
             lightEnabled = false;
         }
+
+        // MVP3-3 Phase 1: like TextureAnim/Light above, the media doorbell only exists on a full
+        // update -- ImprovedTerseObjectUpdate carries neither a TextureEntry nor a MediaURL.
+        if (isFullUpdate) MaybeQueueMediaFetch(simulator, prim, anyFaceHasMedia);
+
         ObjectUpdateReceived?.Invoke(this, new ObjectUpdateEvent(
             simulator.Handle,
             prim.LocalID,
@@ -5341,6 +5368,95 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             defaultFace?.Fullbright ?? false,
             _reflectionProbeByLocalId.TryGetValue(prim.LocalID, out var probe) ? probe : null,
             prim.Flags.HasFlag(PrimFlags.Touch)));
+    }
+
+    /// <summary>MVP3-3 Phase 1: notices the MOAP "doorbell" (<paramref name="anyFaceHasMedia"/>
+    /// plus <c>prim.MediaURL</c>'s <c>x-mv:</c> version string) and fires the <c>ObjectMedia</c>
+    /// GET ourselves -- LibreMetaverse raises no event for either half of this, so nothing else
+    /// will. Gated on the version string actually changing (see
+    /// <see cref="_lastMediaVersionByLocalId"/>); fire-and-forget, like <c>ClickObjectAsync</c>
+    /// callers elsewhere in this file -- the result arrives later via <see cref="ObjectMediaReceived"/>.</summary>
+    private void MaybeQueueMediaFetch(LibreMetaverse.Simulator simulator, Primitive prim, bool anyFaceHasMedia)
+    {
+        if (!anyFaceHasMedia) return;
+
+        string? version = prim.MediaURL;
+        if (!SLNG.Core.MediaVersionString.IsMediaVersion(version)) return;
+        if (_lastMediaVersionByLocalId.TryGetValue(prim.LocalID, out var last) && last == version) return;
+        _lastMediaVersionByLocalId[prim.LocalID] = version!;
+
+        _ = FetchAndPublishObjectMediaAsync(prim.ID.Guid, simulator.Handle, prim.LocalID);
+    }
+
+    private async Task FetchAndPublishObjectMediaAsync(Guid objectId, ulong regionHandle, uint localId)
+    {
+        await _mediaFetchSemaphore.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var result = await RequestObjectMediaAsync(objectId).ConfigureAwait(false);
+            if (result == null) return;
+
+            var (version, faces) = result.Value;
+            int withMedia = 0;
+            foreach (var f in faces) if (f != null) withMedia++;
+            Console.Error.WriteLine(
+                $"[Media] object {localId} ({objectId.ToString()[..8]}) version={version} faces={withMedia}/{faces.Length}");
+
+            ObjectMediaReceived?.Invoke(this, new SLNG.Core.ObjectMediaEvent(regionHandle, localId, objectId, version, faces));
+        }
+        finally
+        {
+            _mediaFetchSemaphore.Release();
+        }
+    }
+
+    /// <summary>MVP3-3 Phase 1: fetches one prim's per-face MOAP media from the region's
+    /// <c>ObjectMedia</c> capability, converted at the boundary -- no LibreMetaverse
+    /// <c>MediaEntry</c>/<c>UUID</c> crosses this method's return. Returns null when the region has
+    /// no cap, the fetch failed, or (OpenSim MoapModule.cs:286-346) the sim answered with a valid
+    /// empty response. <paramref name="objectId"/> is the persistent object UUID -- unlike most of
+    /// this file's other per-object calls, the <c>ObjectMedia</c> cap takes the full id, not the
+    /// scene-local one (verified against llmediadataclient.cpp:872-879).</summary>
+    public async Task<(string Version, SLNG.Core.MediaFace?[] Faces)?> RequestObjectMediaAsync(
+        Guid objectId, CancellationToken cancellationToken = default)
+    {
+        var sim = _client.Network.CurrentSim;
+        if (sim == null) return null;
+
+        var (success, version, faceMedia) = await _client.Objects
+            .RequestObjectMediaAsync(new LibreMetaverse.UUID(objectId), sim, cancellationToken)
+            .ConfigureAwait(false);
+        if (!success) return null;
+
+        if (faceMedia == null) return (version, Array.Empty<SLNG.Core.MediaFace?>());
+
+        var faces = new SLNG.Core.MediaFace?[faceMedia.Length];
+        for (int i = 0; i < faceMedia.Length; i++) faces[i] = ToMediaFace(faceMedia[i]);
+        return (version, faces);
+    }
+
+    /// <summary>Converts one wire <c>MediaEntry</c> (null = this face carries no media, the
+    /// GET response's positional-array convention, llmediadataclient.cpp:942-964) to the neutral
+    /// <see cref="SLNG.Core.MediaFace"/> DTO.</summary>
+    internal static SLNG.Core.MediaFace? ToMediaFace(LibreMetaverse.MediaEntry? entry)
+    {
+        if (entry == null) return null;
+        return new SLNG.Core.MediaFace(
+            entry.HomeURL ?? "",
+            entry.CurrentURL ?? "",
+            entry.AutoPlay,
+            entry.AutoLoop,
+            entry.AutoScale,
+            entry.AutoZoom,
+            entry.InteractOnFirstClick,
+            (SLNG.Core.MediaControlStyle)(byte)entry.Controls,
+            entry.Width,
+            entry.Height,
+            (SLNG.Core.MediaPermission)(byte)entry.ControlPermissions,
+            (SLNG.Core.MediaPermission)(byte)entry.InteractPermissions,
+            entry.EnableWhiteList,
+            entry.WhiteList ?? Array.Empty<string>(),
+            entry.EnableAlternativeImage);
     }
 
     private void OnKillObject(object? sender, KillObjectEventArgs e)

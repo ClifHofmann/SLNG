@@ -47,6 +47,7 @@ public sealed class WorldSimulation : IDisposable
         _source.AvatarAnimationReceived += OnAvatarAnimation;
         _source.ObjectPropertiesReceived += OnObjectProperties;
         _source.PhysicsPropertiesReceived += OnPhysicsProperties;
+        _source.ObjectMediaReceived += OnObjectMedia;
         _source.DisplayNameResolved += OnDisplayNameResolved;
     }
 
@@ -56,6 +57,7 @@ public sealed class WorldSimulation : IDisposable
     private void OnObjectRemoved(object? sender, ObjectRemovedEvent e) => _pending.Enqueue(e);
     private void OnObjectProperties(object? sender, ObjectPropertiesEvent e) => _pending.Enqueue(e);
     private void OnPhysicsProperties(object? sender, PhysicsPropertiesEvent e) => _pending.Enqueue(e);
+    private void OnObjectMedia(object? sender, ObjectMediaEvent e) => _pending.Enqueue(e);
     private void OnTerrainPatch(object? sender, TerrainPatchEvent e) => _pending.Enqueue(e);
     private void OnTerrainSettings(object? sender, TerrainSettingsEvent e) => _pending.Enqueue(e);
     private void OnRegionDisconnected(object? sender, RegionDisconnectedEvent e) => _pending.Enqueue(e);
@@ -78,6 +80,7 @@ public sealed class WorldSimulation : IDisposable
                 case ObjectRemovedEvent e: ApplyObjectRemoved(e); break;
                 case ObjectPropertiesEvent e: ApplyObjectProperties(e); break;
                 case PhysicsPropertiesEvent e: ApplyPhysicsProperties(e); break;
+                case ObjectMediaEvent e: ApplyObjectMedia(e); break;
                 case TerrainPatchEvent e: ApplyTerrainPatch(e); break;
                 case TerrainSettingsEvent e: ApplyTerrainSettings(e); break;
                 case RegionDisconnectedEvent e:
@@ -928,6 +931,22 @@ public sealed class WorldSimulation : IDisposable
         _world.NotifyComponentUpdated(entity, prim);
     }
 
+    /// <summary>MVP3-3 Phase 1: like ApplyPhysicsProperties, this can arrive for an object that
+    /// has since left the world (the fetch completed after the prim left interest list) --
+    /// silently drop it.</summary>
+    private void ApplyObjectMedia(ObjectMediaEvent e)
+    {
+        var entity = _world.GetEntity(e.RegionHandle, e.LocalId);
+        if (entity == null) return;
+
+        var prim = entity.GetComponent<PrimitiveComponent>();
+        if (prim == null) return;
+
+        prim.MediaVersion = e.Version;
+        prim.MediaFaces = e.Faces;
+        _world.NotifyComponentUpdated(entity, prim);
+    }
+
     private void ApplyObjectRemoved(ObjectRemovedEvent e)
     {
         // A removal event does not say whether it was an avatar, so assume it might have been.
@@ -1081,6 +1100,7 @@ public sealed class WorldSimulation : IDisposable
         _source.ObjectRemovedReceived -= OnObjectRemoved;
         _source.ObjectPropertiesReceived -= OnObjectProperties;
         _source.PhysicsPropertiesReceived -= OnPhysicsProperties;
+        _source.ObjectMediaReceived -= OnObjectMedia;
         _source.TerrainPatchReceived -= OnTerrainPatch;
         _source.TerrainSettingsReceived -= OnTerrainSettings;
         _source.RegionDisconnectedReceived -= OnRegionDisconnected;

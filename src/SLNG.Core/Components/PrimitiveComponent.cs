@@ -136,6 +136,19 @@ public class PrimitiveComponent : IComponent
     /// updates for a confirmation that the defaults are real.</summary>
     public bool HasPhysicsProperties { get; set; }
 
+    /// <summary>MVP3-3 Phase 1: per-face MOAP media, indexed by SL face number (matching
+    /// <see cref="Faces"/>). Null until the <c>ObjectMedia</c> capability has answered for this
+    /// prim at least once; a face's own entry is null if that face carries no media even though
+    /// others on the object do. Set only by <c>GridSession</c>'s fetch completing (see
+    /// <see cref="MediaVersion"/>) -- the per-face <see cref="FaceTexture.HasMedia"/> doorbell bit
+    /// can be true here before this array exists.</summary>
+    public MediaFace?[]? MediaFaces { get; set; }
+
+    /// <summary>The <c>x-mv:</c> version string the current <see cref="MediaFaces"/> was fetched
+    /// for, or null if never fetched. Not the same thing as "up to date": a newer ObjectUpdate may
+    /// have already advertised a later version that the fetch for it just hasn't completed yet.</summary>
+    public string? MediaVersion { get; set; }
+
     public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, float repeatU = 1.0f, float repeatV = 1.0f, float offsetU = 0.0f, float offsetV = 0.0f, float rotation = 0.0f, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0, FaceTexture[]? faces = null, byte texGen = FaceTexture.TexGenDefault, ParticleSystemData? particles = null, bool fullbright = false, Guid legacyMaterialId = default)
     {
         Scale = scale;
