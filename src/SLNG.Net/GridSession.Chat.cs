@@ -285,6 +285,41 @@ public sealed partial class GridSession
         GroupsUpdated?.Invoke(this, new GroupsUpdatedEvent(list));
     }
 
+    /// <summary>FEAT-UI-29: the group the agent is currently wearing the tag of, or
+    /// <see cref="Guid.Empty"/> for "none". Updated from the simulator's own AgentDataUpdate
+    /// (LibreMetaverse's <c>AgentDataReply</c>), never guessed from the last
+    /// <see cref="ActivateGroup"/> call -- the sim can refuse, and it also sets this at login to
+    /// whatever the account already had active.</summary>
+    public Guid ActiveGroupId => _client.Self.ActiveGroup.Guid;
+
+    /// <summary>Raised when the active group changes, including the first AgentDataUpdate after
+    /// login. Fires on a LibreMetaverse network thread -- marshal before touching the UI.</summary>
+    public event EventHandler<ActiveGroupChangedEvent>? ActiveGroupChanged;
+
+    /// <summary>Sets the agent's active group -- the group tag shown over the avatar, and the one
+    /// the SIMULATOR evaluates group permissions against.
+    ///
+    /// <para>That second part is why this is not merely cosmetic. A group-editable object's
+    /// <c>FLAGS_OBJECT_MODIFY</c> bit is computed per agent against the agent's ACTIVE group
+    /// (<c>LLPermissions::allowOperationBy</c> takes one group, not a membership list), so with no
+    /// group active the sim reports no group rights and the viewer correctly shows none. Without
+    /// this call SLNG could never exercise group permissions at all -- see FEAT-SEC-04.</para>
+    ///
+    /// <para><see cref="Guid.Empty"/> clears the tag, which is what SL's "(none)" entry does.
+    /// The result arrives on <see cref="ActiveGroupChanged"/>; nothing is assumed to have worked
+    /// until it does.</para></summary>
+    public void ActivateGroup(Guid groupId)
+    {
+        if (!_client.Network.Connected) return;
+        _client.Groups.ActivateGroup(new LibreMetaverse.UUID(groupId));
+    }
+
+    private void OnAgentDataReply(object? sender, AgentDataReplyEventArgs e)
+    {
+        ActiveGroupChanged?.Invoke(this, new ActiveGroupChangedEvent(
+            e.ActiveGroupID.Guid, e.GroupName ?? string.Empty, e.GroupTitle ?? string.Empty));
+    }
+
     /// <summary>Joins a group's chat session. Required before <see cref="SendGroupMessage"/> can
     /// deliver anything — LibreMetaverse refuses to send into a session it has not joined. Result
     /// arrives on <see cref="GroupChatJoined"/>.</summary>

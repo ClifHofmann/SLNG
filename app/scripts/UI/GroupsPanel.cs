@@ -30,6 +30,11 @@ public partial class GroupsPanel : Control
     private Label _emptyLabel = null!;
     private Label _countLabel = null!;
     private Button _chatButton = null!;
+    private Button _activateButton = null!;
+
+    /// <summary>FEAT-UI-29: the group the simulator says is active, from ActiveGroupChanged --
+    /// never what we last asked for. Guid.Empty means none.</summary>
+    private Guid _activeGroupId;
     private Button _muteButton = null!;
     private Guid _selectedGroupId;
     private string _selectedGroupName = "";
@@ -98,10 +103,20 @@ public partial class GroupsPanel : Control
     /// over a freshly constructed session (the old one is being disposed).</summary>
     public void Initialize(GridSession session)
     {
-        if (_session != null) _session.GroupsUpdated -= OnGroupsUpdated;
+        if (_session != null)
+        {
+            _session.GroupsUpdated -= OnGroupsUpdated;
+            _session.ActiveGroupChanged -= OnActiveGroupChanged;
+        }
 
         _session = session;
         _session.GroupsUpdated += OnGroupsUpdated;
+        _session.ActiveGroupChanged += OnActiveGroupChanged;
+
+        // The sim already sent an AgentDataUpdate at login, before this panel existed, so seed
+        // from the session rather than waiting for the next one -- otherwise the tag looks
+        // unset until the user changes it.
+        _activeGroupId = _session.ActiveGroupId;
 
         // Memberships are not pushed by the sim -- nothing arrives until we ask.
         _session.RequestGroups();
@@ -109,6 +124,14 @@ public partial class GroupsPanel : Control
     }
 
     private void OnGroupsUpdated(object? sender, GroupsUpdatedEvent e) => CallDeferred(nameof(Refresh));
+
+    /// <summary>Fires on a network thread -- the field write is a plain reference-sized store and
+    /// the UI work is deferred, same pattern as OnGroupsUpdated above.</summary>
+    private void OnActiveGroupChanged(object? sender, ActiveGroupChangedEvent e)
+    {
+        _activeGroupId = e.GroupId;
+        CallDeferred(nameof(Refresh));
+    }
 
     private void OnMuteChanged(Guid groupId, bool muted)
     {
@@ -264,6 +287,22 @@ public partial class GroupsPanel : Control
         };
         panel.AddChild(_chatButton);
 
+        // FEAT-UI-29: wearing a group tag is not cosmetic -- the simulator evaluates group
+        // permissions against the ACTIVE group, so with none set a group-editable object reports
+        // no rights and the viewer correctly shows none. Placed here for the same reason the
+        // reference viewer puts it in the Groups floater rather than a menu: it belongs next to
+        // the list you pick from.
+        _activateButton = BuildActionButton(L10n.Tr("ui.groups.action_activate"));
+        _activateButton.TooltipText = L10n.Tr("ui.groups.action_activate_tooltip");
+        _activateButton.Pressed += () =>
+        {
+            if (_session == null || _selectedGroupId == Guid.Empty) return;
+            // Toggling the active group off is SL's "(none)" entry -- same button, because the
+            // question it answers is "is THIS group active".
+            _session.ActivateGroup(_selectedGroupId == _activeGroupId ? Guid.Empty : _selectedGroupId);
+        };
+        panel.AddChild(_activateButton);
+
         _muteButton = BuildActionButton(L10n.Tr("ui.groups.action_mute"));
         _muteButton.TooltipText = L10n.Tr("ui.groups.action_mute_tooltip");
         _muteButton.Pressed += () =>
@@ -291,6 +330,19 @@ public partial class GroupsPanel : Control
         if (_muteButton == null) return;
         bool muted = _selectedGroupId != Guid.Empty && GroupMuteSettings.IsMuted(_selectedGroupId);
         _muteButton.Text = muted ? L10n.Tr("ui.groups.action_unmute") : L10n.Tr("ui.groups.action_mute");
+        UpdateActivateButton();
+    }
+
+    /// <summary>The button says what pressing it will DO, so it flips to "Deactivate" once the
+    /// selected group is the active one -- the same control answering "is this group active".</summary>
+    private void UpdateActivateButton()
+    {
+        if (_activateButton == null) return;
+        bool isActive = _selectedGroupId != Guid.Empty && _selectedGroupId == _activeGroupId;
+        _activateButton.Text = isActive
+            ? L10n.Tr("ui.groups.action_deactivate")
+            : L10n.Tr("ui.groups.action_activate");
+        _activateButton.Disabled = _selectedGroupId == Guid.Empty;
     }
 
     private static Button BuildActionButton(string text, bool accent = false)

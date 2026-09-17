@@ -557,6 +557,9 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // before it can act then waits forever -- which is what a pose stand whose menu does
         // nothing actually is.
         _client.Self.ScriptQuestion += OnScriptQuestion;
+        // FEAT-UI-29: the sim's own word on which group is active -- at login and
+        // after every ActivateGroup. Never inferred from our own request.
+        _client.Self.AgentDataReply += OnAgentDataReply;
         // FEAT-UI-13: avatar profile replies. A single AvatarPropertiesRequest packet
         // (RequestAvatarProperties) makes the sim send Properties + Interests + Groups; Picks and
         // Classifieds have their own request/reply pairs (see RequestAvatarProfile).
@@ -629,6 +632,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Self.ChatFromSimulator -= OnChatFromSimulator;
         _client.Objects.ObjectUpdate -= OnObjectUpdate;
         _client.Objects.TerseObjectUpdate -= OnTerseObjectUpdate;
+        _client.Self.AgentDataReply -= OnAgentDataReply;
         _client.Objects.ObjectPropertiesFamily -= OnObjectPropertiesFamily;
         _client.Objects.ObjectProperties -= OnObjectPropertiesFull;
         _client.Objects.PhysicsProperties -= OnPhysicsProperties;
