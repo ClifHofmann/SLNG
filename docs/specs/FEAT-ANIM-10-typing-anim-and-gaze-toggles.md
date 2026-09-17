@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-ANIM-10`
 - **Track:** `net` (+ `render`, `ui`)
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done`
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
