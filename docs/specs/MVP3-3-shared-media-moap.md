@@ -2,9 +2,12 @@
 
 - **Feature ID:** `MVP3-3`
 - **Track:** `net` / `core` / `render`
-- **Status:** `🚧 In Progress` (Phases 1 and 3 landed and confirmed/tested; Phase 2 (click to
-  open in the system browser) is scoped below but not started. Phase 4 — an embedded web
-  browser — is split into its own follow-up id, `FEAT-MEDIA-01`, gated on an ADR.)
+- **Status:** `✅ Done` (Phases 1 and 3 — the roadmap's "done when": media genuinely appears on
+  a prim face — shipped and confirmed in-world on Agni. Phase 2, click-to-open in the system
+  browser, is split into its own follow-up id, [FEAT-MEDIA-02](file:///E:/Git/SLNG/docs/specs/FEAT-MEDIA-02-moap-click-to-open.md).
+  Phase 4, an embedded web browser, is split into [FEAT-MEDIA-01](file:///E:/Git/SLNG/docs/specs/FEAT-MEDIA-01-embedded-browser.md),
+  gated on an ADR. Same closure pattern as `MVP3-4` — the shipped core splits off its remaining
+  polish into non-blocking follow-ups rather than holding the milestone open for them.)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -35,9 +38,9 @@ one:
 | Phase | What ships | New dependency? | Status |
 |---|---|---|---|
 | **1** | Data model + protocol fetch + version-gated, throttled change detection | No | ✅ Landed and confirmed in-world |
-| **2** | Object inspector display + click-a-media-face → confirm dialog (host + URL) → open in the system browser, permission/whitelist-checked | No | ⏸️ Pending — needs raycast-hit → SL-face-number resolution, which does not exist anywhere in the renderer yet (see Phase 2 notes) |
+| **2** (own id: [`FEAT-MEDIA-02`](file:///E:/Git/SLNG/docs/specs/FEAT-MEDIA-02-moap-click-to-open.md)) | Object inspector display + click-a-media-face → confirm dialog (host + URL) → open in the system browser, permission/whitelist-checked | No | ⏸️ Split off, not started — needs raycast-hit → SL-face-number resolution, which does not exist anywhere in the renderer yet |
 | **3** | Direct-image (and, later, Theora) textures rendered live on AUTO_PLAY faces | No (ADR 0002 already covers uniform-driven face content; SkiaSharp/Magick.NET already referenced) | ✅ Landed and confirmed in-world |
-| **4** (own id: `FEAT-MEDIA-01`) | Full embedded web browser | **Yes — needs an ADR** | ⏸️ Not started |
+| **4** (own id: [`FEAT-MEDIA-01`](file:///E:/Git/SLNG/docs/specs/FEAT-MEDIA-01-embedded-browser.md)) | Full embedded web browser | **Yes — needs an ADR** | ⏸️ Split off, not started |
 
 Parcel-wide media (`ParcelMediaCommandMessage`/`ParcelMediaUpdateReply`) is a different,
 legacy, non-per-face feature that happens to share the word "media" — explicitly out of
@@ -240,6 +243,12 @@ confirmed:
 **Confirmed in-world 2026-09-17:** SLNG's and Firestorm's rendering of the probe's `AUTO_PLAY`
 face now match.
 
+**Video (Theora, for a fully-downloadable `.ogv`) is a smaller follow-up on the same seam**
+once there's a real test case for it — needs its own teardown discipline, matching
+`ObjectParticles`' node-lifetime pattern rather than inventing a new one. Not started; no
+in-world MOAP video test target has been found yet. No new roadmap id of its own — small enough
+to fold back into this phase's own follow-up if it's ever picked up.
+
 ### Tests
 
 - `MediaWhitelistTests` — the whitelist matcher against real `checkUrlAgainstWhitelist`
@@ -262,74 +271,21 @@ face now match.
   non-square source (pins an actual "contain" fit with clean black bars, not just that
   *something* got returned at the target size).
 
-## Phase 2 — click-to-open fallback (not started)
+## Phase 2 and Phase 4 — split into their own follow-up ids
 
-The interaction fallback: clicking a MOAP face shows a confirm dialog naming the host and
-full URL, then opens it in the system's default browser — real user value with zero new
-engine dependency, while Phase 4's embedded browser is pending its ADR.
+MVP3-3 closes here, on the same pattern `MVP3-4` closed on: the shipped core (Phases 1 and 3 —
+media genuinely appears on prim faces, the roadmap's own "done when") ships now, and the
+remaining polish moves to its own non-blocking follow-up id rather than holding the milestone
+open for it.
 
-**The blocker this phase actually has to solve:** `ObjectSelectionController`'s left-click
-handler resolves a raycast hit to an **object** (`_session.ClickObjectAsync(rawLocalId,
-position: hitPosSl)`, `ObjectSelectionController.cs:228`) but never to a **face** — every
-call site passes `faceIndex: 0` even though `ClickObjectAsync` already accepts a real one.
-Prim collision is one `ConcavePolygonShape3D` per whole object
-(`ObjectRenderer.cs:4480,4521`), not per face, so Godot's raycast result gives only a
-world-space hit point, no face/triangle id. Resolving "which SL face was clicked" needs a
-small CPU-side picking step against the object's own `MeshData` (which submeshes already
-carry `FaceIndex`, see `FaceSurfaceMerge`) — this does not exist anywhere in the renderer
-today and is this phase's real scope, not the dialog/`OS.ShellOpen` part.
-
-**Guardrails for whoever picks this up (from the architecture review, not yet implemented):**
-- Validate with `Uri.TryCreate(url, UriKind.Absolute, ...)` and allow only `http`/`https`
-  before ever calling `OS.ShellOpen` — `CurrentUrl` comes from an in-world object and an
-  unvalidated scheme (`file://`, `ms-msdt:`, ...) is arbitrary URI-handler invocation.
-- Check `MediaPermissionEvaluator`/`MediaWhitelist` client-side before offering the dialog
-  at all, not just server-side — TPV Non-negotiable #1 (honor creator permissions) applies
-  regardless of what the sim also enforces.
-- No automatic OS-browser open, ever, not even of just a preview: opening an external
-  program is a materially bigger action than an in-scene texture, and MOAP is a known
-  IP-disclosure/griefing vector (a rezzed prim can point media at a server the griefer
-  controls and log every visitor's IP) — for THIS phase's click-to-`OS.ShellOpen` action,
-  everything must stay user-click-gated. This does not contradict Phase 3's auto-rendered
-  image: an in-scene texture swap is the lower-risk half of the same risk (still an IP
-  disclosure to whatever host the creator pointed the face at, but not also handing that host
-  an invitation to run in a full external browser process), it only ever fires for a face the
-  CREATOR explicitly flagged `AUTO_PLAY` (their declared intent, not SLNG inventing
-  auto-fetch), and it's exactly the behaviour a reference viewer already shows with zero
-  clicks — confirmed live: Firestorm auto-renders the probe's `AUTO_PLAY` image face and
-  shows nothing at all for the non-`AUTO_PLAY` webpage face until clicked.
-
-## Phase 3 — direct-image face content (landed, `v0.22.201-alpha`)
-
-For a face whose `CurrentUrl` resolves to `image/*` (vendor boards, gallery prims, webcam
-stills) and whose `MediaFace.AutoPlay` is true, swap the face's albedo texture live —
-`PrimShaderFamily`'s existing per-surface texture parameter, not a material rebuild. Owned by
-`SLNG.Assets.MediaImageService` (a bare `HttpClient`, **never** `Client.HttpCapsClient` — a
-third-party media host must never receive the session's caps URL/agent id), decoding via the
-same `SKBitmap` path `AssetService`'s own CoreJ2K fallback already uses, cached by URL for the
-process lifetime — SkiaSharp and Magick.NET were already referenced in `SLNG.Assets`, no new
-dependency. `ObjectRenderer.ApplyMediaImageAsync` applies it strictly AFTER the face's ordinary
-material has already landed, fire-and-forget, so a slow/dead/non-image URL never blocks or
-breaks the object's normal appearance. See the in-world bug/fix log above this section for the
-one real trap it surfaced (`SKBitmap.Decode` throws rather than returning null on bad input)
-and the instancing-leak gap it closed before ever landing (`EvaluateInstancing` now excludes
-any MOAP-carrying object regardless of surface count).
-
-Video (Theora, for a fully-downloadable `.ogv`) is a smaller follow-up on the same seam once
-there's a real test case for it — needs its own teardown discipline, matching
-`ObjectParticles`' node-lifetime pattern rather than inventing a new one. Not started; no
-in-world MOAP video test target has been found yet.
-
-## Phase 4 — embedded web browser (`FEAT-MEDIA-01`, not started)
-
-Split into its own roadmap id because it is architecturally a different kind of decision:
-a native GDExtension (e.g. a CEF wrapper) is a per-platform build and licensing commitment
-that reshapes the installer/CI pipeline and forecloses the mobile goal if adopted casually.
-First acceptance criterion for that id is "ADR accepted"; the ADR should weigh in-process
-embedding against running the browser as its own process (the real viewer's own approach —
-CEF runs in a separate `SLPlugin` process specifically to isolate crashes and keep the
-extension surface small), and should revisit "is this still needed" if Godot ever ships a
-first-class web view.
+- **Phase 2 — click-to-open in the system browser:** split into
+  [`FEAT-MEDIA-02`](file:///E:/Git/SLNG/docs/specs/FEAT-MEDIA-02-moap-click-to-open.md). Real
+  user value with zero new engine dependency, blocked on a real gap: nothing in the renderer
+  resolves a raycast hit to a specific SL face number today.
+- **Phase 4 — a full embedded web browser:** split into
+  [`FEAT-MEDIA-01`](file:///E:/Git/SLNG/docs/specs/FEAT-MEDIA-01-embedded-browser.md), gated on
+  an ADR (a native GDExtension is a per-platform build/licensing commitment that forecloses the
+  mobile goal if adopted casually).
 
 ## Acceptance Criteria
 
