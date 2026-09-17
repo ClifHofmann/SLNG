@@ -3,29 +3,28 @@
 SLNG is built by AI agents. This document defines how **Claude Code** and **Gemini
 CLI** work the same repository at the same time without stepping on each other.
 
-## Core idea: one worktree per agent
+## Core idea: one checkout, one branch per work item
 
-Never run two agents in the same working directory. Use **git worktrees** so each
-assistant has its own checkout of its own branch, sharing one `.git`:
-
-```bash
-# from the main checkout (E:/Git/SLNG)
-git worktree add ../SLNG-claude  -b feat/m0-2-login
-git worktree add ../SLNG-gemini  -b feat/m0-4-login-ui
-```
-
-Run Claude Code in `../SLNG-claude`, Gemini CLI in `../SLNG-gemini`. They build and
-test independently; they integrate through `main`.
+Everything happens in the single checkout at `E:/Git/SLNG`. Branch in place:
 
 ```bash
-git worktree list          # see all active worktrees
-git worktree remove ../SLNG-gemini   # clean up when a branch is merged
+git switch -c feature/FEAT-NET-01-script-permissions
 ```
+
+This project does **not** use `git worktree` — an earlier attempt left stale
+registrations behind and was cleaned up in `FEAT-INFRA-01`.
+
+The tree is shared, so the real constraint is uncommitted work, not the directory: a
+second session's commit sweeps up whatever the first left unstaged. Commit small and
+early, and re-check that your own changes are still present before reporting a task
+done. Agents integrate through `main`.
 
 ## Branch & commit conventions
 
-- Branch name: `feat/<task-id>-<slug>` e.g. `feat/m2-2-j2c-decoder`.
-- Conventional Commits with the task id: `feat(assets): off-thread j2c decode (M2-2)`.
+- Branch name: `feature/<ID>-<slug>` e.g. `feature/FEAT-ANIM-06-inventory-animations`;
+  `fix/<ID>-<slug>` for a bug, `chore/<slug>` where no ID applies.
+- Conventional Commits in the shape `AGENTS.md` → **Feature Tracking & ID Convention**
+  defines: `feat(anim): [FEAT-ANIM-06] play inventory animations (v0.22.179-alpha)`.
 - Small PRs into `main`. Rebase onto `main` before opening a PR.
 
 ## Claiming a task (avoid double work)

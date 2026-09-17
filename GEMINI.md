@@ -7,11 +7,12 @@ guidance so that Gemini and Claude Code can develop SLNG in parallel.
 
 ## Working agreement (same as Claude)
 
-- Pick a task from `docs/ROADMAP.md`, set its `Owner: gemini`, and work the matching
-  branch in your **own git worktree** — never share a working tree with another agent.
-  See `docs/AI_WORKFLOW.md`.
+- Pick a task from `docs/ROADMAP.md`, set its `Owner` to `gemini`, and work the matching
+  branch in the single checkout at `E:/Git/SLNG` — branch in place, no `git worktree`.
+  Only one session may hold uncommitted work at a time. See `docs/AI_WORKFLOW.md`.
 - Respect the layering rule: no `using Godot;` in `src/`.
-- Conventional Commits with the task id, e.g. `feat(assets): j2c decoder (M2-3)`.
+- Conventional Commits in the shape `AGENTS.md` → **Feature Tracking & ID Convention**
+  defines.
 - Run `dotnet build` and `dotnet test` before committing.
 
 ## Using the role definitions

@@ -19,7 +19,8 @@ This skill is used to generate, update, and maintain end-user documentation for 
 4. **Versioning & Sync**: 
    - Always check the current `AppVersion` (e.g., in `app/scripts/Boot.cs`). 
    - If the version has changed, document any new features, fixes, or UI changes introduced. 
-   - Explicitly state which version the documentation applies to (e.g., "Updated for v0.1.55-alpha").
+   - Explicitly state which version the documentation applies to, quoting the
+     `AppVersion` you just read — never a version from this file or from an older page.
 5. **Terminology**: Cross-reference UI strings in `app/i18n/en-US.json` to ensure the manual uses the exact terminology the user sees on their screen.
 
 ## Standard Workflow

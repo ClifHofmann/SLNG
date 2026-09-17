@@ -6,8 +6,6 @@
 
 Always prefix shell commands with `rtk` to minimize token consumption.
 
-Examples:
-
 ```bash
 rtk git status
 rtk cargo test
@@ -16,6 +14,15 @@ rtk grep "pattern" src/
 rtk find "*.rs" .
 rtk docker ps
 rtk gh pr list
+```
+
+**On Windows, `rtk` only resolves direct `.exe` files.** Native binaries (`git`,
+`docker`, `cargo`) work as above. Built-in commands, `.bat` / `.cmd` scripts and
+aliases (`dir`, `npm`) must be wrapped, or the call fails:
+
+```bash
+rtk cmd /c "dir /O-D"
+rtk powershell -c "<command>"
 ```
 
 ## Meta Commands

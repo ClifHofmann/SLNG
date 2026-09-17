@@ -9,8 +9,7 @@
       "Bash(godot:*)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
-      "Bash(git log:*)",
-      "Bash(git worktree:*)"
+      "Bash(git log:*)"
     ]
   }
 }

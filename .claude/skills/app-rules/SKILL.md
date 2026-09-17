@@ -35,7 +35,8 @@ style, the drag behaviour, the shared HUD scale and the title bars uniform.
 `app/scripts/Boot.cs` holds `public const string AppVersion`. It renders on the login
 screen and in the window title.
 
-- **Patch-bump for every fix** (`v0.18.0-alpha` → `v0.18.1-alpha`).
+- **Patch-bump for every fix** — read the current value and increment its last
+  component; never copy a version out of a rules file.
 - **Minor-bump only at a genuinely testable milestone**, never mid-investigation.
 
 ## Threading

@@ -7,30 +7,20 @@ guidance.
 
 ## Subagents
 
-Specialized agents live in `.claude/agents/`. Delegate to them rather than doing
-everything in the main thread — it keeps context focused and lets work parallelize.
-
-| Agent | Use it for |
-|---|---|
-| `architect` | System design, module boundaries, ADRs, cross-cutting decisions |
-| `protocol-re` | Reverse-engineering SL/OpenSim protocol & asset formats; LibreMetaverse internals |
-| `viewer-parity` | Settling "how does the real viewer/OpenSim actually do this" against vendored source (`scratch/slviewer`, `scratch/libremetaverse_src`) or fetched OpenSim source, instead of guessing |
-| `graphics-engineer` | Godot rendering, PBR materials, shaders, lighting, post-processing |
-| `asset-pipeline` | J2K decode, mesh/LOD, material resolve, avatar bake, caching, threading |
-| `ux-designer` | Viewer UX/UI: HUD, inventory, chat, world map, settings |
-| `test-engineer` | Test strategy, xUnit suites, OpenSim integration harness |
-| `performance-engineer` | Profiling, frame budgets, memory/VRAM, draw-call reduction, login/startup latency |
-| `code-reviewer` | Read-only review against AGENTS.md before merge |
-
-Invoke proactively. Example: when starting a networking task, hand the spec to
-`protocol-re`; when wiring it into the scene, hand off to `graphics-engineer`.
+Specialized agents live in `.claude/agents/`; each one's own `description` says what it
+covers. Delegate a task that is a phase of its own — it keeps context focused and lets
+work parallelize. Example: hand a networking spec to `protocol-re`, then hand the
+scene-wiring to `graphics-engineer`.
 
 ## Working agreement
 
-- Read the task in `docs/ROADMAP.md`, set its `Owner: claude`, and work on the
-  matching branch in your own worktree (see `docs/AI_WORKFLOW.md`).
+- Read the task in `docs/ROADMAP.md`, set its `Owner` to `claude`, and work on the
+  matching branch in `E:/Git/SLNG` (see `docs/AI_WORKFLOW.md`). Branch in place — no
+  `git worktree`.
 - Keep `src/` free of `using Godot;`.
 - Prefer test-first for protocol and asset code.
 - When you finish a task, run `/slng-verify` (it covers the steps `dotnet build`
   alone misses), then commit with the task id in the message.
-- Don't explain your thought process. Don't include introductory or concluding sentences like "Here's the code" or "I'm going to perform step 1 now...". No explanations, no filler text.
+- Skip the preamble and the sign-off — no "Here's the code", no "I'm going to perform
+  step 1 now". Findings, failures and the reasoning behind a non-obvious fix still belong
+  in the reply; it is the narration around them that is unwanted.

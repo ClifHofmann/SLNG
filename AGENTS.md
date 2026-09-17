@@ -63,7 +63,8 @@ Verified toolchain: **.NET SDK 8** and **Godot 4.7-stable (.NET/mono)**.
   final GPU upload / scene-graph mutation touches the Godot main thread. This is
   the single most important performance rule — see Non-negotiables.
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`,
-  `test:`, `chore:`). Reference the roadmap task id, e.g. `feat(net): login flow (M0-2)`.
+  `test:`, `chore:`), in the exact shape given under **Feature Tracking & ID
+  Convention** below — that section is the single statement of the format.
 - **Tests:** every non-trivial PR ships tests. Protocol/asset code is test-first
   where feasible because AI output must be verifiable.
 
@@ -124,8 +125,10 @@ Mechanical checklist: `.claude/skills/slng-verify/SKILL.md` (`/slng-verify`).
 
 ## Parallel-agent rules (short form — full version in docs/AI_WORKFLOW.md)
 
-- Each work item runs on its **own branch + git worktree**. Never two agents in one
-  working tree.
+- Each work item runs on its **own branch in the single checkout at `E:/Git/SLNG`**.
+  Branch in place — this project does not use `git worktree`. Two sessions may share
+  the tree, but only one may hold uncommitted work: a second session's commit sweeps
+  up whatever the first had not staged. Commit small and early.
 - **One owner per task.** Claim a task by setting its `Owner` in `docs/ROADMAP.md`
   to `claude` or `gemini` in the same branch you start work on.
 - Workstreams are designed to be **independent** (net vs. render vs. assets vs. ui)
@@ -157,8 +160,12 @@ Two of these are hard requirements and are called out here so they are not misse
 All features, tasks, and specs MUST use a unified Feature ID scheme across code, git, and documentation:
 - **ID Format:** `M<Milestone>-<Number>` (e.g. `M4-7`) or `FEAT-<AREA>-<Number>` for post-milestone tasks.
 - **Spec files:** Created under `docs/specs/<ID>-<short-description>.md` using `docs/specs/TEMPLATE.md`.
-- **Branch names:** `feature/<ID>-<short-description>`.
-- **Commit messages:** `feat(<area>): [<ID>] <description>` (e.g. `feat(render): [M4-7] implement base mesh hiding`).
+- **Branch names:** `feature/<ID>-<short-description>`, or `fix/<ID>-<short-description>`
+  for a bug. `chore/<short-description>` where no ID applies.
+- **Commit messages:** `feat(<area>): [<ID>] <description> (<AppVersion>)` — e.g.
+  `feat(render): [M4-7] implement base mesh hiding (v0.22.194-alpha)`. The trailing
+  version is the `AppVersion` the commit ships; omit it only on a commit that bumps
+  none (`docs:`, most `chore:`).
 - **Status tracking in `docs/ROADMAP.md`:** Standardized status flags (`⏸️ Pending`, `🚧 In Progress`, `🧪 Review`, `✅ Done`).
 - **Progress dashboard:** those same flags render the public status page at
   <https://clifhofmann.github.io/SLNG/>, auto-built from `docs/ROADMAP.md` + git by
