@@ -5964,6 +5964,16 @@ public sealed class GridSession : IDisposable, IWorldEventSource
         }
     }
 
+    /// <summary>BUG-NET-17: reported live 2026-09-17 on Agni -- a SAME-region ("local") teleport
+    /// moved the avatar's X/Y correctly but rendered her stuck at the OLD height, because
+    /// WorldSimulation deliberately holds the local agent's Z at its own ground-clamped value
+    /// during ordinary movement (to stop the network echo and the local ground-clamp fighting over
+    /// Z every frame -- see ApplyAvatarUpdate's doc comment) and never overwrites a known
+    /// SupportPlane with an absent one (a same-region teleport keeps the SAME entity, unlike a
+    /// cross-region one, so that plane -- a REAL surface reading for wherever the avatar used to
+    /// be -- survived and kept steering the ground clamp toward the old height). <c>IsTeleport:
+    /// true</c> tells ApplyAvatarUpdate to take this event's Position verbatim, snap to it
+    /// instantly, and clear the stale plane instead.</summary>
     private void SyncLocalAgentPositionAfterTeleport()
     {
         var sim = _client.Network.CurrentSim;
@@ -5980,7 +5990,8 @@ public sealed class GridSession : IDisposable, IWorldEventSource
             _client.Self.FirstName,
             _client.Self.LastName,
             IsLocalAgent: true,
-            SittingOnLocalId: _client.Self.SittingOn));
+            SittingOnLocalId: _client.Self.SittingOn,
+            IsTeleport: true));
     }
 
     private async Task<ulong?> ResolveRegionHandleAsync(UUID regionId, CancellationToken ct)

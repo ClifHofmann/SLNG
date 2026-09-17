@@ -666,13 +666,19 @@ public sealed class WorldSimulation : IDisposable
             // ruckelig" after the race fix, dilation scaling, phase-out tuning, and rotation
             // smoothing had already landed -- none of which touch this). Remote avatars have no
             // local ground-clamp, so they still take Z from the network as before.
-            var targetPosition = (e.IsLocalAgent && !isSeatedLocalAgent)
+            // BUG-NET-17: a teleport bypasses the local-Z hold entirely -- see IsTeleport's doc
+            // comment. Taking the network Z here (rather than transform.Position.Z) is exactly the
+            // "two authorities fighting" case the comment above warns against for ORDINARY
+            // movement, but there is no fight here: nothing else claims Z during the one frame a
+            // teleport resync lands, and AvatarController's ground-clamp re-establishes normal
+            // local ownership on its very next tick against the NEW position.
+            var targetPosition = (e.IsLocalAgent && !isSeatedLocalAgent && !e.IsTeleport)
                 ? new Vector3(e.Position.X, e.Position.Y, transform.Position.Z)
                 : e.Position;
 
             float targetDelta = Vector3.Distance(transform.TargetPosition, targetPosition);
 
-            if (targetDelta > TeleportSnapDistanceMeters)
+            if (e.IsTeleport || targetDelta > TeleportSnapDistanceMeters)
             {
                 transform.Position = targetPosition;
             }
@@ -737,9 +743,14 @@ public sealed class WorldSimulation : IDisposable
             // support surface -- it did not report that the avatar is standing on nothing. Letting
             // such an update blank the plane would hand the ground check a null exactly as often as
             // the simulator happened to send a compact update, which is the same "absence read as
-            // information" mistake the light-ExtraParams latch made. A region change drops the
-            // whole entity, so a plane cannot survive a teleport this way.
+            // information" mistake the light-ExtraParams latch made. A CROSS-region teleport drops
+            // the whole entity, so a plane cannot survive that one; a SAME-region ("local") one
+            // keeps this exact entity, so without the IsTeleport branch below the OLD plane -- a
+            // real surface reading that no longer applies anywhere near the new position -- would
+            // silently keep steering the ground clamp (BUG-NET-17: an avatar teleporting to a very
+            // different height rendered stuck at the OLD one).
             if (e.SupportPlane.HasValue) avatar.SupportPlane = e.SupportPlane;
+            else if (e.IsTeleport) avatar.SupportPlane = null;
             entity.SetComponent(avatar);
         }
         _world.NotifyComponentUpdated(entity, avatar);

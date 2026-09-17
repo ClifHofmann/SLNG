@@ -253,7 +253,19 @@ public record ObjectUpdateEvent(
 ///
 /// Null means the simulator has not sent one (it is also cleared across a region change), which
 /// is NOT the same as "standing on nothing" and must not be treated as such.</summary>
-public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent, float ScaleZ = 0f, Vector3 Velocity = default, float TimeDilation = 1f, uint SittingOnLocalId = 0, Vector4? SupportPlane = null) : IWorldEvent;
+/// <param name="IsTeleport">BUG-NET-17: true only for the synthetic resync
+/// GridSession.SyncLocalAgentPositionAfterTeleport raises right after a teleport completes.
+/// Ordinary movement deliberately holds the local agent's Z at its own ground-clamped value and
+/// eases into a nearby TargetPosition (see ApplyAvatarUpdate's local-Z/judder comment) -- correct
+/// for walking, but wrong here: a same-region ("local") teleport keeps the SAME entity (unlike a
+/// cross-region one, which drops and recreates it), so without this flag a teleport whose
+/// destination is far above/below the old spot would have its real network Z silently discarded
+/// in favour of the stale pre-teleport ground height, and the avatar's SupportPlane (which
+/// ApplyAvatarUpdate otherwise deliberately never overwrites with an absent value) would keep
+/// describing a surface that no longer exists. True forces both: the network Position is taken
+/// verbatim and snapped to instantly, and SupportPlane is cleared when the teleport event itself
+/// carries none.</param>
+public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent, float ScaleZ = 0f, Vector3 Velocity = default, float TimeDilation = 1f, uint SittingOnLocalId = 0, Vector4? SupportPlane = null, bool IsTeleport = false) : IWorldEvent;
 
 /// <summary>Represents the removal of an object from the simulator's interest list.</summary>
 public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent;
