@@ -65,7 +65,7 @@ jobs:
             python tools/roadmap-dashboard.py -o _site/index.html
           fi
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
