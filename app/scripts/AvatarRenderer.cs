@@ -1411,13 +1411,18 @@ public partial class AvatarRenderer : Node3D
                         : string.Join(" ", avatar.AnimationSources.Select(s =>
                             $"{s.AnimId.ToString()[..8]}<-{(s.SourceObjectId == Guid.Empty ? "agent" : s.SourceObjectId.ToString()[..8])}"));
 
-                string dropped = desired.Count == avatar.ActiveAnimations.Count
+                // ActiveAnimations is nullable and empty until the first AvatarAnimation arrives —
+                // AnimationSources two lines up is already guarded for the same reason, this was
+                // not. A seated avatar whose animation list had not landed yet took a
+                // NullReferenceException here, but only under --diag, which is why it survived.
+                var active = avatar.ActiveAnimations ?? (IReadOnlyList<Guid>)Array.Empty<Guid>();
+                string dropped = desired.Count == active.Count
                     ? "none"
-                    : string.Join(" ", avatar.ActiveAnimations
+                    : string.Join(" ", active
                         .Where(id => !desired.Contains(id))
                         .Select(id => id.ToString()[..8]));
 
-                GD.Print($"[AnimPlayer] seated: seat={seat} kept={desired.Count}/{avatar.ActiveAnimations.Count} " +
+                GD.Print($"[AnimPlayer] seated: seat={seat} kept={desired.Count}/{active.Count} " +
                          $"dropped=[{dropped}] sources=[{sources}]");
             }
 
