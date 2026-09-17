@@ -31,7 +31,7 @@ jobs:
     name: build dashboard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # full history: the "Commits pro Woche" chart and the commit-count fact
           # read `git log` back over many weeks.
