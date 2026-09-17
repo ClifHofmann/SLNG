@@ -1,0 +1,25 @@
+<Project>
+
+  <!--
+    Applies to every project under the repository root, including app/SLNG.App.csproj, which is
+    deliberately outside SLNG.sln (see AGENTS.md) and therefore easy to leave on weaker settings
+    than the libraries it ships with.
+
+    AGENTS.md makes "it builds" part of the definition of done, but a warning is not a build
+    failure, so the bar was only ever as high as whoever read the output. All four projects in the
+    solution plus the client were already warning-free when this went in (measured, not assumed:
+    0 warnings at AnalysisLevel=latest with EnforceCodeStyleInBuild, after the two nullable
+    warnings in app/ were fixed in the same commit), so turning warnings into errors costs nothing
+    today and stops the next one landing unnoticed.
+
+    AnalysisMode is deliberately left at its default. Recommended adds ~1250 findings, 1086 of
+    them CA1707 (identifiers with underscores) from the vendored PrimMesher — a separate decision,
+    not a side effect of this file.
+  -->
+  <PropertyGroup>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+
+</Project>

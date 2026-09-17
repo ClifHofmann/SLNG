@@ -25,6 +25,12 @@ jobs:
       - name: Test
         run: dotnet test SLNG.sln --no-build -c Release --verbosity normal
 
+      # AGENTS.md makes `dotnet format` clean part of the definition of done, but nothing
+      # enforced it -- it held only as long as every contributor remembered to run it. Placed
+      # after the tests so a formatting nit never masks a real failure.
+      - name: Format
+        run: dotnet format SLNG.sln --verify-no-changes --no-restore
+
       # Text-level check: a `global uniform` has to be declared in BOTH the shader and
       # project.godot, and nothing else in the pipeline looks at .gdshader files at all.
       # Complementary to the selftest job below, which loads the shaders through the engine.

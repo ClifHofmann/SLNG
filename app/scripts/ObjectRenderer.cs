@@ -3921,10 +3921,15 @@ public partial class ObjectRenderer : Node3D
         if (!_visuals.TryGetValue(_activeMirrorId, out var state)) return;
         if (state.MirrorSurfaces == null) return;
 
+        // A null texture is a legitimate value, not an oversight: it clears the sampler back to
+        // the shader's default, which is exactly what "no reflection available" should look like.
+        // Variant's implicit GodotObject conversion is not null-annotated, so the nil case is
+        // constructed explicitly rather than silenced.
+        var value = texture is null ? default : Variant.From(texture);
         foreach (var (surface, _) in state.MirrorSurfaces)
         {
             var mat = SurfaceMaterial(state, surface);
-            mat?.SetShaderParameter(PrimShaderFamily.MirrorTexture, texture);
+            mat?.SetShaderParameter(PrimShaderFamily.MirrorTexture, value);
         }
     }
 
