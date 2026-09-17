@@ -96,6 +96,14 @@ public record InstantMessageEvent(Guid FromAgentId, string FromAgentName, string
 /// not world simulation state, so intentionally not an <see cref="IWorldEvent"/>.</summary>
 public record GroupsUpdatedEvent(IReadOnlyList<GroupEntry> Groups);
 
+/// <summary>FEAT-UI-29: the agent's active group changed -- the tag worn over the avatar, and
+/// the group the SIMULATOR evaluates group permissions against. Identity/social state, not world
+/// simulation state, so intentionally not an <see cref="IWorldEvent"/>.</summary>
+/// <param name="GroupId"><see cref="Guid.Empty"/> when no group is active.</param>
+/// <param name="GroupName">Group name, or empty when none is active.</param>
+/// <param name="Title">The role title worn with the tag ("Member", "Owner", ...).</param>
+public record ActiveGroupChangedEvent(Guid GroupId, string GroupName, string Title);
+
 /// <summary>One message in a group chat session.
 ///
 /// Group chat does NOT arrive as <c>InstantMessageDialog.MessageFromAgent</c> — it comes in as
