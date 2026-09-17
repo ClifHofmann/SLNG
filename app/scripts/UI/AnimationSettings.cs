@@ -36,14 +36,14 @@ public sealed class AnimationSettings
     public bool AlwaysRun { get; private set; }
 
     /// <summary>
-    /// FEAT-ANIM-10: Whether typing in local chat plays the typing animation and broadcasts the typing indicator. Default true.
+    /// FEAT-ANIM-10: Whether typing in local chat plays the typing animation and broadcasts the typing indicator. Default false.
     /// </summary>
-    public bool PlayTypingAnimation { get; private set; } = true;
+    public bool PlayTypingAnimation { get; private set; } = false;
 
     /// <summary>
-    /// FEAT-ANIM-10: Whether the avatar's head turns to follow the camera orientation for other observers. Default true.
+    /// FEAT-ANIM-10: Whether the avatar's head turns to follow the camera orientation for other observers. Default false.
     /// </summary>
-    public bool HeadFollowsCamera { get; private set; } = true;
+    public bool HeadFollowsCamera { get; private set; } = false;
 
     public event System.Action<bool>? SeatPoseOverridesAoChanged;
     public event System.Action<bool>? AlwaysRunChanged;
@@ -56,8 +56,8 @@ public sealed class AnimationSettings
         if (cfg.Load(ConfigPath) != Error.Ok) return;
         SeatPoseOverridesAo = (bool)cfg.GetValue(Section, "seat_pose_overrides_ao", false);
         AlwaysRun = (bool)cfg.GetValue(Section, "always_run", false);
-        PlayTypingAnimation = (bool)cfg.GetValue(Section, "play_typing_animation", true);
-        HeadFollowsCamera = (bool)cfg.GetValue(Section, "head_follows_camera", true);
+        PlayTypingAnimation = (bool)cfg.GetValue(Section, "play_typing_animation", false);
+        HeadFollowsCamera = (bool)cfg.GetValue(Section, "head_follows_camera", false);
     }
 
     public void SetSeatPoseOverridesAo(bool value)

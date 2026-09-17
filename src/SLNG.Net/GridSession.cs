@@ -5808,17 +5808,17 @@ public sealed class GridSession : IDisposable, IWorldEventSource
     public void StartAnimation(Guid animId) => _client.Self.AnimationStart(new UUID(animId), true);
 
     /// <summary>
-    /// FEAT-ANIM-10: When enabled (default), the avatar's head turns to look toward the camera's
-    /// direction in third person for other observers. When disabled, the head stays aligned with
+    /// FEAT-ANIM-10: When enabled, the avatar's head turns to look toward the camera's
+    /// direction in third person for other observers. When disabled (default), the head stays aligned with
     /// the body (neutral forward gaze for portraits).
     /// </summary>
-    public bool HeadFollowsCamera { get; set; } = true;
+    public bool HeadFollowsCamera { get; set; } = false;
 
-    private bool _playTypingAnimation = true;
+    private bool _playTypingAnimation = false;
 
     /// <summary>
-    /// FEAT-ANIM-10: When enabled (default), typing in local chat plays ANIM_AGENT_TYPE and sends
-    /// ChatType.StartTyping/StopTyping indicators to the simulator.
+    /// FEAT-ANIM-10: When enabled, typing in local chat plays ANIM_AGENT_TYPE and sends
+    /// ChatType.StartTyping/StopTyping indicators to the simulator. Default off.
     /// </summary>
     public bool PlayTypingAnimation
     {

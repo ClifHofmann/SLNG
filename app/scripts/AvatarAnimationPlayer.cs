@@ -54,6 +54,14 @@ public sealed class AvatarAnimationPlayer
     private bool _isFrozen;
     private IReadOnlyList<(Guid id, AnimationData data)>? _pendingAnimations;
     private AvatarHoldMode _holdMode = AvatarHoldMode.None;
+    private int _neckBoneIdx = -1;
+    private int _headBoneIdx = -1;
+
+    /// <summary>FEAT-ANIM-10: Yaw offset (radians) for procedural head/neck gaze tracking camera.</summary>
+    public float HeadGazeYaw { get; set; }
+
+    /// <summary>FEAT-ANIM-10: Pitch offset (radians) for procedural head/neck gaze tracking camera.</summary>
+    public float HeadGazePitch { get; set; }
 
     /// <summary>True if any animations (network or local) are currently loaded and playing.</summary>
     public bool IsPlaying => _active.Count > 0 || _localOverlay.Count > 0;
@@ -133,7 +141,12 @@ public sealed class AvatarAnimationPlayer
     public AnimationData? StandAnimation { get; set; }
 
     /// <summary>Bind this player to a skeleton. Must be called before Advance.</summary>
-    public void SetSkeleton(Skeleton3D skeleton) => _skeleton = skeleton;
+    public void SetSkeleton(Skeleton3D skeleton)
+    {
+        _skeleton = skeleton;
+        _neckBoneIdx = skeleton.FindBone("mNeck");
+        _headBoneIdx = skeleton.FindBone("mHead");
+    }
 
     /// <summary>FEAT-ANIM-01: mark <paramref name="animId"/> (a locally-predicted moving gait) to
     /// win over everything for <see cref="LocomotionBoostSeconds"/>. Re-marking the same id is a
@@ -391,10 +404,30 @@ public sealed class AvatarAnimationPlayer
             }
         }
 
+        // FEAT-ANIM-10: Procedural head and neck gaze (head follows camera)
+        if (Mathf.Abs(HeadGazeYaw) > 0.001f || Mathf.Abs(HeadGazePitch) > 0.001f)
+        {
+            if (_neckBoneIdx < 0 && _skeleton != null) _neckBoneIdx = _skeleton.FindBone("mNeck");
+            if (_headBoneIdx < 0 && _skeleton != null) _headBoneIdx = _skeleton.FindBone("mHead");
+
+            if (_neckBoneIdx >= 0)
+            {
+                var neckGaze = Quaternion.FromEuler(new Vector3(HeadGazePitch * 0.3f, HeadGazeYaw * 0.3f, 0));
+                var existing = boneRots.TryGetValue(_neckBoneIdx, out var r) ? r.rotation : Quaternion.Identity;
+                boneRots[_neckBoneIdx] = (99, neckGaze * existing);
+            }
+            if (_headBoneIdx >= 0)
+            {
+                var headGaze = Quaternion.FromEuler(new Vector3(HeadGazePitch * 0.7f, HeadGazeYaw * 0.7f, 0));
+                var existing = boneRots.TryGetValue(_headBoneIdx, out var r) ? r.rotation : Quaternion.Identity;
+                boneRots[_headBoneIdx] = (99, headGaze * existing);
+            }
+        }
+
         // Apply blended poses to skeleton.
         foreach (var (boneIdx, pose) in boneRots)
         {
-            _skeleton.SetBonePoseRotation(boneIdx, pose.rotation);
+            _skeleton!.SetBonePoseRotation(boneIdx, pose.rotation);
         }
 
         // Apply position channels (most commonly mPelvis offset authored into furniture/posestand/cuddle poses).
@@ -403,7 +436,7 @@ public sealed class AvatarAnimationPlayer
         // so adding the bone's rest origin applies the animation offset faithfully without collapsing the bone.
         foreach (var (boneIdx, pose) in bonePositions)
         {
-            var restPos = _skeleton.GetBoneRest(boneIdx).Origin;
+            var restPos = _skeleton!.GetBoneRest(boneIdx).Origin;
             _skeleton.SetBonePosePosition(boneIdx, restPos + pose.position);
         }
     }

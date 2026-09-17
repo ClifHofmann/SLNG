@@ -299,7 +299,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.22.195-alpha";
+    public const string AppVersion = "v0.22.196-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1095,7 +1095,10 @@ public partial class Boot : Control
         // change, so the page never has to know the renderer exists.
         _animationSettings.Load();
         if (_avatarRenderer != null)
+        {
             _avatarRenderer.SeatPoseOverridesAo = _animationSettings.SeatPoseOverridesAo;
+            _avatarRenderer.HeadFollowsCamera = _animationSettings.HeadFollowsCamera;
+        }
         var animationPage = new SLNG.App.UI.AnimationPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_animation"), animationPage);
         animationPage.Initialize(_animationSettings);
@@ -1120,6 +1123,7 @@ public partial class Boot : Control
         _animationSettings.HeadFollowsCameraChanged += on =>
         {
             if (_session != null) _session.HeadFollowsCamera = on;
+            if (_avatarRenderer != null) _avatarRenderer.HeadFollowsCamera = on;
             _topMenu.SetHeadFollowsCameraUI(on);
         };
 
@@ -2815,6 +2819,7 @@ public partial class Boot : Control
         _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, _gpuCache);
         _avatarRenderer?.Initialize(_world, _assetService, _gpuCache, _session);
+        if (_avatarRenderer != null) _avatarRenderer.HeadFollowsCamera = _animationSettings.HeadFollowsCamera;
         _inventoryPanel?.Initialize(_session);
         _maturityPage?.BindSession(_session);
         _chatWindow.BindSession(_session);

@@ -603,25 +603,25 @@ public class GridSessionTests
     }
 
     [Fact]
-    public void HeadFollowsCamera_defaults_to_true_and_can_be_toggled()
+    public void HeadFollowsCamera_defaults_to_false_and_can_be_toggled()
     {
         using var session = new GridSession();
-        Assert.True(session.HeadFollowsCamera);
-        session.HeadFollowsCamera = false;
         Assert.False(session.HeadFollowsCamera);
         session.HeadFollowsCamera = true;
         Assert.True(session.HeadFollowsCamera);
+        session.HeadFollowsCamera = false;
+        Assert.False(session.HeadFollowsCamera);
     }
 
     [Fact]
-    public void PlayTypingAnimation_defaults_to_true_and_can_be_toggled()
+    public void PlayTypingAnimation_defaults_to_false_and_can_be_toggled()
     {
         using var session = new GridSession();
-        Assert.True(session.PlayTypingAnimation);
-        session.PlayTypingAnimation = false;
         Assert.False(session.PlayTypingAnimation);
         session.PlayTypingAnimation = true;
         Assert.True(session.PlayTypingAnimation);
+        session.PlayTypingAnimation = false;
+        Assert.False(session.PlayTypingAnimation);
     }
 
     [Fact]

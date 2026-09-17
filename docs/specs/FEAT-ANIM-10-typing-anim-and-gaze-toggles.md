@@ -27,23 +27,21 @@ and the incoming `StartTyping` / `StopTyping` chat-indicator events are filtered
 - When the local-chat input has focus and the user is typing, start `ANIM_AGENT_TYPE`
   and send `ChatType.StartTyping`; stop both on blur / send / idle timeout.
 - Gate the whole thing behind a preference **"Tipp-Animation zeigen"** (`preferences.cfg`,
-  default **on**). Off = never start the animation and never send `StartTyping`.
+  default **off**). Off = never start the animation and never send `StartTyping`.
 - The typing animation is also suppressed by FEAT-ANIM-07 (T-pose) and FEAT-ANIM-09
   (freeze) like any other clip.
 
 ## Part 2 — Head / eyes follow camera
 
 **Current state:** `GridSession.SetMovement` sends `Self.Movement.HeadRotation = slQuat`
-every `AgentUpdate`, where `slQuat` is the **camera** rotation (`GridSession.cs:7844`).
-That is what other viewers render as "head follows the look direction". There is no
-procedural eye/head look-at on SLNG's own rendered skeleton yet, and no LookAt
-`ViewerEffect` is sent.
+every `AgentUpdate`, where `slQuat` is the **camera** rotation.
+Procedural head/neck gaze tracking in `AvatarRenderer` and `AvatarAnimationPlayer` rotates
+`mNeck` (30%) and `mHead` (70%) towards the camera look direction in third person.
 
 **Work:**
-- Preference **"Kopf folgt der Kamera"** (`preferences.cfg`, default **on**).
-- Off → send `HeadRotation = BodyRotation` (head aligned with body, forward gaze)
-  instead of the camera quat. `BodyRotation` still tracks movement/turn as today.
-- If/when SLNG adds local procedural head/eye look-at rendering, the same flag gates it.
+- Preference **"Kopf folgt der Kamera"** (`preferences.cfg`, default **off**).
+- Off → neutral forward gaze (local skeleton uses animation pose, and network sends `HeadRotation = BodyRotation`).
+- On → local procedural head tracking follows camera in 3rd person, and network sends camera quat.
 - If a LookAt/attention `ViewerEffect` send is ever added (paired with FEAT-RENDER-11's
   receive side), this flag also suppresses the mouse-driven `lookat_*` targets.
 - Mouselook (first person) is unaffected — the body faces the view there by design.

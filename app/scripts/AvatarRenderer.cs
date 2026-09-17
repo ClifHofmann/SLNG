@@ -730,6 +730,55 @@ public partial class AvatarRenderer : Node3D
     }
 
     /// <summary>
+    /// FEAT-ANIM-10: When enabled, the local avatar's head turns to follow the camera orientation.
+    /// Default false.
+    /// </summary>
+    public bool HeadFollowsCamera { get; set; } = false;
+
+    private float _headGazeYaw;
+    private float _headGazePitch;
+
+    private void UpdateSelfHeadGaze(AvatarVisual visual, Camera3D? camera, float dt)
+    {
+        float targetYaw = 0f;
+        float targetPitch = 0f;
+
+        if (HeadFollowsCamera && camera != null && !_tposeActive && visual.AnimPlayer.HoldMode != AvatarHoldMode.BindPose && !visual.AnimPlayer.IsFrozen)
+        {
+            Vector3 camLookDir = -camera.GlobalTransform.Basis.Z.Normalized();
+            Vector3 localLookDir = visual.Root.GlobalTransform.Basis.Inverse() * camLookDir;
+
+            // Angle off avatar forward (-Z in Godot)
+            float angleFromForward = Mathf.Acos(Mathf.Clamp(-localLookDir.Z, -1f, 1f));
+
+            if (angleFromForward < Mathf.DegToRad(90))
+            {
+                float rawYaw = Mathf.Atan2(-localLookDir.X, -localLookDir.Z);
+                float rawPitch = Mathf.Asin(Mathf.Clamp(localLookDir.Y, -1.0f, 1.0f));
+
+                float clampedYaw = Mathf.Clamp(rawYaw, -Mathf.DegToRad(60), Mathf.DegToRad(60));
+                float clampedPitch = Mathf.Clamp(rawPitch, -Mathf.DegToRad(35), Mathf.DegToRad(40));
+
+                // Smooth falloff towards edge of cone (65° to 90°)
+                float blend = 1f;
+                if (angleFromForward > Mathf.DegToRad(65))
+                {
+                    blend = 1f - (angleFromForward - Mathf.DegToRad(65)) / Mathf.DegToRad(25);
+                }
+
+                targetYaw = clampedYaw * blend;
+                targetPitch = clampedPitch * blend;
+            }
+        }
+
+        _headGazeYaw = Mathf.Lerp(_headGazeYaw, targetYaw, Mathf.Clamp(dt * 10.0f, 0f, 1f));
+        _headGazePitch = Mathf.Lerp(_headGazePitch, targetPitch, Mathf.Clamp(dt * 10.0f, 0f, 1f));
+
+        visual.AnimPlayer.HeadGazeYaw = _headGazeYaw;
+        visual.AnimPlayer.HeadGazePitch = _headGazePitch;
+    }
+
+    /// <summary>
     /// FEAT-ANIM-09: Freezes or resumes animation playback across all visible avatars.
     /// </summary>
     public void FreezeAllAvatars(bool freeze)
@@ -4605,7 +4654,17 @@ void fragment() {
                 if (visual.Root.Visible != visible) visual.Root.Visible = visible;
             }
 
-            if (visual.Root.Visible && !_tposeActive && (visual.AnimPlayer.IsPlaying || visual.AnimPlayer.HoldMode != AvatarHoldMode.None || visual.AnimPlayer.IsFrozen))
+            if (visual.IsSelf)
+            {
+                UpdateSelfHeadGaze(visual, camera, dt);
+            }
+
+            bool shouldAdvance = visual.AnimPlayer.IsPlaying
+                || visual.AnimPlayer.HoldMode != AvatarHoldMode.None
+                || visual.AnimPlayer.IsFrozen
+                || (visual.IsSelf && (Mathf.Abs(visual.AnimPlayer.HeadGazeYaw) > 0.001f || Mathf.Abs(visual.AnimPlayer.HeadGazePitch) > 0.001f));
+
+            if (visual.Root.Visible && !_tposeActive && shouldAdvance)
             {
                 visual.AnimPlayer.Advance(dt);
             }
