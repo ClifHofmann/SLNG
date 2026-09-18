@@ -1469,7 +1469,13 @@ namespace SLNG.App.UI
         }
 
         private static Handle RingHandle(int i) => (Handle)((int)Handle.RingX + i);
-        private static bool IsRing(Handle h) => h >= Handle.RingX;
+        /// <summary>Bounded at BOTH ends, and that is not pedantry. This read `h >= RingX`, and
+        /// adding Handle.Scale after RingZ silently made every stretch drag a ring drag --
+        /// UpdateDial then indexed a three-element array with 3, throwing once per frame. The
+        /// identical open-ended test had already cost a session in UpdateRuler; I wrote the
+        /// lesson down in that commit and then reintroduced it next door. Every predicate here
+        /// names its own range.</summary>
+        private static bool IsRing(Handle h) => h >= Handle.RingX && h <= Handle.RingZ;
 
         /// <summary>Angle of the cursor around a ring's axis, in radians, measured in the ring's
         /// own plane. Returns false when the camera is sighting along that axis edge-on, where
