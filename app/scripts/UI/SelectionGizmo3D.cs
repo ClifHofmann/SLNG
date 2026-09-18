@@ -765,7 +765,16 @@ namespace SLNG.App.UI
                 : System.MathF.Abs(System.Numerics.Vector3.Dot(half, localDir));
             if (startReach <= 1e-4f) return;
 
-            float factor = Mathf.Max(t, MinPrimEdge) / startReach;
+            // The dragged side must land ON the cursor, not run ahead of it.
+            //
+            // With the opposite side anchored at -startReach and the cursor at t, the new edge
+            // is t - (-startReach) = t + startReach, so the factor against the old edge of
+            // 2*startReach is (t + startReach) / (2 * startReach). The first cut used
+            // t / startReach, which is that expression's slope doubled: every face travelled at
+            // twice the cursor's speed and overshot it, which is what "reacts too sensitively"
+            // was. A corner works out to the same expression along its diagonal.
+            float factor = (t + startReach) / (2f * startReach);
+            if (factor <= 0f) factor = MinPrimEdge / (2f * startReach);
             var newScale = corner
                 ? _dragStartSlScale * factor
                 : ScaleAlong(_dragStartSlScale, localDir, factor);
