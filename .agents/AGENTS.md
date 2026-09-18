@@ -6,9 +6,9 @@ copy, including the Windows wrapping rule. Do not restate it here.
 
 # Communication Style Rule
 
-- Be direct: no preamble, no sign-off, no narration of routine steps.
-- Findings, failures and the reasoning behind a non-obvious fix belong in the reply;
-  it is the narration around them that is unwanted.
+- Keep replies short and plain. No preamble, no sign-off, no restating what was asked.
+- A finding or a fix gets 1–3 sentences: what's wrong/what changed, why, and the file.
+  Skip the rest unless asked.
 
 # Mandatory Versioning Rule
 

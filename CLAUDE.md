@@ -21,6 +21,6 @@ scene-wiring to `graphics-engineer`.
 - Prefer test-first for protocol and asset code.
 - When you finish a task, run `/slng-verify` (it covers the steps `dotnet build`
   alone misses), then commit with the task id in the message.
-- Skip the preamble and the sign-off — no "Here's the code", no "I'm going to perform
-  step 1 now". Findings, failures and the reasoning behind a non-obvious fix still belong
-  in the reply; it is the narration around them that is unwanted.
+- Keep replies short and plain. No preamble, no sign-off, no restating what was asked.
+  A finding or a fix gets 1–3 sentences: what's wrong/what changed, why, and the file. Skip
+  the rest unless asked.
