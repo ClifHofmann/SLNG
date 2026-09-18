@@ -15,6 +15,7 @@ public partial class AvatarController : Camera3D
     // comment), only to cross-verify AvatarRenderer's measured FootOffsetY/pelvis-fixup in the
     // [GroundClamp] diagnostic log against AvatarRenderer's own [RootApply] log.
     private AvatarRenderer? _avatarRenderer;
+    private int _postTeleportClampReports;
     private float _pitch = 0f;
     private float _yaw = 0f;
     private double _timeSinceLastUpdate = 0;
@@ -1124,6 +1125,21 @@ public partial class AvatarController : Camera3D
                 // Logged on CHANGE rather than periodically: the interesting event is the moment the
                 // ray stops hitting an object collider and falls through to the terrain heightmap
                 // (or nothing at all), and a periodic line would either miss it or bury it.
+                // BUG-NET-17: a few unconditional lines after a teleport. This bug has now cost
+                // three rounds partly because the diagnostic below is behind --diag, so a test
+                // run without it produced no evidence at all and the silence read as success.
+                // A teleport is rare and three lines is not a rate anyone notices.
+                if (avatarComponent?.PendingTeleportDestination != null) _postTeleportClampReports = 3;
+
+                if (_postTeleportClampReports > 0)
+                {
+                    _postTeleportClampReports--;
+                    GD.Print($"[GroundClamp] post-teleport source={groundSource} hasGround={hasGround} " +
+                             $"groundZ={groundHeight:0.00} agentZ={transform.Position.Z:0.00} " +
+                             $"plane={(avatarComponent?.SupportPlane is { } p ? $"{p.X:0.##},{p.Y:0.##},{p.Z:0.##},{p.W:0.##}" : "none")} " +
+                             $"pendingTp={(avatarComponent?.PendingTeleportDestination is { } d ? $"{d.X:0.0},{d.Y:0.0},{d.Z:0.0}" : "no")}");
+                }
+
                 if (Diagnostics.Enabled)
                 {
                 _timeSinceGroundLog += delta;
