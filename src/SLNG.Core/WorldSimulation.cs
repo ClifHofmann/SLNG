@@ -336,7 +336,17 @@ public sealed class WorldSimulation : IDisposable
         var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
 
         var transform = entity.GetComponent<TransformComponent>() ?? new TransformComponent();
-        transform.LocalPosition = e.Position;
+
+        // FEAT-UI-04: while the user is dragging this object with the in-world gizmo, the local
+        // position is authoritative. The simulator's echo trails the cursor by a round trip, so
+        // adopting it would yank the object back to where it was a moment ago, over and over --
+        // that is the stutter this guard exists to stop. Only POSITION is withheld: rotation,
+        // scale, textures and everything else below still apply normally, because the drag makes
+        // no claim on them.
+        if (!transform.LocallyDragged)
+        {
+            transform.LocalPosition = e.Position;
+        }
         transform.LocalRotation = e.Rotation;
         transform.ParentLocalId = e.ParentLocalId;
         // Linked child prims send their transform relative to the root; compose to world space.

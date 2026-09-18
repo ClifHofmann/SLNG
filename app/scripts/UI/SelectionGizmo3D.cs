@@ -170,6 +170,11 @@ namespace SLNG.App.UI
 
         public void Detach()
         {
+            // Releasing ownership here as well: a Detach mid-drag (window closed, object gone)
+            // would otherwise leave the flag set and that object permanently deaf to the sim.
+            var transform = _entity?.GetComponent<TransformComponent>();
+            if (transform != null) transform.LocallyDragged = false;
+
             _entity = null;
             _dragging = Handle.None;
             _hovered = Handle.None;
@@ -219,11 +224,35 @@ namespace SLNG.App.UI
 
                 // Only while actually dragging: a grid that appeared on hover would flash on and
                 // off as the cursor crosses the handle.
-                _grids[i].Visible = _dragging == PlaneHandle(i);
+                bool gridOn = _dragging == PlaneHandle(i);
+                _grids[i].Visible = gridOn;
+                if (gridOn) _grids[i].GlobalPosition = SnappedGridOrigin(i, GlobalPosition);
             }
         }
 
         private static Handle PlaneHandle(int i) => (Handle)((int)Handle.PlaneXY + i);
+
+        /// <summary>Where plane <paramref name="i"/>'s grid patch should sit so that it runs
+        /// through the object while its LINES stay still.
+        ///
+        /// <para>The patch follows the object -- a grid the object has slid off is no longer
+        /// telling you anything about the object. But its offset along the two in-plane axes is
+        /// snapped to whole metres, so the lines land on the same world coordinates whatever the
+        /// object's fractional position: they stay put and the object moves across them, instead
+        /// of the whole grid sliding with the cursor and appearing motionless.</para></summary>
+        private Vector3 SnappedGridOrigin(int i, Vector3 objectPos)
+        {
+            var (ia, ib, inormal) = Planes[i];
+            var a = AxisDirGodot[ia];
+            var b = AxisDirGodot[ib];
+            var n = AxisDirGodot[inormal];
+
+            float alongA = Mathf.Round(objectPos.Dot(a) / GridSpacing) * GridSpacing;
+            float alongB = Mathf.Round(objectPos.Dot(b) / GridSpacing) * GridSpacing;
+            // The normal component is NOT snapped: the grid has to lie exactly in the plane the
+            // object is moving in, not a metre above or below it.
+            return a * alongA + b * alongB + n * objectPos.Dot(n);
+        }
 
         /// <summary>Which handle the cursor is over, or <see cref="Handle.None"/>. Also used to
         /// paint the hover highlight, so it is called on plain mouse motion too.</summary>
@@ -292,6 +321,7 @@ namespace SLNG.App.UI
 
             _dragging = handle;
             _hovered = handle;
+            transform.LocallyDragged = true;
             _dragStartSlPos = transform.Position;
             _lastSentSlPos = transform.Position;
             _lastSendAt = Time.GetTicksMsec() / 1000.0;
@@ -348,7 +378,14 @@ namespace SLNG.App.UI
             _dragging = Handle.None;
 
             var transform = _entity?.GetComponent<TransformComponent>();
-            if (transform != null) Send(transform.Position);
+            if (transform != null)
+            {
+                Send(transform.Position);
+                // Hand authority back. TargetPosition is moved with it so the very next network
+                // packet does not ease the object away from where the user just dropped it.
+                transform.TargetPosition = transform.Position;
+                transform.LocallyDragged = false;
+            }
         }
 
         private static bool IsPlane(Handle h) => h >= Handle.PlaneXY;
@@ -363,6 +400,16 @@ namespace SLNG.App.UI
             if (transform == null) return;
 
             transform.Position = slPos;
+
+            // LocalPosition too, not just Position: ApplyObjectUpdate recomputes Position from
+            // LocalPosition via ResolveWorldTransform, so writing only the world position means
+            // the very next update for this object -- a texture change, a flag toggle, anything
+            // -- silently restores where it used to be. For an unparented prim the two are the
+            // same value. A CHILD prim's local position is relative to its root and would need
+            // the inverse compose; the gizmo does not offer that yet (neither do the numeric
+            // fields), and linked-part editing is FEAT-UI-06's problem.
+            if (transform.ParentLocalId == 0) transform.LocalPosition = slPos;
+
             _world.NotifyComponentUpdated(_entity, transform);
         }
 
@@ -592,7 +639,7 @@ namespace SLNG.App.UI
             var mat = new StandardMaterial3D
             {
                 ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-                AlbedoColor = new Color(1f, 1f, 1f, 0.22f),
+                AlbedoColor = new Color(1f, 1f, 1f, 0.5f),
                 NoDepthTest = true,
                 RenderPriority = 97,
                 Transparency = BaseMaterial3D.TransparencyEnum.Alpha,

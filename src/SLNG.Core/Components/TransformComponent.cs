@@ -72,6 +72,18 @@ public class TransformComponent : IComponent
     /// smoothed.</summary>
     public Vector3 TargetPosition { get; set; }
 
+    /// <summary>FEAT-UI-04: true while the user is dragging this object with the in-world gizmo,
+    /// which makes the LOCAL position authoritative for as long as it lasts.
+    ///
+    /// <para>Without it the drag and the network fight each other every frame, exactly as the
+    /// local agent's Z once did: the gizmo writes <see cref="Position"/>, and
+    /// <c>ExtrapolateMovement</c> immediately eases it back toward <see cref="TargetPosition"/>,
+    /// which still holds the last value the simulator sent. The result is an object that
+    /// stutters backwards while you drag it forwards. Both the easing and the incoming-update
+    /// path skip a transform carrying this flag; the simulator's authority resumes the moment
+    /// the mouse is released.</para></summary>
+    public bool LocallyDragged { get; set; }
+
     public TransformComponent()
     {
         Position = Vector3.Zero;
