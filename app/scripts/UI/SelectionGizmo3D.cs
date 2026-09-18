@@ -113,11 +113,16 @@ namespace SLNG.App.UI
         /// so this bounds the pool.</summary>
         private const int RulerHalfTicks = 24;
 
-        /// <summary>Radius of a rotation ring as a fraction of the arrow length, and how many
-        /// segments it is drawn with. Drawn as a line loop rather than a torus: a ring only has
-        /// to be visible and grabbable, and a line keeps its one-pixel width at any distance.
-        /// </summary>
+        /// <summary>Radius of a rotation ring as a fraction of the arrow length, its tube
+        /// thickness, and the segment count used for hit-testing and for the dial's own circle.
+        ///
+        /// <para>A torus, not the line loop this started as: a one-pixel line reads as a wire
+        /// drawing and gives no sense of which side of the ring you are looking at. Thickness
+        /// stays constant on screen for free, because the whole handle is scaled by the
+        /// screen-derived length every frame -- the same mechanism that keeps the arrows a
+        /// constant size.</para></summary>
         private const float RingRadius = 0.85f;
+        private const float RingThickness = 0.035f;
         private const int RingSegments = 72;
 
         /// <summary>Radius of the snap dial drawn outside the ring, and its tick lengths, as
@@ -214,6 +219,7 @@ namespace SLNG.App.UI
         private readonly MeshInstance3D[] _rings = new MeshInstance3D[3];
         private MeshInstance3D _dial = null!;
         private StandardMaterial3D _dialMaterial = null!;
+        private readonly System.Collections.Generic.List<Label3D> _dialLabels = new();
         private readonly StandardMaterial3D[] _ringMaterials = new StandardMaterial3D[3];
         private readonly StandardMaterial3D[] _gridMaterials = new StandardMaterial3D[3];
 
@@ -948,6 +954,29 @@ namespace SLNG.App.UI
             // scale that travels with what it measures measures nothing.
             _dial = new MeshInstance3D { Name = "RotationDial", Mesh = new ImmediateMesh(), Visible = false, TopLevel = true };
             AddChild(_dial);
+
+            // Same pooling as the ruler's labels, and sized for the densest step the preference
+            // offers (1 degree would be 360, which is absurd to label -- 72 covers every step
+            // from 5 degrees up, and finer steps simply thin out on screen like the ruler's).
+            for (int n = 0; n < 72; n++)
+            {
+                var label = new Label3D
+                {
+                    Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
+                    NoDepthTest = true,
+                    RenderPriority = 102,
+                    FontSize = 48,
+                    FixedSize = true,
+                    PixelSize = RulerLabelPixelSize,
+                    Modulate = new Color(1f, 1f, 1f, 0.9f),
+                    OutlineSize = 10,
+                    OutlineModulate = new Color(0f, 0f, 0f, 0.9f),
+                    Visible = false,
+                    TopLevel = true,
+                };
+                _dialLabels.Add(label);
+                AddChild(label);
+            }
         }
 
         /// <summary>Redraws the snap dial around the ring being dragged: a circle of ticks at the
@@ -956,7 +985,11 @@ namespace SLNG.App.UI
         {
             if (_dragging == Handle.None || !IsRing(_dragging))
             {
-                if (_dial.Visible) _dial.Visible = false;
+                if (_dial.Visible)
+                {
+                    _dial.Visible = false;
+                    foreach (var l in _dialLabels) l.Visible = false;
+                }
                 return;
             }
 
@@ -993,6 +1026,52 @@ namespace SLNG.App.UI
 
             _dialMaterial.AlbedoColor = new Color(1f, 1f, 1f, _snapping ? 0.95f : 0.45f);
             _dial.Visible = true;
+
+            UpdateDialLabels(i, a, b, steps, radius, arrowLength);
+        }
+
+        /// <summary>Prints the resulting rotation at each major tick, so the numbers say what
+        /// the OBJECT will read rather than where the cursor is.
+        ///
+        /// <para>A tick's screen angle maps to a twist through the drag's own frame: the object
+        /// turns by however far the cursor has swept, so the tick at cursor-angle t leaves it at
+        /// startTwist + (t - startCursorAngle). Labelling the dial's own geometry instead would
+        /// print a protractor that has nothing to do with the object's orientation.</para>
+        /// </summary>
+        private void UpdateDialLabels(int axisIndex, Vector3 a, Vector3 b, int steps, float radius, float arrowLength)
+        {
+            float startTwist = AngleAboutAxis(_dragStartSlRot, axisIndex);
+
+            // Thin the numbers out the same way the ruler does, by how far apart the ticks
+            // actually land on screen rather than by a fixed interval.
+            int every = DialMajorEvery;
+            if (!_camera.IsPositionBehind(_dragAxisOrigin))
+            {
+                var c2 = _camera.UnprojectPosition(_dragAxisOrigin);
+                var e2 = _camera.UnprojectPosition(_dragAxisOrigin + a * radius);
+                float circumference = Mathf.Tau * c2.DistanceTo(e2);
+                float perTick = circumference / Mathf.Max(1, steps);
+                float needed = 4f * RulerLabelCharPixels * RulerLabelGapFactor;
+                if (perTick > 0.01f) every = Mathf.Max(1, Mathf.CeilToInt(needed / perTick));
+            }
+
+            int used = 0;
+            for (int n = 0; n < steps && used < _dialLabels.Count; n++)
+            {
+                if (n % every != 0) continue;
+
+                float t = Mathf.Tau * n / steps;
+                float twist = startTwist + Mathf.Wrap(t - _dragStartRingAngle, -Mathf.Pi, Mathf.Pi);
+                float deg = Mathf.Wrap(Mathf.RadToDeg(twist), 0f, 360f);
+
+                var dir = a * Mathf.Cos(t) + b * Mathf.Sin(t);
+                var label = _dialLabels[used++];
+                label.GlobalPosition = _dragAxisOrigin + dir * (radius + DialTickMajor * arrowLength * 2.2f);
+                label.Text = $"{deg:0}°";
+                label.Modulate = new Color(1f, 1f, 1f, _snapping ? 1f : 0.7f);
+                label.Visible = true;
+            }
+            for (int n = used; n < _dialLabels.Count; n++) _dialLabels[n].Visible = false;
         }
 
         /// <summary>A rotation ring in the plane perpendicular to one SL axis, coloured by that
@@ -1007,25 +1086,36 @@ namespace SLNG.App.UI
                 NoDepthTest = true,
                 RenderPriority = 100,
                 Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled,
             };
             _ringMaterials[i] = mat;
 
-            // Two axes spanning the plane the ring lies in.
-            var a = AxisDirGodot[(i + 1) % 3];
-            var b = AxisDirGodot[(i + 2) % 3];
-
-            var mesh = new ImmediateMesh();
-            mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, mat);
-            for (int n = 0; n < RingSegments; n++)
+            var mesh = new TorusMesh
             {
-                float t0 = Mathf.Tau * n / RingSegments;
-                float t1 = Mathf.Tau * (n + 1) / RingSegments;
-                mesh.SurfaceAddVertex((a * Mathf.Cos(t0) + b * Mathf.Sin(t0)) * RingRadius);
-                mesh.SurfaceAddVertex((a * Mathf.Cos(t1) + b * Mathf.Sin(t1)) * RingRadius);
-            }
-            mesh.SurfaceEnd();
+                InnerRadius = RingRadius - RingThickness,
+                OuterRadius = RingRadius + RingThickness,
+                Rings = RingSegments,
+                RingSegments = 8,
+            };
 
-            _rings[i] = new MeshInstance3D { Name = $"Ring{(Handle)((int)Handle.RingX + i)}", Mesh = mesh, Visible = false };
+            _rings[i] = new MeshInstance3D
+            {
+                Name = $"Ring{(Handle)((int)Handle.RingX + i)}",
+                Mesh = mesh,
+                MaterialOverride = mat,
+                Visible = false,
+            };
+
+            // A TorusMesh lies in Godot's XZ plane, so its normal is +Y. Turn it so the normal
+            // is the SL axis this ring rotates about.
+            var normal = AxisDirGodot[i];
+            if (normal != Vector3.Up)
+            {
+                var rotAxis = Vector3.Up.Cross(normal);
+                if (rotAxis.LengthSquared() < 1e-6f) rotAxis = Vector3.Right;
+                _rings[i].Basis = new Basis(rotAxis.Normalized(), Vector3.Up.AngleTo(normal));
+            }
+
             AddChild(_rings[i]);
         }
 
