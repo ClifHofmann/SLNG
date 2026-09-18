@@ -632,6 +632,8 @@ namespace SLNG.App.UI
             }
         }
 
+        private static bool IsAxis(Handle h) => h >= Handle.X && h <= Handle.Z;
+
         private static bool IsPlane(Handle h) => h >= Handle.PlaneXY && h <= Handle.PlaneYZ;
 
         /// <summary>Screen distance from the cursor to a ring, by sampling the ring and taking
@@ -1117,7 +1119,12 @@ namespace SLNG.App.UI
         /// snap lands on.</summary>
         private void UpdateRuler(float arrowLength)
         {
-            if (_dragging == Handle.None || IsPlane(_dragging) || _entity == null)
+            // Positively: only a single-AXIS drag has a linear ruler. Testing for "not None and
+            // not a plane" let ring handles through, and the axis index then ran off the end of
+            // a three-element array -- 944 exceptions in one session, one per frame of every
+            // rotation drag, which also killed UpdateDial on the line below and is why the snap
+            // dial never appeared.
+            if (!IsAxis(_dragging) || _entity == null)
             {
                 if (_ruler.Visible)
                 {
