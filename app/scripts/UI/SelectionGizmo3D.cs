@@ -83,6 +83,10 @@ namespace SLNG.App.UI
 
         public bool IsDragging => _dragging != Axis.None;
 
+        /// <summary>Which entity the handles are currently on, or null. Lets a closing edit
+        /// window check whether the gizmo is still its own before retracting it.</summary>
+        public System.Guid? AttachedEntityId => _entity?.Id;
+
         public void Initialize(World world, SLNG.Net.GridSession session, Camera3D camera)
         {
             _world = world;

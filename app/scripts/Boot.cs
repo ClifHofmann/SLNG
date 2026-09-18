@@ -323,7 +323,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.21-alpha";
+    public const string AppVersion = "v0.23.22-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1020,10 +1020,19 @@ public partial class Boot : Control
         _world.SelectEntity(entity);
         _session.SelectObject(localId);
 
+        // FEAT-UI-04: the move handles belong to "this object is being edited", not to "this
+        // object was left-clicked". Opening the window via right-click -> Edit never went through
+        // ObjectSelectionController's click path, so the gizmo only appeared after an extra click
+        // on the object -- reported in-world 2026-09-18.
+        _selectionGizmo?.Attach(entity);
+
         win.Closed += () =>
         {
             _objectEditWindows.Remove(entity.Id);
             _objectSelectionController.Unpin(entity.Id);
+            // Only retract the handles if they are still on THIS object -- closing one window
+            // must not strip the gizmo off another object that is still open for editing.
+            if (_selectionGizmo?.AttachedEntityId == entity.Id) _selectionGizmo.Detach();
         };
         _objectEditWindows[entity.Id] = win;
 
