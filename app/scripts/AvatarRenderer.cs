@@ -376,7 +376,7 @@ public partial class AvatarRenderer : Node3D
         // Add the visual root to the tree first so all sub-nodes inherit the active scene tree lifecycle
         AddChild(visual.Root);
 
-        var nameText = BuildNameTagText(avatar);
+        BuildNameTagText(avatar, ShowLegacyNames, out string nameText, out string legacyText);
 
         var panel = new Godot.PanelContainer { Name = "NameTag" };
         var styleBox = new Godot.StyleBoxFlat
@@ -393,6 +393,12 @@ public partial class AvatarRenderer : Node3D
         };
         panel.AddThemeStyleboxOverride("panel", styleBox);
 
+        // Two labels in a box rather than one with a newline: the legacy username renders a size
+        // smaller, which a single Label cannot do.
+        var lines = new Godot.VBoxContainer { Name = "Lines" };
+        lines.AddThemeConstantOverride("separation", 0);
+        panel.AddChild(lines);
+
         var label = new Godot.Label
         {
             Name = "Label",
@@ -401,7 +407,19 @@ public partial class AvatarRenderer : Node3D
             VerticalAlignment = Godot.VerticalAlignment.Center
         };
         label.AddThemeFontSizeOverride("font_size", 14);
-        panel.AddChild(label);
+        lines.AddChild(label);
+
+        var legacyLabel = new Godot.Label
+        {
+            Name = "Legacy",
+            Text = legacyText,
+            HorizontalAlignment = Godot.HorizontalAlignment.Center,
+            VerticalAlignment = Godot.VerticalAlignment.Center,
+            Visible = legacyText.Length > 0
+        };
+        legacyLabel.AddThemeFontSizeOverride("font_size", 11);
+        legacyLabel.AddThemeColorOverride("font_color", new Color(0.78f, 0.78f, 0.78f));
+        lines.AddChild(legacyLabel);
 
         visual.NameTag = panel;
         if (_nameTagLayer != null) _nameTagLayer.AddChild(panel);
@@ -946,13 +964,22 @@ public partial class AvatarRenderer : Node3D
 
         if (visual.NameTag is Godot.PanelContainer panel)
         {
-            var label = panel.GetNodeOrNull<Godot.Label>("Label");
+            var label = panel.GetNodeOrNull<Godot.Label>("Lines/Label");
+            var legacyLabel = panel.GetNodeOrNull<Godot.Label>("Lines/Legacy");
             if (label != null)
             {
-                string nameText = BuildNameTagText(avatar);
+                BuildNameTagText(avatar, ShowLegacyNames, out string nameText, out string legacyText);
 
                 if (label.Text != nameText)
                     label.Text = nameText;
+
+                if (legacyLabel != null)
+                {
+                    if (legacyLabel.Text != legacyText) legacyLabel.Text = legacyText;
+                    // Hidden rather than empty, so the panel does not keep a blank line's height.
+                    bool wantVisible = legacyText.Length > 0;
+                    if (legacyLabel.Visible != wantVisible) legacyLabel.Visible = wantVisible;
+                }
             }
         }
 
@@ -1327,6 +1354,47 @@ public partial class AvatarRenderer : Node3D
     /// <see cref="SLNG.App.UI.AnimationSettings.SeatPoseOverridesAo"/>, so a renderer that is never
     /// told behaves like the setting rather than against it.</summary>
     public bool SeatPoseOverridesAo { get; set; }
+
+    /// <summary>FEAT-UI-31: whether the legacy username line is shown under a Display Name.
+    /// Pushed in by Boot from <see cref="SLNG.App.UI.UiSettings.ShowLegacyNames"/>, same pattern
+    /// as <see cref="SeatPoseOverridesAo"/> -- a plain bool because it is read for every visible
+    /// avatar. Setting it refreshes the existing tags rather than waiting for the next avatar
+    /// update, which for a motionless avatar could be never.</summary>
+    public bool ShowLegacyNames
+    {
+        get => _showLegacyNames;
+        set
+        {
+            if (_showLegacyNames == value) return;
+            _showLegacyNames = value;
+            RefreshAllNameTags();
+        }
+    }
+
+    private bool _showLegacyNames = true;
+
+    /// <summary>Rebuilds every live nametag's text in place. Only called when the preference
+    /// changes, so walking the dictionary is fine.</summary>
+    private void RefreshAllNameTags()
+    {
+        foreach (var kvp in _visuals)
+        {
+            if (kvp.Value.NameTag is not Godot.PanelContainer panel || !IsInstanceValid(panel)) continue;
+            var entity = _world?.GetEntity(kvp.Key);
+            var avatar = entity?.GetComponent<AvatarComponent>();
+            if (avatar == null) continue;
+
+            BuildNameTagText(avatar, _showLegacyNames, out string main, out string legacy);
+            var label = panel.GetNodeOrNull<Godot.Label>("Lines/Label");
+            var legacyLabel = panel.GetNodeOrNull<Godot.Label>("Lines/Legacy");
+            if (label != null) label.Text = main;
+            if (legacyLabel != null)
+            {
+                legacyLabel.Text = legacy;
+                legacyLabel.Visible = legacy.Length > 0;
+            }
+        }
+    }
 
     private void ApplyActiveAnimations(Guid entityId, AvatarVisual visual, AvatarComponent avatar)
     {
@@ -4732,22 +4800,36 @@ void fragment() {
     /// <para>Line order matches the reference viewer: the group TITLE sits above the name. It is
     /// the active group's role title, not the group's name, and an avatar with no active group
     /// simply has no such line (<see cref="AvatarComponent.GroupTitle"/>).</para></summary>
-    private static string BuildNameTagText(AvatarComponent avatar)
+    /// <summary>FEAT-UI-31: the nametag's two lines. Split because they are rendered at
+    /// different sizes -- the legacy username sits under the Display Name in parentheses, a size
+    /// smaller, the way the reference viewer shows it.
+    ///
+    /// <para>The legacy line appears only when there IS a Display Name to distinguish it from.
+    /// An avatar that never set one would otherwise get its name printed twice, once plain and
+    /// once in brackets.</para>
+    ///
+    /// <para>Line order in <paramref name="main"/> matches the reference viewer: group TITLE
+    /// above the name. The title is the active group's role title, not the group's name.</para>
+    /// </summary>
+    private static void BuildNameTagText(AvatarComponent avatar, bool showLegacy,
+        out string main, out string legacy)
     {
-        var nameText = avatar.FirstName;
+        var legacyName = avatar.FirstName;
         if (!string.IsNullOrEmpty(avatar.LastName) && avatar.LastName != "Resident")
         {
-            nameText += $" {avatar.LastName}";
+            legacyName += $" {avatar.LastName}";
         }
-        if (!string.IsNullOrEmpty(avatar.DisplayName) && avatar.DisplayName != nameText)
-        {
-            nameText = $"{avatar.DisplayName}\n{nameText}";
-        }
+
+        bool hasDisplayName = !string.IsNullOrEmpty(avatar.DisplayName)
+                              && avatar.DisplayName != legacyName;
+
+        main = hasDisplayName ? avatar.DisplayName : legacyName;
         if (!string.IsNullOrEmpty(avatar.GroupTitle))
         {
-            nameText = $"{avatar.GroupTitle}\n{nameText}";
+            main = $"{avatar.GroupTitle}\n{main}";
         }
-        return nameText;
+
+        legacy = hasDisplayName && showLegacy ? $"({legacyName})" : string.Empty;
     }
 
     private static readonly HashSet<string> BodyPoseJoints = new(StringComparer.OrdinalIgnoreCase)

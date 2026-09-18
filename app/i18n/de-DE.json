@@ -298,6 +298,8 @@
       "toolbar_heading": "Schaltflächen in der unteren Leiste:",
       "language_heading": "Sprache (Fenster müssen neu geöffnet werden):",
       "ui_scale_heading": "UI-Skalierung (Fenster & HUD):",
+      "show_legacy_names": "Benutzernamen unter dem Anzeigenamen zeigen",
+      "show_legacy_names_tip": "Zeigt den unveränderlichen Kontonamen in Klammern unter dem Anzeigenamen. Avatare ohne Anzeigenamen bleiben unverändert.",
       "ui_scale_hint": "Skaliert freischwebende Fenster und das HUD live. Gilt auch für neu geöffnete Fenster.",
       "tab_camera": "Kamera",
       "camera_speed_heading": "Geschwindigkeit der Kamerasteuerung:",

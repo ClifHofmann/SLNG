@@ -322,7 +322,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.16-alpha";
+    public const string AppVersion = "v0.23.17-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1154,6 +1154,15 @@ public partial class Boot : Control
             _avatarRenderer.SeatPoseOverridesAo = _animationSettings.SeatPoseOverridesAo;
             _avatarRenderer.HeadFollowsCamera = _animationSettings.HeadFollowsCamera;
         }
+
+        // FEAT-UI-31: same shape -- push the stored value in once, then follow the setting. The
+        // renderer refreshes live tags itself when this changes, so a motionless avatar does not
+        // keep the old one until it moves.
+        if (_avatarRenderer != null) _avatarRenderer.ShowLegacyNames = _uiSettings.ShowLegacyNames;
+        _uiSettings.ShowLegacyNamesChanged += on =>
+        {
+            if (_avatarRenderer != null) _avatarRenderer.ShowLegacyNames = on;
+        };
         var animationPage = new SLNG.App.UI.AnimationPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_animation"), animationPage);
         animationPage.Initialize(_animationSettings);

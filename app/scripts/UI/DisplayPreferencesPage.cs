@@ -44,6 +44,16 @@ public partial class DisplayPreferencesPage : VBoxContainer
             locManager.CurrentLocale = newLang;
         };
         AddChild(langDropdown);
+        // FEAT-UI-31
+        var legacyCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.show_legacy_names"),
+            ButtonPressed = _settings.ShowLegacyNames,
+            TooltipText = L10n.Tr("ui.preferences.show_legacy_names_tip"),
+        };
+        legacyCheck.Toggled += on => _settings.SetShowLegacyNames(on);
+        AddChild(legacyCheck);
+
         
         var separator = new HSeparator();
         separator.AddThemeConstantOverride("separation", 15);
