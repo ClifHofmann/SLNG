@@ -80,6 +80,12 @@ namespace SLNG.App.UI
         /// so this bounds the pool.</summary>
         private const int RulerHalfTicks = 24;
 
+        /// <summary>How tall a printed coordinate should be on screen, in pixels. Converted to
+        /// Label3D.PixelSize per frame from the actual viewport height, rather than hardcoded: a
+        /// fixed PixelSize is a different apparent size on every resolution, and guessing at it
+        /// twice already produced text three times too large.</summary>
+        private const float RulerLabelPixelHeight = 13f;
+
         /// <summary>Minimum screen distance between two printed coordinates, in pixels. How many
         /// ticks get a label is derived from this per frame rather than fixed: the labels are a
         /// constant size on screen while the ticks are not, so any fixed interval is either
@@ -723,7 +729,6 @@ namespace SLNG.App.UI
                     // With it set, the text keeps one on-screen size wherever the object is --
                     // which is the only useful behaviour for a measurement readout.
                     FixedSize = true,
-                    PixelSize = 0.00035f,
 
                     Modulate = new Color(1f, 1f, 1f, 0.95f),
                     OutlineSize = 10,
@@ -754,43 +759,50 @@ namespace SLNG.App.UI
 
             int axisIndex = (int)_dragging - 1;
             var axis = AxisDirGodot[axisIndex];
-            var transform = _entity.GetComponent<TransformComponent>();
-            if (transform == null) return;
 
             // Broadside to the camera: perpendicular to the axis AND to the view direction, so
             // the ticks are never seen edge-on and never collapse to nothing.
-            var view = (GlobalPosition - _camera.GlobalPosition).Normalized();
+            var view = (_dragAxisOrigin - _camera.GlobalPosition).Normalized();
             var perp = axis.Cross(view);
             if (perp.LengthSquared() < 1e-6f) perp = axis.Cross(Vector3.Up);
             if (perp.LengthSquared() < 1e-6f) perp = Vector3.Right;
             perp = perp.Normalized();
 
-            // The SL coordinate this axis currently reads, so the ticks can be laid out on
-            // absolute metres rather than on the drag's own zero.
-            float slNow = axisIndex switch
+            // The SL coordinate the object had when the drag STARTED. The ruler is laid out
+            // around that and never moves again for the rest of the drag: a scale that travels
+            // with the object relabels itself as you go, which is what made the numbers appear
+            // to scroll. Standing still, it does what a ruler is for -- the object slides along
+            // it and you read off where it got to.
+            float slStart = axisIndex switch
             {
-                0 => transform.Position.X,
-                1 => transform.Position.Y,
-                _ => transform.Position.Z,
+                0 => _dragStartSlPos.X,
+                1 => _dragStartSlPos.Y,
+                _ => _dragStartSlPos.Z,
             };
-            float firstTick = Mathf.Floor(slNow / _gridSpacing) * _gridSpacing - RulerHalfTicks * _gridSpacing;
+            float firstTick = Mathf.Floor(slStart / _gridSpacing) * _gridSpacing - RulerHalfTicks * _gridSpacing;
 
             // How far apart one grid step lands on screen decides how many ticks can carry a
             // number without them colliding.
             int labelEvery = 1;
-            if (!_camera.IsPositionBehind(GlobalPosition) && !_camera.IsPositionBehind(GlobalPosition + axis * _gridSpacing))
+            if (!_camera.IsPositionBehind(_dragAxisOrigin) && !_camera.IsPositionBehind(_dragAxisOrigin + axis * _gridSpacing))
             {
-                float stepPixels = _camera.UnprojectPosition(GlobalPosition)
-                    .DistanceTo(_camera.UnprojectPosition(GlobalPosition + axis * _gridSpacing));
+                float stepPixels = _camera.UnprojectPosition(_dragAxisOrigin)
+                    .DistanceTo(_camera.UnprojectPosition(_dragAxisOrigin + axis * _gridSpacing));
                 labelEvery = stepPixels > 0.01f
                     ? Mathf.Max(1, Mathf.CeilToInt(RulerLabelMinPixels / stepPixels))
                     : RulerHalfTicks * 2;
             }
 
-            _ruler.GlobalPosition = GlobalPosition;
+            _ruler.GlobalPosition = _dragAxisOrigin;
             var mesh = (ImmediateMesh)_ruler.Mesh;
             mesh.ClearSurfaces();
             mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, _rulerMaterial);
+
+            // Label3D with FixedSize keeps a constant screen size whose pixel height works out
+            // to roughly fontSize * pixelSize * viewportHeight / 2. Solve that for the height we
+            // actually want, so it lands the same on any resolution.
+            float labelPixelSize = RulerLabelPixelHeight
+                / (48f * Mathf.Max(1f, GetViewport().GetVisibleRect().Size.Y) * 0.5f);
 
             int labelIndex = 0;
             for (int n = 0; n <= RulerHalfTicks * 2; n++)
@@ -798,7 +810,7 @@ namespace SLNG.App.UI
                 float slAt = firstTick + n * _gridSpacing;
                 // Distance from the object along the axis, in metres -- the ruler node sits at
                 // the object, so tick positions are relative to it.
-                float along = slAt - slNow;
+                float along = slAt - slStart;
                 var baseP = axis * along + perp * (RulerOffset * arrowLength);
                 bool major = labelIndex < _rulerLabels.Count && n % labelEvery == 0;
 
@@ -808,16 +820,17 @@ namespace SLNG.App.UI
                 if (major)
                 {
                     var label = _rulerLabels[labelIndex++];
-                    label.GlobalPosition = GlobalPosition + baseP + perp * (RulerTickLength * arrowLength * 1.6f);
+                    label.GlobalPosition = _dragAxisOrigin + baseP + perp * (RulerTickLength * arrowLength * 1.6f);
                     label.Text = $"{slAt:0.##}m";
+                    label.PixelSize = labelPixelSize;
                     label.Modulate = new Color(1f, 1f, 1f, _snapping ? 1f : 0.85f);
                     label.Visible = true;
                 }
             }
 
             // The axis line itself, so the ticks read as one scale rather than floating marks.
-            mesh.SurfaceAddVertex(axis * (firstTick - slNow) + perp * (RulerOffset * arrowLength));
-            mesh.SurfaceAddVertex(axis * (firstTick + RulerHalfTicks * 2 * _gridSpacing - slNow) + perp * (RulerOffset * arrowLength));
+            mesh.SurfaceAddVertex(axis * (firstTick - slStart) + perp * (RulerOffset * arrowLength));
+            mesh.SurfaceAddVertex(axis * (firstTick + RulerHalfTicks * 2 * _gridSpacing - slStart) + perp * (RulerOffset * arrowLength));
             mesh.SurfaceEnd();
 
             _rulerMaterial.AlbedoColor = new Color(1f, 1f, 1f, _snapping ? 0.95f : 0.5f);
