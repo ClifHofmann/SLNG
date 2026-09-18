@@ -28,7 +28,32 @@ namespace SLNG.App.UI
     {
         /// <summary>A single-axis handle (X/Y/Z) or a two-axis plane handle. A plane is named by
         /// the two axes it moves in; its normal is the third.</summary>
-        public enum Handle { None, X, Y, Z, PlaneXY, PlaneXZ, PlaneYZ }
+        public enum Handle { None, X, Y, Z, PlaneXY, PlaneXZ, PlaneYZ, RingX, RingY, RingZ }
+
+        /// <summary>Which manipulator is showing. Mirrors ObjectEditWindow.GizmoTool -- the two
+        /// are kept as separate enums so the UI layer and the 3D layer do not depend on each
+        /// other's types, which is the same boundary every other setting here respects.</summary>
+        public enum Tool { Move, Rotate }
+
+        public Tool ActiveTool
+        {
+            get => _tool;
+            set
+            {
+                if (_tool == value) return;
+                _tool = value;
+                // Any drag in progress belongs to the old tool.
+                _dragging = Handle.None;
+                _hovered = Handle.None;
+                _snapping = false;
+            }
+        }
+
+        private Tool _tool = Tool.Move;
+
+        /// <summary>Method as well as the property, so Boot can set it without needing to know
+        /// that the property has side effects.</summary>
+        public void SetTool(Tool tool) => ActiveTool = tool;
 
         /// <summary>How close, in screen pixels, the cursor must be to an axis to grab it.
         /// Generous on purpose — the arrow is a few pixels wide at distance, and the reference
@@ -79,6 +104,13 @@ namespace SLNG.App.UI
         /// <summary>How many ticks the ruler draws either side of the object. Labels are pooled,
         /// so this bounds the pool.</summary>
         private const int RulerHalfTicks = 24;
+
+        /// <summary>Radius of a rotation ring as a fraction of the arrow length, and how many
+        /// segments it is drawn with. Drawn as a line loop rather than a torus: a ring only has
+        /// to be visible and grabbable, and a line keeps its one-pixel width at any distance.
+        /// </summary>
+        private const float RingRadius = 0.85f;
+        private const int RingSegments = 72;
 
         /// <summary>Label3D.PixelSize for the printed coordinates, with FixedSize on.
         ///
@@ -156,6 +188,8 @@ namespace SLNG.App.UI
         private readonly MeshInstance3D[] _planeQuads = new MeshInstance3D[3];
         private readonly StandardMaterial3D[] _planeMaterials = new StandardMaterial3D[3];
         private readonly MeshInstance3D[] _grids = new MeshInstance3D[3];
+        private readonly MeshInstance3D[] _rings = new MeshInstance3D[3];
+        private readonly StandardMaterial3D[] _ringMaterials = new StandardMaterial3D[3];
         private readonly StandardMaterial3D[] _gridMaterials = new StandardMaterial3D[3];
 
         private MeshInstance3D _ruler = null!;
@@ -172,6 +206,8 @@ namespace SLNG.App.UI
         private System.Numerics.Vector3 _dragStartSlPos;
         private float _dragStartAxisT;
         private Vector3 _dragStartPlanePoint;
+        private System.Numerics.Quaternion _dragStartSlRot;
+        private float _dragStartRingAngle;
 
         /// <summary>The gizmo's world position when the drag began. The axis has to be measured
         /// from a FIXED origin: GlobalPosition follows the object as it moves, so measuring
@@ -252,11 +288,26 @@ namespace SLNG.App.UI
             float length = ScreenLengthPixels * worldPerPixel;
 
             var active = _dragging != Handle.None ? _dragging : _hovered;
+            bool moving = _tool == Tool.Move;
 
             for (int i = 0; i < 3; i++)
             {
                 _arrows[i].Scale = new Vector3(length, length, length);
                 _planeQuads[i].Scale = new Vector3(length, length, length);
+                _rings[i].Scale = new Vector3(length, length, length);
+
+                // One tool's handles at a time. All three sets at once is unreadable, and the
+                // hit-test would have to arbitrate between overlapping handles that mean
+                // different things.
+                _arrows[i].Visible = moving;
+                _planeQuads[i].Visible = moving;
+                _guides[i].Visible = moving;
+                _rings[i].Visible = !moving;
+
+                bool ringLit = active == RingHandle(i);
+                var ringColor = AxisColor[i];
+                ringColor.A = ringLit ? 1f : 0.65f;
+                _ringMaterials[i].AlbedoColor = ringLit ? Colors.White : ringColor;
 
                 bool axisLit = active == (Handle)(i + 1);
                 _materials[i].AlbedoColor = axisLit ? Colors.White : AxisColor[i];
@@ -266,6 +317,7 @@ namespace SLNG.App.UI
                 var guide = AxisColor[i];
                 guide.A = axisLit ? 0.9f : 0.28f;
                 _guideMaterials[i].AlbedoColor = guide;
+
 
                 bool planeLit = active == PlaneHandle(i);
                 var plane = AxisColor[Planes[i].Normal];
@@ -316,6 +368,18 @@ namespace SLNG.App.UI
             var origin2D = _camera.UnprojectPosition(GlobalPosition);
             float scale = _arrows[0].Scale.X;
 
+            if (_tool == Tool.Rotate)
+            {
+                float bestRing = GrabPixels;
+                var bestRingHandle = Handle.None;
+                for (int i = 0; i < 3; i++)
+                {
+                    float d = DistanceToRing(mouse, i, scale);
+                    if (d < bestRing) { bestRing = d; bestRingHandle = RingHandle(i); }
+                }
+                return bestRingHandle;
+            }
+
             // Planes first. Their triangles sit between two axes and partly under them, and a
             // cursor inside a triangle means the user is aiming at the plane -- the reverse
             // priority makes the plane handles nearly unclickable.
@@ -354,7 +418,13 @@ namespace SLNG.App.UI
 
             _dragAxisOrigin = GlobalPosition;
 
-            if (IsPlane(handle))
+            if (IsRing(handle))
+            {
+                if (!TryRingAngle(mouse, handle, out float startAngle)) return false;
+                _dragStartRingAngle = startAngle;
+                _dragStartSlRot = transform.Rotation;
+            }
+            else if (IsPlane(handle))
             {
                 if (!TryPlanePoint(mouse, handle, out var hit)) return false;
                 _dragStartPlanePoint = hit;
@@ -383,6 +453,12 @@ namespace SLNG.App.UI
         public void UpdateDrag(Vector2 mouse)
         {
             if (_dragging == Handle.None || _entity == null) return;
+
+            if (IsRing(_dragging))
+            {
+                UpdateRingDrag(mouse);
+                return;
+            }
 
             var slPos = _dragStartSlPos;
 
@@ -458,7 +534,79 @@ namespace SLNG.App.UI
             }
         }
 
-        private static bool IsPlane(Handle h) => h >= Handle.PlaneXY;
+        /// <summary>Applies a ring drag: turn the object about that ring's SL axis by the angle
+        /// the cursor has swept since the drag began.
+        ///
+        /// <para>Composed onto the rotation the object had at drag START, not onto its current
+        /// one. Accumulating a per-frame delta instead would let float error pile up over a long
+        /// drag, and any frame whose angle could not be resolved would permanently offset the
+        /// result.</para></summary>
+        private void UpdateRingDrag(Vector2 mouse)
+        {
+            if (_entity == null) return;
+            if (!TryRingAngle(mouse, _dragging, out float angle)) return;
+
+            int i = (int)_dragging - (int)Handle.RingX;
+            // The SL axis this ring turns about, in SL's own coordinates -- the rotation we send
+            // is an SL quaternion, so it must not be built from the Godot axis vector.
+            var slAxis = i switch
+            {
+                0 => new System.Numerics.Vector3(1, 0, 0),
+                1 => new System.Numerics.Vector3(0, 1, 0),
+                _ => new System.Numerics.Vector3(0, 0, 1),
+            };
+
+            float delta = Mathf.Wrap(angle - _dragStartRingAngle, -Mathf.Pi, Mathf.Pi);
+            var turn = System.Numerics.Quaternion.CreateFromAxisAngle(slAxis, delta);
+
+            // World-space turn, so it reads the same whichever way the object already faces:
+            // the new rotation is the turn applied AFTER the original, not in its local frame.
+            var slRot = System.Numerics.Quaternion.Normalize(turn * _dragStartSlRot);
+
+            var transform = _entity.GetComponent<TransformComponent>();
+            if (transform == null) return;
+
+            transform.Rotation = slRot;
+            if (transform.ParentLocalId == 0) transform.LocalRotation = slRot;
+            _world.NotifyComponentUpdated(_entity, transform);
+
+            double now = Time.GetTicksMsec() / 1000.0;
+            if (now - _lastSendAt >= SendIntervalSeconds)
+            {
+                Send(transform.Position);
+                _lastSendAt = now;
+            }
+        }
+
+        private static bool IsPlane(Handle h) => h >= Handle.PlaneXY && h <= Handle.PlaneYZ;
+
+        /// <summary>Screen distance from the cursor to a ring, by sampling the ring and taking
+        /// the nearest segment. Sampled rather than solved: the projection of a circle is an
+        /// ellipse whose screen-space closest point has no cheap closed form, and at this
+        /// segment count the error is well under the grab radius.</summary>
+        private float DistanceToRing(Vector2 mouse, int i, float scale)
+        {
+            var a = AxisDirGodot[(i + 1) % 3];
+            var b = AxisDirGodot[(i + 2) % 3];
+            const int samples = 48;
+
+            float best = float.MaxValue;
+            Vector2 prev = Vector2.Zero;
+            bool hasPrev = false;
+
+            for (int n = 0; n <= samples; n++)
+            {
+                float t = Mathf.Tau * n / samples;
+                var world = GlobalPosition + (a * Mathf.Cos(t) + b * Mathf.Sin(t)) * (RingRadius * scale);
+                if (_camera.IsPositionBehind(world)) { hasPrev = false; continue; }
+
+                var p = _camera.UnprojectPosition(world);
+                if (hasPrev) best = Mathf.Min(best, DistanceToSegment(mouse, prev, p));
+                prev = p;
+                hasPrev = true;
+            }
+            return best;
+        }
 
         private float Snap(float v) => Mathf.Round(v / _gridSpacing) * _gridSpacing;
 
@@ -701,6 +849,69 @@ namespace SLNG.App.UI
             }
 
             BuildRuler();
+
+            for (int i = 0; i < 3; i++) BuildRing(i);
+        }
+
+        /// <summary>A rotation ring in the plane perpendicular to one SL axis, coloured by that
+        /// axis. A line loop, not a torus: it only has to be visible and grabbable, and a line
+        /// keeps its one-pixel width at any distance, which a thin tube does not.</summary>
+        private void BuildRing(int i)
+        {
+            var mat = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                AlbedoColor = AxisColor[i],
+                NoDepthTest = true,
+                RenderPriority = 100,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            };
+            _ringMaterials[i] = mat;
+
+            // Two axes spanning the plane the ring lies in.
+            var a = AxisDirGodot[(i + 1) % 3];
+            var b = AxisDirGodot[(i + 2) % 3];
+
+            var mesh = new ImmediateMesh();
+            mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, mat);
+            for (int n = 0; n < RingSegments; n++)
+            {
+                float t0 = Mathf.Tau * n / RingSegments;
+                float t1 = Mathf.Tau * (n + 1) / RingSegments;
+                mesh.SurfaceAddVertex((a * Mathf.Cos(t0) + b * Mathf.Sin(t0)) * RingRadius);
+                mesh.SurfaceAddVertex((a * Mathf.Cos(t1) + b * Mathf.Sin(t1)) * RingRadius);
+            }
+            mesh.SurfaceEnd();
+
+            _rings[i] = new MeshInstance3D { Name = $"Ring{(Handle)((int)Handle.RingX + i)}", Mesh = mesh, Visible = false };
+            AddChild(_rings[i]);
+        }
+
+        private static Handle RingHandle(int i) => (Handle)((int)Handle.RingX + i);
+        private static bool IsRing(Handle h) => h >= Handle.RingX;
+
+        /// <summary>Angle of the cursor around a ring's axis, in radians, measured in the ring's
+        /// own plane. Returns false when the camera is sighting along that axis edge-on, where
+        /// the ray never meets the plane and the angle is undefined.</summary>
+        private bool TryRingAngle(Vector2 mouse, Handle ring, out float angle)
+        {
+            angle = 0f;
+            int i = (int)ring - (int)Handle.RingX;
+            var normal = AxisDirGodot[i];
+            var ro = _camera.ProjectRayOrigin(mouse);
+            var rd = _camera.ProjectRayNormal(mouse);
+
+            float denom = rd.Dot(normal);
+            if (Mathf.Abs(denom) < 1e-4f) return false;
+
+            float t = (_dragAxisOrigin - ro).Dot(normal) / denom;
+            if (t <= 0f) return false;
+
+            var hit = ro + rd * t - _dragAxisOrigin;
+            var a = AxisDirGodot[(i + 1) % 3];
+            var b = AxisDirGodot[(i + 2) % 3];
+            angle = Mathf.Atan2(hit.Dot(b), hit.Dot(a));
+            return true;
         }
 
         /// <summary>The single-axis ruler: tick marks with printed coordinates, shown while an

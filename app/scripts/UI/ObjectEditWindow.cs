@@ -146,6 +146,36 @@ namespace SLNG.App.UI
             Visible = false;
             CustomMinimumSize = new Vector2(320, 400);
 
+            // FEAT-UI-04: which in-world handles are shown. Above the tabs rather than inside
+            // one, because it governs the 3D manipulator, not any single tab's fields -- and
+            // showing move, rotate and scale handles all at once is unusable, which is why the
+            // reference viewer makes you pick too.
+            var toolRow = new HBoxContainer { Name = "GizmoTools" };
+            toolRow.AddThemeConstantOverride("separation", 4);
+            ContentContainer.AddChild(toolRow);
+
+            _moveToolButton = new Button
+            {
+                Text = L10n.Tr("ui.build.tool_move"),
+                ToggleMode = true,
+                ButtonPressed = true,
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            };
+            _rotateToolButton = new Button
+            {
+                Text = L10n.Tr("ui.build.tool_rotate"),
+                ToggleMode = true,
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            };
+            toolRow.AddChild(_moveToolButton);
+            toolRow.AddChild(_rotateToolButton);
+
+            // Hand-rolled radio behaviour rather than a ButtonGroup: a ButtonGroup lets the
+            // pressed button be un-pressed by clicking it again, which would leave no tool
+            // selected and no handles at all.
+            _moveToolButton.Pressed += () => SelectTool(GizmoTool.Move);
+            _rotateToolButton.Pressed += () => SelectTool(GizmoTool.Rotate);
+
             var tabContainer = new TabContainer();
             ContentContainer.AddChild(tabContainer);
 
@@ -757,6 +787,28 @@ namespace SLNG.App.UI
                 Mathf.Max(0, (viewportSize.X - windowSize.X) / 2),
                 Mathf.Max(0, (viewportSize.Y - windowSize.Y) / 2)
             ) + cascadeOffset;
+        }
+
+        /// <summary>FEAT-UI-04: which handle set the in-world gizmo shows. Scale is a later
+        /// pass of the same spec; the enum is here so adding it does not change this shape.</summary>
+        public enum GizmoTool { Move, Rotate }
+
+        private Button _moveToolButton = null!;
+        private Button _rotateToolButton = null!;
+        private GizmoTool _tool = GizmoTool.Move;
+
+        /// <summary>Raised when the user picks a different manipulator. Boot forwards it to the
+        /// gizmo -- this window does not know the 3D scene exists.</summary>
+        public event System.Action<GizmoTool>? ToolChanged;
+
+        public GizmoTool CurrentTool => _tool;
+
+        private void SelectTool(GizmoTool tool)
+        {
+            _tool = tool;
+            _moveToolButton.SetPressedNoSignal(tool == GizmoTool.Move);
+            _rotateToolButton.SetPressedNoSignal(tool == GizmoTool.Rotate);
+            ToolChanged?.Invoke(tool);
         }
 
         private void OnComponentUpdated(object? sender, ComponentEventArgs e)
