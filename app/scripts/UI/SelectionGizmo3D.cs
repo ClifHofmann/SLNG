@@ -615,10 +615,13 @@ namespace SLNG.App.UI
             _snapping = CursorIsPastDial(mouse);
             if (_snapping)
             {
+                // Snap the DIAL angle, not the object's own rotation. The dial's ticks are laid
+                // out in world angle so that the direction labels land on them; snapping the
+                // object's twist instead would put the needle between ticks whenever the ring
+                // was grabbed off a step, contradicting the scale it is drawn against.
                 float step = Mathf.DegToRad(_rotationSnapDegrees);
-                float startAngleOnAxis = AngleAboutAxis(_dragStartSlRot, i);
-                float target = Mathf.Round((startAngleOnAxis + delta) / step) * step;
-                delta = target - startAngleOnAxis;
+                float snappedT = Mathf.Round(angle / step) * step;
+                delta = Mathf.Wrap(snappedT - _dragStartRingAngle, -Mathf.Pi, Mathf.Pi);
             }
 
             var turn = System.Numerics.Quaternion.CreateFromAxisAngle(slAxis, delta);
@@ -1007,12 +1010,11 @@ namespace SLNG.App.UI
             float step = Mathf.Tau / steps;
             float radius = DialRadius * arrowLength;
 
-            // Laid out in TWIST space, not dial space. The ticks mark the round rotations the
-            // object can land on -- 0, 30, 60 -- and their positions follow from that, rather
-            // than sitting at fixed places on the dial and being labelled with whatever twist
-            // they happen to correspond to. Doing it the other way round printed the object's
-            // starting angle into every number (live: 7, 37, 67, 97) and put the ticks
-            // somewhere other than where the snap actually lands.
+            // Laid out in WORLD angle, measured from the +a direction. The four direction
+            // labels sit at fixed world angles, so ticks placed on round OBJECT rotations --
+            // which is what this did -- are offset from them by wherever the ring happened to
+            // be grabbed, and "East" lands between two ticks. Every offered snap step divides
+            // 90 degrees, so in this space a cardinal direction is always a tick.
             float startTwist = AngleAboutAxis(_dragStartSlRot, i);
 
             _dial.GlobalPosition = _dragAxisOrigin;
@@ -1022,13 +1024,13 @@ namespace SLNG.App.UI
 
             for (int n = 0; n < steps; n++)
             {
-                float twist = n * step;
-                // Where that twist sits on the dial: the object turns by however far the cursor
-                // has swept, so twist = startTwist + (t - startCursorAngle).
-                float t = _dragStartRingAngle + (twist - startTwist);
+                float t = n * step;
                 var dir = a * Mathf.Cos(t) + b * Mathf.Sin(t);
 
-                float len = (n % DialMajorEvery == 0 ? DialTickMajor : DialTickMinor) * arrowLength;
+                // Long on the four labelled directions, short in between -- so a label always
+                // terminates a long tick and the eye can count the steps to the next one.
+                bool cardinal = Mathf.Abs(Mathf.Wrap(Mathf.RadToDeg(t), -45f, 45f)) < 0.01f;
+                float len = (cardinal ? DialTickMajor : DialTickMinor) * arrowLength;
                 mesh.SurfaceAddVertex(dir * radius);
                 mesh.SurfaceAddVertex(dir * (radius + len));
             }
