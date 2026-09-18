@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-04`
 - **Track:** `ui` / `render`
-- **Status:** `⏸️ Pending`
+- **Status:** `🧪 Review` (Move-Pass umgesetzt, in-world noch nicht bestätigt)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -68,6 +68,6 @@ through the numeric fields.
 
 ## Sub-tasks / Progress
 
-- [ ] Move (translate) gizmo — this spec's primary scope.
+- [x] Move (translate) gizmo — this spec's primary scope (`v0.23.21-alpha`).
 - [ ] Rotate gizmo (rings) — separate follow-up pass, not blocking Move.
 - [ ] Scale gizmo (corner handles / cube) — separate follow-up pass, not blocking Move.

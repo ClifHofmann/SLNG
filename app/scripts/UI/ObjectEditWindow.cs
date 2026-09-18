@@ -770,6 +770,14 @@ namespace SLNG.App.UI
                     meta.CreatorId.ToString(), meta.OwnerId.ToString(), meta.GroupId.ToString(), meta.Locked,
                     meta.OwnerCanModify, meta.OwnerCanCopy, meta.OwnerCanTransfer);
             }
+            else if (e.Component is TransformComponent tc)
+            {
+                // FEAT-UI-04: follow a gizmo drag (and any sim-side move) in the numeric fields.
+                // Skipped while a field has focus, so a live update cannot overwrite digits the
+                // user is in the middle of typing -- the same courtesy UpdateMetadataUI extends
+                // to the name and description fields.
+                CallDeferred(MethodName.UpdatePositionUI, tc.Position.X, tc.Position.Y, tc.Position.Z);
+            }
             else if (e.Component is PrimitiveComponent prim)
             {
                 CallDeferred(MethodName.UpdatePrimStateUI, prim.IsPhysical, prim.IsTemporary, prim.IsPhantom,
@@ -778,6 +786,16 @@ namespace SLNG.App.UI
                     (int)prim.PhysicsShapeType, prim.PhysicsGravity, prim.PhysicsFriction, prim.PhysicsDensity, prim.PhysicsRestitution,
                     prim.HasPhysicsProperties, (int)prim.ClickAction);
             }
+        }
+
+        /// <summary>FEAT-UI-04: refresh just the Position fields from a live transform change.
+        /// Separate from the full populate path because that one also rewrites rotation, scale,
+        /// name and description, which a drag has not touched.</summary>
+        private void UpdatePositionUI(float x, float y, float z)
+        {
+            if (!_posX.HasFocus()) _posX.Text = x.ToString("F3");
+            if (!_posY.HasFocus()) _posY.Text = y.ToString("F3");
+            if (!_posZ.HasFocus()) _posZ.Text = z.ToString("F3");
         }
 
         private void UpdatePrimStateUI(bool physical, bool temporary, bool phantom,

@@ -301,6 +301,7 @@ public partial class Boot : Control
 
     // M5-2 Object Editing UI
     private ObjectSelectionController _objectSelectionController = null!;
+    private SLNG.App.UI.SelectionGizmo3D? _selectionGizmo;
     private SLNG.App.CursorManager _cursorManager = null!;
     private SLNG.App.UI.InWorldContextMenu _inWorldContextMenu = null!;
     private Godot.Button _standUpButton = null!;
@@ -322,7 +323,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.20-alpha";
+    public const string AppVersion = "v0.23.21-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3174,6 +3175,13 @@ public partial class Boot : Control
             _objectSelectionController = new ObjectSelectionController();
             AddChild(_objectSelectionController);
             _objectSelectionController.Initialize(_world, _session, _avatarController, _inWorldContextMenu);
+
+            // FEAT-UI-04: the move gizmo. Lives under the camera's 3D parent, not the UI layer --
+            // it is world geometry that happens to be a control surface.
+            _selectionGizmo = new SLNG.App.UI.SelectionGizmo3D();
+            AddChild(_selectionGizmo);
+            _selectionGizmo.Initialize(_world, _session, _avatarController);
+            _objectSelectionController.AttachGizmo(_selectionGizmo);
 
             _cursorManager = new SLNG.App.CursorManager();
             AddChild(_cursorManager);
