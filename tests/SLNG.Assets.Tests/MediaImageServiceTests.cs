@@ -69,6 +69,51 @@ public class MediaImageServiceTests
         Assert.Equal((0, 0, 0, 255), PixelAt(data, x: 0, y: 3));   // bottom bar: black
     }
 
+    /// <summary>Pins the letterbox's RESAMPLING, which the test above does not reach: it fits 4x2
+    /// into 4x4, a scale of exactly 1, so no filter ever runs. Here a 2x2 source into 4x4 is a
+    /// clean 2x upscale, where nearest-neighbour and any smooth filter disagree visibly.
+    ///
+    /// <para>Nearest is the behaviour being pinned, and deliberately so. SkiaSharp 3 resolved the
+    /// paintless <c>DrawBitmap(bitmap, rect)</c> to <c>SKSamplingOptions.Default</c>
+    /// (<c>DrawBitmap</c> -> <c>DrawImage</c> -> <c>paint?.FilterQuality... ?? Default</c>,
+    /// verified against the v3.119.0 source), and <c>Default</c> is
+    /// <c>SKFilterMode.Nearest</c>. SkiaSharp 4 made that overload obsolete and the call now
+    /// passes the options explicitly -- this test is what proves the migration kept the pixels
+    /// identical rather than quietly picking a different filter.</para>
+    ///
+    /// <para>Nearest is arguably the wrong choice for downscaling fetched media, but it is the
+    /// state the MOAP letterbox was compared against Firestorm in on 2026-09-17. If that is ever
+    /// revisited, this test is the thing that should fail, on purpose.</para></summary>
+    [Fact]
+    public void Decode_WithFitDimensions_UpscalesWithNearestNeighbour_NoBlendedEdges()
+    {
+        using var source = new SKBitmap(2, 2, SKColorType.Rgba8888, SKAlphaType.Premul);
+        source.SetPixel(0, 0, SKColors.Red);
+        source.SetPixel(1, 0, SKColors.Blue);
+        source.SetPixel(0, 1, SKColors.Lime);
+        source.SetPixel(1, 1, SKColors.White);
+        using var image = SKImage.FromBitmap(source);
+        using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
+
+        // 2x2 -> 4x4: aspect matches, so the fit is a pure 2x scale with no bars at all.
+        var data = MediaImageService.Decode(encoded.ToArray(), fitWidth: 4, fitHeight: 4);
+
+        Assert.NotNull(data);
+
+        // Each source pixel must become a solid 2x2 block. The pixels that matter are the ones
+        // STRADDLING a source boundary -- (1,0) and (2,0) are the last red and the first blue
+        // column. Any smooth filter blends exactly there; nearest leaves them pure.
+        Assert.Equal((255, 0, 0, 255), PixelAt(data!, x: 0, y: 0));
+        Assert.Equal((255, 0, 0, 255), PixelAt(data, x: 1, y: 0));
+        Assert.Equal((0, 0, 255, 255), PixelAt(data, x: 2, y: 0));
+        Assert.Equal((0, 0, 255, 255), PixelAt(data, x: 3, y: 0));
+
+        // Same boundary on the vertical axis, so a filter differing only in one direction cannot
+        // slip through.
+        Assert.Equal((0, 255, 0, 255), PixelAt(data, x: 0, y: 2));
+        Assert.Equal((255, 255, 255, 255), PixelAt(data, x: 3, y: 3));
+    }
+
     private static (byte R, byte G, byte B, byte A) PixelAt(TextureData data, int x, int y)
     {
         int i = ((y * data.Width) + x) * 4;
