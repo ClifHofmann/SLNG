@@ -1043,6 +1043,20 @@ namespace SLNG.App.UI
             PlaceDirectionLabel(2, b, axisB, positive: true, radius, arrowLength);
             PlaceDirectionLabel(3, -b, axisB, positive: false, radius, arrowLength);
 
+            // A needle from the centre out to where the turn currently points. Derived from the
+            // object's CURRENT rotation rather than from the cursor, so when a snap is active it
+            // lands exactly on a tick instead of hovering a degree or two off it and quietly
+            // contradicting the thing it is meant to confirm.
+            var nowTransform = _entity?.GetComponent<TransformComponent>();
+            if (nowTransform != null)
+            {
+                float nowTwist = AngleAboutAxis(nowTransform.Rotation, i);
+                float nowT = _dragStartRingAngle + (nowTwist - startTwist);
+                var nowDir = a * Mathf.Cos(nowT) + b * Mathf.Sin(nowT);
+                mesh.SurfaceAddVertex(Vector3.Zero);
+                mesh.SurfaceAddVertex(nowDir * (radius + DialTickMajor * arrowLength));
+            }
+
             // The dial's own circle, so the ticks read as one scale.
             for (int n = 0; n < RingSegments; n++)
             {
