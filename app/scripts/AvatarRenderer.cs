@@ -4768,6 +4768,15 @@ void fragment() {
                         }
 
                         var size = visual.NameTag.GetMinimumSize();
+
+                        // FEAT-UI-31: the minimum size was only ever used to CENTRE the tag, never
+                        // applied. A Control parented to a CanvasLayer is not laid out by a
+                        // container, so it keeps whatever size it was last given -- which means
+                        // the panel background stayed at the widest/tallest it had ever been.
+                        // Invisible while the text was long, obvious once hiding the username line
+                        // left a panel with a blank strip under the name.
+                        if (visual.NameTag.Size != size) visual.NameTag.Size = size;
+
                         visual.NameTag.Position = pos2D - (size / 2);
 
                         if (dist > nameTagFadeStart)
