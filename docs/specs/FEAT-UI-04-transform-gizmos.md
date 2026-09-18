@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-04`
 - **Track:** `ui` / `render`
-- **Status:** `🧪 Review` (Move, Rotate und Scale umgesetzt; Scale in-world noch nicht bestätigt)
+- **Status:** `✅ Done` (Move, Rotate und Scale inworld bestätigt, `v0.23.55-alpha`, PR #93)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -46,13 +46,13 @@ through the numeric fields.
 
 ## Acceptance Criteria
 
-- [ ] Selecting an editable object shows 3 colored arrow handles at its pivot.
-- [ ] Dragging an arrow moves the object along only that axis, live, both visually and over the
+- [x] Selecting an editable object shows 3 colored arrow handles at its pivot.
+- [x] Dragging an arrow moves the object along only that axis, live, both visually and over the
       network (other clients/relogging shows the moved position).
-- [ ] Gizmo stays a usable, roughly constant screen size at any camera distance.
-- [ ] Locked / no-Move-permission objects show no draggable gizmo.
-- [ ] Position fields in the Build/Inspector window and the gizmo stay in sync in both directions.
-- [ ] Deselecting / closing the edit window removes the gizmo.
+- [x] Gizmo stays a usable, roughly constant screen size at any camera distance.
+- [x] Locked / no-Move-permission objects show no draggable gizmo.
+- [x] Position fields in the Build/Inspector window and the gizmo stay in sync in both directions.
+- [x] Deselecting / closing the edit window removes the gizmo.
 
 ## Technical Specs & Affected Files
 
