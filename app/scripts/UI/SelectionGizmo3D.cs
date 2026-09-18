@@ -28,7 +28,28 @@ namespace SLNG.App.UI
     {
         /// <summary>A single-axis handle (X/Y/Z) or a two-axis plane handle. A plane is named by
         /// the two axes it moves in; its normal is the third.</summary>
-        public enum Handle { None, X, Y, Z, PlaneXY, PlaneXZ, PlaneYZ }
+        public enum Handle { None, X, Y, Z, PlaneXY, PlaneXZ, PlaneYZ, RingX, RingY, RingZ }
+
+        /// <summary>Which manipulator is showing. Chosen by holding Ctrl (reference-viewer
+        /// parity) rather than by a control in the edit window, so it is decided in _Process
+        /// rather than pushed in.</summary>
+        public enum Tool { Move, Rotate }
+
+        public Tool ActiveTool
+        {
+            get => _tool;
+            set
+            {
+                if (_tool == value) return;
+                _tool = value;
+                // Any drag in progress belongs to the old tool.
+                _dragging = Handle.None;
+                _hovered = Handle.None;
+                _snapping = false;
+            }
+        }
+
+        private Tool _tool = Tool.Move;
 
         /// <summary>How close, in screen pixels, the cursor must be to an axis to grab it.
         /// Generous on purpose — the arrow is a few pixels wide at distance, and the reference
@@ -52,6 +73,18 @@ namespace SLNG.App.UI
         /// what makes a guide readable both at arm's length and across a parcel. A thin cylinder
         /// would vanish at range and look like a pipe up close.</summary>
         private const float GuideHalfLength = 512f;
+
+        /// <summary>Angular snap step in degrees for a rotation drag, and the spacing of the
+        /// dial's ticks. Settable from preferences (default 15°, the step SL builders reach for
+        /// most); the linear grid has its own setting because metres and degrees are not the
+        /// same choice.</summary>
+        public float RotationSnapDegrees
+        {
+            get => _rotationSnapDegrees;
+            set => _rotationSnapDegrees = Mathf.Clamp(value, 0.1f, 90f);
+        }
+
+        private float _rotationSnapDegrees = 15f;
 
         /// <summary>The build grid's cell size in metres, and the spacing of the axis ruler's
         /// ticks. Settable from preferences (default 1 m, SL's own build grid); pushed in by
@@ -79,6 +112,33 @@ namespace SLNG.App.UI
         /// <summary>How many ticks the ruler draws either side of the object. Labels are pooled,
         /// so this bounds the pool.</summary>
         private const int RulerHalfTicks = 24;
+
+        /// <summary>Radius of a rotation ring as a fraction of the arrow length, its tube
+        /// thickness, and the segment count used for hit-testing and for the dial's own circle.
+        ///
+        /// <para>A torus, not the line loop this started as: a one-pixel line reads as a wire
+        /// drawing and gives no sense of which side of the ring you are looking at. Thickness
+        /// stays constant on screen for free, because the whole handle is scaled by the
+        /// screen-derived length every frame -- the same mechanism that keeps the arrows a
+        /// constant size.</para></summary>
+        private const float RingRadius = 0.85f;
+        private const float RingThickness = 0.035f;
+        private const int RingSegments = 72;
+
+        /// <summary>Radius of the snap dial drawn outside the ring, and its tick lengths, as
+        /// fractions of the arrow length. Outside rather than on the ring, so the same gesture
+        /// as the linear ruler applies: lead the cursor out to the scale and it snaps.</summary>
+        private const float DialRadius = 1.45f;
+        private const float DialTickMinor = 0.07f;
+        private const float DialTickMajor = 0.15f;
+
+        /// <summary>How far past the dial's own radius, as a multiple, the cursor has to be
+        /// before an angular drag snaps.</summary>
+        private const float DialSnapReach = 0.88f;
+
+        /// <summary>Every how many snap steps a tick is drawn long. Purely visual grouping, the
+        /// way a protractor marks every fifth degree.</summary>
+        private const int DialMajorEvery = 5;
 
         /// <summary>Label3D.PixelSize for the printed coordinates, with FixedSize on.
         ///
@@ -156,6 +216,12 @@ namespace SLNG.App.UI
         private readonly MeshInstance3D[] _planeQuads = new MeshInstance3D[3];
         private readonly StandardMaterial3D[] _planeMaterials = new StandardMaterial3D[3];
         private readonly MeshInstance3D[] _grids = new MeshInstance3D[3];
+        private readonly MeshInstance3D[] _rings = new MeshInstance3D[3];
+        private MeshInstance3D _dial = null!;
+        private StandardMaterial3D _dialMaterial = null!;
+        private StandardMaterial3D _needleMaterial = null!;
+        private readonly System.Collections.Generic.List<Label3D> _dialLabels = new();
+        private readonly StandardMaterial3D[] _ringMaterials = new StandardMaterial3D[3];
         private readonly StandardMaterial3D[] _gridMaterials = new StandardMaterial3D[3];
 
         private MeshInstance3D _ruler = null!;
@@ -172,6 +238,20 @@ namespace SLNG.App.UI
         private System.Numerics.Vector3 _dragStartSlPos;
         private float _dragStartAxisT;
         private Vector3 _dragStartPlanePoint;
+        private System.Numerics.Quaternion _dragStartSlRot;
+        private float _dragStartRingAngle;
+
+        /// <summary>The object's own local axis that this ring drag steers, chosen at grab time
+        /// as the one whose projection lies closest to the cursor.
+        ///
+        /// <para>This is the whole trick, taken from <c>LLManipRotate::dragUnconstrained</c>'s
+        /// snap branch: the viewer picks the object axis nearest the mouse and then turns the
+        /// object so THAT axis points at the (quantised) mouse angle. One choice gives all three
+        /// properties at once -- the guide line lies on a real object edge, it appears where the
+        /// ring was grabbed, and a snap lands it exactly on a tick. Deriving the line from the
+        /// cursor alone or from a fixed object axis alone each gives only one of the three,
+        /// which is what the two previous attempts here did.</para></summary>
+        private System.Numerics.Vector3 _dragObjectAxis;
 
         /// <summary>The gizmo's world position when the drag began. The axis has to be measured
         /// from a FIXED origin: GlobalPosition follows the object as it moves, so measuring
@@ -251,12 +331,44 @@ namespace SLNG.App.UI
             float worldPerPixel = 2f * depth * Mathf.Tan(Mathf.DegToRad(_camera.Fov) * 0.5f) / viewportH;
             float length = ScreenLengthPixels * worldPerPixel;
 
+            // FEAT-UI-04: hold Ctrl to rotate, the way the reference viewer does it, rather
+            // than a pair of buttons in the edit window. It keeps the choice under the hand
+            // already on the object, and the first attempt -- toggle buttons above the tabs --
+            // also rendered behind the TabContainer, because ContentContainer does not lay its
+            // children out in a column.
+            //
+            // Never mid-drag: releasing Ctrl while turning something would otherwise swap the
+            // handles out from under the gesture.
+            if (_dragging == Handle.None)
+            {
+                ActiveTool = Input.IsKeyPressed(Key.Ctrl) ? Tool.Rotate : Tool.Move;
+            }
+
             var active = _dragging != Handle.None ? _dragging : _hovered;
+            bool moving = _tool == Tool.Move;
 
             for (int i = 0; i < 3; i++)
             {
                 _arrows[i].Scale = new Vector3(length, length, length);
                 _planeQuads[i].Scale = new Vector3(length, length, length);
+                _rings[i].Scale = new Vector3(length, length, length);
+
+                // One tool's handles at a time. All three sets at once is unreadable, and the
+                // hit-test would have to arbitrate between overlapping handles that mean
+                // different things.
+                _arrows[i].Visible = moving;
+                _planeQuads[i].Visible = moving;
+                _guides[i].Visible = moving;
+                // Only the ring being turned, once a turn is under way. Three tori and a dial
+                // on top of each other is unreadable, and the two you are not using tell you
+                // nothing -- the reference viewer drops them for the same reason.
+                _rings[i].Visible = !moving
+                    && (_dragging == Handle.None || RingHandle(i) == _dragging);
+
+                bool ringLit = active == RingHandle(i);
+                var ringColor = AxisColor[i];
+                ringColor.A = ringLit ? 1f : 0.65f;
+                _ringMaterials[i].AlbedoColor = ringLit ? Colors.White : ringColor;
 
                 bool axisLit = active == (Handle)(i + 1);
                 _materials[i].AlbedoColor = axisLit ? Colors.White : AxisColor[i];
@@ -266,6 +378,7 @@ namespace SLNG.App.UI
                 var guide = AxisColor[i];
                 guide.A = axisLit ? 0.9f : 0.28f;
                 _guideMaterials[i].AlbedoColor = guide;
+
 
                 bool planeLit = active == PlaneHandle(i);
                 var plane = AxisColor[Planes[i].Normal];
@@ -280,6 +393,7 @@ namespace SLNG.App.UI
             }
 
             UpdateRuler(length);
+            UpdateDial(length);
         }
 
         private static Handle PlaneHandle(int i) => (Handle)((int)Handle.PlaneXY + i);
@@ -315,6 +429,18 @@ namespace SLNG.App.UI
 
             var origin2D = _camera.UnprojectPosition(GlobalPosition);
             float scale = _arrows[0].Scale.X;
+
+            if (_tool == Tool.Rotate)
+            {
+                float bestRing = GrabPixels;
+                var bestRingHandle = Handle.None;
+                for (int i = 0; i < 3; i++)
+                {
+                    float d = DistanceToRing(mouse, i, scale);
+                    if (d < bestRing) { bestRing = d; bestRingHandle = RingHandle(i); }
+                }
+                return bestRingHandle;
+            }
 
             // Planes first. Their triangles sit between two axes and partly under them, and a
             // cursor inside a triangle means the user is aiming at the plane -- the reverse
@@ -354,7 +480,14 @@ namespace SLNG.App.UI
 
             _dragAxisOrigin = GlobalPosition;
 
-            if (IsPlane(handle))
+            if (IsRing(handle))
+            {
+                if (!TryRingAngle(mouse, handle, out float startAngle)) return false;
+                _dragStartRingAngle = startAngle;
+                _dragStartSlRot = transform.Rotation;
+                _dragObjectAxis = PickObjectAxisNearest(startAngle, (int)handle - (int)Handle.RingX, transform.Rotation);
+            }
+            else if (IsPlane(handle))
             {
                 if (!TryPlanePoint(mouse, handle, out var hit)) return false;
                 _dragStartPlanePoint = hit;
@@ -383,6 +516,12 @@ namespace SLNG.App.UI
         public void UpdateDrag(Vector2 mouse)
         {
             if (_dragging == Handle.None || _entity == null) return;
+
+            if (IsRing(_dragging))
+            {
+                UpdateRingDrag(mouse);
+                return;
+            }
 
             var slPos = _dragStartSlPos;
 
@@ -458,9 +597,114 @@ namespace SLNG.App.UI
             }
         }
 
-        private static bool IsPlane(Handle h) => h >= Handle.PlaneXY;
+        /// <summary>Applies a ring drag: turn the object about that ring's SL axis by the angle
+        /// the cursor has swept since the drag began.
+        ///
+        /// <para>Composed onto the rotation the object had at drag START, not onto its current
+        /// one. Accumulating a per-frame delta instead would let float error pile up over a long
+        /// drag, and any frame whose angle could not be resolved would permanently offset the
+        /// result.</para></summary>
+        private void UpdateRingDrag(Vector2 mouse)
+        {
+            if (_entity == null) return;
+            if (!TryRingAngle(mouse, _dragging, out float angle)) return;
+
+            int i = (int)_dragging - (int)Handle.RingX;
+
+            // LLManipRotate's model: turn the object so the axis picked at grab time points at
+            // the mouse angle, rather than turning it BY the angle the mouse has swept. The two
+            // differ the moment a snap quantises the mouse angle -- "by" leaves the axis a
+            // fraction off the tick, "at" puts it on the tick, which is the whole point of a
+            // detent.
+            _snapping = CursorIsPastDial(mouse);
+            float targetAngle = angle;
+            if (_snapping)
+            {
+                float step = Mathf.DegToRad(_rotationSnapDegrees);
+                targetAngle = Mathf.Round(angle / step) * step;
+            }
+
+            var a = AxisDirGodot[(i + 1) % 3];
+            var b = AxisDirGodot[(i + 2) % 3];
+            if (!TryProjectSlAxis(_dragObjectAxis, _dragStartSlRot, a, b, out var axisDir)) return;
+            float axisAngle = Mathf.Atan2(axisDir.Dot(b), axisDir.Dot(a));
+
+            float delta = Mathf.Wrap(targetAngle - axisAngle, -Mathf.Pi, Mathf.Pi);
+
+            // The SL axis this ring turns about, in SL's own coordinates -- the rotation we send
+            // is an SL quaternion, so it must not be built from the Godot axis vector. A
+            // right-handed turn about axis i carries (i+1) toward (i+2), which is the same sense
+            // the angles above are measured in, so the sign needs no correction.
+            var turn = System.Numerics.Quaternion.CreateFromAxisAngle(SlUnit(i), delta);
+            var slRot = System.Numerics.Quaternion.Normalize(turn * _dragStartSlRot);
+
+            var transform = _entity.GetComponent<TransformComponent>();
+            if (transform == null) return;
+
+            transform.Rotation = slRot;
+            if (transform.ParentLocalId == 0) transform.LocalRotation = slRot;
+            _world.NotifyComponentUpdated(_entity, transform);
+
+            double now = Time.GetTicksMsec() / 1000.0;
+            if (now - _lastSendAt >= SendIntervalSeconds)
+            {
+                Send(transform.Position);
+                _lastSendAt = now;
+            }
+        }
+
+        private static bool IsAxis(Handle h) => h >= Handle.X && h <= Handle.Z;
+
+        private static bool IsPlane(Handle h) => h >= Handle.PlaneXY && h <= Handle.PlaneYZ;
+
+        /// <summary>Screen distance from the cursor to a ring, by sampling the ring and taking
+        /// the nearest segment. Sampled rather than solved: the projection of a circle is an
+        /// ellipse whose screen-space closest point has no cheap closed form, and at this
+        /// segment count the error is well under the grab radius.</summary>
+        private float DistanceToRing(Vector2 mouse, int i, float scale)
+        {
+            var a = AxisDirGodot[(i + 1) % 3];
+            var b = AxisDirGodot[(i + 2) % 3];
+            const int samples = 48;
+
+            float best = float.MaxValue;
+            Vector2 prev = Vector2.Zero;
+            bool hasPrev = false;
+
+            for (int n = 0; n <= samples; n++)
+            {
+                float t = Mathf.Tau * n / samples;
+                var world = GlobalPosition + (a * Mathf.Cos(t) + b * Mathf.Sin(t)) * (RingRadius * scale);
+                if (_camera.IsPositionBehind(world)) { hasPrev = false; continue; }
+
+                var p = _camera.UnprojectPosition(world);
+                if (hasPrev) best = Mathf.Min(best, DistanceToSegment(mouse, prev, p));
+                prev = p;
+                hasPrev = true;
+            }
+            return best;
+        }
 
         private float Snap(float v) => Mathf.Round(v / _gridSpacing) * _gridSpacing;
+
+        /// <summary>True once the cursor has been led out past the dial's ticks.</summary>
+        private bool CursorIsPastDial(Vector2 mouse)
+        {
+            if (_camera.IsPositionBehind(_dragAxisOrigin)) return false;
+            var centre2D = _camera.UnprojectPosition(_dragAxisOrigin);
+
+            // The dial's radius in screen pixels, measured rather than assumed: the ring is a
+            // circle in 3D and its projection depends on the viewing angle, so a world-space
+            // threshold would engage at different apparent distances from different sides.
+            int i = (int)_dragging - (int)Handle.RingX;
+            var edge = _dragAxisOrigin
+                       + AxisDirGodot[(i + 1) % 3] * (DialRadius * _arrows[0].Scale.X);
+            if (_camera.IsPositionBehind(edge)) return false;
+
+            float radiusPixels = centre2D.DistanceTo(_camera.UnprojectPosition(edge));
+            return mouse.DistanceTo(centre2D) > radiusPixels * DialSnapReach;
+        }
+
 
         /// <summary>Glyph count of the longest coordinate this ruler will print, so the label
         /// spacing can be driven by width. Checks both ends, since the far end carries the most
@@ -701,6 +945,298 @@ namespace SLNG.App.UI
             }
 
             BuildRuler();
+
+            for (int i = 0; i < 3; i++) BuildRing(i);
+
+            _dialMaterial = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                AlbedoColor = new Color(1f, 1f, 1f, 0.6f),
+                NoDepthTest = true,
+                RenderPriority = 101,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            };
+
+            // The needle and the tick it rests on get their own material, so they can carry the
+            // axis colour while the scale stays neutral -- a second surface on the same
+            // ImmediateMesh rather than a second node, since they are drawn together anyway.
+            _needleMaterial = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                NoDepthTest = true,
+                RenderPriority = 103,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            };
+
+            // TopLevel and pinned at the drag origin, same as the linear ruler and the grid: a
+            // scale that travels with what it measures measures nothing.
+            _dial = new MeshInstance3D { Name = "RotationDial", Mesh = new ImmediateMesh(), Visible = false, TopLevel = true };
+            AddChild(_dial);
+
+            // Four, one per world direction the ring's plane runs through. Degree numbers were
+            // the first attempt and read badly: two dozen figures round a circle, all of them
+            // needing to be related back to the object's own orientation before they mean
+            // anything. The reference viewer labels the directions instead, which answers the
+            // question actually being asked -- which way is this thing going to face.
+            for (int n = 0; n < 4; n++)
+            {
+                var label = new Label3D
+                {
+                    Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
+                    NoDepthTest = true,
+                    RenderPriority = 102,
+                    FontSize = 48,
+                    FixedSize = true,
+                    PixelSize = RulerLabelPixelSize,
+                    Modulate = new Color(1f, 1f, 1f, 0.9f),
+                    OutlineSize = 10,
+                    OutlineModulate = new Color(0f, 0f, 0f, 0.9f),
+                    Visible = false,
+                    TopLevel = true,
+                };
+                _dialLabels.Add(label);
+                AddChild(label);
+            }
+        }
+
+        /// <summary>Redraws the snap dial around the ring being dragged: a circle of ticks at the
+        /// angular snap step, outside the ring so the cursor can be led out to it.</summary>
+        private void UpdateDial(float arrowLength)
+        {
+            if (_dragging == Handle.None || !IsRing(_dragging))
+            {
+                if (_dial.Visible)
+                {
+                    _dial.Visible = false;
+                    foreach (var l in _dialLabels) l.Visible = false;
+                }
+                return;
+            }
+
+            int i = (int)_dragging - (int)Handle.RingX;
+            var a = AxisDirGodot[(i + 1) % 3];
+            var b = AxisDirGodot[(i + 2) % 3];
+
+            int steps = Mathf.Max(4, Mathf.RoundToInt(360f / _rotationSnapDegrees));
+            float step = Mathf.Tau / steps;
+            float radius = DialRadius * arrowLength;
+
+            // Laid out in WORLD angle, measured from the +a direction. The four direction
+            // labels sit at fixed world angles, so ticks placed on round OBJECT rotations --
+            // which is what this did -- are offset from them by wherever the ring happened to
+            // be grabbed, and "East" lands between two ticks. Every offered snap step divides
+            // 90 degrees, so in this space a cardinal direction is always a tick.
+
+            _dial.GlobalPosition = _dragAxisOrigin;
+            var mesh = (ImmediateMesh)_dial.Mesh;
+            mesh.ClearSurfaces();
+            mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, _dialMaterial);
+
+            for (int n = 0; n < steps; n++)
+            {
+                float t = n * step;
+                var dir = a * Mathf.Cos(t) + b * Mathf.Sin(t);
+
+                // Long on the four labelled directions, short in between -- so a label always
+                // terminates a long tick and the eye can count the steps to the next one.
+                bool cardinal = Mathf.Abs(Mathf.Wrap(Mathf.RadToDeg(t), -45f, 45f)) < 0.01f;
+                float len = (cardinal ? DialTickMajor : DialTickMinor) * arrowLength;
+                mesh.SurfaceAddVertex(dir * radius);
+                mesh.SurfaceAddVertex(dir * (radius + len));
+            }
+
+            // The four world directions this ring's plane runs through, at the dial's own
+            // extremes. Fixed in world space, so they stay put while the object turns past them
+            // -- which is what makes them a reference rather than a readout.
+            int axisA = (i + 1) % 3;
+            int axisB = (i + 2) % 3;
+            PlaceDirectionLabel(0, a, axisA, positive: true, radius, arrowLength);
+            PlaceDirectionLabel(1, -a, axisA, positive: false, radius, arrowLength);
+            PlaceDirectionLabel(2, b, axisB, positive: true, radius, arrowLength);
+            PlaceDirectionLabel(3, -b, axisB, positive: false, radius, arrowLength);
+
+            // A needle from the centre out to where the turn currently points. Derived from the
+            // object's CURRENT rotation rather than from the cursor, so when a snap is active it
+            // lands exactly on a tick instead of hovering a degree or two off it and quietly
+            // contradicting the thing it is meant to confirm.
+            // The dial's own circle, so the ticks read as one scale.
+            for (int n = 0; n < RingSegments; n++)
+            {
+                float t0 = Mathf.Tau * n / RingSegments;
+                float t1 = Mathf.Tau * (n + 1) / RingSegments;
+                mesh.SurfaceAddVertex((a * Mathf.Cos(t0) + b * Mathf.Sin(t0)) * radius);
+                mesh.SurfaceAddVertex((a * Mathf.Cos(t1) + b * Mathf.Sin(t1)) * radius);
+            }
+            mesh.SurfaceEnd();
+
+            // Second surface: the needle, in the ring's own colour so it reads as part of the
+            // handle rather than part of the scale, plus a long bright tick under it while
+            // snapped -- the detent is worth showing, not just feeling.
+            var nowTransform = _entity?.GetComponent<TransformComponent>();
+            if (nowTransform != null
+                && TryProjectSlAxis(_dragObjectAxis, nowTransform.Rotation, a, b, out var nowDir))
+            {
+                mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, _needleMaterial);
+                mesh.SurfaceAddVertex(Vector3.Zero);
+                mesh.SurfaceAddVertex(nowDir * (radius + DialTickMajor * arrowLength));
+
+                if (_snapping)
+                {
+                    mesh.SurfaceAddVertex(nowDir * (radius - DialTickMajor * arrowLength * 0.5f));
+                    mesh.SurfaceAddVertex(nowDir * (radius + DialTickMajor * arrowLength * 1.6f));
+                }
+                mesh.SurfaceEnd();
+            }
+
+            var needle = AxisColor[i];
+            needle.A = _snapping ? 1f : 0.8f;
+            _needleMaterial.AlbedoColor = needle;
+
+            _dialMaterial.AlbedoColor = new Color(1f, 1f, 1f, _snapping ? 0.95f : 0.45f);
+            _dial.Visible = true;
+        }
+
+
+        /// <summary>A rotation ring in the plane perpendicular to one SL axis, coloured by that
+        /// axis. A line loop, not a torus: it only has to be visible and grabbable, and a line
+        /// keeps its one-pixel width at any distance, which a thin tube does not.</summary>
+        private void BuildRing(int i)
+        {
+            var mat = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                AlbedoColor = AxisColor[i],
+                NoDepthTest = true,
+                RenderPriority = 100,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            };
+            _ringMaterials[i] = mat;
+
+            var mesh = new TorusMesh
+            {
+                InnerRadius = RingRadius - RingThickness,
+                OuterRadius = RingRadius + RingThickness,
+                Rings = RingSegments,
+                RingSegments = 8,
+            };
+
+            _rings[i] = new MeshInstance3D
+            {
+                Name = $"Ring{(Handle)((int)Handle.RingX + i)}",
+                Mesh = mesh,
+                MaterialOverride = mat,
+                Visible = false,
+            };
+
+            // A TorusMesh lies in Godot's XZ plane, so its normal is +Y. Turn it so the normal
+            // is the SL axis this ring rotates about.
+            var normal = AxisDirGodot[i];
+            if (normal != Vector3.Up)
+            {
+                var rotAxis = Vector3.Up.Cross(normal);
+                if (rotAxis.LengthSquared() < 1e-6f) rotAxis = Vector3.Right;
+                _rings[i].Basis = new Basis(rotAxis.Normalized(), Vector3.Up.AngleTo(normal));
+            }
+
+            AddChild(_rings[i]);
+        }
+
+        /// <summary>Puts one direction label at a dial extreme. The name comes from the SL
+        /// axis and its sign: X is east/west, Y north/south, Z up/down.</summary>
+        private void PlaceDirectionLabel(int slot, Vector3 dir, int slAxis, bool positive, float radius, float arrowLength)
+        {
+            if (slot >= _dialLabels.Count) return;
+            var label = _dialLabels[slot];
+            label.GlobalPosition = _dragAxisOrigin + dir * (radius + DialTickMajor * arrowLength * 2.4f);
+            label.Text = L10n.Tr(slAxis switch
+            {
+                0 => positive ? "ui.build.dir_east" : "ui.build.dir_west",
+                1 => positive ? "ui.build.dir_north" : "ui.build.dir_south",
+                _ => positive ? "ui.build.dir_up" : "ui.build.dir_down",
+            });
+            label.Modulate = new Color(1f, 1f, 1f, _snapping ? 1f : 0.75f);
+            label.Visible = true;
+        }
+
+        /// <summary>The object's local axis whose direction in the ring's plane is closest to
+        /// where the ring was grabbed. Four candidates -- the two in-plane local axes and their
+        /// negatives -- because a box edge points both ways and the near one is the one the user
+        /// is pointing at.</summary>
+        private System.Numerics.Vector3 PickObjectAxisNearest(float grabAngle, int ringAxis, System.Numerics.Quaternion rotation)
+        {
+            var a = AxisDirGodot[(ringAxis + 1) % 3];
+            var b = AxisDirGodot[(ringAxis + 2) % 3];
+            var target = a * Mathf.Cos(grabAngle) + b * Mathf.Sin(grabAngle);
+
+            var best = SlUnit((ringAxis + 1) % 3);
+            float bestDot = float.MinValue;
+
+            for (int k = 1; k <= 2; k++)
+            {
+                for (int sign = -1; sign <= 1; sign += 2)
+                {
+                    var candidate = SlUnit((ringAxis + k) % 3) * sign;
+                    if (!TryProjectSlAxis(candidate, rotation, a, b, out var dir)) continue;
+                    float dot = dir.Dot(target);
+                    if (dot > bestDot) { bestDot = dot; best = candidate; }
+                }
+            }
+            return best;
+        }
+
+        private static System.Numerics.Vector3 SlUnit(int axis) => axis switch
+        {
+            0 => new System.Numerics.Vector3(1, 0, 0),
+            1 => new System.Numerics.Vector3(0, 1, 0),
+            _ => new System.Numerics.Vector3(0, 0, 1),
+        };
+
+        /// <summary>An object-local SL axis, rotated into the world and projected into the ring's
+        /// plane. False when it points straight out of the plane and has no direction there.
+        /// </summary>
+        private static bool TryProjectSlAxis(
+            System.Numerics.Vector3 slLocal, System.Numerics.Quaternion rotation,
+            Vector3 a, Vector3 b, out Vector3 dir)
+        {
+            dir = Vector3.Zero;
+            var slWorld = System.Numerics.Vector3.Transform(slLocal, rotation);
+            // SL is Z-up, Godot Y-up: SL(x, y, z) -> Godot(x, z, -y). Directions only, so the
+            // region origin does not enter into it.
+            var godot = new Vector3(slWorld.X, slWorld.Z, -slWorld.Y);
+
+            var projected = a * godot.Dot(a) + b * godot.Dot(b);
+            if (projected.LengthSquared() < 1e-6f) return false;
+
+            dir = projected.Normalized();
+            return true;
+        }
+
+        private static Handle RingHandle(int i) => (Handle)((int)Handle.RingX + i);
+        private static bool IsRing(Handle h) => h >= Handle.RingX;
+
+        /// <summary>Angle of the cursor around a ring's axis, in radians, measured in the ring's
+        /// own plane. Returns false when the camera is sighting along that axis edge-on, where
+        /// the ray never meets the plane and the angle is undefined.</summary>
+        private bool TryRingAngle(Vector2 mouse, Handle ring, out float angle)
+        {
+            angle = 0f;
+            int i = (int)ring - (int)Handle.RingX;
+            var normal = AxisDirGodot[i];
+            var ro = _camera.ProjectRayOrigin(mouse);
+            var rd = _camera.ProjectRayNormal(mouse);
+
+            float denom = rd.Dot(normal);
+            if (Mathf.Abs(denom) < 1e-4f) return false;
+
+            float t = (_dragAxisOrigin - ro).Dot(normal) / denom;
+            if (t <= 0f) return false;
+
+            var hit = ro + rd * t - _dragAxisOrigin;
+            var a = AxisDirGodot[(i + 1) % 3];
+            var b = AxisDirGodot[(i + 2) % 3];
+            angle = Mathf.Atan2(hit.Dot(b), hit.Dot(a));
+            return true;
         }
 
         /// <summary>The single-axis ruler: tick marks with printed coordinates, shown while an
@@ -766,7 +1302,12 @@ namespace SLNG.App.UI
         /// snap lands on.</summary>
         private void UpdateRuler(float arrowLength)
         {
-            if (_dragging == Handle.None || IsPlane(_dragging) || _entity == null)
+            // Positively: only a single-AXIS drag has a linear ruler. Testing for "not None and
+            // not a plane" let ring handles through, and the axis index then ran off the end of
+            // a three-element array -- 944 exceptions in one session, one per frame of every
+            // rotation drag, which also killed UpdateDial on the line below and is why the snap
+            // dial never appeared.
+            if (!IsAxis(_dragging) || _entity == null)
             {
                 if (_ruler.Visible)
                 {

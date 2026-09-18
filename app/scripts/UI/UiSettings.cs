@@ -49,6 +49,11 @@ public sealed class UiSettings
     /// drag lands on. Default 1 m, SL's own build grid.</summary>
     public float BuildGridSpacing { get; private set; } = 1.0f;
 
+    /// <summary>FEAT-UI-04: the angular snap step in degrees for a rotation drag, and the
+    /// spacing of the gizmo's dial ticks. Its own setting rather than sharing the grid's,
+    /// because metres and degrees are not the same choice. Default 15°.</summary>
+    public float BuildRotationSnapDegrees { get; private set; } = 15.0f;
+
     public void Load()
     {
         var cfg = new ConfigFile();
@@ -62,6 +67,7 @@ public sealed class UiSettings
             ShowDisplayNames = (bool)cfg.GetValue(Section, "show_display_names", true);
             HideOwnGroupTitle = (bool)cfg.GetValue(Section, "hide_own_group_title", false);
             BuildGridSpacing = Mathf.Clamp((float)cfg.GetValue(Section, "build_grid_spacing", 1.0), 0.01f, 64f);
+            BuildRotationSnapDegrees = Mathf.Clamp((float)cfg.GetValue(Section, "build_rotation_snap_degrees", 15.0), 0.1f, 90f);
         }
         SLNGWindow.SetGlobalUiScale(Scale);
     }
@@ -121,6 +127,21 @@ public sealed class UiSettings
     }
 
     public event System.Action<float>? BuildGridSpacingChanged;
+
+    /// <summary>FEAT-UI-04.</summary>
+    public void SetBuildRotationSnapDegrees(float degrees)
+    {
+        BuildRotationSnapDegrees = Mathf.Clamp(degrees, 0.1f, 90f);
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "build_rotation_snap_degrees", BuildRotationSnapDegrees);
+        cfg.Save(ConfigPath);
+
+        BuildRotationSnapDegreesChanged?.Invoke(BuildRotationSnapDegrees);
+    }
+
+    public event System.Action<float>? BuildRotationSnapDegreesChanged;
 
     /// <summary>FEAT-UI-30. Separate event from the display toggles: this one has to reach
     /// GridSession, not the renderer, because it changes an outgoing packet.</summary>

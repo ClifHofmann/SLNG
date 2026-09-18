@@ -73,5 +73,10 @@ through the numeric fields.
 - [x] Two-axis plane handles + a metre grid while dragging one (`v0.23.24-alpha`) — requested live.
 - [x] Single-axis ruler with printed coordinates, snap-to-tick by sliding the cursor off the
       axis, and a configurable grid granularity (`v0.23.28-alpha`) — requested live.
-- [ ] Rotate gizmo (rings) — separate follow-up pass, not blocking Move.
+- [x] Rotate gizmo (rings) (`v0.23.38-alpha`), switched to by holding **Ctrl** (`v0.23.39-alpha`,
+      reference-viewer parity) rather than a control in the edit window.
+- [x] Rotation snap dial with a configurable angular step (`v0.23.40-alpha`) — same
+      lead-the-cursor-out gesture as the linear ruler. Labelled with the four world
+      directions the ring's plane runs through (`v0.23.45-alpha`, reference-viewer parity),
+      not degree numbers.
 - [ ] Scale gizmo (corner handles / cube) — separate follow-up pass, not blocking Move.

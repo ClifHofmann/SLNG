@@ -323,7 +323,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.37-alpha";
+    public const string AppVersion = "v0.23.51-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3195,6 +3195,11 @@ public partial class Boot : Control
             _uiSettings.BuildGridSpacingChanged += m =>
             {
                 if (_selectionGizmo != null) _selectionGizmo.GridSpacing = m;
+            };
+            _selectionGizmo.RotationSnapDegrees = _uiSettings.BuildRotationSnapDegrees;
+            _uiSettings.BuildRotationSnapDegreesChanged += d =>
+            {
+                if (_selectionGizmo != null) _selectionGizmo.RotationSnapDegrees = d;
             };
 
             _cursorManager = new SLNG.App.CursorManager();
