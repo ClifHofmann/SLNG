@@ -1015,7 +1015,6 @@ namespace SLNG.App.UI
             // which is what this did -- are offset from them by wherever the ring happened to
             // be grabbed, and "East" lands between two ticks. Every offered snap step divides
             // 90 degrees, so in this space a cardinal direction is always a tick.
-            float startTwist = AngleAboutAxis(_dragStartSlRot, i);
 
             _dial.GlobalPosition = _dragAxisOrigin;
             var mesh = (ImmediateMesh)_dial.Mesh;
@@ -1050,11 +1049,8 @@ namespace SLNG.App.UI
             // lands exactly on a tick instead of hovering a degree or two off it and quietly
             // contradicting the thing it is meant to confirm.
             var nowTransform = _entity?.GetComponent<TransformComponent>();
-            if (nowTransform != null)
+            if (nowTransform != null && TryObjectAxisInPlane(nowTransform.Rotation, i, a, b, out var nowDir))
             {
-                float nowTwist = AngleAboutAxis(nowTransform.Rotation, i);
-                float nowT = _dragStartRingAngle + (nowTwist - startTwist);
-                var nowDir = a * Mathf.Cos(nowT) + b * Mathf.Sin(nowT);
                 mesh.SurfaceAddVertex(Vector3.Zero);
                 mesh.SurfaceAddVertex(nowDir * (radius + DialTickMajor * arrowLength));
             }
@@ -1134,6 +1130,43 @@ namespace SLNG.App.UI
             });
             label.Modulate = new Color(1f, 1f, 1f, _snapping ? 1f : 0.75f);
             label.Visible = true;
+        }
+
+        /// <summary>Direction of one of the object's OWN axes, projected into the ring's plane
+        /// and normalised, for the needle to lie along.
+        ///
+        /// <para>Taken from the rotation directly rather than from the swing-twist angle the
+        /// snap uses. The two agree only while the object has no rotation about the other two
+        /// axes; with a compound rotation the twist is still the right thing to SNAP, but it is
+        /// not where any face of the object points, and the needle drawn from it floated off
+        /// the box instead of lying on an edge.</para>
+        ///
+        /// <para>False when that axis is pointing (near enough) straight out of the ring's
+        /// plane, where its projection has no direction to give.</para></summary>
+        private static bool TryObjectAxisInPlane(
+            System.Numerics.Quaternion rotation, int ringAxis, Vector3 a, Vector3 b, out Vector3 dir)
+        {
+            dir = Vector3.Zero;
+
+            // The object's local axis that lies in this ring's plane when unrotated.
+            int localAxis = (ringAxis + 1) % 3;
+            var slLocal = localAxis switch
+            {
+                0 => new System.Numerics.Vector3(1, 0, 0),
+                1 => new System.Numerics.Vector3(0, 1, 0),
+                _ => new System.Numerics.Vector3(0, 0, 1),
+            };
+
+            var slWorld = System.Numerics.Vector3.Transform(slLocal, rotation);
+            // SL is Z-up, Godot Y-up: SL(x, y, z) -> Godot(x, z, -y). Directions only, so no
+            // region origin is involved.
+            var godot = new Vector3(slWorld.X, slWorld.Z, -slWorld.Y);
+
+            var projected = a * godot.Dot(a) + b * godot.Dot(b);
+            if (projected.LengthSquared() < 1e-6f) return false;
+
+            dir = projected.Normalized();
+            return true;
         }
 
         private static Handle RingHandle(int i) => (Handle)((int)Handle.RingX + i);
