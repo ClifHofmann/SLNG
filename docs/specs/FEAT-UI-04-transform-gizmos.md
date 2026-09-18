@@ -69,5 +69,7 @@ through the numeric fields.
 ## Sub-tasks / Progress
 
 - [x] Move (translate) gizmo — this spec's primary scope (`v0.23.21-alpha`).
+- [x] Axis guide lines through the pivot (`v0.23.23-alpha`) — requested live, Firestorm parity.
+- [x] Two-axis plane handles + a metre grid while dragging one (`v0.23.24-alpha`) — requested live.
 - [ ] Rotate gizmo (rings) — separate follow-up pass, not blocking Move.
 - [ ] Scale gizmo (corner handles / cube) — separate follow-up pass, not blocking Move.
