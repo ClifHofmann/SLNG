@@ -76,5 +76,7 @@ through the numeric fields.
 - [x] Rotate gizmo (rings) (`v0.23.38-alpha`), switched to by holding **Ctrl** (`v0.23.39-alpha`,
       reference-viewer parity) rather than a control in the edit window.
 - [x] Rotation snap dial with a configurable angular step (`v0.23.40-alpha`) — same
-      lead-the-cursor-out gesture as the linear ruler.
+      lead-the-cursor-out gesture as the linear ruler. Labelled with the four world
+      directions the ring's plane runs through (`v0.23.45-alpha`, reference-viewer parity),
+      not degree numbers.
 - [ ] Scale gizmo (corner handles / cube) — separate follow-up pass, not blocking Move.

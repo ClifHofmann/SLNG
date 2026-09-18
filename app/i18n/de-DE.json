@@ -465,6 +465,12 @@
     },
     "build": {
       "title": "Bauen / Inspektor",
+      "dir_north": "Norden",
+      "dir_south": "Süden",
+      "dir_east": "Osten",
+      "dir_west": "Westen",
+      "dir_up": "Nach oben",
+      "dir_down": "Nach unten",
       "edit_title": "Bearbeiten: {0}",
       "tab_general": "Allgemein",
       "tab_object": "Objekt",

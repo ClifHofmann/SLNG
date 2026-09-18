@@ -465,6 +465,12 @@
     },
     "build": {
       "title": "Build / Inspector",
+      "dir_north": "North",
+      "dir_south": "South",
+      "dir_east": "East",
+      "dir_west": "West",
+      "dir_up": "Up",
+      "dir_down": "Down",
       "edit_title": "Edit: {0}",
       "tab_general": "General",
       "tab_object": "Object",

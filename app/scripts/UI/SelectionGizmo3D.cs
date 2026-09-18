@@ -959,10 +959,12 @@ namespace SLNG.App.UI
             _dial = new MeshInstance3D { Name = "RotationDial", Mesh = new ImmediateMesh(), Visible = false, TopLevel = true };
             AddChild(_dial);
 
-            // Same pooling as the ruler's labels, and sized for the densest step the preference
-            // offers (1 degree would be 360, which is absurd to label -- 72 covers every step
-            // from 5 degrees up, and finer steps simply thin out on screen like the ruler's).
-            for (int n = 0; n < 72; n++)
+            // Four, one per world direction the ring's plane runs through. Degree numbers were
+            // the first attempt and read badly: two dozen figures round a circle, all of them
+            // needing to be related back to the object's own orientation before they mean
+            // anything. The reference viewer labels the directions instead, which answers the
+            // question actually being asked -- which way is this thing going to face.
+            for (int n = 0; n < 4; n++)
             {
                 var label = new Label3D
                 {
@@ -1018,18 +1020,6 @@ namespace SLNG.App.UI
             mesh.ClearSurfaces();
             mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, _dialMaterial);
 
-            // Thin the numbers out by how far apart the ticks land on screen, as the ruler does.
-            int labelEvery = DialMajorEvery;
-            if (!_camera.IsPositionBehind(_dragAxisOrigin))
-            {
-                var c2 = _camera.UnprojectPosition(_dragAxisOrigin);
-                var e2 = _camera.UnprojectPosition(_dragAxisOrigin + a * radius);
-                float perTick = Mathf.Tau * c2.DistanceTo(e2) / steps;
-                float needed = 4f * RulerLabelCharPixels * RulerLabelGapFactor;
-                if (perTick > 0.01f) labelEvery = Mathf.Max(1, Mathf.CeilToInt(needed / perTick));
-            }
-
-            int used = 0;
             for (int n = 0; n < steps; n++)
             {
                 float twist = n * step;
@@ -1038,21 +1028,20 @@ namespace SLNG.App.UI
                 float t = _dragStartRingAngle + (twist - startTwist);
                 var dir = a * Mathf.Cos(t) + b * Mathf.Sin(t);
 
-                bool major = n % labelEvery == 0;
-                float len = (major ? DialTickMajor : DialTickMinor) * arrowLength;
+                float len = (n % DialMajorEvery == 0 ? DialTickMajor : DialTickMinor) * arrowLength;
                 mesh.SurfaceAddVertex(dir * radius);
                 mesh.SurfaceAddVertex(dir * (radius + len));
-
-                if (major && used < _dialLabels.Count)
-                {
-                    var label = _dialLabels[used++];
-                    label.GlobalPosition = _dragAxisOrigin + dir * (radius + DialTickMajor * arrowLength * 2.2f);
-                    label.Text = $"{Mathf.RadToDeg(twist):0}°";
-                    label.Modulate = new Color(1f, 1f, 1f, _snapping ? 1f : 0.7f);
-                    label.Visible = true;
-                }
             }
-            for (int n = used; n < _dialLabels.Count; n++) _dialLabels[n].Visible = false;
+
+            // The four world directions this ring's plane runs through, at the dial's own
+            // extremes. Fixed in world space, so they stay put while the object turns past them
+            // -- which is what makes them a reference rather than a readout.
+            int axisA = (i + 1) % 3;
+            int axisB = (i + 2) % 3;
+            PlaceDirectionLabel(0, a, axisA, positive: true, radius, arrowLength);
+            PlaceDirectionLabel(1, -a, axisA, positive: false, radius, arrowLength);
+            PlaceDirectionLabel(2, b, axisB, positive: true, radius, arrowLength);
+            PlaceDirectionLabel(3, -b, axisB, positive: false, radius, arrowLength);
 
             // The dial's own circle, so the ticks read as one scale.
             for (int n = 0; n < RingSegments; n++)
@@ -1112,6 +1101,23 @@ namespace SLNG.App.UI
             }
 
             AddChild(_rings[i]);
+        }
+
+        /// <summary>Puts one direction label at a dial extreme. The name comes from the SL
+        /// axis and its sign: X is east/west, Y north/south, Z up/down.</summary>
+        private void PlaceDirectionLabel(int slot, Vector3 dir, int slAxis, bool positive, float radius, float arrowLength)
+        {
+            if (slot >= _dialLabels.Count) return;
+            var label = _dialLabels[slot];
+            label.GlobalPosition = _dragAxisOrigin + dir * (radius + DialTickMajor * arrowLength * 2.4f);
+            label.Text = L10n.Tr(slAxis switch
+            {
+                0 => positive ? "ui.build.dir_east" : "ui.build.dir_west",
+                1 => positive ? "ui.build.dir_north" : "ui.build.dir_south",
+                _ => positive ? "ui.build.dir_up" : "ui.build.dir_down",
+            });
+            label.Modulate = new Color(1f, 1f, 1f, _snapping ? 1f : 0.75f);
+            label.Visible = true;
         }
 
         private static Handle RingHandle(int i) => (Handle)((int)Handle.RingX + i);
