@@ -76,10 +76,16 @@ namespace SLNG.App.UI
         private const float RulerTickLength = 0.22f;
         private const float RulerOffset = 0.42f;
 
-        /// <summary>How many ticks the ruler draws either side of the object, and how often a
-        /// tick gets a printed coordinate. Labels are pooled, so this bounds the pool.</summary>
+        /// <summary>How many ticks the ruler draws either side of the object. Labels are pooled,
+        /// so this bounds the pool.</summary>
         private const int RulerHalfTicks = 24;
-        private const int RulerLabelEvery = 2;
+
+        /// <summary>Minimum screen distance between two printed coordinates, in pixels. How many
+        /// ticks get a label is derived from this per frame rather than fixed: the labels are a
+        /// constant size on screen while the ticks are not, so any fixed interval is either
+        /// sparse when zoomed in or an unreadable run of overlapping numbers when zoomed out
+        /// (live: "100m101m102m103m").</summary>
+        private const float RulerLabelMinPixels = 62f;
 
         /// <summary>How far the grid reaches, as a multiple of the camera's distance to the
         /// object, clamped to this range in metres. Sized at drag start rather than fixed: a
@@ -700,7 +706,9 @@ namespace SLNG.App.UI
             };
             AddChild(_ruler);
 
-            for (int n = 0; n <= (RulerHalfTicks * 2) / RulerLabelEvery; n++)
+            // Pool sized for the densest case, every tick labelled. The interval is decided per
+            // frame from screen spacing, so it can be as low as 1 when zoomed right in.
+            for (int n = 0; n <= RulerHalfTicks * 2; n++)
             {
                 var label = new Label3D
                 {
@@ -715,10 +723,10 @@ namespace SLNG.App.UI
                     // With it set, the text keeps one on-screen size wherever the object is --
                     // which is the only useful behaviour for a measurement readout.
                     FixedSize = true,
-                    PixelSize = 0.0011f,
+                    PixelSize = 0.00035f,
 
                     Modulate = new Color(1f, 1f, 1f, 0.95f),
-                    OutlineSize = 20,
+                    OutlineSize = 10,
                     OutlineModulate = new Color(0f, 0f, 0f, 0.9f),
                     Visible = false,
                     TopLevel = true,
@@ -767,6 +775,18 @@ namespace SLNG.App.UI
             };
             float firstTick = Mathf.Floor(slNow / _gridSpacing) * _gridSpacing - RulerHalfTicks * _gridSpacing;
 
+            // How far apart one grid step lands on screen decides how many ticks can carry a
+            // number without them colliding.
+            int labelEvery = 1;
+            if (!_camera.IsPositionBehind(GlobalPosition) && !_camera.IsPositionBehind(GlobalPosition + axis * _gridSpacing))
+            {
+                float stepPixels = _camera.UnprojectPosition(GlobalPosition)
+                    .DistanceTo(_camera.UnprojectPosition(GlobalPosition + axis * _gridSpacing));
+                labelEvery = stepPixels > 0.01f
+                    ? Mathf.Max(1, Mathf.CeilToInt(RulerLabelMinPixels / stepPixels))
+                    : RulerHalfTicks * 2;
+            }
+
             _ruler.GlobalPosition = GlobalPosition;
             var mesh = (ImmediateMesh)_ruler.Mesh;
             mesh.ClearSurfaces();
@@ -780,7 +800,7 @@ namespace SLNG.App.UI
                 // the object, so tick positions are relative to it.
                 float along = slAt - slNow;
                 var baseP = axis * along + perp * (RulerOffset * arrowLength);
-                bool major = labelIndex < _rulerLabels.Count && n % RulerLabelEvery == 0;
+                bool major = labelIndex < _rulerLabels.Count && n % labelEvery == 0;
 
                 mesh.SurfaceAddVertex(baseP);
                 mesh.SurfaceAddVertex(baseP + perp * (RulerTickLength * arrowLength * (major ? 1f : 0.55f)));
