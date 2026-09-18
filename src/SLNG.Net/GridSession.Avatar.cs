@@ -39,6 +39,11 @@ public sealed partial class GridSession
             RequestUnresolvedSeat(e.Simulator, e.Avatar.ParentID);
         }
 
+        // An avatar in view carries its LEGACY name in the ObjectUpdate's NameValues, so it never
+        // goes through OnUUIDNameReply and nothing would ever ask for its Display Name. Deduped
+        // inside RequestDisplayName, so calling it on every update is free after the first.
+        RequestDisplayName(e.Avatar.ID.Guid);
+
         AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
             e.Simulator.Handle,
             e.Avatar.LocalID,

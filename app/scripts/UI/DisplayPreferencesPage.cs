@@ -44,6 +44,48 @@ public partial class DisplayPreferencesPage : VBoxContainer
             locManager.CurrentLocale = newLang;
         };
         AddChild(langDropdown);
+        // FEAT-UI-30/31: the reference viewer's three nametag toggles
+        // (NameTagShowGroupTitles / NameTagShowDisplayNames / NameTagShowUsernames), all default
+        // on. Ordered the way the lines appear in the tag.
+        var titlesCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.show_group_titles"),
+            ButtonPressed = _settings.ShowGroupTitles,
+            TooltipText = L10n.Tr("ui.preferences.show_group_titles_tip"),
+        };
+        titlesCheck.Toggled += on => _settings.SetShowGroupTitles(on);
+        AddChild(titlesCheck);
+
+        var displayCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.show_display_names"),
+            ButtonPressed = _settings.ShowDisplayNames,
+            TooltipText = L10n.Tr("ui.preferences.show_display_names_tip"),
+        };
+        displayCheck.Toggled += on => _settings.SetShowDisplayNames(on);
+        AddChild(displayCheck);
+
+        // FEAT-UI-30: NOT a display toggle -- see UiSettings.HideOwnGroupTitle. Placed with
+        // them because that is where a user looks for it, but the tooltip has to say that this
+        // one actually reaches other people.
+        var hideOwnTitleCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.hide_own_group_title"),
+            ButtonPressed = _settings.HideOwnGroupTitle,
+            TooltipText = L10n.Tr("ui.preferences.hide_own_group_title_tip"),
+        };
+        hideOwnTitleCheck.Toggled += on => _settings.SetHideOwnGroupTitle(on);
+        AddChild(hideOwnTitleCheck);
+
+        var legacyCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.show_legacy_names"),
+            ButtonPressed = _settings.ShowLegacyNames,
+            TooltipText = L10n.Tr("ui.preferences.show_legacy_names_tip"),
+        };
+        legacyCheck.Toggled += on => _settings.SetShowLegacyNames(on);
+        AddChild(legacyCheck);
+
         
         var separator = new HSeparator();
         separator.AddThemeConstantOverride("separation", 15);
