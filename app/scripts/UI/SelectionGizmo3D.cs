@@ -268,6 +268,10 @@ namespace SLNG.App.UI
             {
                 if (!TryPlanePoint(mouse, handle, out var hit)) return false;
                 _dragStartPlanePoint = hit;
+
+                // Park the grid where the object started. TopLevel means it keeps this position
+                // for the whole drag instead of being dragged along.
+                _grids[(int)handle - (int)Handle.PlaneXY].GlobalPosition = _dragAxisOrigin;
             }
             else
             {
@@ -600,7 +604,17 @@ namespace SLNG.App.UI
             }
             mesh.SurfaceEnd();
 
-            _grids[i] = new MeshInstance3D { Name = $"Grid{PlaneHandle(i)}", Mesh = mesh, Visible = false };
+            // TopLevel: the grid must NOT inherit this node's transform. The gizmo follows the
+            // object every frame, so a child grid would travel with the thing being dragged and
+            // measure against itself. It is parked at the drag's start position instead and
+            // stays there, which is the only way it can show how far the object has come.
+            _grids[i] = new MeshInstance3D
+            {
+                Name = $"Grid{PlaneHandle(i)}",
+                Mesh = mesh,
+                Visible = false,
+                TopLevel = true,
+            };
             AddChild(_grids[i]);
         }
     }
