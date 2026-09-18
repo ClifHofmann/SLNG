@@ -298,6 +298,8 @@
       "toolbar_heading": "Buttons shown on the bottom bar:",
       "language_heading": "Language (requires reopening windows):",
       "ui_scale_heading": "UI Scale (windows & HUD):",
+      "build_grid_heading": "Build grid",
+      "build_grid_tip": "Cell size of the move gizmo's grid and the spacing of its axis ruler. Sliding the cursor off the axis while dragging snaps to these steps.",
       "hide_own_group_title": "Hide my group title from everyone",
       "hide_own_group_title_tip": "Stops the simulator sending your group title to anyone, including you. Unlike the options above this is not a local view setting -- other people really stop seeing it.",
       "show_group_titles": "Show group titles",

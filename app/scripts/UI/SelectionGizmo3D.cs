@@ -53,10 +53,33 @@ namespace SLNG.App.UI
         /// would vanish at range and look like a pipe up close.</summary>
         private const float GuideHalfLength = 512f;
 
-        /// <summary>The drag grid's cell size: 1 m, matching SL's own metre-based build grid.
-        /// Shown only on the plane actually being dragged — a grid on all three at once is
-        /// unreadable, and on a plane you are not using it is noise.</summary>
-        private const float GridSpacing = 1f;
+        /// <summary>The build grid's cell size in metres, and the spacing of the axis ruler's
+        /// ticks. Settable from preferences (default 1 m, SL's own build grid); pushed in by
+        /// Boot. Clamped on the way in, because a zero or negative spacing would generate an
+        /// infinite loop of grid lines.</summary>
+        public float GridSpacing
+        {
+            get => _gridSpacing;
+            set => _gridSpacing = Mathf.Clamp(value, 0.01f, 64f);
+        }
+
+        private float _gridSpacing = 1f;
+
+        /// <summary>How far, in screen pixels, the cursor has to stray sideways from the axis
+        /// before a single-axis drag snaps to the ruler's ticks. The ruler is drawn at roughly
+        /// this offset, so "slide the cursor out to the scale" is literally what engages it —
+        /// the same gesture the reference viewer uses, and it keeps free dragging available by
+        /// simply staying on the axis.</summary>
+        private const float RulerSnapPixels = 55f;
+
+        /// <summary>Tick length and label offset, as a fraction of the arrow length.</summary>
+        private const float RulerTickLength = 0.22f;
+        private const float RulerOffset = 0.42f;
+
+        /// <summary>How many ticks the ruler draws either side of the object, and how often a
+        /// tick gets a printed coordinate. Labels are pooled, so this bounds the pool.</summary>
+        private const int RulerHalfTicks = 24;
+        private const int RulerLabelEvery = 2;
 
         /// <summary>How far the grid reaches, as a multiple of the camera's distance to the
         /// object, clamped to this range in metres. Sized at drag start rather than fixed: a
@@ -113,6 +136,11 @@ namespace SLNG.App.UI
         private readonly StandardMaterial3D[] _planeMaterials = new StandardMaterial3D[3];
         private readonly MeshInstance3D[] _grids = new MeshInstance3D[3];
         private readonly StandardMaterial3D[] _gridMaterials = new StandardMaterial3D[3];
+
+        private MeshInstance3D _ruler = null!;
+        private StandardMaterial3D _rulerMaterial = null!;
+        private readonly System.Collections.Generic.List<Label3D> _rulerLabels = new();
+        private bool _snapping;
 
         private Entity? _entity;
         private uint _localId;
@@ -178,6 +206,7 @@ namespace SLNG.App.UI
             _entity = null;
             _dragging = Handle.None;
             _hovered = Handle.None;
+            _snapping = false;
             Visible = false;
         }
 
@@ -228,6 +257,8 @@ namespace SLNG.App.UI
                 _grids[i].Visible = gridOn;
                 if (gridOn) _grids[i].GlobalPosition = SnappedGridOrigin(i, GlobalPosition);
             }
+
+            UpdateRuler(length);
         }
 
         private static Handle PlaneHandle(int i) => (Handle)((int)Handle.PlaneXY + i);
@@ -247,8 +278,8 @@ namespace SLNG.App.UI
             var b = AxisDirGodot[ib];
             var n = AxisDirGodot[inormal];
 
-            float alongA = Mathf.Round(objectPos.Dot(a) / GridSpacing) * GridSpacing;
-            float alongB = Mathf.Round(objectPos.Dot(b) / GridSpacing) * GridSpacing;
+            float alongA = Mathf.Round(objectPos.Dot(a) / _gridSpacing) * _gridSpacing;
+            float alongB = Mathf.Round(objectPos.Dot(b) / _gridSpacing) * _gridSpacing;
             // The normal component is NOT snapped: the grid has to lie exactly in the plane the
             // object is moving in, not a metre above or below it.
             return a * alongA + b * alongB + n * objectPos.Dot(n);
@@ -356,6 +387,23 @@ namespace SLNG.App.UI
                     case Handle.Y: slPos.Y += delta; break;
                     case Handle.Z: slPos.Z += delta; break;
                 }
+
+                // Slide the cursor sideways off the axis and it snaps to the ruler's ticks --
+                // the reference viewer's gesture, and it leaves free dragging one mouse-width
+                // away rather than behind a modifier key. Snapped to ABSOLUTE multiples of the
+                // spacing, not to offsets from where the drag started, so the object lands on
+                // the round number the ruler prints rather than a round distance from wherever
+                // it happened to be.
+                _snapping = CursorIsOffAxis(mouse);
+                if (_snapping)
+                {
+                    switch (_dragging)
+                    {
+                        case Handle.X: slPos.X = Snap(slPos.X); break;
+                        case Handle.Y: slPos.Y = Snap(slPos.Y); break;
+                        case Handle.Z: slPos.Z = Snap(slPos.Z); break;
+                    }
+                }
             }
 
             ApplyLocal(slPos);
@@ -376,6 +424,7 @@ namespace SLNG.App.UI
         {
             if (_dragging == Handle.None) { return; }
             _dragging = Handle.None;
+            _snapping = false;
 
             var transform = _entity?.GetComponent<TransformComponent>();
             if (transform != null)
@@ -389,6 +438,30 @@ namespace SLNG.App.UI
         }
 
         private static bool IsPlane(Handle h) => h >= Handle.PlaneXY;
+
+        private float Snap(float v) => Mathf.Round(v / _gridSpacing) * _gridSpacing;
+
+        /// <summary>True when the cursor has strayed far enough sideways from the drag axis to
+        /// be "on the ruler". Measured against the axis's screen-space LINE rather than its
+        /// segment, so it stays true when the drag runs past the end of the arrow.</summary>
+        private bool CursorIsOffAxis(Vector2 mouse)
+        {
+            if (_camera.IsPositionBehind(GlobalPosition)) return false;
+            var axis = AxisDirGodot[(int)_dragging - 1];
+            var far = GlobalPosition + axis * _arrows[0].Scale.X;
+            if (_camera.IsPositionBehind(far)) return false;
+
+            var a = _camera.UnprojectPosition(GlobalPosition);
+            var b = _camera.UnprojectPosition(far);
+            var dir = b - a;
+            if (dir.LengthSquared() < 1e-6f) return false;
+            dir = dir.Normalized();
+
+            var rel = mouse - a;
+            // Perpendicular component only: how far off the line, ignoring how far along it.
+            float perp = Mathf.Abs(rel.X * dir.Y - rel.Y * dir.X);
+            return perp > RulerSnapPixels;
+        }
 
         /// <summary>Moves the object locally and tells the world, so the mesh follows the cursor
         /// without waiting for the simulator's echo. Same optimistic pattern as
@@ -596,6 +669,132 @@ namespace SLNG.App.UI
                 BuildPlaneHandle(i);
                 BuildGrid(i);
             }
+
+            BuildRuler();
+        }
+
+        /// <summary>The single-axis ruler: tick marks with printed coordinates, shown while an
+        /// axis is being dragged. TopLevel for the same reason the grid is — it is pinned in
+        /// world space so the object travels along it.
+        ///
+        /// <para>Labels are pooled rather than created per frame. The tick geometry is rebuilt
+        /// every frame because the ticks have to stay broadside to the camera, but allocating
+        /// fifty Label3D nodes per frame would not.</para></summary>
+        private void BuildRuler()
+        {
+            _rulerMaterial = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                AlbedoColor = new Color(1f, 1f, 1f, 0.85f),
+                NoDepthTest = true,
+                RenderPriority = 101,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            };
+
+            _ruler = new MeshInstance3D
+            {
+                Name = "Ruler",
+                Mesh = new ImmediateMesh(),
+                Visible = false,
+                TopLevel = true,
+            };
+            AddChild(_ruler);
+
+            for (int n = 0; n <= (RulerHalfTicks * 2) / RulerLabelEvery; n++)
+            {
+                var label = new Label3D
+                {
+                    Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
+                    NoDepthTest = true,
+                    RenderPriority = 102,
+                    FontSize = 48,
+                    PixelSize = 0.0006f,
+                    Modulate = new Color(1f, 1f, 1f, 0.9f),
+                    OutlineSize = 12,
+                    OutlineModulate = new Color(0f, 0f, 0f, 0.8f),
+                    Visible = false,
+                    TopLevel = true,
+                };
+                _rulerLabels.Add(label);
+                AddChild(label);
+            }
+        }
+
+        /// <summary>Redraws the ruler for the axis being dragged. Ticks sit at absolute whole
+        /// multiples of <see cref="GridSpacing"/> in SL coordinates, not at offsets from where
+        /// the drag began — that is what makes the printed numbers mean something and what the
+        /// snap lands on.</summary>
+        private void UpdateRuler(float arrowLength)
+        {
+            if (_dragging == Handle.None || IsPlane(_dragging) || _entity == null)
+            {
+                if (_ruler.Visible)
+                {
+                    _ruler.Visible = false;
+                    foreach (var l in _rulerLabels) l.Visible = false;
+                }
+                return;
+            }
+
+            int axisIndex = (int)_dragging - 1;
+            var axis = AxisDirGodot[axisIndex];
+            var transform = _entity.GetComponent<TransformComponent>();
+            if (transform == null) return;
+
+            // Broadside to the camera: perpendicular to the axis AND to the view direction, so
+            // the ticks are never seen edge-on and never collapse to nothing.
+            var view = (GlobalPosition - _camera.GlobalPosition).Normalized();
+            var perp = axis.Cross(view);
+            if (perp.LengthSquared() < 1e-6f) perp = axis.Cross(Vector3.Up);
+            if (perp.LengthSquared() < 1e-6f) perp = Vector3.Right;
+            perp = perp.Normalized();
+
+            // The SL coordinate this axis currently reads, so the ticks can be laid out on
+            // absolute metres rather than on the drag's own zero.
+            float slNow = axisIndex switch
+            {
+                0 => transform.Position.X,
+                1 => transform.Position.Y,
+                _ => transform.Position.Z,
+            };
+            float firstTick = Mathf.Floor(slNow / _gridSpacing) * _gridSpacing - RulerHalfTicks * _gridSpacing;
+
+            _ruler.GlobalPosition = GlobalPosition;
+            var mesh = (ImmediateMesh)_ruler.Mesh;
+            mesh.ClearSurfaces();
+            mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, _rulerMaterial);
+
+            int labelIndex = 0;
+            for (int n = 0; n <= RulerHalfTicks * 2; n++)
+            {
+                float slAt = firstTick + n * _gridSpacing;
+                // Distance from the object along the axis, in metres -- the ruler node sits at
+                // the object, so tick positions are relative to it.
+                float along = slAt - slNow;
+                var baseP = axis * along + perp * (RulerOffset * arrowLength);
+                bool major = labelIndex < _rulerLabels.Count && n % RulerLabelEvery == 0;
+
+                mesh.SurfaceAddVertex(baseP);
+                mesh.SurfaceAddVertex(baseP + perp * (RulerTickLength * arrowLength * (major ? 1f : 0.55f)));
+
+                if (major)
+                {
+                    var label = _rulerLabels[labelIndex++];
+                    label.GlobalPosition = GlobalPosition + baseP + perp * (RulerTickLength * arrowLength * 1.6f);
+                    label.Text = $"{slAt:0.##}m";
+                    label.Modulate = new Color(1f, 1f, 1f, _snapping ? 1f : 0.55f);
+                    label.Visible = true;
+                }
+            }
+
+            // The axis line itself, so the ticks read as one scale rather than floating marks.
+            mesh.SurfaceAddVertex(axis * (firstTick - slNow) + perp * (RulerOffset * arrowLength));
+            mesh.SurfaceAddVertex(axis * (firstTick + RulerHalfTicks * 2 * _gridSpacing - slNow) + perp * (RulerOffset * arrowLength));
+            mesh.SurfaceEnd();
+
+            _rulerMaterial.AlbedoColor = new Color(1f, 1f, 1f, _snapping ? 0.95f : 0.5f);
+            _ruler.Visible = true;
+            for (int i = labelIndex; i < _rulerLabels.Count; i++) _rulerLabels[i].Visible = false;
         }
 
         /// <summary>The two-axis handle: a filled triangle in the plane's own two axes, coloured
@@ -679,10 +878,10 @@ namespace SLNG.App.UI
             var mesh = (ImmediateMesh)_grids[i].Mesh;
             mesh.ClearSurfaces();
             mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, _gridMaterials[i]);
-            int half = Mathf.Max(1, Mathf.RoundToInt(extent / GridSpacing));
+            int half = Mathf.Max(1, Mathf.RoundToInt(extent / _gridSpacing));
             for (int n = -half; n <= half; n++)
             {
-                float o = n * GridSpacing;
+                float o = n * _gridSpacing;
                 mesh.SurfaceAddVertex(a * o + b * -extent);
                 mesh.SurfaceAddVertex(a * o + b * extent);
                 mesh.SurfaceAddVertex(a * -extent + b * o);

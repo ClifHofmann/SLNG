@@ -323,7 +323,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.27-alpha";
+    public const string AppVersion = "v0.23.28-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3191,6 +3191,11 @@ public partial class Boot : Control
             AddChild(_selectionGizmo);
             _selectionGizmo.Initialize(_world, _session, _avatarController);
             _objectSelectionController.AttachGizmo(_selectionGizmo);
+            _selectionGizmo.GridSpacing = _uiSettings.BuildGridSpacing;
+            _uiSettings.BuildGridSpacingChanged += m =>
+            {
+                if (_selectionGizmo != null) _selectionGizmo.GridSpacing = m;
+            };
 
             _cursorManager = new SLNG.App.CursorManager();
             AddChild(_cursorManager);

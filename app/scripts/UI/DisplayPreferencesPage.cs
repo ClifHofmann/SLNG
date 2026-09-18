@@ -87,6 +87,23 @@ public partial class DisplayPreferencesPage : VBoxContainer
         AddChild(legacyCheck);
 
         
+        // FEAT-UI-04: the build grid's granularity, the way a paint program exposes its grid.
+        // The listed steps are the ones SL builders actually use; finer than 1 cm is below what
+        // the simulator's position precision can hold anyway.
+        var gridHeading = new Label { Text = L10n.Tr("ui.preferences.build_grid_heading") };
+        gridHeading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
+        AddChild(gridHeading);
+
+        var gridDropdown = new OptionButton { TooltipText = L10n.Tr("ui.preferences.build_grid_tip") };
+        float[] steps = { 0.01f, 0.05f, 0.1f, 0.25f, 0.5f, 1f, 2f, 5f, 10f };
+        for (int i = 0; i < steps.Length; i++)
+        {
+            gridDropdown.AddItem($"{steps[i]:0.##} m");
+            if (Mathf.IsEqualApprox(steps[i], _settings.BuildGridSpacing)) gridDropdown.Select(i);
+        }
+        gridDropdown.ItemSelected += index => _settings.SetBuildGridSpacing(steps[(int)index]);
+        AddChild(gridDropdown);
+
         var separator = new HSeparator();
         separator.AddThemeConstantOverride("separation", 15);
         AddChild(separator);
