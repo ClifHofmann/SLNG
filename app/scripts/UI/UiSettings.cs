@@ -24,6 +24,19 @@ public sealed class UiSettings
     /// An avatar that never set a Display Name has only the one line either way.</summary>
     public bool ShowLegacyNames { get; private set; } = true;
 
+    /// <summary>FEAT-UI-30: whether group titles appear in nametags. Mirrors the reference
+    /// viewer's <c>NameTagShowGroupTitles</c>, default on. Purely local -- it changes what YOU
+    /// see, including above your own avatar; it cannot stop anyone else seeing your title,
+    /// because the simulator broadcasts it. The only way to not have one shown is to hold no
+    /// active group, or a role whose title is blank.</summary>
+    public bool ShowGroupTitles { get; private set; } = true;
+
+    /// <summary>FEAT-UI-31: whether Display Names are used at all. Mirrors the reference viewer's
+    /// <c>NameTagShowDisplayNames</c>, default on. Off means every nametag shows the username,
+    /// and the parenthesised second line disappears with it -- there is nothing left to
+    /// disambiguate.</summary>
+    public bool ShowDisplayNames { get; private set; } = true;
+
     public void Load()
     {
         var cfg = new ConfigFile();
@@ -33,6 +46,8 @@ public sealed class UiSettings
             Language = (string)cfg.GetValue(Section, "language", "en-US");
             ShowTopBarFps = (bool)cfg.GetValue(Section, "show_top_bar_fps", true);
             ShowLegacyNames = (bool)cfg.GetValue(Section, "show_legacy_names", true);
+            ShowGroupTitles = (bool)cfg.GetValue(Section, "show_group_titles", true);
+            ShowDisplayNames = (bool)cfg.GetValue(Section, "show_display_names", true);
         }
         SLNGWindow.SetGlobalUiScale(Scale);
     }
@@ -49,10 +64,39 @@ public sealed class UiSettings
         cfg.SetValue(Section, "show_legacy_names", ShowLegacyNames);
         cfg.Save(ConfigPath);
 
-        ShowLegacyNamesChanged?.Invoke(ShowLegacyNames);
+        NameTagOptionsChanged?.Invoke();
     }
 
-    public event System.Action<bool>? ShowLegacyNamesChanged;
+    /// <summary>FEAT-UI-30.</summary>
+    public void SetShowGroupTitles(bool show)
+    {
+        ShowGroupTitles = show;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "show_group_titles", ShowGroupTitles);
+        cfg.Save(ConfigPath);
+
+        NameTagOptionsChanged?.Invoke();
+    }
+
+    /// <summary>FEAT-UI-31.</summary>
+    public void SetShowDisplayNames(bool show)
+    {
+        ShowDisplayNames = show;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "show_display_names", ShowDisplayNames);
+        cfg.Save(ConfigPath);
+
+        NameTagOptionsChanged?.Invoke();
+    }
+
+    /// <summary>Raised when any of the three nametag toggles changes. One event rather than three,
+    /// because the renderer's reaction is the same for all of them: re-read all three and rebuild
+    /// the live tags.</summary>
+    public event System.Action? NameTagOptionsChanged;
 
     public void SetShowTopBarFps(bool show)
     {

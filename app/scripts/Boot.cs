@@ -322,7 +322,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.18-alpha";
+    public const string AppVersion = "v0.23.19-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1158,11 +1158,14 @@ public partial class Boot : Control
         // FEAT-UI-31: same shape -- push the stored value in once, then follow the setting. The
         // renderer refreshes live tags itself when this changes, so a motionless avatar does not
         // keep the old one until it moves.
-        if (_avatarRenderer != null) _avatarRenderer.ShowLegacyNames = _uiSettings.ShowLegacyNames;
-        _uiSettings.ShowLegacyNamesChanged += on =>
+        void PushNameTagOptions()
         {
-            if (_avatarRenderer != null) _avatarRenderer.ShowLegacyNames = on;
-        };
+            if (_avatarRenderer == null) return;
+            _avatarRenderer.NameTags = new AvatarRenderer.NameTagOptions(
+                _uiSettings.ShowGroupTitles, _uiSettings.ShowDisplayNames, _uiSettings.ShowLegacyNames);
+        }
+        PushNameTagOptions();
+        _uiSettings.NameTagOptionsChanged += PushNameTagOptions;
         var animationPage = new SLNG.App.UI.AnimationPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_animation"), animationPage);
         animationPage.Initialize(_animationSettings);

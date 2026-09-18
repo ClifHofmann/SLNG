@@ -376,7 +376,7 @@ public partial class AvatarRenderer : Node3D
         // Add the visual root to the tree first so all sub-nodes inherit the active scene tree lifecycle
         AddChild(visual.Root);
 
-        BuildNameTagText(avatar, ShowLegacyNames, out string nameText, out string legacyText);
+        BuildNameTagText(avatar, _nameTags, out string nameText, out string legacyText);
 
         var panel = new Godot.PanelContainer { Name = "NameTag" };
         var styleBox = new Godot.StyleBoxFlat
@@ -968,7 +968,7 @@ public partial class AvatarRenderer : Node3D
             var legacyLabel = panel.GetNodeOrNull<Godot.Label>("Lines/Legacy");
             if (label != null)
             {
-                BuildNameTagText(avatar, ShowLegacyNames, out string nameText, out string legacyText);
+                BuildNameTagText(avatar, _nameTags, out string nameText, out string legacyText);
 
                 if (label.Text != nameText)
                     label.Text = nameText;
@@ -1355,23 +1355,22 @@ public partial class AvatarRenderer : Node3D
     /// told behaves like the setting rather than against it.</summary>
     public bool SeatPoseOverridesAo { get; set; }
 
-    /// <summary>FEAT-UI-31: whether the legacy username line is shown under a Display Name.
-    /// Pushed in by Boot from <see cref="SLNG.App.UI.UiSettings.ShowLegacyNames"/>, same pattern
-    /// as <see cref="SeatPoseOverridesAo"/> -- a plain bool because it is read for every visible
-    /// avatar. Setting it refreshes the existing tags rather than waiting for the next avatar
-    /// update, which for a motionless avatar could be never.</summary>
-    public bool ShowLegacyNames
+    /// <summary>FEAT-UI-30/31: which nametag parts to show. Pushed in by Boot from
+    /// <see cref="SLNG.App.UI.UiSettings"/>, same pattern as <see cref="SeatPoseOverridesAo"/>.
+    /// Setting it refreshes the existing tags rather than waiting for the next avatar update,
+    /// which for a motionless avatar could be never.</summary>
+    public NameTagOptions NameTags
     {
-        get => _showLegacyNames;
+        get => _nameTags;
         set
         {
-            if (_showLegacyNames == value) return;
-            _showLegacyNames = value;
+            if (_nameTags == value) return;
+            _nameTags = value;
             RefreshAllNameTags();
         }
     }
 
-    private bool _showLegacyNames = true;
+    private NameTagOptions _nameTags = NameTagOptions.Default;
 
     /// <summary>Rebuilds every live nametag's text in place. Only called when the preference
     /// changes, so walking the dictionary is fine.</summary>
@@ -1384,7 +1383,7 @@ public partial class AvatarRenderer : Node3D
             var avatar = entity?.GetComponent<AvatarComponent>();
             if (avatar == null) continue;
 
-            BuildNameTagText(avatar, _showLegacyNames, out string main, out string legacy);
+            BuildNameTagText(avatar, _nameTags, out string main, out string legacy);
             var label = panel.GetNodeOrNull<Godot.Label>("Lines/Label");
             var legacyLabel = panel.GetNodeOrNull<Godot.Label>("Lines/Legacy");
             if (label != null) label.Text = main;
@@ -4809,18 +4808,27 @@ void fragment() {
     /// <para>Line order matches the reference viewer: the group TITLE sits above the name. It is
     /// the active group's role title, not the group's name, and an avatar with no active group
     /// simply has no such line (<see cref="AvatarComponent.GroupTitle"/>).</para></summary>
-    /// <summary>FEAT-UI-31: the nametag's two lines. Split because they are rendered at
-    /// different sizes -- the legacy username sits under the Display Name in parentheses, a size
-    /// smaller, the way the reference viewer shows it.
+    /// <summary>FEAT-UI-30/31: which parts of a nametag are shown. Mirrors the reference
+    /// viewer's three settings -- <c>NameTagShowGroupTitles</c>, <c>NameTagShowDisplayNames</c>
+    /// and <c>NameTagShowUsernames</c> -- all default on. Grouped into one struct so the three
+    /// travel together and a new one cannot be forgotten at a call site.</summary>
+    public readonly record struct NameTagOptions(bool GroupTitles, bool DisplayNames, bool Usernames)
+    {
+        public static readonly NameTagOptions Default = new(true, true, true);
+    }
+
+    /// <summary>FEAT-UI-31: the nametag's two lines. Split because they render at different sizes
+    /// -- the username sits under the Display Name in parentheses, a size smaller, the way the
+    /// reference viewer shows it.
     ///
-    /// <para>The legacy line appears only when there IS a Display Name to distinguish it from.
-    /// An avatar that never set one would otherwise get its name printed twice, once plain and
-    /// once in brackets.</para>
+    /// <para>The username line only appears when there IS a Display Name to distinguish it from.
+    /// An avatar that never set one, or a viewer with Display Names switched off, would otherwise
+    /// get the same name printed twice, once plain and once in brackets.</para>
     ///
     /// <para>Line order in <paramref name="main"/> matches the reference viewer: group TITLE
     /// above the name. The title is the active group's role title, not the group's name.</para>
     /// </summary>
-    private static void BuildNameTagText(AvatarComponent avatar, bool showLegacy,
+    private static void BuildNameTagText(AvatarComponent avatar, NameTagOptions options,
         out string main, out string legacy)
     {
         var legacyName = avatar.FirstName;
@@ -4829,16 +4837,17 @@ void fragment() {
             legacyName += $" {avatar.LastName}";
         }
 
-        bool hasDisplayName = !string.IsNullOrEmpty(avatar.DisplayName)
+        bool hasDisplayName = options.DisplayNames
+                              && !string.IsNullOrEmpty(avatar.DisplayName)
                               && avatar.DisplayName != legacyName;
 
         main = hasDisplayName ? avatar.DisplayName : legacyName;
-        if (!string.IsNullOrEmpty(avatar.GroupTitle))
+        if (options.GroupTitles && !string.IsNullOrEmpty(avatar.GroupTitle))
         {
             main = $"{avatar.GroupTitle}\n{main}";
         }
 
-        legacy = hasDisplayName && showLegacy ? $"({legacyName})" : string.Empty;
+        legacy = hasDisplayName && options.Usernames ? $"({legacyName})" : string.Empty;
     }
 
     private static readonly HashSet<string> BodyPoseJoints = new(StringComparer.OrdinalIgnoreCase)

@@ -44,7 +44,27 @@ public partial class DisplayPreferencesPage : VBoxContainer
             locManager.CurrentLocale = newLang;
         };
         AddChild(langDropdown);
-        // FEAT-UI-31
+        // FEAT-UI-30/31: the reference viewer's three nametag toggles
+        // (NameTagShowGroupTitles / NameTagShowDisplayNames / NameTagShowUsernames), all default
+        // on. Ordered the way the lines appear in the tag.
+        var titlesCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.show_group_titles"),
+            ButtonPressed = _settings.ShowGroupTitles,
+            TooltipText = L10n.Tr("ui.preferences.show_group_titles_tip"),
+        };
+        titlesCheck.Toggled += on => _settings.SetShowGroupTitles(on);
+        AddChild(titlesCheck);
+
+        var displayCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.show_display_names"),
+            ButtonPressed = _settings.ShowDisplayNames,
+            TooltipText = L10n.Tr("ui.preferences.show_display_names_tip"),
+        };
+        displayCheck.Toggled += on => _settings.SetShowDisplayNames(on);
+        AddChild(displayCheck);
+
         var legacyCheck = new CheckBox
         {
             Text = L10n.Tr("ui.preferences.show_legacy_names"),
