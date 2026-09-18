@@ -219,6 +219,7 @@ namespace SLNG.App.UI
         private readonly MeshInstance3D[] _rings = new MeshInstance3D[3];
         private MeshInstance3D _dial = null!;
         private StandardMaterial3D _dialMaterial = null!;
+        private StandardMaterial3D _needleMaterial = null!;
         private readonly System.Collections.Generic.List<Label3D> _dialLabels = new();
         private readonly StandardMaterial3D[] _ringMaterials = new StandardMaterial3D[3];
         private readonly StandardMaterial3D[] _gridMaterials = new StandardMaterial3D[3];
@@ -956,6 +957,17 @@ namespace SLNG.App.UI
                 Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
             };
 
+            // The needle and the tick it rests on get their own material, so they can carry the
+            // axis colour while the scale stays neutral -- a second surface on the same
+            // ImmediateMesh rather than a second node, since they are drawn together anyway.
+            _needleMaterial = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                NoDepthTest = true,
+                RenderPriority = 103,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            };
+
             // TopLevel and pinned at the drag origin, same as the linear ruler and the grid: a
             // scale that travels with what it measures measures nothing.
             _dial = new MeshInstance3D { Name = "RotationDial", Mesh = new ImmediateMesh(), Visible = false, TopLevel = true };
@@ -1047,14 +1059,6 @@ namespace SLNG.App.UI
             // object's CURRENT rotation rather than from the cursor, so when a snap is active it
             // lands exactly on a tick instead of hovering a degree or two off it and quietly
             // contradicting the thing it is meant to confirm.
-            var nowTransform = _entity?.GetComponent<TransformComponent>();
-            if (nowTransform != null
-                && TryProjectSlAxis(_dragObjectAxis, nowTransform.Rotation, a, b, out var nowDir))
-            {
-                mesh.SurfaceAddVertex(Vector3.Zero);
-                mesh.SurfaceAddVertex(nowDir * (radius + DialTickMajor * arrowLength));
-            }
-
             // The dial's own circle, so the ticks read as one scale.
             for (int n = 0; n < RingSegments; n++)
             {
@@ -1064,6 +1068,29 @@ namespace SLNG.App.UI
                 mesh.SurfaceAddVertex((a * Mathf.Cos(t1) + b * Mathf.Sin(t1)) * radius);
             }
             mesh.SurfaceEnd();
+
+            // Second surface: the needle, in the ring's own colour so it reads as part of the
+            // handle rather than part of the scale, plus a long bright tick under it while
+            // snapped -- the detent is worth showing, not just feeling.
+            var nowTransform = _entity?.GetComponent<TransformComponent>();
+            if (nowTransform != null
+                && TryProjectSlAxis(_dragObjectAxis, nowTransform.Rotation, a, b, out var nowDir))
+            {
+                mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, _needleMaterial);
+                mesh.SurfaceAddVertex(Vector3.Zero);
+                mesh.SurfaceAddVertex(nowDir * (radius + DialTickMajor * arrowLength));
+
+                if (_snapping)
+                {
+                    mesh.SurfaceAddVertex(nowDir * (radius - DialTickMajor * arrowLength * 0.5f));
+                    mesh.SurfaceAddVertex(nowDir * (radius + DialTickMajor * arrowLength * 1.6f));
+                }
+                mesh.SurfaceEnd();
+            }
+
+            var needle = AxisColor[i];
+            needle.A = _snapping ? 1f : 0.8f;
+            _needleMaterial.AlbedoColor = needle;
 
             _dialMaterial.AlbedoColor = new Color(1f, 1f, 1f, _snapping ? 0.95f : 0.45f);
             _dial.Visible = true;
