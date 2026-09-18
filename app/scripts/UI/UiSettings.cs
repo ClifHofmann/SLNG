@@ -37,6 +37,13 @@ public sealed class UiSettings
     /// disambiguate.</summary>
     public bool ShowDisplayNames { get; private set; } = true;
 
+    /// <summary>FEAT-UI-30: hide the local agent's group title from EVERYONE. Unlike the three
+    /// toggles above this is NOT a display setting -- it rides the AgentUpdate packet as
+    /// AU_FLAGS_HIDETITLE and the simulator stops broadcasting the title, so other people's
+    /// viewers never receive it. Mirrors the reference viewer's <c>RenderHideGroupTitle</c>,
+    /// default OFF.</summary>
+    public bool HideOwnGroupTitle { get; private set; }
+
     public void Load()
     {
         var cfg = new ConfigFile();
@@ -48,6 +55,7 @@ public sealed class UiSettings
             ShowLegacyNames = (bool)cfg.GetValue(Section, "show_legacy_names", true);
             ShowGroupTitles = (bool)cfg.GetValue(Section, "show_group_titles", true);
             ShowDisplayNames = (bool)cfg.GetValue(Section, "show_display_names", true);
+            HideOwnGroupTitle = (bool)cfg.GetValue(Section, "hide_own_group_title", false);
         }
         SLNGWindow.SetGlobalUiScale(Scale);
     }
@@ -92,6 +100,22 @@ public sealed class UiSettings
 
         NameTagOptionsChanged?.Invoke();
     }
+
+    /// <summary>FEAT-UI-30. Separate event from the display toggles: this one has to reach
+    /// GridSession, not the renderer, because it changes an outgoing packet.</summary>
+    public void SetHideOwnGroupTitle(bool hide)
+    {
+        HideOwnGroupTitle = hide;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "hide_own_group_title", HideOwnGroupTitle);
+        cfg.Save(ConfigPath);
+
+        HideOwnGroupTitleChanged?.Invoke(HideOwnGroupTitle);
+    }
+
+    public event System.Action<bool>? HideOwnGroupTitleChanged;
 
     /// <summary>Raised when any of the three nametag toggles changes. One event rather than three,
     /// because the renderer's reaction is the same for all of them: re-read all three and rebuild

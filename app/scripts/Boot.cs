@@ -322,7 +322,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.19-alpha";
+    public const string AppVersion = "v0.23.20-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1166,6 +1166,15 @@ public partial class Boot : Control
         }
         PushNameTagOptions();
         _uiSettings.NameTagOptionsChanged += PushNameTagOptions;
+
+        // FEAT-UI-30: this one goes to the SESSION, not the renderer -- it is a bit on the
+        // outgoing AgentUpdate, so it only takes effect while connected and has to be re-applied
+        // on each login.
+        if (_session != null) _session.HideOwnGroupTitle = _uiSettings.HideOwnGroupTitle;
+        _uiSettings.HideOwnGroupTitleChanged += hide =>
+        {
+            if (_session != null) _session.HideOwnGroupTitle = hide;
+        };
         var animationPage = new SLNG.App.UI.AnimationPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_animation"), animationPage);
         animationPage.Initialize(_animationSettings);

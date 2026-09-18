@@ -92,6 +92,14 @@ public sealed partial class GridSession
     /// </summary>
     public bool HeadFollowsCamera { get; set; } = false;
 
+    /// <summary>FEAT-UI-30: hide the local agent's group title from EVERYONE, not just locally.
+    /// Mirrors the reference viewer's <c>RenderHideGroupTitle</c> (default off, "Don't show my
+    /// group title in my name label"), which reaches the grid as <c>AU_FLAGS_HIDETITLE</c> on the
+    /// AgentUpdate packet -- the simulator then leaves the Title NameValue off the broadcast.
+    /// Distinct from the purely local nametag toggles in UiSettings: this one changes what other
+    /// people's viewers receive.</summary>
+    public bool HideOwnGroupTitle { get; set; }
+
     private bool _playTypingAnimation = false;
 
     /// <summary>
@@ -244,6 +252,15 @@ public sealed partial class GridSession
 
         // FEAT-ANIM-10: BodyRotation is always the avatar's body facing; HeadRotation follows
         // the camera rotation if HeadFollowsCamera is enabled, or stays aligned with the body if disabled.
+        // FEAT-UI-30: hiding your own group title is NOT a local display setting -- it is a bit
+        // in the AgentUpdate packet (AU_FLAGS_HIDETITLE, llviewermessage.cpp's send_agent_update
+        // from gAgent.isGroupTitleHidden(), fed by the stock RenderHideGroupTitle setting). The
+        // SIMULATOR then stops broadcasting the title, so it disappears for everyone, not just
+        // for you. Set on every update because Movement.Flags travels with the packet.
+        _client.Self.Movement.Flags = HideOwnGroupTitle
+            ? LibreMetaverse.AgentFlags.HideTitle
+            : LibreMetaverse.AgentFlags.None;
+
         _client.Self.Movement.BodyRotation = slBodyQuat;
         _client.Self.Movement.HeadRotation = HeadFollowsCamera ? slCameraQuat : slBodyQuat;
 

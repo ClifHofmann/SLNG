@@ -65,6 +65,18 @@ public partial class DisplayPreferencesPage : VBoxContainer
         displayCheck.Toggled += on => _settings.SetShowDisplayNames(on);
         AddChild(displayCheck);
 
+        // FEAT-UI-30: NOT a display toggle -- see UiSettings.HideOwnGroupTitle. Placed with
+        // them because that is where a user looks for it, but the tooltip has to say that this
+        // one actually reaches other people.
+        var hideOwnTitleCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.hide_own_group_title"),
+            ButtonPressed = _settings.HideOwnGroupTitle,
+            TooltipText = L10n.Tr("ui.preferences.hide_own_group_title_tip"),
+        };
+        hideOwnTitleCheck.Toggled += on => _settings.SetHideOwnGroupTitle(on);
+        AddChild(hideOwnTitleCheck);
+
         var legacyCheck = new CheckBox
         {
             Text = L10n.Tr("ui.preferences.show_legacy_names"),
