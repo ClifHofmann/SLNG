@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-04`
 - **Track:** `ui` / `render`
-- **Status:** `🧪 Review` (Move-Pass umgesetzt, in-world noch nicht bestätigt)
+- **Status:** `🧪 Review` (Move, Rotate und Scale umgesetzt; Scale in-world noch nicht bestätigt)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -79,4 +79,7 @@ through the numeric fields.
       lead-the-cursor-out gesture as the linear ruler. Labelled with the four world
       directions the ring's plane runs through (`v0.23.45-alpha`, reference-viewer parity),
       not degree numbers.
-- [ ] Scale gizmo (corner handles / cube) — separate follow-up pass, not blocking Move.
+- [x] Scale gizmo (`v0.23.52-alpha`) — six face handles and eight corner handles on the
+      object's own box, reached with **Ctrl+Shift**. Face stretches one local axis with the
+      opposite face anchored (`ScaleUniform` is off by default in the reference viewer);
+      corner scales all three about the opposite corner.
