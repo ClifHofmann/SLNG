@@ -635,17 +635,6 @@ public sealed partial class GridSession
         var pos = _client.Self.SimPosition;
         var rot = _client.Self.SimRotation;
 
-        // BUG-NET-17 follow-up: print what this resync is actually syncing TO. The bug came back
-        // in-world on 2026-09-18 (same-region landmark teleport, Z left at the old height), and
-        // the handling in ApplyAvatarUpdate reads correct -- which points at this position
-        // already being wrong when we read it. TeleportAsync returns on the teleport-finished
-        // event, but Self.SimPosition is refreshed from the agent's next ObjectUpdate, so there
-        // is a window where it still holds the OLD location. One line per teleport, which is not
-        // a rate anyone will notice, and it is the difference between "we synced to the wrong
-        // place" and "we synced correctly and something later moved it".
-        Console.WriteLine($"[Teleport] resync to {pos.X:0.0},{pos.Y:0.0},{pos.Z:0.0} " +
-                          $"in {sim.Name} (agent localId {_client.Self.LocalID})");
-
         AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
             sim.Handle,
             _client.Self.LocalID,
