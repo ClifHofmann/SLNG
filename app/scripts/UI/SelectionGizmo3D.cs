@@ -53,11 +53,19 @@ namespace SLNG.App.UI
         /// would vanish at range and look like a pipe up close.</summary>
         private const float GuideHalfLength = 512f;
 
-        /// <summary>The drag grid: 1 m cells out to 12 m, matching SL's own metre-based build
-        /// grid. Shown only on the plane actually being dragged — a grid on all three at once is
+        /// <summary>The drag grid's cell size: 1 m, matching SL's own metre-based build grid.
+        /// Shown only on the plane actually being dragged — a grid on all three at once is
         /// unreadable, and on a plane you are not using it is noise.</summary>
         private const float GridSpacing = 1f;
-        private const int GridHalfCells = 12;
+
+        /// <summary>How far the grid reaches, as a multiple of the camera's distance to the
+        /// object, clamped to this range in metres. Sized at drag start rather than fixed: a
+        /// grid that ends inside the visible area looks like a rug, and one large enough for a
+        /// distant view is a moiré haze up close. The reference viewer's covers the view, which
+        /// is what this reproduces.</summary>
+        private const float GridExtentPerDistance = 1.6f;
+        private const float GridExtentMin = 12f;
+        private const float GridExtentMax = 96f;
 
         /// <summary>Minimum world movement before an intermediate update goes to the simulator.
         /// Sub-millimetre jitter from pixel-quantised cursor input would otherwise put a packet on
@@ -104,6 +112,7 @@ namespace SLNG.App.UI
         private readonly MeshInstance3D[] _planeQuads = new MeshInstance3D[3];
         private readonly StandardMaterial3D[] _planeMaterials = new StandardMaterial3D[3];
         private readonly MeshInstance3D[] _grids = new MeshInstance3D[3];
+        private readonly StandardMaterial3D[] _gridMaterials = new StandardMaterial3D[3];
 
         private Entity? _entity;
         private uint _localId;
@@ -271,7 +280,9 @@ namespace SLNG.App.UI
 
                 // Park the grid where the object started. TopLevel means it keeps this position
                 // for the whole drag instead of being dragged along.
-                _grids[(int)handle - (int)Handle.PlaneXY].GlobalPosition = _dragAxisOrigin;
+                int gi = (int)handle - (int)Handle.PlaneXY;
+                _grids[gi].GlobalPosition = _dragAxisOrigin;
+                BuildGridMesh(gi, GridExtentFor(_dragAxisOrigin));
             }
             else
             {
@@ -578,10 +589,6 @@ namespace SLNG.App.UI
         /// plane is being dragged.</summary>
         private void BuildGrid(int i)
         {
-            var (ia, ib, _) = Planes[i];
-            var a = AxisDirGodot[ia];
-            var b = AxisDirGodot[ib];
-
             var mat = new StandardMaterial3D
             {
                 ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
@@ -591,18 +598,7 @@ namespace SLNG.App.UI
                 Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
             };
 
-            var mesh = new ImmediateMesh();
-            mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, mat);
-            float extent = GridHalfCells * GridSpacing;
-            for (int n = -GridHalfCells; n <= GridHalfCells; n++)
-            {
-                float o = n * GridSpacing;
-                mesh.SurfaceAddVertex(a * o + b * -extent);
-                mesh.SurfaceAddVertex(a * o + b * extent);
-                mesh.SurfaceAddVertex(a * -extent + b * o);
-                mesh.SurfaceAddVertex(a * extent + b * o);
-            }
-            mesh.SurfaceEnd();
+            _gridMaterials[i] = mat;
 
             // TopLevel: the grid must NOT inherit this node's transform. The gizmo follows the
             // object every frame, so a child grid would travel with the thing being dragged and
@@ -611,11 +607,41 @@ namespace SLNG.App.UI
             _grids[i] = new MeshInstance3D
             {
                 Name = $"Grid{PlaneHandle(i)}",
-                Mesh = mesh,
+                Mesh = new ImmediateMesh(),
                 Visible = false,
                 TopLevel = true,
             };
             AddChild(_grids[i]);
+            BuildGridMesh(i, GridExtentMin);
+        }
+
+        /// <summary>How far the grid should reach for an object at <paramref name="at"/>, from
+        /// the camera's current distance to it.</summary>
+        private float GridExtentFor(Vector3 at)
+            => Mathf.Clamp(_camera.GlobalPosition.DistanceTo(at) * GridExtentPerDistance,
+                           GridExtentMin, GridExtentMax);
+
+        /// <summary>(Re)builds one plane's grid lines at the given half-extent. Cheap enough to
+        /// redo per drag (a few hundred vertices) and only ever called on mouse-down.</summary>
+        private void BuildGridMesh(int i, float extent)
+        {
+            var (ia, ib, _) = Planes[i];
+            var a = AxisDirGodot[ia];
+            var b = AxisDirGodot[ib];
+
+            var mesh = (ImmediateMesh)_grids[i].Mesh;
+            mesh.ClearSurfaces();
+            mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, _gridMaterials[i]);
+            int half = Mathf.Max(1, Mathf.RoundToInt(extent / GridSpacing));
+            for (int n = -half; n <= half; n++)
+            {
+                float o = n * GridSpacing;
+                mesh.SurfaceAddVertex(a * o + b * -extent);
+                mesh.SurfaceAddVertex(a * o + b * extent);
+                mesh.SurfaceAddVertex(a * -extent + b * o);
+                mesh.SurfaceAddVertex(a * extent + b * o);
+            }
+            mesh.SurfaceEnd();
         }
     }
 }
