@@ -346,7 +346,11 @@ namespace SLNG.App.UI
                 _arrows[i].Visible = moving;
                 _planeQuads[i].Visible = moving;
                 _guides[i].Visible = moving;
-                _rings[i].Visible = !moving;
+                // Only the ring being turned, once a turn is under way. Three tori and a dial
+                // on top of each other is unreadable, and the two you are not using tell you
+                // nothing -- the reference viewer drops them for the same reason.
+                _rings[i].Visible = !moving
+                    && (_dragging == Handle.None || RingHandle(i) == _dragging);
 
                 bool ringLit = active == RingHandle(i);
                 var ringColor = AxisColor[i];
