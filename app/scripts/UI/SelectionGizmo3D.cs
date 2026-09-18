@@ -28,12 +28,12 @@ namespace SLNG.App.UI
     {
         /// <summary>A single-axis handle (X/Y/Z) or a two-axis plane handle. A plane is named by
         /// the two axes it moves in; its normal is the third.</summary>
-        public enum Handle { None, X, Y, Z, PlaneXY, PlaneXZ, PlaneYZ, RingX, RingY, RingZ }
+        public enum Handle { None, X, Y, Z, PlaneXY, PlaneXZ, PlaneYZ, RingX, RingY, RingZ, Scale }
 
         /// <summary>Which manipulator is showing. Chosen by holding Ctrl (reference-viewer
         /// parity) rather than by a control in the edit window, so it is decided in _Process
         /// rather than pushed in.</summary>
-        public enum Tool { Move, Rotate }
+        public enum Tool { Move, Rotate, Scale }
 
         public Tool ActiveTool
         {
@@ -121,6 +121,13 @@ namespace SLNG.App.UI
         /// stays constant on screen for free, because the whole handle is scaled by the
         /// screen-derived length every frame -- the same mechanism that keeps the arrows a
         /// constant size.</para></summary>
+        /// <summary>Size of a stretch handle as a fraction of the arrow length, so the cubes
+        /// keep a constant screen size like everything else here.</summary>
+        private const float ScaleHandleSize = 0.085f;
+
+        /// <summary>Smallest edge a stretch may produce, in metres. SL's own floor is 0.01.</summary>
+        private const float MinPrimEdge = 0.01f;
+
         private const float RingRadius = 0.85f;
         private const float RingThickness = 0.035f;
         private const int RingSegments = 72;
@@ -217,6 +224,19 @@ namespace SLNG.App.UI
         private readonly StandardMaterial3D[] _planeMaterials = new StandardMaterial3D[3];
         private readonly MeshInstance3D[] _grids = new MeshInstance3D[3];
         private readonly MeshInstance3D[] _rings = new MeshInstance3D[3];
+        /// <summary>Six face handles then eight corner handles. Index 0-5 is axis/2 with the
+        /// sign from the low bit; 6-13 carries one sign bit per axis. Kept as an index rather
+        /// than fourteen enum values, which would swamp the Handle enum for no benefit.</summary>
+        private readonly MeshInstance3D[] _scaleHandles = new MeshInstance3D[14];
+        private readonly StandardMaterial3D[] _scaleMaterials = new StandardMaterial3D[14];
+
+        /// <summary>Which stretch handle the hit-test last matched. Written by HitTest, which is
+        /// impure but keeps Handle small; read only for the handle it just returned.</summary>
+        private int _scaleHandleIndex;
+
+        private System.Numerics.Vector3 _dragStartSlScale;
+        private float _dragStartScaleParam;
+
         private MeshInstance3D _dial = null!;
         private StandardMaterial3D _dialMaterial = null!;
         private StandardMaterial3D _needleMaterial = null!;
@@ -341,7 +361,10 @@ namespace SLNG.App.UI
             // handles out from under the gesture.
             if (_dragging == Handle.None)
             {
-                ActiveTool = Input.IsKeyPressed(Key.Ctrl) ? Tool.Rotate : Tool.Move;
+                // Ctrl rotates, Ctrl+Shift stretches -- the reference viewer's own bindings.
+                ActiveTool = Input.IsKeyPressed(Key.Ctrl)
+                    ? (Input.IsKeyPressed(Key.Shift) ? Tool.Scale : Tool.Rotate)
+                    : Tool.Move;
             }
 
             var active = _dragging != Handle.None ? _dragging : _hovered;
@@ -362,7 +385,7 @@ namespace SLNG.App.UI
                 // Only the ring being turned, once a turn is under way. Three tori and a dial
                 // on top of each other is unreadable, and the two you are not using tell you
                 // nothing -- the reference viewer drops them for the same reason.
-                _rings[i].Visible = !moving
+                _rings[i].Visible = _tool == Tool.Rotate
                     && (_dragging == Handle.None || RingHandle(i) == _dragging);
 
                 bool ringLit = active == RingHandle(i);
@@ -392,6 +415,7 @@ namespace SLNG.App.UI
                 if (gridOn) _grids[i].GlobalPosition = SnappedGridOrigin(i, GlobalPosition);
             }
 
+            UpdateScaleHandles(length);
             UpdateRuler(length);
             UpdateDial(length);
         }
@@ -429,6 +453,21 @@ namespace SLNG.App.UI
 
             var origin2D = _camera.UnprojectPosition(GlobalPosition);
             float scale = _arrows[0].Scale.X;
+
+            if (_tool == Tool.Scale)
+            {
+                float bestScale = GrabPixels;
+                var bestScaleHandle = Handle.None;
+                for (int n = 0; n < _scaleHandles.Length; n++)
+                {
+                    if (!TryScaleHandlePosition(n, out var world, out _)) continue;
+                    if (_camera.IsPositionBehind(world)) continue;
+
+                    float d = mouse.DistanceTo(_camera.UnprojectPosition(world));
+                    if (d < bestScale) { bestScale = d; bestScaleHandle = Handle.Scale; _scaleHandleIndex = n; }
+                }
+                return bestScaleHandle;
+            }
 
             if (_tool == Tool.Rotate)
             {
@@ -480,7 +519,17 @@ namespace SLNG.App.UI
 
             _dragAxisOrigin = GlobalPosition;
 
-            if (IsRing(handle))
+            if (handle == Handle.Scale)
+            {
+                var prim0 = _entity.GetComponent<PrimitiveComponent>();
+                if (prim0 == null) return false;
+                if (!TryScaleHandlePosition(_scaleHandleIndex, out _, out var localDir0)) return false;
+                if (!TryScaleParam(mouse, transform.Rotation, localDir0, out float p0)) return false;
+
+                _dragStartSlScale = prim0.Scale;
+                _dragStartScaleParam = p0;
+            }
+            else if (IsRing(handle))
             {
                 if (!TryRingAngle(mouse, handle, out float startAngle)) return false;
                 _dragStartRingAngle = startAngle;
@@ -516,6 +565,12 @@ namespace SLNG.App.UI
         public void UpdateDrag(Vector2 mouse)
         {
             if (_dragging == Handle.None || _entity == null) return;
+
+            if (_dragging == Handle.Scale)
+            {
+                UpdateScaleDrag(mouse);
+                return;
+            }
 
             if (IsRing(_dragging))
             {
@@ -653,6 +708,107 @@ namespace SLNG.App.UI
             }
         }
 
+        /// <summary>Distance of the cursor along the stretch direction, measured from the
+        /// object's centre in metres. Same ray/line closest-point as the move axes, but about an
+        /// arbitrary direction -- SL stretches along the object's LOCAL axes, which are only the
+        /// world axes while it is unrotated.</summary>
+        private bool TryScaleParam(
+            Vector2 mouse, System.Numerics.Quaternion rotation, System.Numerics.Vector3 localDir, out float t)
+        {
+            t = 0f;
+            var slDir = System.Numerics.Vector3.Normalize(
+                System.Numerics.Vector3.Transform(localDir, rotation));
+            var ad = new Vector3(slDir.X, slDir.Z, -slDir.Y);
+
+            var ro = _camera.ProjectRayOrigin(mouse);
+            var rd = _camera.ProjectRayNormal(mouse);
+            float rdDotAd = rd.Dot(ad);
+            float denom = 1f - rdDotAd * rdDotAd;
+            if (Mathf.Abs(denom) < 1e-5f) return false;
+
+            var w = _dragAxisOrigin - ro;
+            t = (rdDotAd * w.Dot(rd) - w.Dot(ad)) / denom;
+            return true;
+        }
+
+        /// <summary>Stretches the object. A face handle moves that face only, leaving the
+        /// opposite one where it is (the reference viewer's default -- ScaleUniform is off); a
+        /// corner scales all three axes together, anchored at the opposite corner.
+        ///
+        /// <para>The centre has to move with it. Changing only the size grows the object about
+        /// its own middle, which would drag the anchored face along and make a stretch feel like
+        /// a scale about the centre.</para></summary>
+        private void UpdateScaleDrag(Vector2 mouse)
+        {
+            if (_entity == null) return;
+            var transform = _entity.GetComponent<TransformComponent>();
+            var prim = _entity.GetComponent<PrimitiveComponent>();
+            if (transform == null || prim == null) return;
+            if (!TryScaleHandlePosition(_scaleHandleIndex, out _, out var localDir)) return;
+            if (!TryScaleParam(mouse, _dragStartSlRot, localDir, out float t)) return;
+
+            // Same lead-the-cursor-out gesture as the move ruler: off the stretch line by more
+            // than the grab radius and the edge snaps to the build grid.
+            var slDir = System.Numerics.Vector3.Normalize(
+                System.Numerics.Vector3.Transform(localDir, _dragStartSlRot));
+            _snapping = CursorIsOffLine(mouse, new Vector3(slDir.X, slDir.Z, -slDir.Y));
+            if (_snapping) t = Snap(t);
+
+            bool corner = _scaleHandleIndex >= 6;
+            var half = _dragStartSlScale * 0.5f;
+
+            // Distance from the centre to this handle at drag start, along the drag direction.
+            // How far the handle sat from the centre along the drag direction at grab time:
+            // the diagonal for a corner, the half-edge for a face.
+            float startReach = corner
+                ? half.Length()
+                : System.MathF.Abs(System.Numerics.Vector3.Dot(half, localDir));
+            if (startReach <= 1e-4f) return;
+
+            float factor = Mathf.Max(t, MinPrimEdge) / startReach;
+            var newScale = corner
+                ? _dragStartSlScale * factor
+                : ScaleAlong(_dragStartSlScale, localDir, factor);
+
+            newScale = new System.Numerics.Vector3(
+                System.MathF.Max(newScale.X, MinPrimEdge),
+                System.MathF.Max(newScale.Y, MinPrimEdge),
+                System.MathF.Max(newScale.Z, MinPrimEdge));
+
+            // Keep the opposite side still: the centre moves by half of however much this side
+            // moved, in the handle's own direction.
+            // Per axis: the opposite side stays put when the centre moves by half the growth,
+            // in the handle's own direction. localDir's components are exactly +1, -1 or 0, so
+            // multiplying by it both applies the sign and zeroes the axes a face handle does
+            // not touch.
+            var grow = (newScale - _dragStartSlScale) * 0.5f;
+            var shiftLocal = grow * localDir;
+            var shiftWorld = System.Numerics.Vector3.Transform(shiftLocal, _dragStartSlRot);
+
+            prim.Scale = newScale;
+            transform.Position = _dragStartSlPos + shiftWorld;
+            if (transform.ParentLocalId == 0) transform.LocalPosition = transform.Position;
+
+            _world.NotifyComponentUpdated(_entity, prim);
+            _world.NotifyComponentUpdated(_entity, transform);
+
+            double now = Time.GetTicksMsec() / 1000.0;
+            if (now - _lastSendAt >= SendIntervalSeconds)
+            {
+                Send(transform.Position);
+                _lastSendAt = now;
+            }
+        }
+
+        /// <summary>Scales only the components the direction actually touches, so a face handle
+        /// stretches one axis and leaves the other two alone.</summary>
+        private static System.Numerics.Vector3 ScaleAlong(
+            System.Numerics.Vector3 scale, System.Numerics.Vector3 dir, float factor)
+            => new(
+                dir.X != 0 ? scale.X * factor : scale.X,
+                dir.Y != 0 ? scale.Y * factor : scale.Y,
+                dir.Z != 0 ? scale.Z * factor : scale.Z);
+
         private static bool IsAxis(Handle h) => h >= Handle.X && h <= Handle.Z;
 
         private static bool IsPlane(Handle h) => h >= Handle.PlaneXY && h <= Handle.PlaneYZ;
@@ -719,9 +875,14 @@ namespace SLNG.App.UI
         /// be "on the ruler". Measured against the axis's screen-space LINE rather than its
         /// segment, so it stays true when the drag runs past the end of the arrow.</summary>
         private bool CursorIsOffAxis(Vector2 mouse)
+            => CursorIsOffLine(mouse, AxisDirGodot[(int)_dragging - 1]);
+
+        /// <summary>True when the cursor has strayed far enough sideways from a world-space
+        /// direction through the gizmo to count as "out at the scale". Shared by the move ruler
+        /// and the stretch handles so the gesture is the same one in both.</summary>
+        private bool CursorIsOffLine(Vector2 mouse, Vector3 axis)
         {
             if (_camera.IsPositionBehind(GlobalPosition)) return false;
-            var axis = AxisDirGodot[(int)_dragging - 1];
             var far = GlobalPosition + axis * _arrows[0].Scale.X;
             if (_camera.IsPositionBehind(far)) return false;
 
@@ -947,6 +1108,7 @@ namespace SLNG.App.UI
             BuildRuler();
 
             for (int i = 0; i < 3; i++) BuildRing(i);
+            for (int n = 0; n < _scaleHandles.Length; n++) BuildScaleHandle(n);
 
             _dialMaterial = new StandardMaterial3D
             {
@@ -1210,6 +1372,91 @@ namespace SLNG.App.UI
 
             dir = projected.Normalized();
             return true;
+        }
+
+        /// <summary>One stretch handle: a small cube, coloured by its axis for a face handle
+        /// and white for a corner, since a corner belongs to all three.</summary>
+        private void BuildScaleHandle(int n)
+        {
+            bool face = n < 6;
+            var colour = face ? AxisColor[n / 2] : new Color(0.95f, 0.95f, 0.95f);
+
+            var mat = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                AlbedoColor = colour,
+                NoDepthTest = true,
+                RenderPriority = 100,
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            };
+            _scaleMaterials[n] = mat;
+
+            _scaleHandles[n] = new MeshInstance3D
+            {
+                Name = $"Scale{n}",
+                Mesh = new BoxMesh { Size = Vector3.One },
+                MaterialOverride = mat,
+                Visible = false,
+                TopLevel = true,
+            };
+            AddChild(_scaleHandles[n]);
+        }
+
+        /// <summary>Where stretch handle <paramref name="n"/> sits, in Godot world space: on the
+        /// object's own bounding box, so the handles rotate with it. SL stretches along LOCAL
+        /// axes, which is why this cannot use the world axis vectors the move handles do.</summary>
+        private bool TryScaleHandlePosition(int n, out Vector3 world, out System.Numerics.Vector3 localDir)
+        {
+            world = Vector3.Zero;
+            localDir = System.Numerics.Vector3.Zero;
+
+            var transform = _entity?.GetComponent<TransformComponent>();
+            var prim = _entity?.GetComponent<PrimitiveComponent>();
+            if (transform == null || prim == null) return false;
+
+            var half = prim.Scale * 0.5f;
+            if (n < 6)
+            {
+                int axis = n / 2;
+                float sign = (n % 2) == 0 ? 1f : -1f;
+                localDir = SlUnit(axis) * sign;
+            }
+            else
+            {
+                int bits = n - 6;
+                localDir = new System.Numerics.Vector3(
+                    (bits & 1) != 0 ? 1f : -1f,
+                    (bits & 2) != 0 ? 1f : -1f,
+                    (bits & 4) != 0 ? 1f : -1f);
+            }
+
+            var localOffset = localDir * half;
+            var slOffset = System.Numerics.Vector3.Transform(localOffset, transform.Rotation);
+            world = GlobalPosition + new Vector3(slOffset.X, slOffset.Z, -slOffset.Y);
+            return true;
+        }
+
+        /// <summary>Places the stretch handles on the object's box and shows them only for the
+        /// Scale tool.</summary>
+        private void UpdateScaleHandles(float arrowLength)
+        {
+            bool scaling = _tool == Tool.Scale;
+            float size = ScaleHandleSize * arrowLength;
+
+            for (int n = 0; n < _scaleHandles.Length; n++)
+            {
+                bool show = scaling && (_dragging == Handle.None || _scaleHandleIndex == n);
+                _scaleHandles[n].Visible = show;
+                if (!show) continue;
+
+                if (!TryScaleHandlePosition(n, out var world, out _)) { _scaleHandles[n].Visible = false; continue; }
+                _scaleHandles[n].GlobalPosition = world;
+                _scaleHandles[n].Scale = new Vector3(size, size, size);
+
+                bool lit = _dragging == Handle.Scale && _scaleHandleIndex == n;
+                var colour = n < 6 ? AxisColor[n / 2] : new Color(0.95f, 0.95f, 0.95f);
+                _scaleMaterials[n].AlbedoColor = lit ? Colors.White : colour;
+            }
         }
 
         private static Handle RingHandle(int i) => (Handle)((int)Handle.RingX + i);
