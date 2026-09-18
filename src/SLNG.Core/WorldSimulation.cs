@@ -729,6 +729,7 @@ public sealed class WorldSimulation : IDisposable
         {
             avatar = new AvatarComponent(e.AgentId, e.FirstName, e.LastName, e.IsLocalAgent);
             avatar.ScaleZ = e.ScaleZ;
+            avatar.GroupTitle = e.GroupTitle ?? string.Empty;  // FEAT-UI-30
             avatar.SittingOnLocalId = e.SittingOnLocalId;
             avatar.SupportPlane = e.SupportPlane;
             entity.SetComponent(avatar);
@@ -747,6 +748,10 @@ public sealed class WorldSimulation : IDisposable
             if (e.AgentId != System.Guid.Empty) avatar.AgentId = e.AgentId;
             if (!string.IsNullOrEmpty(e.FirstName)) avatar.FirstName = e.FirstName;
             if (!string.IsNullOrEmpty(e.LastName)) avatar.LastName = e.LastName;
+            // FEAT-UI-30: null is "this event does not carry a title" (a terse update, or the
+            // self-teleport echo), empty is the simulator saying there is none -- so an empty
+            // string MUST overwrite, or a title could never be taken off again.
+            if (e.GroupTitle != null) avatar.GroupTitle = e.GroupTitle;
             avatar.IsLocalAgent = e.IsLocalAgent;
             if (e.ScaleZ > 0f) avatar.ScaleZ = e.ScaleZ;
             uint prevSittingOnLocalId = avatar.SittingOnLocalId;

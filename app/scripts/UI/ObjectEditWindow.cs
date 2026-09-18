@@ -973,6 +973,51 @@ namespace SLNG.App.UI
             _rotX.Editable = youMayMove;
             _rotY.Editable = youMayMove;
             _rotZ.Editable = youMayMove;
+
+            // FEAT-SEC-04 follow-up: everything else on this panel is a MODIFY operation, and
+            // until now only Position/Rotation were gated -- so on someone else's object you
+            // could still type a new scale, rename it, relight it or change its physics shape.
+            // The sim rejects those, but silently: the field keeps the value you typed and the
+            // object does not change, which reads as a viewer bug rather than a refusal.
+            //
+            // Split exactly as llpanelobject.cpp:refresh() does it: `enable_scale =
+            // enable_modify`, `enable_rotate = enable_move`. Scale is Modify, not Move -- the two
+            // only coincide while you are the owner.
+            _scaleX.Editable = youMayModify;
+            _scaleY.Editable = youMayModify;
+            _scaleZ.Editable = youMayModify;
+            _nameInput.Editable = youMayModify;
+            _descInput.Editable = youMayModify;
+
+            _lockedCheck.Disabled = !youMayModify;
+            _physicalCheck.Disabled = !youMayModify;
+            _tempCheck.Disabled = !youMayModify;
+            _phantomCheck.Disabled = !youMayModify;
+
+            _lightCheck.Disabled = !youMayModify;
+            _lightColorPicker.Disabled = !youMayModify;
+            _lightIntensityInput.Editable = youMayModify;
+            _lightRadiusInput.Editable = youMayModify;
+            _lightFalloffInput.Editable = youMayModify;
+
+            _materialOption.Disabled = !youMayModify;
+            _physicsShapeOption.Disabled = !youMayModify;
+            _clickActionOption.Disabled = !youMayModify;
+            _physicsGravityInput.Editable = youMayModify;
+            _physicsFrictionInput.Editable = youMayModify;
+            _physicsDensityInput.Editable = youMayModify;
+            _physicsRestitutionInput.Editable = youMayModify;
+
+            // These four are documented read-only INDICATORS (see this method's summary) and have
+            // no Toggled handler at all -- so clicking one used to flip the tick and change
+            // nothing, which reads as "I just edited the permissions" and is a lie. Made
+            // genuinely inert rather than Disabled, because Disabled greys the tick out and these
+            // exist to be read. Not gated on ownership: they are never editable by anyone here.
+            foreach (var indicator in new[] { _permModifyCheck, _permCopyCheck, _permTransferCheck, _permMoveCheck })
+            {
+                indicator.MouseFilter = Control.MouseFilterEnum.Ignore;
+                indicator.FocusMode = Control.FocusModeEnum.None;
+            }
         }
 
         /// <summary>Copies this object's underlying content asset UUID (mesh, sculpt map, or

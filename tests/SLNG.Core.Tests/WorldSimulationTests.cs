@@ -132,6 +132,39 @@ public class WorldSimulationTests
         Assert.Equal(new Vector3(100, 200, 30), root.Position);
     }
 
+    /// <summary>FEAT-UI-30. The group title is nullable on the wire for a reason: only the events
+    /// built from a LibreMetaverse <c>Avatar</c> know one, while a terse position update and the
+    /// self-teleport echo carry none. Null therefore means "this event has no opinion" and must
+    /// leave the stored title alone -- otherwise every movement packet would wipe it.</summary>
+    [Fact]
+    public void AvatarUpdate_GroupTitle_NullLeavesItAlone_EmptyClearsIt()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+        var agentId = Guid.NewGuid();
+
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(
+            1ul, 7, agentId, Vector3.Zero, Quaternion.Identity, "Test", "User", false,
+            GroupTitle: "Bauleiter"));
+        simulation.Pump();
+        var avatar = world.GetEntity(1ul, 7)!.GetComponent<AvatarComponent>()!;
+        Assert.Equal("Bauleiter", avatar.GroupTitle);
+
+        // A terse update -- no title on it at all. The title must survive.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(
+            1ul, 7, agentId, new Vector3(1, 0, 0), Quaternion.Identity, "Test", "User", false));
+        simulation.Pump();
+        Assert.Equal("Bauleiter", avatar.GroupTitle);
+
+        // The simulator saying "no active group" IS an opinion, and must take the title off.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(
+            1ul, 7, agentId, Vector3.Zero, Quaternion.Identity, "Test", "User", false,
+            GroupTitle: ""));
+        simulation.Pump();
+        Assert.Equal(string.Empty, avatar.GroupTitle);
+    }
+
     [Fact]
     public void AvatarAppearanceEvent_UpdatesAvatarComponent()
     {

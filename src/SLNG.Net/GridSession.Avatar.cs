@@ -52,7 +52,8 @@ public sealed partial class GridSession
             new System.Numerics.Vector3(e.Avatar.Velocity.X, e.Avatar.Velocity.Y, e.Avatar.Velocity.Z),
             e.TimeDilation / 65535.0f,
             e.Avatar.ParentID,
-            ToSupportPlane(e.Avatar.CollisionPlane)));
+            ToSupportPlane(e.Avatar.CollisionPlane),
+            GroupTitle: e.Avatar.GroupName));
     }
 
     /// <summary>SL's collision plane, converted at the boundary — no LibreMetaverse type may cross
@@ -194,7 +195,8 @@ public sealed partial class GridSession
                 av.FirstName,
                 av.LastName,
                 isLocalAgent,
-                SittingOnLocalId: seatLocalId));
+                SittingOnLocalId: seatLocalId,
+                GroupTitle: av.GroupName));
         }
     }
 
