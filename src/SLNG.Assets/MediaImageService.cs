@@ -307,7 +307,18 @@ public static class MediaImageService
             float offsetX = (width - drawWidth) / 2f;
             float offsetY = (height - drawHeight) / 2f;
 
-            canvas.DrawBitmap(source, new SKRect(offsetX, offsetY, offsetX + drawWidth, offsetY + drawHeight));
+            // SKSamplingOptions.Default explicitly, NOT a nicer filter: SkiaSharp 4 made the
+            // paintless overload obsolete, and SkiaSharp 3 resolved this exact call to
+            // Default (SKCanvas.DrawBitmap -> DrawImage -> `paint?.FilterQuality... ?? Default`,
+            // verified against the v3.119.0 source). Default is nearest-neighbour, so a
+            // downscale here is unfiltered -- a real quality weakness, but a pre-existing one,
+            // and the letterbox was signed off against Firestorm in exactly this state on
+            // 2026-09-17. Changing the filter is a visible change that needs its own in-world
+            // comparison, not a silent rider on a dependency bump.
+            canvas.DrawBitmap(
+                source,
+                new SKRect(offsetX, offsetY, offsetX + drawWidth, offsetY + drawHeight),
+                SKSamplingOptions.Default);
         }
         return canvasBitmap;
     }
