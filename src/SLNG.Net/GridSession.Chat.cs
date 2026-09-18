@@ -78,11 +78,13 @@ public sealed partial class GridSession
     {
         _ = Task.Run(async () =>
         {
+            bool ok = false;
             try
             {
                 var (success, names, _) = await _client.Avatars.GetDisplayNamesAsync(ids).ConfigureAwait(false);
-                if (!success || names == null) return;
-                foreach (var n in names)
+                ok = success && names != null;
+                if (!ok) return;
+                foreach (var n in names!)
                 {
                     // IsDefaultDisplayName means the resident never set one and the grid is
                     // echoing the legacy name back. Raising it would make the nametag show the
@@ -92,6 +94,31 @@ public sealed partial class GridSession
                 }
             }
             catch { /* Optional capability -- absent on most OpenSim grids. */ }
+            finally
+            {
+                // Un-claim on failure so a later avatar update retries. Deduping on the REQUEST
+                // rather than on success was wrong: the first call for an agent can land before
+                // the region's capability handshake has finished, and one early failure then
+                // blocked every retry for the rest of the session -- which is how the first cut
+                // of this shipped looking like it did nothing at all on SL.
+                if (!ok)
+                {
+                    foreach (var id in ids) _displayNamesRequested.TryRemove(id.Guid, out _);
+
+                    // Once per session, not per attempt: with the retry above this fires on every
+                    // subsequent avatar update until it succeeds, and on an OpenSim grid without
+                    // the capability that is forever. One line is enough to tell "the grid has no
+                    // Display Names" apart from "the nametag code is broken", which is the
+                    // distinction that cost a round trip here.
+                    if (!_displayNameFailureLogged)
+                    {
+                        _displayNameFailureLogged = true;
+                        Console.Error.WriteLine(
+                            "[DisplayName] GetDisplayNames lookup failed -- nametags keep the legacy name. " +
+                            "Expected on grids without the capability; on SL it means the request did not go through.");
+                    }
+                }
+            }
         });
     }
 
@@ -106,6 +133,7 @@ public sealed partial class GridSession
     }
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _displayNamesRequested = new();
+    private volatile bool _displayNameFailureLogged;
 
     private void OnDisplayNameUpdate(object? sender, DisplayNameUpdateEventArgs e)
     {
