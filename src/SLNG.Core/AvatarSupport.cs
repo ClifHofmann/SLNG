@@ -13,6 +13,22 @@ public static class AvatarSupport
     /// plane reported by Havok".</summary>
     public const float HavokPlaneTolerance = 0.05f;
 
+    /// <summary>How far a support surface may resolve ABOVE the avatar before the plane is
+    /// rejected as stale.
+    ///
+    /// <para>One-sided, and that is the whole point. An earlier attempt at this rejected any
+    /// plane further than 64 m in either direction and an existing test rightly refused it:
+    /// flying eighty metres over a floor is ordinary and that plane is correct. But a floor
+    /// ABOVE you is not something you are standing on. BUG-NET-17 measured exactly that after a
+    /// same-region teleport — agent at Z 27.07, simulator still insisting on the skybox floor at
+    /// 1034.86, and the ground clamp dutifully lifting the avatar 1007 m to meet it.</para>
+    ///
+    /// <para>Not zero, because a small positive reading is legitimate: an avatar that has sunk
+    /// into the land resolves slightly above itself and the clamp uses that to lift it back out.
+    /// Four metres keeps every rescue case and still rejects the absurd by three orders of
+    /// magnitude.</para></summary>
+    public const float MaxSupportAboveAvatar = 4f;
+
     /// <summary>Height of the surface the simulator says this avatar is supported by.
     ///
     /// <paramref name="plane"/> is SL's collision plane: xyz the normal in region space, w the
@@ -43,6 +59,11 @@ public static class AvatarSupport
 
         float distanceAbove = Vector3.Dot(position, normal) - constant + HavokPlaneTolerance;
         if (!float.IsFinite(distanceAbove)) return null;
+
+        // A surface resolving well above the avatar is a stale plane, not a floor -- see
+        // MaxSupportAboveAvatar. Null means "not told", so the caller falls back to its raycast
+        // and the terrain height instead of being hauled up to where it used to be.
+        if (-distanceAbove > MaxSupportAboveAvatar) return null;
 
         return position.Z - distanceAbove;
     }

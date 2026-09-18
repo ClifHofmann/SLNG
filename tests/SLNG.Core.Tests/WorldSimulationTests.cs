@@ -165,6 +165,52 @@ public class WorldSimulationTests
         Assert.Equal(string.Empty, avatar.GroupTitle);
     }
 
+    /// <summary>FEAT-UI-04. While the in-world gizmo is dragging an object, the local position
+    /// is authoritative: the simulator's echo lags the cursor by a round trip, so adopting it
+    /// would yank the object back to where it was a moment ago, over and over. That was the
+    /// reported stutter.</summary>
+    [Fact]
+    public void ObjectUpdate_IsIgnoredWhileTheObjectIsBeingDraggedLocally()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(5ul, 11,
+            new Vector3(10, 10, 10), Quaternion.Identity, Vector3.One, 1, false,
+            Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One));
+        simulation.Pump();
+
+        var transform = world.GetEntity(5ul, 11)!.GetComponent<TransformComponent>()!;
+        Assert.Equal(new Vector3(10, 10, 10), transform.Position);
+
+        // The user grabs it and drags it somewhere else.
+        transform.LocallyDragged = true;
+        // Exactly what SelectionGizmo3D.ApplyLocal writes: both, because ResolveWorldTransform
+        // recomputes Position from LocalPosition on the next update.
+        transform.Position = new Vector3(20, 10, 10);
+        transform.LocalPosition = new Vector3(20, 10, 10);
+
+        // A stale echo lands mid-drag. It must not move the object or re-aim the interpolation.
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(5ul, 11,
+            new Vector3(10, 10, 10), Quaternion.Identity, Vector3.One, 1, false,
+            Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One));
+        simulation.Pump();
+
+        Assert.Equal(new Vector3(20, 10, 10), transform.Position);
+
+        // Released: the simulator is authoritative again. Asserted on Position, not
+        // TargetPosition -- that one belongs to the avatar interpolation path, which objects
+        // never go through (ExtrapolateMovement queries AvatarComponent only).
+        transform.LocallyDragged = false;
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(5ul, 11,
+            new Vector3(30, 10, 10), Quaternion.Identity, Vector3.One, 1, false,
+            Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One));
+        simulation.Pump();
+
+        Assert.Equal(new Vector3(30, 10, 10), transform.Position);
+    }
+
     [Fact]
     public void AvatarAppearanceEvent_UpdatesAvatarComponent()
     {

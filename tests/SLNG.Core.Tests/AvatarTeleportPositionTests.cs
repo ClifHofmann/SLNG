@@ -111,4 +111,55 @@ public class AvatarTeleportPositionTests
         var avatar = world.GetEntity(123ul, 1)!.GetComponent<AvatarComponent>()!;
         Assert.NotNull(avatar.SupportPlane);
     }
+
+    /// <summary>BUG-NET-17, second round. Clearing the collision plane on the teleport event was
+    /// not enough: the simulator keeps sending avatar updates throughout, and one queued from
+    /// BEFORE the jump lands right after the resync carrying the old position and the old plane.
+    /// The ground clamp then follows it back to the height just left — measured live 2026-09-18,
+    /// resync to Z 27.1 followed by groundZ 1034.81.
+    ///
+    /// <para>The rule is temporal, not geometric: a plane is ignored while the updates carrying
+    /// it are still talking about the old place. Distance alone cannot decide this — flying
+    /// eighty metres above a floor is ordinary and that plane is correct.</para></summary>
+    [Fact]
+    public void AStaleInFlightUpdate_CannotRestoreThePlaneTheTeleportCleared()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+        var agentId = Guid.NewGuid();
+
+        // Standing in a skybox at 1035, with the simulator's plane for its floor.
+        var skyboxFloor = new Vector4(0, 0, 1, 1034.81f);
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(1ul, 3, agentId,
+            new Vector3(132.4f, 122.7f, 1035.8f), Quaternion.Identity, "Test", "User", true,
+            SupportPlane: skyboxFloor));
+        simulation.Pump();
+
+        var entity = world.GetEntity(1ul, 3)!;
+        var avatar = entity.GetComponent<AvatarComponent>()!;
+        Assert.Equal(skyboxFloor, avatar.SupportPlane);
+
+        // Teleport down to ground level.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(1ul, 3, agentId,
+            new Vector3(132.4f, 122.7f, 27.1f), Quaternion.Identity, "Test", "User", true,
+            IsTeleport: true));
+        simulation.Pump();
+        Assert.Null(avatar.SupportPlane);
+
+        // An update the simulator had already queued before the jump: old position, old plane.
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(1ul, 3, agentId,
+            new Vector3(132.4f, 122.7f, 1035.8f), Quaternion.Identity, "Test", "User", true,
+            SupportPlane: skyboxFloor));
+        simulation.Pump();
+        Assert.Null(avatar.SupportPlane);
+
+        // Once the simulator is talking about the new place, its plane is trustworthy again.
+        var groundPlane = new Vector4(0, 0, 1, 26.2f);
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(1ul, 3, agentId,
+            new Vector3(132.5f, 122.6f, 27.2f), Quaternion.Identity, "Test", "User", true,
+            SupportPlane: groundPlane));
+        simulation.Pump();
+        Assert.Equal(groundPlane, avatar.SupportPlane);
+    }
 }

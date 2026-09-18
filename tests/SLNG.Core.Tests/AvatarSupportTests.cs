@@ -125,4 +125,38 @@ public class AvatarSupportTests
         // And it never resolves ABOVE the avatar, which would push it upward every frame.
         Assert.True(clampTargetZ <= position.Z);
     }
+
+    /// <summary>BUG-NET-17, third round. After a same-region teleport the simulator kept sending
+    /// the collision plane for the skybox the agent had just left. Measured live 2026-09-18:
+    /// agent at Z 27.07, plane at 1034.86, and the clamp lifted the avatar 1007 m to meet it.
+    ///
+    /// <para>The usable signal is DIRECTION, not distance. An earlier attempt rejected any plane
+    /// beyond 64 m either way and TheAnswerDoesNotDependOnHowHighTheAvatarIs rightly failed it —
+    /// flying high over a floor is ordinary. A floor above you is not.</para></summary>
+    [Fact]
+    public void SupportHeight_RejectsAPlaneResolvingWellAboveTheAvatar()
+    {
+        Assert.Null(AvatarSupport.SupportHeight(FlatFloorAt(1034.86f), new Vector3(132.4f, 122.7f, 27.07f)));
+    }
+
+    /// <summary>The guard is one-sided on purpose: a plane far BELOW is a normal thing to see
+    /// while flying, and rejecting it would strip the simulator's answer from anyone airborne.
+    /// </summary>
+    [Fact]
+    public void SupportHeight_StillAcceptsADistantFloorBelow()
+    {
+        float? z = AvatarSupport.SupportHeight(FlatFloorAt(10f), new Vector3(50f, 50f, 900f));
+        Assert.NotNull(z);
+        Assert.Equal(10f, z!.Value, AvatarSupport.HavokPlaneTolerance + Tolerance);
+    }
+
+    /// <summary>And a slightly-above reading stays usable: that is how the clamp lifts an avatar
+    /// that has sunk into the land back out of it.</summary>
+    [Fact]
+    public void SupportHeight_StillAcceptsASmallLiftForASunkAvatar()
+    {
+        float? z = AvatarSupport.SupportHeight(FlatFloorAt(30f), new Vector3(50f, 50f, 28.5f));
+        Assert.NotNull(z);
+        Assert.Equal(30f, z!.Value, AvatarSupport.HavokPlaneTolerance + Tolerance);
+    }
 }

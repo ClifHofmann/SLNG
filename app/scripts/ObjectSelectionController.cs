@@ -13,6 +13,13 @@ namespace SLNG.App
         private Camera3D _camera = null!;
         private UI.InWorldContextMenu _contextMenu = null!;
 
+        /// <summary>FEAT-UI-04: the in-world move handles. Owned here rather than by the edit
+        /// window, because the gizmo has to see the raw click BEFORE the raycast does -- a drag
+        /// on an arrow must not also select whatever is behind it.</summary>
+        private UI.SelectionGizmo3D? _gizmo;
+
+        public void AttachGizmo(UI.SelectionGizmo3D gizmo) => _gizmo = gizmo;
+
         // World.SelectEntity is additive (multiple objects can be selected/edited independently
         // at once, one per open ObjectEditWindow) -- this tracks only what THIS controller most
         // recently raycast-clicked, so "click empty space to deselect" clears just that, not
@@ -43,6 +50,39 @@ namespace SLNG.App
         public override void _UnhandledInput(InputEvent @event)
         {
             if (_world == null || _session == null || _camera == null) return;
+
+            // FEAT-UI-04: the gizmo gets first refusal on the mouse, and once it has a drag it
+            // keeps every event until release -- otherwise a drag that wanders off the arrow
+            // would fall through and start selecting things mid-move.
+            if (_gizmo != null)
+            {
+                if (_gizmo.IsDragging)
+                {
+                    switch (@event)
+                    {
+                        case InputEventMouseMotion drag:
+                            _gizmo.UpdateDrag(drag.Position);
+                            GetViewport().SetInputAsHandled();
+                            return;
+                        case InputEventMouseButton up when !up.Pressed && up.ButtonIndex == MouseButton.Left:
+                            _gizmo.EndDrag();
+                            GetViewport().SetInputAsHandled();
+                            return;
+                    }
+                }
+                else if (@event is InputEventMouseMotion hover)
+                {
+                    _gizmo.SetHover(hover.Position);
+                }
+                else if (@event is InputEventMouseButton down && down.Pressed
+                         && down.ButtonIndex == MouseButton.Left && !down.AltPressed
+                         && GetViewport().GuiGetHoveredControl() == null
+                         && _gizmo.TryBeginDrag(down.Position))
+                {
+                    GetViewport().SetInputAsHandled();
+                    return;
+                }
+            }
 
             if (@event is InputEventMouseButton mouseBtn && mouseBtn.Pressed && !mouseBtn.AltPressed)
             {
@@ -199,7 +239,9 @@ namespace SLNG.App
                                             if (_lastClicked != null && !_pinnedEntityIds.Contains(_lastClicked.Id))
                                             {
                                                 _world.DeselectEntity(_lastClicked);
+                                _gizmo?.Detach();
                                                 _lastClicked = null;
+                                                _gizmo?.Detach();
                                             }
 
                                             // MVP2-1: a plain left-click executes the object's ClickAction (Sit vs. Touch).
@@ -243,6 +285,9 @@ namespace SLNG.App
                                             }
 
                                             _world.SelectEntity(entity);
+                                            // FEAT-UI-04: Attach decides for itself whether the
+                                            // agent may move this one, and hides otherwise.
+                                            _gizmo?.Attach(entity);
                                             _session.SelectObject(localId);
                                             _lastClicked = entity;
                                         }

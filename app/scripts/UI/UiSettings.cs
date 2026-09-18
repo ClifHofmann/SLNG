@@ -44,6 +44,11 @@ public sealed class UiSettings
     /// default OFF.</summary>
     public bool HideOwnGroupTitle { get; private set; }
 
+    /// <summary>FEAT-UI-04: the build grid's cell size in metres — the spacing of the move
+    /// gizmo's plane grid and of its single-axis ruler's ticks, and therefore what a snapped
+    /// drag lands on. Default 1 m, SL's own build grid.</summary>
+    public float BuildGridSpacing { get; private set; } = 1.0f;
+
     public void Load()
     {
         var cfg = new ConfigFile();
@@ -56,6 +61,7 @@ public sealed class UiSettings
             ShowGroupTitles = (bool)cfg.GetValue(Section, "show_group_titles", true);
             ShowDisplayNames = (bool)cfg.GetValue(Section, "show_display_names", true);
             HideOwnGroupTitle = (bool)cfg.GetValue(Section, "hide_own_group_title", false);
+            BuildGridSpacing = Mathf.Clamp((float)cfg.GetValue(Section, "build_grid_spacing", 1.0), 0.01f, 64f);
         }
         SLNGWindow.SetGlobalUiScale(Scale);
     }
@@ -100,6 +106,21 @@ public sealed class UiSettings
 
         NameTagOptionsChanged?.Invoke();
     }
+
+    /// <summary>FEAT-UI-04.</summary>
+    public void SetBuildGridSpacing(float metres)
+    {
+        BuildGridSpacing = Mathf.Clamp(metres, 0.01f, 64f);
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "build_grid_spacing", BuildGridSpacing);
+        cfg.Save(ConfigPath);
+
+        BuildGridSpacingChanged?.Invoke(BuildGridSpacing);
+    }
+
+    public event System.Action<float>? BuildGridSpacingChanged;
 
     /// <summary>FEAT-UI-30. Separate event from the display toggles: this one has to reach
     /// GridSession, not the renderer, because it changes an outgoing packet.</summary>

@@ -52,6 +52,22 @@ public class AvatarComponent : IComponent
     /// teleport.</summary>
     public System.Numerics.Vector4? SupportPlane { get; set; }
 
+    /// <summary>BUG-NET-17: where a teleport just sent this agent, held until the simulator's
+    /// own updates catch up, or null when no teleport is outstanding.
+    ///
+    /// <para>Clearing <see cref="SupportPlane"/> on the teleport event was not enough. The
+    /// simulator keeps sending avatar updates throughout, and one queued from BEFORE the jump
+    /// lands immediately after the resync carrying the old position AND the old collision plane
+    /// — which the ground clamp then follows straight back to the height the agent just left
+    /// (measured live 2026-09-18: resync to Z 27.1, clamp to groundZ 1034.81).</para>
+    ///
+    /// <para>So the test is temporal, not geometric. Distance alone cannot tell a stale plane
+    /// from a legitimately distant one: flying eighty metres over a floor is ordinary, and the
+    /// plane is correct there. A stale update is instead recognisable by its POSITION still
+    /// being the old one — once an update arrives near where the teleport went, the simulator
+    /// has caught up and its plane can be trusted again.</para></summary>
+    public System.Numerics.Vector3? PendingTeleportDestination { get; set; }
+
     /// <summary>
     /// The latest visual parameters received from AvatarAppearance.
     /// Used to deform the skeleton and meshes.

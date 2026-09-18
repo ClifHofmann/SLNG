@@ -298,6 +298,8 @@
       "toolbar_heading": "Schaltflächen in der unteren Leiste:",
       "language_heading": "Sprache (Fenster müssen neu geöffnet werden):",
       "ui_scale_heading": "UI-Skalierung (Fenster & HUD):",
+      "build_grid_heading": "Baugitter",
+      "build_grid_tip": "Zellengröße des Rasters am Verschiebe-Gizmo und Abstand der Markierungen auf der Achsenskala. Wer den Cursor beim Ziehen seitlich von der Achse wegführt, rastet auf diesen Schritten ein.",
       "hide_own_group_title": "Meinen Gruppentitel vor allen verbergen",
       "hide_own_group_title_tip": "Der Simulator sendet deinen Gruppentitel dann an niemanden mehr, auch nicht an dich. Anders als die Optionen darüber ist das keine reine Ansichtseinstellung — andere sehen ihn wirklich nicht mehr.",
       "show_group_titles": "Gruppentitel zeigen",

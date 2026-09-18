@@ -634,6 +634,7 @@ public sealed partial class GridSession
 
         var pos = _client.Self.SimPosition;
         var rot = _client.Self.SimRotation;
+
         AvatarUpdateReceived?.Invoke(this, new AvatarUpdateEvent(
             sim.Handle,
             _client.Self.LocalID,

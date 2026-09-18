@@ -301,6 +301,7 @@ public partial class Boot : Control
 
     // M5-2 Object Editing UI
     private ObjectSelectionController _objectSelectionController = null!;
+    private SLNG.App.UI.SelectionGizmo3D? _selectionGizmo;
     private SLNG.App.CursorManager _cursorManager = null!;
     private SLNG.App.UI.InWorldContextMenu _inWorldContextMenu = null!;
     private Godot.Button _standUpButton = null!;
@@ -322,7 +323,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.20-alpha";
+    public const string AppVersion = "v0.23.37-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1019,10 +1020,19 @@ public partial class Boot : Control
         _world.SelectEntity(entity);
         _session.SelectObject(localId);
 
+        // FEAT-UI-04: the move handles belong to "this object is being edited", not to "this
+        // object was left-clicked". Opening the window via right-click -> Edit never went through
+        // ObjectSelectionController's click path, so the gizmo only appeared after an extra click
+        // on the object -- reported in-world 2026-09-18.
+        _selectionGizmo?.Attach(entity);
+
         win.Closed += () =>
         {
             _objectEditWindows.Remove(entity.Id);
             _objectSelectionController.Unpin(entity.Id);
+            // Only retract the handles if they are still on THIS object -- closing one window
+            // must not strip the gizmo off another object that is still open for editing.
+            if (_selectionGizmo?.AttachedEntityId == entity.Id) _selectionGizmo.Detach();
         };
         _objectEditWindows[entity.Id] = win;
 
@@ -3174,6 +3184,18 @@ public partial class Boot : Control
             _objectSelectionController = new ObjectSelectionController();
             AddChild(_objectSelectionController);
             _objectSelectionController.Initialize(_world, _session, _avatarController, _inWorldContextMenu);
+
+            // FEAT-UI-04: the move gizmo. Lives under the camera's 3D parent, not the UI layer --
+            // it is world geometry that happens to be a control surface.
+            _selectionGizmo = new SLNG.App.UI.SelectionGizmo3D();
+            AddChild(_selectionGizmo);
+            _selectionGizmo.Initialize(_world, _session, _avatarController);
+            _objectSelectionController.AttachGizmo(_selectionGizmo);
+            _selectionGizmo.GridSpacing = _uiSettings.BuildGridSpacing;
+            _uiSettings.BuildGridSpacingChanged += m =>
+            {
+                if (_selectionGizmo != null) _selectionGizmo.GridSpacing = m;
+            };
 
             _cursorManager = new SLNG.App.CursorManager();
             AddChild(_cursorManager);

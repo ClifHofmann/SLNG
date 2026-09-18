@@ -336,7 +336,17 @@ public sealed class WorldSimulation : IDisposable
         var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
 
         var transform = entity.GetComponent<TransformComponent>() ?? new TransformComponent();
-        transform.LocalPosition = e.Position;
+
+        // FEAT-UI-04: while the user is dragging this object with the in-world gizmo, the local
+        // position is authoritative. The simulator's echo trails the cursor by a round trip, so
+        // adopting it would yank the object back to where it was a moment ago, over and over --
+        // that is the stutter this guard exists to stop. Only POSITION is withheld: rotation,
+        // scale, textures and everything else below still apply normally, because the drag makes
+        // no claim on them.
+        if (!transform.LocallyDragged)
+        {
+            transform.LocalPosition = e.Position;
+        }
         transform.LocalRotation = e.Rotation;
         transform.ParentLocalId = e.ParentLocalId;
         // Linked child prims send their transform relative to the root; compose to world space.
@@ -598,6 +608,13 @@ public sealed class WorldSimulation : IDisposable
         }
     }
 
+    /// <summary>BUG-NET-17: how close an avatar update has to be to a teleport's destination
+    /// before the simulator counts as having caught up. Generous, because the agent starts
+    /// moving again immediately and the first post-teleport updates are already drifting from
+    /// the exact arrival point -- it only has to separate "near where we went" from "still at
+    /// the place we left", and those are usually hundreds of metres apart.</summary>
+    private const float PostTeleportSettleMeters = 12f;
+
     private void ApplyAvatarUpdate(AvatarUpdateEvent e)
     {
         // Cheap and unconditional: an avatar update is rare compared with an object update, and
@@ -771,8 +788,28 @@ public sealed class WorldSimulation : IDisposable
             // real surface reading that no longer applies anywhere near the new position -- would
             // silently keep steering the ground clamp (BUG-NET-17: an avatar teleporting to a very
             // different height rendered stuck at the OLD one).
-            if (e.SupportPlane.HasValue) avatar.SupportPlane = e.SupportPlane;
-            else if (e.IsTeleport) avatar.SupportPlane = null;
+            if (e.IsTeleport)
+            {
+                // Clear it, and remember where we went: the next few updates can still be
+                // pre-teleport ones the simulator had already queued.
+                avatar.SupportPlane = null;
+                avatar.PendingTeleportDestination = e.Position;
+            }
+            else if (avatar.PendingTeleportDestination is { } destination)
+            {
+                if (Vector3.Distance(e.Position, destination) <= PostTeleportSettleMeters)
+                {
+                    // The simulator is talking about the new location now, so its plane is
+                    // about the new location too.
+                    avatar.PendingTeleportDestination = null;
+                    if (e.SupportPlane.HasValue) avatar.SupportPlane = e.SupportPlane;
+                }
+                // Otherwise: a stale in-flight update. Its plane describes where we WERE.
+            }
+            else if (e.SupportPlane.HasValue)
+            {
+                avatar.SupportPlane = e.SupportPlane;
+            }
             entity.SetComponent(avatar);
         }
         _world.NotifyComponentUpdated(entity, avatar);
