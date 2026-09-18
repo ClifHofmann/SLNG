@@ -289,7 +289,7 @@ public record ObjectUpdateEvent(
 /// describing a surface that no longer exists. True forces both: the network Position is taken
 /// verbatim and snapped to instantly, and SupportPlane is cleared when the teleport event itself
 /// carries none.</param>
-public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent, float ScaleZ = 0f, Vector3 Velocity = default, float TimeDilation = 1f, uint SittingOnLocalId = 0, Vector4? SupportPlane = null, bool IsTeleport = false) : IWorldEvent;
+public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, Vector3 Position, Quaternion Rotation, string FirstName, string LastName, bool IsLocalAgent, float ScaleZ = 0f, Vector3 Velocity = default, float TimeDilation = 1f, uint SittingOnLocalId = 0, Vector4? SupportPlane = null, bool IsTeleport = false, string? GroupTitle = null) : IWorldEvent;
 
 /// <summary>Represents the removal of an object from the simulator's interest list.</summary>
 public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent;

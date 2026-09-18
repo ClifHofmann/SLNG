@@ -28,6 +28,14 @@ public class AvatarComponent : IComponent
     public string FirstName { get; set; } = string.Empty;
     public string LastName { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
+
+    /// <summary>FEAT-UI-30: the group title the simulator broadcasts above this avatar --
+    /// the active group's role title, not its name. It arrives as the <c>Title</c> NameValue
+    /// on the avatar's ObjectUpdate (LibreMetaverse surfaces it as <c>Avatar.GroupName</c>,
+    /// which is misleadingly named: it is the TITLE). Empty means no active group or a role
+    /// with a blank title -- both render as no title line, which is what the reference viewer
+    /// does.</summary>
+    public string GroupTitle { get; set; } = string.Empty;
     public bool IsLocalAgent { get; set; }
 
     /// <summary>SL's collision plane for this avatar, as the simulator last reported it, or null

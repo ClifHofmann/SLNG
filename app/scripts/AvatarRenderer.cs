@@ -376,15 +376,7 @@ public partial class AvatarRenderer : Node3D
         // Add the visual root to the tree first so all sub-nodes inherit the active scene tree lifecycle
         AddChild(visual.Root);
 
-        var nameText = avatar.FirstName;
-        if (!string.IsNullOrEmpty(avatar.LastName) && avatar.LastName != "Resident")
-        {
-            nameText += $" {avatar.LastName}";
-        }
-        if (!string.IsNullOrEmpty(avatar.DisplayName) && avatar.DisplayName != nameText)
-        {
-            nameText = $"{avatar.DisplayName}\n{nameText}";
-        }
+        var nameText = BuildNameTagText(avatar);
 
         var panel = new Godot.PanelContainer { Name = "NameTag" };
         var styleBox = new Godot.StyleBoxFlat
@@ -957,11 +949,7 @@ public partial class AvatarRenderer : Node3D
             var label = panel.GetNodeOrNull<Godot.Label>("Label");
             if (label != null)
             {
-                string nameText = avatar.FirstName;
-                if (!string.IsNullOrEmpty(avatar.LastName) && avatar.LastName != "Resident") 
-                    nameText += $" {avatar.LastName}";
-                if (!string.IsNullOrEmpty(avatar.DisplayName) && avatar.DisplayName != nameText)
-                    nameText = $"{avatar.DisplayName}\n{nameText}";
+                string nameText = BuildNameTagText(avatar);
 
                 if (label.Text != nameText)
                     label.Text = nameText;
@@ -4737,6 +4725,31 @@ void fragment() {
     /// facial expression. Pelvis, spine and legs: the chain a sit or a stand actually moves, and
     /// the chain two poses fight over. An animation touching none of these does not compete with
     /// a furniture pose and must never be dropped as a rival (FEAT-ANIM-03).</summary>
+    /// <summary>FEAT-UI-30: the nametag's text. One method rather than two copies -- the build
+    /// path and the per-frame update path had already drifted apart, and a group title added to
+    /// only one of them would show on avatars that arrive and never on avatars that change.
+    ///
+    /// <para>Line order matches the reference viewer: the group TITLE sits above the name. It is
+    /// the active group's role title, not the group's name, and an avatar with no active group
+    /// simply has no such line (<see cref="AvatarComponent.GroupTitle"/>).</para></summary>
+    private static string BuildNameTagText(AvatarComponent avatar)
+    {
+        var nameText = avatar.FirstName;
+        if (!string.IsNullOrEmpty(avatar.LastName) && avatar.LastName != "Resident")
+        {
+            nameText += $" {avatar.LastName}";
+        }
+        if (!string.IsNullOrEmpty(avatar.DisplayName) && avatar.DisplayName != nameText)
+        {
+            nameText = $"{avatar.DisplayName}\n{nameText}";
+        }
+        if (!string.IsNullOrEmpty(avatar.GroupTitle))
+        {
+            nameText = $"{avatar.GroupTitle}\n{nameText}";
+        }
+        return nameText;
+    }
+
     private static readonly HashSet<string> BodyPoseJoints = new(StringComparer.OrdinalIgnoreCase)
     {
         "mPelvis", "mTorso", "mChest", "mSpine1", "mSpine2", "mSpine3", "mSpine4",
