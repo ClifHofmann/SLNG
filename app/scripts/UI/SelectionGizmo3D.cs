@@ -235,7 +235,6 @@ namespace SLNG.App.UI
         private int _scaleHandleIndex;
 
         private System.Numerics.Vector3 _dragStartSlScale;
-        private float _dragStartScaleParam;
 
         private MeshInstance3D _dial = null!;
         private StandardMaterial3D _dialMaterial = null!;
@@ -519,21 +518,23 @@ namespace SLNG.App.UI
 
             _dragAxisOrigin = GlobalPosition;
 
+            // Hoisted out of the branches. It lived in the ring branch only, so a stretch drag
+            // computed its direction and its centre shift from whatever rotation a previous
+            // rotate drag had left behind -- or from identity -- and the handle therefore did
+            // not follow the cursor. Every drag kind wants the rotation it started from.
+            _dragStartSlRot = transform.Rotation;
+
             if (handle == Handle.Scale)
             {
                 var prim0 = _entity.GetComponent<PrimitiveComponent>();
                 if (prim0 == null) return false;
                 if (!TryScaleHandlePosition(_scaleHandleIndex, out _, out var localDir0)) return false;
-                if (!TryScaleParam(mouse, transform.Rotation, localDir0, out float p0)) return false;
-
                 _dragStartSlScale = prim0.Scale;
-                _dragStartScaleParam = p0;
             }
             else if (IsRing(handle))
             {
                 if (!TryRingAngle(mouse, handle, out float startAngle)) return false;
                 _dragStartRingAngle = startAngle;
-                _dragStartSlRot = transform.Rotation;
                 _dragObjectAxis = PickObjectAxisNearest(startAngle, (int)handle - (int)Handle.RingX, transform.Rotation);
             }
             else if (IsPlane(handle))
@@ -747,12 +748,12 @@ namespace SLNG.App.UI
             if (!TryScaleHandlePosition(_scaleHandleIndex, out _, out var localDir)) return;
             if (!TryScaleParam(mouse, _dragStartSlRot, localDir, out float t)) return;
 
-            // Same lead-the-cursor-out gesture as the move ruler: off the stretch line by more
-            // than the grab radius and the edge snaps to the build grid.
-            var slDir = System.Numerics.Vector3.Normalize(
-                System.Numerics.Vector3.Transform(localDir, _dragStartSlRot));
-            _snapping = CursorIsOffLine(mouse, new Vector3(slDir.X, slDir.Z, -slDir.Y));
-            if (_snapping) t = Snap(t);
+            // No snapping here yet, deliberately. The move ruler's lead-the-cursor-out gesture
+            // works because there is a scale drawn to lead it to; a stretch has no such guide,
+            // so the same test fires on ordinary sideways cursor movement and the edge jumps in
+            // grid steps for no visible reason -- which reads as the handle refusing to follow
+            // the mouse. Snapping belongs here, but only together with something to aim at.
+            _snapping = false;
 
             bool corner = _scaleHandleIndex >= 6;
             var half = _dragStartSlScale * 0.5f;
