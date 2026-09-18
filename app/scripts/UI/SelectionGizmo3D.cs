@@ -38,6 +38,14 @@ namespace SLNG.App.UI
         /// <summary>Minimum world movement before an intermediate update goes to the simulator.
         /// Sub-millimetre jitter from pixel-quantised cursor input would otherwise put a packet on
         /// the wire every frame of a drag.</summary>
+        /// <summary>Half-length of the axis guide lines, in metres. Not literally infinite, but
+        /// a region is 256 m across and the draw distance is far shorter, so at this length they
+        /// leave the visible world in every direction and read as endless. Drawn as LINE
+        /// primitives on purpose: a line renders one pixel wide whatever the distance, which is
+        /// what makes a guide readable both at arm's length and across a parcel. A thin cylinder
+        /// would vanish at range and look like a pipe up close.</summary>
+        private const float GuideHalfLength = 512f;
+
         private const float SendEpsilon = 0.01f;
 
         /// <summary>Minimum gap between intermediate sends. The final position is always sent on
@@ -64,6 +72,8 @@ namespace SLNG.App.UI
 
         private readonly MeshInstance3D[] _arrows = new MeshInstance3D[3];
         private readonly StandardMaterial3D[] _materials = new StandardMaterial3D[3];
+        private readonly MeshInstance3D[] _guides = new MeshInstance3D[3];
+        private readonly StandardMaterial3D[] _guideMaterials = new StandardMaterial3D[3];
 
         private Entity? _entity;
         private uint _localId;
@@ -149,6 +159,12 @@ namespace SLNG.App.UI
                 _arrows[i].Scale = new Vector3(length, length, length);
                 bool lit = _dragging == (Axis)(i + 1) || (_dragging == Axis.None && _hovered == (Axis)(i + 1));
                 _materials[i].AlbedoColor = lit ? Colors.White : AxisColor[i];
+
+                // The guides are scenery until an axis is in play: faint enough not to clutter
+                // the view with three full-length lines, obvious on the one being dragged.
+                var guide = AxisColor[i];
+                guide.A = lit ? 0.9f : 0.28f;
+                _guideMaterials[i].AlbedoColor = guide;
             }
         }
 
@@ -351,6 +367,27 @@ namespace SLNG.App.UI
 
                 _arrows[i] = holder;
                 AddChild(holder);
+
+                var guideMat = new StandardMaterial3D
+                {
+                    ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                    AlbedoColor = AxisColor[i],
+                    NoDepthTest = true,
+                    RenderPriority = 99,
+                    Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                };
+                _guideMaterials[i] = guideMat;
+
+                var line = new ImmediateMesh();
+                line.SurfaceBegin(Mesh.PrimitiveType.Lines, guideMat);
+                line.SurfaceAddVertex(dir * -GuideHalfLength);
+                line.SurfaceAddVertex(dir * GuideHalfLength);
+                line.SurfaceEnd();
+
+                // NOT a child of the arrow holder: the holder is rescaled every frame for the
+                // constant-screen-size arrows, and the guides must keep their fixed world length.
+                _guides[i] = new MeshInstance3D { Name = $"Guide{(Axis)(i + 1)}", Mesh = line };
+                AddChild(_guides[i]);
             }
         }
     }
