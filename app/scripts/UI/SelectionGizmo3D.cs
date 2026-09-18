@@ -240,11 +240,17 @@ namespace SLNG.App.UI
         private System.Numerics.Quaternion _dragStartSlRot;
         private float _dragStartRingAngle;
 
-        /// <summary>Where the needle points, as an angle on the dial: the cursor's angle, or the
-        /// snapped one while snapping. Kept rather than recomputed so the needle is drawn from
-        /// exactly the value the drag acted on -- any second derivation of it is a third frame
-        /// to get out of step with the ticks.</summary>
-        private float _dialAngle;
+        /// <summary>The object's own local axis that this ring drag steers, chosen at grab time
+        /// as the one whose projection lies closest to the cursor.
+        ///
+        /// <para>This is the whole trick, taken from <c>LLManipRotate::dragUnconstrained</c>'s
+        /// snap branch: the viewer picks the object axis nearest the mouse and then turns the
+        /// object so THAT axis points at the (quantised) mouse angle. One choice gives all three
+        /// properties at once -- the guide line lies on a real object edge, it appears where the
+        /// ring was grabbed, and a snap lands it exactly on a tick. Deriving the line from the
+        /// cursor alone or from a fixed object axis alone each gives only one of the three,
+        /// which is what the two previous attempts here did.</para></summary>
+        private System.Numerics.Vector3 _dragObjectAxis;
 
         /// <summary>The gizmo's world position when the drag began. The axis has to be measured
         /// from a FIXED origin: GlobalPosition follows the object as it moves, so measuring
@@ -477,8 +483,8 @@ namespace SLNG.App.UI
             {
                 if (!TryRingAngle(mouse, handle, out float startAngle)) return false;
                 _dragStartRingAngle = startAngle;
-                _dialAngle = startAngle;
                 _dragStartSlRot = transform.Rotation;
+                _dragObjectAxis = PickObjectAxisNearest(startAngle, (int)handle - (int)Handle.RingX, transform.Rotation);
             }
             else if (IsPlane(handle))
             {
@@ -603,43 +609,32 @@ namespace SLNG.App.UI
             if (!TryRingAngle(mouse, _dragging, out float angle)) return;
 
             int i = (int)_dragging - (int)Handle.RingX;
-            // The SL axis this ring turns about, in SL's own coordinates -- the rotation we send
-            // is an SL quaternion, so it must not be built from the Godot axis vector.
-            var slAxis = i switch
-            {
-                0 => new System.Numerics.Vector3(1, 0, 0),
-                1 => new System.Numerics.Vector3(0, 1, 0),
-                _ => new System.Numerics.Vector3(0, 0, 1),
-            };
 
-            float delta = Mathf.Wrap(angle - _dragStartRingAngle, -Mathf.Pi, Mathf.Pi);
-
-            // Lead the cursor out past the dial and the turn snaps to its ticks -- the same
-            // gesture as the linear ruler, and the reference viewer's own ("move the mouse
-            // cursor to the lines to snap"). Snapped on the RESULTING angle rather than the
-            // delta, so the object lands on a whole multiple of the step instead of a whole
-            // step away from wherever it already was.
+            // LLManipRotate's model: turn the object so the axis picked at grab time points at
+            // the mouse angle, rather than turning it BY the angle the mouse has swept. The two
+            // differ the moment a snap quantises the mouse angle -- "by" leaves the axis a
+            // fraction off the tick, "at" puts it on the tick, which is the whole point of a
+            // detent.
             _snapping = CursorIsPastDial(mouse);
+            float targetAngle = angle;
             if (_snapping)
             {
-                // Snap the DIAL angle, not the object's own rotation. The dial's ticks are laid
-                // out in world angle so that the direction labels land on them; snapping the
-                // object's twist instead would put the needle between ticks whenever the ring
-                // was grabbed off a step, contradicting the scale it is drawn against.
                 float step = Mathf.DegToRad(_rotationSnapDegrees);
-                float snappedT = Mathf.Round(angle / step) * step;
-                delta = Mathf.Wrap(snappedT - _dragStartRingAngle, -Mathf.Pi, Mathf.Pi);
-                _dialAngle = snappedT;
-            }
-            else
-            {
-                _dialAngle = angle;
+                targetAngle = Mathf.Round(angle / step) * step;
             }
 
-            var turn = System.Numerics.Quaternion.CreateFromAxisAngle(slAxis, delta);
+            var a = AxisDirGodot[(i + 1) % 3];
+            var b = AxisDirGodot[(i + 2) % 3];
+            if (!TryProjectSlAxis(_dragObjectAxis, _dragStartSlRot, a, b, out var axisDir)) return;
+            float axisAngle = Mathf.Atan2(axisDir.Dot(b), axisDir.Dot(a));
 
-            // World-space turn, so it reads the same whichever way the object already faces:
-            // the new rotation is the turn applied AFTER the original, not in its local frame.
+            float delta = Mathf.Wrap(targetAngle - axisAngle, -Mathf.Pi, Mathf.Pi);
+
+            // The SL axis this ring turns about, in SL's own coordinates -- the rotation we send
+            // is an SL quaternion, so it must not be built from the Godot axis vector. A
+            // right-handed turn about axis i carries (i+1) toward (i+2), which is the same sense
+            // the angles above are measured in, so the sign needs no correction.
+            var turn = System.Numerics.Quaternion.CreateFromAxisAngle(SlUnit(i), delta);
             var slRot = System.Numerics.Quaternion.Normalize(turn * _dragStartSlRot);
 
             var transform = _entity.GetComponent<TransformComponent>();
@@ -709,14 +704,6 @@ namespace SLNG.App.UI
             return mouse.DistanceTo(centre2D) > radiusPixels * DialSnapReach;
         }
 
-        /// <summary>The component of a rotation about one SL axis, so a snap can land on a whole
-        /// multiple of the step in world terms rather than relative to the drag's own start.
-        /// Swing-twist: project the quaternion onto the axis and take the twist.</summary>
-        private static float AngleAboutAxis(System.Numerics.Quaternion q, int axisIndex)
-        {
-            float component = axisIndex switch { 0 => q.X, 1 => q.Y, _ => q.Z };
-            return 2f * System.MathF.Atan2(component, q.W);
-        }
 
         /// <summary>Glyph count of the longest coordinate this ruler will print, so the label
         /// spacing can be driven by width. Checks both ends, since the far end carries the most
@@ -1060,9 +1047,13 @@ namespace SLNG.App.UI
             // object's CURRENT rotation rather than from the cursor, so when a snap is active it
             // lands exactly on a tick instead of hovering a degree or two off it and quietly
             // contradicting the thing it is meant to confirm.
-            var nowDir = a * Mathf.Cos(_dialAngle) + b * Mathf.Sin(_dialAngle);
-            mesh.SurfaceAddVertex(Vector3.Zero);
-            mesh.SurfaceAddVertex(nowDir * (radius + DialTickMajor * arrowLength));
+            var nowTransform = _entity?.GetComponent<TransformComponent>();
+            if (nowTransform != null
+                && TryProjectSlAxis(_dragObjectAxis, nowTransform.Rotation, a, b, out var nowDir))
+            {
+                mesh.SurfaceAddVertex(Vector3.Zero);
+                mesh.SurfaceAddVertex(nowDir * (radius + DialTickMajor * arrowLength));
+            }
 
             // The dial's own circle, so the ticks read as one scale.
             for (int n = 0; n < RingSegments; n++)
@@ -1139,6 +1130,59 @@ namespace SLNG.App.UI
             });
             label.Modulate = new Color(1f, 1f, 1f, _snapping ? 1f : 0.75f);
             label.Visible = true;
+        }
+
+        /// <summary>The object's local axis whose direction in the ring's plane is closest to
+        /// where the ring was grabbed. Four candidates -- the two in-plane local axes and their
+        /// negatives -- because a box edge points both ways and the near one is the one the user
+        /// is pointing at.</summary>
+        private System.Numerics.Vector3 PickObjectAxisNearest(float grabAngle, int ringAxis, System.Numerics.Quaternion rotation)
+        {
+            var a = AxisDirGodot[(ringAxis + 1) % 3];
+            var b = AxisDirGodot[(ringAxis + 2) % 3];
+            var target = a * Mathf.Cos(grabAngle) + b * Mathf.Sin(grabAngle);
+
+            var best = SlUnit((ringAxis + 1) % 3);
+            float bestDot = float.MinValue;
+
+            for (int k = 1; k <= 2; k++)
+            {
+                for (int sign = -1; sign <= 1; sign += 2)
+                {
+                    var candidate = SlUnit((ringAxis + k) % 3) * sign;
+                    if (!TryProjectSlAxis(candidate, rotation, a, b, out var dir)) continue;
+                    float dot = dir.Dot(target);
+                    if (dot > bestDot) { bestDot = dot; best = candidate; }
+                }
+            }
+            return best;
+        }
+
+        private static System.Numerics.Vector3 SlUnit(int axis) => axis switch
+        {
+            0 => new System.Numerics.Vector3(1, 0, 0),
+            1 => new System.Numerics.Vector3(0, 1, 0),
+            _ => new System.Numerics.Vector3(0, 0, 1),
+        };
+
+        /// <summary>An object-local SL axis, rotated into the world and projected into the ring's
+        /// plane. False when it points straight out of the plane and has no direction there.
+        /// </summary>
+        private static bool TryProjectSlAxis(
+            System.Numerics.Vector3 slLocal, System.Numerics.Quaternion rotation,
+            Vector3 a, Vector3 b, out Vector3 dir)
+        {
+            dir = Vector3.Zero;
+            var slWorld = System.Numerics.Vector3.Transform(slLocal, rotation);
+            // SL is Z-up, Godot Y-up: SL(x, y, z) -> Godot(x, z, -y). Directions only, so the
+            // region origin does not enter into it.
+            var godot = new Vector3(slWorld.X, slWorld.Z, -slWorld.Y);
+
+            var projected = a * godot.Dot(a) + b * godot.Dot(b);
+            if (projected.LengthSquared() < 1e-6f) return false;
+
+            dir = projected.Normalized();
+            return true;
         }
 
         private static Handle RingHandle(int i) => (Handle)((int)Handle.RingX + i);
