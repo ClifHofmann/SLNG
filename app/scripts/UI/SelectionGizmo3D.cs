@@ -80,18 +80,27 @@ namespace SLNG.App.UI
         /// so this bounds the pool.</summary>
         private const int RulerHalfTicks = 24;
 
-        /// <summary>How tall a printed coordinate should be on screen, in pixels. Converted to
-        /// Label3D.PixelSize per frame from the actual viewport height, rather than hardcoded: a
-        /// fixed PixelSize is a different apparent size on every resolution, and guessing at it
-        /// twice already produced text three times too large.</summary>
-        private const float RulerLabelPixelHeight = 13f;
+        /// <summary>Label3D.PixelSize for the printed coordinates, with FixedSize on.
+        ///
+        /// <para>A flat constant, arrived at by measurement rather than derivation. I twice tried
+        /// to compute it from viewport height and font size and was wrong both times -- the
+        /// second attempt raised it from 0.00035 to 0.0005 while trying to shrink the text. The
+        /// mapping from PixelSize to on-screen pixels for a fixed-size Label3D is not the
+        /// obvious one, so this is simply a value that reads correctly in-world; change it by
+        /// looking, not by algebra.</para></summary>
+        private const float RulerLabelPixelSize = 0.0002f;
 
-        /// <summary>Minimum screen distance between two printed coordinates, in pixels. How many
-        /// ticks get a label is derived from this per frame rather than fixed: the labels are a
-        /// constant size on screen while the ticks are not, so any fixed interval is either
-        /// sparse when zoomed in or an unreadable run of overlapping numbers when zoomed out
-        /// (live: "100m101m102m103m").</summary>
-        private const float RulerLabelMinPixels = 62f;
+        /// <summary>Minimum screen distance between two printed coordinates, in pixels, as a
+        /// multiple of the label's own estimated WIDTH. Height was the wrong thing to space by:
+        /// "100,5m" is six or seven glyphs, so a gap that clears the text vertically still runs
+        /// the numbers into each other horizontally, which is exactly what happened at 0.5 m
+        /// spacing (live: "100m100,5m101m").</summary>
+        private const float RulerLabelGapFactor = 1.35f;
+
+        /// <summary>Roughly how many screen pixels one glyph of a ruler label occupies at
+        /// <see cref="RulerLabelPixelSize"/>. An estimate, and deliberately a plain one — it
+        /// only has to be close enough to decide how many labels fit.</summary>
+        private const float RulerLabelCharPixels = 9f;
 
         /// <summary>How far the grid reaches, as a multiple of the camera's distance to the
         /// object, clamped to this range in metres. Sized at drag start rather than fixed: a
@@ -453,6 +462,15 @@ namespace SLNG.App.UI
 
         private float Snap(float v) => Mathf.Round(v / _gridSpacing) * _gridSpacing;
 
+        /// <summary>Glyph count of the longest coordinate this ruler will print, so the label
+        /// spacing can be driven by width. Checks both ends, since the far end carries the most
+        /// digits and a negative coordinate carries a sign as well.</summary>
+        private static int LongestLabelChars(float firstTick, float spacing)
+        {
+            float last = firstTick + RulerHalfTicks * 2 * spacing;
+            return Mathf.Max($"{firstTick:0.##}m".Length, $"{last:0.##}m".Length);
+        }
+
         /// <summary>True when the cursor has strayed far enough sideways from the drag axis to
         /// be "on the ruler". Measured against the axis's screen-space LINE rather than its
         /// segment, so it stays true when the drag runs past the end of the arrow.</summary>
@@ -729,6 +747,7 @@ namespace SLNG.App.UI
                     // With it set, the text keeps one on-screen size wherever the object is --
                     // which is the only useful behaviour for a measurement readout.
                     FixedSize = true,
+                    PixelSize = RulerLabelPixelSize,
 
                     Modulate = new Color(1f, 1f, 1f, 0.95f),
                     OutlineSize = 10,
@@ -788,8 +807,14 @@ namespace SLNG.App.UI
             {
                 float stepPixels = _camera.UnprojectPosition(_dragAxisOrigin)
                     .DistanceTo(_camera.UnprojectPosition(_dragAxisOrigin + axis * _gridSpacing));
+                // Widest text this ruler will print, e.g. "-102,5m". Estimated from the glyph
+                // count times an average advance: Label3D exposes no cheap width, and an
+                // estimate that errs wide merely drops a label that would just have fitted.
+                float labelWidthPixels = LongestLabelChars(firstTick, _gridSpacing) * RulerLabelCharPixels;
+                float needed = Mathf.Max(40f, labelWidthPixels * RulerLabelGapFactor);
+
                 labelEvery = stepPixels > 0.01f
-                    ? Mathf.Max(1, Mathf.CeilToInt(RulerLabelMinPixels / stepPixels))
+                    ? Mathf.Max(1, Mathf.CeilToInt(needed / stepPixels))
                     : RulerHalfTicks * 2;
             }
 
@@ -797,12 +822,6 @@ namespace SLNG.App.UI
             var mesh = (ImmediateMesh)_ruler.Mesh;
             mesh.ClearSurfaces();
             mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, _rulerMaterial);
-
-            // Label3D with FixedSize keeps a constant screen size whose pixel height works out
-            // to roughly fontSize * pixelSize * viewportHeight / 2. Solve that for the height we
-            // actually want, so it lands the same on any resolution.
-            float labelPixelSize = RulerLabelPixelHeight
-                / (48f * Mathf.Max(1f, GetViewport().GetVisibleRect().Size.Y) * 0.5f);
 
             int labelIndex = 0;
             for (int n = 0; n <= RulerHalfTicks * 2; n++)
@@ -822,7 +841,7 @@ namespace SLNG.App.UI
                     var label = _rulerLabels[labelIndex++];
                     label.GlobalPosition = _dragAxisOrigin + baseP + perp * (RulerTickLength * arrowLength * 1.6f);
                     label.Text = $"{slAt:0.##}m";
-                    label.PixelSize = labelPixelSize;
+                    label.PixelSize = RulerLabelPixelSize;
                     label.Modulate = new Color(1f, 1f, 1f, _snapping ? 1f : 0.85f);
                     label.Visible = true;
                 }
