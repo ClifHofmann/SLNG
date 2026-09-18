@@ -708,10 +708,18 @@ namespace SLNG.App.UI
                     NoDepthTest = true,
                     RenderPriority = 102,
                     FontSize = 48,
-                    PixelSize = 0.0006f,
-                    Modulate = new Color(1f, 1f, 1f, 0.9f),
-                    OutlineSize = 12,
-                    OutlineModulate = new Color(0f, 0f, 0f, 0.8f),
+
+                    // FixedSize, and this is the whole reason the numbers were unreadable: a
+                    // Label3D defaults to scaling with distance like any other geometry, so a
+                    // ruler a few metres away printed its coordinates at a handful of pixels.
+                    // With it set, the text keeps one on-screen size wherever the object is --
+                    // which is the only useful behaviour for a measurement readout.
+                    FixedSize = true,
+                    PixelSize = 0.0011f,
+
+                    Modulate = new Color(1f, 1f, 1f, 0.95f),
+                    OutlineSize = 20,
+                    OutlineModulate = new Color(0f, 0f, 0f, 0.9f),
                     Visible = false,
                     TopLevel = true,
                 };
@@ -782,7 +790,7 @@ namespace SLNG.App.UI
                     var label = _rulerLabels[labelIndex++];
                     label.GlobalPosition = GlobalPosition + baseP + perp * (RulerTickLength * arrowLength * 1.6f);
                     label.Text = $"{slAt:0.##}m";
-                    label.Modulate = new Color(1f, 1f, 1f, _snapping ? 1f : 0.55f);
+                    label.Modulate = new Color(1f, 1f, 1f, _snapping ? 1f : 0.85f);
                     label.Visible = true;
                 }
             }
