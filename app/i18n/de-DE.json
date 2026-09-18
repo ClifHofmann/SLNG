@@ -463,8 +463,6 @@
     },
     "build": {
       "title": "Bauen / Inspektor",
-      "tool_move": "Verschieben",
-      "tool_rotate": "Drehen",
       "edit_title": "Bearbeiten: {0}",
       "tab_general": "Allgemein",
       "tab_object": "Objekt",

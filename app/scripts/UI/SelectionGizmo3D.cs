@@ -30,9 +30,9 @@ namespace SLNG.App.UI
         /// the two axes it moves in; its normal is the third.</summary>
         public enum Handle { None, X, Y, Z, PlaneXY, PlaneXZ, PlaneYZ, RingX, RingY, RingZ }
 
-        /// <summary>Which manipulator is showing. Mirrors ObjectEditWindow.GizmoTool -- the two
-        /// are kept as separate enums so the UI layer and the 3D layer do not depend on each
-        /// other's types, which is the same boundary every other setting here respects.</summary>
+        /// <summary>Which manipulator is showing. Chosen by holding Ctrl (reference-viewer
+        /// parity) rather than by a control in the edit window, so it is decided in _Process
+        /// rather than pushed in.</summary>
         public enum Tool { Move, Rotate }
 
         public Tool ActiveTool
@@ -50,10 +50,6 @@ namespace SLNG.App.UI
         }
 
         private Tool _tool = Tool.Move;
-
-        /// <summary>Method as well as the property, so Boot can set it without needing to know
-        /// that the property has side effects.</summary>
-        public void SetTool(Tool tool) => ActiveTool = tool;
 
         /// <summary>How close, in screen pixels, the cursor must be to an axis to grab it.
         /// Generous on purpose — the arrow is a few pixels wide at distance, and the reference
@@ -286,6 +282,19 @@ namespace SLNG.App.UI
             float viewportH = Mathf.Max(1f, GetViewport().GetVisibleRect().Size.Y);
             float worldPerPixel = 2f * depth * Mathf.Tan(Mathf.DegToRad(_camera.Fov) * 0.5f) / viewportH;
             float length = ScreenLengthPixels * worldPerPixel;
+
+            // FEAT-UI-04: hold Ctrl to rotate, the way the reference viewer does it, rather
+            // than a pair of buttons in the edit window. It keeps the choice under the hand
+            // already on the object, and the first attempt -- toggle buttons above the tabs --
+            // also rendered behind the TabContainer, because ContentContainer does not lay its
+            // children out in a column.
+            //
+            // Never mid-drag: releasing Ctrl while turning something would otherwise swap the
+            // handles out from under the gesture.
+            if (_dragging == Handle.None)
+            {
+                ActiveTool = Input.IsKeyPressed(Key.Ctrl) ? Tool.Rotate : Tool.Move;
+            }
 
             var active = _dragging != Handle.None ? _dragging : _hovered;
             bool moving = _tool == Tool.Move;

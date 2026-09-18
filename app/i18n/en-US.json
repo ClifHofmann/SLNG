@@ -463,8 +463,6 @@
     },
     "build": {
       "title": "Build / Inspector",
-      "tool_move": "Move",
-      "tool_rotate": "Rotate",
       "edit_title": "Edit: {0}",
       "tab_general": "General",
       "tab_object": "Object",

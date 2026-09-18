@@ -323,7 +323,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.38-alpha";
+    public const string AppVersion = "v0.23.39-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1025,19 +1025,6 @@ public partial class Boot : Control
         // ObjectSelectionController's click path, so the gizmo only appeared after an extra click
         // on the object -- reported in-world 2026-09-18.
         _selectionGizmo?.Attach(entity);
-
-        // FEAT-UI-04: and the window drives which handles those are. Re-applied per window,
-        // since each one remembers its own tool and the gizmo follows whichever is in front.
-        _selectionGizmo?.SetTool(win.CurrentTool == SLNG.App.UI.ObjectEditWindow.GizmoTool.Rotate
-            ? SLNG.App.UI.SelectionGizmo3D.Tool.Rotate
-            : SLNG.App.UI.SelectionGizmo3D.Tool.Move);
-        win.ToolChanged += tool =>
-        {
-            _selectionGizmo?.Attach(entity);
-            _selectionGizmo?.SetTool(tool == SLNG.App.UI.ObjectEditWindow.GizmoTool.Rotate
-                ? SLNG.App.UI.SelectionGizmo3D.Tool.Rotate
-                : SLNG.App.UI.SelectionGizmo3D.Tool.Move);
-        };
 
         win.Closed += () =>
         {
