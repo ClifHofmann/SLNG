@@ -104,6 +104,20 @@ public partial class DisplayPreferencesPage : VBoxContainer
         gridDropdown.ItemSelected += index => _settings.SetBuildGridSpacing(steps[(int)index]);
         AddChild(gridDropdown);
 
+        var rotHeading = new Label { Text = L10n.Tr("ui.preferences.build_rotation_snap_heading") };
+        rotHeading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
+        AddChild(rotHeading);
+
+        var rotDropdown = new OptionButton { TooltipText = L10n.Tr("ui.preferences.build_rotation_snap_tip") };
+        float[] angles = { 1f, 5f, 10f, 15f, 22.5f, 30f, 45f, 90f };
+        for (int i = 0; i < angles.Length; i++)
+        {
+            rotDropdown.AddItem($"{angles[i]:0.##}°");
+            if (Mathf.IsEqualApprox(angles[i], _settings.BuildRotationSnapDegrees)) rotDropdown.Select(i);
+        }
+        rotDropdown.ItemSelected += index => _settings.SetBuildRotationSnapDegrees(angles[(int)index]);
+        AddChild(rotDropdown);
+
         var separator = new HSeparator();
         separator.AddThemeConstantOverride("separation", 15);
         AddChild(separator);

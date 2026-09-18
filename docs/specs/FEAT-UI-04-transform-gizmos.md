@@ -75,4 +75,6 @@ through the numeric fields.
       axis, and a configurable grid granularity (`v0.23.28-alpha`) — requested live.
 - [x] Rotate gizmo (rings) (`v0.23.38-alpha`), switched to by holding **Ctrl** (`v0.23.39-alpha`,
       reference-viewer parity) rather than a control in the edit window.
+- [x] Rotation snap dial with a configurable angular step (`v0.23.40-alpha`) — same
+      lead-the-cursor-out gesture as the linear ruler.
 - [ ] Scale gizmo (corner handles / cube) — separate follow-up pass, not blocking Move.

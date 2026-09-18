@@ -298,6 +298,8 @@
       "toolbar_heading": "Buttons shown on the bottom bar:",
       "language_heading": "Language (requires reopening windows):",
       "ui_scale_heading": "UI Scale (windows & HUD):",
+      "build_rotation_snap_heading": "Rotation snap",
+      "build_rotation_snap_tip": "Angular step the rotate gizmo snaps to, and the spacing of its dial ticks. Leading the cursor out past the dial while turning engages it.",
       "build_grid_heading": "Build grid",
       "build_grid_tip": "Cell size of the move gizmo's grid and the spacing of its axis ruler. Sliding the cursor off the axis while dragging snaps to these steps.",
       "hide_own_group_title": "Hide my group title from everyone",

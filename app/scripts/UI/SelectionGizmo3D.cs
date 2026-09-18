@@ -74,6 +74,18 @@ namespace SLNG.App.UI
         /// would vanish at range and look like a pipe up close.</summary>
         private const float GuideHalfLength = 512f;
 
+        /// <summary>Angular snap step in degrees for a rotation drag, and the spacing of the
+        /// dial's ticks. Settable from preferences (default 15°, the step SL builders reach for
+        /// most); the linear grid has its own setting because metres and degrees are not the
+        /// same choice.</summary>
+        public float RotationSnapDegrees
+        {
+            get => _rotationSnapDegrees;
+            set => _rotationSnapDegrees = Mathf.Clamp(value, 0.1f, 90f);
+        }
+
+        private float _rotationSnapDegrees = 15f;
+
         /// <summary>The build grid's cell size in metres, and the spacing of the axis ruler's
         /// ticks. Settable from preferences (default 1 m, SL's own build grid); pushed in by
         /// Boot. Clamped on the way in, because a zero or negative spacing would generate an
@@ -107,6 +119,21 @@ namespace SLNG.App.UI
         /// </summary>
         private const float RingRadius = 0.85f;
         private const int RingSegments = 72;
+
+        /// <summary>Radius of the snap dial drawn outside the ring, and its tick lengths, as
+        /// fractions of the arrow length. Outside rather than on the ring, so the same gesture
+        /// as the linear ruler applies: lead the cursor out to the scale and it snaps.</summary>
+        private const float DialRadius = 1.45f;
+        private const float DialTickMinor = 0.07f;
+        private const float DialTickMajor = 0.15f;
+
+        /// <summary>How far past the dial's own radius, as a multiple, the cursor has to be
+        /// before an angular drag snaps.</summary>
+        private const float DialSnapReach = 0.88f;
+
+        /// <summary>Every how many snap steps a tick is drawn long. Purely visual grouping, the
+        /// way a protractor marks every fifth degree.</summary>
+        private const int DialMajorEvery = 5;
 
         /// <summary>Label3D.PixelSize for the printed coordinates, with FixedSize on.
         ///
@@ -185,6 +212,8 @@ namespace SLNG.App.UI
         private readonly StandardMaterial3D[] _planeMaterials = new StandardMaterial3D[3];
         private readonly MeshInstance3D[] _grids = new MeshInstance3D[3];
         private readonly MeshInstance3D[] _rings = new MeshInstance3D[3];
+        private MeshInstance3D _dial = null!;
+        private StandardMaterial3D _dialMaterial = null!;
         private readonly StandardMaterial3D[] _ringMaterials = new StandardMaterial3D[3];
         private readonly StandardMaterial3D[] _gridMaterials = new StandardMaterial3D[3];
 
@@ -341,6 +370,7 @@ namespace SLNG.App.UI
             }
 
             UpdateRuler(length);
+            UpdateDial(length);
         }
 
         private static Handle PlaneHandle(int i) => (Handle)((int)Handle.PlaneXY + i);
@@ -566,6 +596,21 @@ namespace SLNG.App.UI
             };
 
             float delta = Mathf.Wrap(angle - _dragStartRingAngle, -Mathf.Pi, Mathf.Pi);
+
+            // Lead the cursor out past the dial and the turn snaps to its ticks -- the same
+            // gesture as the linear ruler, and the reference viewer's own ("move the mouse
+            // cursor to the lines to snap"). Snapped on the RESULTING angle rather than the
+            // delta, so the object lands on a whole multiple of the step instead of a whole
+            // step away from wherever it already was.
+            _snapping = CursorIsPastDial(mouse);
+            if (_snapping)
+            {
+                float step = Mathf.DegToRad(_rotationSnapDegrees);
+                float startAngleOnAxis = AngleAboutAxis(_dragStartSlRot, i);
+                float target = Mathf.Round((startAngleOnAxis + delta) / step) * step;
+                delta = target - startAngleOnAxis;
+            }
+
             var turn = System.Numerics.Quaternion.CreateFromAxisAngle(slAxis, delta);
 
             // World-space turn, so it reads the same whichever way the object already faces:
@@ -618,6 +663,33 @@ namespace SLNG.App.UI
         }
 
         private float Snap(float v) => Mathf.Round(v / _gridSpacing) * _gridSpacing;
+
+        /// <summary>True once the cursor has been led out past the dial's ticks.</summary>
+        private bool CursorIsPastDial(Vector2 mouse)
+        {
+            if (_camera.IsPositionBehind(_dragAxisOrigin)) return false;
+            var centre2D = _camera.UnprojectPosition(_dragAxisOrigin);
+
+            // The dial's radius in screen pixels, measured rather than assumed: the ring is a
+            // circle in 3D and its projection depends on the viewing angle, so a world-space
+            // threshold would engage at different apparent distances from different sides.
+            int i = (int)_dragging - (int)Handle.RingX;
+            var edge = _dragAxisOrigin
+                       + AxisDirGodot[(i + 1) % 3] * (DialRadius * _arrows[0].Scale.X);
+            if (_camera.IsPositionBehind(edge)) return false;
+
+            float radiusPixels = centre2D.DistanceTo(_camera.UnprojectPosition(edge));
+            return mouse.DistanceTo(centre2D) > radiusPixels * DialSnapReach;
+        }
+
+        /// <summary>The component of a rotation about one SL axis, so a snap can land on a whole
+        /// multiple of the step in world terms rather than relative to the drag's own start.
+        /// Swing-twist: project the quaternion onto the axis and take the twist.</summary>
+        private static float AngleAboutAxis(System.Numerics.Quaternion q, int axisIndex)
+        {
+            float component = axisIndex switch { 0 => q.X, 1 => q.Y, _ => q.Z };
+            return 2f * System.MathF.Atan2(component, q.W);
+        }
 
         /// <summary>Glyph count of the longest coordinate this ruler will print, so the label
         /// spacing can be driven by width. Checks both ends, since the far end carries the most
@@ -860,6 +932,65 @@ namespace SLNG.App.UI
             BuildRuler();
 
             for (int i = 0; i < 3; i++) BuildRing(i);
+
+            _dialMaterial = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                AlbedoColor = new Color(1f, 1f, 1f, 0.6f),
+                NoDepthTest = true,
+                RenderPriority = 101,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            };
+
+            // TopLevel and pinned at the drag origin, same as the linear ruler and the grid: a
+            // scale that travels with what it measures measures nothing.
+            _dial = new MeshInstance3D { Name = "RotationDial", Mesh = new ImmediateMesh(), Visible = false, TopLevel = true };
+            AddChild(_dial);
+        }
+
+        /// <summary>Redraws the snap dial around the ring being dragged: a circle of ticks at the
+        /// angular snap step, outside the ring so the cursor can be led out to it.</summary>
+        private void UpdateDial(float arrowLength)
+        {
+            if (_dragging == Handle.None || !IsRing(_dragging))
+            {
+                if (_dial.Visible) _dial.Visible = false;
+                return;
+            }
+
+            int i = (int)_dragging - (int)Handle.RingX;
+            var a = AxisDirGodot[(i + 1) % 3];
+            var b = AxisDirGodot[(i + 2) % 3];
+
+            int steps = Mathf.Max(4, Mathf.RoundToInt(360f / _rotationSnapDegrees));
+            float radius = DialRadius * arrowLength;
+
+            _dial.GlobalPosition = _dragAxisOrigin;
+            var mesh = (ImmediateMesh)_dial.Mesh;
+            mesh.ClearSurfaces();
+            mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, _dialMaterial);
+
+            for (int n = 0; n < steps; n++)
+            {
+                float t = Mathf.Tau * n / steps;
+                var dir = a * Mathf.Cos(t) + b * Mathf.Sin(t);
+                float len = (n % DialMajorEvery == 0 ? DialTickMajor : DialTickMinor) * arrowLength;
+                mesh.SurfaceAddVertex(dir * radius);
+                mesh.SurfaceAddVertex(dir * (radius + len));
+            }
+
+            // The dial's own circle, so the ticks read as one scale.
+            for (int n = 0; n < RingSegments; n++)
+            {
+                float t0 = Mathf.Tau * n / RingSegments;
+                float t1 = Mathf.Tau * (n + 1) / RingSegments;
+                mesh.SurfaceAddVertex((a * Mathf.Cos(t0) + b * Mathf.Sin(t0)) * radius);
+                mesh.SurfaceAddVertex((a * Mathf.Cos(t1) + b * Mathf.Sin(t1)) * radius);
+            }
+            mesh.SurfaceEnd();
+
+            _dialMaterial.AlbedoColor = new Color(1f, 1f, 1f, _snapping ? 0.95f : 0.45f);
+            _dial.Visible = true;
         }
 
         /// <summary>A rotation ring in the plane perpendicular to one SL axis, coloured by that
