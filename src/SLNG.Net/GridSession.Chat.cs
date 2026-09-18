@@ -57,9 +57,55 @@ public sealed partial class GridSession
         }
         if (idsToRequest.Count > 0)
         {
-            try { _client.Avatars.GetDisplayNamesAsync(idsToRequest); } catch { /* Ignore if not supported/disabled */ }
+            RequestDisplayNames(idsToRequest);
         }
     }
+
+    /// <summary>Asks the grid for these agents' Display Names and raises
+    /// <see cref="DisplayNameResolved"/> for each one that comes back.
+    ///
+    /// <para>The result has to be READ. This used to be a bare fire-and-forget
+    /// <c>GetDisplayNamesAsync(ids)</c> whose Task was dropped on the floor, on the assumption
+    /// that the names would arrive via <c>AvatarManager.DisplayNameUpdate</c>. They do not:
+    /// that event is the grid's unsolicited "someone changed their name" push, while the reply
+    /// to a lookup is the Task's own result. So nothing ever set a display name and every
+    /// nametag showed the legacy name.</para>
+    ///
+    /// <para>Batched because the cap takes a list, and swallowing failures on purpose: Display
+    /// Names are an optional capability and most OpenSim grids do not serve them, where the
+    /// correct behaviour is simply to keep showing the legacy name.</para></summary>
+    private void RequestDisplayNames(System.Collections.Generic.List<UUID> ids)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var (success, names, _) = await _client.Avatars.GetDisplayNamesAsync(ids).ConfigureAwait(false);
+                if (!success || names == null) return;
+                foreach (var n in names)
+                {
+                    // IsDefaultDisplayName means the resident never set one and the grid is
+                    // echoing the legacy name back. Raising it would make the nametag show the
+                    // same text twice, so treat it as "no display name".
+                    if (n == null || n.IsDefaultDisplayName || string.IsNullOrEmpty(n.DisplayName)) continue;
+                    DisplayNameResolved?.Invoke(this, new NameResolvedEvent(n.ID.Guid, n.DisplayName));
+                }
+            }
+            catch { /* Optional capability -- absent on most OpenSim grids. */ }
+        });
+    }
+
+    /// <summary>Requests one agent's Display Name, deduped against the ids already asked for.
+    /// Avatars in view never reach <see cref="OnUUIDNameReply"/> -- their legacy name rides along
+    /// on the ObjectUpdate -- so without this nothing would ever ask for theirs.</summary>
+    public void RequestDisplayName(Guid agentId)
+    {
+        if (agentId == Guid.Empty || !_client.Network.Connected) return;
+        if (!_displayNamesRequested.TryAdd(agentId, 0)) return;
+        RequestDisplayNames(new System.Collections.Generic.List<UUID> { new UUID(agentId) });
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _displayNamesRequested = new();
 
     private void OnDisplayNameUpdate(object? sender, DisplayNameUpdateEventArgs e)
     {
