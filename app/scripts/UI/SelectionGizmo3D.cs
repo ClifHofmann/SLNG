@@ -998,21 +998,57 @@ namespace SLNG.App.UI
             var b = AxisDirGodot[(i + 2) % 3];
 
             int steps = Mathf.Max(4, Mathf.RoundToInt(360f / _rotationSnapDegrees));
+            float step = Mathf.Tau / steps;
             float radius = DialRadius * arrowLength;
+
+            // Laid out in TWIST space, not dial space. The ticks mark the round rotations the
+            // object can land on -- 0, 30, 60 -- and their positions follow from that, rather
+            // than sitting at fixed places on the dial and being labelled with whatever twist
+            // they happen to correspond to. Doing it the other way round printed the object's
+            // starting angle into every number (live: 7, 37, 67, 97) and put the ticks
+            // somewhere other than where the snap actually lands.
+            float startTwist = AngleAboutAxis(_dragStartSlRot, i);
 
             _dial.GlobalPosition = _dragAxisOrigin;
             var mesh = (ImmediateMesh)_dial.Mesh;
             mesh.ClearSurfaces();
             mesh.SurfaceBegin(Mesh.PrimitiveType.Lines, _dialMaterial);
 
+            // Thin the numbers out by how far apart the ticks land on screen, as the ruler does.
+            int labelEvery = DialMajorEvery;
+            if (!_camera.IsPositionBehind(_dragAxisOrigin))
+            {
+                var c2 = _camera.UnprojectPosition(_dragAxisOrigin);
+                var e2 = _camera.UnprojectPosition(_dragAxisOrigin + a * radius);
+                float perTick = Mathf.Tau * c2.DistanceTo(e2) / steps;
+                float needed = 4f * RulerLabelCharPixels * RulerLabelGapFactor;
+                if (perTick > 0.01f) labelEvery = Mathf.Max(1, Mathf.CeilToInt(needed / perTick));
+            }
+
+            int used = 0;
             for (int n = 0; n < steps; n++)
             {
-                float t = Mathf.Tau * n / steps;
+                float twist = n * step;
+                // Where that twist sits on the dial: the object turns by however far the cursor
+                // has swept, so twist = startTwist + (t - startCursorAngle).
+                float t = _dragStartRingAngle + (twist - startTwist);
                 var dir = a * Mathf.Cos(t) + b * Mathf.Sin(t);
-                float len = (n % DialMajorEvery == 0 ? DialTickMajor : DialTickMinor) * arrowLength;
+
+                bool major = n % labelEvery == 0;
+                float len = (major ? DialTickMajor : DialTickMinor) * arrowLength;
                 mesh.SurfaceAddVertex(dir * radius);
                 mesh.SurfaceAddVertex(dir * (radius + len));
+
+                if (major && used < _dialLabels.Count)
+                {
+                    var label = _dialLabels[used++];
+                    label.GlobalPosition = _dragAxisOrigin + dir * (radius + DialTickMajor * arrowLength * 2.2f);
+                    label.Text = $"{Mathf.RadToDeg(twist):0}°";
+                    label.Modulate = new Color(1f, 1f, 1f, _snapping ? 1f : 0.7f);
+                    label.Visible = true;
+                }
             }
+            for (int n = used; n < _dialLabels.Count; n++) _dialLabels[n].Visible = false;
 
             // The dial's own circle, so the ticks read as one scale.
             for (int n = 0; n < RingSegments; n++)
@@ -1026,53 +1062,8 @@ namespace SLNG.App.UI
 
             _dialMaterial.AlbedoColor = new Color(1f, 1f, 1f, _snapping ? 0.95f : 0.45f);
             _dial.Visible = true;
-
-            UpdateDialLabels(i, a, b, steps, radius, arrowLength);
         }
 
-        /// <summary>Prints the resulting rotation at each major tick, so the numbers say what
-        /// the OBJECT will read rather than where the cursor is.
-        ///
-        /// <para>A tick's screen angle maps to a twist through the drag's own frame: the object
-        /// turns by however far the cursor has swept, so the tick at cursor-angle t leaves it at
-        /// startTwist + (t - startCursorAngle). Labelling the dial's own geometry instead would
-        /// print a protractor that has nothing to do with the object's orientation.</para>
-        /// </summary>
-        private void UpdateDialLabels(int axisIndex, Vector3 a, Vector3 b, int steps, float radius, float arrowLength)
-        {
-            float startTwist = AngleAboutAxis(_dragStartSlRot, axisIndex);
-
-            // Thin the numbers out the same way the ruler does, by how far apart the ticks
-            // actually land on screen rather than by a fixed interval.
-            int every = DialMajorEvery;
-            if (!_camera.IsPositionBehind(_dragAxisOrigin))
-            {
-                var c2 = _camera.UnprojectPosition(_dragAxisOrigin);
-                var e2 = _camera.UnprojectPosition(_dragAxisOrigin + a * radius);
-                float circumference = Mathf.Tau * c2.DistanceTo(e2);
-                float perTick = circumference / Mathf.Max(1, steps);
-                float needed = 4f * RulerLabelCharPixels * RulerLabelGapFactor;
-                if (perTick > 0.01f) every = Mathf.Max(1, Mathf.CeilToInt(needed / perTick));
-            }
-
-            int used = 0;
-            for (int n = 0; n < steps && used < _dialLabels.Count; n++)
-            {
-                if (n % every != 0) continue;
-
-                float t = Mathf.Tau * n / steps;
-                float twist = startTwist + Mathf.Wrap(t - _dragStartRingAngle, -Mathf.Pi, Mathf.Pi);
-                float deg = Mathf.Wrap(Mathf.RadToDeg(twist), 0f, 360f);
-
-                var dir = a * Mathf.Cos(t) + b * Mathf.Sin(t);
-                var label = _dialLabels[used++];
-                label.GlobalPosition = _dragAxisOrigin + dir * (radius + DialTickMajor * arrowLength * 2.2f);
-                label.Text = $"{deg:0}°";
-                label.Modulate = new Color(1f, 1f, 1f, _snapping ? 1f : 0.7f);
-                label.Visible = true;
-            }
-            for (int n = used; n < _dialLabels.Count; n++) _dialLabels[n].Visible = false;
-        }
 
         /// <summary>A rotation ring in the plane perpendicular to one SL axis, coloured by that
         /// axis. A line loop, not a torus: it only has to be visible and grabbable, and a line
