@@ -35,8 +35,72 @@ namespace SLNG.App
         // deselected again).
         private readonly System.Collections.Generic.HashSet<System.Guid> _pinnedEntityIds = new();
 
-        public void Pin(System.Guid entityId) => _pinnedEntityIds.Add(entityId);
-        public void Unpin(System.Guid entityId) => _pinnedEntityIds.Remove(entityId);
+        // FEAT-UI-05: the objects gathered for a link, in the order they were picked. The LAST
+        // one becomes the linkset's root -- the viewer's rule, and it keeps its position and
+        // rotation while everything else becomes an offset from it. A List and not a HashSet
+        // precisely because that order is load-bearing.
+        private readonly System.Collections.Generic.List<System.Guid> _linkSelection = new();
+
+        /// <summary>The link selection, oldest first; the last entry is the prospective root.</summary>
+        public System.Collections.Generic.IReadOnlyList<System.Guid> LinkSelection => _linkSelection;
+
+        /// <summary>Raised whenever <see cref="LinkSelection"/> changes, so the open edit windows
+        /// can re-evaluate whether Link/Unlink are available.</summary>
+        public System.Action? OnLinkSelectionChanged;
+
+        public void Pin(System.Guid entityId)
+        {
+            _pinnedEntityIds.Add(entityId);
+            // An object open for editing is part of the link selection by definition -- that is
+            // how the viewer behaves, and it means Link works after one shift-click rather than
+            // needing the first object picked twice.
+            if (!_linkSelection.Contains(entityId)) _linkSelection.Add(entityId);
+            OnLinkSelectionChanged?.Invoke();
+        }
+
+        public void Unpin(System.Guid entityId)
+        {
+            _pinnedEntityIds.Remove(entityId);
+            _linkSelection.Remove(entityId);
+            OnLinkSelectionChanged?.Invoke();
+        }
+
+        /// <summary>Shift-click: add the object to the link selection, or drop it if it was
+        /// already there. Re-adding moves it to the end, which makes it the root.</summary>
+        private void ToggleLinkSelection(Entity entity)
+        {
+            if (_world == null) return;
+
+            if (_linkSelection.Remove(entity.Id))
+            {
+                // Never strip the highlight off something that still has its own edit window
+                // open; that window would hide itself.
+                if (!_pinnedEntityIds.Contains(entity.Id)) _world.DeselectEntity(entity);
+            }
+            else
+            {
+                _linkSelection.Add(entity.Id);
+                _world.SelectEntity(entity);
+                _session.SelectObject(entity.LocalId);
+            }
+            OnLinkSelectionChanged?.Invoke();
+        }
+
+        /// <summary>Drops everything from the link selection except the objects that have their
+        /// own edit window open -- what a plain, unmodified click means.</summary>
+        private void ResetLinkSelectionToPinned()
+        {
+            if (_world == null) return;
+            for (int i = _linkSelection.Count - 1; i >= 0; i--)
+            {
+                var id = _linkSelection[i];
+                if (_pinnedEntityIds.Contains(id)) continue;
+                var entity = _world.GetEntity(id);
+                if (entity != null) _world.DeselectEntity(entity);
+                _linkSelection.RemoveAt(i);
+            }
+            OnLinkSelectionChanged?.Invoke();
+        }
 
         /// <summary>FEAT-UI-06: the user left-clicked a prim of a linkset that is already open for
         /// editing, and wants to edit THAT prim. Arguments are the entity the open window is
@@ -277,8 +341,20 @@ namespace SLNG.App
                                             // object still touches or sits on it, because an open
                                             // build window should not swallow the whole world's
                                             // left click.
+                                            // FEAT-UI-05: shift-click gathers objects for a link.
+                                            // Only inside an edit session, like the part picking
+                                            // below and for the same reason -- outside one, a
+                                            // shift-click is just a click on the world.
+                                            if (_pinnedEntityIds.Count > 0 && mouseBtn.ShiftPressed)
+                                            {
+                                                ToggleLinkSelection(entity);
+                                                GetViewport().SetInputAsHandled();
+                                                return;
+                                            }
+
                                             if (TryFindOpenEditFor(rawEntity, out var editedEntityId))
                                             {
+                                                ResetLinkSelectionToPinned();
                                                 if (editedEntityId != entity.Id)
                                                 {
                                                     OnEditTargetPicked?.Invoke(editedEntityId, entity, localId);
@@ -287,7 +363,8 @@ namespace SLNG.App
                                                 return;
                                             }
 
-                                            if (_lastClicked != null && !_pinnedEntityIds.Contains(_lastClicked.Id))
+                                            if (_lastClicked != null && !_pinnedEntityIds.Contains(_lastClicked.Id)
+                                                && !_linkSelection.Contains(_lastClicked.Id))
                                             {
                                                 _world.DeselectEntity(_lastClicked);
                                                 _lastClicked = null;

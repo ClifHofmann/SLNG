@@ -26,6 +26,17 @@ public sealed class WorldSimulation : IDisposable
     // re-composed when the root arrives or moves. Touched only on the pump thread.
     private readonly Dictionary<(ulong, uint), HashSet<System.Guid>> _children = new();
 
+    /// <summary>FEAT-UI-05: raised when a prim joins or leaves a linkset, which in practice only
+    /// happens on a link or an unlink. Lets the UI re-read a state it cannot poll for cheaply.</summary>
+    public event System.EventHandler<Entity>? ObjectReparented;
+
+    /// <summary>FEAT-UI-05: does this prim have anything linked UNDER it -- i.e. is it a linkset
+    /// root? A child knows its own parent through <c>TransformComponent.ParentLocalId</c>, but a
+    /// root has nothing on itself that says so, and the alternative is scanning every entity in
+    /// the region. This index already exists for re-composing children, so it answers for free.</summary>
+    public bool HasChildren(ulong regionHandle, uint localId)
+        => _children.TryGetValue((regionHandle, localId), out var set) && set.Count > 0;
+
     /// <summary>
     /// Raised when WorldSimulation determines that an animation on the local agent should be stopped
     /// (e.g. its source attachment was detached/removed or the avatar stood up from a seat).
@@ -348,6 +359,22 @@ public sealed class WorldSimulation : IDisposable
             transform.LocalPosition = e.Position;
         }
         transform.LocalRotation = e.Rotation;
+
+        // FEAT-UI-05: a prim can change parent while we are watching it -- that is exactly what
+        // linking and unlinking do, and nothing here ever removed it from its OLD parent's child
+        // set. The position survives that (ResolveWorldTransform reads the prim's own
+        // ParentLocalId and returns early once it is 0), so the damage is to every question
+        // answered FROM the index: HasChildren keeps reporting the old root as a linkset root,
+        // which would leave Unlink offered on a prim that has nothing left under it. It also
+        // re-composes prims that are no longer its concern on every move.
+        uint previousParent = transform.ParentLocalId;
+        bool reparented = previousParent != e.ParentLocalId;
+        if (reparented && previousParent != 0
+            && _children.TryGetValue((e.RegionHandle, previousParent), out var oldSiblings))
+        {
+            oldSiblings.Remove(entity.Id);
+        }
+
         transform.ParentLocalId = e.ParentLocalId;
         // Linked child prims send their transform relative to the root; compose to world space.
         ResolveWorldTransform(transform, e.RegionHandle);
@@ -371,6 +398,8 @@ public sealed class WorldSimulation : IDisposable
             set.Add(entity.Id);
         }
         RecomposeChildren(e.RegionHandle, e.LocalId);
+
+        if (reparented) ObjectReparented?.Invoke(this, entity);
 
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim == null)

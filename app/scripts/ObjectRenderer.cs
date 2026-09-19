@@ -494,6 +494,11 @@ public partial class ObjectRenderer : Node3D
     // changes underneath it. Normally empty, and never more than a linkset.
     private readonly Dictionary<Guid, MeshInstance3D> _outlined = new();
 
+    // Set when a link or an unlink has changed who is a root and who is a child. One rebuild per
+    // frame, not one per reparented prim: a single Link sends an ObjectUpdate for every prim in
+    // the new linkset, and they all arrive in the same frame.
+    private bool _selectionHighlightDirty;
+
     private void InitializeOutlineMaterials()
     {
         var shader = GD.Load<Shader>("res://materials/selection_outline.gdshader");
@@ -1645,8 +1650,12 @@ public partial class ObjectRenderer : Node3D
             if (_visuals.TryGetValue(id, out var soloState) && soloState.MeshInstance != null)
             {
                 SuppressInstancing(id, isSelected);
-                // If editing linked parts, the specifically selected part acts as the primary selection (yellow)
-                ApplySelectionOutline(id, soloState.MeshInstance, isSelected, true);
+                // Root colour for a prim that IS a root, child colour otherwise -- which is what
+                // the reference viewer does even when a child is the thing being edited
+                // (llselectmgr.cpp asks isRootEdit(), and a child prim answers false). This used
+                // to force the root colour on whatever was picked, so after a link every part of
+                // a multi-selection still drew as its own root.
+                ApplySelectionOutline(id, soloState.MeshInstance, isSelected, transform.ParentLocalId == 0);
             }
             return;
         }
@@ -1673,6 +1682,28 @@ public partial class ObjectRenderer : Node3D
         }
     }
 
+    /// <summary>FEAT-UI-05: the selection has not changed, but what the selected prims ARE has
+    /// -- a link or an unlink turns roots into children and back. Ask for the highlight to be
+    /// re-cut on the next frame.</summary>
+    public void InvalidateSelectionHighlights() => _selectionHighlightDirty = true;
+
+    /// <summary>Drops every outline and draws the selection again from the world's own selected
+    /// set, so a prim that was a standalone root a moment ago now reads as a child of the
+    /// linkset it just joined (and the other way round after an unlink).</summary>
+    private void RebuildSelectionHighlights()
+    {
+        if (_world == null) return;
+
+        foreach (var (id, meshInstance) in _outlined.ToList())
+        {
+            if (IsInstanceValid(meshInstance)) ApplySelectionOutline(id, meshInstance, false, false);
+            SuppressInstancing(id, false);
+        }
+        _outlined.Clear();
+
+        foreach (var id in _world.SelectedIds.ToList()) HighlightVisual(id.ToString(), true);
+    }
+
     /// <summary>FEAT-PERF-06: mark a prim as not-instanceable (while selected/edited) and pull it
     /// out of any group now, or clear the mark so the cull sweep may re-instance it.</summary>
     private void SuppressInstancing(Guid id, bool suppress)
@@ -1693,13 +1724,13 @@ public partial class ObjectRenderer : Node3D
 
     private void ApplySelectionOutline(Guid id, MeshInstance3D meshInstance, bool isSelected, bool isRoot)
     {
-        var existing = meshInstance.GetNodeOrNull<MeshInstance3D>(OutlineNodeName);
-        var existingMask = meshInstance.GetNodeOrNull<MeshInstance3D>(OutlineMaskNodeName);
+        var existing = FindLiveChild(meshInstance, OutlineNodeName);
+        var existingMask = FindLiveChild(meshInstance, OutlineMaskNodeName);
         if (!isSelected)
         {
             _outlined.Remove(id);
-            existing?.QueueFree();
-            existingMask?.QueueFree();
+            Discard(meshInstance, existing);
+            Discard(meshInstance, existingMask);
             return;
         }
 
@@ -1755,6 +1786,30 @@ public partial class ObjectRenderer : Node3D
 
     private const string OutlineSourceMeta = "slng_outline_source";
 
+    /// <summary>The named child, unless it is already on its way out.</summary>
+    /// <remarks>
+    /// QueueFree does not remove the node, it schedules the removal for the end of the frame --
+    /// so a plain GetNodeOrNull still finds a node that is about to vanish. Rebuilding the whole
+    /// highlight within one frame (FEAT-UI-05, after a link) did exactly that: the teardown
+    /// queued each outline, the rebuild immediately found those same nodes, decided they could
+    /// be reused, and then Godot deleted them at the end of the frame. Every outline
+    /// disappeared.
+    /// </remarks>
+    private static MeshInstance3D? FindLiveChild(Node parent, string name)
+    {
+        var node = parent.GetNodeOrNull<MeshInstance3D>(name);
+        return node != null && !node.IsQueuedForDeletion() ? node : null;
+    }
+
+    /// <summary>Takes the node out of the tree NOW and frees it afterwards, so a rebuild in the
+    /// same frame neither finds it nor collides with its name.</summary>
+    private static void Discard(Node parent, Node? child)
+    {
+        if (child == null) return;
+        parent.RemoveChild(child);
+        child.QueueFree();
+    }
+
     /// <summary>Re-cuts the hull of anything outlined whose geometry has been replaced since.</summary>
     /// <remarks>
     /// Clicking an object that is still streaming is the ordinary case: the prim is wearing its
@@ -1764,12 +1819,18 @@ public partial class ObjectRenderer : Node3D
     /// </remarks>
     private void TickSelectionOutlines()
     {
+        if (_selectionHighlightDirty)
+        {
+            _selectionHighlightDirty = false;
+            RebuildSelectionHighlights();
+        }
+
         if (_outlined.Count == 0) return;
         foreach (var kvp in _outlined)
         {
             var meshInstance = kvp.Value;
             if (!IsInstanceValid(meshInstance) || meshInstance.Mesh == null) continue;
-            var outline = meshInstance.GetNodeOrNull<MeshInstance3D>(OutlineNodeName);
+            var outline = FindLiveChild(meshInstance, OutlineNodeName);
             if (outline == null) continue;
 
             long current = (long)meshInstance.Mesh.GetInstanceId();
@@ -1780,7 +1841,7 @@ public partial class ObjectRenderer : Node3D
             outline.Mesh = hull;
             outline.SetMeta(OutlineSourceMeta, current);
 
-            var mask = meshInstance.GetNodeOrNull<MeshInstance3D>(OutlineMaskNodeName);
+            var mask = FindLiveChild(meshInstance, OutlineMaskNodeName);
             if (mask != null) mask.Mesh = meshInstance.Mesh;
         }
     }
