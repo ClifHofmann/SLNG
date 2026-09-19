@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-06`
 - **Track:** `ui`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done` (`v0.23.60-alpha`, confirmed in-world after two data-losing bugs — see the two sections at the end)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 

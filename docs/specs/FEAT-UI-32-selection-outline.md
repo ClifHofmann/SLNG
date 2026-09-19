@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-32`
 - **Track:** `render` / `ui`
-- **Status:** `🧪 Review` (implemented `v0.23.56-alpha`, transparent prims fixed in `v0.23.57-alpha`; outline confirmed in-world, the depth mask not yet)
+- **Status:** `✅ Done` (`v0.23.57-alpha`, confirmed in-world including the transparent sit prim that prompted the depth mask)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -73,7 +73,7 @@ not negate it, which shrank the hull inside the object and made the outline vani
 - [x] No corner notches on a hard-edged prim.
 - [x] The hull is re-cut when the prim's geometry is replaced while it is selected (a sculpt or
       mesh that finishes loading after the click; a prim type changed in the build window).
-- [ ] Confirmed in-world against Firestorm on a prim, a sculpt, a mesh and a linkset.
+- [x] Confirmed in-world against Firestorm on a prim, a mesh and a linkset, including a chair whose invisible sit prim is what exposed the transparent case.
 
 ## Technical Specs & Affected Files
 
