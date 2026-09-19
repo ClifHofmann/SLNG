@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-05`
 - **Track:** `ui` / `net`
-- **Status:** `🧪 Review` (implemented `v0.23.61-alpha`, not yet confirmed in-world)
+- **Status:** `🧪 Review` (implemented `v0.23.61-alpha`, highlight follows the reparent as of `v0.23.62-alpha`)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -101,3 +101,21 @@ not link or unlink anything. Positions survived it (`ResolveWorldTransform` retu
 counting as a linkset root, so Unlink would have stayed offered on a prim with nothing under it.
 Three tests in `WorldSimulationReparentTests` cover the removal, a re-link under a different
 root, and the new `ObjectReparented` event that tells the UI to re-read the buttons.
+
+## The highlight follows the reparent (`v0.23.62-alpha`)
+
+Reported after the first in-world test: link and unlink work, but the selection keeps the
+colours it had. That is the same class of gap as the button state — the *selection* has not
+changed, only what the prims in it **are**. A prim that was a standalone root a moment ago is
+now a child of the linkset it just joined, and it should read as one.
+
+`ObjectRenderer.InvalidateSelectionHighlights` marks the highlight stale and the next frame
+re-cuts it from `World.SelectedIds`, rather than trying to patch individual outlines: after a
+link there is no single prim whose outline is wrong, the whole grouping is. One rebuild per
+frame and not one per prim, because a single Link sends an `ObjectUpdate` for every prim in the
+new linkset and they all arrive together.
+
+The "edit linked parts" path also stopped forcing the root colour on whatever was picked. The
+reference viewer asks `isRootEdit()`, which a child prim answers false to, so an individually
+edited child draws in the child colour — and after a link, every part of a multi-selection was
+otherwise still drawing as its own root.

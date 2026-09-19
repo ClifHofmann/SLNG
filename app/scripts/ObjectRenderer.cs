@@ -494,6 +494,11 @@ public partial class ObjectRenderer : Node3D
     // changes underneath it. Normally empty, and never more than a linkset.
     private readonly Dictionary<Guid, MeshInstance3D> _outlined = new();
 
+    // Set when a link or an unlink has changed who is a root and who is a child. One rebuild per
+    // frame, not one per reparented prim: a single Link sends an ObjectUpdate for every prim in
+    // the new linkset, and they all arrive in the same frame.
+    private bool _selectionHighlightDirty;
+
     private void InitializeOutlineMaterials()
     {
         var shader = GD.Load<Shader>("res://materials/selection_outline.gdshader");
@@ -1645,8 +1650,12 @@ public partial class ObjectRenderer : Node3D
             if (_visuals.TryGetValue(id, out var soloState) && soloState.MeshInstance != null)
             {
                 SuppressInstancing(id, isSelected);
-                // If editing linked parts, the specifically selected part acts as the primary selection (yellow)
-                ApplySelectionOutline(id, soloState.MeshInstance, isSelected, true);
+                // Root colour for a prim that IS a root, child colour otherwise -- which is what
+                // the reference viewer does even when a child is the thing being edited
+                // (llselectmgr.cpp asks isRootEdit(), and a child prim answers false). This used
+                // to force the root colour on whatever was picked, so after a link every part of
+                // a multi-selection still drew as its own root.
+                ApplySelectionOutline(id, soloState.MeshInstance, isSelected, transform.ParentLocalId == 0);
             }
             return;
         }
@@ -1671,6 +1680,28 @@ public partial class ObjectRenderer : Node3D
                 ApplySelectionOutline(kvp.Key, kvp.Value.MeshInstance, isSelected, isRoot);
             }
         }
+    }
+
+    /// <summary>FEAT-UI-05: the selection has not changed, but what the selected prims ARE has
+    /// -- a link or an unlink turns roots into children and back. Ask for the highlight to be
+    /// re-cut on the next frame.</summary>
+    public void InvalidateSelectionHighlights() => _selectionHighlightDirty = true;
+
+    /// <summary>Drops every outline and draws the selection again from the world's own selected
+    /// set, so a prim that was a standalone root a moment ago now reads as a child of the
+    /// linkset it just joined (and the other way round after an unlink).</summary>
+    private void RebuildSelectionHighlights()
+    {
+        if (_world == null) return;
+
+        foreach (var (id, meshInstance) in _outlined.ToList())
+        {
+            if (IsInstanceValid(meshInstance)) ApplySelectionOutline(id, meshInstance, false, false);
+            SuppressInstancing(id, false);
+        }
+        _outlined.Clear();
+
+        foreach (var id in _world.SelectedIds.ToList()) HighlightVisual(id.ToString(), true);
     }
 
     /// <summary>FEAT-PERF-06: mark a prim as not-instanceable (while selected/edited) and pull it
@@ -1764,6 +1795,12 @@ public partial class ObjectRenderer : Node3D
     /// </remarks>
     private void TickSelectionOutlines()
     {
+        if (_selectionHighlightDirty)
+        {
+            _selectionHighlightDirty = false;
+            RebuildSelectionHighlights();
+        }
+
         if (_outlined.Count == 0) return;
         foreach (var kvp in _outlined)
         {

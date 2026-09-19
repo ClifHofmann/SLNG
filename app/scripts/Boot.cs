@@ -323,7 +323,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.61-alpha";
+    public const string AppVersion = "v0.23.62-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3305,7 +3305,15 @@ public partial class Boot : Control
             _objectSelectionController.OnLinkSelectionChanged = RefreshLinkButtons;
             // A link or an unlink changes what the buttons should offer, and nothing else tells
             // the UI about it -- the selection has not changed, only what the objects are.
-            _worldSimulation.ObjectReparented += (_, _) => RefreshLinkButtons();
+            _worldSimulation.ObjectReparented += (_, _) =>
+            {
+                RefreshLinkButtons();
+                // The selection is unchanged, but the prims in it have swapped between being
+                // roots and being children -- so the highlight has to be re-cut, or a freshly
+                // linked part keeps drawing in the root colour and an unlinked one in the child
+                // colour.
+                _objectRenderer?.InvalidateSelectionHighlights();
+            };
             _selectionGizmo.GridSpacing = _uiSettings.BuildGridSpacing;
             _uiSettings.BuildGridSpacingChanged += m =>
             {

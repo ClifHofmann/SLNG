@@ -55,6 +55,12 @@ public class World
 
     public bool IsSelected(Entity entity) => _selectedIds.Contains(entity.Id);
 
+    /// <summary>FEAT-UI-05: everything currently selected. The renderer needs to rebuild the
+    /// selection highlight from scratch after a link or an unlink, because which prim is a root
+    /// and which is a child -- and therefore what colour it draws in -- has just changed
+    /// underneath a selection nobody touched.</summary>
+    public IReadOnlyCollection<System.Guid> SelectedIds => _selectedIds;
+
     /// <summary>
     /// Gets or creates an entity with the specified RegionHandle and LocalId.
     /// </summary>
