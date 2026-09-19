@@ -466,37 +466,166 @@ public partial class ObjectRenderer : Node3D
     private Mesh _sphereMesh = new SphereMesh();
     private Mesh _cylinderMesh = new CylinderMesh();
 
-    private Mesh? _highlightBoxMesh;
-    private StandardMaterial3D? _highlightLineMaterialCyan;
-    private StandardMaterial3D? _highlightLineMaterialYellow;
+    // FEAT-UI-32: the selection highlight. The reference viewer's colours, from
+    // skins/default/colors.xml -- SilhouetteParentColor is "Yellow" (1 1 0) and
+    // SilhouetteChildColor is (0.13 0.42 0.77), a deep blue rather than the cyan this used to
+    // draw.
+    private static readonly Color OutlineRootColor = new(1.0f, 1.0f, 0.0f);
+    private static readonly Color OutlineChildColor = new(0.13f, 0.42f, 0.77f);
 
-    private void InitializeHighlightBox()
+    // The reference viewer's SelectionHighlightThickness is 0.01 of the camera distance, giving a
+    // ribbon of 0.01 rad; at the default vertical FOV that is 0.01/(2*tan(fov/2)) of the viewport
+    // height, and the ribbon straddles the edge so only half of it lies outside the silhouette.
+    // For a 1080-high viewport at 60 deg that outer half is a little under 5 px.
+    private const float OutlineThicknessPixels = 4.0f;
+
+    private ShaderMaterial? _outlineMaterialRoot;
+    private ShaderMaterial? _outlineMaterialChild;
+
+    // Keyed by the source mesh's instance id. Prims share mesh resources (that is what
+    // ReleaseMeshRef counts), so selecting a linkset of identical parts builds one hull, not one
+    // per part. Cleared wholesale when it grows past the cap rather than reference-counted: the
+    // entries are only reachable while something is selected, and rebuilding one is cheap.
+    private readonly Dictionary<ulong, ArrayMesh> _outlineMeshes = new();
+    private const int OutlineMeshCacheCap = 64;
+
+    // The prims currently wearing an outline, so the hull can be re-cut when their geometry
+    // changes underneath it. Normally empty, and never more than a linkset.
+    private readonly Dictionary<Guid, MeshInstance3D> _outlined = new();
+
+    private void InitializeOutlineMaterials()
     {
-        _highlightLineMaterialCyan = new StandardMaterial3D
-        {
-            AlbedoColor = new Color(0.0f, 1.0f, 1.0f, 1.0f), // Cyan
-            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            NoDepthTest = true, // Draw over everything
-        };
-        _highlightLineMaterialYellow = new StandardMaterial3D
-        {
-            AlbedoColor = new Color(1.0f, 1.0f, 0.0f, 1.0f), // Yellow
-            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            NoDepthTest = true, // Draw over everything
-        };
+        var shader = GD.Load<Shader>("res://materials/selection_outline.gdshader");
+        _outlineMaterialRoot = new ShaderMaterial { Shader = shader };
+        _outlineMaterialRoot.SetShaderParameter("outline_color", OutlineRootColor);
+        _outlineMaterialRoot.SetShaderParameter("outline_thickness_px", OutlineThicknessPixels);
+        _outlineMaterialChild = new ShaderMaterial { Shader = shader };
+        _outlineMaterialChild.SetShaderParameter("outline_color", OutlineChildColor);
+        _outlineMaterialChild.SetShaderParameter("outline_thickness_px", OutlineThicknessPixels);
+    }
 
-        var st = new SurfaceTool();
-        st.Begin(Mesh.PrimitiveType.Lines);
+    /// <summary>Builds the hull the outline shader inflates: the same geometry, but with vertices
+    /// WELDED by position and their normals averaged.</summary>
+    /// <remarks>
+    /// The welding is the whole point. A prim box arrives with 24 vertices carrying six face
+    /// normals, and pushing each face out along its own normal separates them at every corner,
+    /// leaving a notch in the outline exactly where the eye looks for a corner. Averaging the
+    /// normals of the faces that meet at a position gives that corner one outward direction, and
+    /// the hull stays closed. Face normals are accumulated un-normalised so that a large triangle
+    /// counts for more than a sliver.
+    /// </remarks>
+    private static ArrayMesh? BuildOutlineHull(Mesh source)
+    {
+        var welded = new Dictionary<(int, int, int), int>();
+        var positions = new List<Vector3>();
+        var normals = new List<Vector3>();
+        var indices = new List<int>();
 
-        Vector3[] c = new Vector3[] {
-            new Vector3(-0.5f, -0.5f, -0.5f), new Vector3(0.5f, -0.5f, -0.5f),
-            new Vector3(0.5f, 0.5f, -0.5f), new Vector3(-0.5f, 0.5f, -0.5f),
-            new Vector3(-0.5f, -0.5f, 0.5f), new Vector3(0.5f, -0.5f, 0.5f),
-            new Vector3(0.5f, 0.5f, 0.5f), new Vector3(-0.5f, 0.5f, 0.5f)
-        };
-        int[] indices = new int[] { 0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7 };
-        foreach (var idx in indices) st.AddVertex(c[idx]);
-        _highlightBoxMesh = st.Commit();
+        // 0.1 mm. Fine enough that two genuinely distinct vertices are never merged, coarse
+        // enough to catch the float noise in coordinates that came through a mesh decoder.
+        const float weldQuantum = 0.0001f;
+
+        // Only an ArrayMesh can be asked what a surface's primitive type is; the procedural
+        // fallback shapes (BoxMesh and friends) are PrimitiveMesh and are always triangles.
+        var arrayMesh = source as ArrayMesh;
+
+        for (int surface = 0; surface < source.GetSurfaceCount(); surface++)
+        {
+            if (arrayMesh != null
+                && arrayMesh.SurfaceGetPrimitiveType(surface) != Mesh.PrimitiveType.Triangles) continue;
+
+            var arrays = source.SurfaceGetArrays(surface);
+            if (arrays.Count <= (int)Mesh.ArrayType.Vertex) continue;
+            var sourceVerts = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+            if (sourceVerts.Length == 0) continue;
+            // The mesh's own normals when it has them, which is every prim and every decoded
+            // mesh asset. The geometric fallback below exists only for geometry that arrives
+            // without them.
+            var sourceNormals = arrays[(int)Mesh.ArrayType.Normal].AsVector3Array();
+            bool haveNormals = sourceNormals.Length == sourceVerts.Length;
+
+            var sourceIndices = arrays[(int)Mesh.ArrayType.Index].AsInt32Array();
+            int triangleVertexCount = sourceIndices.Length > 0 ? sourceIndices.Length : sourceVerts.Length;
+            if (triangleVertexCount % 3 != 0) continue;
+
+            int Weld(int sourceIndex)
+            {
+                var v = sourceVerts[sourceIndex];
+                var key = (Mathf.RoundToInt(v.X / weldQuantum),
+                           Mathf.RoundToInt(v.Y / weldQuantum),
+                           Mathf.RoundToInt(v.Z / weldQuantum));
+                if (welded.TryGetValue(key, out int existing)) return existing;
+                welded[key] = positions.Count;
+                positions.Add(v);
+                normals.Add(Vector3.Zero);
+                return positions.Count - 1;
+            }
+
+            for (int i = 0; i < triangleVertexCount; i += 3)
+            {
+                int sourceA = sourceIndices.Length > 0 ? sourceIndices[i] : i;
+                int sourceB = sourceIndices.Length > 0 ? sourceIndices[i + 1] : i + 1;
+                int sourceC = sourceIndices.Length > 0 ? sourceIndices[i + 2] : i + 2;
+                int a = Weld(sourceA);
+                int b = Weld(sourceB);
+                int c = Weld(sourceC);
+                if (a == b || b == c || a == c) continue;
+
+                if (haveNormals)
+                {
+                    normals[a] += sourceNormals[sourceA];
+                    normals[b] += sourceNormals[sourceB];
+                    normals[c] += sourceNormals[sourceC];
+                }
+                else
+                {
+                    // NEGATED on purpose. Godot's front faces are wound CLOCKWISE, so for a
+                    // front-facing triangle (b-a)x(c-a) points INTO the object. Feeding that
+                    // straight in shrinks the hull instead of inflating it, and the outline then
+                    // disappears completely behind the object -- which is exactly what a test
+                    // render of this function's first version showed.
+                    var faceNormal = -(positions[b] - positions[a]).Cross(positions[c] - positions[a]);
+                    normals[a] += faceNormal;
+                    normals[b] += faceNormal;
+                    normals[c] += faceNormal;
+                }
+                indices.Add(a);
+                indices.Add(b);
+                indices.Add(c);
+            }
+        }
+
+        if (indices.Count == 0) return null;
+
+        var normalArray = new Vector3[normals.Count];
+        for (int i = 0; i < normals.Count; i++)
+        {
+            // A vertex whose faces cancel out (a zero-thickness fold) has no outward direction;
+            // leaving it at zero makes the shader's edge-on guard skip it rather than push it
+            // somewhere arbitrary.
+            normalArray[i] = normals[i].LengthSquared() > 0f ? normals[i].Normalized() : Vector3.Zero;
+        }
+
+        var meshArrays = new Godot.Collections.Array();
+        meshArrays.Resize((int)Mesh.ArrayType.Max);
+        meshArrays[(int)Mesh.ArrayType.Vertex] = positions.ToArray();
+        meshArrays[(int)Mesh.ArrayType.Normal] = normalArray;
+        meshArrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
+
+        var hull = new ArrayMesh();
+        hull.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, meshArrays);
+        return hull;
+    }
+
+    private ArrayMesh? GetOutlineHull(Mesh source)
+    {
+        ulong key = source.GetInstanceId();
+        if (_outlineMeshes.TryGetValue(key, out var cached)) return cached;
+        var hull = BuildOutlineHull(source);
+        if (hull == null) return null;
+        if (_outlineMeshes.Count >= OutlineMeshCacheCap) _outlineMeshes.Clear();
+        _outlineMeshes[key] = hull;
+        return hull;
     }
 
     // Bump alongside every fix so a fresh log line proves this exact build is running (see
@@ -618,6 +747,7 @@ public partial class ObjectRenderer : Node3D
         // known yet or its per-frame budget rounds to zero, and an animated texture must keep
         // running through both.
         TickTextureAnimations();
+        TickSelectionOutlines();
 
         TickAlphaSortCensus();
         TickAlphaSortHysteresis();
@@ -1502,7 +1632,7 @@ public partial class ObjectRenderer : Node3D
             {
                 SuppressInstancing(id, isSelected);
                 // If editing linked parts, the specifically selected part acts as the primary selection (yellow)
-                ApplyHighlightBox(soloState.MeshInstance, isSelected, true);
+                ApplySelectionOutline(id, soloState.MeshInstance, isSelected, true);
             }
             return;
         }
@@ -1520,11 +1650,11 @@ public partial class ObjectRenderer : Node3D
             {
                 bool isRoot = visEntity.LocalId == rootLocalId;
                 // FEAT-PERF-06: a highlighted part needs its own live node -- the edit gizmo and
-                // ApplyHighlightBox's GetAabb() both read the MeshInstance, which is empty once it
+                // ApplySelectionOutline both read the MeshInstance, which is empty once it
                 // is drawn by a MultiMesh. Evict the whole highlighted linkset; the cull sweep
                 // re-instances each part on deselect.
                 SuppressInstancing(kvp.Key, isSelected);
-                ApplyHighlightBox(kvp.Value.MeshInstance, isSelected, isRoot);
+                ApplySelectionOutline(kvp.Key, kvp.Value.MeshInstance, isSelected, isRoot);
             }
         }
     }
@@ -1544,37 +1674,76 @@ public partial class ObjectRenderer : Node3D
         }
     }
 
-    private void ApplyHighlightBox(MeshInstance3D meshInstance, bool isSelected, bool isRoot)
+    private const string OutlineNodeName = "SelectionOutline";
+
+    private void ApplySelectionOutline(Guid id, MeshInstance3D meshInstance, bool isSelected, bool isRoot)
     {
-        var existingBox = meshInstance.GetNodeOrNull<MeshInstance3D>("HighlightBox");
-        if (isSelected)
+        var existing = meshInstance.GetNodeOrNull<MeshInstance3D>(OutlineNodeName);
+        if (!isSelected)
         {
-            if (existingBox == null)
+            _outlined.Remove(id);
+            existing?.QueueFree();
+            return;
+        }
+
+        if (meshInstance.Mesh == null) return;
+        var hull = GetOutlineHull(meshInstance.Mesh);
+        if (hull == null) return;
+        if (_outlineMaterialRoot == null) InitializeOutlineMaterials();
+        var material = isRoot ? _outlineMaterialRoot : _outlineMaterialChild;
+
+        if (existing == null)
+        {
+            // A plain child of the prim's own MeshInstance3D, so it inherits the object's
+            // transform for free and follows a gizmo drag without any per-frame work.
+            var outline = new MeshInstance3D
             {
-                if (_highlightBoxMesh == null) InitializeHighlightBox();
-                var box = new MeshInstance3D
-                {
-                    Name = "HighlightBox",
-                    Mesh = _highlightBoxMesh,
-                    MaterialOverride = isRoot ? _highlightLineMaterialYellow : _highlightLineMaterialCyan
-                };
-                meshInstance.AddChild(box);
-                var aabb = meshInstance.GetAabb();
-                box.Position = aabb.Position + aabb.Size / 2.0f;
-                // Add a tiny bit of padding so it doesn't clip exactly into the object bounds
-                box.Scale = aabb.Size + new Vector3(0.02f, 0.02f, 0.02f);
-            }
-            else
-            {
-                existingBox.MaterialOverride = isRoot ? _highlightLineMaterialYellow : _highlightLineMaterialCyan;
-            }
+                Name = OutlineNodeName,
+                Mesh = hull,
+                MaterialOverride = material,
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            };
+            meshInstance.AddChild(outline);
+            outline.SetMeta(OutlineSourceMeta, (long)meshInstance.Mesh.GetInstanceId());
+            _outlined[id] = meshInstance;
         }
         else
         {
-            if (existingBox != null)
-            {
-                existingBox.QueueFree();
-            }
+            // The prim's geometry can be replaced while it is selected -- a sculpt map arriving
+            // late, or an edit to the shape -- so the hull is re-read here, not just the colour.
+            existing.Mesh = hull;
+            existing.MaterialOverride = material;
+            existing.SetMeta(OutlineSourceMeta, (long)meshInstance.Mesh.GetInstanceId());
+            _outlined[id] = meshInstance;
+        }
+    }
+
+    private const string OutlineSourceMeta = "slng_outline_source";
+
+    /// <summary>Re-cuts the hull of anything outlined whose geometry has been replaced since.</summary>
+    /// <remarks>
+    /// Clicking an object that is still streaming is the ordinary case: the prim is wearing its
+    /// procedural stand-in when the outline is first built, and the real sculpt or mesh lands a
+    /// second later. Without this the outline keeps the shape of the stand-in for as long as the
+    /// selection lasts. Changing the prim type in the build window does the same thing.
+    /// </remarks>
+    private void TickSelectionOutlines()
+    {
+        if (_outlined.Count == 0) return;
+        foreach (var kvp in _outlined)
+        {
+            var meshInstance = kvp.Value;
+            if (!IsInstanceValid(meshInstance) || meshInstance.Mesh == null) continue;
+            var outline = meshInstance.GetNodeOrNull<MeshInstance3D>(OutlineNodeName);
+            if (outline == null) continue;
+
+            long current = (long)meshInstance.Mesh.GetInstanceId();
+            if (outline.GetMeta(OutlineSourceMeta, 0L).AsInt64() == current) continue;
+
+            var hull = GetOutlineHull(meshInstance.Mesh);
+            if (hull == null) continue;
+            outline.Mesh = hull;
+            outline.SetMeta(OutlineSourceMeta, current);
         }
     }
 
@@ -1595,6 +1764,7 @@ public partial class ObjectRenderer : Node3D
             _visuals.Remove(entityId);
             _texAnims.Remove(entityId);
             _instanceSuppressed.Remove(entityId);
+            _outlined.Remove(entityId);
             // BUG-RENDER-24: a mirror that leaves the scene must stop being the hero probe's
             // subject -- the sweep resolves the id back through _visuals, so a stale entry would
             // simply never match, but leaving it would grow unboundedly over a long session.

@@ -158,7 +158,7 @@ internal sealed class ObjectInstanceGroups
     // regardless of windlight or shadow/SSAO settings -- reported live as "sieht aus wie ein
     // übertriebener Schatten", reproduced on demand by simply right-clicking (selecting) a
     // previously-correct instanced object, since selection is exactly this Leave() path
-    // (SuppressInstancing -> ApplyHighlightBox needs a live node). Every member of a group shares
+    // (SuppressInstancing -> ApplySelectionOutline needs a live node). Every member of a group shares
     // one material by construction (InstanceGroupKey's whole point), so the group's own
     // SharedMaterial is always the right value to put back -- no per-member state to track.
     private void RestoreMesh(Guid id, Mesh shared, Material material)
