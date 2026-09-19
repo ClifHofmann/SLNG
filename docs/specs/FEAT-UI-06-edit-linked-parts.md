@@ -80,7 +80,30 @@ path on deselect as well as on select. With the toggle now reachable mid-session
 between selecting and deselecting stripped the outline off a single prim and left it stuck on
 every other part of the linkset. Deselect always walks the whole linkset now.
 
-## Known limitation
+## A child prim is edited in its parent's frame (`v0.23.59-alpha`)
 
-The transform gizmo still writes a child prim's position as if it were a root prim, so dragging a
-selected child is not yet correct — that is the remaining work on this task, not on FEAT-UI-32.
+Reported in-world one version later, and the reason it matters: *"bei Linksklick ist mir das
+Objekt gerade zerfallen, ich vermute ein Teil wurde weit verschoben."* Picking a part and then
+touching the gizmo flung that part across the region — and it was a real, persisted move on the
+simulator, not a display error.
+
+A `MultipleObjectUpdate` for a **child** prim is read relative to its root. Verified in OpenSim's
+own source rather than assumed: `SceneGraph.UpdatePrimSinglePosition` →
+`SceneObjectGroup.UpdateSinglePosition`, which calls `UpdateRootPosition` for the root part and
+`part.UpdateOffSet(pos)` for every other one; `UpdateSingleRotation` splits the same way into
+`UpdateRootRotation` and `part.UpdateRotation`, which writes `RotationOffset`. Both the gizmo and
+the numeric fields were sending the **world** transform for every prim, so a child was displaced
+by roughly its root's position in the region — over a hundred metres on an ordinary build.
+
+Fixed in one place: `SLNG.Core.LinksetTransform` holds the composition and its exact inverse, and
+`WorldSimulation.ResolveWorldTransform` now calls the same forward function so the pair cannot
+drift apart. The gizmo converts before sending, and refuses to send at all while the root prim has
+not arrived — there is no frame to express the child in, and a guess would fling it. The numeric
+fields both show and send a child's parent-relative transform, which is also what the reference
+viewer displays for a linked part.
+
+Two things were repaired on the way: `ApplyTransform` used to write only the world
+`Position`/`Rotation` into the ECS, so the next unrelated `ObjectUpdate` restored the old place
+(`ResolveWorldTransform` recomputes the world transform from the local one); and scale is
+deliberately left alone, because in SL a prim's size is its own and does not inherit from the
+root.

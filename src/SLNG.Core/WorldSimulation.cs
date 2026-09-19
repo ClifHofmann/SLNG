@@ -587,8 +587,10 @@ public sealed class WorldSimulation : IDisposable
             return;
         }
 
-        t.Rotation = parentT.Rotation * t.LocalRotation;
-        t.Position = parentT.Position + Vector3.Transform(t.LocalPosition, parentT.Rotation);
+        // One composition, shared with the inverse the edit tools need (LinksetTransform) so the
+        // two can never drift apart.
+        (t.Position, t.Rotation) = LinksetTransform.ToWorld(
+            t.LocalPosition, t.LocalRotation, parentT.Position, parentT.Rotation);
     }
 
     /// <summary>Re-composes the world transform of every child linked to <paramref name="localId"/>
