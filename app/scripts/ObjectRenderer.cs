@@ -481,6 +481,7 @@ public partial class ObjectRenderer : Node3D
 
     private ShaderMaterial? _outlineMaterialRoot;
     private ShaderMaterial? _outlineMaterialChild;
+    private ShaderMaterial? _outlineDepthMaskMaterial;
 
     // Keyed by the source mesh's instance id. Prims share mesh resources (that is what
     // ReleaseMeshRef counts), so selecting a linkset of identical parts builds one hull, not one
@@ -502,6 +503,15 @@ public partial class ObjectRenderer : Node3D
         _outlineMaterialChild = new ShaderMaterial { Shader = shader };
         _outlineMaterialChild.SetShaderParameter("outline_color", OutlineChildColor);
         _outlineMaterialChild.SetShaderParameter("outline_thickness_px", OutlineThicknessPixels);
+
+        // The depth mask must reach the depth buffer before the outline is measured against it.
+        _outlineDepthMaskMaterial = new ShaderMaterial
+        {
+            Shader = GD.Load<Shader>("res://materials/selection_depth_mask.gdshader"),
+            RenderPriority = 0,
+        };
+        _outlineMaterialRoot.RenderPriority = 1;
+        _outlineMaterialChild.RenderPriority = 1;
     }
 
     /// <summary>Builds the hull the outline shader inflates: the same geometry, but with vertices
@@ -1675,14 +1685,17 @@ public partial class ObjectRenderer : Node3D
     }
 
     private const string OutlineNodeName = "SelectionOutline";
+    private const string OutlineMaskNodeName = "SelectionDepthMask";
 
     private void ApplySelectionOutline(Guid id, MeshInstance3D meshInstance, bool isSelected, bool isRoot)
     {
         var existing = meshInstance.GetNodeOrNull<MeshInstance3D>(OutlineNodeName);
+        var existingMask = meshInstance.GetNodeOrNull<MeshInstance3D>(OutlineMaskNodeName);
         if (!isSelected)
         {
             _outlined.Remove(id);
             existing?.QueueFree();
+            existingMask?.QueueFree();
             return;
         }
 
@@ -1716,6 +1729,24 @@ public partial class ObjectRenderer : Node3D
             existing.SetMeta(OutlineSourceMeta, (long)meshInstance.Mesh.GetInstanceId());
             _outlined[id] = meshInstance;
         }
+
+        // The mask carries the object's OWN geometry, not the hull: it stands in for the depth
+        // the object may not have written itself.
+        if (existingMask == null)
+        {
+            var mask = new MeshInstance3D
+            {
+                Name = OutlineMaskNodeName,
+                Mesh = meshInstance.Mesh,
+                MaterialOverride = _outlineDepthMaskMaterial,
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            };
+            meshInstance.AddChild(mask);
+        }
+        else
+        {
+            existingMask.Mesh = meshInstance.Mesh;
+        }
     }
 
     private const string OutlineSourceMeta = "slng_outline_source";
@@ -1744,6 +1775,9 @@ public partial class ObjectRenderer : Node3D
             if (hull == null) continue;
             outline.Mesh = hull;
             outline.SetMeta(OutlineSourceMeta, current);
+
+            var mask = meshInstance.GetNodeOrNull<MeshInstance3D>(OutlineMaskNodeName);
+            if (mask != null) mask.Mesh = meshInstance.Mesh;
         }
     }
 

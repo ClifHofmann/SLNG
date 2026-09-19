@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-32`
 - **Track:** `render` / `ui`
-- **Status:** `🧪 Review` (implemented `v0.23.56-alpha`, shader verified in an offline render, in-world not yet confirmed)
+- **Status:** `🧪 Review` (implemented `v0.23.56-alpha`, transparent prims fixed in `v0.23.57-alpha`; outline confirmed in-world, the depth mask not yet)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -78,6 +78,7 @@ not negate it, which shrank the hull inside the object and made the outline vani
 ## Technical Specs & Affected Files
 
 - `app/materials/selection_outline.gdshader` (new) — the inverted-hull vertex offset.
+- `app/materials/selection_depth_mask.gdshader` (new) — the invisible depth-only pass.
 - `app/scripts/ObjectRenderer.cs` — `BuildOutlineHull` / `GetOutlineHull` (welding and a capped
   cache keyed by the source mesh, so a linkset of identical parts cuts one hull),
   `ApplySelectionOutline` replacing `ApplyHighlightBox`, and `TickSelectionOutlines` for the
@@ -91,12 +92,28 @@ located the inverted normals immediately; the second showed a clean outline on t
 notches on an unwelded one for comparison, and the outline correctly cut off by a wall in front of
 it.
 
+## Transparent prims (`v0.23.57-alpha`)
+
+Reported live with a chair whose sit target is an invisible prim: Firestorm showed it as a thin
+yellow outline, SLNG as a **solid yellow slab**. The hull's back faces are only hidden because the
+object writes depth in front of them, and an alpha-blended surface writes none — so nothing
+rejected them and the silhouette filled in. The reference viewer never meets this because it draws
+silhouette *edges*, which have no interior.
+
+The object therefore writes its own depth, on a second invisible pass
+(`selection_depth_mask.gdshader`: `ALPHA = 0.0` with `depth_draw_always`) carrying the object's own
+geometry and drawn before the outline. The obvious worry — that an invisible prim now punches a
+hole in everything behind it — was checked in the offline harness before the change shipped: an
+opaque wall behind a masked transparent sphere stays fully visible through it. The write lands late
+enough that only the outline is measured against it.
+
+The mask runs for every selected prim, not just transparent ones. For an opaque prim it writes the
+depth the prim already wrote, which costs a draw call and changes nothing, and that is cheaper than
+asking each prim's material whether it happens to blend.
+
 ## Known limitations
 
 - **Single-sided geometry gets no outline on its front.** Culling front faces leaves nothing to
   inflate on a sheet that has no back. Prims are closed solids, so this affects mesh assets built
   as single-sided sheets.
-- **An alpha-blended prim does not occlude its own hull**, because a blended surface writes no
-  depth (see `avatar-blend-faces-have-no-depth-write`). The outline of a glass prim will therefore
-  show through it. Fixing it needs a depth-only pre-pass for the selected object.
 - No setting for `RenderHiddenSelections` yet; SLNG behaves as the viewers' default (off).
