@@ -323,7 +323,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.57-alpha";
+    public const string AppVersion = "v0.23.58-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1028,15 +1028,52 @@ public partial class Boot : Control
 
         win.Closed += () =>
         {
-            _objectEditWindows.Remove(entity.Id);
-            _objectSelectionController.Unpin(entity.Id);
+            // Read the window's CURRENT entity rather than the one it was opened on: FEAT-UI-06
+            // re-targets an open window to another prim of the same linkset, and unpinning the
+            // original id would leave the prim actually on screen pinned forever.
+            var shown = win.CurrentEntityId ?? entity.Id;
+            _objectEditWindows.Remove(shown);
+            _objectSelectionController.Unpin(shown);
             // Only retract the handles if they are still on THIS object -- closing one window
             // must not strip the gizmo off another object that is still open for editing.
-            if (_selectionGizmo?.AttachedEntityId == entity.Id) _selectionGizmo.Detach();
+            if (_selectionGizmo?.AttachedEntityId == shown) _selectionGizmo.Detach();
         };
         _objectEditWindows[entity.Id] = win;
 
         win.EditObject(entity, localId, _world);
+    }
+
+    /// <summary>FEAT-UI-06: a left click inside an open edit session picked a different prim of
+    /// the same linkset. Moves the window that is already open onto it, rather than opening a
+    /// second one -- the reference viewer has a single build floater that follows the
+    /// selection, and one window per prim of a linkset would bury the screen.</summary>
+    private void RetargetObjectEditWindow(System.Guid shownEntityId, SLNG.Core.ECS.Entity picked, uint pickedLocalId)
+    {
+        if (_session == null || _world == null) return;
+        if (shownEntityId == picked.Id) return;
+        if (!_objectEditWindows.TryGetValue(shownEntityId, out var win)) return;
+
+        // That prim already has a window of its own -- two windows must never claim one entity.
+        if (_objectEditWindows.TryGetValue(picked.Id, out var already))
+        {
+            already.MoveToFront();
+            return;
+        }
+
+        var shown = _world.GetEntity(shownEntityId);
+        _objectEditWindows.Remove(shownEntityId);
+        _objectEditWindows[picked.Id] = win;
+        _objectSelectionController.Unpin(shownEntityId);
+        _objectSelectionController.Pin(picked.Id);
+
+        // Re-target BEFORE deselecting the old prim: the window hides itself when the entity it
+        // is currently showing is deselected (OnEntityDeselected), so the other order would make
+        // the window vanish on the first click.
+        win.EditObject(picked, pickedLocalId, _world);
+        if (shown != null) _world.DeselectEntity(shown);
+        _world.SelectEntity(picked);
+        _session.SelectObject(pickedLocalId);
+        _selectionGizmo?.Attach(picked);
     }
 
     /// <summary>
@@ -3191,6 +3228,10 @@ public partial class Boot : Control
             AddChild(_selectionGizmo);
             _selectionGizmo.Initialize(_world, _session, _avatarController);
             _objectSelectionController.AttachGizmo(_selectionGizmo);
+            // FEAT-UI-06: here and not next to the context-menu wiring in SetupHud -- the
+            // controller does not exist yet at that point, and assigning through it there threw
+            // a NullReferenceException out of _Ready, which stalled the whole boot.
+            _objectSelectionController.OnEditTargetPicked = RetargetObjectEditWindow;
             _selectionGizmo.GridSpacing = _uiSettings.BuildGridSpacing;
             _uiSettings.BuildGridSpacingChanged += m =>
             {

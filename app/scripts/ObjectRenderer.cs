@@ -1636,7 +1636,11 @@ public partial class ObjectRenderer : Node3D
         // Edit Linked Parts ON (FEAT-UI-06): highlight only the specific part that was actually
         // selected -- grouping by root here would glow the WHOLE linkset regardless of which
         // part got selected, making it look like per-part selection silently does nothing.
-        if (SelectionSettings.EditLinkedParts)
+        // Only on the way IN. Deselecting always goes through the linkset loop below, because
+        // the setting can be flipped between select and deselect -- the edit window carries the
+        // checkbox now (FEAT-UI-06) -- and taking the solo path on the way out would then strip
+        // the outline off one part and leave it stuck on every other part of the linkset.
+        if (SelectionSettings.EditLinkedParts && isSelected)
         {
             if (_visuals.TryGetValue(id, out var soloState) && soloState.MeshInstance != null)
             {

@@ -17,6 +17,11 @@ namespace SLNG.App.UI
         private Entity? _currentEntity;
         private uint _currentLocalId;
 
+        /// <summary>Which entity this window is showing right now. Not necessarily the one it was
+        /// opened on: FEAT-UI-06 re-targets an open window to another prim of the same linkset,
+        /// so whoever keeps windows in a dictionary has to ask rather than remember.</summary>
+        public System.Guid? CurrentEntityId => _currentEntity?.Id;
+
         // Tracked separately from the label text so a NameResolved reply arriving after the
         // user has already switched objects (or after Creator/Owner/Group changed again) can be
         // matched to the field it belongs to instead of stomping whatever is showing now.
@@ -88,6 +93,7 @@ namespace SLNG.App.UI
 
         private LineEdit _nameInput = null!, _descInput = null!;
         private Label _creatorLabel = null!, _ownerLabel = null!, _groupLabel = null!, _isOwnerLabel = null!;
+        private CheckBox _editLinkedPartsCheck = null!;
         private CheckBox _lockedCheck = null!, _physicalCheck = null!, _tempCheck = null!, _phantomCheck = null!;
         private CheckBox _permModifyCheck = null!, _permCopyCheck = null!, _permTransferCheck = null!, _permMoveCheck = null!;
         private Button _copyAssetUuidBtn = null!;
@@ -146,8 +152,23 @@ namespace SLNG.App.UI
             Visible = false;
             CustomMinimumSize = new Vector2(320, 400);
 
-            var tabContainer = new TabContainer();
-            ContentContainer.AddChild(tabContainer);
+            // FEAT-UI-06: "Edit linked parts" lives here, above the tabs, where the reference
+            // viewer keeps it -- it belongs to the edit session, not to the right-click menu that
+            // started it. Note the VBox: ContentContainer is a MarginContainer and would simply
+            // stack the checkbox and the tabs on top of each other.
+            var contentColumn = new VBoxContainer();
+            ContentContainer.AddChild(contentColumn);
+
+            _editLinkedPartsCheck = new CheckBox
+            {
+                Text = L10n.Tr("ui.build.edit_linked_parts"),
+                ButtonPressed = SelectionSettings.EditLinkedParts,
+            };
+            _editLinkedPartsCheck.Toggled += on => SelectionSettings.EditLinkedParts = on;
+            contentColumn.AddChild(_editLinkedPartsCheck);
+
+            var tabContainer = new TabContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
+            contentColumn.AddChild(tabContainer);
 
             // General Tab
             var generalTab = new MarginContainer { Name = L10n.Tr("ui.build.tab_general") };
@@ -361,6 +382,9 @@ namespace SLNG.App.UI
 
             _currentEntity = entity;
             _currentLocalId = localId;
+            // The setting is shared by every open edit window, so re-read it rather than trusting
+            // whatever this window's own box was last set to.
+            _editLinkedPartsCheck.SetPressedNoSignal(SelectionSettings.EditLinkedParts);
 
             if (transform != null)
             {

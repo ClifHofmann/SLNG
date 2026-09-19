@@ -472,6 +472,7 @@
       "dir_up": "Up",
       "dir_down": "Down",
       "edit_title": "Edit: {0}",
+      "edit_linked_parts": "Edit linked parts",
       "tab_general": "General",
       "tab_object": "Object",
       "tab_features": "Features",
