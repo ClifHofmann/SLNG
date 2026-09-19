@@ -323,7 +323,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.60-alpha";
+    public const string AppVersion = "v0.23.61-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1040,7 +1040,77 @@ public partial class Boot : Control
         };
         _objectEditWindows[entity.Id] = win;
 
+        win.OnLinkRequested = LinkCurrentSelection;
+        win.OnUnlinkRequested = UnlinkCurrentSelection;
+
         win.EditObject(entity, localId, _world);
+        RefreshLinkButtons();
+    }
+
+    /// <summary>FEAT-UI-05: re-evaluates Link / Unlink on every open edit window. Both depend on
+    /// the whole selection, not on the one object a window happens to show, so this is driven
+    /// from the selection controller rather than from inside the window.</summary>
+    private void RefreshLinkButtons()
+    {
+        if (_world == null) return;
+        int count = _objectSelectionController.LinkSelection.Count;
+
+        foreach (var (entityId, win) in _objectEditWindows)
+        {
+            var entity = _world.GetEntity(entityId);
+            if (entity == null) { win.SetLinkState(count, false, false); continue; }
+
+            var transform = entity.GetComponent<SLNG.Core.Components.TransformComponent>();
+            // "Linked" means the object is in a linkset either way round: a child knows its
+            // parent, and a root only knows it has children -- which is why the child index is
+            // consulted rather than just ParentLocalId.
+            bool isLinked = (transform != null && transform.ParentLocalId != 0)
+                || _worldSimulation.HasChildren(entity.RegionHandle, entity.LocalId);
+
+            win.SetLinkState(count, isLinked, SLNG.Core.EditPermission.CanModify(_world, entity));
+        }
+    }
+
+    /// <summary>FEAT-UI-05: links everything currently selected. The object picked LAST becomes
+    /// the root -- the viewer's rule -- and it keeps its position and rotation while the others
+    /// become offsets from it.</summary>
+    private void LinkCurrentSelection()
+    {
+        if (_session == null || _world == null) return;
+        var selection = _objectSelectionController.LinkSelection;
+        if (selection.Count < 2) return;
+
+        var localIds = new System.Collections.Generic.List<uint>(selection.Count);
+        foreach (var id in selection)
+        {
+            var entity = _world.GetEntity(id);
+            if (entity == null) continue;
+            if (!SLNG.Core.EditPermission.CanModify(_world, entity)) return;
+            localIds.Add(entity.LocalId);
+        }
+        if (localIds.Count < 2) return;
+
+        uint rootLocalId = localIds[^1];
+        localIds.RemoveAt(localIds.Count - 1);
+        _session.LinkObjects(rootLocalId, localIds);
+    }
+
+    /// <summary>FEAT-UI-05: splits the selected linkset back into standalone prims.</summary>
+    private void UnlinkCurrentSelection()
+    {
+        if (_session == null || _world == null) return;
+
+        var localIds = new System.Collections.Generic.List<uint>();
+        foreach (var id in _objectSelectionController.LinkSelection)
+        {
+            var entity = _world.GetEntity(id);
+            if (entity == null) continue;
+            if (!SLNG.Core.EditPermission.CanModify(_world, entity)) return;
+            localIds.Add(entity.LocalId);
+        }
+        if (localIds.Count == 0) return;
+
+        _session.UnlinkObjects(localIds);
     }
 
     /// <summary>FEAT-UI-06: a left click inside an open edit session picked a different prim of
@@ -3232,6 +3302,10 @@ public partial class Boot : Control
             // controller does not exist yet at that point, and assigning through it there threw
             // a NullReferenceException out of _Ready, which stalled the whole boot.
             _objectSelectionController.OnEditTargetPicked = RetargetObjectEditWindow;
+            _objectSelectionController.OnLinkSelectionChanged = RefreshLinkButtons;
+            // A link or an unlink changes what the buttons should offer, and nothing else tells
+            // the UI about it -- the selection has not changed, only what the objects are.
+            _worldSimulation.ObjectReparented += (_, _) => RefreshLinkButtons();
             _selectionGizmo.GridSpacing = _uiSettings.BuildGridSpacing;
             _uiSettings.BuildGridSpacingChanged += m =>
             {

@@ -919,6 +919,47 @@ public sealed partial class GridSession
         _client.Objects.DeselectObject(_client.Network.CurrentSim, localId);
     }
 
+    /// <summary>FEAT-UI-05: links standalone objects into one linkset.</summary>
+    /// <param name="rootLocalId">The prim that becomes the linkset's root -- in the viewer, the
+    /// object selected LAST. It keeps its position and rotation; every other prim's transform
+    /// becomes an offset from it.</param>
+    /// <param name="childLocalIds">Everything else in the selection.</param>
+    /// <remarks>
+    /// The root goes FIRST in the packet. LibreMetaverse's own doc comment on <c>LinkPrims</c>
+    /// says the opposite ("the last object in the array will be the root"), and it is wrong:
+    /// OpenSim's <c>LLClientView.HandleObjectLink</c> reads <c>ObjectData[0]</c> as the parent
+    /// and every later entry as a child. LMV's comments have already been wrong once on this
+    /// path (see <see cref="UpdateObjectTransform"/>), so this is taken from the server that
+    /// has to act on it.
+    /// </remarks>
+    public void LinkObjects(uint rootLocalId, IReadOnlyList<uint> childLocalIds)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+        if (childLocalIds.Count == 0) return;
+
+        var ids = new System.Collections.Generic.List<uint>(childLocalIds.Count + 1) { rootLocalId };
+        foreach (uint id in childLocalIds)
+        {
+            // A duplicate would make the sim try to parent the root to itself.
+            if (id != rootLocalId) ids.Add(id);
+        }
+        if (ids.Count < 2) return;
+
+        _client.Objects.LinkPrims(_client.Network.CurrentSim, ids);
+    }
+
+    /// <summary>FEAT-UI-05: splits a linkset back into standalone prims.</summary>
+    /// <param name="localIds">The prims to detach. Passing the root's id detaches the whole
+    /// linkset, which is what the viewer's Unlink button does with a whole selection.</param>
+    public void UnlinkObjects(IReadOnlyList<uint> localIds)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+        if (localIds.Count == 0) return;
+
+        _client.Objects.DelinkPrims(_client.Network.CurrentSim,
+            new System.Collections.Generic.List<uint>(localIds));
+    }
+
     public void RequestObjectProperties(Guid objectId)
     {
         if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;

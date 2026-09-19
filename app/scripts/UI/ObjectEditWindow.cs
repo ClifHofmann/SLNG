@@ -94,6 +94,30 @@ namespace SLNG.App.UI
         private LineEdit _nameInput = null!, _descInput = null!;
         private Label _creatorLabel = null!, _ownerLabel = null!, _groupLabel = null!, _isOwnerLabel = null!;
         private CheckBox _editLinkedPartsCheck = null!;
+        private Button _linkButton = null!, _unlinkButton = null!;
+
+        /// <summary>FEAT-UI-05: raised by the Link / Unlink buttons. Boot owns the actual
+        /// selection and the session, so it does the work; this window only knows when to offer
+        /// it.</summary>
+        public System.Action? OnLinkRequested;
+        public System.Action? OnUnlinkRequested;
+
+        /// <summary>Tells the buttons what the current selection allows.</summary>
+        /// <param name="selectionCount">How many objects are gathered for a link.</param>
+        /// <param name="isLinked">Whether the object on display is part of a linkset.</param>
+        /// <param name="mayModify">The agent's Modify right on the object on display. Both
+        /// operations rewrite the objects, so both need it -- the simulator refuses otherwise,
+        /// and silently, which reads as a broken button (FEAT-SEC-04).</param>
+        public void SetLinkState(int selectionCount, bool isLinked, bool mayModify)
+        {
+            _linkButton.Disabled = !mayModify || selectionCount < 2;
+            _linkButton.TooltipText = L10n.Tr(selectionCount < 2
+                ? "ui.build.link_tip_need_two" : "ui.build.link_tip");
+
+            _unlinkButton.Disabled = !mayModify || !isLinked;
+            _unlinkButton.TooltipText = L10n.Tr(isLinked
+                ? "ui.build.unlink_tip" : "ui.build.unlink_tip_not_linked");
+        }
         private CheckBox _lockedCheck = null!, _physicalCheck = null!, _tempCheck = null!, _phantomCheck = null!;
         private CheckBox _permModifyCheck = null!, _permCopyCheck = null!, _permTransferCheck = null!, _permMoveCheck = null!;
         private Button _copyAssetUuidBtn = null!;
@@ -166,6 +190,18 @@ namespace SLNG.App.UI
             };
             _editLinkedPartsCheck.Toggled += on => SelectionSettings.EditLinkedParts = on;
             contentColumn.AddChild(_editLinkedPartsCheck);
+
+            // FEAT-UI-05: Link / Unlink, side by side under the checkbox, the way the reference
+            // viewer's build floater arranges them. Both start disabled; RefreshLinkButtons is
+            // what decides, and it is driven by the selection rather than by this window alone.
+            var linkRow = new HBoxContainer();
+            _linkButton = new Button { Text = L10n.Tr("ui.build.link"), Disabled = true };
+            _unlinkButton = new Button { Text = L10n.Tr("ui.build.unlink"), Disabled = true };
+            _linkButton.Pressed += () => OnLinkRequested?.Invoke();
+            _unlinkButton.Pressed += () => OnUnlinkRequested?.Invoke();
+            linkRow.AddChild(_linkButton);
+            linkRow.AddChild(_unlinkButton);
+            contentColumn.AddChild(linkRow);
 
             var tabContainer = new TabContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
             contentColumn.AddChild(tabContainer);
