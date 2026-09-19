@@ -102,6 +102,30 @@ not arrived — there is no frame to express the child in, and a guess would fli
 fields both show and send a child's parent-relative transform, which is also what the reference
 viewer displays for a linked part.
 
+### The wire flag has to agree with the frame (`v0.23.60-alpha`)
+
+Sending the right vector was only half of it. Reported straight after: *"ich hab jetzt einen
+verlinkten Cube bewegt und nach dem Loslassen sehe ich den nicht mehr."*
+
+LibreMetaverse's three-argument `SetPosition` sends `UpdateType.Position | UpdateType.Linked`,
+and the three-argument `SetRotation` an `ObjectRotation` packet — both mean *the whole group*, and
+the simulator then reads the vector as the **group's absolute position**
+(`SceneGraph.UpdatePrimGroupPosition`). So the corrected child offset, a value like
+`(0.5, 0, 0.2)`, teleported the entire linkset to that spot read as a region coordinate: the
+corner of the region at ground level, which from the camera is simply gone.
+
+`UpdateObjectTransform` now takes a `singlePrim` flag and uses LibreMetaverse's `childOnly`
+overloads, which leave `Linked` off and take the simulator's single-prim route instead
+(`SceneObjectGroup.UpdateSinglePosition` → `UpdateRootPosition` for the root part,
+`part.UpdateOffSet` for any other). Confirmed against the pinned LibreMetaverse 3.1.6 source, not
+the stale vendored copy, because the flag is the whole point.
+
+The flag and the frame are one decision and are documented together on that method: a group update
+and a single-**root** update both want the root's absolute region position — `UpdateRootPosition`
+keeps the children in place by shifting their offsets — while a single update for a **child** wants
+its offset. Which route is taken follows "edit linked parts", which is also what the reference
+viewer does: with it on, dragging the root moves only the root prim inside the linkset.
+
 Two things were repaired on the way: `ApplyTransform` used to write only the world
 `Position`/`Rotation` into the ECS, so the next unrelated `ObjectUpdate` restored the old place
 (`ResolveWorldTransform` recomputes the world transform from the local one); and scale is

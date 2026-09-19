@@ -984,7 +984,8 @@ namespace SLNG.App.UI
             // scale here would resize the object on every drag frame. Scale is the one field that
             // never needs converting: in SL a prim's size is its own and does not inherit.
             _session.UpdateObjectTransform(_localId, sendPos, sendRot,
-                prim?.Scale ?? System.Numerics.Vector3.One);
+                prim?.Scale ?? System.Numerics.Vector3.One,
+                singlePrim: SelectionSettings.EditLinkedParts || transform.ParentLocalId != 0);
             _lastSentSlPos = slPos;
         }
 

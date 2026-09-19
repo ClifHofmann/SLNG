@@ -555,7 +555,10 @@ namespace SLNG.App.UI
                 // The fields hold this prim's own frame -- parent-relative for a child -- which is
                 // exactly what the wire wants, so pos/rot go out unchanged. What the ECS keeps is
                 // the WORLD transform, so the optimistic update below has to compose back.
-                _session.UpdateObjectTransform(_currentLocalId, pos, rot, scale);
+                var editedTransform = _currentEntity.GetComponent<TransformComponent>();
+                _session.UpdateObjectTransform(_currentLocalId, pos, rot, scale,
+                    singlePrim: SelectionSettings.EditLinkedParts
+                        || (editedTransform != null && editedTransform.ParentLocalId != 0));
 
                 // Optimistic local update -- must fire NotifyComponentUpdated or nothing renders
                 // until an unrelated event happens to force a resync (e.g. a later flag toggle

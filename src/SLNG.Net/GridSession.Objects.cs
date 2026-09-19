@@ -925,7 +925,25 @@ public sealed partial class GridSession
         _client.Objects.RequestObjectPropertiesFamily(_client.Network.CurrentSim, new LibreMetaverse.UUID(objectId));
     }
 
-    public void UpdateObjectTransform(uint localId, System.Numerics.Vector3 position, System.Numerics.Quaternion rotation, System.Numerics.Vector3 scale)
+    /// <param name="singlePrim">Move/turn this ONE prim inside its linkset instead of the whole
+    /// linkset -- the reference viewer's "edit linked parts" mode. It decides two things at once,
+    /// and they have to agree:
+    ///
+    /// <para>The flag on the wire. LibreMetaverse's three-argument <c>SetPosition</c> sends
+    /// <c>UpdateType.Position | UpdateType.Linked</c>, and <c>SetRotation</c> an
+    /// <c>ObjectRotation</c> packet; both mean "the whole group". The simulator then reads the
+    /// vector as the GROUP's absolute position (<c>SceneGraph.UpdatePrimGroupPosition</c>).
+    /// Without <c>Linked</c> it takes the single-prim route instead:
+    /// <c>SceneObjectGroup.UpdateSinglePosition</c>, which is <c>UpdateRootPosition</c> for the
+    /// root part and <c>part.UpdateOffSet</c> for any other.</para>
+    ///
+    /// <para>And therefore the FRAME the caller has to pass: a group update and a single-root
+    /// update both want the root's absolute region position, but a single update for a child
+    /// wants its offset from the root. Sending a child's offset with <c>Linked</c> still set
+    /// teleports the entire linkset to that offset read as a region coordinate -- from the
+    /// viewer's point of view the object simply vanishes, which is how this was found.</para>
+    /// </param>
+    public void UpdateObjectTransform(uint localId, System.Numerics.Vector3 position, System.Numerics.Quaternion rotation, System.Numerics.Vector3 scale, bool singlePrim = false)
     {
         if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
 
@@ -933,8 +951,11 @@ public sealed partial class GridSession
         var slRot = new LibreMetaverse.Quaternion(rotation.X, rotation.Y, rotation.Z, rotation.W);
         var slScale = new LibreMetaverse.Vector3(scale.X, scale.Y, scale.Z);
 
-        _client.Objects.SetPosition(_client.Network.CurrentSim, localId, slPos);
-        _client.Objects.SetRotation(_client.Network.CurrentSim, localId, slRot);
+        // childOnly is LibreMetaverse's name for "do not set UpdateType.Linked". Its own doc
+        // comment on the position overload describes a DeselectObject call instead, which the
+        // body does not do -- read the body, not the comment.
+        _client.Objects.SetPosition(_client.Network.CurrentSim, localId, slPos, childOnly: singlePrim);
+        _client.Objects.SetRotation(_client.Network.CurrentSim, localId, slRot, childOnly: singlePrim);
         _client.Objects.SetScale(_client.Network.CurrentSim, localId, slScale, true, false);
     }
 
