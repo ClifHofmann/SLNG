@@ -38,6 +38,38 @@ namespace SLNG.App
         public void Pin(System.Guid entityId) => _pinnedEntityIds.Add(entityId);
         public void Unpin(System.Guid entityId) => _pinnedEntityIds.Remove(entityId);
 
+        /// <summary>FEAT-UI-06: the user left-clicked a prim of a linkset that is already open for
+        /// editing, and wants to edit THAT prim. Arguments are the entity the open window is
+        /// currently showing, and the entity/localId it should show instead. Boot re-targets the
+        /// window; the controller does not know windows exist.</summary>
+        public System.Action<System.Guid, Entity, uint>? OnEditTargetPicked;
+
+        /// <summary>The root prim's local id -- the object itself when it is not linked.</summary>
+        private static uint RootLocalIdOf(Entity entity)
+        {
+            var transform = entity.GetComponent<TransformComponent>();
+            return transform != null && transform.ParentLocalId != 0 ? transform.ParentLocalId : entity.LocalId;
+        }
+
+        /// <summary>Is the clicked prim part of a linkset that already has an edit window open,
+        /// and if so, which entity is that window showing?</summary>
+        private bool TryFindOpenEditFor(Entity clicked, out System.Guid editedEntityId)
+        {
+            editedEntityId = System.Guid.Empty;
+            if (_world == null || _pinnedEntityIds.Count == 0) return false;
+
+            uint clickedRoot = RootLocalIdOf(clicked);
+            foreach (var pinnedId in _pinnedEntityIds)
+            {
+                var pinned = _world.GetEntity(pinnedId);
+                if (pinned == null || pinned.RegionHandle != clicked.RegionHandle) continue;
+                if (RootLocalIdOf(pinned) != clickedRoot) continue;
+                editedEntityId = pinnedId;
+                return true;
+            }
+            return false;
+        }
+
         public void Initialize(World world, GridSession session, Camera3D camera, UI.InWorldContextMenu contextMenu)
         {
             _world = world;
@@ -236,10 +268,28 @@ namespace SLNG.App
 
                                         if (mouseBtn.ButtonIndex == MouseButton.Left)
                                         {
+                                            // FEAT-UI-06: inside an open edit session, a left click
+                                            // on the object being edited PICKS a part instead of
+                                            // running its click action -- the reference viewer does
+                                            // the same, and it is how you reach a child prim once
+                                            // "Edit linked parts" is on. Deliberately scoped to the
+                                            // linkset that is already open: clicking any other
+                                            // object still touches or sits on it, because an open
+                                            // build window should not swallow the whole world's
+                                            // left click.
+                                            if (TryFindOpenEditFor(rawEntity, out var editedEntityId))
+                                            {
+                                                if (editedEntityId != entity.Id)
+                                                {
+                                                    OnEditTargetPicked?.Invoke(editedEntityId, entity, localId);
+                                                }
+                                                GetViewport().SetInputAsHandled();
+                                                return;
+                                            }
+
                                             if (_lastClicked != null && !_pinnedEntityIds.Contains(_lastClicked.Id))
                                             {
                                                 _world.DeselectEntity(_lastClicked);
-                                _gizmo?.Detach();
                                                 _lastClicked = null;
                                                 _gizmo?.Detach();
                                             }

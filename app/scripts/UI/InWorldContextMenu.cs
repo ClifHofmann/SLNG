@@ -51,10 +51,7 @@ namespace SLNG.App.UI
         private VBoxContainer _createRoot = null!;
         private Button _createHeader = null!;
         private VBoxContainer _createShapes = null!;
-        private Button _editPartsToggle = null!;
 
-        private const string EditPartsOffText = "🔗 Edit Parts: Off";
-        private const string EditPartsOnText = "🔗 Edit Parts: On";
 
         private const string CreateHeaderCollapsed = "📦 Create ▶";
         private const string CreateHeaderExpanded = "📦 Create ▼";
@@ -104,17 +101,6 @@ namespace SLNG.App.UI
             AddMenuButton(_objectButtons, "🪑 Sit", () => OnSitClicked?.Invoke(_currentEntity!, _currentLocalId));
             AddMenuButton(_objectButtons, "🔍 Inspect", () => OnInspectClicked?.Invoke(_currentEntity!, _currentLocalId));
             AddMenuButton(_objectButtons, "🗑️ Delete", () => OnDeleteClicked?.Invoke(_currentEntity!, _currentLocalId));
-            _objectButtons.AddChild(new HSeparator());
-            // FEAT-UI-06: toggles SelectionSettings.EditLinkedParts. Not a click-to-close action
-            // like the buttons above -- stays visible so the user can flip it, check the result,
-            // and flip it back without re-navigating the menu each time.
-            _editPartsToggle = new Button { Text = EditPartsOffText, Flat = true, Alignment = HorizontalAlignment.Left };
-            _editPartsToggle.Pressed += () =>
-            {
-                SelectionSettings.EditLinkedParts = !SelectionSettings.EditLinkedParts;
-                _editPartsToggle.Text = SelectionSettings.EditLinkedParts ? EditPartsOnText : EditPartsOffText;
-            };
-            _objectButtons.AddChild(_editPartsToggle);
 
             // Right-clicking empty ground shows this set instead (see ShowGroundMenu): a single
             // "Create" entry that expands into the basic-shape list, rather than dumping all 7
@@ -167,7 +153,6 @@ namespace SLNG.App.UI
             _objectButtons.Visible = true;
             _avatarButtons.Visible = false;
             _createRoot.Visible = false;
-            _editPartsToggle.Text = SelectionSettings.EditLinkedParts ? EditPartsOnText : EditPartsOffText;
             Position = position;
             Visible = true;
             MoveToFront();

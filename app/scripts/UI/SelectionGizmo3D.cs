@@ -698,7 +698,9 @@ namespace SLNG.App.UI
             if (transform == null) return;
 
             transform.Rotation = slRot;
-            if (transform.ParentLocalId == 0) transform.LocalRotation = slRot;
+            transform.LocalRotation = TryGetLinkRoot(transform, out var rotRootPos, out var rotRootRot)
+                ? LinksetTransform.ToLocal(transform.Position, slRot, rotRootPos, rotRootRot).Rotation
+                : slRot;
             _world.NotifyComponentUpdated(_entity, transform);
 
             double now = Time.GetTicksMsec() / 1000.0;
@@ -797,7 +799,9 @@ namespace SLNG.App.UI
 
             prim.Scale = newScale;
             transform.Position = _dragStartSlPos + shiftWorld;
-            if (transform.ParentLocalId == 0) transform.LocalPosition = transform.Position;
+            transform.LocalPosition = TryGetLinkRoot(transform, out var scaleRootPos, out var scaleRootRot)
+                ? LinksetTransform.ToLocal(transform.Position, transform.Rotation, scaleRootPos, scaleRootRot).Position
+                : transform.Position;
 
             _world.NotifyComponentUpdated(_entity, prim);
             _world.NotifyComponentUpdated(_entity, transform);
@@ -908,6 +912,26 @@ namespace SLNG.App.UI
             return perp > RulerSnapPixels;
         }
 
+        /// <summary>The root prim's world transform, for a prim that is linked to one.</summary>
+        /// <returns>False for an unlinked prim, and also when the root has not arrived yet --
+        /// in which case nothing here may be sent, because a child's transform is meaningless
+        /// without it.</returns>
+        private bool TryGetLinkRoot(TransformComponent transform,
+            out System.Numerics.Vector3 rootPos, out System.Numerics.Quaternion rootRot)
+        {
+            rootPos = System.Numerics.Vector3.Zero;
+            rootRot = System.Numerics.Quaternion.Identity;
+            if (transform.ParentLocalId == 0 || _entity == null) return false;
+
+            var root = _world.GetEntity(_entity.RegionHandle, transform.ParentLocalId);
+            var rootTransform = root?.GetComponent<TransformComponent>();
+            if (rootTransform == null) return false;
+
+            rootPos = rootTransform.Position;
+            rootRot = rootTransform.Rotation;
+            return true;
+        }
+
         /// <summary>Moves the object locally and tells the world, so the mesh follows the cursor
         /// without waiting for the simulator's echo. Same optimistic pattern as
         /// <c>ObjectEditWindow.ApplyTransform</c>.</summary>
@@ -923,10 +947,11 @@ namespace SLNG.App.UI
             // LocalPosition via ResolveWorldTransform, so writing only the world position means
             // the very next update for this object -- a texture change, a flag toggle, anything
             // -- silently restores where it used to be. For an unparented prim the two are the
-            // same value. A CHILD prim's local position is relative to its root and would need
-            // the inverse compose; the gizmo does not offer that yet (neither do the numeric
-            // fields), and linked-part editing is FEAT-UI-06's problem.
-            if (transform.ParentLocalId == 0) transform.LocalPosition = slPos;
+            // same value; for a child they are not, and the difference is the root's own place
+            // in the region.
+            transform.LocalPosition = TryGetLinkRoot(transform, out var rootPos, out var rootRot)
+                ? LinksetTransform.ToLocal(slPos, transform.Rotation, rootPos, rootRot).Position
+                : slPos;
 
             _world.NotifyComponentUpdated(_entity, transform);
         }
@@ -937,11 +962,30 @@ namespace SLNG.App.UI
             var prim = _entity?.GetComponent<PrimitiveComponent>();
             if (transform == null) return;
 
+            // A MultipleObjectUpdate for a CHILD prim is read relative to its root, so what goes
+            // on the wire is the local transform, not the world one. Sending the world position
+            // for a child displaced it by the root's position in the region -- reported in-world
+            // as the object falling apart the moment a part was picked (FEAT-UI-06).
+            var sendPos = slPos;
+            var sendRot = transform.Rotation;
+            if (transform.ParentLocalId != 0)
+            {
+                if (!TryGetLinkRoot(transform, out var rootPos, out var rootRot))
+                {
+                    // The root is not in the world yet. There is no frame to express this prim in,
+                    // so send nothing at all rather than something that would fling it away.
+                    return;
+                }
+                (sendPos, sendRot) = LinksetTransform.ToLocal(slPos, transform.Rotation, rootPos, rootRot);
+            }
+
             // UpdateObjectTransform writes position, rotation AND scale in one go, so the other
             // two have to be passed through unchanged rather than defaulted -- passing a default
-            // scale here would resize the object on every drag frame.
-            _session.UpdateObjectTransform(_localId, slPos, transform.Rotation,
-                prim?.Scale ?? System.Numerics.Vector3.One);
+            // scale here would resize the object on every drag frame. Scale is the one field that
+            // never needs converting: in SL a prim's size is its own and does not inherit.
+            _session.UpdateObjectTransform(_localId, sendPos, sendRot,
+                prim?.Scale ?? System.Numerics.Vector3.One,
+                singlePrim: SelectionSettings.EditLinkedParts || transform.ParentLocalId != 0);
             _lastSentSlPos = slPos;
         }
 

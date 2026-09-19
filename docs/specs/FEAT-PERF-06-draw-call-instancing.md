@@ -128,7 +128,7 @@ members is realised as a `MultiMeshInstance3D`; a lone member stays a normal
 | System | Handling |
 |---|---|
 | **Collision / picking** | Untouched. `StaticBody3D` + `CollisionShape3D` stay per-object; the selection raycast (`ObjectSelectionController`) reads `LocalId`/`EntityId` metas off the body, never the `MeshInstance3D`. |
-| **Selection highlight** | `HighlightVisual` adds a `HighlightBox` child to `state.MeshInstance`, which still exists. Selecting also **evicts** (rule 5) so the real geometry is a normal node again while it is being edited. |
+| **Selection highlight** | `HighlightVisual` adds a `SelectionOutline` child to `state.MeshInstance`, which still exists. Selecting also **evicts** (rule 5) so the real geometry is a normal node again while it is being edited. |
 | **Shadows** | Per-group `castShadow` from `BoundingRadius(sharedMesh) >= 0.5f || RenderConfig.SmallObjectShadows`, mirroring `ObjectRenderer.cs:3207`. Small-prop fields therefore stop casting the two shadow-split copies — a large part of the win. |
 | **Texture LOD re-offer** (`cull.texlod`) | Still iterates `state.UsedTextureIds` per prim; instanced members re-offer the same id and `GpuCache` dedupes. No change needed, cost unchanged. |
 | **BUG-RENDER-16 alpha split** | Sorted-transparent prims are excluded by rule 3; `SplitChildren` by rule 4. The flicker fix is untouched. |

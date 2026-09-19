@@ -17,6 +17,11 @@ namespace SLNG.App.UI
         private Entity? _currentEntity;
         private uint _currentLocalId;
 
+        /// <summary>Which entity this window is showing right now. Not necessarily the one it was
+        /// opened on: FEAT-UI-06 re-targets an open window to another prim of the same linkset,
+        /// so whoever keeps windows in a dictionary has to ask rather than remember.</summary>
+        public System.Guid? CurrentEntityId => _currentEntity?.Id;
+
         // Tracked separately from the label text so a NameResolved reply arriving after the
         // user has already switched objects (or after Creator/Owner/Group changed again) can be
         // matched to the field it belongs to instead of stomping whatever is showing now.
@@ -88,6 +93,7 @@ namespace SLNG.App.UI
 
         private LineEdit _nameInput = null!, _descInput = null!;
         private Label _creatorLabel = null!, _ownerLabel = null!, _groupLabel = null!, _isOwnerLabel = null!;
+        private CheckBox _editLinkedPartsCheck = null!;
         private CheckBox _lockedCheck = null!, _physicalCheck = null!, _tempCheck = null!, _phantomCheck = null!;
         private CheckBox _permModifyCheck = null!, _permCopyCheck = null!, _permTransferCheck = null!, _permMoveCheck = null!;
         private Button _copyAssetUuidBtn = null!;
@@ -146,8 +152,23 @@ namespace SLNG.App.UI
             Visible = false;
             CustomMinimumSize = new Vector2(320, 400);
 
-            var tabContainer = new TabContainer();
-            ContentContainer.AddChild(tabContainer);
+            // FEAT-UI-06: "Edit linked parts" lives here, above the tabs, where the reference
+            // viewer keeps it -- it belongs to the edit session, not to the right-click menu that
+            // started it. Note the VBox: ContentContainer is a MarginContainer and would simply
+            // stack the checkbox and the tabs on top of each other.
+            var contentColumn = new VBoxContainer();
+            ContentContainer.AddChild(contentColumn);
+
+            _editLinkedPartsCheck = new CheckBox
+            {
+                Text = L10n.Tr("ui.build.edit_linked_parts"),
+                ButtonPressed = SelectionSettings.EditLinkedParts,
+            };
+            _editLinkedPartsCheck.Toggled += on => SelectionSettings.EditLinkedParts = on;
+            contentColumn.AddChild(_editLinkedPartsCheck);
+
+            var tabContainer = new TabContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
+            contentColumn.AddChild(tabContainer);
 
             // General Tab
             var generalTab = new MarginContainer { Name = L10n.Tr("ui.build.tab_general") };
@@ -361,14 +382,18 @@ namespace SLNG.App.UI
 
             _currentEntity = entity;
             _currentLocalId = localId;
+            // The setting is shared by every open edit window, so re-read it rather than trusting
+            // whatever this window's own box was last set to.
+            _editLinkedPartsCheck.SetPressedNoSignal(SelectionSettings.EditLinkedParts);
 
             if (transform != null)
             {
-                _posX.Text = transform.Position.X.ToString("F3");
-                _posY.Text = transform.Position.Y.ToString("F3");
-                _posZ.Text = transform.Position.Z.ToString("F3");
+                var shown = EditedFrame(transform);
+                _posX.Text = shown.Position.X.ToString("F3");
+                _posY.Text = shown.Position.Y.ToString("F3");
+                _posZ.Text = shown.Position.Z.ToString("F3");
 
-                var q = transform.Rotation;
+                var q = shown.Rotation;
                 var gQuat = new Godot.Quaternion(q.X, q.Y, q.Z, q.W);
                 // A freshly-rezzed object's first ObjectUpdate can carry a degenerate all-zero
                 // rotation before the sim echoes a real one -- GetEuler() throws hard
@@ -475,6 +500,37 @@ namespace SLNG.App.UI
             CallDeferred(MethodName.CenterWindow);
         }
 
+        /// <summary>The root prim's world transform, when the edited prim is a linked child.</summary>
+        /// <remarks>
+        /// The fields show and send a CHILD prim's transform relative to its root, because that
+        /// is what the protocol carries for a child and what the reference viewer displays. Using
+        /// world coordinates here displaced the part by the root's position in the region the
+        /// moment Apply was pressed -- the same defect the gizmo had (FEAT-UI-06).
+        /// </remarks>
+        private bool TryGetLinkRoot(TransformComponent transform,
+            out System.Numerics.Vector3 rootPos, out System.Numerics.Quaternion rootRot)
+        {
+            rootPos = System.Numerics.Vector3.Zero;
+            rootRot = System.Numerics.Quaternion.Identity;
+            if (transform.ParentLocalId == 0 || _currentEntity == null || _world == null) return false;
+
+            var root = _world.GetEntity(_currentEntity.RegionHandle, transform.ParentLocalId);
+            var rootTransform = root?.GetComponent<TransformComponent>();
+            if (rootTransform == null) return false;
+
+            rootPos = rootTransform.Position;
+            rootRot = rootTransform.Rotation;
+            return true;
+        }
+
+        /// <summary>What the position/rotation fields should show for this prim: its own
+        /// transform for a root, its parent-relative one for a child.</summary>
+        private (System.Numerics.Vector3 Position, System.Numerics.Quaternion Rotation) EditedFrame(
+            TransformComponent transform)
+            => TryGetLinkRoot(transform, out var rootPos, out var rootRot)
+                ? LinksetTransform.ToLocal(transform.Position, transform.Rotation, rootPos, rootRot)
+                : (transform.Position, transform.Rotation);
+
         private void ApplyTransform()
         {
             if (_currentEntity == null || _session == null) return;
@@ -496,7 +552,13 @@ namespace SLNG.App.UI
                 var gQuat = Godot.Basis.FromEuler(eulerRad).GetRotationQuaternion();
                 var rot = new System.Numerics.Quaternion(gQuat.X, gQuat.Y, gQuat.Z, gQuat.W);
 
-                _session.UpdateObjectTransform(_currentLocalId, pos, rot, scale);
+                // The fields hold this prim's own frame -- parent-relative for a child -- which is
+                // exactly what the wire wants, so pos/rot go out unchanged. What the ECS keeps is
+                // the WORLD transform, so the optimistic update below has to compose back.
+                var editedTransform = _currentEntity.GetComponent<TransformComponent>();
+                _session.UpdateObjectTransform(_currentLocalId, pos, rot, scale,
+                    singlePrim: SelectionSettings.EditLinkedParts
+                        || (editedTransform != null && editedTransform.ParentLocalId != 0));
 
                 // Optimistic local update -- must fire NotifyComponentUpdated or nothing renders
                 // until an unrelated event happens to force a resync (e.g. a later flag toggle
@@ -514,8 +576,17 @@ namespace SLNG.App.UI
                 var comp = _currentEntity.GetComponent<TransformComponent>();
                 if (comp != null)
                 {
-                    comp.Position = pos;
-                    comp.Rotation = rot;
+                    if (TryGetLinkRoot(comp, out var rootPos, out var rootRot))
+                    {
+                        comp.LocalPosition = pos;
+                        comp.LocalRotation = rot;
+                        (comp.Position, comp.Rotation) = LinksetTransform.ToWorld(pos, rot, rootPos, rootRot);
+                    }
+                    else
+                    {
+                        comp.Position = comp.LocalPosition = pos;
+                        comp.Rotation = comp.LocalRotation = rot;
+                    }
                     _world?.NotifyComponentUpdated(_currentEntity, comp);
                 }
                 var primComp = _currentEntity.GetComponent<PrimitiveComponent>();
@@ -776,7 +847,8 @@ namespace SLNG.App.UI
                 // Skipped while a field has focus, so a live update cannot overwrite digits the
                 // user is in the middle of typing -- the same courtesy UpdateMetadataUI extends
                 // to the name and description fields.
-                CallDeferred(MethodName.UpdatePositionUI, tc.Position.X, tc.Position.Y, tc.Position.Z);
+                var shownPos = EditedFrame(tc).Position;
+                CallDeferred(MethodName.UpdatePositionUI, shownPos.X, shownPos.Y, shownPos.Z);
             }
             else if (e.Component is PrimitiveComponent prim)
             {
