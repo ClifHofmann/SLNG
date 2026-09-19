@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-05`
 - **Track:** `ui` / `net`
-- **Status:** `🧪 Review` (implemented `v0.23.61-alpha`, highlight follows the reparent as of `v0.23.62-alpha`)
+- **Status:** `🧪 Review` (implemented `v0.23.61-alpha`, highlight follows the reparent as of `v0.23.63-alpha`)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -119,3 +119,17 @@ The "edit linked parts" path also stopped forcing the root colour on whatever wa
 reference viewer asks `isRootEdit()`, which a child prim answers false to, so an individually
 edited child draws in the child colour — and after a link, every part of a multi-selection was
 otherwise still drawing as its own root.
+
+### QueueFree does not free (`v0.23.63-alpha`)
+
+The rebuild above was broken on arrival: after a link the outlines simply disappeared. Tearing
+the old highlight down called `QueueFree` on each outline node, which does **not** remove it --
+it schedules the removal for the end of the frame. The rebuild, running in that same frame,
+found those very nodes with `GetNodeOrNull`, decided they could be reused, re-pointed their mesh
+and material, and then Godot deleted them a moment later.
+
+Checked in a throwaway headless project rather than argued from the documentation: after
+`queue_free()`, `get_node_or_null` still returns the node and `is_queued_for_deletion()` is
+true; after `remove_child()` it is gone at once. So removal now takes the node out of the tree
+first and frees it afterwards, and every lookup goes through a helper that ignores a node on its
+way out.

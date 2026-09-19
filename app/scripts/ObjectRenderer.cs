@@ -1724,13 +1724,13 @@ public partial class ObjectRenderer : Node3D
 
     private void ApplySelectionOutline(Guid id, MeshInstance3D meshInstance, bool isSelected, bool isRoot)
     {
-        var existing = meshInstance.GetNodeOrNull<MeshInstance3D>(OutlineNodeName);
-        var existingMask = meshInstance.GetNodeOrNull<MeshInstance3D>(OutlineMaskNodeName);
+        var existing = FindLiveChild(meshInstance, OutlineNodeName);
+        var existingMask = FindLiveChild(meshInstance, OutlineMaskNodeName);
         if (!isSelected)
         {
             _outlined.Remove(id);
-            existing?.QueueFree();
-            existingMask?.QueueFree();
+            Discard(meshInstance, existing);
+            Discard(meshInstance, existingMask);
             return;
         }
 
@@ -1786,6 +1786,30 @@ public partial class ObjectRenderer : Node3D
 
     private const string OutlineSourceMeta = "slng_outline_source";
 
+    /// <summary>The named child, unless it is already on its way out.</summary>
+    /// <remarks>
+    /// QueueFree does not remove the node, it schedules the removal for the end of the frame --
+    /// so a plain GetNodeOrNull still finds a node that is about to vanish. Rebuilding the whole
+    /// highlight within one frame (FEAT-UI-05, after a link) did exactly that: the teardown
+    /// queued each outline, the rebuild immediately found those same nodes, decided they could
+    /// be reused, and then Godot deleted them at the end of the frame. Every outline
+    /// disappeared.
+    /// </remarks>
+    private static MeshInstance3D? FindLiveChild(Node parent, string name)
+    {
+        var node = parent.GetNodeOrNull<MeshInstance3D>(name);
+        return node != null && !node.IsQueuedForDeletion() ? node : null;
+    }
+
+    /// <summary>Takes the node out of the tree NOW and frees it afterwards, so a rebuild in the
+    /// same frame neither finds it nor collides with its name.</summary>
+    private static void Discard(Node parent, Node? child)
+    {
+        if (child == null) return;
+        parent.RemoveChild(child);
+        child.QueueFree();
+    }
+
     /// <summary>Re-cuts the hull of anything outlined whose geometry has been replaced since.</summary>
     /// <remarks>
     /// Clicking an object that is still streaming is the ordinary case: the prim is wearing its
@@ -1806,7 +1830,7 @@ public partial class ObjectRenderer : Node3D
         {
             var meshInstance = kvp.Value;
             if (!IsInstanceValid(meshInstance) || meshInstance.Mesh == null) continue;
-            var outline = meshInstance.GetNodeOrNull<MeshInstance3D>(OutlineNodeName);
+            var outline = FindLiveChild(meshInstance, OutlineNodeName);
             if (outline == null) continue;
 
             long current = (long)meshInstance.Mesh.GetInstanceId();
@@ -1817,7 +1841,7 @@ public partial class ObjectRenderer : Node3D
             outline.Mesh = hull;
             outline.SetMeta(OutlineSourceMeta, current);
 
-            var mask = meshInstance.GetNodeOrNull<MeshInstance3D>(OutlineMaskNodeName);
+            var mask = FindLiveChild(meshInstance, OutlineMaskNodeName);
             if (mask != null) mask.Mesh = meshInstance.Mesh;
         }
     }
