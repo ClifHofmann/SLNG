@@ -2037,6 +2037,32 @@ public partial class AvatarRenderer : Node3D
     /// <summary>Shared tail of both attachment paths: turns already-obtained
     /// <paramref name="meshData"/> into a scene node — skinned to the avatar skeleton when it
     /// carries skin data, otherwise bolted statically to its attachment bone.</summary>
+    /// <summary>FEAT-UI-23: the world transform of the attach point a worn item hangs on -- the
+    /// frame its own position and rotation are expressed in.</summary>
+    /// <remarks>
+    /// A worn item's TransformComponent is NOT in region coordinates: WorldSimulation leaves it
+    /// local, because the renderer places it through the bone hierarchy instead. Anything that
+    /// wants to show or edit it in world space -- the transform gizmo -- has to ask for the
+    /// frame, and only this class knows it: it is the bone's current pose times the attachment
+    /// point's own offset and rotation on that bone.
+    ///
+    /// False for a RIGGED item. Those are skinned to the whole skeleton and have no single
+    /// point node; their prim transform does not move them either, so there is nothing for a
+    /// gizmo to do there anyway.
+    /// </remarks>
+    public bool TryGetAttachmentFrame(Guid entityId, out Transform3D frame)
+    {
+        frame = Transform3D.Identity;
+        if (!_attachmentNodes.TryGetValue(entityId, out var boneAttach) || !IsInstanceValid(boneAttach))
+            return false;
+
+        var pointNode = boneAttach.GetNodeOrNull<Node3D>("PointOffset");
+        if (pointNode == null || !IsInstanceValid(pointNode) || !pointNode.IsInsideTree()) return false;
+
+        frame = pointNode.GlobalTransform;
+        return true;
+    }
+
     /// <summary>FEAT-UI-23: makes a worn item right-clickable in the 3D view, by giving it the
     /// same kind of tagged <see cref="StaticBody3D"/> that <c>ObjectRenderer</c> puts on a world
     /// prim. Without one the raycast simply passes through every attachment, and the only way

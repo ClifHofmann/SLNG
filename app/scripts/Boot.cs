@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.5-alpha";
+    public const string AppVersion = "v0.24.6-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3332,6 +3332,13 @@ public partial class Boot : Control
             AddChild(_selectionGizmo);
             _selectionGizmo.Initialize(_world, _session, _avatarController);
             _objectSelectionController.AttachGizmo(_selectionGizmo);
+            // FEAT-UI-23: the gizmo asks here where a worn item's attach point is. Only
+            // AvatarRenderer knows -- it is the bone's current pose times the attachment point's
+            // own offset on that bone.
+            _selectionGizmo.AttachmentFrame = entity =>
+                _avatarRenderer != null && _avatarRenderer.TryGetAttachmentFrame(entity.Id, out var frame)
+                    ? frame
+                    : null;
             // FEAT-UI-06: here and not next to the context-menu wiring in SetupHud -- the
             // controller does not exist yet at that point, and assigning through it there threw
             // a NullReferenceException out of _Ready, which stalled the whole boot.

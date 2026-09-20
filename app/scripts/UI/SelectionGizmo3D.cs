@@ -301,6 +301,84 @@ namespace SLNG.App.UI
         /// not move that object. The permission question is the sim's own per-agent answer
         /// (FEAT-SEC-04), not the owner's mask — the same source the Position fields are gated
         /// on, so the two can never disagree.</summary>
+        /// <summary>FEAT-UI-23: where the attach point of a worn item is, in Godot world space.
+        /// Supplied by Boot from AvatarRenderer, which is the only thing that knows -- the gizmo
+        /// does not reach into the avatar's scene graph itself.</summary>
+        public System.Func<Entity, Transform3D?>? AttachmentFrame;
+
+        /// <summary>The frame a worn item's transform is expressed in, in SL coordinates.</summary>
+        /// <remarks>
+        /// Everything else in this class works in SL WORLD coordinates, because that is what a
+        /// world prim's TransformComponent.Position holds. A worn item's does not: it holds the
+        /// offset from its attach point. Rather than teach every drag about that, the two
+        /// conversions happen at the edges -- read the world position once, write the local one
+        /// back -- and the frame is what turns one into the other.
+        /// </remarks>
+        private bool TryGetWornFrame(out System.Numerics.Vector3 framePos, out System.Numerics.Quaternion frameRot)
+        {
+            framePos = System.Numerics.Vector3.Zero;
+            frameRot = System.Numerics.Quaternion.Identity;
+            if (_entity == null || _entity.GetComponent<AttachmentComponent>() == null) return false;
+
+            var frame = AttachmentFrame?.Invoke(_entity);
+            if (frame == null) return false;
+
+            framePos = RenderConfig.FromGodot(_regionHandle, frame.Value.Origin);
+            var q = frame.Value.Basis.GetRotationQuaternion();
+            // The inverse of the map used everywhere for the other direction (AvatarRenderer:
+            // "new Godot.Quaternion(slRot.X, slRot.Z, -slRot.Y, slRot.W)").
+            frameRot = new System.Numerics.Quaternion(q.X, -q.Z, q.Y, q.W);
+            return true;
+        }
+
+        /// <summary>The object's position in SL WORLD coordinates, whatever frame it stores.</summary>
+        private System.Numerics.Vector3 SlWorldPositionOf(TransformComponent transform)
+            => TryGetWornFrame(out var framePos, out var frameRot)
+                ? LinksetTransform.ToWorld(transform.Position, transform.Rotation, framePos, frameRot).Position
+                // A linked CHILD prim's Position is already world -- ResolveWorldTransform composed
+                // it. Only a worn item's is not, because that one it deliberately left alone.
+                : transform.Position;
+
+        /// <summary>The object's rotation in SL WORLD terms, whatever frame it stores.</summary>
+        private System.Numerics.Quaternion SlWorldRotationOf(TransformComponent transform)
+            => TryGetWornFrame(out var framePos, out var frameRot)
+                ? LinksetTransform.ToWorld(transform.Position, transform.Rotation, framePos, frameRot).Rotation
+                : transform.Rotation;
+
+        /// <summary>Writes an SL WORLD rotation back into whatever frame the object stores.</summary>
+        private void StoreSlWorldRotation(TransformComponent transform, System.Numerics.Quaternion slWorldRot)
+        {
+            if (TryGetWornFrame(out var framePos, out var frameRot))
+            {
+                var local = LinksetTransform.ToLocal(transform.Position, slWorldRot, framePos, frameRot).Rotation;
+                transform.Rotation = local;
+                transform.LocalRotation = local;
+                return;
+            }
+
+            transform.Rotation = slWorldRot;
+            transform.LocalRotation = TryGetLinkRoot(transform, out var rootPos, out var rootRot)
+                ? LinksetTransform.ToLocal(transform.Position, slWorldRot, rootPos, rootRot).Rotation
+                : slWorldRot;
+        }
+
+        /// <summary>Writes an SL WORLD position back into whatever frame the object stores.</summary>
+        private void StoreSlWorldPosition(TransformComponent transform, System.Numerics.Vector3 slWorldPos)
+        {
+            if (TryGetWornFrame(out var framePos, out var frameRot))
+            {
+                var local = LinksetTransform.ToLocal(slWorldPos, transform.Rotation, framePos, frameRot).Position;
+                transform.Position = local;
+                transform.LocalPosition = local;
+                return;
+            }
+
+            transform.Position = slWorldPos;
+            transform.LocalPosition = TryGetLinkRoot(transform, out var rootPos, out var rootRot)
+                ? LinksetTransform.ToLocal(slWorldPos, transform.Rotation, rootPos, rootRot).Position
+                : slWorldPos;
+        }
+
         /// <summary>Is this prim part of something worn? True for the attachment itself and for
         /// every child prim of a worn linkset -- their transforms all live in the attach point's
         /// frame, not the region's.</summary>
@@ -328,7 +406,11 @@ namespace SLNG.App.UI
             // TransformComponent.Position, which for an attachment is a few centimetres of
             // offset and would put them at the corner of the region. Worn items are edited
             // through the numeric fields, which are already in that frame, until it is done.
-            if (IsWorn(entity))
+            // FEAT-UI-23: a worn item is allowed now, but only when its attach point can be
+            // located -- that frame is what makes its stored offset a world position. Without
+            // one (a RIGGED item, or an attachment whose node has not been built yet) the
+            // handles would sit at the corner of the region and drag it there, so refuse.
+            if (IsWorn(entity) && AttachmentFrame?.Invoke(entity) == null)
             {
                 Detach();
                 return;
@@ -364,7 +446,7 @@ namespace SLNG.App.UI
             var transform = _entity.GetComponent<TransformComponent>();
             if (transform == null) { Detach(); return; }
 
-            GlobalPosition = RenderConfig.ToGodot(_regionHandle, transform.Position);
+            GlobalPosition = RenderConfig.ToGodot(_regionHandle, SlWorldPositionOf(transform));
 
             // Constant screen size. Uses the vertical FOV and the distance along the camera's
             // forward axis rather than the straight-line distance, so the gizmo does not swell
@@ -547,7 +629,7 @@ namespace SLNG.App.UI
             // computed its direction and its centre shift from whatever rotation a previous
             // rotate drag had left behind -- or from identity -- and the handle therefore did
             // not follow the cursor. Every drag kind wants the rotation it started from.
-            _dragStartSlRot = transform.Rotation;
+            _dragStartSlRot = SlWorldRotationOf(transform);
 
             if (handle == Handle.Scale)
             {
@@ -582,7 +664,7 @@ namespace SLNG.App.UI
             _dragging = handle;
             _hovered = handle;
             transform.LocallyDragged = true;
-            _dragStartSlPos = transform.Position;
+            _dragStartSlPos = SlWorldPositionOf(transform);
             _lastSentSlPos = transform.Position;
             _lastSendAt = Time.GetTicksMsec() / 1000.0;
             return true;
@@ -722,10 +804,7 @@ namespace SLNG.App.UI
             var transform = _entity.GetComponent<TransformComponent>();
             if (transform == null) return;
 
-            transform.Rotation = slRot;
-            transform.LocalRotation = TryGetLinkRoot(transform, out var rotRootPos, out var rotRootRot)
-                ? LinksetTransform.ToLocal(transform.Position, slRot, rotRootPos, rotRootRot).Rotation
-                : slRot;
+            StoreSlWorldRotation(transform, slRot);
             _world.NotifyComponentUpdated(_entity, transform);
 
             double now = Time.GetTicksMsec() / 1000.0;
@@ -823,10 +902,9 @@ namespace SLNG.App.UI
             var shiftWorld = System.Numerics.Vector3.Transform(shiftLocal, _dragStartSlRot);
 
             prim.Scale = newScale;
-            transform.Position = _dragStartSlPos + shiftWorld;
-            transform.LocalPosition = TryGetLinkRoot(transform, out var scaleRootPos, out var scaleRootRot)
-                ? LinksetTransform.ToLocal(transform.Position, transform.Rotation, scaleRootPos, scaleRootRot).Position
-                : transform.Position;
+            // _dragStartSlPos is a WORLD position and shiftWorld a world-space delta, so the sum
+            // is world too -- StoreSlWorldPosition puts it back in the object's own frame.
+            StoreSlWorldPosition(transform, _dragStartSlPos + shiftWorld);
 
             _world.NotifyComponentUpdated(_entity, prim);
             _world.NotifyComponentUpdated(_entity, transform);
@@ -968,17 +1046,13 @@ namespace SLNG.App.UI
             var transform = _entity.GetComponent<TransformComponent>();
             if (transform == null) return;
 
-            transform.Position = slPos;
-
-            // LocalPosition too, not just Position: ApplyObjectUpdate recomputes Position from
+            // Both fields, not just Position: ApplyObjectUpdate recomputes Position from
             // LocalPosition via ResolveWorldTransform, so writing only the world position means
             // the very next update for this object -- a texture change, a flag toggle, anything
-            // -- silently restores where it used to be. For an unparented prim the two are the
-            // same value; for a child they are not, and the difference is the root's own place
-            // in the region.
-            transform.LocalPosition = TryGetLinkRoot(transform, out var rootPos, out var rootRot)
-                ? LinksetTransform.ToLocal(slPos, transform.Rotation, rootPos, rootRot).Position
-                : slPos;
+            // -- silently restores where it used to be. StoreSlWorldPosition knows which frame
+            // this object keeps: region for a free prim, the root for a linked child, the attach
+            // point for a worn item.
+            StoreSlWorldPosition(transform, slPos);
 
             _world.NotifyComponentUpdated(_entity, transform);
         }
@@ -995,6 +1069,22 @@ namespace SLNG.App.UI
             // as the object falling apart the moment a part was picked (FEAT-UI-06).
             var sendPos = slPos;
             var sendRot = transform.Rotation;
+
+            // FEAT-UI-23: a worn item's MultipleObjectUpdate carries its offset from the attach
+            // point -- OpenSim's UpdatePrimGroupPosition writes it into AttachedPos for an
+            // attachment rather than treating it as a region coordinate. That is the same value
+            // the component now holds, so read it back rather than re-deriving it.
+            if (TryGetWornFrame(out _, out _))
+            {
+                // Both fields already hold the attach-point-relative values, because every write
+                // above went through StoreSlWorldPosition / StoreSlWorldRotation. Send those, not
+                // the world ones.
+                _session.UpdateObjectTransform(_localId, transform.Position, transform.Rotation,
+                    prim?.Scale ?? System.Numerics.Vector3.One);
+                _lastSentSlPos = slPos;
+                return;
+            }
+
             if (transform.ParentLocalId != 0)
             {
                 if (!TryGetLinkRoot(transform, out var rootPos, out var rootRot))
