@@ -312,9 +312,13 @@ public partial class Boot : Control
     private System.Guid _myAgentId = System.Guid.Empty;
     private double _worldLoadWaitTime = 0.0;
 
-    // One independent ObjectEditWindow per edited object (keyed by its ECS Entity.Id) so
-    // multiple objects can be open and edited at the same time instead of sharing one floater.
-    private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.ObjectEditWindow> _objectEditWindows = new();
+    // FEAT-UI-05: ONE edit window, showing whatever is selected. It used to be one independent
+    // window per object, keyed by entity id, so several objects could be open at once -- but the
+    // reference viewer has a single build floater over a single selection (LLSelectMgr +
+    // LLFloaterTools), and the two models disagree about what a click means. Clicking between
+    // objects behaved differently depending on which of them happened to own a window, reported
+    // in-world as "beim Hin- und Herklicken funktioniert das noch nicht sauber".
+    private SLNG.App.UI.ObjectEditWindow? _objectEditWindow;
 
     // FEAT-UI-13: one UserProfileWindow per avatar, keyed by agent id -- same multi-instance
     // pattern as _objectEditWindows. _userProfileWindows is only touched on the main thread;
@@ -323,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.23.60-alpha";
+    public const string AppVersion = "v0.23.64-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -999,81 +1003,121 @@ public partial class Boot : Control
     {
         if (_session == null || _world == null) return; // only reachable post-login, where both are set
 
-        if (_objectEditWindows.TryGetValue(entity.Id, out var existing))
+        if (_objectEditWindow == null)
         {
-            existing.MoveToFront();
-            return;
+            var win = new SLNG.App.UI.ObjectEditWindow();
+            hudLayer.AddChild(win);
+            win.Initialize(_session, _world);
+            win.OnLinkRequested = LinkCurrentSelection;
+            win.OnUnlinkRequested = UnlinkCurrentSelection;
+            win.Closed += () =>
+            {
+                _objectEditWindow = null;
+                // Leaving build mode: the selection goes with the window, and a left click means
+                // touch/sit again rather than pick.
+                _objectSelectionController.EndEditSession();
+                _selectionGizmo?.Detach();
+            };
+            _objectEditWindow = win;
+        }
+        else
+        {
+            _objectEditWindow.MoveToFront();
         }
 
-        var win = new SLNG.App.UI.ObjectEditWindow();
-        hudLayer.AddChild(win);
-        win.Initialize(_session, _world);
-        // Cascade new windows diagonally so opening several doesn't stack them exactly on top
-        // of each other -- wraps every 8 so it doesn't walk off-screen over a long session.
-        win.CascadeIndex = _objectEditWindows.Count % 8;
-        // Pinned so ObjectSelectionController won't drop this entity's selection/highlight just
-        // because the user clicked a different object elsewhere -- see ObjectSelectionController
-        // for why plain clicks otherwise replace the previous highlight.
-        _objectSelectionController.Pin(entity.Id);
-
-        // Ensure the object is selected on the grid and visually (since right-click no longer auto-selects outside edit mode).
-        _world.SelectEntity(entity);
-        _session.SelectObject(localId);
-
-        // FEAT-UI-04: the move handles belong to "this object is being edited", not to "this
-        // object was left-clicked". Opening the window via right-click -> Edit never went through
-        // ObjectSelectionController's click path, so the gizmo only appeared after an extra click
-        // on the object -- reported in-world 2026-09-18.
-        _selectionGizmo?.Attach(entity);
-
-        win.Closed += () =>
-        {
-            // Read the window's CURRENT entity rather than the one it was opened on: FEAT-UI-06
-            // re-targets an open window to another prim of the same linkset, and unpinning the
-            // original id would leave the prim actually on screen pinned forever.
-            var shown = win.CurrentEntityId ?? entity.Id;
-            _objectEditWindows.Remove(shown);
-            _objectSelectionController.Unpin(shown);
-            // Only retract the handles if they are still on THIS object -- closing one window
-            // must not strip the gizmo off another object that is still open for editing.
-            if (_selectionGizmo?.AttachedEntityId == shown) _selectionGizmo.Detach();
-        };
-        _objectEditWindows[entity.Id] = win;
-
-        win.EditObject(entity, localId, _world);
+        // Selecting is the controller's job, and it is what puts the object on the grid's
+        // selection list, attaches the gizmo and tells this window what to show -- the window
+        // follows OnPrimarySelectionChanged. Doing any of it here as well would just be a second
+        // path to keep in step.
+        _objectSelectionController.BeginEditSession(entity, localId);
     }
 
-    /// <summary>FEAT-UI-06: a left click inside an open edit session picked a different prim of
-    /// the same linkset. Moves the window that is already open onto it, rather than opening a
-    /// second one -- the reference viewer has a single build floater that follows the
-    /// selection, and one window per prim of a linkset would bury the screen.</summary>
-    private void RetargetObjectEditWindow(System.Guid shownEntityId, SLNG.Core.ECS.Entity picked, uint pickedLocalId)
+    /// <summary>FEAT-UI-05: the one edit window follows whichever object is the primary
+    /// selection.</summary>
+    private void ShowInEditWindow(SLNG.Core.ECS.Entity entity, uint localId)
+    {
+        if (_world == null || _objectEditWindow == null) return;
+        _objectEditWindow.EditObject(entity, localId, _world);
+        _objectEditWindow.Visible = true;
+    }
+
+    /// <summary>FEAT-UI-05: the selection changed -- re-read the Link / Unlink buttons, and close
+    /// the window once there is nothing left to edit (clicking empty ground).</summary>
+    private void OnEditSelectionChanged()
+    {
+        RefreshLinkButtons();
+        // The selection is unchanged in count but the prims in it may have swapped between being
+        // roots and children, so the highlight has to be re-cut either way.
+        _objectRenderer?.InvalidateSelectionHighlights();
+
+        if (_objectEditWindow != null && _objectSelectionController.LinkSelection.Count == 0)
+        {
+            _objectEditWindow.RequestClose();
+        }
+    }
+
+    /// <summary>FEAT-UI-05: re-evaluates Link / Unlink on every open edit window. Both depend on
+    /// the whole selection, not on the one object a window happens to show, so this is driven
+    /// from the selection controller rather than from inside the window.</summary>
+    private void RefreshLinkButtons()
+    {
+        if (_world == null || _objectEditWindow == null) return;
+        int count = _objectSelectionController.LinkSelection.Count;
+
+        var shownId = _objectEditWindow.CurrentEntityId;
+        var entity = shownId != null ? _world.GetEntity(shownId.Value) : null;
+        if (entity == null) { _objectEditWindow.SetLinkState(count, false, false); return; }
+
+        var transform = entity.GetComponent<SLNG.Core.Components.TransformComponent>();
+        // "Linked" means the object is in a linkset either way round: a child knows its parent,
+        // and a root only knows it has children -- which is why the child index is consulted
+        // rather than just ParentLocalId.
+        bool isLinked = (transform != null && transform.ParentLocalId != 0)
+            || _worldSimulation.HasChildren(entity.RegionHandle, entity.LocalId);
+
+        _objectEditWindow.SetLinkState(count, isLinked, SLNG.Core.EditPermission.CanModify(_world, entity));
+    }
+
+    /// <summary>FEAT-UI-05: links everything currently selected. The object picked LAST becomes
+    /// the root -- the viewer's rule -- and it keeps its position and rotation while the others
+    /// become offsets from it.</summary>
+    private void LinkCurrentSelection()
     {
         if (_session == null || _world == null) return;
-        if (shownEntityId == picked.Id) return;
-        if (!_objectEditWindows.TryGetValue(shownEntityId, out var win)) return;
+        var selection = _objectSelectionController.LinkSelection;
+        if (selection.Count < 2) return;
 
-        // That prim already has a window of its own -- two windows must never claim one entity.
-        if (_objectEditWindows.TryGetValue(picked.Id, out var already))
+        var localIds = new System.Collections.Generic.List<uint>(selection.Count);
+        foreach (var id in selection)
         {
-            already.MoveToFront();
-            return;
+            var entity = _world.GetEntity(id);
+            if (entity == null) continue;
+            if (!SLNG.Core.EditPermission.CanModify(_world, entity)) return;
+            localIds.Add(entity.LocalId);
         }
+        if (localIds.Count < 2) return;
 
-        var shown = _world.GetEntity(shownEntityId);
-        _objectEditWindows.Remove(shownEntityId);
-        _objectEditWindows[picked.Id] = win;
-        _objectSelectionController.Unpin(shownEntityId);
-        _objectSelectionController.Pin(picked.Id);
+        uint rootLocalId = localIds[^1];
+        localIds.RemoveAt(localIds.Count - 1);
+        _session.LinkObjects(rootLocalId, localIds);
+    }
 
-        // Re-target BEFORE deselecting the old prim: the window hides itself when the entity it
-        // is currently showing is deselected (OnEntityDeselected), so the other order would make
-        // the window vanish on the first click.
-        win.EditObject(picked, pickedLocalId, _world);
-        if (shown != null) _world.DeselectEntity(shown);
-        _world.SelectEntity(picked);
-        _session.SelectObject(pickedLocalId);
-        _selectionGizmo?.Attach(picked);
+    /// <summary>FEAT-UI-05: splits the selected linkset back into standalone prims.</summary>
+    private void UnlinkCurrentSelection()
+    {
+        if (_session == null || _world == null) return;
+
+        var localIds = new System.Collections.Generic.List<uint>();
+        foreach (var id in _objectSelectionController.LinkSelection)
+        {
+            var entity = _world.GetEntity(id);
+            if (entity == null) continue;
+            if (!SLNG.Core.EditPermission.CanModify(_world, entity)) return;
+            localIds.Add(entity.LocalId);
+        }
+        if (localIds.Count == 0) return;
+
+        _session.UnlinkObjects(localIds);
     }
 
     /// <summary>
@@ -2955,8 +2999,8 @@ public partial class Boot : Control
         // Any ObjectEditWindows still open are bound to the session/world we're about to replace
         // (Initialize() is called once at creation, not re-bindable) -- free them rather than
         // leave them holding references to a disposed GridSession.
-        foreach (var win in _objectEditWindows.Values) win.QueueFree();
-        _objectEditWindows.Clear();
+        _objectEditWindow?.QueueFree();
+        _objectEditWindow = null;
 
         // Same for open profile windows -- FEAT-UI-13.
         foreach (var win in _userProfileWindows.Values) win.QueueFree();
@@ -3231,7 +3275,11 @@ public partial class Boot : Control
             // FEAT-UI-06: here and not next to the context-menu wiring in SetupHud -- the
             // controller does not exist yet at that point, and assigning through it there threw
             // a NullReferenceException out of _Ready, which stalled the whole boot.
-            _objectSelectionController.OnEditTargetPicked = RetargetObjectEditWindow;
+            _objectSelectionController.OnPrimarySelectionChanged = ShowInEditWindow;
+            _objectSelectionController.OnLinkSelectionChanged = OnEditSelectionChanged;
+            // A link or an unlink leaves the selection alone but swaps roots and children around
+            // inside it, so the highlight has to be re-cut and the buttons re-read.
+            _worldSimulation.ObjectReparented += (_, _) => OnEditSelectionChanged();
             _selectionGizmo.GridSpacing = _uiSettings.BuildGridSpacing;
             _uiSettings.BuildGridSpacingChanged += m =>
             {

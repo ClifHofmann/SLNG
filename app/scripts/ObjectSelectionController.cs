@@ -26,48 +26,124 @@ namespace SLNG.App
         // every object some other window still has pinned open.
         private Entity? _lastClicked;
 
-        // Entities with an open ObjectEditWindow (see Boot.cs Pin/Unpin calls) -- these stay
-        // selected/highlighted no matter what else gets clicked, since deselecting them would
-        // auto-hide their window (ObjectEditWindow.OnEntityDeselected). Anything NOT in this set
-        // is just a plain click-highlight, which a click elsewhere should replace -- without this
-        // distinction, every plain click left the previous object's highlight stuck forever
-        // (_lastClicked only remembers the ONE most recent click, so the one before it was never
-        // deselected again).
-        private readonly System.Collections.Generic.HashSet<System.Guid> _pinnedEntityIds = new();
+        // FEAT-UI-05: ONE edit session, with ONE ordered selection. That is the reference
+        // viewer's model -- LLSelectMgr holds a single selection and the build floater shows
+        // whatever is in it (lltoolselect.cpp: an unmodified click calls deselectAll() and then
+        // selects what was hit; shift or ctrl toggles instead). SLNG used to open an independent
+        // window per object and keep a set of "pinned" entities beside the click highlight, so
+        // clicking back and forth between objects behaved differently depending on which of them
+        // happened to own a window.
+        private bool _editSessionOpen;
 
-        public void Pin(System.Guid entityId) => _pinnedEntityIds.Add(entityId);
-        public void Unpin(System.Guid entityId) => _pinnedEntityIds.Remove(entityId);
+        // The selection, oldest first. The LAST entry is the primary: it is what the edit window
+        // shows, and on a link it becomes the linkset's root -- keeping its own position while
+        // everything else turns into an offset from it. A List and not a HashSet precisely
+        // because that order is load-bearing.
+        private readonly System.Collections.Generic.List<System.Guid> _selection = new();
 
-        /// <summary>FEAT-UI-06: the user left-clicked a prim of a linkset that is already open for
-        /// editing, and wants to edit THAT prim. Arguments are the entity the open window is
-        /// currently showing, and the entity/localId it should show instead. Boot re-targets the
-        /// window; the controller does not know windows exist.</summary>
-        public System.Action<System.Guid, Entity, uint>? OnEditTargetPicked;
+        /// <summary>The selection, oldest first; the last entry is the primary.</summary>
+        public System.Collections.Generic.IReadOnlyList<System.Guid> LinkSelection => _selection;
 
-        /// <summary>The root prim's local id -- the object itself when it is not linked.</summary>
-        private static uint RootLocalIdOf(Entity entity)
+        /// <summary>Raised whenever the selection changes -- for the Link / Unlink buttons, and
+        /// so the edit window can close once nothing is selected any more.</summary>
+        public System.Action? OnLinkSelectionChanged;
+
+        /// <summary>Raised when a different object becomes the primary, so the one edit window
+        /// can follow it.</summary>
+        public System.Action<Entity, uint>? OnPrimarySelectionChanged;
+
+        /// <summary>Boot has opened the edit window on this object. From here until
+        /// <see cref="EndEditSession"/> a left click picks objects instead of touching them,
+        /// which is what build mode means in the reference viewer.</summary>
+        public void BeginEditSession(Entity entity, uint localId)
         {
-            var transform = entity.GetComponent<TransformComponent>();
-            return transform != null && transform.ParentLocalId != 0 ? transform.ParentLocalId : entity.LocalId;
+            _editSessionOpen = true;
+            SelectOnly(entity, localId);
         }
 
-        /// <summary>Is the clicked prim part of a linkset that already has an edit window open,
-        /// and if so, which entity is that window showing?</summary>
-        private bool TryFindOpenEditFor(Entity clicked, out System.Guid editedEntityId)
+        /// <summary>The edit window closed: nothing stays selected, and a click means what it
+        /// means outside build mode again.</summary>
+        public void EndEditSession()
         {
-            editedEntityId = System.Guid.Empty;
-            if (_world == null || _pinnedEntityIds.Count == 0) return false;
+            _editSessionOpen = false;
+            DeselectAll();
+        }
 
-            uint clickedRoot = RootLocalIdOf(clicked);
-            foreach (var pinnedId in _pinnedEntityIds)
+        private void DeselectAll()
+        {
+            if (_world == null) return;
+            foreach (var id in _selection)
             {
-                var pinned = _world.GetEntity(pinnedId);
-                if (pinned == null || pinned.RegionHandle != clicked.RegionHandle) continue;
-                if (RootLocalIdOf(pinned) != clickedRoot) continue;
-                editedEntityId = pinnedId;
-                return true;
+                var entity = _world.GetEntity(id);
+                if (entity != null) _world.DeselectEntity(entity);
             }
-            return false;
+            _selection.Clear();
+            _lastClicked = null;
+            _gizmo?.Detach();
+            OnLinkSelectionChanged?.Invoke();
+        }
+
+        /// <summary>A plain click: this object and nothing else. Mirrors the reference viewer,
+        /// where an unmodified click is deselectAll() followed by selecting what was hit.</summary>
+        private void SelectOnly(Entity entity, uint localId)
+        {
+            if (_world == null) return;
+
+            for (int i = _selection.Count - 1; i >= 0; i--)
+            {
+                if (_selection[i] == entity.Id) continue;
+                var previous = _world.GetEntity(_selection[i]);
+                if (previous != null) _world.DeselectEntity(previous);
+                _selection.RemoveAt(i);
+            }
+            if (_selection.Count == 0) _selection.Add(entity.Id);
+
+            _world.SelectEntity(entity);
+            _session.SelectObject(localId);
+            _gizmo?.Attach(entity);
+            _lastClicked = entity;
+
+            OnPrimarySelectionChanged?.Invoke(entity, localId);
+            OnLinkSelectionChanged?.Invoke();
+        }
+
+        /// <summary>Shift-click: add the object, or drop it again if it was already in.
+        /// Re-adding moves it to the end, which makes it the primary -- and therefore the root
+        /// of a link.</summary>
+        private void ToggleSelection(Entity entity, uint localId)
+        {
+            if (_world == null) return;
+
+            if (_selection.Remove(entity.Id))
+            {
+                _world.DeselectEntity(entity);
+                // Something else has to show in the window now; the newest survivor takes over.
+                if (_selection.Count > 0)
+                {
+                    var primary = _world.GetEntity(_selection[_selection.Count - 1]);
+                    if (primary != null)
+                    {
+                        _gizmo?.Attach(primary);
+                        _lastClicked = primary;
+                        OnPrimarySelectionChanged?.Invoke(primary, primary.LocalId);
+                    }
+                }
+                else
+                {
+                    _gizmo?.Detach();
+                    _lastClicked = null;
+                }
+            }
+            else
+            {
+                _selection.Add(entity.Id);
+                _world.SelectEntity(entity);
+                _session.SelectObject(localId);
+                _gizmo?.Attach(entity);
+                _lastClicked = entity;
+                OnPrimarySelectionChanged?.Invoke(entity, localId);
+            }
+            OnLinkSelectionChanged?.Invoke();
         }
 
         public void Initialize(World world, GridSession session, Camera3D camera, UI.InWorldContextMenu contextMenu)
@@ -268,26 +344,24 @@ namespace SLNG.App
 
                                         if (mouseBtn.ButtonIndex == MouseButton.Left)
                                         {
-                                            // FEAT-UI-06: inside an open edit session, a left click
-                                            // on the object being edited PICKS a part instead of
-                                            // running its click action -- the reference viewer does
-                                            // the same, and it is how you reach a child prim once
-                                            // "Edit linked parts" is on. Deliberately scoped to the
-                                            // linkset that is already open: clicking any other
-                                            // object still touches or sits on it, because an open
-                                            // build window should not swallow the whole world's
-                                            // left click.
-                                            if (TryFindOpenEditFor(rawEntity, out var editedEntityId))
+                                            // FEAT-UI-05/06: while the edit window is open, a left
+                                            // click PICKS -- it does not touch or sit. That is
+                                            // build mode in the reference viewer: an unmodified
+                                            // click replaces the selection with what was hit
+                                            // (lltoolselect.cpp calls deselectAll() first), and
+                                            // shift toggles that object in or out instead. Which
+                                            // prim gets picked, the whole linkset or one part of
+                                            // it, was already decided above by "edit linked
+                                            // parts".
+                                            if (_editSessionOpen)
                                             {
-                                                if (editedEntityId != entity.Id)
-                                                {
-                                                    OnEditTargetPicked?.Invoke(editedEntityId, entity, localId);
-                                                }
+                                                if (mouseBtn.ShiftPressed) ToggleSelection(entity, localId);
+                                                else SelectOnly(entity, localId);
                                                 GetViewport().SetInputAsHandled();
                                                 return;
                                             }
 
-                                            if (_lastClicked != null && !_pinnedEntityIds.Contains(_lastClicked.Id))
+                                            if (_lastClicked != null)
                                             {
                                                 _world.DeselectEntity(_lastClicked);
                                                 _lastClicked = null;
@@ -322,24 +396,13 @@ namespace SLNG.App
                                             return;
                                         }
 
-                                        // Only select visually if we are ALREADY in Edit Mode (i.e. at least one ObjectEditWindow is open)
-                                        if (_pinnedEntityIds.Count > 0)
+                                        // Right-clicking inside an edit session moves the
+                                        // selection onto that object first, so the menu acts on
+                                        // what it is drawn over. Outside one it only opens the
+                                        // menu, exactly as before.
+                                        if (_editSessionOpen)
                                         {
-                                            // Replace the previous plain-click highlight -- but never
-                                            // an entity pinned by its own open Edit window; that stays
-                                            // selected independently until the window itself closes.
-                                            if (_lastClicked != null && _lastClicked.Id != entity.Id
-                                                && !_pinnedEntityIds.Contains(_lastClicked.Id))
-                                            {
-                                                _world.DeselectEntity(_lastClicked);
-                                            }
-
-                                            _world.SelectEntity(entity);
-                                            // FEAT-UI-04: Attach decides for itself whether the
-                                            // agent may move this one, and hides otherwise.
-                                            _gizmo?.Attach(entity);
-                                            _session.SelectObject(localId);
-                                            _lastClicked = entity;
+                                            SelectOnly(entity, localId);
                                         }
 
                                         _contextMenu.ShowMenu(mouseBtn.Position, entity, localId);
@@ -353,15 +416,22 @@ namespace SLNG.App
                     }
                     else
                     {
-                        // Clicked on nothing: deselect only what this controller last clicked --
-                        // other objects pinned open in their own ObjectEditWindow are untouched.
-                        if (_lastClicked != null && mouseBtn.ButtonIndex == MouseButton.Left)
+                        // Clicked on nothing. In an edit session that clears the WHOLE selection,
+                        // the way deselectAll() does in the reference viewer -- and Boot closes
+                        // the window behind it, because a build floater with an empty selection
+                        // has nothing to show. Outside a session there is only ever the one
+                        // click highlight to drop.
+                        if (mouseBtn.ButtonIndex == MouseButton.Left && !mouseBtn.ShiftPressed)
                         {
-                            if (!_pinnedEntityIds.Contains(_lastClicked.Id))
+                            if (_editSessionOpen)
+                            {
+                                DeselectAll();
+                            }
+                            else if (_lastClicked != null)
                             {
                                 _world.DeselectEntity(_lastClicked);
+                                _lastClicked = null;
                             }
-                            _lastClicked = null;
                         }
                     }
                 }
