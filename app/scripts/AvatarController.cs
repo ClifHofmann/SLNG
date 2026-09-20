@@ -201,6 +201,11 @@ public partial class AvatarController : Camera3D
     /// so the screen-space "keep whatever's under the cursor anchored" approximation
     /// (<see cref="ZoomTowardCursor"/>) is still the right behaviour -- unchanged.</item>
     /// </list></summary>
+    /// <summary>FEAT-UI-23: given a wheel direction (+1 in, -1 out), a hook may consume the
+    /// wheel instead of letting it move the camera. Boot uses it to zoom the HUD layer while a
+    /// HUD is the thing being edited.</summary>
+    public System.Func<int, bool>? WheelOverride;
+
     private void ZoomBy(float zoomDelta, Vector2 mousePos)
     {
         bool glidingToFocus = _transitioning && !_transitionEndIsAvatarFollow;
@@ -648,13 +653,17 @@ public partial class AvatarController : Camera3D
                 hasUiFocus = GetViewport().GuiGetHoveredControl() != null;
             }
 
+            // FEAT-UI-23: while a HUD is being edited the wheel belongs to the HUD layer, not
+            // to the camera -- the reference viewer does the same (LLAgentCamera::cameraZoomIn
+            // short-circuits to mHUDTargetZoom once build mode has a HUD selected). A true from
+            // the hook means it took the wheel.
             if (!hasUiFocus && mouseBtn.ButtonIndex == MouseButton.WheelUp)
             {
-                ZoomBy(-0.5f, mouseBtn.Position);
+                if (WheelOverride?.Invoke(1) != true) ZoomBy(-0.5f, mouseBtn.Position);
             }
             else if (!hasUiFocus && mouseBtn.ButtonIndex == MouseButton.WheelDown)
             {
-                ZoomBy(0.5f, mouseBtn.Position);
+                if (WheelOverride?.Invoke(-1) != true) ZoomBy(0.5f, mouseBtn.Position);
             }
         }
 

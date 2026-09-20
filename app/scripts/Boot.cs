@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.4-alpha";
+    public const string AppVersion = "v0.24.5-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1021,6 +1021,9 @@ public partial class Boot : Control
                 // touch/sit again rather than pick.
                 _objectSelectionController.EndEditSession();
                 _selectionGizmo?.Detach();
+                // The HUD layer goes back to normal with the window, the way the reference
+                // viewer resets its HUD zoom when the selection goes.
+                _avatarRenderer?.SetHudZoom(1f);
             };
             _objectEditWindow = win;
         }
@@ -1058,6 +1061,28 @@ public partial class Boot : Control
         {
             _objectEditWindow.RequestClose();
         }
+    }
+
+    /// <summary>FEAT-UI-23: the mouse wheel, while a HUD is the thing being edited, pulls the HUD
+    /// layer back instead of moving the camera -- people park HUDs outside the visible screen to
+    /// get them out of the way, and editing one has to be able to reach them again.</summary>
+    /// <returns>True when the wheel was used here, so the camera leaves it alone.</returns>
+    private bool TryZoomEditedHud(int direction)
+    {
+        if (_objectEditWindow == null || _avatarRenderer == null || _world == null) return false;
+
+        var selection = _objectSelectionController.LinkSelection;
+        if (selection.Count == 0) return false;
+
+        var primary = _world.GetEntity(selection[selection.Count - 1]);
+        var attachment = primary?.GetComponent<SLNG.Core.Components.AttachmentComponent>();
+        if (attachment == null || !SLNG.App.AttachmentPointMap.IsHudPoint(attachment.AttachmentPoint)) return false;
+
+        // One notch is 10%, compounding, so the range from fully zoomed in to the 0.2 floor is
+        // about seventeen notches -- a short flick of the wheel, not a grind.
+        const float step = 1.1f;
+        _avatarRenderer.SetHudZoom(direction > 0 ? _avatarRenderer.HudZoom * step : _avatarRenderer.HudZoom / step);
+        return true;
     }
 
     /// <summary>FEAT-UI-23: what the local agent is wearing, for the self context menu's worn
@@ -3311,6 +3336,10 @@ public partial class Boot : Control
             // controller does not exist yet at that point, and assigning through it there threw
             // a NullReferenceException out of _Ready, which stalled the whole boot.
             _objectSelectionController.OnPrimarySelectionChanged = ShowInEditWindow;
+            // FEAT-UI-23: the wheel zooms the HUD layer while a HUD is being edited. No null
+            // check -- the surrounding block already uses _avatarController unconditionally, and
+            // adding one here only teaches the compiler to doubt it further down.
+            _avatarController.WheelOverride = TryZoomEditedHud;
             _objectSelectionController.OnLinkSelectionChanged = OnEditSelectionChanged;
             // A link or an unlink leaves the selection alone but swaps roots and children around
             // inside it, so the highlight has to be re-cut and the buttons re-read.

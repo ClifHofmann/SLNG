@@ -2882,6 +2882,38 @@ public partial class AvatarRenderer : Node3D
     private SubViewport? _hudViewport;
 
     private Node3D? _hudRoot;
+    private Camera3D? _hudCamera;
+
+    /// <summary>FEAT-UI-23: how much of the HUD layer is on screen while a HUD is being edited.
+    /// 1 is normal; smaller shows more.</summary>
+    /// <remarks>
+    /// People park HUDs they want out of the way OUTSIDE the visible screen, so editing one has
+    /// to be able to pull the view back far enough to find it again -- reported in-world, with
+    /// the reference viewer doing exactly this. There the wheel drives
+    /// <c>LLAgentCamera::mHUDTargetZoom</c> whenever build mode has a HUD selected
+    /// (<c>cameraZoomIn/Out</c> short-circuit to <c>mHUDTargetZoom /= fraction</c>), and the
+    /// zoom is a fraction in [0,1] with 1 fully zoomed in.
+    ///
+    /// Here the same thing is one property on the orthographic HUD camera: its Size is the
+    /// height of HUD space on screen, so Size = 1/zoom. Clicking follows for free, because
+    /// TryClickHud projects its ray through this very camera.
+    /// </remarks>
+    public float HudZoom { get; private set; } = 1f;
+
+    /// <summary>The floor is 0.2, which shows five screen-heights of HUD space -- far enough to
+    /// find something parked off the edge without the content becoming unreadable.</summary>
+    private const float MinHudZoom = 0.2f;
+
+    public void SetHudZoom(float zoom)
+    {
+        HudZoom = Mathf.Clamp(zoom, MinHudZoom, 1f);
+        ApplyHudZoom();
+    }
+
+    private void ApplyHudZoom()
+    {
+        if (_hudCamera != null && IsInstanceValid(_hudCamera)) _hudCamera.Size = 1f / HudZoom;
+    }
     // HUD entity id → its Node3D in the overlay, its (point, SL-local offset) placement (kept
     // for aspect-ratio repositioning on window resize), and a content signature mirroring
     // _attachmentMeshIds' duplicate-load guard (see that field's doc comment).
@@ -2962,7 +2994,7 @@ public partial class AvatarRenderer : Node3D
         // — under our standard SL→Godot map that is: look down world +X with +Y up, so screen
         // right = world +Z and screen up = world +Y. Content sits near x≈0; ±3.5 m offsets stay
         // comfortably inside Near/Far from x=-4.5.
-        _hudViewport.AddChild(new Camera3D
+        _hudCamera = new Camera3D
         {
             Projection = Camera3D.ProjectionType.Orthogonal,
             Size = 1.0f,
@@ -2971,7 +3003,9 @@ public partial class AvatarRenderer : Node3D
             RotationDegrees = new Godot.Vector3(0f, -90f, 0f),
             Near = 0.01f,
             Far = 20f,
-        });
+        };
+        _hudViewport.AddChild(_hudCamera);
+        ApplyHudZoom();
 
         _hudRoot = new Node3D { Name = "SlHudRoot" };
         _hudViewport.AddChild(_hudRoot);
