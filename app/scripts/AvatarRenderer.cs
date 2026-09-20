@@ -205,6 +205,13 @@ public partial class AvatarRenderer : Node3D
     private readonly Dictionary<Guid, BoneAttachment3D> _attachmentNodes = new();
     // attachment entity ID → Rigged mesh node parented to the avatar skeleton
     private readonly Dictionary<Guid, MeshInstance3D> _riggedAttachments = new();
+
+    // FEAT-UI-23: the bone-parented colliders that make a rigged worn item clickable -- one per
+    // bone the item is weighted to. They live on the SKELETON, not under the item's own mesh
+    // instance, so freeing the mesh does not free them: every teardown path has to call
+    // ClearRiggedPickBodies or a detached item keeps swallowing clicks for the rest of the
+    // session.
+    private readonly Dictionary<Guid, List<Node3D>> _riggedPickBodies = new();
     // attachment entity ID → (mesh id, per-face textures, default face) of the currently
     // loaded/loading attachment mesh. Guards against re-triggering the async mesh load on every
     // redundant PrimitiveComponent update (LibreMetaverse's ObjectUpdate fires several times per
@@ -289,6 +296,10 @@ public partial class AvatarRenderer : Node3D
         _world.EntityAdded += OnEntityAdded;
         _world.EntityRemoved += OnEntityRemoved;
         _world.ComponentUpdated += OnComponentUpdated;
+        // FEAT-UI-23: worn items are drawn here, not by ObjectRenderer, so the selection
+        // highlight has to be drawn here too -- selecting one produced no outline at all.
+        _world.EntitySelected += (_, e) => CallDeferred(nameof(HighlightAttachment), e.Entity.Id.ToString(), true);
+        _world.EntityDeselected += (_, e) => CallDeferred(nameof(HighlightAttachment), e.Entity.Id.ToString(), false);
     }
 
     private void OnEntityAdded(object? sender, EntityEventArgs e)
@@ -518,6 +529,8 @@ public partial class AvatarRenderer : Node3D
             _attachmentNodes.Remove(entityId);
         }
         MeshInstance3D? removedRigged = null;
+        ClearRiggedPickBodies(entityId);
+        ReleaseEditPause(entityId);
         if (_riggedAttachments.TryGetValue(entityId, out var riggedMesh))
         {
             removedRigged = riggedMesh;
@@ -734,9 +747,61 @@ public partial class AvatarRenderer : Node3D
     /// </summary>
     public void FreezeSelfAnimation(bool freeze)
     {
-        if (_selfEntityId == Guid.Empty || !_visuals.TryGetValue(_selfEntityId, out var visual)) return;
-        visual.AnimPlayer.IsFrozen = freeze;
+        if (_selfEntityId == Guid.Empty || !_visuals.TryGetValue(_selfEntityId, out _)) return;
+        if (freeze) _userFrozen.Add(_selfEntityId);
+        else _userFrozen.Remove(_selfEntityId);
+        RefreshFreeze(_selfEntityId);
         GD.Print($"[AvatarAnimation] Freeze self animation: {freeze}");
+    }
+
+    // FEAT-ANIM-09 asked for a freeze the user drives; FEAT-UI-23 for one the selection drives.
+    // Both end at the same IsFrozen flag, so neither may write it directly -- deselecting an
+    // attachment would otherwise resume an avatar the user had deliberately stopped.
+    private readonly HashSet<Guid> _userFrozen = new();
+
+    // FEAT-UI-23: avatars held still because one of their worn items is selected for editing,
+    // keyed by the avatar, valued by the items holding it. Viewer parity: LLSelectMgr::
+    // pauseAssociatedAvatars (llselectmgr.cpp) takes a pause handle on the avatar an attachment
+    // hangs from for as long as it stays in the selection, so an item can be lined up against a
+    // body that is not walking out from under it.
+    private readonly Dictionary<Guid, HashSet<Guid>> _editPausedAvatars = new();
+
+    private void RefreshFreeze(Guid avatarEntityId)
+    {
+        if (!_visuals.TryGetValue(avatarEntityId, out var visual)) return;
+        visual.AnimPlayer.IsFrozen = _isAllFrozen
+            || _userFrozen.Contains(avatarEntityId)
+            || _editPausedAvatars.ContainsKey(avatarEntityId);
+    }
+
+    /// <summary>FEAT-UI-23: a worn item entered or left the edit selection.</summary>
+    private void SetWornEditPause(Entity wornEntity, bool paused)
+    {
+        if (!paused) { ReleaseEditPause(wornEntity.Id); return; }
+
+        var attachment = wornEntity.GetComponent<AttachmentComponent>();
+        if (attachment == null) return;
+
+        if (!_editPausedAvatars.TryGetValue(attachment.AvatarEntityId, out var held))
+            _editPausedAvatars[attachment.AvatarEntityId] = held = new HashSet<Guid>();
+        held.Add(wornEntity.Id);
+        RefreshFreeze(attachment.AvatarEntityId);
+    }
+
+    /// <summary>Drops whatever hold this worn item had on its avatar -- on deselect, and on
+    /// detach, where the entity is already gone by the time the deselect would arrive.</summary>
+    private void ReleaseEditPause(Guid wornEntityId)
+    {
+        Guid affected = Guid.Empty;
+        foreach (var (avatarId, held) in _editPausedAvatars)
+        {
+            if (!held.Remove(wornEntityId)) continue;
+            affected = avatarId;
+            break;
+        }
+        if (affected == Guid.Empty) return;
+        if (_editPausedAvatars[affected].Count == 0) _editPausedAvatars.Remove(affected);
+        RefreshFreeze(affected);
     }
 
     /// <summary>
@@ -794,10 +859,7 @@ public partial class AvatarRenderer : Node3D
     public void FreezeAllAvatars(bool freeze)
     {
         _isAllFrozen = freeze;
-        foreach (var visual in _visuals.Values)
-        {
-            visual.AnimPlayer.IsFrozen = freeze;
-        }
+        foreach (var id in _visuals.Keys) RefreshFreeze(id);
         GD.Print($"[AvatarAnimation] Freeze all avatars ({_visuals.Count} avatars): {freeze}");
     }
 
@@ -1797,6 +1859,11 @@ public partial class AvatarRenderer : Node3D
         }, label: "avatar.bake");
     }
 
+    /// <summary>The object is not worn any more (detached, dropped, re-parented into a world
+    /// linkset): drop everything this renderer built for it, so the object renderer can draw it
+    /// as the ordinary world prim it now is.</summary>
+    public void DropWornVisuals(Guid entityId) => CallDeferred(nameof(RemoveVisual), entityId.ToString());
+
     private void UpdateAttachment(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
@@ -1884,9 +1951,17 @@ public partial class AvatarRenderer : Node3D
         boneAttach.SetMeta("AttachPoint", (int)attachment.AttachmentPoint);
         boneAttach.SetMeta("BoneName", boneName);
 
-        // Clear previous static attachment visuals
+        // Clear previous static attachment visuals. RemoveChild FIRST, and only then free:
+        // QueueFree merely schedules the deletion for the end of the frame, so the old child is
+        // still a sibling when the replacement is added below -- and Godot keeps sibling names
+        // unique by RENAMING the newcomer, throwing the given name away entirely ("PointOffset"
+        // became "@Node3D@3", measured). Everything that looks a worn item up by name then found
+        // the dying node for one frame and nothing at all afterwards: no outline on a selected
+        // attachment, and no attach-point frame, which is why the gizmo refused to appear on
+        // anything worn. Same trap as SelectionOutline.Discard, same fix.
         foreach (var child in boneAttach.GetChildren())
         {
+            boneAttach.RemoveChild(child);
             child.QueueFree();
         }
 
@@ -1908,11 +1983,7 @@ public partial class AvatarRenderer : Node3D
             // low -- prim hair (which cannot follow head morphs in ANY viewer) sinks into the
             // skull by that much and the scalp comes through at the crown. The error grows with
             // head size, which is why it reads as "the head is too big for the hair".
-            var apPos = apPoint.Position;
-            if (avatarVisual.BoneOwnScale.TryGetValue(boneName, out var jointScale))
-                apPos *= jointScale;
-            pointNode.Position = new Godot.Vector3(apPos.X, apPos.Z, -apPos.Y);
-            pointNode.Basis = SkeletonBuilder.SlEulerDegToGodotBasis(apPoint.RotationDeg);
+            pointNode.Transform = AttachPointOffset(apPoint, avatarVisual, boneName);
         }
         boneAttach.AddChild(pointNode);
         
@@ -1922,6 +1993,7 @@ public partial class AvatarRenderer : Node3D
             oldRigged.QueueFree();
             _riggedAttachments.Remove(entityId);
         }
+        ClearRiggedPickBodies(entityId);
         // Same item being re-rezzed with a NEW mesh id at this attachment point (e.g. an
         // applier swapping mesh assets, not just face textures): the OLD mesh's pelvis fixup
         // must go too, or a removed/replaced fitted item leaves the avatar's height shifted
@@ -2037,6 +2109,395 @@ public partial class AvatarRenderer : Node3D
     /// <summary>Shared tail of both attachment paths: turns already-obtained
     /// <paramref name="meshData"/> into a scene node — skinned to the avatar skeleton when it
     /// carries skin data, otherwise bolted statically to its attachment bone.</summary>
+    /// <summary>FEAT-UI-23: outlines a worn item the way ObjectRenderer outlines a world prim.
+    /// Silently does nothing for an entity that is not a worn item, or whose geometry has not
+    /// been built yet.</summary>
+    /// <remarks>
+    /// Both shapes a worn item can take are covered. A STATIC one is a plain mesh instance
+    /// under the attachment point node, so it outlines exactly like a world prim. A RIGGED one
+    /// is skinned to the avatar's skeleton, and its outline has to be skinned with it -- the
+    /// hull is handed the same Skin and the same Skeleton, or it would hang in the bind pose
+    /// while the item moves with the body.
+    ///
+    /// Deferred from the selection event, like everything else here: the event arrives on
+    /// whatever thread changed the selection, and this touches the scene graph.
+    /// </remarks>
+    private void HighlightAttachment(string entityIdStr, bool selected)
+    {
+        if (_world == null || !Guid.TryParse(entityIdStr, out var entityId)) return;
+
+        var entity = _world.GetEntity(entityId);
+        if (entity?.GetComponent<AttachmentComponent>() == null) return;
+
+        // Hold the avatar still while one of its worn items is being edited, the way the
+        // reference viewer does (LLSelectMgr::pauseAssociatedAvatars) -- lining up a hat on a
+        // head that keeps breathing and shifting weight is guesswork.
+        SetWornEditPause(entity, selected);
+
+        // The selection names ONE prim, and a worn item is rarely one prim -- hair is a root
+        // plus a handful of rigged parts. So the whole linkset lights up, the way ObjectRenderer
+        // does it for world prims: root yellow, children blue, unless "edit linked parts" is on,
+        // in which case only the part that was picked draws. Outlining the named prim alone left
+        // a selected head of hair looking untouched, which is what was reported in-world.
+        uint rootLocalId = WornLinksetRoot(entity);
+        bool solo = SelectionSettings.EditLinkedParts && selected;
+        bool entityIsRoot = entity.LocalId == rootLocalId;
+
+        bool Wanted(Guid candidate, out bool isRoot)
+        {
+            if (solo)
+            {
+                isRoot = entityIsRoot;
+                return candidate == entityId;
+            }
+
+            isRoot = false;
+            var worn = _world.GetEntity(candidate);
+            if (worn?.GetComponent<AttachmentComponent>() == null) return false;
+            if (WornLinksetRoot(worn) != rootLocalId) return false;
+            isRoot = worn.LocalId == rootLocalId;
+            return true;
+        }
+
+        foreach (var (wornId, rigged) in _riggedAttachments)
+        {
+            if (!Wanted(wornId, out bool isRoot) || !IsInstanceValid(rigged)) continue;
+            SelectionOutline.Apply(rigged, selected, isRoot, skinnedFrom: rigged);
+        }
+
+        foreach (var (wornId, boneAttach) in _attachmentNodes)
+        {
+            if (!Wanted(wornId, out bool isRoot) || !IsInstanceValid(boneAttach)) continue;
+            var point = boneAttach.GetNodeOrNull<Node3D>("PointOffset");
+            var mesh = point?.GetNodeOrNull<MeshInstance3D>("AttachMesh");
+            if (mesh != null && IsInstanceValid(mesh)) SelectionOutline.Apply(mesh, selected, isRoot);
+        }
+
+        foreach (var (wornId, hudNode) in _hudNodes)
+        {
+            if (!Wanted(wornId, out bool isRoot) || !IsInstanceValid(hudNode)) continue;
+            var hudMesh = hudNode.GetNodeOrNull<MeshInstance3D>("HudMesh");
+            if (hudMesh != null && IsInstanceValid(hudMesh)) SelectionOutline.Apply(hudMesh, selected, isRoot);
+        }
+    }
+
+    /// <summary>Puts the selection outline back on a worn item whose scene nodes were just
+    /// rebuilt.</summary>
+    /// <remarks>
+    /// The outline is a child of the item's mesh instance, so a rebuild throws it away with the
+    /// old nodes -- and the selection event that drew it fired once, long before, and will not
+    /// fire again. Right-clicking a worn item does exactly that: the click sends SelectObject,
+    /// the simulator answers with an update, the update rebuilds the item, and the highlight
+    /// blinked out a moment after appearing. ObjectRenderer solves the same problem for world
+    /// prims with its TickSelectionOutlines repair pass.
+    /// </remarks>
+    private void RestoreWornHighlight(Guid entityId)
+    {
+        if (_world == null || !_world.SelectedIds.Contains(entityId)) return;
+        HighlightAttachment(entityId.ToString(), true);
+    }
+
+    /// <summary>The local id of the root prim of the worn linkset this prim belongs to.</summary>
+    /// <remarks>
+    /// Not the same question as for a world prim, where ParentLocalId == 0 means "this is the
+    /// root". A worn linkset's root hangs off the AVATAR, so it has a parent like any child
+    /// does -- and reading that parent as the linkset would fold every attachment on the avatar
+    /// into one. The click resolver and WorldSimulation.ResolveWorldTransform draw the same line.
+    /// </remarks>
+    private uint WornLinksetRoot(Entity entity)
+    {
+        var transform = entity.GetComponent<TransformComponent>();
+        if (transform == null || transform.ParentLocalId == 0) return entity.LocalId;
+
+        var parent = _world?.GetEntity(entity.RegionHandle, transform.ParentLocalId);
+        if (parent == null || parent.GetComponent<AvatarComponent>() != null) return entity.LocalId;
+        return transform.ParentLocalId;
+    }
+
+    /// <summary>FEAT-UI-23: makes a RIGGED worn item clickable, with one collision shape per
+    /// bone it is weighted to.</summary>
+    /// <remarks>
+    /// A collision shape cannot be skinned, so the item is cut into per-bone chunks instead:
+    /// every triangle goes to the bone carrying most of its weight, and that chunk hangs off
+    /// that bone. Inside a chunk the shape is rigid, which is exact wherever a vertex is
+    /// weighted to a single bone -- most of a garment -- and off by centimetres only in the
+    /// blend zone around a joint. That is rigid skinning, and it is as close as a static shape
+    /// gets; the exact answer is the reference viewer's colour-coded pick buffer, which Godot
+    /// has no equivalent of.
+    ///
+    /// The transform is the one Godot itself skins with. For a vertex bound to bind slot s it
+    /// computes boneGlobalPose(s) * bindPose(s) * v, and a BoneAttachment3D IS boneGlobalPose(s)
+    /// -- so the holder underneath carries bindPose(s) verbatim.
+    ///
+    /// An earlier version hung the WHOLE item off its single dominant bone and used the
+    /// skeleton's inverse REST as that matrix. Both were wrong. A fitted garment is never
+    /// authored against our rest (BuildRiggedMeshInstance takes every bind from the asset's own
+    /// inverse-bind matrix, with the joint's own scale injected), so the collider sat somewhere
+    /// the item was not, and a click on a worn item landed on whatever stood behind it.
+    /// </remarks>
+    private void AddRiggedPickBody(MeshInstance3D mi, AvatarVisual avatarVisual, Skeleton3D skeleton, Guid entityId)
+    {
+        if (!avatarVisual.IsSelf || _world == null) return;
+        if (mi.Mesh is not ArrayMesh mesh || mi.Skin is not Skin skin) return;
+
+        var entity = _world.GetEntity(entityId);
+        if (entity == null) return;
+
+        // bind slot -> its triangles, as the flat face array ConcavePolygonShape3D wants
+        var chunks = new Dictionary<int, List<Godot.Vector3>>();
+
+        for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
+        {
+            var arrays = mesh.SurfaceGetArrays(surface);
+            var verts = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+            var bones = arrays[(int)Mesh.ArrayType.Bones].AsInt32Array();
+            var weights = arrays[(int)Mesh.ArrayType.Weights].AsFloat32Array();
+            var indices = arrays[(int)Mesh.ArrayType.Index].AsInt32Array();
+            if (verts.Length == 0 || bones.Length == 0 || weights.Length != bones.Length) continue;
+
+            int influences = bones.Length / verts.Length; // 4 for an SL mesh, 8 for an 8-weight one
+            if (influences is < 1 or > 8) continue;
+            int triangles = (indices.Length > 0 ? indices.Length : verts.Length) / 3;
+
+            for (int t = 0; t < triangles; t++)
+            {
+                int i0 = indices.Length > 0 ? indices[t * 3] : t * 3;
+                int i1 = indices.Length > 0 ? indices[t * 3 + 1] : t * 3 + 1;
+                int i2 = indices.Length > 0 ? indices[t * 3 + 2] : t * 3 + 2;
+
+                int slot = DominantSlot(bones, weights, influences, i0, i1, i2);
+                if (slot < 0 || slot >= skin.GetBindCount()) continue;
+
+                if (!chunks.TryGetValue(slot, out var faces)) chunks[slot] = faces = new List<Godot.Vector3>();
+                faces.Add(verts[i0]);
+                faces.Add(verts[i1]);
+                faces.Add(verts[i2]);
+            }
+        }
+
+        var bodies = new List<Node3D>();
+        // Every chunk is a node the skeleton re-poses and a body the physics server re-places,
+        // each frame, for every worn item -- so only the big ones are worth keeping. The tail is
+        // fingers and toes; dropping it costs nothing a user would click at.
+        foreach (var (slot, faces) in chunks.OrderByDescending(c => c.Value.Count).Take(MaxWornPickChunks))
+        {
+            int bone = skin.GetBindBone(slot);
+            if (bone < 0 || bone >= skeleton.GetBoneCount() || faces.Count < 3) continue;
+
+            var attach = new BoneAttachment3D
+            {
+                Name = $"WornPick_{entityId:N}_{slot}",
+                BoneName = skeleton.GetBoneName(bone),
+                BoneIdx = bone,
+            };
+            skeleton.AddChild(attach);
+
+            var holder = new Node3D { Name = "BindSpace", Transform = skin.GetBindPose(slot) };
+            attach.AddChild(holder);
+
+            var body = new StaticBody3D
+            {
+                Name = "AttachCollision",
+                // Phantom rather than Objects: a worn item is something to look at and click,
+                // never something the avatar should bump into.
+                CollisionLayer = PhysicsLayers.Phantom,
+                CollisionMask = 0,
+            };
+            // The same two metas ObjectRenderer writes, so the selection path resolves this hit
+            // back to an entity with no special case.
+            body.SetMeta("EntityId", entityId.ToString());
+            body.SetMeta("LocalId", entity.LocalId.ToString());
+            body.AddChild(new CollisionShape3D { Shape = new ConcavePolygonShape3D { Data = faces.ToArray() } });
+            holder.AddChild(body);
+            bodies.Add(attach);
+        }
+
+        if (bodies.Count > 0) _riggedPickBodies[entityId] = bodies;
+    }
+
+    /// <summary>How many per-bone colliders one worn item may keep, largest first.</summary>
+    private const int MaxWornPickChunks = 8;
+
+    /// <summary>The bind slot carrying the most weight across a triangle's three vertices.</summary>
+    private static int DominantSlot(int[] bones, float[] weights, int influences, int i0, int i1, int i2)
+    {
+        Span<int> slots = stackalloc int[24];
+        Span<float> totals = stackalloc float[24];
+        int count = 0;
+
+        Span<int> corners = stackalloc int[3] { i0, i1, i2 };
+        foreach (int corner in corners)
+        {
+            int at = corner * influences;
+            for (int k = 0; k < influences; k++)
+            {
+                float weight = weights[at + k];
+                if (weight <= 0f) continue;
+                int slot = bones[at + k];
+
+                int found = -1;
+                for (int i = 0; i < count; i++)
+                {
+                    if (slots[i] != slot) continue;
+                    found = i;
+                    break;
+                }
+                if (found >= 0) { totals[found] += weight; continue; }
+                if (count >= slots.Length) continue;
+                slots[count] = slot;
+                totals[count] = weight;
+                count++;
+            }
+        }
+
+        int best = -1;
+        float bestWeight = 0f;
+        for (int i = 0; i < count; i++)
+        {
+            if (totals[i] <= bestWeight) continue;
+            bestWeight = totals[i];
+            best = slots[i];
+        }
+        return best;
+    }
+
+    /// <summary>Takes a worn item's pick colliders off the skeleton. They are not children of
+    /// the item's mesh instance -- a BoneAttachment3D only works directly under a Skeleton3D --
+    /// so freeing the mesh leaves them behind, hanging in the air and eating every click that
+    /// crosses them.</summary>
+    private void ClearRiggedPickBodies(Guid entityId)
+    {
+        if (!_riggedPickBodies.TryGetValue(entityId, out var bodies)) return;
+        foreach (var body in bodies)
+        {
+            if (IsInstanceValid(body)) body.QueueFree();
+        }
+        _riggedPickBodies.Remove(entityId);
+    }
+
+    /// <summary>FEAT-UI-23: the world transform of the attach point a worn item hangs on -- the
+    /// frame its own position and rotation are expressed in.</summary>
+    /// <remarks>
+    /// A worn item's TransformComponent is NOT in region coordinates: WorldSimulation leaves it
+    /// local, because the renderer places it through the bone hierarchy instead. Anything that
+    /// wants to show or edit it in world space -- the transform gizmo -- has to ask for the
+    /// frame, and only this class knows it: it is the bone's current pose times the attachment
+    /// point's own offset and rotation on that bone.
+    ///
+    /// False for a RIGGED item. Those are skinned to the whole skeleton and have no single
+    /// point node; their prim transform does not move them either, so there is nothing for a
+    /// gizmo to do there anyway.
+    /// </remarks>
+    public bool TryGetAttachmentFrame(Guid entityId, out Transform3D frame)
+    {
+        frame = Transform3D.Identity;
+        if (!_attachmentNodes.TryGetValue(entityId, out var boneAttach)
+            || !IsInstanceValid(boneAttach) || !boneAttach.IsInsideTree())
+            return false;
+
+        var pointNode = boneAttach.GetNodeOrNull<Node3D>("PointOffset");
+        if (pointNode != null && IsInstanceValid(pointNode) && pointNode.IsInsideTree()
+            && !pointNode.IsQueuedForDeletion())
+        {
+            frame = pointNode.GlobalTransform;
+            return true;
+        }
+
+        // The node is missing for as long as the item's visuals are being rebuilt -- and that is
+        // exactly what dragging one causes: every update the gizmo sends comes back from the
+        // simulator as an update that rebuilds it. Answering "no frame" in that window told the
+        // gizmo the item was not worn at all, so it wrote a REGION coordinate into the field the
+        // simulator reads as an offset from the attach point, and the item shot off across the
+        // sim. The frame never needed the node: it is the bone's current pose times the attach
+        // point's own offset, and both of those are still here.
+        if (!boneAttach.HasMeta("AttachPoint") || !boneAttach.HasMeta("BoneName")) return false;
+        if (AttachmentPointMap.GetPoint((byte)boneAttach.GetMeta("AttachPoint").AsInt32()) is not { } apPoint)
+        {
+            frame = boneAttach.GlobalTransform;
+            return true;
+        }
+
+        string boneName = boneAttach.GetMeta("BoneName").AsString();
+        var visual = _world?.GetEntity(entityId)?.GetComponent<AttachmentComponent>() is { } attachment
+                     && _visuals.TryGetValue(attachment.AvatarEntityId, out var v) ? v : null;
+        frame = boneAttach.GlobalTransform * AttachPointOffset(apPoint, visual, boneName);
+        return true;
+    }
+
+    /// <summary>An SL attachment point's own offset and rotation on its joint, in Godot terms.
+    /// The one definition of it -- the scene node, the offset refresh after a shape change and
+    /// the gizmo's frame all have to agree, or a worn item is drawn in one place and edited in
+    /// another.</summary>
+    /// <remarks>
+    /// [FEAT-RENDER-05] The offset is a JOINT-LOCAL position, so SL's joint rule applies to it
+    /// exactly as it does to every bone in ApplyShape: LLXformMatrix::update scales a local
+    /// position by the PARENT's scale (mWorldPosition.scaleVec(parentScale)). ApplyShape already
+    /// does this for the skeleton (`slPos *= parentScale`); the attachment point did not, so it
+    /// sat at a fixed 0.15 m above mHead no matter how big the head actually is. On an avatar
+    /// whose mHead own scale is 1.1 that is 1.5 cm too low -- prim hair (which cannot follow head
+    /// morphs in ANY viewer) sinks into the skull by that much and the scalp comes through at the
+    /// crown. The error grows with head size, which is why it reads as "the head is too big for
+    /// the hair".
+    /// </remarks>
+    private static Transform3D AttachPointOffset(AttachmentPointMap.Point apPoint, AvatarVisual? visual, string boneName)
+    {
+        var apPos = apPoint.Position;
+        if (visual != null && visual.BoneOwnScale.TryGetValue(boneName, out var jointScale))
+            apPos *= jointScale;
+
+        return new Transform3D(
+            SkeletonBuilder.SlEulerDegToGodotBasis(apPoint.RotationDeg),
+            new Godot.Vector3(apPos.X, apPos.Z, -apPos.Y));
+    }
+
+    /// <summary>FEAT-UI-23: makes a worn item right-clickable in the 3D view, by giving it the
+    /// same kind of tagged <see cref="StaticBody3D"/> that <c>ObjectRenderer</c> puts on a world
+    /// prim. Without one the raycast simply passes through every attachment, and the only way
+    /// to act on a worn item was the inventory.</summary>
+    /// <remarks>
+    /// Only for the LOCAL agent's attachments, and only for STATIC ones.
+    ///
+    /// Own attachments only, because that is all the feature needs and it bounds the cost: a
+    /// trimesh shape per worn item on every avatar in view would be a real bill on a busy sim,
+    /// and someone else's attachment belongs to the avatar context menu anyway.
+    ///
+    /// Static only, because a rigged mesh is deformed by the skeleton every frame while a
+    /// trimesh shape would stay in the bind pose -- the collider would sit somewhere the item
+    /// visibly is not. Rigged worn items (mesh bodies and clothing) therefore stay unpickable,
+    /// which costs little: their prim transform does not move them anyway.
+    ///
+    /// The shape is a child of the mesh instance and carries no transform of its own, so it
+    /// inherits the attachment's placement -- including the per-frame bone pose above it -- for
+    /// free. The prim scale is already baked into the vertices.
+    /// </remarks>
+    private void AddAttachmentPickBody(MeshInstance3D mi, ArrayMesh mesh, AvatarVisual avatarVisual, Guid entityId)
+    {
+        if (!avatarVisual.IsSelf || _world == null) return;
+
+        var entity = _world.GetEntity(entityId);
+        if (entity == null) return;
+
+        var shape = mesh.CreateTrimeshShape();
+        if (shape == null) return;
+
+        var body = new StaticBody3D
+        {
+            Name = "AttachCollision",
+            // Phantom rather than Objects: a worn item is something to look at and click, never
+            // something the avatar should bump into. PhysicsLayers.Phantom is exactly that
+            // distinction and is already in every "what is the user pointing at" ray.
+            CollisionLayer = PhysicsLayers.Phantom,
+            CollisionMask = 0,
+        };
+        // The same two metas ObjectRenderer writes, so the existing selection path resolves this
+        // hit back to an entity with no special case -- including the peek-behind-the-local-
+        // avatar logic that a worn item needs, since the avatar capsule swallows the ray first.
+        body.SetMeta("EntityId", entityId.ToString());
+        body.SetMeta("LocalId", entity.LocalId.ToString());
+        body.AddChild(new CollisionShape3D { Shape = shape });
+        mi.AddChild(body);
+    }
+
     private void ApplyAttachmentMeshDataAsync(
         MeshData meshData, Node3D attachParent, AvatarVisual avatarVisual, Guid meshId,
         FaceTexture[]? faces, FaceTexture defaultFace, System.Numerics.Vector3 slScale,
@@ -2064,12 +2525,14 @@ public partial class AvatarRenderer : Node3D
                 mi.CustomAabb = new Aabb(new Godot.Vector3(-4, -4, -4), new Godot.Vector3(8, 8, 8));
                 
                 skeleton.AddChild(mi);
+                AddRiggedPickBody(mi, avatarVisual, skeleton, entityId);
                 _riggedAttachments[entityId] = mi;
                 avatarVisual.RiggedAttachments.Add((mi, meshData, meshId));
 
                 // Skin is already assigned on the instance; the skeleton path must be set after
                 // the node is in the tree so Godot can resolve and drive the skinning.
                 mi.Skeleton = mi.GetPathTo(skeleton);
+                RestoreWornHighlight(entityId);
                 RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices, faces, defaultFace, meshId);
                 _ = ApplyFaceMaterialsAsync(mi, faceIndices, faces, defaultFace, avatarVisual, meshId);
             }, label: "avatar.rig");
@@ -2148,6 +2611,8 @@ public partial class AvatarRenderer : Node3D
             mi.Position = new Godot.Vector3(slPos.X, slPos.Z, -slPos.Y);
             mi.Quaternion = new Godot.Quaternion(slRot.X, slRot.Z, -slRot.Y, slRot.W);
             attachParent.AddChild(mi);
+            AddAttachmentPickBody(mi, arrayMesh, avatarVisual, entityId);
+            RestoreWornHighlight(entityId);
             RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices.ToArray(), faces, defaultFace, meshId);
             _ = ApplyFaceMaterialsAsync(mi, faceIndices.ToArray(), faces, defaultFace, avatarVisual, meshId);
         }, label: "avatar.attach");
@@ -2833,6 +3298,38 @@ public partial class AvatarRenderer : Node3D
     private SubViewport? _hudViewport;
 
     private Node3D? _hudRoot;
+    private Camera3D? _hudCamera;
+
+    /// <summary>FEAT-UI-23: how much of the HUD layer is on screen while a HUD is being edited.
+    /// 1 is normal; smaller shows more.</summary>
+    /// <remarks>
+    /// People park HUDs they want out of the way OUTSIDE the visible screen, so editing one has
+    /// to be able to pull the view back far enough to find it again -- reported in-world, with
+    /// the reference viewer doing exactly this. There the wheel drives
+    /// <c>LLAgentCamera::mHUDTargetZoom</c> whenever build mode has a HUD selected
+    /// (<c>cameraZoomIn/Out</c> short-circuit to <c>mHUDTargetZoom /= fraction</c>), and the
+    /// zoom is a fraction in [0,1] with 1 fully zoomed in.
+    ///
+    /// Here the same thing is one property on the orthographic HUD camera: its Size is the
+    /// height of HUD space on screen, so Size = 1/zoom. Clicking follows for free, because
+    /// TryClickHud projects its ray through this very camera.
+    /// </remarks>
+    public float HudZoom { get; private set; } = 1f;
+
+    /// <summary>The floor is 0.2, which shows five screen-heights of HUD space -- far enough to
+    /// find something parked off the edge without the content becoming unreadable.</summary>
+    private const float MinHudZoom = 0.2f;
+
+    public void SetHudZoom(float zoom)
+    {
+        HudZoom = Mathf.Clamp(zoom, MinHudZoom, 1f);
+        ApplyHudZoom();
+    }
+
+    private void ApplyHudZoom()
+    {
+        if (_hudCamera != null && IsInstanceValid(_hudCamera)) _hudCamera.Size = 1f / HudZoom;
+    }
     // HUD entity id → its Node3D in the overlay, its (point, SL-local offset) placement (kept
     // for aspect-ratio repositioning on window resize), and a content signature mirroring
     // _attachmentMeshIds' duplicate-load guard (see that field's doc comment).
@@ -2913,7 +3410,7 @@ public partial class AvatarRenderer : Node3D
         // — under our standard SL→Godot map that is: look down world +X with +Y up, so screen
         // right = world +Z and screen up = world +Y. Content sits near x≈0; ±3.5 m offsets stay
         // comfortably inside Near/Far from x=-4.5.
-        _hudViewport.AddChild(new Camera3D
+        _hudCamera = new Camera3D
         {
             Projection = Camera3D.ProjectionType.Orthogonal,
             Size = 1.0f,
@@ -2922,7 +3419,9 @@ public partial class AvatarRenderer : Node3D
             RotationDegrees = new Godot.Vector3(0f, -90f, 0f),
             Near = 0.01f,
             Far = 20f,
-        });
+        };
+        _hudViewport.AddChild(_hudCamera);
+        ApplyHudZoom();
 
         _hudRoot = new Node3D { Name = "SlHudRoot" };
         _hudViewport.AddChild(_hudRoot);
@@ -2944,6 +3443,7 @@ public partial class AvatarRenderer : Node3D
             _attachmentNodes.Remove(entityId);
         }
         MeshInstance3D? hudMovedRigged = null;
+        ClearRiggedPickBodies(entityId);
         if (_riggedAttachments.TryGetValue(entityId, out var staleRigged))
         {
             hudMovedRigged = staleRigged;
@@ -3043,7 +3543,14 @@ public partial class AvatarRenderer : Node3D
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (!IsInstanceValid(hudNode)) return;
-            foreach (var child in hudNode.GetChildren()) child.QueueFree();
+            // Out of the tree first, then freed -- see the same loop in the static-attachment
+            // path: a merely queue_free'd sibling is still there when "HudMesh" is re-added, and
+            // Godot renames the newcomer, so the outline could never find it again.
+            foreach (var child in hudNode.GetChildren())
+            {
+                hudNode.RemoveChild(child);
+                child.QueueFree();
+            }
 
             // flipV:true for BOTH mesh assets and prims — MeshFoundry's prim UVs are vertically
             // inverted vs the real viewer (see ObjectRenderer's prim path for the llvolume.cpp
@@ -3064,6 +3571,7 @@ public partial class AvatarRenderer : Node3D
             var shape = new CollisionShape3D { Shape = arrayMesh.CreateTrimeshShape() };
             body.AddChild(shape);
             hudNode.AddChild(body);
+            RestoreWornHighlight(entityId);
         }, label: "avatar.hud_mesh");
     }
 
@@ -3455,11 +3963,7 @@ public partial class AvatarRenderer : Node3D
                 var pointNode = boneAttach.GetNodeOrNull<Node3D>("PointOffset");
                 if (pointNode != null && AttachmentPointMap.GetPoint(apByte) is { } apPoint)
                 {
-                    var apPos = apPoint.Position;
-                    if (visual.BoneOwnScale.TryGetValue(bName, out var jointScale))
-                        apPos *= jointScale;
-                    pointNode.Position = new Godot.Vector3(apPos.X, apPos.Z, -apPos.Y);
-                    pointNode.Basis = SkeletonBuilder.SlEulerDegToGodotBasis(apPoint.RotationDeg);
+                    pointNode.Transform = AttachPointOffset(apPoint, visual, bName);
                 }
             }
         }

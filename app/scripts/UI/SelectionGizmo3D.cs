@@ -2,6 +2,7 @@ using Godot;
 using SLNG.Core;
 using SLNG.Core.Components;
 using SLNG.Core.ECS;
+using SLNG.Net;
 
 namespace SLNG.App.UI
 {
@@ -128,6 +129,12 @@ namespace SLNG.App.UI
         /// <summary>Smallest edge a stretch may produce, in metres. SL's own floor is 0.01.</summary>
         private const float MinPrimEdge = 0.01f;
 
+        /// <summary>And its ceiling, 64 m, which is SL's own limit for a prim. Without it a drag
+        /// whose cursor ray runs nearly parallel to the handle direction produces an enormous
+        /// factor, and the object swallows the camera -- indistinguishable from "it vanished".
+        /// The floor was already clamped; only the ceiling was missing.</summary>
+        private const float MaxPrimEdge = 64.0f;
+
         private const float RingRadius = 0.85f;
         private const float RingThickness = 0.035f;
         private const int RingSegments = 72;
@@ -227,6 +234,9 @@ namespace SLNG.App.UI
         /// <summary>Six face handles then eight corner handles. Index 0-5 is axis/2 with the
         /// sign from the low bit; 6-13 carries one sign bit per axis. Kept as an index rather
         /// than fourteen enum values, which would swamp the Handle enum for no benefit.</summary>
+        private MeshInstance3D _scaleBox = null!;
+        private ImmediateMesh _scaleBoxMesh = null!;
+        private StandardMaterial3D _scaleBoxMaterial = null!;
         private readonly MeshInstance3D[] _scaleHandles = new MeshInstance3D[14];
         private readonly StandardMaterial3D[] _scaleMaterials = new StandardMaterial3D[14];
 
@@ -301,9 +311,158 @@ namespace SLNG.App.UI
         /// not move that object. The permission question is the sim's own per-agent answer
         /// (FEAT-SEC-04), not the owner's mask — the same source the Position fields are gated
         /// on, so the two can never disagree.</summary>
+        /// <summary>FEAT-UI-23: where the attach point of a worn item is, in Godot world space.
+        /// Supplied by Boot from AvatarRenderer, which is the only thing that knows -- the gizmo
+        /// does not reach into the avatar's scene graph itself.</summary>
+        public System.Func<Entity, Transform3D?>? AttachmentFrame;
+
+        /// <summary>The other prims of the selected object's linkset, supplied by the owner
+        /// because only WorldSimulation keeps the parent index.</summary>
+        public System.Func<Entity, System.Collections.Generic.IReadOnlyList<Entity>>? LinksetParts;
+
+        // The box the stretch handles sit on, in the ROOT prim's own frame: where its centre is
+        // relative to the root, and half its size. For a single prim that is (0, scale/2) -- for
+        // a linkset it is the whole object, which is the point.
+        private System.Numerics.Vector3 _boxCentreLocal;
+        private System.Numerics.Vector3 _boxHalf = System.Numerics.Vector3.One * 0.5f;
+        private System.Numerics.Vector3 _dragStartBoxCentre;
+        private System.Numerics.Vector3 _dragStartBoxHalf;
+
+        // Is the selection more than one prim? Then only the corner handles exist -- see
+        // UpdateScaleHandles. Refreshed with the box, so the hit test and the drawing agree.
+        private bool _multiPrimSelection;
+
+        /// <summary>The frame a worn item's transform is expressed in, in SL coordinates.</summary>
+        /// <remarks>
+        /// Everything else in this class works in SL WORLD coordinates, because that is what a
+        /// world prim's TransformComponent.Position holds. A worn item's does not: it holds the
+        /// offset from its attach point. Rather than teach every drag about that, the two
+        /// conversions happen at the edges -- read the world position once, write the local one
+        /// back -- and the frame is what turns one into the other.
+        /// </remarks>
+        // The worn frame as it stood when the drag began. A drag is the one time this must not
+        // move OR disappear: the item's scene nodes are rebuilt on every update it causes -- and
+        // a stretch causes one per frame, because the scale is baked into an attachment's
+        // vertices -- so the live lookup answers "no frame" again and again mid-gesture. Every
+        // reading then flips between two frames a whole region apart, and the handles run away
+        // with the object. The reference viewer manipulates against a fixed frame too, and the
+        // avatar is held still for the duration anyway (LLSelectMgr::pauseAssociatedAvatars).
+        private bool _dragFrameCaptured;
+        private System.Numerics.Vector3 _dragFramePos;
+        private System.Numerics.Quaternion _dragFrameRot;
+
+        private bool TryGetWornFrame(out System.Numerics.Vector3 framePos, out System.Numerics.Quaternion frameRot)
+        {
+            if (_dragging != Handle.None && _dragFrameCaptured)
+            {
+                framePos = _dragFramePos;
+                frameRot = _dragFrameRot;
+                return true;
+            }
+
+            framePos = System.Numerics.Vector3.Zero;
+            frameRot = System.Numerics.Quaternion.Identity;
+            if (_entity == null || _entity.GetComponent<AttachmentComponent>() == null) return false;
+
+            var frame = AttachmentFrame?.Invoke(_entity);
+            if (frame == null) return false;
+
+            framePos = RenderConfig.FromGodot(_regionHandle, frame.Value.Origin);
+            var q = frame.Value.Basis.GetRotationQuaternion();
+            // The inverse of the map used everywhere for the other direction (AvatarRenderer:
+            // "new Godot.Quaternion(slRot.X, slRot.Z, -slRot.Y, slRot.W)").
+            frameRot = new System.Numerics.Quaternion(q.X, -q.Z, q.Y, q.W);
+            return true;
+        }
+
+        /// <summary>The object's position in SL WORLD coordinates, whatever frame it stores.</summary>
+        private System.Numerics.Vector3 SlWorldPositionOf(TransformComponent transform)
+            => TryGetWornFrame(out var framePos, out var frameRot)
+                ? LinksetTransform.ToWorld(transform.Position, transform.Rotation, framePos, frameRot).Position
+                // A linked CHILD prim's Position is already world -- ResolveWorldTransform composed
+                // it. Only a worn item's is not, because that one it deliberately left alone.
+                : transform.Position;
+
+        /// <summary>The object's rotation in SL WORLD terms, whatever frame it stores.</summary>
+        private System.Numerics.Quaternion SlWorldRotationOf(TransformComponent transform)
+            => TryGetWornFrame(out var framePos, out var frameRot)
+                ? LinksetTransform.ToWorld(transform.Position, transform.Rotation, framePos, frameRot).Rotation
+                : transform.Rotation;
+
+        /// <summary>Writes an SL WORLD rotation back into whatever frame the object stores.</summary>
+        private void StoreSlWorldRotation(TransformComponent transform, System.Numerics.Quaternion slWorldRot)
+        {
+            if (TryGetWornFrame(out var framePos, out var frameRot))
+            {
+                var local = LinksetTransform.ToLocal(transform.Position, slWorldRot, framePos, frameRot).Rotation;
+                transform.Rotation = local;
+                transform.LocalRotation = local;
+                return;
+            }
+
+            // Worn, but the frame could not be resolved this instant: write nothing. The fields
+            // below are the REGION-frame ones, and for a worn item the simulator reads that field
+            // as an offset from the attach point -- a region coordinate there throws the item
+            // across the sim. A dropped drag frame is the cheap failure.
+            if (_entity != null && IsWorn(_entity)) return;
+
+            transform.Rotation = slWorldRot;
+            transform.LocalRotation = TryGetLinkRoot(transform, out var rootPos, out var rootRot)
+                ? LinksetTransform.ToLocal(transform.Position, slWorldRot, rootPos, rootRot).Rotation
+                : slWorldRot;
+        }
+
+        /// <summary>Writes an SL WORLD position back into whatever frame the object stores.</summary>
+        private void StoreSlWorldPosition(TransformComponent transform, System.Numerics.Vector3 slWorldPos)
+        {
+            if (TryGetWornFrame(out var framePos, out var frameRot))
+            {
+                var local = LinksetTransform.ToLocal(slWorldPos, transform.Rotation, framePos, frameRot).Position;
+                transform.Position = local;
+                transform.LocalPosition = local;
+                return;
+            }
+
+            if (_entity != null && IsWorn(_entity)) return; // see StoreSlWorldRotation
+
+            transform.Position = slWorldPos;
+            transform.LocalPosition = TryGetLinkRoot(transform, out var rootPos, out var rootRot)
+                ? LinksetTransform.ToLocal(slWorldPos, transform.Rotation, rootPos, rootRot).Position
+                : slWorldPos;
+        }
+
+        /// <summary>Is this prim part of something worn? True for the attachment itself and for
+        /// every child prim of a worn linkset -- their transforms all live in the attach point's
+        /// frame, not the region's.</summary>
+        private bool IsWorn(Entity entity)
+        {
+            if (entity.GetComponent<AttachmentComponent>() != null) return true;
+            var transform = entity.GetComponent<TransformComponent>();
+            if (transform == null || transform.ParentLocalId == 0) return false;
+            var root = _world.GetEntity(entity.RegionHandle, transform.ParentLocalId);
+            return root != null
+                && (root.GetComponent<AttachmentComponent>() != null
+                    || root.GetComponent<AvatarComponent>() != null);
+        }
+
         public void Attach(Entity? entity)
         {
             if (entity == null || !SLNG.Core.EditPermission.CanMove(_world, entity))
+            {
+                Detach();
+                return;
+            }
+
+            // FEAT-UI-23: never on a worn item. An attachment's transform is relative to its
+            // ATTACH POINT, a frame this gizmo does not have -- it places its handles from
+            // TransformComponent.Position, which for an attachment is a few centimetres of
+            // offset and would put them at the corner of the region. Worn items are edited
+            // through the numeric fields, which are already in that frame, until it is done.
+            // FEAT-UI-23: a worn item is allowed now, but only when its attach point can be
+            // located -- that frame is what makes its stored offset a world position. Without
+            // one (a RIGGED item, or an attachment whose node has not been built yet) the
+            // handles would sit at the corner of the region and drag it there, so refuse.
+            if (IsWorn(entity) && AttachmentFrame?.Invoke(entity) == null)
             {
                 Detach();
                 return;
@@ -327,6 +486,7 @@ namespace SLNG.App.UI
             _dragging = Handle.None;
             _hovered = Handle.None;
             _snapping = false;
+            _dragFrameCaptured = false;
             Visible = false;
         }
 
@@ -339,7 +499,13 @@ namespace SLNG.App.UI
             var transform = _entity.GetComponent<TransformComponent>();
             if (transform == null) { Detach(); return; }
 
-            GlobalPosition = RenderConfig.ToGodot(_regionHandle, transform.Position);
+            if (_echoCheckAt > 0 && Time.GetTicksMsec() / 1000.0 >= _echoCheckAt)
+            {
+                _echoCheckAt = 0;
+                LogLinksetState("after echo");
+            }
+
+            GlobalPosition = RenderConfig.ToGodot(_regionHandle, SlWorldPositionOf(transform));
 
             // Constant screen size. Uses the vertical FOV and the distance along the camera's
             // forward axis rather than the straight-line distance, so the gizmo does not swell
@@ -459,6 +625,7 @@ namespace SLNG.App.UI
                 var bestScaleHandle = Handle.None;
                 for (int n = 0; n < _scaleHandles.Length; n++)
                 {
+                    if (!AllowedHandle(n)) continue;
                     if (!TryScaleHandlePosition(n, out var world, out _)) continue;
                     if (_camera.IsPositionBehind(world)) continue;
 
@@ -522,20 +689,25 @@ namespace SLNG.App.UI
             // computed its direction and its centre shift from whatever rotation a previous
             // rotate drag had left behind -- or from identity -- and the handle therefore did
             // not follow the cursor. Every drag kind wants the rotation it started from.
-            _dragStartSlRot = transform.Rotation;
+            _dragStartSlRot = SlWorldRotationOf(transform);
 
             if (handle == Handle.Scale)
             {
                 var prim0 = _entity.GetComponent<PrimitiveComponent>();
                 if (prim0 == null) return false;
+                RefreshSelectionBox();
                 if (!TryScaleHandlePosition(_scaleHandleIndex, out _, out var localDir0)) return false;
                 _dragStartSlScale = prim0.Scale;
+                _dragStartBoxCentre = _boxCentreLocal;
+                _dragStartBoxHalf = _boxHalf;
             }
             else if (IsRing(handle))
             {
                 if (!TryRingAngle(mouse, handle, out float startAngle)) return false;
                 _dragStartRingAngle = startAngle;
-                _dragObjectAxis = PickObjectAxisNearest(startAngle, (int)handle - (int)Handle.RingX, transform.Rotation);
+                // Same reason as the stretch handles: which of the object's own axes a ring is
+                // closest to is a question about where that axis points IN THE WORLD.
+                _dragObjectAxis = PickObjectAxisNearest(startAngle, (int)handle - (int)Handle.RingX, SlWorldRotationOf(transform));
             }
             else if (IsPlane(handle))
             {
@@ -554,10 +726,18 @@ namespace SLNG.App.UI
                 _dragStartAxisT = t;
             }
 
+            // Still before _dragging is set, so this reads the live frame and pins it.
+            _dragFrameCaptured = TryGetWornFrame(out _dragFramePos, out _dragFrameRot);
+            if (!_dragFrameCaptured && IsWorn(_entity))
+            {
+                Logger.Warn($"[Gizmo] refusing to drag worn {_localId}: no attach-point frame");
+                return false;
+            }
+
             _dragging = handle;
             _hovered = handle;
             transform.LocallyDragged = true;
-            _dragStartSlPos = transform.Position;
+            _dragStartSlPos = SlWorldPositionOf(transform);
             _lastSentSlPos = transform.Position;
             _lastSendAt = Time.GetTicksMsec() / 1000.0;
             return true;
@@ -628,7 +808,7 @@ namespace SLNG.App.UI
             if (System.Numerics.Vector3.Distance(slPos, _lastSentSlPos) >= SendEpsilon
                 && now - _lastSendAt >= SendIntervalSeconds)
             {
-                Send(slPos);
+                Send(slPos, FieldsFor(_dragging), UniformStretch(_dragging));
                 _lastSendAt = now;
             }
         }
@@ -639,13 +819,39 @@ namespace SLNG.App.UI
         public void EndDrag()
         {
             if (_dragging == Handle.None) { return; }
+            var finished = _dragging;
             _dragging = Handle.None;
             _snapping = false;
+            _dragFrameCaptured = false;
 
             var transform = _entity?.GetComponent<TransformComponent>();
             if (transform != null)
             {
-                Send(transform.Position);
+                // One line per gesture, on purpose: a drag that puts an object somewhere
+                // unexpected is otherwise undiagnosable after the fact -- the numbers that went
+                // on the wire are gone, and "it vanished" cannot distinguish a bad frame from a
+                // bad flag from the simulator disagreeing. This is the record of what we sent.
+                bool worn = _entity != null && IsWorn(_entity);
+                // singlePrim and the box are here because they are the two answers that decide
+                // whether a drag acts on the OBJECT or on one prim of it, and neither is visible
+                // from the outside afterwards.
+                bool singlePrim = SelectionSettings.EditLinkedParts || transform.ParentLocalId != 0;
+                int partCount = _entity == null ? 0 : LinksetParts?.Invoke(_entity)?.Count ?? -1;
+                Logger.Info($"[Gizmo] {finished} on {_localId}: worn={worn} " +
+                            $"frame={(worn ? TryGetWornFrame(out _, out _) : false)} " +
+                            $"singlePrim={singlePrim} linkedParts={SelectionSettings.EditLinkedParts} " +
+                            $"box=({_boxCentreLocal})+-({_boxHalf}) parts={partCount} " +
+                            $"pos={transform.Position} rot={transform.Rotation} " +
+                            $"scale={_entity?.GetComponent<PrimitiveComponent>()?.Scale} " +
+                            $"parent={transform.ParentLocalId}");
+                Send(transform.Position, FieldsFor(finished), UniformStretch(finished));
+                LogLinksetState("sent");
+                // Look again once the simulator has had time to answer. Whether a linked-set
+                // update reached the OTHER prims is not observable any other way: locally we only
+                // ever move the root, so "the rest of the object did not follow" can equally mean
+                // the simulator ignored us, applied it to the root alone, or answered fine and
+                // something here dropped the echo.
+                _echoCheckAt = Time.GetTicksMsec() / 1000.0 + 1.5;
                 // Hand authority back. TargetPosition is moved with it so the very next network
                 // packet does not ease the object away from where the user just dropped it.
                 transform.TargetPosition = transform.Position;
@@ -697,16 +903,13 @@ namespace SLNG.App.UI
             var transform = _entity.GetComponent<TransformComponent>();
             if (transform == null) return;
 
-            transform.Rotation = slRot;
-            transform.LocalRotation = TryGetLinkRoot(transform, out var rotRootPos, out var rotRootRot)
-                ? LinksetTransform.ToLocal(transform.Position, slRot, rotRootPos, rotRootRot).Rotation
-                : slRot;
+            StoreSlWorldRotation(transform, slRot);
             _world.NotifyComponentUpdated(_entity, transform);
 
             double now = Time.GetTicksMsec() / 1000.0;
             if (now - _lastSendAt >= SendIntervalSeconds)
             {
-                Send(transform.Position);
+                Send(transform.Position, FieldsFor(_dragging), UniformStretch(_dragging));
                 _lastSendAt = now;
             }
         }
@@ -758,7 +961,10 @@ namespace SLNG.App.UI
             _snapping = false;
 
             bool corner = _scaleHandleIndex >= 6;
-            var half = _dragStartSlScale * 0.5f;
+            // The BOX is what the cursor is dragging -- on a linkset it is the whole object,
+            // and the root prim inside it may be a tenth of that. The root's scale is only what
+            // goes on the wire afterwards.
+            var half = _dragStartBoxHalf;
 
             // Distance from the centre to this handle at drag start, along the drag direction.
             // How far the handle sat from the centre along the drag direction at grab time:
@@ -783,36 +989,61 @@ namespace SLNG.App.UI
                 : ScaleAlong(_dragStartSlScale, localDir, factor);
 
             newScale = new System.Numerics.Vector3(
-                System.MathF.Max(newScale.X, MinPrimEdge),
-                System.MathF.Max(newScale.Y, MinPrimEdge),
-                System.MathF.Max(newScale.Z, MinPrimEdge));
+                System.Math.Clamp(newScale.X, MinPrimEdge, MaxPrimEdge),
+                System.Math.Clamp(newScale.Y, MinPrimEdge, MaxPrimEdge),
+                System.Math.Clamp(newScale.Z, MinPrimEdge, MaxPrimEdge));
 
-            // Keep the opposite side still: the centre moves by half of however much this side
-            // moved, in the handle's own direction.
-            // Per axis: the opposite side stays put when the centre moves by half the growth,
-            // in the handle's own direction. localDir's components are exactly +1, -1 or 0, so
-            // multiplying by it both applies the sign and zeroes the axes a face handle does
-            // not touch.
-            var grow = (newScale - _dragStartSlScale) * 0.5f;
-            var shiftLocal = grow * localDir;
+            // What the ROOT actually ended up scaling by, per axis, after the clamps -- which is
+            // also what the simulator will scale every other part of the linkset by, and
+            // therefore what happens to the box.
+            var applied = new System.Numerics.Vector3(
+                Ratio(newScale.X, _dragStartSlScale.X),
+                Ratio(newScale.Y, _dragStartSlScale.Y),
+                Ratio(newScale.Z, _dragStartSlScale.Z));
+
+            _boxHalf = _dragStartBoxHalf * applied;
+            _boxCentreLocal = _dragStartBoxCentre * applied;
+
+            // Keep the opposite side of the BOX still. A linked-set resize scales every offset
+            // about the ROOT, so both the box's half-size and its centre offset scale by the same
+            // factor -- and the root has to move to put the anchored face back where it was:
+            //
+            //   anchor = centre - half*u  must not move, and both scale by f about the root, so
+            //   shift = (1 - f) * (centre - half*u)
+            //
+            // For a single prim centre is zero and half is scale/2, which reduces to the old
+            // "move the centre by half the growth" -- the same rule, stated where it is true.
+            var anchor = _dragStartBoxCentre - (_dragStartBoxHalf * localDir);
+            var shiftLocal = (System.Numerics.Vector3.One - applied) * anchor;
             var shiftWorld = System.Numerics.Vector3.Transform(shiftLocal, _dragStartSlRot);
 
             prim.Scale = newScale;
-            transform.Position = _dragStartSlPos + shiftWorld;
-            transform.LocalPosition = TryGetLinkRoot(transform, out var scaleRootPos, out var scaleRootRot)
-                ? LinksetTransform.ToLocal(transform.Position, transform.Rotation, scaleRootPos, scaleRootRot).Position
-                : transform.Position;
+            // _dragStartSlPos is a WORLD position and shiftWorld a world-space delta, so the sum
+            // is world too -- StoreSlWorldPosition puts it back in the object's own frame.
+            StoreSlWorldPosition(transform, _dragStartSlPos + shiftWorld);
 
-            _world.NotifyComponentUpdated(_entity, prim);
+            // A WORN item's scale is baked into its vertices, so announcing a scale change means
+            // rebuilding its mesh, its collider and its node tree. At 60 Hz that is a rebuild
+            // storm for the whole drag; at the network cadence it is ten a second, which looks
+            // the same and leaves the scene standing still in between.
+            bool worn = IsWorn(_entity);
+            double now = Time.GetTicksMsec() / 1000.0;
+            bool due = now - _lastSendAt >= SendIntervalSeconds;
+
+            if (!worn || due) _world.NotifyComponentUpdated(_entity, prim);
             _world.NotifyComponentUpdated(_entity, transform);
 
-            double now = Time.GetTicksMsec() / 1000.0;
-            if (now - _lastSendAt >= SendIntervalSeconds)
+            if (due)
             {
-                Send(transform.Position);
+                Send(transform.Position, FieldsFor(_dragging), UniformStretch(_dragging));
                 _lastSendAt = now;
             }
         }
+
+        /// <summary>How much an axis actually grew, guarding the degenerate prim whose scale is
+        /// zero on some axis (a sculpt stand-in before its map arrives).</summary>
+        private static float Ratio(float now, float before)
+            => System.MathF.Abs(before) > 1e-6f ? now / before : 1f;
 
         /// <summary>Scales only the components the direction actually touches, so a face handle
         /// stretches one axis and leaves the other two alone.</summary>
@@ -924,6 +1155,8 @@ namespace SLNG.App.UI
             if (transform.ParentLocalId == 0 || _entity == null) return false;
 
             var root = _world.GetEntity(_entity.RegionHandle, transform.ParentLocalId);
+            // An AVATAR is not a link root. A worn item's ParentLocalId is the avatar that wears it, so walking up would select the avatar instead of the item (FEAT-UI-23). WorldSimulation.ResolveWorldTransform draws the same line.
+            if (root?.GetComponent<AvatarComponent>() != null) return false;
             var rootTransform = root?.GetComponent<TransformComponent>();
             if (rootTransform == null) return false;
 
@@ -941,22 +1174,34 @@ namespace SLNG.App.UI
             var transform = _entity.GetComponent<TransformComponent>();
             if (transform == null) return;
 
-            transform.Position = slPos;
-
-            // LocalPosition too, not just Position: ApplyObjectUpdate recomputes Position from
+            // Both fields, not just Position: ApplyObjectUpdate recomputes Position from
             // LocalPosition via ResolveWorldTransform, so writing only the world position means
             // the very next update for this object -- a texture change, a flag toggle, anything
-            // -- silently restores where it used to be. For an unparented prim the two are the
-            // same value; for a child they are not, and the difference is the root's own place
-            // in the region.
-            transform.LocalPosition = TryGetLinkRoot(transform, out var rootPos, out var rootRot)
-                ? LinksetTransform.ToLocal(slPos, transform.Rotation, rootPos, rootRot).Position
-                : slPos;
+            // -- silently restores where it used to be. StoreSlWorldPosition knows which frame
+            // this object keeps: region for a free prim, the root for a linked child, the attach
+            // point for a worn item.
+            StoreSlWorldPosition(transform, slPos);
 
             _world.NotifyComponentUpdated(_entity, transform);
         }
 
-        private void Send(System.Numerics.Vector3 slPos)
+        /// <summary>What a gesture changes, and therefore what its update carries. A move sends
+        /// a position, a turn a rotation, a stretch a position AND a scale -- exactly the three
+        /// the reference viewer's manipulators send (LLManipTranslate, LLManipRotate,
+        /// LLManipScale::sendUpdates). It is not tidiness: a scale that reaches the simulator
+        /// without a position beside it is what threw a worn item across the region.</summary>
+        private static TransformFields FieldsFor(Handle handle) => handle switch
+        {
+            Handle.Scale => TransformFields.Position | TransformFields.Scale,
+            Handle.RingX or Handle.RingY or Handle.RingZ => TransformFields.Rotation,
+            _ => TransformFields.Position,
+        };
+
+        /// <summary>A CORNER stretch is a uniform one, and that is what tells the simulator to
+        /// resize the whole linkset rather than its root prim alone.</summary>
+        private bool UniformStretch(Handle handle) => handle == Handle.Scale && _scaleHandleIndex >= 6;
+
+        private void Send(System.Numerics.Vector3 slPos, TransformFields fields, bool uniform)
         {
             var transform = _entity?.GetComponent<TransformComponent>();
             var prim = _entity?.GetComponent<PrimitiveComponent>();
@@ -968,6 +1213,27 @@ namespace SLNG.App.UI
             // as the object falling apart the moment a part was picked (FEAT-UI-06).
             var sendPos = slPos;
             var sendRot = transform.Rotation;
+
+            // FEAT-UI-23: a worn item's MultipleObjectUpdate carries its offset from the attach
+            // point -- OpenSim's UpdatePrimGroupPosition writes it into AttachedPos for an
+            // attachment rather than treating it as a region coordinate. That is the same value
+            // the component now holds, so read it back rather than re-deriving it.
+            if (TryGetWornFrame(out _, out _))
+            {
+                // Both fields already hold the attach-point-relative values, because every write
+                // above went through StoreSlWorldPosition / StoreSlWorldRotation. Send those, not
+                // the world ones.
+                _session.UpdateObjectTransform(_localId, transform.Position, transform.Rotation,
+                    prim?.Scale ?? System.Numerics.Vector3.One, fields: fields, uniformScale: uniform);
+                _lastSentSlPos = slPos;
+                return;
+            }
+
+            // Worn with no frame to express it in -- send nothing, the same way a linked child
+            // whose root has not arrived sends nothing. Falling through would put a region
+            // coordinate in the offset field.
+            if (_entity != null && IsWorn(_entity)) return;
+
             if (transform.ParentLocalId != 0)
             {
                 if (!TryGetLinkRoot(transform, out var rootPos, out var rootRot))
@@ -985,7 +1251,8 @@ namespace SLNG.App.UI
             // never needs converting: in SL a prim's size is its own and does not inherit.
             _session.UpdateObjectTransform(_localId, sendPos, sendRot,
                 prim?.Scale ?? System.Numerics.Vector3.One,
-                singlePrim: SelectionSettings.EditLinkedParts || transform.ParentLocalId != 0);
+                singlePrim: SelectionSettings.EditLinkedParts || transform.ParentLocalId != 0,
+                fields: fields, uniformScale: uniform);
             _lastSentSlPos = slPos;
         }
 
@@ -1162,6 +1429,7 @@ namespace SLNG.App.UI
             BuildRuler();
 
             for (int i = 0; i < 3; i++) BuildRing(i);
+            BuildScaleBox();
             for (int n = 0; n < _scaleHandles.Length; n++) BuildScaleHandle(n);
 
             _dialMaterial = new StandardMaterial3D
@@ -1428,20 +1696,47 @@ namespace SLNG.App.UI
             return true;
         }
 
+        private void BuildScaleBox()
+        {
+            _scaleBoxMaterial = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                AlbedoColor = new Color(1f, 1f, 1f, 0.45f),
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                NoDepthTest = true,
+                RenderPriority = 99, // under the handles, which sit on its corners
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled, // lines have no facing
+            };
+
+            _scaleBoxMesh = new ImmediateMesh();
+            _scaleBox = new MeshInstance3D
+            {
+                Name = "ScaleBox",
+                Mesh = _scaleBoxMesh,
+                Visible = false,
+                TopLevel = true, // the vertices are already in world space
+            };
+            AddChild(_scaleBox);
+        }
+
         /// <summary>One stretch handle: a small cube, coloured by its axis for a face handle
         /// and white for a corner, since a corner belongs to all three.</summary>
         private void BuildScaleHandle(int n)
         {
-            bool face = n < 6;
-            var colour = face ? AxisColor[n / 2] : new Color(0.95f, 0.95f, 0.95f);
-
             var mat = new StandardMaterial3D
             {
                 ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-                AlbedoColor = colour,
+                AlbedoColor = HandleColour(n, lit: false),
+                // The colours below are half transparency; without this Godot ignores the alpha
+                // channel outright and every handle stays opaque.
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
                 NoDepthTest = true,
                 RenderPriority = 100,
-                CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+                // Back faces CULLED, unlike the rest of the gizmo. A closed box drawn with
+                // culling off blends its far side and its near side over the same pixel, so
+                // alpha 0.45 arrives as roughly 0.85 -- measured, and indistinguishable from
+                // opaque. One layer per pixel is what makes the number mean what it says.
+                CullMode = BaseMaterial3D.CullModeEnum.Back,
             };
             _scaleMaterials[n] = mat;
 
@@ -1468,7 +1763,7 @@ namespace SLNG.App.UI
             var prim = _entity?.GetComponent<PrimitiveComponent>();
             if (transform == null || prim == null) return false;
 
-            var half = prim.Scale * 0.5f;
+            var half = _boxHalf;
             if (n < 6)
             {
                 int axis = n / 2;
@@ -1484,10 +1779,73 @@ namespace SLNG.App.UI
                     (bits & 4) != 0 ? 1f : -1f);
             }
 
-            var localOffset = localDir * half;
-            var slOffset = System.Numerics.Vector3.Transform(localOffset, transform.Rotation);
+            // The object's WORLD rotation, not the one it stores. For a free prim they are the
+            // same; for a worn item the stored rotation is relative to its attach point, and
+            // using it put every handle -- and the box they sit on -- at the wrong angle around
+            // a correct centre. The box drawn over a worn cube visibly disagreed with the cube.
+            var localOffset = _boxCentreLocal + (localDir * half);
+            var slOffset = System.Numerics.Vector3.Transform(localOffset, SlWorldRotationOf(transform));
             world = GlobalPosition + new Vector3(slOffset.X, slOffset.Z, -slOffset.Y);
             return true;
+        }
+
+        /// <summary>Which stretch handles exist at all. On a LINKSET, only the corners do.</summary>
+        /// <remarks>
+        /// The reference viewer refuses outright to draw face handles once more than one prim is
+        /// selected (LLManipScale::renderFaces opens with that early-out), and the reason is on
+        /// the wire rather than in the drawing: a group scale only resizes the whole linkset when
+        /// it is UNIFORM, which is what a corner drag sends. A face drag on a linkset would
+        /// therefore offer a gesture the simulator answers by resizing the root prim alone --
+        /// which is exactly what was reported: the second prim briefly follows the local preview
+        /// and then snaps back to its old size.
+        /// </remarks>
+        private bool AllowedHandle(int n) => n >= 6 || !_multiPrimSelection;
+
+        /// <summary>Re-measures the box the handles sit on: the bounding box of the whole
+        /// SELECTION, in the root prim's frame.</summary>
+        /// <remarks>
+        /// The reference viewer stretches against <c>LLSelectMgr::getBBoxOfSelection()</c>
+        /// (llmanipscale.cpp:170), not against the root prim -- so on a linked object the box
+        /// wraps the chair, not the one cushion the root happens to be. SLNG measured the root
+        /// alone, which put the handles somewhere in the middle of the object with nothing to do
+        /// with its extent.
+        ///
+        /// Everything is expressed in the ROOT's frame because that is the frame the simulator
+        /// resizes in: a linked-set scale scales every child's offset from the root, so a box
+        /// measured there transforms with the object for free.
+        ///
+        /// A worn item keeps the simple answer. Its parts' transforms are relative to their own
+        /// parent rather than to the region, so the composition below would be measuring in a
+        /// frame it is not in -- and a worn object is a single prim often enough that the simple
+        /// answer is usually the right one anyway.
+        /// </remarks>
+        private void RefreshSelectionBox()
+        {
+            var transform = _entity?.GetComponent<TransformComponent>();
+            var prim = _entity?.GetComponent<PrimitiveComponent>();
+            if (_entity == null || transform == null || prim == null) return;
+
+            _boxCentreLocal = System.Numerics.Vector3.Zero;
+            _boxHalf = prim.Scale * 0.5f;
+            _multiPrimSelection = false;
+
+            if (SelectionSettings.EditLinkedParts || IsWorn(_entity)) return;
+
+            var parts = LinksetParts?.Invoke(_entity);
+            if (parts == null || parts.Count == 0) return;
+            _multiPrimSelection = true;
+
+            var measured = new System.Collections.Generic.List<LinksetBounds.Part>(parts.Count);
+            foreach (var part in parts)
+            {
+                var partTransform = part.GetComponent<TransformComponent>();
+                var partPrim = part.GetComponent<PrimitiveComponent>();
+                if (partTransform == null || partPrim == null) continue;
+                measured.Add(new LinksetBounds.Part(partTransform.Position, partTransform.Rotation, partPrim.Scale));
+            }
+
+            (_boxCentreLocal, _boxHalf) = LinksetBounds.Measure(
+                SlWorldPositionOf(transform), SlWorldRotationOf(transform), prim.Scale, measured);
         }
 
         /// <summary>Places the stretch handles on the object's box and shows them only for the
@@ -1497,20 +1855,119 @@ namespace SLNG.App.UI
             bool scaling = _tool == Tool.Scale;
             float size = ScaleHandleSize * arrowLength;
 
+            // Not during a drag: the parts do not move locally while the root is being stretched
+            // (only the simulator's echo moves them), so re-measuring mid-gesture would shrink
+            // the box back under the cursor. UpdateScaleDrag grows it by the same factor instead.
+            if (scaling && _dragging == Handle.None) RefreshSelectionBox();
+
             for (int n = 0; n < _scaleHandles.Length; n++)
             {
-                bool show = scaling && (_dragging == Handle.None || _scaleHandleIndex == n);
+                bool show = scaling && AllowedHandle(n) && (_dragging == Handle.None || _scaleHandleIndex == n);
                 _scaleHandles[n].Visible = show;
                 if (!show) continue;
 
                 if (!TryScaleHandlePosition(n, out var world, out _)) { _scaleHandles[n].Visible = false; continue; }
-                _scaleHandles[n].GlobalPosition = world;
-                _scaleHandles[n].Scale = new Vector3(size, size, size);
+                bool lit = _scaleHandleIndex == n
+                           && (_dragging == Handle.Scale
+                               || (_dragging == Handle.None && _hovered == Handle.Scale));
 
-                bool lit = _dragging == Handle.Scale && _scaleHandleIndex == n;
-                var colour = n < 6 ? AxisColor[n / 2] : new Color(0.95f, 0.95f, 0.95f);
-                _scaleMaterials[n].AlbedoColor = lit ? Colors.White : colour;
+                _scaleHandles[n].GlobalPosition = world;
+                float handleSize = lit ? size * 1.4f : size;
+                _scaleHandles[n].Scale = new Vector3(handleSize, handleSize, handleSize);
+                _scaleMaterials[n].AlbedoColor = HandleColour(n, lit);
             }
+
+            UpdateScaleBox(scaling);
+        }
+
+        /// <summary>The object's bounding box, drawn as twelve edges while the stretch tool is
+        /// up.</summary>
+        /// <remarks>
+        /// This is what "the handles cannot be told apart" was really about. Fourteen small cubes
+        /// floating around an object have no structure to belong to: which one is a corner and
+        /// which a face centre is a guess, and a rotated object makes it a bad one. The reference
+        /// viewer draws the box (llmanipscale.cpp renderFaces, the translucent strip over
+        /// min/max) and the handles then read as what they are -- the corners and the face
+        /// centres of THAT box.
+        ///
+        /// Built from the same TryScaleHandlePosition the handles use, so the two cannot drift
+        /// apart: corners are handles 6..13, and the bit pattern of the index IS the corner's
+        /// sign per axis, so two corners share an edge exactly when their indices differ in one
+        /// bit.
+        /// </remarks>
+        private void UpdateScaleBox(bool scaling)
+        {
+            _scaleBox.Visible = scaling;
+            if (!scaling) return;
+
+            var corners = new Vector3[8];
+            for (int c = 0; c < 8; c++)
+            {
+                if (!TryScaleHandlePosition(6 + c, out corners[c], out _)) { _scaleBox.Visible = false; return; }
+            }
+
+            _scaleBoxMesh.ClearSurfaces();
+            _scaleBoxMesh.SurfaceBegin(Mesh.PrimitiveType.Lines, _scaleBoxMaterial);
+            for (int c = 0; c < 8; c++)
+            {
+                for (int bit = 1; bit <= 4; bit <<= 1)
+                {
+                    int other = c | bit;
+                    if (other == c) continue; // only draw each edge once, from its low end
+                    _scaleBoxMesh.SurfaceAddVertex(corners[c]);
+                    _scaleBoxMesh.SurfaceAddVertex(corners[other]);
+                }
+            }
+            _scaleBoxMesh.SurfaceEnd();
+        }
+
+        /// <summary>What a stretch handle looks like: dark and translucent until the cursor is on
+        /// it, then bright and opaque.</summary>
+        /// <remarks>
+        /// Viewer parity, and the point of it. The reference viewer paints an unhovered face
+        /// handle at (0.6, 0, 0) with alpha 0.4 and the hovered one at (1, 0.2, 0.2) opaque
+        /// (llmanipscale.cpp, renderFaces); corners are white at alpha 0.3 / 0.5. SLNG painted
+        /// all fourteen at full strength, so the box was surrounded by fourteen equally loud
+        /// cubes and only the one already being dragged stood out -- reported in-world as "die
+        /// Gizmos sind kaum zuzuordnen". What makes a handle assignable is not its colour, it is
+        /// that every other handle is quiet.
+        /// </remarks>
+        private static Color HandleColour(int n, bool lit)
+        {
+            // A corner belongs to all three axes at once, so it has no axis colour to wear.
+            if (n >= 6) return lit ? new Color(1f, 1f, 1f, 1f) : new Color(1f, 1f, 1f, 0.35f);
+
+            var axis = AxisColor[n / 2];
+            return lit
+                ? new Color(Mathf.Lerp(axis.R, 1f, 0.35f), Mathf.Lerp(axis.G, 1f, 0.35f), Mathf.Lerp(axis.B, 1f, 0.35f), 1f)
+                : new Color(axis.R * 0.55f, axis.G * 0.55f, axis.B * 0.55f, 0.45f);
+        }
+
+        private double _echoCheckAt;
+
+        /// <summary>One line naming the root and every other prim of the object, as the world
+        /// model holds them right now.</summary>
+        private void LogLinksetState(string when)
+        {
+            var transform = _entity?.GetComponent<TransformComponent>();
+            var prim = _entity?.GetComponent<PrimitiveComponent>();
+            if (_entity == null || transform == null || prim == null) return;
+
+            var line = new System.Text.StringBuilder();
+            line.Append($"[Gizmo] {when} {_localId}: root pos={transform.Position} scale={prim.Scale}");
+
+            var parts = LinksetParts?.Invoke(_entity);
+            if (parts != null)
+            {
+                foreach (var part in parts)
+                {
+                    var partTransform = part.GetComponent<TransformComponent>();
+                    var partPrim = part.GetComponent<PrimitiveComponent>();
+                    if (partTransform == null || partPrim == null) continue;
+                    line.Append($" | part {part.LocalId} pos={partTransform.Position} scale={partPrim.Scale}");
+                }
+            }
+            Logger.Info(line.ToString());
         }
 
         private static Handle RingHandle(int i) => (Handle)((int)Handle.RingX + i);

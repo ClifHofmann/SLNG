@@ -1022,7 +1022,19 @@ public sealed partial class GridSession
     /// <summary>Detaches whatever attachment is the given scene-local object id, via ObjectDetach
     /// (by localId). Unlike <see cref="DetachItemAsync"/> (DetachAttachmentIntoInv, which the sim
     /// matches on the attachment's AttachItemID name-value) this works even when that name-value
-    /// is missing or stale — the case where an inventory "Detach" silently does nothing.</summary>
+    /// is missing or stale — the case where an inventory "Detach" silently does nothing.
+    ///
+    /// <para>Taking the object off the avatar is only half of it. What makes an item WORN is its
+    /// link in the Current Outfit folder, and ObjectDetach does not touch that: the object left
+    /// the avatar, the link stayed, and the next login put the item back on — reported in-world
+    /// as "detach works until I log in again". The viewer's own Detach is
+    /// <c>LLAppearanceMgr::removeItemFromAvatar</c>, which does both. So does this now, by way of
+    /// <see cref="DetachItemAsync"/>, which already owns the link cleanup (including the reason it
+    /// must be a DELETE rather than a move to Trash).</para>
+    ///
+    /// <para>Only when the object names an inventory item. Without one there is no link to find,
+    /// and the object is off the avatar either way.</para>
+    /// </summary>
     public void DetachByLocalId(uint localId)
     {
         var sim = _client.Network.CurrentSim;
@@ -1046,6 +1058,9 @@ public sealed partial class GridSession
         StopMotionsFromSources(candidateSourceIds);
 
         _client.Objects.DetachObjects(sim, new List<uint> { localId });
+
+        var attachItemId = rootPrim != null ? ExtractAttachItemId(rootPrim) : Guid.Empty;
+        if (attachItemId != Guid.Empty) _ = DetachItemAsync(attachItemId);
     }
 
     /// <summary>Escape hatch for a stuck attachment that can't be pinned down in inventory:

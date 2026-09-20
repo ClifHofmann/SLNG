@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.0-alpha";
+    public const string AppVersion = "v0.24.31-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -899,6 +899,9 @@ public partial class Boot : Control
         _inWorldContextMenu.OnInspectClicked = (entity, localId) => { /* Inspect logic later */ };
         _inWorldContextMenu.OnDeleteClicked = (entity, localId) => { /* Delete logic later */ };
         _inWorldContextMenu.OnSitClicked = (entity, localId) => _session?.RequestSit(localId);
+        // FEAT-UI-23: take a worn item off from the 3D view. DetachByLocalId already handles the
+        // Current-Outfit write-back (FEAT-INV-03), so the change survives a relog.
+        _inWorldContextMenu.OnDetachClicked = (entity, localId) => _session?.DetachByLocalId(localId);
         _inWorldContextMenu.OnSitOnGroundClicked = (godotPos) => _session?.SitOnGround();
         // FEAT-UI-13: right-click an avatar -> Profile / IM.
         _inWorldContextMenu.OnAvatarProfileClicked = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
@@ -1017,6 +1020,9 @@ public partial class Boot : Control
                 // touch/sit again rather than pick.
                 _objectSelectionController.EndEditSession();
                 _selectionGizmo?.Detach();
+                // The HUD layer goes back to normal with the window, the way the reference
+                // viewer resets its HUD zoom when the selection goes.
+                _avatarRenderer?.SetHudZoom(1f);
             };
             _objectEditWindow = win;
         }
@@ -1030,6 +1036,26 @@ public partial class Boot : Control
         // follows OnPrimarySelectionChanged. Doing any of it here as well would just be a second
         // path to keep in step.
         _objectSelectionController.BeginEditSession(entity, localId);
+    }
+
+    /// <summary>The other prims of an object's linkset. Empty for a single prim, and for a
+    /// child when "edit linked parts" is on -- there the selection IS the one part.</summary>
+    /// <remarks>
+    /// A linkset in SL is flat: every part names the root as its parent, so one lookup in the
+    /// parent index is the whole object. Anything that is worn is left out -- a worn linkset's
+    /// parts keep their transforms in a different frame, and the gizmo says so itself.
+    /// </remarks>
+    private System.Collections.Generic.IReadOnlyList<SLNG.Core.ECS.Entity> CollectLinksetParts(SLNG.Core.ECS.Entity root)
+    {
+        var parts = new System.Collections.Generic.List<SLNG.Core.ECS.Entity>();
+        if (_world == null || _worldSimulation == null) return parts;
+
+        foreach (var id in _worldSimulation.ChildrenOf(root.RegionHandle, root.LocalId))
+        {
+            var child = _world.GetEntity(id);
+            if (child != null) parts.Add(child);
+        }
+        return parts;
     }
 
     /// <summary>FEAT-UI-05: the one edit window follows whichever object is the primary
@@ -1054,6 +1080,28 @@ public partial class Boot : Control
         {
             _objectEditWindow.RequestClose();
         }
+    }
+
+    /// <summary>FEAT-UI-23: the mouse wheel, while a HUD is the thing being edited, pulls the HUD
+    /// layer back instead of moving the camera -- people park HUDs outside the visible screen to
+    /// get them out of the way, and editing one has to be able to reach them again.</summary>
+    /// <returns>True when the wheel was used here, so the camera leaves it alone.</returns>
+    private bool TryZoomEditedHud(int direction)
+    {
+        if (_objectEditWindow == null || _avatarRenderer == null || _world == null) return false;
+
+        var selection = _objectSelectionController.LinkSelection;
+        if (selection.Count == 0) return false;
+
+        var primary = _world.GetEntity(selection[selection.Count - 1]);
+        var attachment = primary?.GetComponent<SLNG.Core.Components.AttachmentComponent>();
+        if (attachment == null || !SLNG.App.AttachmentPointMap.IsHudPoint(attachment.AttachmentPoint)) return false;
+
+        // One notch is 10%, compounding, so the range from fully zoomed in to the 0.2 floor is
+        // about seventeen notches -- a short flick of the wheel, not a grind.
+        const float step = 1.1f;
+        _avatarRenderer.SetHudZoom(direction > 0 ? _avatarRenderer.HudZoom * step : _avatarRenderer.HudZoom / step);
+        return true;
     }
 
     /// <summary>FEAT-UI-05: re-evaluates Link / Unlink on every open edit window. Both depend on
@@ -3272,14 +3320,36 @@ public partial class Boot : Control
             AddChild(_selectionGizmo);
             _selectionGizmo.Initialize(_world, _session, _avatarController);
             _objectSelectionController.AttachGizmo(_selectionGizmo);
+            // FEAT-UI-23: the gizmo asks here where a worn item's attach point is. Only
+            // AvatarRenderer knows -- it is the bone's current pose times the attachment point's
+            // own offset on that bone.
+            _selectionGizmo.AttachmentFrame = entity =>
+                _avatarRenderer != null && _avatarRenderer.TryGetAttachmentFrame(entity.Id, out var frame)
+                    ? frame
+                    : null;
+            // FEAT-UI-04: and here for the rest of a linked object, so the stretch box wraps the
+            // whole thing rather than its root prim. WorldSimulation is the only holder of the
+            // parent index, which is why this is wired from here rather than read by the gizmo.
+            _selectionGizmo.LinksetParts = CollectLinksetParts;
+            _objectSelectionController.LinksetParts = CollectLinksetParts;
             // FEAT-UI-06: here and not next to the context-menu wiring in SetupHud -- the
             // controller does not exist yet at that point, and assigning through it there threw
             // a NullReferenceException out of _Ready, which stalled the whole boot.
             _objectSelectionController.OnPrimarySelectionChanged = ShowInEditWindow;
+            // FEAT-UI-23: the wheel zooms the HUD layer while a HUD is being edited. No null
+            // check -- the surrounding block already uses _avatarController unconditionally, and
+            // adding one here only teaches the compiler to doubt it further down.
+            _avatarController.WheelOverride = TryZoomEditedHud;
             _objectSelectionController.OnLinkSelectionChanged = OnEditSelectionChanged;
             // A link or an unlink leaves the selection alone but swaps roots and children around
             // inside it, so the highlight has to be re-cut and the buttons re-read.
             _worldSimulation.ObjectReparented += (_, _) => OnEditSelectionChanged();
+            // FEAT-UI-23: an object that stops being worn has to change renderers.
+            _worldSimulation.AttachmentCleared += (_, entity) =>
+            {
+                _avatarRenderer?.DropWornVisuals(entity.Id);
+                _objectRenderer?.EnsureStandaloneVisual(entity.Id);
+            };
             _selectionGizmo.GridSpacing = _uiSettings.BuildGridSpacing;
             _uiSettings.BuildGridSpacingChanged += m =>
             {

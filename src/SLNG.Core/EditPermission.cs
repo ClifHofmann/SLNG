@@ -24,7 +24,8 @@ namespace SLNG.Core;
 /// </summary>
 public static class EditPermission
 {
-    /// <summary>The prim whose flags decide, which for a child is the linkset's root. The viewer
+    /// <summary>The prim whose flags decide, which for a child is the linkset's root -- and for
+    /// a WORN item the prim that hangs off the avatar, never the avatar itself. The viewer
     /// recurses through <c>getParent()</c> for exactly this; a child's own flags are not the
     /// answer, and an "edit linked parts" UI asking the child would let go of the rule the moment
     /// someone selected a child prim.
@@ -49,6 +50,16 @@ public static class EditPermission
 
             var parent = world.GetEntity(current.RegionHandle, parentLocalId);
             if (parent == null || parent == current) return current;
+
+            // A WORN linkset's root hangs off the avatar wearing it, and an avatar is not a
+            // prim. Walking into it lands on an entity with no PrimitiveComponent at all, so
+            // every permission question about an attachment answered "no": no gizmo on a worn
+            // item, the build window's fields disabled, and "NOT yours" printed over the user's
+            // own hat. The viewer stops at exactly the same place -- permModify() recurses only
+            // while !isRootEdit(), and getRootEdit() walks up "while (mParent && !mParent->
+            // isAvatar())" (llviewerobject.cpp:5061).
+            if (parent.GetComponent<AvatarComponent>() != null) return current;
+
             current = parent;
         }
         return current;

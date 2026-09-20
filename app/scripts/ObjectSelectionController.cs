@@ -35,6 +35,51 @@ namespace SLNG.App
         // happened to own a window.
         private bool _editSessionOpen;
 
+        /// <summary>The other prims of an object's linkset, supplied by Boot -- only
+        /// WorldSimulation keeps the parent index.</summary>
+        public System.Func<Entity, System.Collections.Generic.IReadOnlyList<Entity>>? LinksetParts;
+
+        /// <summary>Tells the simulator what is selected: the whole object, or one prim of it
+        /// when "edit linked parts" is on.</summary>
+        /// <remarks>
+        /// Viewer parity, and load-bearing rather than cosmetic. LLSelectMgr::selectObjectAndFamily
+        /// sends ONE ObjectSelect naming every prim of the linkset; the simulator keeps that
+        /// selection per agent and a linked-set edit acts on it. Selecting only the root made a
+        /// resize change the root prim alone -- reported in-world as "beim Großziehen wird das
+        /// non-root Prim nicht größer".
+        /// </remarks>
+        private void SelectFamily(Entity entity, uint localId)
+        {
+            if (SelectionSettings.EditLinkedParts)
+            {
+                _session.SelectObject(localId);
+                return;
+            }
+
+            var parts = LinksetParts?.Invoke(entity);
+            if (parts == null || parts.Count == 0)
+            {
+                _session.SelectObject(localId);
+                return;
+            }
+
+            var ids = new System.Collections.Generic.List<uint>(parts.Count + 1) { localId };
+            foreach (var part in parts)
+            {
+                if (part.LocalId != localId) ids.Add(part.LocalId);
+            }
+            _session.SelectObjects(ids);
+        }
+
+        /// <summary>Is this collider one of the LOCAL agent's worn items? Only those carry one at
+        /// all (see AvatarRenderer.AddAttachmentPickBody), so the entity lookup is what decides.</summary>
+        private bool IsOwnAttachmentBody(StaticBody3D body)
+        {
+            if (_world == null || !body.HasMeta("EntityId")) return false;
+            if (!System.Guid.TryParse(body.GetMeta("EntityId").AsString(), out var id)) return false;
+            return _world.GetEntity(id)?.GetComponent<AttachmentComponent>() != null;
+        }
+
         // The selection, oldest first. The LAST entry is the primary: it is what the edit window
         // shows, and on a link it becomes the linkset's root -- keeping its own position while
         // everything else turns into an offset from it. A List and not a HashSet precisely
@@ -99,7 +144,7 @@ namespace SLNG.App
             if (_selection.Count == 0) _selection.Add(entity.Id);
 
             _world.SelectEntity(entity);
-            _session.SelectObject(localId);
+            SelectFamily(entity, localId);
             _gizmo?.Attach(entity);
             _lastClicked = entity;
 
@@ -138,7 +183,7 @@ namespace SLNG.App
             {
                 _selection.Add(entity.Id);
                 _world.SelectEntity(entity);
-                _session.SelectObject(localId);
+                SelectFamily(entity, localId);
                 _gizmo?.Attach(entity);
                 _lastClicked = entity;
                 OnPrimarySelectionChanged?.Invoke(entity, localId);
@@ -214,6 +259,42 @@ namespace SLNG.App
                     while (result.Count > 0 && result.ContainsKey("collider"))
                     {
                         var col = result["collider"].As<Node>();
+
+                        // FEAT-UI-23: your own worn items are pickable now, and in third person
+                        // they sit between the camera and everything else -- prim hair over the
+                        // head is directly in the way of most of the screen. Left through, they
+                        // swallow every click meant for the world, which is what "ich kann meine
+                        // Objekte nicht auswählen" was.
+                        //
+                        // So a LEFT click gets the same treatment the local avatar already gets:
+                        // peek behind, and if there is anything else there, use that instead --
+                        // a worn item has no touch or sit action of its own, so nothing is lost.
+                        //
+                        // A RIGHT click does not peek. It is the gesture that means "this one",
+                        // and it is how the reference viewer opens an attachment's own menu
+                        // (Edit / Detach). Peeking would hand that menu to whatever the avatar
+                        // happens to stand in front of -- the ground, if nothing else -- so a
+                        // worn item could only ever be right-clicked against the sky, and the
+                        // right-click highlight landed on the ground instead of the shirt.
+                        //
+                        // Nor does a left click inside an edit session, where it means "pick
+                        // this" rather than "touch this" -- that is how a part of a worn linkset
+                        // gets selected with "edit linked parts" on.
+                        if (col is StaticBody3D wornBody && IsOwnAttachmentBody(wornBody))
+                        {
+                            if (mouseBtn.ButtonIndex == MouseButton.Right || _editSessionOpen) break;
+
+                            var behind = new Godot.Collections.Array<Rid>(exclude) { wornBody.GetRid() };
+                            var behindResult = RaycastFromMouse(mouseBtn.Position, behind);
+                            if (behindResult.Count > 0 && behindResult.ContainsKey("collider"))
+                            {
+                                exclude.Add(wornBody.GetRid());
+                                result = behindResult;
+                                continue;
+                            }
+                            break;
+                        }
+
                         if (col is StaticBody3D sb && sb.HasMeta("LocalId") && sb.GetMeta("LocalId").AsString() == "Avatar")
                         {
                             if (mouseBtn.ButtonIndex == MouseButton.Left)
@@ -334,7 +415,8 @@ namespace SLNG.App
                                             if (transform != null && transform.ParentLocalId != 0)
                                             {
                                                 var parent = _world.GetEntity(rawEntity.RegionHandle, transform.ParentLocalId);
-                                                if (parent != null)
+                                                // An AVATAR is not a link root. A worn item's ParentLocalId is the avatar that wears it, so walking up would select the avatar instead of the item (FEAT-UI-23). WorldSimulation.ResolveWorldTransform draws the same line.
+                                                if (parent != null && parent.GetComponent<AvatarComponent>() == null)
                                                 {
                                                     entity = parent;
                                                     localId = transform.ParentLocalId;
@@ -396,13 +478,24 @@ namespace SLNG.App
                                             return;
                                         }
 
-                                        // Right-clicking inside an edit session moves the
-                                        // selection onto that object first, so the menu acts on
-                                        // what it is drawn over. Outside one it only opens the
-                                        // menu, exactly as before.
+                                        // A right-click marks what it is about to act on, in or
+                                        // out of an edit session -- asked for in-world, and the
+                                        // reference viewer highlights its pie menu's target the
+                                        // same way. Outside a session that is the plain click
+                                        // highlight, which the next click elsewhere clears.
                                         if (_editSessionOpen)
                                         {
                                             SelectOnly(entity, localId);
+                                        }
+                                        else
+                                        {
+                                            if (_lastClicked != null && _lastClicked.Id != entity.Id)
+                                            {
+                                                _world.DeselectEntity(_lastClicked);
+                                            }
+                                            _world.SelectEntity(entity);
+                                            SelectFamily(entity, localId);
+                                            _lastClicked = entity;
                                         }
 
                                         _contextMenu.ShowMenu(mouseBtn.Position, entity, localId,

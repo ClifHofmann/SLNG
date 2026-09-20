@@ -121,6 +121,32 @@ public class EditPermissionTests
         _ = EditPermission.CanModify(world, b);
     }
 
+    /// <summary>FEAT-UI-23: a worn item's root prim hangs off the AVATAR wearing it. The walk
+    /// has to stop there -- an avatar carries no PrimitiveComponent, so continuing into it
+    /// answered "no" to every permission question about anything worn: no gizmo on your own hat,
+    /// disabled size fields, "NOT yours" over an object you created. Viewer parity:
+    /// getRootEdit() walks up "while (mParent && !mParent->isAvatar())".</summary>
+    [Fact]
+    public void AWornItemAnswersWithItsOwnRootNotTheAvatar()
+    {
+        var world = new World();
+
+        var avatar = world.GetOrCreateEntity(Region, 100);
+        avatar.SetComponent(new TransformComponent());
+        avatar.SetComponent(new AvatarComponent(System.Guid.NewGuid(), "Test", "Resident", isLocalAgent: true));
+
+        // the attachment's root prim, worn: its parent is the avatar
+        var worn = Prim(world, 1, parentLocalId: 100, canModify: true, canMove: true, isOwner: true);
+        // and a linked part of that same worn object
+        var wornChild = Prim(world, 2, parentLocalId: 1);
+
+        Assert.Equal(1u, EditPermission.RootFor(world, worn).LocalId);
+        Assert.Equal(1u, EditPermission.RootFor(world, wornChild).LocalId);
+        Assert.True(EditPermission.CanModify(world, worn));
+        Assert.True(EditPermission.CanMove(world, wornChild));
+        Assert.True(EditPermission.IsOwner(world, wornChild));
+    }
+
     /// <summary>Modify and Move are distinct bits on the wire because a no-modify object still
     /// accepts transform edits. A UI gating both on one of them is wrong in one direction.</summary>
     [Fact]

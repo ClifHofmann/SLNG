@@ -304,6 +304,12 @@ public partial class SLNGWindow : MarginContainer
     /// clamped to the current viewport's size on the tall/wide side -- a size saved before the
     /// resize-handle fix above (or from any other future bad drag) self-heals here instead of
     /// reopening broken forever, since this is the one place every restart actually passes through.</summary>
+    /// <summary>True once a saved position has actually been put back, so a subclass with a
+    /// default placement of its own (centring, cascading) can leave the restored one alone.
+    /// Only readable after the deferred restore has run -- which is why the one caller checks it
+    /// from a deferred call of its own.</summary>
+    protected bool GeometryRestored { get; private set; }
+
     private void RestorePersistedGeometry()
     {
         if (string.IsNullOrEmpty(PersistId)) return;
@@ -312,7 +318,10 @@ public partial class SLNGWindow : MarginContainer
         if (cfg.Load(GeometryConfigPath) != Error.Ok) return;
 
         if (cfg.HasSectionKey(GeometrySection, $"{PersistId}_pos"))
+        {
             Position = (Vector2)cfg.GetValue(GeometrySection, $"{PersistId}_pos");
+            GeometryRestored = true;
+        }
         if (cfg.HasSectionKey(GeometrySection, $"{PersistId}_size"))
         {
             var savedSize = (Vector2)cfg.GetValue(GeometrySection, $"{PersistId}_size");
