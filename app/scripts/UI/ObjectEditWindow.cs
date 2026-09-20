@@ -172,6 +172,10 @@ namespace SLNG.App.UI
         {
             base._Ready(); // set up SLNGWindow styling
             OnCloseRequested = RequestClose;
+            // FEAT-UI-11: reopen where it was left. Boot drops its reference when the window
+            // closes, so a build session always builds a fresh one -- without this every close
+            // forgets the spot the window was dragged to.
+            PersistId = "object_edit";
             Title = L10n.Tr("ui.build.title");
             Visible = false;
             CustomMinimumSize = new Vector2(320, 400);
@@ -534,7 +538,15 @@ namespace SLNG.App.UI
             Title = L10n.TrFormat("ui.build.edit_title", titleName);
             Visible = true;
             MoveToFront();
-            CallDeferred(MethodName.CenterWindow);
+            // Only ever place it once, and only if there is nothing saved to place it by. This
+            // used to run on EVERY EditObject call, so the window jumped back to the middle of
+            // the screen -- on top of the object being edited -- each time the selection moved
+            // to another prim.
+            if (!_placed)
+            {
+                _placed = true;
+                CallDeferred(MethodName.CenterWindow);
+            }
         }
 
         /// <summary>The root prim's world transform, when the edited prim is a linked child.</summary>
@@ -597,9 +609,24 @@ namespace SLNG.App.UI
                 // exactly what the wire wants, so pos/rot go out unchanged. What the ECS keeps is
                 // the WORLD transform, so the optimistic update below has to compose back.
                 var editedTransform = _currentEntity.GetComponent<TransformComponent>();
-                _session.UpdateObjectTransform(_currentLocalId, pos, rot, scale,
-                    singlePrim: SelectionSettings.EditLinkedParts
-                        || (editedTransform != null && editedTransform.ParentLocalId != 0));
+
+                // Single-prim form for a linked CHILD, group form for a root. "Has a parent" is
+                // NOT the test: a worn item's parent is the avatar wearing it, and it is still a
+                // root -- the reference viewer sends UPD_LINKED_SETS for it (LLSelectMgr::
+                // sendMultipleUpdate, with "edit linked parts" off). Sent as a single prim, the
+                // simulator ran the root route instead, which reads the vector as the group's
+                // ABSOLUTE region position -- and the value in these fields for a worn item is
+                // its few centimetres of offset from the attach point. Applying any edit to a worn
+                // item therefore threw it into the corner of the region: "flupp, weg".
+                bool linkedChild = editedTransform != null && TryGetLinkRoot(editedTransform, out _, out _);
+                bool singlePrim = SelectionSettings.EditLinkedParts || linkedChild;
+                // One line per Apply. "It vanished" is not diagnosable afterwards: the numbers
+                // that went on the wire are gone, and a bad frame, a bad linked flag and the
+                // simulator simply disagreeing all look identical from the outside.
+                Logger.Info($"[Edit] apply {_currentLocalId}: singlePrim={singlePrim} linkedChild={linkedChild} " +
+                            $"worn={_currentEntity.GetComponent<AttachmentComponent>() != null} " +
+                            $"parent={editedTransform?.ParentLocalId} pos={pos} rot={rot} scale={scale}");
+                _session.UpdateObjectTransform(_currentLocalId, pos, rot, scale, singlePrim: singlePrim);
 
                 // Optimistic local update -- must fire NotifyComponentUpdated or nothing renders
                 // until an unrelated event happens to force a resync (e.g. a later flag toggle
@@ -858,8 +885,14 @@ namespace SLNG.App.UI
         /// simultaneously-open windows cascade instead of spawning exactly on top of each other.</summary>
         public int CascadeIndex { get; set; }
 
+        /// <summary>Set once the window has been placed, by a restored position or by centring.</summary>
+        private bool _placed;
+
         private void CenterWindow()
         {
+            // Deferred, so the base class's own deferred geometry restore has already run.
+            if (GeometryRestored) return;
+
             var viewportSize = GetViewportRect().Size;
             var windowSize = Size;
             if (windowSize.X < CustomMinimumSize.X) windowSize = CustomMinimumSize;

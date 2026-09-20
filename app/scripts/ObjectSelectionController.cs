@@ -35,6 +35,42 @@ namespace SLNG.App
         // happened to own a window.
         private bool _editSessionOpen;
 
+        /// <summary>The other prims of an object's linkset, supplied by Boot -- only
+        /// WorldSimulation keeps the parent index.</summary>
+        public System.Func<Entity, System.Collections.Generic.IReadOnlyList<Entity>>? LinksetParts;
+
+        /// <summary>Tells the simulator what is selected: the whole object, or one prim of it
+        /// when "edit linked parts" is on.</summary>
+        /// <remarks>
+        /// Viewer parity, and load-bearing rather than cosmetic. LLSelectMgr::selectObjectAndFamily
+        /// sends ONE ObjectSelect naming every prim of the linkset; the simulator keeps that
+        /// selection per agent and a linked-set edit acts on it. Selecting only the root made a
+        /// resize change the root prim alone -- reported in-world as "beim Großziehen wird das
+        /// non-root Prim nicht größer".
+        /// </remarks>
+        private void SelectFamily(Entity entity, uint localId)
+        {
+            if (SelectionSettings.EditLinkedParts)
+            {
+                _session.SelectObject(localId);
+                return;
+            }
+
+            var parts = LinksetParts?.Invoke(entity);
+            if (parts == null || parts.Count == 0)
+            {
+                _session.SelectObject(localId);
+                return;
+            }
+
+            var ids = new System.Collections.Generic.List<uint>(parts.Count + 1) { localId };
+            foreach (var part in parts)
+            {
+                if (part.LocalId != localId) ids.Add(part.LocalId);
+            }
+            _session.SelectObjects(ids);
+        }
+
         /// <summary>Is this collider one of the LOCAL agent's worn items? Only those carry one at
         /// all (see AvatarRenderer.AddAttachmentPickBody), so the entity lookup is what decides.</summary>
         private bool IsOwnAttachmentBody(StaticBody3D body)
@@ -108,7 +144,7 @@ namespace SLNG.App
             if (_selection.Count == 0) _selection.Add(entity.Id);
 
             _world.SelectEntity(entity);
-            _session.SelectObject(localId);
+            SelectFamily(entity, localId);
             _gizmo?.Attach(entity);
             _lastClicked = entity;
 
@@ -147,7 +183,7 @@ namespace SLNG.App
             {
                 _selection.Add(entity.Id);
                 _world.SelectEntity(entity);
-                _session.SelectObject(localId);
+                SelectFamily(entity, localId);
                 _gizmo?.Attach(entity);
                 _lastClicked = entity;
                 OnPrimarySelectionChanged?.Invoke(entity, localId);
@@ -230,13 +266,24 @@ namespace SLNG.App
                         // swallow every click meant for the world, which is what "ich kann meine
                         // Objekte nicht auswählen" was.
                         //
-                        // So they get the same treatment the local avatar already gets: peek
-                        // behind, and if there is anything else there, use that instead. A worn
-                        // item is only picked when nothing is behind it, which is exactly the
-                        // gesture that means "I want THIS" -- pointing at it against the sky, or
-                        // stepping back so nothing lines up.
+                        // So a LEFT click gets the same treatment the local avatar already gets:
+                        // peek behind, and if there is anything else there, use that instead --
+                        // a worn item has no touch or sit action of its own, so nothing is lost.
+                        //
+                        // A RIGHT click does not peek. It is the gesture that means "this one",
+                        // and it is how the reference viewer opens an attachment's own menu
+                        // (Edit / Detach). Peeking would hand that menu to whatever the avatar
+                        // happens to stand in front of -- the ground, if nothing else -- so a
+                        // worn item could only ever be right-clicked against the sky, and the
+                        // right-click highlight landed on the ground instead of the shirt.
+                        //
+                        // Nor does a left click inside an edit session, where it means "pick
+                        // this" rather than "touch this" -- that is how a part of a worn linkset
+                        // gets selected with "edit linked parts" on.
                         if (col is StaticBody3D wornBody && IsOwnAttachmentBody(wornBody))
                         {
+                            if (mouseBtn.ButtonIndex == MouseButton.Right || _editSessionOpen) break;
+
                             var behind = new Godot.Collections.Array<Rid>(exclude) { wornBody.GetRid() };
                             var behindResult = RaycastFromMouse(mouseBtn.Position, behind);
                             if (behindResult.Count > 0 && behindResult.ContainsKey("collider"))
@@ -447,7 +494,7 @@ namespace SLNG.App
                                                 _world.DeselectEntity(_lastClicked);
                                             }
                                             _world.SelectEntity(entity);
-                                            _session.SelectObject(localId);
+                                            SelectFamily(entity, localId);
                                             _lastClicked = entity;
                                         }
 
