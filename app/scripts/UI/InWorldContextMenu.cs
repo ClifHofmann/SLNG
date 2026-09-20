@@ -55,15 +55,6 @@ namespace SLNG.App.UI
         private Button _avatarMuteButton = null!;
         private VBoxContainer _createRoot = null!;
         private Button _sitButton = null!, _deleteButton = null!, _detachButton = null!;
-        private VBoxContainer _wornRoot = null!, _wornItems = null!;
-        private Button _wornHeader = null!;
-        private const string WornHeaderCollapsed = "👚 Worn items ▶";
-        private const string WornHeaderExpanded = "👚 Worn items ▼";
-
-        /// <summary>FEAT-UI-23: what the local agent is wearing, as (entity, localId, name), so
-        /// the self menu can offer Edit and Detach per item. Supplied by Boot, which owns the
-        /// world; the menu does not go looking for entities itself.</summary>
-        public Func<System.Collections.Generic.IReadOnlyList<(Entity Entity, uint LocalId, string Name)>>? GetWornItems;
         private VBoxContainer _groundOnlyButtons = null!;
         private Button _createHeader = null!;
         private VBoxContainer _createShapes = null!;
@@ -110,29 +101,6 @@ namespace SLNG.App.UI
             _avatarTeleportButton = AddMenuButton(_avatarButtons, "🚀 Offer Teleport", () => OnAvatarOfferTeleportClicked?.Invoke(_currentAvatarId, _currentAvatarName));
             _avatarMuteButton = AddMenuButton(_avatarButtons, "🔇 Mute", () => OnAvatarMuteToggleClicked?.Invoke(_currentAvatarId, _currentAvatarName));
 
-            // FEAT-UI-23: right-clicking YOURSELF lists what you are wearing, with Edit and
-            // Detach per item. This is how the reference viewer reaches worn items too ("Take
-            // Off" / "Detach" submenus on your own avatar), and it is the only route that works
-            // for a RIGGED item: a rigged mesh is deformed by the skeleton every frame, so it
-            // cannot carry a collision shape that stays where it looks. Most of what people
-            // actually wear -- mesh hair, a beanie, clothing -- is rigged, so picking worn items
-            // by clicking them alone would have missed nearly everything.
-            _wornRoot = new VBoxContainer { Visible = false };
-            _avatarButtons.AddChild(_wornRoot);
-            _wornRoot.AddChild(new HSeparator());
-            _wornHeader = new Button { Text = WornHeaderCollapsed, Flat = true, Alignment = HorizontalAlignment.Left };
-            _wornRoot.AddChild(_wornHeader);
-            var wornIndent = new MarginContainer();
-            wornIndent.AddThemeConstantOverride("margin_left", 16);
-            _wornRoot.AddChild(wornIndent);
-            _wornItems = new VBoxContainer { Visible = false };
-            wornIndent.AddChild(_wornItems);
-            _wornHeader.Pressed += () =>
-            {
-                _wornItems.Visible = !_wornItems.Visible;
-                _wornHeader.Text = _wornItems.Visible ? WornHeaderExpanded : WornHeaderCollapsed;
-                CallDeferred(nameof(ClampIntoViewport));
-            };
 
             _objectButtons = new VBoxContainer();
             root.AddChild(_objectButtons);
@@ -279,59 +247,10 @@ namespace SLNG.App.UI
             _avatarMuteButton.Visible = !isSelf;
             _avatarMuteButton.Text = isMuted ? "🔊 Unmute" : "🔇 Mute";
 
-            _wornRoot.Visible = isSelf;
-            if (isSelf) PopulateWornItems();
-
             Position = position;
             Visible = true;
             MoveToFront();
             CallDeferred(nameof(ClampIntoViewport));
-        }
-
-        /// <summary>Rebuilds the worn-items list. Always from scratch: what you are wearing
-        /// changes between two right-clicks, and a stale row would act on an entity that is no
-        /// longer attached.</summary>
-        private void PopulateWornItems()
-        {
-            foreach (var child in _wornItems.GetChildren())
-            {
-                _wornItems.RemoveChild(child);
-                child.QueueFree();
-            }
-            _wornItems.Visible = false;
-            _wornHeader.Text = WornHeaderCollapsed;
-
-            var items = GetWornItems?.Invoke();
-            if (items == null || items.Count == 0)
-            {
-                _wornHeader.Disabled = true;
-                return;
-            }
-            _wornHeader.Disabled = false;
-
-            foreach (var item in items)
-            {
-                var entity = item.Entity;
-                uint localId = item.LocalId;
-
-                var row = new HBoxContainer();
-                var edit = new Button
-                {
-                    Text = item.Name,
-                    Flat = true,
-                    Alignment = HorizontalAlignment.Left,
-                    SizeFlagsHorizontal = SizeFlags.ExpandFill,
-                    TooltipText = "Edit this worn item",
-                };
-                edit.Pressed += () => { OnEditClicked?.Invoke(entity, localId); Hide(); };
-                row.AddChild(edit);
-
-                var detach = new Button { Text = "👜", Flat = true, TooltipText = "Detach" };
-                detach.Pressed += () => { OnDetachClicked?.Invoke(entity, localId); Hide(); };
-                row.AddChild(detach);
-
-                _wornItems.AddChild(row);
-            }
         }
 
         /// <summary>Right-click on terrain (or anything else without an entity to edit) --

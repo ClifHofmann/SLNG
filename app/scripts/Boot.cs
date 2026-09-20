@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.8-alpha";
+    public const string AppVersion = "v0.24.9-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -902,7 +902,6 @@ public partial class Boot : Control
         // FEAT-UI-23: take a worn item off from the 3D view. DetachByLocalId already handles the
         // Current-Outfit write-back (FEAT-INV-03), so the change survives a relog.
         _inWorldContextMenu.OnDetachClicked = (entity, localId) => _session?.DetachByLocalId(localId);
-        _inWorldContextMenu.GetWornItems = CollectWornItems;
         _inWorldContextMenu.OnSitOnGroundClicked = (godotPos) => _session?.SitOnGround();
         // FEAT-UI-13: right-click an avatar -> Profile / IM.
         _inWorldContextMenu.OnAvatarProfileClicked = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
@@ -1083,37 +1082,6 @@ public partial class Boot : Control
         const float step = 1.1f;
         _avatarRenderer.SetHudZoom(direction > 0 ? _avatarRenderer.HudZoom * step : _avatarRenderer.HudZoom / step);
         return true;
-    }
-
-    /// <summary>FEAT-UI-23: what the local agent is wearing, for the self context menu's worn
-    /// list. Sorted by name so the same item sits in the same place between two right-clicks.</summary>
-    /// <remarks>
-    /// HUDs are in the list. An earlier version filtered them out on the assumption that a HUD
-    /// is not edited in the 3D view -- corrected in-world with a screenshot of exactly that:
-    /// the reference viewer's build floater open on a HUD, gizmo and all. Arranging HUDs on the
-    /// screen is a normal part of using them.
-    /// </remarks>
-    private System.Collections.Generic.IReadOnlyList<(SLNG.Core.ECS.Entity Entity, uint LocalId, string Name)> CollectWornItems()
-    {
-        var worn = new System.Collections.Generic.List<(SLNG.Core.ECS.Entity, uint, string)>();
-        if (_world == null) return worn;
-
-        var self = _world.Query<SLNG.Core.Components.AvatarComponent>()
-            .FirstOrDefault(e => e.GetComponent<SLNG.Core.Components.AvatarComponent>()?.IsLocalAgent == true);
-        if (self == null) return worn;
-
-        foreach (var entity in _world.Query<SLNG.Core.Components.AttachmentComponent>())
-        {
-            var attachment = entity.GetComponent<SLNG.Core.Components.AttachmentComponent>();
-            if (attachment == null || attachment.AvatarEntityId != self.Id) continue;
-
-            var meta = entity.GetComponent<SLNG.Core.Components.MetadataComponent>();
-            string name = string.IsNullOrWhiteSpace(meta?.Name) ? $"Object {entity.LocalId}" : meta!.Name;
-            worn.Add((entity, entity.LocalId, name));
-        }
-
-        worn.Sort((a, b) => string.Compare(a.Item3, b.Item3, System.StringComparison.OrdinalIgnoreCase));
-        return worn;
     }
 
     /// <summary>FEAT-UI-05: re-evaluates Link / Unlink on every open edit window. Both depend on

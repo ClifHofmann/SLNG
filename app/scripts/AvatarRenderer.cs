@@ -205,6 +205,10 @@ public partial class AvatarRenderer : Node3D
     private readonly Dictionary<Guid, BoneAttachment3D> _attachmentNodes = new();
     // attachment entity ID → Rigged mesh node parented to the avatar skeleton
     private readonly Dictionary<Guid, MeshInstance3D> _riggedAttachments = new();
+
+    // FEAT-UI-23: the bone-parented collider that makes a rigged worn item clickable, so it can
+    // be torn down with the item rather than outliving it on the skeleton.
+    private readonly Dictionary<Guid, BoneAttachment3D> _riggedPickBodies = new();
     // attachment entity ID → (mesh id, per-face textures, default face) of the currently
     // loaded/loading attachment mesh. Guards against re-triggering the async mesh load on every
     // redundant PrimitiveComponent update (LibreMetaverse's ObjectUpdate fires several times per
@@ -1926,6 +1930,11 @@ public partial class AvatarRenderer : Node3D
             oldRigged.QueueFree();
             _riggedAttachments.Remove(entityId);
         }
+        if (_riggedPickBodies.TryGetValue(entityId, out var oldPick))
+        {
+            if (IsInstanceValid(oldPick)) oldPick.QueueFree();
+            _riggedPickBodies.Remove(entityId);
+        }
         // Same item being re-rezzed with a NEW mesh id at this attachment point (e.g. an
         // applier swapping mesh assets, not just face textures): the OLD mesh's pelvis fixup
         // must go too, or a removed/replaced fitted item leaves the avatar's height shifted
@@ -2082,6 +2091,101 @@ public partial class AvatarRenderer : Node3D
         }
     }
 
+    /// <summary>FEAT-UI-23: makes a RIGGED worn item right-clickable, with a collision shape
+    /// parented to the one bone it is mostly weighted to.</summary>
+    /// <remarks>
+    /// An approximation, deliberately. The reference viewer picks by rendering the scene into a
+    /// colour-coded buffer and reading the pixel under the cursor, so it hits deformed geometry
+    /// exactly; Godot has no equivalent, and a collision shape cannot be skinned. What it can do
+    /// is follow a bone.
+    ///
+    /// So the shape is the item's bind-pose geometry hung off its DOMINANT bone -- the one
+    /// carrying the most weight across the whole mesh. For a hat, a pair of glasses, jewellery,
+    /// anything weighted to a single joint, that is exact. For a shirt it is right over the
+    /// torso and drifts at the sleeves when the arms move, which is close enough to click; the
+    /// alternative was worn items staying unclickable, which is what the "Worn items" submenu
+    /// was standing in for and the user rejected it.
+    ///
+    /// The holder node carries the bone's inverse rest transform, which is the same matrix the
+    /// Skin binds use (see the AddBind call in the rigged-mesh builder) -- it maps the mesh's
+    /// bind space into that bone's space, so the shape lands on the item rather than at the
+    /// skeleton's origin.
+    /// </remarks>
+    private void AddRiggedPickBody(AvatarVisual avatarVisual, Skeleton3D skeleton, MeshData meshData, Guid entityId)
+    {
+        if (!avatarVisual.IsSelf || _world == null || meshData.Skin == null) return;
+
+        var entity = _world.GetEntity(entityId);
+        if (entity == null) return;
+
+        int dominant = DominantJoint(meshData);
+        if (dominant < 0 || dominant >= meshData.Skin.JointNames.Length) return;
+
+        string boneName = meshData.Skin.JointNames[dominant];
+        int boneIdx = skeleton.FindBone(boneName);
+        if (boneIdx < 0) return;
+
+        var source = _riggedAttachments.TryGetValue(entityId, out var existing) && IsInstanceValid(existing)
+            ? existing.Mesh as ArrayMesh
+            : null;
+        source ??= skeleton.GetChildren().OfType<MeshInstance3D>().LastOrDefault()?.Mesh as ArrayMesh;
+        var shape = source?.CreateTrimeshShape();
+        if (shape == null) return;
+
+        var attach = new BoneAttachment3D { Name = $"WornPick_{entityId:N}", BoneName = boneName, BoneIdx = boneIdx };
+        skeleton.AddChild(attach);
+
+        var holder = new Node3D { Name = "BindSpace", Transform = ComputeGlobalRestTransform(skeleton, boneIdx).AffineInverse() };
+        attach.AddChild(holder);
+
+        var body = new StaticBody3D
+        {
+            Name = "AttachCollision",
+            CollisionLayer = PhysicsLayers.Phantom,
+            CollisionMask = 0,
+        };
+        body.SetMeta("EntityId", entityId.ToString());
+        body.SetMeta("LocalId", entity.LocalId.ToString());
+        body.AddChild(new CollisionShape3D { Shape = shape });
+        holder.AddChild(body);
+
+        _riggedPickBodies[entityId] = attach;
+    }
+
+    /// <summary>The joint carrying the most weight across the whole mesh.</summary>
+    private static int DominantJoint(MeshData meshData)
+    {
+        if (meshData.Skin == null) return -1;
+        var total = new float[meshData.Skin.JointNames.Length];
+
+        foreach (var sub in meshData.Submeshes)
+        {
+            if (sub.Weights == null) continue;
+            foreach (var vertex in sub.Weights)
+            {
+                Accumulate(total, vertex.Joint0, vertex.Weight0);
+                Accumulate(total, vertex.Joint1, vertex.Weight1);
+                Accumulate(total, vertex.Joint2, vertex.Weight2);
+                Accumulate(total, vertex.Joint3, vertex.Weight3);
+            }
+        }
+
+        static void Accumulate(float[] total, int joint, float weight)
+        {
+            if (weight > 0f && joint >= 0 && joint < total.Length) total[joint] += weight;
+        }
+
+        int best = -1;
+        float bestWeight = 0f;
+        for (int i = 0; i < total.Length; i++)
+        {
+            if (total[i] <= bestWeight) continue;
+            bestWeight = total[i];
+            best = i;
+        }
+        return best;
+    }
+
     /// <summary>FEAT-UI-23: the world transform of the attach point a worn item hangs on -- the
     /// frame its own position and rotation are expressed in.</summary>
     /// <remarks>
@@ -2183,6 +2287,7 @@ public partial class AvatarRenderer : Node3D
                 mi.CustomAabb = new Aabb(new Godot.Vector3(-4, -4, -4), new Godot.Vector3(8, 8, 8));
                 
                 skeleton.AddChild(mi);
+                AddRiggedPickBody(avatarVisual, skeleton, meshData, entityId);
                 _riggedAttachments[entityId] = mi;
                 avatarVisual.RiggedAttachments.Add((mi, meshData, meshId));
 

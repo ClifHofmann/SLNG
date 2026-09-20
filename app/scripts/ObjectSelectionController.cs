@@ -431,13 +431,24 @@ namespace SLNG.App
                                             return;
                                         }
 
-                                        // Right-clicking inside an edit session moves the
-                                        // selection onto that object first, so the menu acts on
-                                        // what it is drawn over. Outside one it only opens the
-                                        // menu, exactly as before.
+                                        // A right-click marks what it is about to act on, in or
+                                        // out of an edit session -- asked for in-world, and the
+                                        // reference viewer highlights its pie menu's target the
+                                        // same way. Outside a session that is the plain click
+                                        // highlight, which the next click elsewhere clears.
                                         if (_editSessionOpen)
                                         {
                                             SelectOnly(entity, localId);
+                                        }
+                                        else
+                                        {
+                                            if (_lastClicked != null && _lastClicked.Id != entity.Id)
+                                            {
+                                                _world.DeselectEntity(_lastClicked);
+                                            }
+                                            _world.SelectEntity(entity);
+                                            _session.SelectObject(localId);
+                                            _lastClicked = entity;
                                         }
 
                                         _contextMenu.ShowMenu(mouseBtn.Position, entity, localId,
