@@ -648,7 +648,7 @@ namespace SLNG.App.UI
         /// World.DeselectEntity(), which no-ops once the object is no longer the world's
         /// selected entity (e.g. the user already clicked a different object, or clicked empty
         /// space) and never hid the window either, so Close silently did nothing.</summary>
-        private void RequestClose()
+        public void RequestClose()
         {
             Visible = false;
 
@@ -656,8 +656,8 @@ namespace SLNG.App.UI
             {
                 _session.DeselectObject(_currentLocalId);
             }
-            // World selection is a set now (multiple windows can each have their own object
-            // selected at once) -- deselect only this window's entity, not "the" selection.
+            // Only this window's own entity. Everything else in the selection belongs to the
+            // controller, which clears it from EndEditSession when Closed fires (FEAT-UI-05).
             if (_world != null && _currentEntity != null && _world.IsSelected(_currentEntity))
             {
                 _world.DeselectEntity(_currentEntity);

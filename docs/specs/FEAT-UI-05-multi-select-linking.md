@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-05`
 - **Track:** `ui` / `net`
-- **Status:** `🧪 Review` (implemented `v0.23.61-alpha`, highlight follows the reparent as of `v0.23.63-alpha`)
+- **Status:** `🧪 Review` (implemented `v0.23.61-alpha`, one edit session over one selection as of `v0.23.64-alpha`)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -133,3 +133,35 @@ Checked in a throwaway headless project rather than argued from the documentatio
 true; after `remove_child()` it is gone at once. So removal now takes the node out of the tree
 first and frees it afterwards, and every lookup goes through a helper that ignores a node on its
 way out.
+
+## One session, one selection (`v0.23.64-alpha`)
+
+Reported after testing the buttons: *"beim Hin- und Herklicken funktioniert das noch nicht
+sauber. Das liegt aber daran, dass man nur ein Objekt — also natürlich auch verknüpfte Objekte
+— aktiv bearbeiten darf. Schau dir mal an, wie das im Firestorm usw. funktioniert."*
+
+That is the right diagnosis, and it is an architectural difference rather than a bug. SLNG opened
+**one edit window per object**, deliberately, and kept a set of "pinned" entities beside a
+separate one-object click highlight. Which of two objects a click affected then depended on which
+of them happened to own a window.
+
+The reference viewer has one selection and one floater. From `lltoolselect.cpp`:
+
+- an **unmodified** click calls `deselectAll()` and then selects what was hit
+  (`selectObjectAndFamily`, or `selectObjectOnly` when linked parts are being edited);
+- **shift or ctrl** toggles that object in or out of the selection instead
+  (`extend_select = (pick.mKeyMask == MASK_SHIFT) || (pick.mKeyMask == MASK_CONTROL)`);
+- a click on **nothing**, unmodified, is `deselectAll()`.
+
+SLNG now works the same way. `ObjectSelectionController` holds one ordered selection and a single
+`_editSessionOpen` flag; the last entry is the primary, which is what the one window shows and
+what a link makes the root. `Pin`/`Unpin` and the per-object window dictionary are gone, and with
+them `RetargetObjectEditWindow` — the window simply follows `OnPrimarySelectionChanged`.
+
+Two consequences worth stating:
+
+- While the window is open, a left click anywhere **picks** rather than touches or sits. That is
+  build mode in the viewer, and it replaces the previous compromise where only clicks inside the
+  edited linkset were treated as picks.
+- Clicking empty ground clears the selection, and Boot closes the window behind it, because a
+  build window with nothing selected has nothing to show.
