@@ -904,12 +904,29 @@ public sealed partial class GridSession
         System.Numerics.Vector3 binormal = default)
     {
         var sim = _client.Network.CurrentSim;
-        if (sim == null) return;
+        if (sim == null)
+        {
+            Console.WriteLine($"[Touch] {localId}: no current simulator -- nothing sent");
+            return;
+        }
 
-        await _client.Objects.ClickObjectAsync(
-            sim, localId,
-            ToOmv(uvCoord), ToOmv(stCoord), faceIndex,
-            ToOmv(position), ToOmv(normal), ToOmv(binormal));
+        // Callers fire this and forget it (a touch has no result to await), so an exception in
+        // here would vanish into a discarded Task and the click would look like it was sent.
+        // That is the one gap the caller's own log line cannot close: it records the CALL, not
+        // the packet.
+        try
+        {
+            await _client.Objects.ClickObjectAsync(
+                sim, localId,
+                ToOmv(uvCoord), ToOmv(stCoord), faceIndex,
+                ToOmv(position), ToOmv(normal), ToOmv(binormal));
+
+            Console.WriteLine($"[Touch] grab+release sent for {localId} to {sim.Name}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Touch] {localId}: send failed -- {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     public void SelectObject(uint localId)
