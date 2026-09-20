@@ -296,7 +296,7 @@ namespace SLNG.App
                         // of the object menu -- there's no entity here to Edit/Touch/Inspect.
                         if (!isTaggedObject && mouseBtn.ButtonIndex == MouseButton.Right)
                         {
-                            _contextMenu.ShowGroundMenu(mouseBtn.Position, result["position"].AsVector3());
+                            _contextMenu.ShowGroundMenu(mouseBtn.Position, RezPointFrom(result));
                             GetViewport().SetInputAsHandled();
                             return;
                         }
@@ -405,7 +405,8 @@ namespace SLNG.App
                                             SelectOnly(entity, localId);
                                         }
 
-                                        _contextMenu.ShowMenu(mouseBtn.Position, entity, localId);
+                                        _contextMenu.ShowMenu(mouseBtn.Position, entity, localId,
+                                            RezPointFrom(result));
                                         GetViewport().SetInputAsHandled();
                                         
                                         return;
@@ -437,6 +438,28 @@ namespace SLNG.App
                 }
             }
         }
+
+        /// <summary>Where a prim rezzed from a right-click should sit: the point that was hit,
+        /// lifted clear of the surface along its normal.</summary>
+        /// <remarks>
+        /// MVP4-1. LibreMetaverse's AddPrim hardcodes <c>BypassRaycast = 1</c> with RayStart and
+        /// RayEnd both set to the position we pass, so the simulator puts the prim's CENTRE
+        /// exactly there and a new prim would be half buried in whatever it was rezzed onto.
+        /// The reference viewer instead leaves the ray to the simulator, which rests the prim on
+        /// the surface; lifting by half the new prim's height gets to the same place without
+        /// needing a packet LibreMetaverse does not expose.
+        /// </remarks>
+        private static Vector3 RezPointFrom(Godot.Collections.Dictionary hit)
+        {
+            var point = hit.ContainsKey("position") ? hit["position"].AsVector3() : Vector3.Zero;
+            var normal = hit.ContainsKey("normal") ? hit["normal"].AsVector3() : Vector3.Up;
+            if (normal.LengthSquared() < 0.0001f) normal = Vector3.Up;
+            return point + normal.Normalized() * (NewPrimSize * 0.5f);
+        }
+
+        /// <summary>The edge length GridSession.CreatePrim rezzes with, SL's default half-metre
+        /// cube. Kept in step by hand; a wrong value here only offsets the drop point.</summary>
+        private const float NewPrimSize = 0.5f;
 
         private Godot.Collections.Dictionary RaycastFromMouse(Vector2 mousePos, Godot.Collections.Array<Rid>? exclude = null)
         {
