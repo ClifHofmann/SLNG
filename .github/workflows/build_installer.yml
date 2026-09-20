@@ -98,3 +98,7 @@ jobs:
       if: startsWith(github.ref, 'refs/tags/')
       with:
         files: Output/PurisViewer_Setup_*.exe
+        # Every -alpha tag is a pre-release, so GitHub stops calling the newest one "Latest"
+        # and the download page does not offer an alpha to someone looking for a stable build.
+        # Was set by hand on v0.23.55-alpha; this is the same decision, made once.
+        prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') }}
