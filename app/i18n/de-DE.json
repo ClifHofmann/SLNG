@@ -74,6 +74,7 @@
       "copy_slurl_tooltip": "Klicken, um SLURL in die Zwischenablage zu kopieren",
       "slurl_copied": "SLURL in Zwischenablage kopiert: {0}",
       "fps_tooltip": "Bilder pro Sekunde (Klicken für Leistungsstatistik)",
+      "balance_tooltip": "Dein Kontostand in Linden-Dollar",
       "graphics_profile_tooltip": "Grafikprofil auswählen",
       "media_autoload_on_tooltip": "Medien-Autoplay ist AN — klicken, um automatisches Laden von AUTO_PLAY-Medien auf Prims zu deaktivieren",
       "media_autoload_off_tooltip": "Medien-Autoplay ist AUS — klicken, um automatisches Laden von AUTO_PLAY-Medien auf Prims zu aktivieren",

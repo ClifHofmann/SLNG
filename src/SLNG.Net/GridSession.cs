@@ -530,6 +530,10 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Groups.CurrentGroups += OnCurrentGroups;
         _client.Self.GroupChatJoined += OnGroupChatJoined;
         _client.Self.AlertMessage += OnAlertMessage;
+        // FEAT-ECON-01. MoneyBalance rather than MoneyBalanceReply: the reply carries a whole
+        // transaction record (description, meters credit) that nothing here consumes yet, and
+        // both are raised from the same packet.
+        _client.Self.MoneyBalance += OnMoneyBalance;
         _client.Objects.KillObject += OnKillObject;
         _client.Objects.KillObjects += OnKillObjects;
         _client.Terrain.LandPatchReceived += OnLandPatchReceived;

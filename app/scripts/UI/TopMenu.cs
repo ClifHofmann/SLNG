@@ -92,6 +92,25 @@ namespace SLNG.App.UI
 
         private int _lastFps = -1;
 
+        private Label _balanceLabel = null!;
+        private VSeparator _balanceSep = null!;
+
+        /// <summary>FEAT-ECON-01: the L$ balance readout.</summary>
+        /// <param name="balance">The simulator's figure.</param>
+        /// <param name="known">False until the simulator has answered at all. It stays hidden
+        /// until then rather than showing L$ 0 -- to someone with thousands that is not a blank
+        /// readout, it is a wrong one.</param>
+        public void UpdateBalance(int balance, bool known)
+        {
+            _balanceLabel.Visible = known;
+            _balanceSep.Visible = known;
+            if (!known) return;
+
+            // Thousands separators, in the user's own locale: a five-figure balance is otherwise
+            // a wall of digits. "L$" leads, as in the reference viewer.
+            _balanceLabel.Text = $"L$ {balance:N0}";
+        }
+
         /// <summary>FEAT-UI-24: Updates the location readout in the top bar.</summary>
         public void UpdateLocation(string? regionName, string? parcelName, int x, int y, int z)
         {
@@ -392,6 +411,22 @@ namespace SLNG.App.UI
             _fpsSep = new VSeparator { Visible = false };
             _fpsSep.AddThemeConstantOverride("separation", 6);
             hbox.AddChild(_fpsSep);
+
+            // FEAT-ECON-01: left of the version, right of the FPS readout -- the corner the
+            // reference viewer keeps money in.
+            _balanceLabel = new Label
+            {
+                Visible = false,
+                VerticalAlignment = VerticalAlignment.Center,
+                TooltipText = L10n.Tr("ui.topmenu.balance_tooltip"),
+            };
+            _balanceLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.85f, 0.45f, 0.95f));
+            _balanceLabel.AddThemeFontSizeOverride("font_size", 13);
+            hbox.AddChild(_balanceLabel);
+
+            _balanceSep = new VSeparator { Visible = false };
+            _balanceSep.AddThemeConstantOverride("separation", 6);
+            hbox.AddChild(_balanceSep);
 
             var versionLabel = new Label
             {

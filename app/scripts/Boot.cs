@@ -1058,6 +1058,9 @@ public partial class Boot : Control
         return parts;
     }
 
+    /// <summary>FEAT-ECON-01: puts the L$ balance in the top bar.</summary>
+    private void ShowBalance(int balance) => _topMenu?.UpdateBalance(balance, known: true);
+
     /// <summary>FEAT-UI-05: the one edit window follows whichever object is the primary
     /// selection.</summary>
     private void ShowInEditWindow(SLNG.Core.ECS.Entity entity, uint localId)
@@ -3173,6 +3176,11 @@ public partial class Boot : Control
         // fine here -- worst case the toast is a frame late, same tolerance as every other
         // "parked" flag in this class.
         _session.RegionConnected += (s, regionHandle) => _pendingArrivalToast = true;
+
+        // FEAT-ECON-01: the balance readout. Deferred by name rather than through a lambda --
+        // MoneyBalanceReply arrives on LibreMetaverse's packet thread, and Callable.From from a
+        // background thread is not safe here.
+        _session.BalanceChanged += (s, balance) => CallDeferred(nameof(ShowBalance), balance);
 
         _session.RegionEnvironmentReceived += (s, env) => _pendingRegionEnvironment = env;
 
