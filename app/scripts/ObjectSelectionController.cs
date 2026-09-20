@@ -514,6 +514,18 @@ namespace SLNG.App
                                             // anyway would be answering a question nobody asked.
                                             if (clickAction is ClickActionDisabled or ClickActionIgnore) return;
 
+                                            // One line per click ON AN OBJECT, naming what the
+                                            // object asked for and what was done with it. "Ich
+                                            // klicke und nichts passiert" has three different
+                                            // causes -- the ray missed, the click action was
+                                            // something we ignore, or the touch went out and the
+                                            // script stayed silent -- and they are indistinguishable
+                                            // from the outside.
+                                            Logger.Info($"[Click] left on {rawLocalId} (root {localId}): " +
+                                                        $"action={clickAction} takesMoney={rawPrim?.TakesMoney == true || rootPrim?.TakesMoney == true} " +
+                                                        $"sale={entity.GetComponent<MetadataComponent>()?.SaleType} " +
+                                                        $"-> {(wantSit ? "sit" : "touch")}");
+
                                             if (wantSit)
                                             {
                                                 _session.RequestSit(rawLocalId);
