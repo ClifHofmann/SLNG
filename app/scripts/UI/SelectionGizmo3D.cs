@@ -320,6 +320,15 @@ namespace SLNG.App.UI
         /// because only WorldSimulation keeps the parent index.</summary>
         public System.Func<Entity, System.Collections.Generic.IReadOnlyList<Entity>>? LinksetParts;
 
+        /// <summary>Re-composes the linkset's other prims from the root's current transform.
+        /// Supplied by the owner for the same reason as LinksetParts.</summary>
+        public System.Action<Entity>? RecomposeLinkset;
+
+        // What the other prims looked like when the drag began, so a stretch can put them at
+        // startValue * factor every frame instead of multiplying what it wrote last frame. The
+        // reference viewer keeps exactly this (LLSelectNode::mSavedScale / mSavedPositionLocal).
+        private readonly System.Collections.Generic.List<(Entity Part, System.Numerics.Vector3 LocalPosition, System.Numerics.Vector3 Scale)> _dragStartParts = new();
+
         // The box the stretch handles sit on, in the ROOT prim's own frame: where its centre is
         // relative to the root, and half its size. For a single prim that is (0, scale/2) -- for
         // a linkset it is the whole object, which is the point.
@@ -700,6 +709,18 @@ namespace SLNG.App.UI
                 _dragStartSlScale = prim0.Scale;
                 _dragStartBoxCentre = _boxCentreLocal;
                 _dragStartBoxHalf = _boxHalf;
+
+                _dragStartParts.Clear();
+                if (!SelectionSettings.EditLinkedParts && LinksetParts?.Invoke(_entity) is { } startParts)
+                {
+                    foreach (var part in startParts)
+                    {
+                        var partTransform = part.GetComponent<TransformComponent>();
+                        var partPrim = part.GetComponent<PrimitiveComponent>();
+                        if (partTransform == null || partPrim == null) continue;
+                        _dragStartParts.Add((part, partTransform.LocalPosition, partPrim.Scale));
+                    }
+                }
             }
             else if (IsRing(handle))
             {
@@ -823,6 +844,7 @@ namespace SLNG.App.UI
             _dragging = Handle.None;
             _snapping = false;
             _dragFrameCaptured = false;
+            _dragStartParts.Clear();
 
             var transform = _entity?.GetComponent<TransformComponent>();
             if (transform != null)
@@ -905,6 +927,7 @@ namespace SLNG.App.UI
 
             StoreSlWorldRotation(transform, slRot);
             _world.NotifyComponentUpdated(_entity, transform);
+            RecomposeLinkset?.Invoke(_entity);
 
             double now = Time.GetTicksMsec() / 1000.0;
             if (now - _lastSendAt >= SendIntervalSeconds)
@@ -1032,6 +1055,25 @@ namespace SLNG.App.UI
 
             if (!worn || due) _world.NotifyComponentUpdated(_entity, prim);
             _world.NotifyComponentUpdated(_entity, transform);
+
+            // The simulator scales every part of the linkset, but its answer is a network round
+            // trip away: left to it, the other prims stand still and then jump, ten times a
+            // second. So they are scaled here too -- from their values at grab time, never from
+            // what was written last frame, or the factor would compound every frame.
+            foreach (var (part, startLocal, startScale) in _dragStartParts)
+            {
+                var partTransform = part.GetComponent<TransformComponent>();
+                var partPrim = part.GetComponent<PrimitiveComponent>();
+                if (partTransform == null || partPrim == null) continue;
+
+                partTransform.LocalPosition = startLocal * applied;
+                partPrim.Scale = new System.Numerics.Vector3(
+                    System.Math.Clamp(startScale.X * applied.X, MinPrimEdge, MaxPrimEdge),
+                    System.Math.Clamp(startScale.Y * applied.Y, MinPrimEdge, MaxPrimEdge),
+                    System.Math.Clamp(startScale.Z * applied.Z, MinPrimEdge, MaxPrimEdge));
+                _world.NotifyComponentUpdated(part, partPrim);
+            }
+            RecomposeLinkset?.Invoke(_entity);
 
             if (due)
             {
@@ -1183,6 +1225,7 @@ namespace SLNG.App.UI
             StoreSlWorldPosition(transform, slPos);
 
             _world.NotifyComponentUpdated(_entity, transform);
+            RecomposeLinkset?.Invoke(_entity);
         }
 
         /// <summary>What a gesture changes, and therefore what its update carries. A move sends

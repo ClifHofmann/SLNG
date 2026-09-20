@@ -3406,6 +3406,8 @@ public partial class Boot : Control
             // whole thing rather than its root prim. WorldSimulation is the only holder of the
             // parent index, which is why this is wired from here rather than read by the gizmo.
             _selectionGizmo.LinksetParts = CollectLinksetParts;
+            _selectionGizmo.RecomposeLinkset = root =>
+                _worldSimulation?.RecomposeChildren(root.RegionHandle, root.LocalId);
             _objectSelectionController.LinksetParts = CollectLinksetParts;
             // FEAT-ECON-02: a left click on an object whose click action is Pay or Buy opens the
             // same dialog the context menu opens.
