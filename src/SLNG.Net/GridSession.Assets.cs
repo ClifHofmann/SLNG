@@ -64,8 +64,12 @@ public sealed partial class GridSession
         if (batch.Count > 0)
             await FetchOneBatchAsync(sim, batch, result, cancellationToken).ConfigureAwait(false);
 
-        Console.Error.WriteLine($"[LegacyMat] requested {materialIds.Count} -> resolved {result.Count} " +
-            $"(RenderMaterials cap {(capUri == null ? "MISSING on this region" : "present")})");
+        // One line per BATCH, and a busy region asks for materials continuously -- measured at
+        // ~165 lines in a single session, which is most of what is left in a quiet log. The
+        // failure branches below stay unconditional: those say why something is missing.
+        if (Diag.Verbose)
+            Console.Error.WriteLine($"[LegacyMat] requested {materialIds.Count} -> resolved {result.Count} " +
+                $"(RenderMaterials cap {(capUri == null ? "MISSING on this region" : "present")})");
 
         return result;
     }
@@ -132,7 +136,8 @@ public sealed partial class GridSession
                 try { into.Add(ToLegacyMaterialData(new LibreMetaverse.Materials.LegacyMaterial(em))); }
                 catch (Exception ex) { Console.Error.WriteLine($"[LegacyMat] entry parse failed: {ex.Message}"); }
             }
-            Console.Error.WriteLine($"[LegacyMat] POST {status}: {ids.Count} ids -> {into.Count - before} materials");
+            if (Diag.Verbose)
+                Console.Error.WriteLine($"[LegacyMat] POST {status}: {ids.Count} ids -> {into.Count - before} materials");
         }
         catch (Exception ex)
         {

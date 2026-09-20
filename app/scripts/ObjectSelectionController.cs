@@ -35,6 +35,21 @@ namespace SLNG.App
         // happened to own a window.
         private bool _editSessionOpen;
 
+        // SL's click actions, in the simulator's own numbering (indra_constants.h, marked "DO NOT
+        // CHANGE THE SEQUENCE OF THIS LIST"). Only the ones this viewer acts on are named; Open,
+        // Play, OpenMedia and Zoom fall through to a touch, which is what an unhandled action did
+        // before and is harmless.
+        private const byte ClickActionSit = 1;
+        private const byte ClickActionBuy = 2;
+        private const byte ClickActionPay = 3;
+        private const byte ClickActionDisabled = 8;
+        private const byte ClickActionIgnore = 9;
+
+        /// <summary>FEAT-ECON-02: a left click asked to pay or buy this object -- Boot owns the
+        /// two dialogs, and the context menu reaches them through the same pair.</summary>
+        public System.Action<Entity, uint>? OnPayRequested;
+        public System.Action<Entity, uint>? OnBuyRequested;
+
         /// <summary>The other prims of an object's linkset, supplied by Boot -- only
         /// WorldSimulation keeps the parent index.</summary>
         public System.Func<Entity, System.Collections.Generic.IReadOnlyList<Entity>>? LinksetParts;
@@ -463,7 +478,53 @@ namespace SLNG.App
                                             var rawPrim = rawEntity.GetComponent<PrimitiveComponent>();
                                             var rootPrim = entity != rawEntity ? entity.GetComponent<PrimitiveComponent>() : null;
                                             byte clickAction = (rawPrim != null && rawPrim.ClickAction != 0) ? rawPrim.ClickAction : (rootPrim?.ClickAction ?? 0);
-                                            bool wantSit = clickAction == 1 && !isSittingOnThisObject;
+                                            bool wantSit = clickAction == ClickActionSit && !isSittingOnThisObject;
+
+                                            // FEAT-ECON-02: an object can say what a LEFT click on
+                                            // it means, and Pay and Buy are two of the answers --
+                                            // which is most of what a vendor is. SLNG knew only Sit
+                                            // and Touch, so clicking a vendor sent a touch its
+                                            // script ignores: "ich klicke drauf und es passiert
+                                            // nichts". The reference viewer dispatches the same
+                                            // way (LLToolPie::handleLeftClickPick), and gates each
+                                            // on the object actually being able to do it.
+                                            if (clickAction == ClickActionPay
+                                                && (rawPrim?.TakesMoney == true || rootPrim?.TakesMoney == true))
+                                            {
+                                                // "pay event goes to object actually clicked on"
+                                                OnPayRequested?.Invoke(rawEntity, rawLocalId);
+                                                return;
+                                            }
+
+                                            if (clickAction == ClickActionBuy)
+                                            {
+                                                // Buying is about the OBJECT, so the root prim --
+                                                // the sale price lives there, not on the face you
+                                                // happened to hit.
+                                                var meta = entity.GetComponent<MetadataComponent>();
+                                                if (meta != null && meta.SaleType != PrimSaleType.NotForSale)
+                                                {
+                                                    OnBuyRequested?.Invoke(entity, localId);
+                                                    return;
+                                                }
+                                            }
+
+                                            // "Disabled" and "Ignore" mean exactly that: the object
+                                            // has asked not to be clicked, and sending a touch
+                                            // anyway would be answering a question nobody asked.
+                                            if (clickAction is ClickActionDisabled or ClickActionIgnore) return;
+
+                                            // One line per click ON AN OBJECT, naming what the
+                                            // object asked for and what was done with it. "Ich
+                                            // klicke und nichts passiert" has three different
+                                            // causes -- the ray missed, the click action was
+                                            // something we ignore, or the touch went out and the
+                                            // script stayed silent -- and they are indistinguishable
+                                            // from the outside.
+                                            Logger.Info($"[Click] left on {rawLocalId} (root {localId}): " +
+                                                        $"action={clickAction} takesMoney={rawPrim?.TakesMoney == true || rootPrim?.TakesMoney == true} " +
+                                                        $"sale={entity.GetComponent<MetadataComponent>()?.SaleType} " +
+                                                        $"-> {(wantSit ? "sit" : "touch")}");
 
                                             if (wantSit)
                                             {
@@ -473,7 +534,7 @@ namespace SLNG.App
                                             {
                                                 var hitPosGodot = result.ContainsKey("position") ? result["position"].AsVector3() : Vector3.Zero;
                                                 var hitPosSl = RenderConfig.FromGodot(rawEntity.RegionHandle, hitPosGodot);
-                                                _ = _session.ClickObjectAsync(rawLocalId, position: hitPosSl);
+                                                SendTouch(rawEntity, rawLocalId, mouseBtn.Position, hitPosSl);
                                             }
                                             return;
                                         }
@@ -510,6 +571,17 @@ namespace SLNG.App
                     }
                     else
                     {
+                        // A right-click that resolves to nothing at all is the one case where the
+                        // viewer looks broken rather than merely unhelpful: no menu appears, and
+                        // there is nothing on screen to say why. It means the ray met no collider
+                        // -- open sky, or an object whose collision shape has not been built yet.
+                        // One line, only for the right button, so "nichts passiert" is answerable
+                        // afterwards.
+                        if (mouseBtn.ButtonIndex == MouseButton.Right)
+                        {
+                            Logger.Warn($"[Pick] right-click at {mouseBtn.Position} hit nothing -- no collider under the cursor");
+                        }
+
                         // Clicked on nothing. In an edit session that clears the WHOLE selection,
                         // the way deselectAll() does in the reference viewer -- and Boot closes
                         // the window behind it, because a build floater with an empty selection
@@ -553,6 +625,49 @@ namespace SLNG.App
         /// <summary>The edge length GridSession.CreatePrim rezzes with, SL's default half-metre
         /// cube. Kept in step by hand; a wrong value here only offsets the drop point.</summary>
         private const float NewPrimSize = 0.5f;
+
+        /// <summary>
+        /// Sends the touch, with the detail about WHERE on the object it landed.
+        /// </summary>
+        /// <remarks>
+        /// A touch is not just "this object was clicked". The wire carries the face, the surface
+        /// and texture coordinates, the normal and the binormal of the exact spot
+        /// (<c>ObjectGrab.SurfaceInfo</c> — <c>LLPickInfo::getSurfaceInfo</c> fills all of it),
+        /// because that is what a script reads back with <c>llDetectedTouchFace</c>,
+        /// <c>llDetectedTouchST</c> and <c>llDetectedTouchUV</c>. A multi-item vendor panel is
+        /// built on exactly that: one prim, one face per product.
+        ///
+        /// <para>SLNG used to send zeros for all of it — "face 0, at (0,0), no normal" — which is
+        /// not a missing nicety but a wrong answer, and a vendor that acts on the face has no
+        /// reason to respond to it. That is "ich klicke auf den Verkaufsstand und es passiert
+        /// nichts" while the same click in Firestorm opens the menu.</para>
+        ///
+        /// <para>If the object's geometry is not resident (still loading, or drawn from an
+        /// instanced copy) there is nothing to measure against, and the touch goes out without the
+        /// detail rather than not at all — which is what it always did.</para>
+        /// </remarks>
+        private void SendTouch(Entity entity, uint localId, Vector2 mousePos, System.Numerics.Vector3 hitPosSl)
+        {
+            var rayOrigin = _camera.ProjectRayOrigin(mousePos);
+            var rayDirection = _camera.ProjectRayNormal(mousePos);
+
+            if (ObjectRenderer.TrySurfacePick(entity.Id, rayOrigin, rayDirection,
+                                              out int face, out var st, out var uv,
+                                              out var normal, out var binormal))
+            {
+                Logger.Info($"[Touch] {localId} face={face} st=({st.X:0.###},{st.Y:0.###}) " +
+                            $"uv=({uv.X:0.###},{uv.Y:0.###})");
+                _ = _session.ClickObjectAsync(
+                    localId, face, hitPosSl, normal,
+                    new System.Numerics.Vector3(uv.X, uv.Y, 0f),
+                    new System.Numerics.Vector3(st.X, st.Y, 0f),
+                    binormal);
+                return;
+            }
+
+            Logger.Info($"[Touch] {localId}: no surface detail -- geometry not resident");
+            _ = _session.ClickObjectAsync(localId, position: hitPosSl);
+        }
 
         private Godot.Collections.Dictionary RaycastFromMouse(Vector2 mousePos, Godot.Collections.Array<Rid>? exclude = null)
         {

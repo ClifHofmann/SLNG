@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using Godot;
 using SLNG.App;
@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.32-alpha";
+    public const string AppVersion = "v0.24.42-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -902,6 +902,10 @@ public partial class Boot : Control
         // FEAT-UI-23: take a worn item off from the 3D view. DetachByLocalId already handles the
         // Current-Outfit write-back (FEAT-INV-03), so the change survives a relog.
         _inWorldContextMenu.OnDetachClicked = (entity, localId) => _session?.DetachByLocalId(localId);
+        // FEAT-ECON-02: buying asks first. Everything the dialog shows -- price, sale type -- is
+        // the simulator's own answer, taken from the entity rather than recomputed here.
+        _inWorldContextMenu.OnBuyClicked = (entity, localId) => ShowBuyWindow(entity, localId);
+        _inWorldContextMenu.OnPayClicked = (entity, localId) => ShowPayWindow(entity);
         _inWorldContextMenu.OnSitOnGroundClicked = (godotPos) => _session?.SitOnGround();
         // FEAT-UI-13: right-click an avatar -> Profile / IM.
         _inWorldContextMenu.OnAvatarProfileClicked = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
@@ -1056,6 +1060,58 @@ public partial class Boot : Control
             if (child != null) parts.Add(child);
         }
         return parts;
+    }
+
+    /// <summary>FEAT-ECON-01: puts the L$ balance in the top bar.</summary>
+    private void ShowBalance(int balance) => _topMenu?.UpdateBalance(balance, known: true);
+
+    private void RefreshContextMenuSale() => _inWorldContextMenu?.RefreshSaleEntry();
+
+    private SLNG.App.UI.BuyObjectWindow? _buyWindow;
+    private SLNG.App.UI.PayObjectWindow? _payWindow;
+
+    /// <summary>FEAT-ECON-02: paying an object -- the vendor case, which is a different
+    /// transaction from buying one.</summary>
+    private void ShowPayWindow(SLNG.Core.ECS.Entity entity)
+    {
+        var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+        if (_session == null || hudLayer == null) return;
+
+        var meta = entity.GetComponent<SLNG.Core.Components.MetadataComponent>();
+        if (meta == null || meta.Id == System.Guid.Empty) return;
+
+        if (_payWindow != null && Godot.GodotObject.IsInstanceValid(_payWindow)) _payWindow.QueueFree();
+        _payWindow = null;
+
+        var win = new SLNG.App.UI.PayObjectWindow();
+        hudLayer.AddChild(win);
+        win.Closed += () => _payWindow = null;
+        win.Paid += (name, amount) =>
+            LogMessage($"[color=#f0d060][L$] {SLNG.App.UI.L10n.TrFormat("ui.pay.sent", name, $"{amount:N0}")}[/color]");
+        win.Initialize(_session, meta.Id, meta.Name);
+        _payWindow = win;
+    }
+
+    /// <summary>FEAT-ECON-02: the confirmation before any money moves.</summary>
+    private void ShowBuyWindow(SLNG.Core.ECS.Entity entity, uint localId)
+    {
+        var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+        if (_session == null || hudLayer == null) return;
+
+        var meta = entity.GetComponent<SLNG.Core.Components.MetadataComponent>();
+        if (meta == null || meta.SaleType == SLNG.Core.PrimSaleType.NotForSale) return;
+
+        // One at a time: two open confirmations over the same object is an easy way to pay twice.
+        if (_buyWindow != null && Godot.GodotObject.IsInstanceValid(_buyWindow)) _buyWindow.QueueFree();
+        _buyWindow = null;
+
+        var win = new SLNG.App.UI.BuyObjectWindow();
+        hudLayer.AddChild(win);
+        win.Closed += () => _buyWindow = null;
+        win.Bought += (name, price) =>
+            LogMessage($"[color=#f0d060][L$] {SLNG.App.UI.L10n.TrFormat("ui.buy.sent", name, $"{price:N0}")}[/color]");
+        win.Initialize(_session, localId, meta.Name, meta.SaleType, meta.SalePrice);
+        _buyWindow = win;
     }
 
     /// <summary>FEAT-UI-05: the one edit window follows whichever object is the primary
@@ -2357,9 +2413,10 @@ public partial class Boot : Control
             // moment it crossed the threshold made every gap read as 0.50-0.54 s regardless of how
             // long it went on -- which mattered, because whether it exceeded the 0.80 s
             // extrapolation cutoff is the difference between a smooth walk and a visible stall.
-            GD.Print($"[AgentGap] no position packet for {_agentGapPeak:0.00}s " +
-                      $"({(_agentGapPeak > 0.8f ? "OVER" : "within")} the 0.80s extrapolation cutoff) " +
-                      $"queue={MainThreadWorkQueue.Depth}");
+            if (Diagnostics.Enabled)
+                GD.Print($"[AgentGap] no position packet for {_agentGapPeak:0.00}s " +
+                          $"({(_agentGapPeak > 0.8f ? "OVER" : "within")} the 0.80s extrapolation cutoff) " +
+                          $"queue={MainThreadWorkQueue.Depth}");
             _agentGapReported = false;
             _agentGapPeak = 0;
         }
@@ -3174,6 +3231,24 @@ public partial class Boot : Control
         // "parked" flag in this class.
         _session.RegionConnected += (s, regionHandle) => _pendingArrivalToast = true;
 
+        // FEAT-ECON-01: the balance readout. Deferred by name rather than through a lambda --
+        // MoneyBalanceReply arrives on LibreMetaverse's packet thread, and Callable.From from a
+        // background thread is not safe here.
+        _session.BalanceChanged += (s, balance) => CallDeferred(nameof(ShowBalance), balance);
+
+        // FEAT-ECON-02: the sale price rides on ObjectProperties, which the simulator sends only
+        // AFTER the click that selected the object -- so the context menu is already open by the
+        // time we learn whether the thing is for sale. Refresh it in place rather than making the
+        // user right-click a second time.
+        _world.ComponentUpdated += (s, e) =>
+        {
+            if (e.Component is SLNG.Core.Components.MetadataComponent
+                && _inWorldContextMenu?.CurrentEntity?.Id == e.Entity.Id)
+            {
+                CallDeferred(nameof(RefreshContextMenuSale));
+            }
+        };
+
         _session.RegionEnvironmentReceived += (s, env) => _pendingRegionEnvironment = env;
 
         // FEAT-UI-18: teleport progress -> loading overlay. Raised on a LibreMetaverse network
@@ -3334,6 +3409,10 @@ public partial class Boot : Control
             _selectionGizmo.RecomposeLinkset = root =>
                 _worldSimulation?.RecomposeChildren(root.RegionHandle, root.LocalId);
             _objectSelectionController.LinksetParts = CollectLinksetParts;
+            // FEAT-ECON-02: a left click on an object whose click action is Pay or Buy opens the
+            // same dialog the context menu opens.
+            _objectSelectionController.OnPayRequested = (entity, _) => ShowPayWindow(entity);
+            _objectSelectionController.OnBuyRequested = ShowBuyWindow;
             // FEAT-UI-06: here and not next to the context-menu wiring in SetupHud -- the
             // controller does not exist yet at that point, and assigning through it there threw
             // a NullReferenceException out of _Ready, which stalled the whole boot.

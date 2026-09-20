@@ -74,6 +74,7 @@
       "copy_slurl_tooltip": "Klicken, um SLURL in die Zwischenablage zu kopieren",
       "slurl_copied": "SLURL in Zwischenablage kopiert: {0}",
       "fps_tooltip": "Bilder pro Sekunde (Klicken für Leistungsstatistik)",
+      "balance_tooltip": "Dein Kontostand in Linden-Dollar",
       "graphics_profile_tooltip": "Grafikprofil auswählen",
       "media_autoload_on_tooltip": "Medien-Autoplay ist AN — klicken, um automatisches Laden von AUTO_PLAY-Medien auf Prims zu deaktivieren",
       "media_autoload_off_tooltip": "Medien-Autoplay ist AUS — klicken, um automatisches Laden von AUTO_PLAY-Medien auf Prims zu aktivieren",
@@ -527,6 +528,28 @@
       "anim_playing_local": "Spiele lokal: {0}",
       "anim_playing_inworld": "Spiele Inworld: {0}",
       "anim_stopped": "Animation gestoppt: {0}"
+    },
+    "buy": {
+      "title": "Objekt kaufen",
+      "unnamed": "(unbenannt)",
+      "what_original": "Du kaufst das Original. Es wechselt den Besitzer und verschwindet von hier.",
+      "what_copy": "Du kaufst eine Kopie. Das Objekt bleibt stehen, die Kopie landet in deinem Inventar.",
+      "what_contents": "Du kaufst den Inhalt des Objekts. Das Objekt selbst bleibt stehen.",
+      "what_unknown": "Was genau verkauft wird, hat der Sim nicht gesagt.",
+      "price": "Preis: L$ {0}",
+      "balance": "Dein Kontostand: L$ {0}",
+      "insufficient": "Dir fehlen L$ {0}.",
+      "confirm": "Für L$ {0} kaufen",
+      "cancel": "Abbrechen",
+      "sent": "Kauf gesendet: {0} für L$ {1}.",
+      "menu": "Kaufen (L$ {0}) …"
+    },
+    "pay": {
+      "title": "Objekt bezahlen",
+      "confirm": "Bezahlen",
+      "menu": "Bezahlen …",
+      "sent": "Bezahlt: {0} — L$ {1}.",
+      "other_amount": "Anderer Betrag"
     }
   }
 }

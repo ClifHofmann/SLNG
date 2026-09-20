@@ -107,6 +107,11 @@ public class PrimitiveComponent : IComponent
     /// <summary>True when an in-world script on this prim registers touch_start/touch/touch_end.</summary>
     public bool IsTouch { get; set; }
 
+    /// <summary>The object takes payment -- a script on it registers money(). The viewer offers
+    /// "Pay" on exactly this bit, and a vendor is usually PAID rather than bought: the sale
+    /// fields (see MetadataComponent) are a different transaction entirely.</summary>
+    public bool TakesMoney { get; set; }
+
     /// <summary>FEAT-SEC-04: what the SIMULATOR says <b>this agent</b> may do to this object —
     /// not what its owner may do. <see cref="MetadataComponent.OwnerCanModify"/> and friends
     /// answer the owner's question, which is only the same question when you are the owner.

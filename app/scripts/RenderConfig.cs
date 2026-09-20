@@ -337,6 +337,15 @@ public static class RenderConfig
         return new System.Numerics.Vector3(slX, slY, godotPos.Y);
     }
 
+    /// <summary>Converts a Godot world-space DIRECTION back to SL region space.</summary>
+    /// <remarks>
+    /// The same axis swap as <see cref="FromGodot"/> without the floating origin: a direction has
+    /// no position, and subtracting the region's corner from one would turn "up" into a vector
+    /// pointing at the region. Used for the normal and binormal an SL touch carries.
+    /// </remarks>
+    public static System.Numerics.Vector3 DirectionFromGodot(Vector3 godotDir) =>
+        new(godotDir.X, -godotDir.Z, godotDir.Y);
+
     /// <summary>
     /// Returns the local agent's position converted to Godot world space, or false if the
     /// agent (or its transform) isn't in the world yet.

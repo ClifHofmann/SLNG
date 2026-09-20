@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
@@ -387,7 +387,8 @@ public partial class WorldMapWindow : SLNGWindow
         _selectedLocal = local;
 
         bool known = _regions.TryGetValue(regionHandle, out var info);
-        GD.Print($"[WorldMap] Point clicked: screen={screenPos} global=({gx:0.#},{gy:0.#}) "
+        if (Diagnostics.Enabled)
+            GD.Print($"[WorldMap] Point clicked: screen={screenPos} global=({gx:0.#},{gy:0.#}) "
             + $"handle={regionHandle} local={local} teleport={teleport} known={known}"
             + (known ? $" name=\"{info!.Name}\"" : ""));
 

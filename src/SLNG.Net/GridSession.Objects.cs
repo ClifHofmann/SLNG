@@ -104,7 +104,9 @@ public sealed partial class GridSession
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Move),
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Modify),
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Copy),
-            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Transfer)
+            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Transfer),
+            (SLNG.Core.PrimSaleType)(byte)e.Properties.SaleType,
+            e.Properties.SalePrice
         ));
     }
 
@@ -124,7 +126,9 @@ public sealed partial class GridSession
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Move),
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Modify),
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Copy),
-            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Transfer)
+            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Transfer),
+            (SLNG.Core.PrimSaleType)(byte)e.Properties.SaleType,
+            e.Properties.SalePrice
         ));
     }
 
@@ -650,6 +654,7 @@ public sealed partial class GridSession
             defaultFace?.Fullbright ?? false,
             _reflectionProbeByLocalId.TryGetValue(prim.LocalID, out var probe) ? probe : null,
             prim.Flags.HasFlag(PrimFlags.Touch),
+            prim.Flags.HasFlag(PrimFlags.Money),
             // FEAT-SEC-04: the sim's per-agent permission answer, already computed for us. These
             // bits sat in prim.Flags all along, next to the four read above, and were dropped --
             // which is why the edit window could only report what the OWNER may do and had to
@@ -899,12 +904,31 @@ public sealed partial class GridSession
         System.Numerics.Vector3 binormal = default)
     {
         var sim = _client.Network.CurrentSim;
-        if (sim == null) return;
+        if (sim == null)
+        {
+            if (SLNG.Core.Diag.Verbose)
+                Console.WriteLine($"[Touch] {localId}: no current simulator -- nothing sent");
+            return;
+        }
 
-        await _client.Objects.ClickObjectAsync(
-            sim, localId,
-            ToOmv(uvCoord), ToOmv(stCoord), faceIndex,
-            ToOmv(position), ToOmv(normal), ToOmv(binormal));
+        // Callers fire this and forget it (a touch has no result to await), so an exception in
+        // here would vanish into a discarded Task and the click would look like it was sent.
+        // That is the one gap the caller's own log line cannot close: it records the CALL, not
+        // the packet.
+        try
+        {
+            await _client.Objects.ClickObjectAsync(
+                sim, localId,
+                ToOmv(uvCoord), ToOmv(stCoord), faceIndex,
+                ToOmv(position), ToOmv(normal), ToOmv(binormal));
+
+            if (SLNG.Core.Diag.Verbose)
+                Console.WriteLine($"[Touch] grab+release sent for {localId} to {sim.Name}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Touch] {localId}: send failed -- {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     public void SelectObject(uint localId)

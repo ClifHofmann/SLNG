@@ -1,4 +1,4 @@
-using Godot;
+﻿using Godot;
 using SLNG.Core;
 using SLNG.Core.ECS;
 using SLNG.Core.Components;
@@ -787,7 +787,8 @@ namespace SLNG.App.UI
             if (enabled && radius <= 0f) { radius = 10.0f; _lightRadiusInput.Text = radius.ToString("F2"); }
             if (enabled && falloff <= 0f) { falloff = 1.0f; _lightFalloffInput.Text = falloff.ToString("F2"); }
 
-            GD.Print($"[ObjectEditWindow] SendObjectLight -> localId={_currentLocalId} enabled={enabled} color={color} intensity={intensity} radius={radius} falloff={falloff}");
+            if (Diagnostics.Enabled)
+                GD.Print($"[ObjectEditWindow] SendObjectLight -> localId={_currentLocalId} enabled={enabled} color={color} intensity={intensity} radius={radius} falloff={falloff}");
             _session.SetObjectLight(_currentLocalId, enabled, color, intensity, radius, falloff);
 
             var prim = _currentEntity?.GetComponent<PrimitiveComponent>();

@@ -20,6 +20,12 @@ namespace SLNG.App.UI
         /// own attachments.</summary>
         public Action<Entity, uint>? OnDetachClicked;
 
+        /// <summary>FEAT-ECON-02: the user asked to buy the object the menu is open on.</summary>
+        public Action<Entity, uint>? OnBuyClicked;
+
+        /// <summary>FEAT-ECON-02: the user asked to pay the object the menu is open on.</summary>
+        public Action<Entity, uint>? OnPayClicked;
+
         /// <summary>FEAT-UI-13: right-click "Profile" / "IM" on an avatar. Guid is the target
         /// agent id, string its best-known display name.</summary>
         public Action<Guid, string>? OnAvatarProfileClicked;
@@ -43,6 +49,10 @@ namespace SLNG.App.UI
         public Action<Vector3, BasicPrimType>? OnCreatePrimClicked;
 
         private Entity? _currentEntity;
+
+        /// <summary>The object the menu is currently open on, for an owner that needs to notice
+        /// late-arriving data about it (FEAT-ECON-02: the sale price).</summary>
+        public Entity? CurrentEntity => Visible ? _currentEntity : null;
         private uint _currentLocalId;
         private Vector3 _pendingCreatePosition;
         private Guid _currentAvatarId;
@@ -54,7 +64,7 @@ namespace SLNG.App.UI
         private Button _avatarTeleportButton = null!;
         private Button _avatarMuteButton = null!;
         private VBoxContainer _createRoot = null!;
-        private Button _sitButton = null!, _deleteButton = null!, _detachButton = null!;
+        private Button _sitButton = null!, _deleteButton = null!, _detachButton = null!, _buyButton = null!, _payButton = null!;
         private VBoxContainer _groundOnlyButtons = null!;
         private Button _createHeader = null!;
         private VBoxContainer _createShapes = null!;
@@ -112,6 +122,15 @@ namespace SLNG.App.UI
             // FEAT-UI-23: shown instead of Sit and Delete once the object turns out to be worn.
             _detachButton = AddMenuButton(_objectButtons, "👜 Detach",
                 () => OnDetachClicked?.Invoke(_currentEntity!, _currentLocalId));
+            // FEAT-ECON-02: only ever visible on an object the simulator says is for sale.
+            _buyButton = AddMenuButton(_objectButtons, "💰 Buy",
+                () => OnBuyClicked?.Invoke(_currentEntity!, _currentLocalId));
+            _buyButton.Visible = false;
+            // Paying is the other money entry, and a different transaction: it rides on the
+            // object's money() script, not on a sale price. A vendor usually has this one.
+            _payButton = AddMenuButton(_objectButtons, "💵 Pay",
+                () => OnPayClicked?.Invoke(_currentEntity!, _currentLocalId));
+            _payButton.Visible = false;
 
             // MVP2-1: ground sit. Its own block, because it is the one entry that only makes
             // sense on bare ground -- the object menu has its own Sit.
@@ -215,6 +234,8 @@ namespace SLNG.App.UI
             _sitButton.Visible = !isWorn;
             _deleteButton.Visible = !isWorn;
 
+            RefreshSaleEntry();
+
             _objectButtons.Visible = true;
             _avatarButtons.Visible = false;
             _groundOnlyButtons.Visible = false;
@@ -225,6 +246,41 @@ namespace SLNG.App.UI
             Visible = true;
             MoveToFront();
             CallDeferred(nameof(ClampIntoViewport));
+        }
+
+        /// <summary>FEAT-ECON-02: shows or hides the Buy entry from what the world model knows
+        /// about the object's sale right now.</summary>
+        /// <remarks>
+        /// Callable again while the menu is open, and the owner does exactly that: the sale price
+        /// rides on ObjectProperties, which the simulator sends AFTER the click that selects the
+        /// object. Deciding once at open time would mean the first right-click on a for-sale
+        /// object never offers to buy it.
+        /// </remarks>
+        public void RefreshSaleEntry()
+        {
+            var meta = _currentEntity?.GetComponent<MetadataComponent>();
+            bool forSale = meta != null && meta.SaleType != PrimSaleType.NotForSale;
+            bool isWorn = _currentEntity?.GetComponent<AttachmentComponent>() != null;
+
+            // Never on something you are wearing: it is already yours, and the simulator's answer
+            // to buying your own attachment is nothing at all.
+            _buyButton.Visible = forSale && !isWorn;
+            if (_buyButton.Visible)
+            {
+                _buyButton.Text = "💰 " + L10n.TrFormat("ui.buy.menu", $"{meta!.SalePrice:N0}");
+            }
+
+            // PrimFlags.Money, which is what the reference viewer gates its own Pay entry on: a
+            // script on the object registers money(). It arrives with the ObjectUpdate rather
+            // than with the properties, so unlike Buy it is usually known before the first click.
+            var prim = _currentEntity?.GetComponent<PrimitiveComponent>();
+            _payButton.Visible = prim?.TakesMoney == true && !isWorn;
+            if (_payButton.Visible)
+            {
+                _payButton.Text = "💵 " + L10n.Tr("ui.pay.menu");
+            }
+
+            if (_buyButton.Visible || _payButton.Visible) CallDeferred(nameof(ClampIntoViewport));
         }
 
         /// <summary>FEAT-UI-13: right-clicked an avatar -- offers Profile / IM / Offer Teleport /

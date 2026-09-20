@@ -299,6 +299,8 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
 
     internal void RaiseObjectRemoved(ObjectRemovedEvent e) => ObjectRemovedReceived?.Invoke(this, e);
 
+    internal void RaiseObjectProperties(ObjectPropertiesEvent e) => ObjectPropertiesReceived?.Invoke(this, e);
+
     internal void RaiseObjectMedia(ObjectMediaEvent e) => ObjectMediaReceived?.Invoke(this, e);
 
     internal void RaiseTerrainPatch(TerrainPatchEvent e) => TerrainPatchReceived?.Invoke(this, e);
@@ -530,6 +532,11 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Groups.CurrentGroups += OnCurrentGroups;
         _client.Self.GroupChatJoined += OnGroupChatJoined;
         _client.Self.AlertMessage += OnAlertMessage;
+        // FEAT-ECON-01. MoneyBalance rather than MoneyBalanceReply: the reply carries a whole
+        // transaction record (description, meters credit) that nothing here consumes yet, and
+        // both are raised from the same packet.
+        _client.Self.MoneyBalance += OnMoneyBalance;
+        _client.Objects.PayPriceReply += OnPayPriceReply;
         _client.Objects.KillObject += OnKillObject;
         _client.Objects.KillObjects += OnKillObjects;
         _client.Terrain.LandPatchReceived += OnLandPatchReceived;

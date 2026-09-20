@@ -220,6 +220,9 @@ public record ObjectUpdateEvent(
     ReflectionProbeParams? ReflectionProbe = null,
     // PrimFlags.Touch bit: true when an in-world script on this prim registers touch_start/touch/touch_end.
     bool IsTouch = false,
+    // PrimFlags.Money bit: true when a script on this prim registers money(), i.e. the object
+    // takes payment. What the reference viewer gates its "Pay..." entry on (flagTakesMoney).
+    bool TakesMoney = false,
     // FEAT-SEC-04: the simulator's own answer to "may THIS agent do that to this object". These
     // are not the object's permission masks -- those describe what its OWNER may do, which is a
     // different question unless you are the owner. The sim evaluates the masks against the
@@ -324,7 +327,10 @@ public record ObjectPropertiesEvent(
     Guid OwnerId,
     Guid GroupId,
     bool OwnerCanMove = true,
-    bool OwnerCanModify = true, bool OwnerCanCopy = true, bool OwnerCanTransfer = true
+    bool OwnerCanModify = true, bool OwnerCanCopy = true, bool OwnerCanTransfer = true,
+    // FEAT-ECON-02: what the object sells and for how much. Both come from the same
+    // ObjectProperties the rest of this record does, family variant included.
+    PrimSaleType SaleType = PrimSaleType.NotForSale, int SalePrice = 0
 ) : IWorldEvent;
 
 /// <summary>Represents a raw 16x16 chunk of terrain height data from the simulator.

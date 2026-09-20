@@ -74,6 +74,7 @@
       "copy_slurl_tooltip": "Click to copy SLURL to clipboard",
       "slurl_copied": "SLURL copied to clipboard: {0}",
       "fps_tooltip": "Frames per second (Click for performance stats)",
+      "balance_tooltip": "Your balance in Linden dollars",
       "graphics_profile_tooltip": "Select graphics profile",
       "media_autoload_on_tooltip": "Media auto-play is ON — click to disable loading AUTO_PLAY media on prims",
       "media_autoload_off_tooltip": "Media auto-play is OFF — click to enable loading AUTO_PLAY media on prims",
@@ -527,6 +528,28 @@
       "anim_playing_local": "Playing locally: {0}",
       "anim_playing_inworld": "Playing inworld: {0}",
       "anim_stopped": "Animation stopped: {0}"
+    },
+    "buy": {
+      "title": "Buy object",
+      "unnamed": "(unnamed)",
+      "what_original": "You are buying the original. It changes hands and leaves this spot.",
+      "what_copy": "You are buying a copy. The object stays where it is; the copy goes to your inventory.",
+      "what_contents": "You are buying the object's contents. The object itself stays where it is.",
+      "what_unknown": "The simulator did not say what exactly is for sale.",
+      "price": "Price: L$ {0}",
+      "balance": "Your balance: L$ {0}",
+      "insufficient": "You are L$ {0} short.",
+      "confirm": "Buy for L$ {0}",
+      "cancel": "Cancel",
+      "sent": "Purchase sent: {0} for L$ {1}.",
+      "menu": "Buy (L$ {0}) …"
+    },
+    "pay": {
+      "title": "Pay object",
+      "confirm": "Pay",
+      "menu": "Pay …",
+      "sent": "Paid: {0} — L$ {1}.",
+      "other_amount": "Other amount"
     }
   }
 }

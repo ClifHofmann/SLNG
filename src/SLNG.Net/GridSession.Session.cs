@@ -49,6 +49,9 @@ public sealed partial class GridSession
             // the sim not streaming (interest list / camera), not a render bug.
             Console.WriteLine($"[RegionEnter] {sim.Name} ({sim.Handle}) is now the current region");
             RegionConnected?.Invoke(this, sim.Handle);
+            // FEAT-ECON-01: ask for the L$ balance on arrival. The simulator volunteers one only
+            // when it changes, so without asking, a session that spends nothing never learns it.
+            RequestBalance();
         }
         else
         {
