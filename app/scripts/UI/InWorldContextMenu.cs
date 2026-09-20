@@ -39,7 +39,7 @@ namespace SLNG.App.UI
 
         private Entity? _currentEntity;
         private uint _currentLocalId;
-        private Vector3 _pendingGroundPosition;
+        private Vector3 _pendingCreatePosition;
         private Guid _currentAvatarId;
         private string _currentAvatarName = "";
 
@@ -49,6 +49,7 @@ namespace SLNG.App.UI
         private Button _avatarTeleportButton = null!;
         private Button _avatarMuteButton = null!;
         private VBoxContainer _createRoot = null!;
+        private VBoxContainer _groundOnlyButtons = null!;
         private Button _createHeader = null!;
         private VBoxContainer _createShapes = null!;
 
@@ -102,16 +103,21 @@ namespace SLNG.App.UI
             AddMenuButton(_objectButtons, "🔍 Inspect", () => OnInspectClicked?.Invoke(_currentEntity!, _currentLocalId));
             AddMenuButton(_objectButtons, "🗑️ Delete", () => OnDeleteClicked?.Invoke(_currentEntity!, _currentLocalId));
 
-            // Right-clicking empty ground shows this set instead (see ShowGroundMenu): a single
-            // "Create" entry that expands into the basic-shape list, rather than dumping all 7
-            // shapes directly into the menu. Material/torus-etc. fine-tuning happens afterward in
-            // the Build/Inspector window like any other object.
+            // MVP2-1: ground sit. Its own block, because it is the one entry that only makes
+            // sense on bare ground -- the object menu has its own Sit.
+            _groundOnlyButtons = new VBoxContainer { Visible = false };
+            root.AddChild(_groundOnlyButtons);
+            AddMenuButton(_groundOnlyButtons, "🪑 Sit Here", () => OnSitOnGroundClicked?.Invoke(_pendingCreatePosition));
+
+            // MVP4-1: "Create" expands into the basic-shape list rather than dumping all 7 shapes
+            // into the menu. Material/torus-etc. fine-tuning happens afterward in the
+            // Build/Inspector window like any other object.
+            //
+            // Shown for an OBJECT as well as for bare ground: the reference viewer lets you rez
+            // onto whatever surface you right-clicked, and offering it only on terrain meant you
+            // could not build on top of anything you had already built -- reported in-world.
             _createRoot = new VBoxContainer { Visible = false };
             root.AddChild(_createRoot);
-
-            // MVP2-1: ground sit lives above "Create" in the same ground-menu block, not inside
-            // the collapsible shape list -- it's a single immediate action, not a sub-picker.
-            AddMenuButton(_createRoot, "🪑 Sit Here", () => OnSitOnGroundClicked?.Invoke(_pendingGroundPosition));
             _createRoot.AddChild(new HSeparator());
 
             _createHeader = new Button { Text = CreateHeaderCollapsed, Flat = true, Alignment = HorizontalAlignment.Left };
@@ -128,14 +134,50 @@ namespace SLNG.App.UI
             {
                 _createShapes.Visible = !_createShapes.Visible;
                 _createHeader.Text = _createShapes.Visible ? CreateHeaderExpanded : CreateHeaderCollapsed;
+                // Seven more entries appear here, which is exactly when the menu runs off the
+                // bottom of the screen.
+                CallDeferred(nameof(ClampIntoViewport));
             };
-            AddMenuButton(_createShapes, "📦 Box", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Box));
-            AddMenuButton(_createShapes, "🔵 Sphere", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Sphere));
-            AddMenuButton(_createShapes, "🥫 Cylinder", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Cylinder));
-            AddMenuButton(_createShapes, "🔺 Prism", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Prism));
-            AddMenuButton(_createShapes, "🍩 Torus", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Torus));
-            AddMenuButton(_createShapes, "🛞 Tube", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Tube));
-            AddMenuButton(_createShapes, "💍 Ring", () => OnCreatePrimClicked?.Invoke(_pendingGroundPosition, BasicPrimType.Ring));
+            AddMenuButton(_createShapes, "📦 Box", () => OnCreatePrimClicked?.Invoke(_pendingCreatePosition, BasicPrimType.Box));
+            AddMenuButton(_createShapes, "🔵 Sphere", () => OnCreatePrimClicked?.Invoke(_pendingCreatePosition, BasicPrimType.Sphere));
+            AddMenuButton(_createShapes, "🥫 Cylinder", () => OnCreatePrimClicked?.Invoke(_pendingCreatePosition, BasicPrimType.Cylinder));
+            AddMenuButton(_createShapes, "🔺 Prism", () => OnCreatePrimClicked?.Invoke(_pendingCreatePosition, BasicPrimType.Prism));
+            AddMenuButton(_createShapes, "🍩 Torus", () => OnCreatePrimClicked?.Invoke(_pendingCreatePosition, BasicPrimType.Torus));
+            AddMenuButton(_createShapes, "🛞 Tube", () => OnCreatePrimClicked?.Invoke(_pendingCreatePosition, BasicPrimType.Tube));
+            AddMenuButton(_createShapes, "💍 Ring", () => OnCreatePrimClicked?.Invoke(_pendingCreatePosition, BasicPrimType.Ring));
+        }
+
+        /// <summary>Keeps the menu on screen. It opens AT the cursor, so a right-click near the
+        /// bottom edge pushed the lower half of it off the viewport -- reported in-world with
+        /// the shape list cut in two. Slides it back rather than flipping it above the cursor:
+        /// the entries then stay where the eye already is.</summary>
+        /// <remarks>
+        /// Deferred because the size is only known after the layout pass, and the menu changes
+        /// height every time it opens -- the object, avatar and ground sets have different
+        /// entries, and "Create" expands. GetCombinedMinimumSize is the height it WILL take, so
+        /// the first frame is already right; Size alone would still be the previous menu's.
+        /// </remarks>
+        private void ClampIntoViewport()
+        {
+            // Let it shrink first. Assigning Position pins the control's rect -- Godot writes it
+            // out as offsets -- and from then on the control keeps its width and height instead
+            // of following a minimum that has got smaller. So once "Create" had been expanded
+            // even once, every later menu stayed as tall as the longest one had been, with the
+            // entries at the top and empty panel below. Measured: collapsed 171 px, expanded
+            // 416 px, re-opened collapsed still 416 px against a minimum of 171. Assigning zero
+            // does not make it zero; Godot clamps the assignment straight back up to the
+            // minimum, which is exactly the size wanted here.
+            Size = Vector2.Zero;
+
+            var viewport = GetViewportRect().Size;
+            var extent = GetCombinedMinimumSize().Max(Size);
+            var position = Position;
+
+            if (position.Y + extent.Y > viewport.Y) position.Y = viewport.Y - extent.Y;
+            if (position.X + extent.X > viewport.X) position.X = viewport.X - extent.X;
+            // Never off the top or the left: a menu taller than the viewport is better cut off
+            // at the bottom, where the user can still reach the first entries.
+            Position = new Vector2(Mathf.Max(0f, position.X), Mathf.Max(0f, position.Y));
         }
 
         private Button AddMenuButton(VBoxContainer container, string text, Action onClick)
@@ -146,16 +188,24 @@ namespace SLNG.App.UI
             return btn;
         }
 
-        public void ShowMenu(Vector2 position, Entity entity, uint localId)
+        /// <param name="createPosition">Where a prim rezzed from this menu should go: the point
+        /// on the object's surface that was right-clicked, already lifted clear of it by the
+        /// caller.</param>
+        public void ShowMenu(Vector2 position, Entity entity, uint localId, Vector3 createPosition)
         {
             _currentEntity = entity;
             _currentLocalId = localId;
+            _pendingCreatePosition = createPosition;
             _objectButtons.Visible = true;
             _avatarButtons.Visible = false;
-            _createRoot.Visible = false;
+            _groundOnlyButtons.Visible = false;
+            _createRoot.Visible = true;
+            _createShapes.Visible = false;
+            _createHeader.Text = CreateHeaderCollapsed;
             Position = position;
             Visible = true;
             MoveToFront();
+            CallDeferred(nameof(ClampIntoViewport));
         }
 
         /// <summary>FEAT-UI-13: right-clicked an avatar -- offers Profile / IM / Offer Teleport /
@@ -171,6 +221,7 @@ namespace SLNG.App.UI
             _currentAvatarName = name ?? "";
             _objectButtons.Visible = false;
             _createRoot.Visible = false;
+            _groundOnlyButtons.Visible = false;
             _avatarButtons.Visible = true;
             _avatarImButton.Visible = !isSelf;
             _avatarTeleportButton.Visible = !isSelf;
@@ -179,6 +230,7 @@ namespace SLNG.App.UI
             Position = position;
             Visible = true;
             MoveToFront();
+            CallDeferred(nameof(ClampIntoViewport));
         }
 
         /// <summary>Right-click on terrain (or anything else without an entity to edit) --
@@ -186,15 +238,17 @@ namespace SLNG.App.UI
         /// collapsed so repeated right-clicks behave predictably.</summary>
         public void ShowGroundMenu(Vector2 screenPosition, Vector3 worldPosition)
         {
-            _pendingGroundPosition = worldPosition;
+            _pendingCreatePosition = worldPosition;
             _objectButtons.Visible = false;
             _avatarButtons.Visible = false;
+            _groundOnlyButtons.Visible = true;
             _createRoot.Visible = true;
             _createShapes.Visible = false;
             _createHeader.Text = CreateHeaderCollapsed;
             Position = screenPosition;
             Visible = true;
             MoveToFront();
+            CallDeferred(nameof(ClampIntoViewport));
         }
 
         public override void _UnhandledInput(InputEvent @event)
