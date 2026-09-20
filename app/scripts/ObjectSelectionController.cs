@@ -534,7 +534,7 @@ namespace SLNG.App
                                             {
                                                 var hitPosGodot = result.ContainsKey("position") ? result["position"].AsVector3() : Vector3.Zero;
                                                 var hitPosSl = RenderConfig.FromGodot(rawEntity.RegionHandle, hitPosGodot);
-                                                _ = _session.ClickObjectAsync(rawLocalId, position: hitPosSl);
+                                                SendTouch(rawEntity, rawLocalId, mouseBtn.Position, hitPosSl);
                                             }
                                             return;
                                         }
@@ -625,6 +625,49 @@ namespace SLNG.App
         /// <summary>The edge length GridSession.CreatePrim rezzes with, SL's default half-metre
         /// cube. Kept in step by hand; a wrong value here only offsets the drop point.</summary>
         private const float NewPrimSize = 0.5f;
+
+        /// <summary>
+        /// Sends the touch, with the detail about WHERE on the object it landed.
+        /// </summary>
+        /// <remarks>
+        /// A touch is not just "this object was clicked". The wire carries the face, the surface
+        /// and texture coordinates, the normal and the binormal of the exact spot
+        /// (<c>ObjectGrab.SurfaceInfo</c> — <c>LLPickInfo::getSurfaceInfo</c> fills all of it),
+        /// because that is what a script reads back with <c>llDetectedTouchFace</c>,
+        /// <c>llDetectedTouchST</c> and <c>llDetectedTouchUV</c>. A multi-item vendor panel is
+        /// built on exactly that: one prim, one face per product.
+        ///
+        /// <para>SLNG used to send zeros for all of it — "face 0, at (0,0), no normal" — which is
+        /// not a missing nicety but a wrong answer, and a vendor that acts on the face has no
+        /// reason to respond to it. That is "ich klicke auf den Verkaufsstand und es passiert
+        /// nichts" while the same click in Firestorm opens the menu.</para>
+        ///
+        /// <para>If the object's geometry is not resident (still loading, or drawn from an
+        /// instanced copy) there is nothing to measure against, and the touch goes out without the
+        /// detail rather than not at all — which is what it always did.</para>
+        /// </remarks>
+        private void SendTouch(Entity entity, uint localId, Vector2 mousePos, System.Numerics.Vector3 hitPosSl)
+        {
+            var rayOrigin = _camera.ProjectRayOrigin(mousePos);
+            var rayDirection = _camera.ProjectRayNormal(mousePos);
+
+            if (ObjectRenderer.TrySurfacePick(entity.Id, rayOrigin, rayDirection,
+                                              out int face, out var st, out var uv,
+                                              out var normal, out var binormal))
+            {
+                Logger.Info($"[Touch] {localId} face={face} st=({st.X:0.###},{st.Y:0.###}) " +
+                            $"uv=({uv.X:0.###},{uv.Y:0.###})");
+                _ = _session.ClickObjectAsync(
+                    localId, face, hitPosSl, normal,
+                    new System.Numerics.Vector3(uv.X, uv.Y, 0f),
+                    new System.Numerics.Vector3(st.X, st.Y, 0f),
+                    binormal);
+                return;
+            }
+
+            Logger.Info($"[Touch] {localId}: no surface detail -- geometry not resident");
+            _ = _session.ClickObjectAsync(localId, position: hitPosSl);
+        }
 
         private Godot.Collections.Dictionary RaycastFromMouse(Vector2 mousePos, Godot.Collections.Array<Rid>? exclude = null)
         {

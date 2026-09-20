@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Godot;
@@ -962,6 +962,100 @@ public partial class ObjectRenderer : Node3D
 
         UpdateVisual(entityIdStr);
     }
+
+    /// <summary>
+    /// Which FACE of <paramref name="entityId"/> a world-space ray lands on, and where on it.
+    ///
+    /// <para>The physics raycast that finds the object cannot answer this. Its collision shape is
+    /// one undifferentiated triangle soup — no faces, no texture coordinates — so the ray is
+    /// re-tested here against that one object's decoded geometry, which is what the reference
+    /// viewer does as well (<c>LLPickInfo::getSurfaceInfo</c> calls <c>cursorIntersect</c> against
+    /// the single object already picked).</para>
+    ///
+    /// <para>Returns false for anything whose mesh is not resident — an object still loading, or
+    /// one drawn from instanced geometry. The caller then sends the touch without surface detail,
+    /// which is what it always did.</para>
+    /// </summary>
+    /// <param name="stCoord">Surface coordinate: the mesh's own UV at the hit
+    /// (<c>llDetectedTouchST</c>).</param>
+    /// <param name="uvCoord">Texture coordinate: <paramref name="stCoord"/> through the face's
+    /// repeat/offset/rotation (<c>llDetectedTouchUV</c>).</param>
+    /// <param name="normal">Surface normal at the hit, in SL region space.</param>
+    /// <param name="binormal">Texture V direction at the hit, in SL region space.</param>
+    public static bool TrySurfacePick(
+        Guid entityId, Vector3 rayOrigin, Vector3 rayDirection,
+        out int faceIndex, out System.Numerics.Vector2 stCoord, out System.Numerics.Vector2 uvCoord,
+        out System.Numerics.Vector3 normal, out System.Numerics.Vector3 binormal)
+    {
+        faceIndex = -1;
+        stCoord = default;
+        uvCoord = default;
+        normal = default;
+        binormal = default;
+
+        var renderer = _instance;
+        if (renderer == null) return false;
+        if (!renderer._visuals.TryGetValue(entityId, out var state)) return false;
+        if (!IsInstanceValid(state.MeshInstance)) return false;
+
+        var mesh = state.LoadedMeshData;
+        if (mesh == null || mesh.Submeshes.Count == 0) return false;
+
+        // Into the mesh's own frame. The node carries the prim's position, rotation AND scale, so
+        // the inverse handles all three at once -- MeshData is unscaled local geometry.
+        var toLocal = state.MeshInstance.GlobalTransform.AffineInverse();
+        Vector3 localOrigin = toLocal * rayOrigin;
+        Vector3 localDirection = toLocal.Basis * rayDirection;
+
+        var submeshes = new SLNG.Core.PickSubmesh[mesh.Submeshes.Count];
+        for (int i = 0; i < submeshes.Length; i++)
+        {
+            var sub = mesh.Submeshes[i];
+            submeshes[i] = new SLNG.Core.PickSubmesh(
+                sub.Positions, sub.Normals, sub.UVs, sub.Indices, sub.FaceIndex);
+        }
+
+        // MeshData is SL space (Z-up); the node's local space is Godot's (Y-up), and the renderer
+        // maps SL(x,y,z) -> Godot(x, z, -y) when it builds the ArrayMesh. Undo that for both the
+        // ray and, below, the vectors that come back.
+        if (!SLNG.Core.SurfacePick.TryPick(submeshes, GodotToSl(localOrigin), GodotToSl(localDirection), out var hit))
+            return false;
+
+        faceIndex = hit.FaceIndex;
+
+        // The wire wants SL's surface coordinate, bottom-left origin. Mesh and prim geometry
+        // already carries it that way (which is why the ArrayMesh builder flips V for them);
+        // sculpt geometry arrives pre-flipped, so it has to be flipped BACK here or every touch
+        // on a sculpt reports the mirror image of where the click landed.
+        stCoord = state.LoadedMeshFlipV ? hit.St : new System.Numerics.Vector2(hit.St.X, 1f - hit.St.Y);
+
+        // The face's own texture placement decides where on the TEXTURE the hit is. A face the
+        // object does not actually have (a mesh submesh numbered past the TextureEntry) keeps the
+        // untransformed surface coordinate rather than borrowing another face's placement.
+        var prim = renderer._world?.GetEntity(entityId)?.GetComponent<PrimitiveComponent>();
+        var faces = prim?.Faces;
+        uvCoord = faces != null && faceIndex >= 0 && faceIndex < faces.Length
+            ? SLNG.Core.TextureSurface.SurfaceToTexture(stCoord, faces[faceIndex])
+            : stCoord;
+
+        // Back out to region space: the wire wants both vectors in the region's frame, not the
+        // object's (llviewerwindow.cpp fills them from an agent-space intersect).
+        //
+        // A normal does not transform like a direction. Prims are routinely scaled unevenly -- a
+        // 2.3 x 0.12 x 1.56 m sign is a normal case, not a pathological one -- and running a
+        // normal through that basis tilts it off the surface it belongs to. The inverse transpose
+        // is the transform that keeps it perpendicular. The binormal is a real direction ALONG
+        // the surface, so it takes the plain basis.
+        var basis = state.MeshInstance.GlobalTransform.Basis;
+        var normalBasis = basis.Inverse().Transposed();
+        normal = RenderConfig.DirectionFromGodot((normalBasis * SlToGodot(hit.Normal)).Normalized());
+        binormal = RenderConfig.DirectionFromGodot((basis * SlToGodot(hit.Binormal)).Normalized());
+        return true;
+    }
+
+    private static System.Numerics.Vector3 GodotToSl(Vector3 v) => new(v.X, -v.Z, v.Y);
+
+    private static Vector3 SlToGodot(System.Numerics.Vector3 v) => new(v.X, v.Z, -v.Y);
 
     /// <summary>Prints the per-face texture placement of a selected object, in the same terms
     /// the SL build floater shows (repeats, offsets, rotation in degrees).
