@@ -159,6 +159,16 @@ namespace SLNG.App.UI
         /// </remarks>
         private void ClampIntoViewport()
         {
+            // Let it shrink first. Assigning Position pins the control's rect -- Godot writes it
+            // out as offsets -- and from then on the control keeps its width and height instead
+            // of following a minimum that has got smaller. So once "Create" had been expanded
+            // even once, every later menu stayed as tall as the longest one had been, with the
+            // entries at the top and empty panel below. Measured: collapsed 171 px, expanded
+            // 416 px, re-opened collapsed still 416 px against a minimum of 171. Assigning zero
+            // does not make it zero; Godot clamps the assignment straight back up to the
+            // minimum, which is exactly the size wanted here.
+            Size = Vector2.Zero;
+
             var viewport = GetViewportRect().Size;
             var extent = GetCombinedMinimumSize().Max(Size);
             var position = Position;
