@@ -223,7 +223,14 @@ public static class SelectionOutline
             return;
         }
 
-        var hull = GetHull(target.Mesh);
+        // A SKINNED item cannot use the welded hull. The hull carries positions, normals and
+        // indices only, and Godot skins a mesh from its BONES and WEIGHTS arrays -- handing it a
+        // Skin without those does nothing, so the outline stayed in the bind pose while the item
+        // it was outlining moved with the body. That is why a rigged shirt showed no outline
+        // where it actually was. Its own mesh has the weights, so use that and let the shader
+        // inflate it; the welding exists to stop hard prim corners opening up, which clothing
+        // does not have.
+        var hull = skinnedFrom != null ? target.Mesh : GetHull(target.Mesh);
         if (hull == null) return;
 
         EnsureMaterials();
