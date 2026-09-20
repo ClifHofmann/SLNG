@@ -324,7 +324,10 @@ public record ObjectPropertiesEvent(
     Guid OwnerId,
     Guid GroupId,
     bool OwnerCanMove = true,
-    bool OwnerCanModify = true, bool OwnerCanCopy = true, bool OwnerCanTransfer = true
+    bool OwnerCanModify = true, bool OwnerCanCopy = true, bool OwnerCanTransfer = true,
+    // FEAT-ECON-02: what the object sells and for how much. Both come from the same
+    // ObjectProperties the rest of this record does, family variant included.
+    PrimSaleType SaleType = PrimSaleType.NotForSale, int SalePrice = 0
 ) : IWorldEvent;
 
 /// <summary>Represents a raw 16x16 chunk of terrain height data from the simulator.

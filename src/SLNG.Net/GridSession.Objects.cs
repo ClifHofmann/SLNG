@@ -104,7 +104,9 @@ public sealed partial class GridSession
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Move),
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Modify),
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Copy),
-            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Transfer)
+            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Transfer),
+            (SLNG.Core.PrimSaleType)(byte)e.Properties.SaleType,
+            e.Properties.SalePrice
         ));
     }
 
@@ -124,7 +126,9 @@ public sealed partial class GridSession
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Move),
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Modify),
             e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Copy),
-            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Transfer)
+            e.Properties.Permissions.OwnerMask.HasFlag(PermissionMask.Transfer),
+            (SLNG.Core.PrimSaleType)(byte)e.Properties.SaleType,
+            e.Properties.SalePrice
         ));
     }
 

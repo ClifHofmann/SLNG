@@ -29,6 +29,12 @@ public class MetadataComponent : IComponent
     public bool OwnerCanCopy { get; set; } = true;
     public bool OwnerCanTransfer { get; set; } = true;
 
+    /// <summary>FEAT-ECON-02: what this object sells, and for how much. Only the simulator's own
+    /// figures ever land here -- a purchase sends back exactly what it was told, and the sim
+    /// cancels the sale if the two disagree.</summary>
+    public PrimSaleType SaleType { get; set; } = PrimSaleType.NotForSale;
+    public int SalePrice { get; set; }
+
     public MetadataComponent() { }
 
     public MetadataComponent(Guid id)

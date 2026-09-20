@@ -1066,4 +1066,60 @@ public class WorldSimulationTests
         Assert.Empty(avatar.ActiveAnimations!);
         Assert.Equal(Guid.Empty, avatar.SittingOnObjectId);
     }
+
+    /// <summary>FEAT-ECON-02: the sale info rides on ObjectProperties like the name does, and has
+    /// to survive into the world model -- the context menu decides whether to offer a purchase
+    /// from it, and the purchase sends back exactly these two figures.</summary>
+    [Fact]
+    public void ObjectProperties_carry_the_sale_info_into_the_world()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var objectId = Guid.NewGuid();
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(1ul, 5, new Vector3(1, 2, 3), Quaternion.Identity,
+            Vector3.One, 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One,
+            ParentLocalId: 0, AttachmentPoint: 0, ObjectId: objectId));
+        simulation.Pump();
+
+        session.RaiseObjectProperties(new ObjectPropertiesEvent(
+            1ul, objectId, "Vendor", "", Guid.Empty, Guid.NewGuid(), Guid.Empty,
+            SaleType: PrimSaleType.Copy, SalePrice: 250));
+        simulation.Pump();
+
+        var meta = world.GetEntity(1ul, 5)!.GetComponent<MetadataComponent>()!;
+        Assert.Equal(PrimSaleType.Copy, meta.SaleType);
+        Assert.Equal(250, meta.SalePrice);
+    }
+
+    /// <summary>And an object nobody is selling says so, rather than leaving the previous
+    /// answer standing: a price that outlives the sale is an offer to buy something that is not
+    /// for sale.</summary>
+    [Fact]
+    public void Taking_an_object_off_sale_clears_the_price()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var objectId = Guid.NewGuid();
+        session.RaiseObjectUpdate(new ObjectUpdateEvent(1ul, 5, Vector3.Zero, Quaternion.Identity,
+            Vector3.One, 1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One,
+            ParentLocalId: 0, AttachmentPoint: 0, ObjectId: objectId));
+        simulation.Pump();
+
+        session.RaiseObjectProperties(new ObjectPropertiesEvent(
+            1ul, objectId, "Vendor", "", Guid.Empty, Guid.NewGuid(), Guid.Empty,
+            SaleType: PrimSaleType.Original, SalePrice: 900));
+        simulation.Pump();
+
+        session.RaiseObjectProperties(new ObjectPropertiesEvent(
+            1ul, objectId, "Vendor", "", Guid.Empty, Guid.NewGuid(), Guid.Empty));
+        simulation.Pump();
+
+        var meta = world.GetEntity(1ul, 5)!.GetComponent<MetadataComponent>()!;
+        Assert.Equal(PrimSaleType.NotForSale, meta.SaleType);
+        Assert.Equal(0, meta.SalePrice);
+    }
 }

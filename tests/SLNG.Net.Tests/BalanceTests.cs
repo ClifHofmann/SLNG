@@ -78,6 +78,27 @@ public class BalanceTests
         Assert.Equal(new[] { 1000, 750, 1750 }, seen);
     }
 
+    /// <summary>FEAT-ECON-02: buying refuses the cases that cannot be a purchase, rather than
+    /// putting a packet on the wire for the simulator to reject. "Not for sale" is the one that
+    /// matters -- a sale type of 0 with a price is how a formerly-for-sale object reads.</summary>
+    [Theory]
+    [InlineData(SLNG.Core.PrimSaleType.NotForSale, 100)]
+    [InlineData(SLNG.Core.PrimSaleType.Original, -1)]
+    public void ANonPurchaseIsRefused(SLNG.Core.PrimSaleType saleType, int price)
+    {
+        using var session = new GridSession();
+
+        Assert.False(session.BuyObject(localId: 42, saleType, price));
+    }
+
+    [Fact]
+    public void BuyingTheRootPrimOfNothingIsRefused()
+    {
+        using var session = new GridSession();
+
+        Assert.False(session.BuyObject(localId: 0, SLNG.Core.PrimSaleType.Copy, 10));
+    }
+
     /// <summary>Asking while disconnected is a no-op, not a throw: the readout is wired up before
     /// login and the region-entry path calls this on every arrival.</summary>
     [Fact]
@@ -88,5 +109,19 @@ public class BalanceTests
         var exception = Record.Exception(() => session.RequestBalance());
 
         Assert.Null(exception);
+    }
+
+    /// <summary>And the same for a purchase: it reports that nothing was sent instead of
+    /// throwing, so a caller can tell the difference without catching.</summary>
+    [Fact]
+    public void BuyingWhileDisconnectedReportsThatNothingWasSent()
+    {
+        using var session = new GridSession();
+
+        bool sent = true;
+        var exception = Record.Exception(() => sent = session.BuyObject(7, SLNG.Core.PrimSaleType.Original, 250));
+
+        Assert.Null(exception);
+        Assert.False(sent);
     }
 }

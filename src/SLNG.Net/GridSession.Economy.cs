@@ -39,6 +39,38 @@ public partial class GridSession
 
     private void OnMoneyBalance(object? sender, LibreMetaverse.BalanceEventArgs e) => SetBalance(e.Balance);
 
+    /// <summary>FEAT-ECON-02: buys a for-sale object.</summary>
+    /// <param name="localId">The object's root prim.</param>
+    /// <param name="saleType">What it sells, as the SIMULATOR reported it.</param>
+    /// <param name="price">Its price, likewise.</param>
+    /// <remarks>
+    /// The sale type and the price are the simulator's own figures, passed straight back. That is
+    /// not a formality: the sim compares them against what it has and CANCELS the sale if they
+    /// differ ("sale info is used for verification only, if it doesn't match region info then
+    /// sale is canceled" -- llfloaterbuy.cpp). It is what stops a client from naming its own
+    /// price, and it is why nothing here ever computes either number.
+    ///
+    /// GroupID is the buyer's ACTIVE group, not the object's -- the viewer sends
+    /// gAgent.getGroupID() (LLSelectMgr::packAgentGroupAndCatID). CategoryID is where the
+    /// delivery lands: the Objects folder for an object, the inventory root for contents, which
+    /// is the split llfloaterbuy / llfloaterbuycontents make.
+    /// </remarks>
+    public bool BuyObject(uint localId, SLNG.Core.PrimSaleType saleType, int price)
+    {
+        var sim = _client.Network.CurrentSim;
+        if (!_client.Network.Connected || sim == null) return false;
+        if (localId == 0 || saleType == SLNG.Core.PrimSaleType.NotForSale || price < 0) return false;
+
+        var folderType = saleType == SLNG.Core.PrimSaleType.Contents
+            ? LibreMetaverse.FolderType.Root
+            : LibreMetaverse.FolderType.Object;
+        var category = _client.Inventory.FindFolderForType(folderType);
+
+        _client.Objects.BuyObject(sim, localId, (LibreMetaverse.SaleType)(byte)saleType, price,
+            _client.Self.ActiveGroup, category);
+        return true;
+    }
+
     /// <summary>The one place the balance changes, so "unknown" can only ever become "known"
     /// here and the event cannot fire without the property already agreeing with it.</summary>
     internal void SetBalance(int balance)

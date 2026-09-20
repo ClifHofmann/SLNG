@@ -299,6 +299,8 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
 
     internal void RaiseObjectRemoved(ObjectRemovedEvent e) => ObjectRemovedReceived?.Invoke(this, e);
 
+    internal void RaiseObjectProperties(ObjectPropertiesEvent e) => ObjectPropertiesReceived?.Invoke(this, e);
+
     internal void RaiseObjectMedia(ObjectMediaEvent e) => ObjectMediaReceived?.Invoke(this, e);
 
     internal void RaiseTerrainPatch(TerrainPatchEvent e) => TerrainPatchReceived?.Invoke(this, e);

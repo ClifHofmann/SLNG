@@ -528,6 +528,21 @@
       "anim_playing_local": "Spiele lokal: {0}",
       "anim_playing_inworld": "Spiele Inworld: {0}",
       "anim_stopped": "Animation gestoppt: {0}"
+    },
+    "buy": {
+      "title": "Objekt kaufen",
+      "unnamed": "(unbenannt)",
+      "what_original": "Du kaufst das Original. Es wechselt den Besitzer und verschwindet von hier.",
+      "what_copy": "Du kaufst eine Kopie. Das Objekt bleibt stehen, die Kopie landet in deinem Inventar.",
+      "what_contents": "Du kaufst den Inhalt des Objekts. Das Objekt selbst bleibt stehen.",
+      "what_unknown": "Was genau verkauft wird, hat der Sim nicht gesagt.",
+      "price": "Preis: L$ {0}",
+      "balance": "Dein Kontostand: L$ {0}",
+      "insufficient": "Dir fehlen L$ {0}.",
+      "confirm": "Für L$ {0} kaufen",
+      "cancel": "Abbrechen",
+      "sent": "Kauf gesendet: {0} für L$ {1}.",
+      "menu": "Kaufen (L$ {0}) …"
     }
   }
 }

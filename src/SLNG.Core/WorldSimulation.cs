@@ -1071,6 +1071,8 @@ public sealed class WorldSimulation : IDisposable
         meta.OwnerCanModify = e.OwnerCanModify;
         meta.OwnerCanCopy = e.OwnerCanCopy;
         meta.OwnerCanTransfer = e.OwnerCanTransfer;
+        meta.SaleType = e.SaleType;
+        meta.SalePrice = e.SalePrice;
 
         _world.NotifyComponentUpdated(entity, meta);
     }
