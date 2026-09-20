@@ -134,6 +134,9 @@ namespace SLNG.App.UI
             {
                 _createShapes.Visible = !_createShapes.Visible;
                 _createHeader.Text = _createShapes.Visible ? CreateHeaderExpanded : CreateHeaderCollapsed;
+                // Seven more entries appear here, which is exactly when the menu runs off the
+                // bottom of the screen.
+                CallDeferred(nameof(ClampIntoViewport));
             };
             AddMenuButton(_createShapes, "📦 Box", () => OnCreatePrimClicked?.Invoke(_pendingCreatePosition, BasicPrimType.Box));
             AddMenuButton(_createShapes, "🔵 Sphere", () => OnCreatePrimClicked?.Invoke(_pendingCreatePosition, BasicPrimType.Sphere));
@@ -142,6 +145,29 @@ namespace SLNG.App.UI
             AddMenuButton(_createShapes, "🍩 Torus", () => OnCreatePrimClicked?.Invoke(_pendingCreatePosition, BasicPrimType.Torus));
             AddMenuButton(_createShapes, "🛞 Tube", () => OnCreatePrimClicked?.Invoke(_pendingCreatePosition, BasicPrimType.Tube));
             AddMenuButton(_createShapes, "💍 Ring", () => OnCreatePrimClicked?.Invoke(_pendingCreatePosition, BasicPrimType.Ring));
+        }
+
+        /// <summary>Keeps the menu on screen. It opens AT the cursor, so a right-click near the
+        /// bottom edge pushed the lower half of it off the viewport -- reported in-world with
+        /// the shape list cut in two. Slides it back rather than flipping it above the cursor:
+        /// the entries then stay where the eye already is.</summary>
+        /// <remarks>
+        /// Deferred because the size is only known after the layout pass, and the menu changes
+        /// height every time it opens -- the object, avatar and ground sets have different
+        /// entries, and "Create" expands. GetCombinedMinimumSize is the height it WILL take, so
+        /// the first frame is already right; Size alone would still be the previous menu's.
+        /// </remarks>
+        private void ClampIntoViewport()
+        {
+            var viewport = GetViewportRect().Size;
+            var extent = GetCombinedMinimumSize().Max(Size);
+            var position = Position;
+
+            if (position.Y + extent.Y > viewport.Y) position.Y = viewport.Y - extent.Y;
+            if (position.X + extent.X > viewport.X) position.X = viewport.X - extent.X;
+            // Never off the top or the left: a menu taller than the viewport is better cut off
+            // at the bottom, where the user can still reach the first entries.
+            Position = new Vector2(Mathf.Max(0f, position.X), Mathf.Max(0f, position.Y));
         }
 
         private Button AddMenuButton(VBoxContainer container, string text, Action onClick)
@@ -169,6 +195,7 @@ namespace SLNG.App.UI
             Position = position;
             Visible = true;
             MoveToFront();
+            CallDeferred(nameof(ClampIntoViewport));
         }
 
         /// <summary>FEAT-UI-13: right-clicked an avatar -- offers Profile / IM / Offer Teleport /
@@ -193,6 +220,7 @@ namespace SLNG.App.UI
             Position = position;
             Visible = true;
             MoveToFront();
+            CallDeferred(nameof(ClampIntoViewport));
         }
 
         /// <summary>Right-click on terrain (or anything else without an entity to edit) --
@@ -210,6 +238,7 @@ namespace SLNG.App.UI
             Position = screenPosition;
             Visible = true;
             MoveToFront();
+            CallDeferred(nameof(ClampIntoViewport));
         }
 
         public override void _UnhandledInput(InputEvent @event)
