@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-05`
 - **Track:** `ui` / `net`
-- **Status:** `🧪 Review` (implemented `v0.23.61-alpha`, one edit session over one selection as of `v0.23.64-alpha`)
+- **Status:** `✅ Done` (`v0.23.64-alpha`, confirmed in-world)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -49,9 +49,8 @@ its own "Link"/"Unlink" buttons.
 - [x] 2+ selected standalone objects can be linked into one linkset via a Link command.
 - [x] A linkset can be split back into standalone prims via an Unlink command.
 - [x] Selection highlighting correctly reflects the full multi-select set at all times — it rides on FEAT-UI-32's outline, and a link-selected object is no longer dropped by a plain click elsewhere.
-- [ ] Linking/unlinking is reflected correctly in `TransformComponent.ParentLocalId` and renders
-      correctly afterward (no orphaned or duplicated visuals) — covered by unit tests, in-world
-      confirmation outstanding.
+- [x] Linking/unlinking is reflected correctly in `TransformComponent.ParentLocalId` and renders
+      correctly afterward (no orphaned or duplicated visuals).
 
 ## Technical Specs & Affected Files
 
