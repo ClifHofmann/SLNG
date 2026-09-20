@@ -289,6 +289,10 @@ public partial class AvatarRenderer : Node3D
         _world.EntityAdded += OnEntityAdded;
         _world.EntityRemoved += OnEntityRemoved;
         _world.ComponentUpdated += OnComponentUpdated;
+        // FEAT-UI-23: worn items are drawn here, not by ObjectRenderer, so the selection
+        // highlight has to be drawn here too -- selecting one produced no outline at all.
+        _world.EntitySelected += (_, e) => CallDeferred(nameof(HighlightAttachment), e.Entity.Id.ToString(), true);
+        _world.EntityDeselected += (_, e) => CallDeferred(nameof(HighlightAttachment), e.Entity.Id.ToString(), false);
     }
 
     private void OnEntityAdded(object? sender, EntityEventArgs e)
@@ -2037,6 +2041,47 @@ public partial class AvatarRenderer : Node3D
     /// <summary>Shared tail of both attachment paths: turns already-obtained
     /// <paramref name="meshData"/> into a scene node — skinned to the avatar skeleton when it
     /// carries skin data, otherwise bolted statically to its attachment bone.</summary>
+    /// <summary>FEAT-UI-23: outlines a worn item the way ObjectRenderer outlines a world prim.
+    /// Silently does nothing for an entity that is not a worn item, or whose geometry has not
+    /// been built yet.</summary>
+    /// <remarks>
+    /// Both shapes a worn item can take are covered. A STATIC one is a plain mesh instance
+    /// under the attachment point node, so it outlines exactly like a world prim. A RIGGED one
+    /// is skinned to the avatar's skeleton, and its outline has to be skinned with it -- the
+    /// hull is handed the same Skin and the same Skeleton, or it would hang in the bind pose
+    /// while the item moves with the body.
+    ///
+    /// Deferred from the selection event, like everything else here: the event arrives on
+    /// whatever thread changed the selection, and this touches the scene graph.
+    /// </remarks>
+    private void HighlightAttachment(string entityIdStr, bool selected)
+    {
+        if (_world == null || !Guid.TryParse(entityIdStr, out var entityId)) return;
+
+        var entity = _world.GetEntity(entityId);
+        if (entity?.GetComponent<AttachmentComponent>() == null) return;
+
+        // A worn item is always the root of what it is: nothing above it in the linkset is
+        // selectable, so it draws in the root colour.
+        if (_riggedAttachments.TryGetValue(entityId, out var rigged) && IsInstanceValid(rigged))
+        {
+            SelectionOutline.Apply(rigged, selected, isRoot: true, skinnedFrom: rigged);
+        }
+
+        if (_attachmentNodes.TryGetValue(entityId, out var boneAttach) && IsInstanceValid(boneAttach))
+        {
+            var point = boneAttach.GetNodeOrNull<Node3D>("PointOffset");
+            var mesh = point?.GetNodeOrNull<MeshInstance3D>("AttachMesh");
+            if (mesh != null && IsInstanceValid(mesh)) SelectionOutline.Apply(mesh, selected, isRoot: true);
+        }
+
+        if (_hudNodes.TryGetValue(entityId, out var hudNode) && IsInstanceValid(hudNode))
+        {
+            var hudMesh = hudNode.GetNodeOrNull<MeshInstance3D>("HudMesh");
+            if (hudMesh != null && IsInstanceValid(hudMesh)) SelectionOutline.Apply(hudMesh, selected, isRoot: true);
+        }
+    }
+
     /// <summary>FEAT-UI-23: the world transform of the attach point a worn item hangs on -- the
     /// frame its own position and rotation are expressed in.</summary>
     /// <remarks>
