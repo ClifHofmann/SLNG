@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using Godot;
 using SLNG.App;
@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.41-alpha";
+    public const string AppVersion = "v0.24.42-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -2413,9 +2413,10 @@ public partial class Boot : Control
             // moment it crossed the threshold made every gap read as 0.50-0.54 s regardless of how
             // long it went on -- which mattered, because whether it exceeded the 0.80 s
             // extrapolation cutoff is the difference between a smooth walk and a visible stall.
-            GD.Print($"[AgentGap] no position packet for {_agentGapPeak:0.00}s " +
-                      $"({(_agentGapPeak > 0.8f ? "OVER" : "within")} the 0.80s extrapolation cutoff) " +
-                      $"queue={MainThreadWorkQueue.Depth}");
+            if (Diagnostics.Enabled)
+                GD.Print($"[AgentGap] no position packet for {_agentGapPeak:0.00}s " +
+                          $"({(_agentGapPeak > 0.8f ? "OVER" : "within")} the 0.80s extrapolation cutoff) " +
+                          $"queue={MainThreadWorkQueue.Depth}");
             _agentGapReported = false;
             _agentGapPeak = 0;
         }

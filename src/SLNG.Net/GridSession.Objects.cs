@@ -906,7 +906,8 @@ public sealed partial class GridSession
         var sim = _client.Network.CurrentSim;
         if (sim == null)
         {
-            Console.WriteLine($"[Touch] {localId}: no current simulator -- nothing sent");
+            if (SLNG.Core.Diag.Verbose)
+                Console.WriteLine($"[Touch] {localId}: no current simulator -- nothing sent");
             return;
         }
 
@@ -921,7 +922,8 @@ public sealed partial class GridSession
                 ToOmv(uvCoord), ToOmv(stCoord), faceIndex,
                 ToOmv(position), ToOmv(normal), ToOmv(binormal));
 
-            Console.WriteLine($"[Touch] grab+release sent for {localId} to {sim.Name}");
+            if (SLNG.Core.Diag.Verbose)
+                Console.WriteLine($"[Touch] grab+release sent for {localId} to {sim.Name}");
         }
         catch (Exception ex)
         {

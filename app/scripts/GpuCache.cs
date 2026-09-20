@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
@@ -344,6 +344,9 @@ public class GpuCache
             pinnedMb = pinnedBytes >> 20;
         }
         degraded = _uploadFromDegraded.Count;
+        // A periodic stats dump, which is what the perf overlay is for. The budget and LOD-bias
+        // lines below/above stay: those report a state CHANGE, not a reading.
+        if (!Diagnostics.Enabled) return;
         Console.Error.WriteLine($"[GpuCache] get={n} hit={_gpuGetHit} bypassDegraded={_gpuGetBypassDegraded} " +
             $"entries={entries} sizeMB={sizeMb}/{_maxSize >> 20} pinned={pinned} pinnedMB={pinnedMb} " +
             $"lodBias={SLNG.Assets.TextureLod.GlobalLodBias} degradedIds={degraded} mainQueue={MainThreadWorkQueue.Depth}");

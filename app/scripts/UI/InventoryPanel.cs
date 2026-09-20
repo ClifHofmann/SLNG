@@ -1,4 +1,4 @@
-using Godot;
+﻿using Godot;
 using SLNG.Net;
 using System;
 using System.Collections.Generic;
@@ -1758,14 +1758,18 @@ public partial class InventoryPanel : SLNGWindow
     /// "teleport home", so an unresolved id must fail loudly, not silently send the agent home.</summary>
     private async System.Threading.Tasks.Task TeleportAsync(Guid itemId, Guid assetId, Guid? parentFolderId)
     {
-        GD.Print($"[Teleport] item={itemId} assetId={assetId} parentFolder={parentFolderId}");
+        // The trace of HOW the landmark was resolved is diagnostic; the RESULT below is not, and
+        // stays -- a teleport that silently does nothing is the report this line answers.
+        if (Diagnostics.Enabled)
+            GD.Print($"[Teleport] item={itemId} assetId={assetId} parentFolder={parentFolderId}");
 
         if (assetId == Guid.Empty && parentFolderId is { } folderId && _session != null)
         {
             var children = await _session.FetchInventoryChildrenAsync(folderId).ConfigureAwait(false);
             var fresh = children.FirstOrDefault(c => c.Id == itemId);
             assetId = fresh?.AssetId ?? Guid.Empty;
-            GD.Print($"[Teleport] re-resolved assetId={assetId} (found={fresh != null})");
+            if (Diagnostics.Enabled)
+                GD.Print($"[Teleport] re-resolved assetId={assetId} (found={fresh != null})");
         }
 
         if (assetId == Guid.Empty)
