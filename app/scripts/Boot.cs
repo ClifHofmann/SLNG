@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.36-alpha";
+    public const string AppVersion = "v0.24.37-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3406,6 +3406,10 @@ public partial class Boot : Control
             // parent index, which is why this is wired from here rather than read by the gizmo.
             _selectionGizmo.LinksetParts = CollectLinksetParts;
             _objectSelectionController.LinksetParts = CollectLinksetParts;
+            // FEAT-ECON-02: a left click on an object whose click action is Pay or Buy opens the
+            // same dialog the context menu opens.
+            _objectSelectionController.OnPayRequested = (entity, _) => ShowPayWindow(entity);
+            _objectSelectionController.OnBuyRequested = ShowBuyWindow;
             // FEAT-UI-06: here and not next to the context-menu wiring in SetupHud -- the
             // controller does not exist yet at that point, and assigning through it there threw
             // a NullReferenceException out of _Ready, which stalled the whole boot.

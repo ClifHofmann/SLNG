@@ -35,6 +35,21 @@ namespace SLNG.App
         // happened to own a window.
         private bool _editSessionOpen;
 
+        // SL's click actions, in the simulator's own numbering (indra_constants.h, marked "DO NOT
+        // CHANGE THE SEQUENCE OF THIS LIST"). Only the ones this viewer acts on are named; Open,
+        // Play, OpenMedia and Zoom fall through to a touch, which is what an unhandled action did
+        // before and is harmless.
+        private const byte ClickActionSit = 1;
+        private const byte ClickActionBuy = 2;
+        private const byte ClickActionPay = 3;
+        private const byte ClickActionDisabled = 8;
+        private const byte ClickActionIgnore = 9;
+
+        /// <summary>FEAT-ECON-02: a left click asked to pay or buy this object -- Boot owns the
+        /// two dialogs, and the context menu reaches them through the same pair.</summary>
+        public System.Action<Entity, uint>? OnPayRequested;
+        public System.Action<Entity, uint>? OnBuyRequested;
+
         /// <summary>The other prims of an object's linkset, supplied by Boot -- only
         /// WorldSimulation keeps the parent index.</summary>
         public System.Func<Entity, System.Collections.Generic.IReadOnlyList<Entity>>? LinksetParts;
@@ -463,7 +478,41 @@ namespace SLNG.App
                                             var rawPrim = rawEntity.GetComponent<PrimitiveComponent>();
                                             var rootPrim = entity != rawEntity ? entity.GetComponent<PrimitiveComponent>() : null;
                                             byte clickAction = (rawPrim != null && rawPrim.ClickAction != 0) ? rawPrim.ClickAction : (rootPrim?.ClickAction ?? 0);
-                                            bool wantSit = clickAction == 1 && !isSittingOnThisObject;
+                                            bool wantSit = clickAction == ClickActionSit && !isSittingOnThisObject;
+
+                                            // FEAT-ECON-02: an object can say what a LEFT click on
+                                            // it means, and Pay and Buy are two of the answers --
+                                            // which is most of what a vendor is. SLNG knew only Sit
+                                            // and Touch, so clicking a vendor sent a touch its
+                                            // script ignores: "ich klicke drauf und es passiert
+                                            // nichts". The reference viewer dispatches the same
+                                            // way (LLToolPie::handleLeftClickPick), and gates each
+                                            // on the object actually being able to do it.
+                                            if (clickAction == ClickActionPay
+                                                && (rawPrim?.TakesMoney == true || rootPrim?.TakesMoney == true))
+                                            {
+                                                // "pay event goes to object actually clicked on"
+                                                OnPayRequested?.Invoke(rawEntity, rawLocalId);
+                                                return;
+                                            }
+
+                                            if (clickAction == ClickActionBuy)
+                                            {
+                                                // Buying is about the OBJECT, so the root prim --
+                                                // the sale price lives there, not on the face you
+                                                // happened to hit.
+                                                var meta = entity.GetComponent<MetadataComponent>();
+                                                if (meta != null && meta.SaleType != PrimSaleType.NotForSale)
+                                                {
+                                                    OnBuyRequested?.Invoke(entity, localId);
+                                                    return;
+                                                }
+                                            }
+
+                                            // "Disabled" and "Ignore" mean exactly that: the object
+                                            // has asked not to be clicked, and sending a touch
+                                            // anyway would be answering a question nobody asked.
+                                            if (clickAction is ClickActionDisabled or ClickActionIgnore) return;
 
                                             if (wantSit)
                                             {
