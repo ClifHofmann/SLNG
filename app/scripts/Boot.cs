@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.3-alpha";
+    public const string AppVersion = "v0.24.4-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1063,9 +1063,10 @@ public partial class Boot : Control
     /// <summary>FEAT-UI-23: what the local agent is wearing, for the self context menu's worn
     /// list. Sorted by name so the same item sits in the same place between two right-clicks.</summary>
     /// <remarks>
-    /// Attachment points 31-38 are HUDs, which are left out: a HUD is not something you edit in
-    /// the 3D view, and it would pad the list with the applier and AO huds nobody is reaching
-    /// for here.
+    /// HUDs are in the list. An earlier version filtered them out on the assumption that a HUD
+    /// is not edited in the 3D view -- corrected in-world with a screenshot of exactly that:
+    /// the reference viewer's build floater open on a HUD, gizmo and all. Arranging HUDs on the
+    /// screen is a normal part of using them.
     /// </remarks>
     private System.Collections.Generic.IReadOnlyList<(SLNG.Core.ECS.Entity Entity, uint LocalId, string Name)> CollectWornItems()
     {
@@ -1080,7 +1081,6 @@ public partial class Boot : Control
         {
             var attachment = entity.GetComponent<SLNG.Core.Components.AttachmentComponent>();
             if (attachment == null || attachment.AvatarEntityId != self.Id) continue;
-            if (SLNG.App.AttachmentPointMap.IsHudPoint(attachment.AttachmentPoint)) continue;
 
             var meta = entity.GetComponent<SLNG.Core.Components.MetadataComponent>();
             string name = string.IsNullOrWhiteSpace(meta?.Name) ? $"Object {entity.LocalId}" : meta!.Name;
