@@ -1,5 +1,6 @@
 using Godot;
 using SLNG.Core;
+using SLNG.Core.Components;
 using SLNG.Core.ECS;
 using System;
 
@@ -14,6 +15,10 @@ namespace SLNG.App.UI
         /// <summary>MVP2-1: right-click "Sit" on an object -- distinct from OnTouchClicked's
         /// grab/de-grab pair.</summary>
         public Action<Entity, uint>? OnSitClicked;
+
+        /// <summary>FEAT-UI-23: take a worn item off. Only ever offered for the local agent's
+        /// own attachments.</summary>
+        public Action<Entity, uint>? OnDetachClicked;
 
         /// <summary>FEAT-UI-13: right-click "Profile" / "IM" on an avatar. Guid is the target
         /// agent id, string its best-known display name.</summary>
@@ -49,6 +54,7 @@ namespace SLNG.App.UI
         private Button _avatarTeleportButton = null!;
         private Button _avatarMuteButton = null!;
         private VBoxContainer _createRoot = null!;
+        private Button _sitButton = null!, _deleteButton = null!, _detachButton = null!;
         private VBoxContainer _groundOnlyButtons = null!;
         private Button _createHeader = null!;
         private VBoxContainer _createShapes = null!;
@@ -99,9 +105,12 @@ namespace SLNG.App.UI
             root.AddChild(_objectButtons);
             AddMenuButton(_objectButtons, "✏️ Edit", () => OnEditClicked?.Invoke(_currentEntity!, _currentLocalId));
             AddMenuButton(_objectButtons, "✋ Touch", () => OnTouchClicked?.Invoke(_currentEntity!, _currentLocalId));
-            AddMenuButton(_objectButtons, "🪑 Sit", () => OnSitClicked?.Invoke(_currentEntity!, _currentLocalId));
+            _sitButton = AddMenuButton(_objectButtons, "🪑 Sit", () => OnSitClicked?.Invoke(_currentEntity!, _currentLocalId));
             AddMenuButton(_objectButtons, "🔍 Inspect", () => OnInspectClicked?.Invoke(_currentEntity!, _currentLocalId));
-            AddMenuButton(_objectButtons, "🗑️ Delete", () => OnDeleteClicked?.Invoke(_currentEntity!, _currentLocalId));
+            _deleteButton = AddMenuButton(_objectButtons, "🗑️ Delete", () => OnDeleteClicked?.Invoke(_currentEntity!, _currentLocalId));
+            // FEAT-UI-23: shown instead of Sit and Delete once the object turns out to be worn.
+            _detachButton = AddMenuButton(_objectButtons, "👜 Detach",
+                () => OnDetachClicked?.Invoke(_currentEntity!, _currentLocalId));
 
             // MVP2-1: ground sit. Its own block, because it is the one entry that only makes
             // sense on bare ground -- the object menu has its own Sit.
@@ -196,6 +205,15 @@ namespace SLNG.App.UI
             _currentEntity = entity;
             _currentLocalId = localId;
             _pendingCreatePosition = createPosition;
+
+            // FEAT-UI-23: a worn item takes Detach in place of Sit and Delete. You cannot sit on
+            // something you are wearing, and Delete on a worn item is not what the reference
+            // viewer offers there either -- it offers Detach.
+            bool isWorn = entity.GetComponent<AttachmentComponent>() != null;
+            _detachButton.Visible = isWorn;
+            _sitButton.Visible = !isWorn;
+            _deleteButton.Visible = !isWorn;
+
             _objectButtons.Visible = true;
             _avatarButtons.Visible = false;
             _groundOnlyButtons.Visible = false;

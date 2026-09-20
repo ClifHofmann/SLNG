@@ -398,7 +398,8 @@ namespace SLNG.App.UI
             if (!SelectionSettings.EditLinkedParts && transform != null && transform.ParentLocalId != 0 && _session != null && world != null)
             {
                 var parent = world.GetEntity(_session.CurrentRegionHandle, transform.ParentLocalId);
-                if (parent != null)
+                // An AVATAR is not a link root. A worn item's ParentLocalId is the avatar that wears it, so walking up would select the avatar instead of the item (FEAT-UI-23). WorldSimulation.ResolveWorldTransform draws the same line.
+                if (parent != null && parent.GetComponent<AvatarComponent>() == null)
                 {
                     entity = parent;
                     localId = transform.ParentLocalId;
@@ -551,6 +552,10 @@ namespace SLNG.App.UI
             if (transform.ParentLocalId == 0 || _currentEntity == null || _world == null) return false;
 
             var root = _world.GetEntity(_currentEntity.RegionHandle, transform.ParentLocalId);
+            // An AVATAR is not a link root. A worn item's ParentLocalId is the avatar that wears it, so walking up would select the avatar instead of the item (FEAT-UI-23). WorldSimulation.ResolveWorldTransform draws the same line. Here it matters twice over: a worn item's Position is ALREADY relative to its
+            // attach point, so subtracting the avatar's position would be nonsense on top of
+            // being the wrong parent.
+            if (root?.GetComponent<AvatarComponent>() != null) return false;
             var rootTransform = root?.GetComponent<TransformComponent>();
             if (rootTransform == null) return false;
 

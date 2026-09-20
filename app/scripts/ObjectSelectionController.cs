@@ -334,7 +334,8 @@ namespace SLNG.App
                                             if (transform != null && transform.ParentLocalId != 0)
                                             {
                                                 var parent = _world.GetEntity(rawEntity.RegionHandle, transform.ParentLocalId);
-                                                if (parent != null)
+                                                // An AVATAR is not a link root. A worn item's ParentLocalId is the avatar that wears it, so walking up would select the avatar instead of the item (FEAT-UI-23). WorldSimulation.ResolveWorldTransform draws the same line.
+                                                if (parent != null && parent.GetComponent<AvatarComponent>() == null)
                                                 {
                                                     entity = parent;
                                                     localId = transform.ParentLocalId;

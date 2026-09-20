@@ -301,9 +301,34 @@ namespace SLNG.App.UI
         /// not move that object. The permission question is the sim's own per-agent answer
         /// (FEAT-SEC-04), not the owner's mask — the same source the Position fields are gated
         /// on, so the two can never disagree.</summary>
+        /// <summary>Is this prim part of something worn? True for the attachment itself and for
+        /// every child prim of a worn linkset -- their transforms all live in the attach point's
+        /// frame, not the region's.</summary>
+        private bool IsWorn(Entity entity)
+        {
+            if (entity.GetComponent<AttachmentComponent>() != null) return true;
+            var transform = entity.GetComponent<TransformComponent>();
+            if (transform == null || transform.ParentLocalId == 0) return false;
+            var root = _world.GetEntity(entity.RegionHandle, transform.ParentLocalId);
+            return root != null
+                && (root.GetComponent<AttachmentComponent>() != null
+                    || root.GetComponent<AvatarComponent>() != null);
+        }
+
         public void Attach(Entity? entity)
         {
             if (entity == null || !SLNG.Core.EditPermission.CanMove(_world, entity))
+            {
+                Detach();
+                return;
+            }
+
+            // FEAT-UI-23: never on a worn item. An attachment's transform is relative to its
+            // ATTACH POINT, a frame this gizmo does not have -- it places its handles from
+            // TransformComponent.Position, which for an attachment is a few centimetres of
+            // offset and would put them at the corner of the region. Worn items are edited
+            // through the numeric fields, which are already in that frame, until it is done.
+            if (IsWorn(entity))
             {
                 Detach();
                 return;
@@ -924,6 +949,8 @@ namespace SLNG.App.UI
             if (transform.ParentLocalId == 0 || _entity == null) return false;
 
             var root = _world.GetEntity(_entity.RegionHandle, transform.ParentLocalId);
+            // An AVATAR is not a link root. A worn item's ParentLocalId is the avatar that wears it, so walking up would select the avatar instead of the item (FEAT-UI-23). WorldSimulation.ResolveWorldTransform draws the same line.
+            if (root?.GetComponent<AvatarComponent>() != null) return false;
             var rootTransform = root?.GetComponent<TransformComponent>();
             if (rootTransform == null) return false;
 

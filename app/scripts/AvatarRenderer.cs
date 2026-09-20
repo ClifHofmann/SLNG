@@ -2037,6 +2037,54 @@ public partial class AvatarRenderer : Node3D
     /// <summary>Shared tail of both attachment paths: turns already-obtained
     /// <paramref name="meshData"/> into a scene node — skinned to the avatar skeleton when it
     /// carries skin data, otherwise bolted statically to its attachment bone.</summary>
+    /// <summary>FEAT-UI-23: makes a worn item right-clickable in the 3D view, by giving it the
+    /// same kind of tagged <see cref="StaticBody3D"/> that <c>ObjectRenderer</c> puts on a world
+    /// prim. Without one the raycast simply passes through every attachment, and the only way
+    /// to act on a worn item was the inventory.</summary>
+    /// <remarks>
+    /// Only for the LOCAL agent's attachments, and only for STATIC ones.
+    ///
+    /// Own attachments only, because that is all the feature needs and it bounds the cost: a
+    /// trimesh shape per worn item on every avatar in view would be a real bill on a busy sim,
+    /// and someone else's attachment belongs to the avatar context menu anyway.
+    ///
+    /// Static only, because a rigged mesh is deformed by the skeleton every frame while a
+    /// trimesh shape would stay in the bind pose -- the collider would sit somewhere the item
+    /// visibly is not. Rigged worn items (mesh bodies and clothing) therefore stay unpickable,
+    /// which costs little: their prim transform does not move them anyway.
+    ///
+    /// The shape is a child of the mesh instance and carries no transform of its own, so it
+    /// inherits the attachment's placement -- including the per-frame bone pose above it -- for
+    /// free. The prim scale is already baked into the vertices.
+    /// </remarks>
+    private void AddAttachmentPickBody(MeshInstance3D mi, ArrayMesh mesh, AvatarVisual avatarVisual, Guid entityId)
+    {
+        if (!avatarVisual.IsSelf || _world == null) return;
+
+        var entity = _world.GetEntity(entityId);
+        if (entity == null) return;
+
+        var shape = mesh.CreateTrimeshShape();
+        if (shape == null) return;
+
+        var body = new StaticBody3D
+        {
+            Name = "AttachCollision",
+            // Phantom rather than Objects: a worn item is something to look at and click, never
+            // something the avatar should bump into. PhysicsLayers.Phantom is exactly that
+            // distinction and is already in every "what is the user pointing at" ray.
+            CollisionLayer = PhysicsLayers.Phantom,
+            CollisionMask = 0,
+        };
+        // The same two metas ObjectRenderer writes, so the existing selection path resolves this
+        // hit back to an entity with no special case -- including the peek-behind-the-local-
+        // avatar logic that a worn item needs, since the avatar capsule swallows the ray first.
+        body.SetMeta("EntityId", entityId.ToString());
+        body.SetMeta("LocalId", entity.LocalId.ToString());
+        body.AddChild(new CollisionShape3D { Shape = shape });
+        mi.AddChild(body);
+    }
+
     private void ApplyAttachmentMeshDataAsync(
         MeshData meshData, Node3D attachParent, AvatarVisual avatarVisual, Guid meshId,
         FaceTexture[]? faces, FaceTexture defaultFace, System.Numerics.Vector3 slScale,
@@ -2148,6 +2196,7 @@ public partial class AvatarRenderer : Node3D
             mi.Position = new Godot.Vector3(slPos.X, slPos.Z, -slPos.Y);
             mi.Quaternion = new Godot.Quaternion(slRot.X, slRot.Z, -slRot.Y, slRot.W);
             attachParent.AddChild(mi);
+            AddAttachmentPickBody(mi, arrayMesh, avatarVisual, entityId);
             RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices.ToArray(), faces, defaultFace, meshId);
             _ = ApplyFaceMaterialsAsync(mi, faceIndices.ToArray(), faces, defaultFace, avatarVisual, meshId);
         }, label: "avatar.attach");

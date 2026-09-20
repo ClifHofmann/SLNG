@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.0-alpha";
+    public const string AppVersion = "v0.24.1-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -899,6 +899,9 @@ public partial class Boot : Control
         _inWorldContextMenu.OnInspectClicked = (entity, localId) => { /* Inspect logic later */ };
         _inWorldContextMenu.OnDeleteClicked = (entity, localId) => { /* Delete logic later */ };
         _inWorldContextMenu.OnSitClicked = (entity, localId) => _session?.RequestSit(localId);
+        // FEAT-UI-23: take a worn item off from the 3D view. DetachByLocalId already handles the
+        // Current-Outfit write-back (FEAT-INV-03), so the change survives a relog.
+        _inWorldContextMenu.OnDetachClicked = (entity, localId) => _session?.DetachByLocalId(localId);
         _inWorldContextMenu.OnSitOnGroundClicked = (godotPos) => _session?.SitOnGround();
         // FEAT-UI-13: right-click an avatar -> Profile / IM.
         _inWorldContextMenu.OnAvatarProfileClicked = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
