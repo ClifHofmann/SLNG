@@ -8,17 +8,20 @@ namespace SLNG.App.UI;
 /// FEAT-ECON-02: "Pay this object" — the vendor/tip-jar half of in-world money.
 ///
 /// Paying is not buying, and the two are not interchangeable. A purchase echoes a price the
-/// simulator advertised; a payment names its own amount, because a paid object states its terms
-/// on a prim face or in its description and its script decides what to do with whatever arrives.
-/// That is precisely why this window cannot pre-fill a price and why the amount stays the user's
-/// decision.
+/// simulator advertised for an object that is for sale; a payment goes to a script, and the
+/// script names its own terms with llSetPayPrice -- a default amount and up to four fixed
+/// buttons. So the window ASKS (RequestPayPrice) and shows what the object charges, which is
+/// what the reference viewer does and what "da bekomme ich eine feste Auswahl mit einem
+/// vorgegebenen Preis" is.
 ///
-/// The quick amounts are the reference viewer's own (L$ 1 / 5 / 10 / 20) plus a free field, so the
-/// common case is one click and the uncommon one is still possible.
+/// Until that answer arrives -- and for an object whose script says nothing -- it falls back to
+/// the viewer's own L$ 1 / 5 / 10 / 20 plus a free field. A script can take the free field away
+/// entirely (PAY_PRICE_HIDE), and then its amounts are the only ones offered.
 /// </summary>
 public partial class PayObjectWindow : SLNGWindow
 {
-    private static readonly int[] QuickAmounts = { 1, 5, 10, 20 };
+    // What to offer until the object's own script answers -- the viewer's fastpay 1/5/10/20.
+    private static readonly int[] QuickAmounts = SLNG.Core.PayPrice.DefaultButtons;
 
     public event Action? Closed;
 
@@ -33,6 +36,8 @@ public partial class PayObjectWindow : SLNGWindow
     private SpinBox _amount = null!;
     private Label? _shortLabel;
     private Button _payButton = null!;
+    private readonly System.Collections.Generic.List<Button> _quickButtons = new();
+    private Label _amountLabel = null!;
 
     public override void _Ready()
     {
@@ -77,13 +82,28 @@ public partial class PayObjectWindow : SLNGWindow
 
         var quickRow = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         quickRow.AddThemeConstantOverride("separation", 6);
-        foreach (int quick in QuickAmounts)
+        for (int i = 0; i < SLNG.Core.PayPrice.MaxButtons; i++)
         {
-            var button = new Button { Text = $"L$ {quick}", SizeFlagsHorizontal = SizeFlags.ExpandFill };
-            button.Pressed += () => _amount.Value = quick;
+            int fallback = i < QuickAmounts.Length ? QuickAmounts[i] : 0;
+            var button = new Button
+            {
+                Text = $"L$ {fallback}",
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                Visible = fallback > 0,
+            };
+            int index = i;
+            // Pays straight away, as the viewer's fastpay buttons do: the amount is the object's
+            // own, so there is nothing left to confirm.
+            button.Pressed += () => { _amount.Value = AmountOf(index); Close(pay: true); };
+            _quickButtons.Add(button);
             quickRow.AddChild(button);
         }
         _contentVBox.AddChild(quickRow);
+
+        _amountLabel = new Label { Text = L10n.Tr("ui.pay.other_amount") };
+        _amountLabel.AddThemeFontSizeOverride("font_size", 11);
+        _amountLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        _contentVBox.AddChild(_amountLabel);
 
         _amount = new SpinBox
         {
@@ -113,6 +133,57 @@ public partial class PayObjectWindow : SLNGWindow
 
         RefreshAffordable();
         PositionWindow();
+
+        // What does this object actually charge? Its script may have said so with
+        // llSetPayPrice, and the viewer asks before showing anything else. The answer arrives
+        // off a network thread, hence the deferred hop.
+        _session.PayPriceReceived += OnPayPriceReceived;
+        _session.RequestPayPrice(objectId);
+    }
+
+    private void OnPayPriceReceived(object? sender, SLNG.Core.PayPriceEvent e)
+    {
+        if (e.ObjectId != _objectId) return; // another object's pay info
+        CallDeferred(MethodName.ApplyPayPrice, e.DefaultPrice, e.ButtonPrices);
+    }
+
+    /// <summary>Applies what the object's script asked for.</summary>
+    /// <remarks>
+    /// The rules are the viewer's (LLFloaterPay::processPayPriceReply): a default price of HIDE
+    /// takes the free field away entirely -- the script wants to be paid one of ITS amounts and
+    /// nothing else -- DEFAULT leaves the field alone, and any other value pre-fills it. A button
+    /// price is shown when it is positive and hidden otherwise, so a script offering two amounts
+    /// shows two buttons rather than two of its own and two of ours.
+    /// </remarks>
+    private void ApplyPayPrice(int defaultPrice, int[] buttonPrices)
+    {
+        if (defaultPrice == SLNG.Core.PayPrice.Hide)
+        {
+            _amount.Visible = false;
+            _amountLabel.Visible = false;
+            _payButton.Visible = false;
+        }
+        else if (defaultPrice != SLNG.Core.PayPrice.Default && defaultPrice > 0)
+        {
+            _amount.Value = defaultPrice;
+        }
+
+        for (int i = 0; i < _quickButtons.Count; i++)
+        {
+            int price = i < buttonPrices.Length ? buttonPrices[i] : SLNG.Core.PayPrice.Hide;
+            _quickButtons[i].Visible = price > 0;
+            if (price > 0) _quickButtons[i].Text = $"L$ {price:N0}";
+        }
+
+        RefreshAffordable();
+    }
+
+    /// <summary>The amount a quick button stands for, read back from its own label so the
+    /// script's figure and the button the user pressed cannot drift apart.</summary>
+    private int AmountOf(int index)
+    {
+        var text = _quickButtons[index].Text.Replace("L$", "").Replace(".", "").Replace(",", "").Trim();
+        return int.TryParse(text, out int amount) ? amount : 0;
     }
 
     /// <summary>Refuses an amount the balance cannot cover, with the shortfall named. Only when a
@@ -161,6 +232,7 @@ public partial class PayObjectWindow : SLNGWindow
     {
         if (_closing) return;
         _closing = true;
+        _session.PayPriceReceived -= OnPayPriceReceived;
 
         int amount = (int)_amount.Value;
         if (pay && _session.PayObject(_objectId, amount, _objectName))

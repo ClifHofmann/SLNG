@@ -548,7 +548,8 @@
       "title": "Objekt bezahlen",
       "confirm": "Bezahlen",
       "menu": "Bezahlen …",
-      "sent": "Bezahlt: {0} — L$ {1}."
+      "sent": "Bezahlt: {0} — L$ {1}.",
+      "other_amount": "Anderer Betrag"
     }
   }
 }

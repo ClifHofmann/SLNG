@@ -71,6 +71,29 @@ public partial class GridSession
         return true;
     }
 
+    /// <summary>FEAT-ECON-02: what the object's own script says it charges, once it answers.
+    /// Off a background thread like every other event here.</summary>
+    public event EventHandler<SLNG.Core.PayPriceEvent>? PayPriceReceived;
+
+    /// <summary>Asks an object what it wants to be paid (RequestPayPrice).</summary>
+    /// <remarks>
+    /// The reference viewer asks this the moment its pay floater opens, and shows the script's
+    /// own amounts rather than a blank field -- llSetPayPrice is how a vendor states its price,
+    /// and a viewer that ignores it makes the user guess a number the script will refuse.
+    /// </remarks>
+    public void RequestPayPrice(System.Guid objectId)
+    {
+        var sim = _client.Network.CurrentSim;
+        if (!_client.Network.Connected || sim == null || objectId == System.Guid.Empty) return;
+        _client.Objects.RequestPayPrice(sim, new LibreMetaverse.UUID(objectId));
+    }
+
+    private void OnPayPriceReply(object? sender, LibreMetaverse.PayPriceReplyEventArgs e)
+    {
+        PayPriceReceived?.Invoke(this, new SLNG.Core.PayPriceEvent(
+            e.ObjectID.Guid, e.DefaultPrice, e.ButtonPrices ?? System.Array.Empty<int>()));
+    }
+
     /// <summary>Pays an in-world object -- a vendor, a tip jar, a rental box.</summary>
     /// <param name="objectId">The object's UUID (not its local id: the money path is addressed by
     /// UUID like any other transfer).</param>

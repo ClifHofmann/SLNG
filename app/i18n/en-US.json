@@ -548,7 +548,8 @@
       "title": "Pay object",
       "confirm": "Pay",
       "menu": "Pay …",
-      "sent": "Paid: {0} — L$ {1}."
+      "sent": "Paid: {0} — L$ {1}.",
+      "other_amount": "Other amount"
     }
   }
 }

@@ -536,6 +536,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // transaction record (description, meters credit) that nothing here consumes yet, and
         // both are raised from the same packet.
         _client.Self.MoneyBalance += OnMoneyBalance;
+        _client.Objects.PayPriceReply += OnPayPriceReply;
         _client.Objects.KillObject += OnKillObject;
         _client.Objects.KillObjects += OnKillObjects;
         _client.Terrain.LandPatchReceived += OnLandPatchReceived;
