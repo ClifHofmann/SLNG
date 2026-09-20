@@ -23,6 +23,9 @@ namespace SLNG.App.UI
         /// <summary>FEAT-ECON-02: the user asked to buy the object the menu is open on.</summary>
         public Action<Entity, uint>? OnBuyClicked;
 
+        /// <summary>FEAT-ECON-02: the user asked to pay the object the menu is open on.</summary>
+        public Action<Entity, uint>? OnPayClicked;
+
         /// <summary>FEAT-UI-13: right-click "Profile" / "IM" on an avatar. Guid is the target
         /// agent id, string its best-known display name.</summary>
         public Action<Guid, string>? OnAvatarProfileClicked;
@@ -61,7 +64,7 @@ namespace SLNG.App.UI
         private Button _avatarTeleportButton = null!;
         private Button _avatarMuteButton = null!;
         private VBoxContainer _createRoot = null!;
-        private Button _sitButton = null!, _deleteButton = null!, _detachButton = null!, _buyButton = null!;
+        private Button _sitButton = null!, _deleteButton = null!, _detachButton = null!, _buyButton = null!, _payButton = null!;
         private VBoxContainer _groundOnlyButtons = null!;
         private Button _createHeader = null!;
         private VBoxContainer _createShapes = null!;
@@ -123,6 +126,11 @@ namespace SLNG.App.UI
             _buyButton = AddMenuButton(_objectButtons, "💰 Buy",
                 () => OnBuyClicked?.Invoke(_currentEntity!, _currentLocalId));
             _buyButton.Visible = false;
+            // Paying is the other money entry, and a different transaction: it rides on the
+            // object's money() script, not on a sale price. A vendor usually has this one.
+            _payButton = AddMenuButton(_objectButtons, "💵 Pay",
+                () => OnPayClicked?.Invoke(_currentEntity!, _currentLocalId));
+            _payButton.Visible = false;
 
             // MVP2-1: ground sit. Its own block, because it is the one entry that only makes
             // sense on bare ground -- the object menu has its own Sit.
@@ -260,8 +268,19 @@ namespace SLNG.App.UI
             if (_buyButton.Visible)
             {
                 _buyButton.Text = "💰 " + L10n.TrFormat("ui.buy.menu", $"{meta!.SalePrice:N0}");
-                CallDeferred(nameof(ClampIntoViewport));
             }
+
+            // PrimFlags.Money, which is what the reference viewer gates its own Pay entry on: a
+            // script on the object registers money(). It arrives with the ObjectUpdate rather
+            // than with the properties, so unlike Buy it is usually known before the first click.
+            var prim = _currentEntity?.GetComponent<PrimitiveComponent>();
+            _payButton.Visible = prim?.TakesMoney == true && !isWorn;
+            if (_payButton.Visible)
+            {
+                _payButton.Text = "💵 " + L10n.Tr("ui.pay.menu");
+            }
+
+            if (_buyButton.Visible || _payButton.Visible) CallDeferred(nameof(ClampIntoViewport));
         }
 
         /// <summary>FEAT-UI-13: right-clicked an avatar -- offers Profile / IM / Offer Teleport /

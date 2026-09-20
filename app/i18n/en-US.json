@@ -543,6 +543,12 @@
       "cancel": "Cancel",
       "sent": "Purchase sent: {0} for L$ {1}.",
       "menu": "Buy (L$ {0}) …"
+    },
+    "pay": {
+      "title": "Pay object",
+      "confirm": "Pay",
+      "menu": "Pay …",
+      "sent": "Paid: {0} — L$ {1}."
     }
   }
 }

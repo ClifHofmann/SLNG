@@ -510,6 +510,17 @@ namespace SLNG.App
                     }
                     else
                     {
+                        // A right-click that resolves to nothing at all is the one case where the
+                        // viewer looks broken rather than merely unhelpful: no menu appears, and
+                        // there is nothing on screen to say why. It means the ray met no collider
+                        // -- open sky, or an object whose collision shape has not been built yet.
+                        // One line, only for the right button, so "nichts passiert" is answerable
+                        // afterwards.
+                        if (mouseBtn.ButtonIndex == MouseButton.Right)
+                        {
+                            Logger.Warn($"[Pick] right-click at {mouseBtn.Position} hit nothing -- no collider under the cursor");
+                        }
+
                         // Clicked on nothing. In an edit session that clears the WHOLE selection,
                         // the way deselectAll() does in the reference viewer -- and Boot closes
                         // the window behind it, because a build floater with an empty selection

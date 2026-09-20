@@ -71,6 +71,28 @@ public partial class GridSession
         return true;
     }
 
+    /// <summary>Pays an in-world object -- a vendor, a tip jar, a rental box.</summary>
+    /// <param name="objectId">The object's UUID (not its local id: the money path is addressed by
+    /// UUID like any other transfer).</param>
+    /// <param name="amount">What the user chose. Unlike a purchase there is no price on the wire
+    /// to echo back -- a paid object names its own terms in its description or on a prim face,
+    /// and the script decides what to do with whatever arrives.</param>
+    /// <param name="objectName">Shown in the simulator's own transaction record.</param>
+    /// <remarks>
+    /// Paying and buying are different transactions and the viewer keeps them apart: "Pay" is
+    /// offered on the PrimFlags.Money bit (a script with a money() handler), "Buy" on the sale
+    /// fields in ObjectProperties. A vendor is typically the former, which is why the two entries
+    /// can appear on the same object -- or neither.
+    /// </remarks>
+    public bool PayObject(System.Guid objectId, int amount, string objectName)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return false;
+        if (objectId == System.Guid.Empty || amount <= 0) return false;
+
+        _client.Self.GiveObjectMoney(new LibreMetaverse.UUID(objectId), amount, objectName ?? string.Empty);
+        return true;
+    }
+
     /// <summary>The one place the balance changes, so "unknown" can only ever become "known"
     /// here and the event cannot fire without the property already agreeing with it.</summary>
     internal void SetBalance(int balance)

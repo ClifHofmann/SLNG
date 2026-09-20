@@ -654,6 +654,7 @@ public sealed partial class GridSession
             defaultFace?.Fullbright ?? false,
             _reflectionProbeByLocalId.TryGetValue(prim.LocalID, out var probe) ? probe : null,
             prim.Flags.HasFlag(PrimFlags.Touch),
+            prim.Flags.HasFlag(PrimFlags.Money),
             // FEAT-SEC-04: the sim's per-agent permission answer, already computed for us. These
             // bits sat in prim.Flags all along, next to the four read above, and were dropped --
             // which is why the edit window could only report what the OWNER may do and had to

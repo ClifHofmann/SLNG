@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.34-alpha";
+    public const string AppVersion = "v0.24.35-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -905,6 +905,7 @@ public partial class Boot : Control
         // FEAT-ECON-02: buying asks first. Everything the dialog shows -- price, sale type -- is
         // the simulator's own answer, taken from the entity rather than recomputed here.
         _inWorldContextMenu.OnBuyClicked = (entity, localId) => ShowBuyWindow(entity, localId);
+        _inWorldContextMenu.OnPayClicked = (entity, localId) => ShowPayWindow(entity);
         _inWorldContextMenu.OnSitOnGroundClicked = (godotPos) => _session?.SitOnGround();
         // FEAT-UI-13: right-click an avatar -> Profile / IM.
         _inWorldContextMenu.OnAvatarProfileClicked = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
@@ -1067,6 +1068,29 @@ public partial class Boot : Control
     private void RefreshContextMenuSale() => _inWorldContextMenu?.RefreshSaleEntry();
 
     private SLNG.App.UI.BuyObjectWindow? _buyWindow;
+    private SLNG.App.UI.PayObjectWindow? _payWindow;
+
+    /// <summary>FEAT-ECON-02: paying an object -- the vendor case, which is a different
+    /// transaction from buying one.</summary>
+    private void ShowPayWindow(SLNG.Core.ECS.Entity entity)
+    {
+        var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+        if (_session == null || hudLayer == null) return;
+
+        var meta = entity.GetComponent<SLNG.Core.Components.MetadataComponent>();
+        if (meta == null || meta.Id == System.Guid.Empty) return;
+
+        if (_payWindow != null && Godot.GodotObject.IsInstanceValid(_payWindow)) _payWindow.QueueFree();
+        _payWindow = null;
+
+        var win = new SLNG.App.UI.PayObjectWindow();
+        hudLayer.AddChild(win);
+        win.Closed += () => _payWindow = null;
+        win.Paid += (name, amount) =>
+            LogMessage($"[color=#f0d060][L$] {SLNG.App.UI.L10n.TrFormat("ui.pay.sent", name, $"{amount:N0}")}[/color]");
+        win.Initialize(_session, meta.Id, meta.Name);
+        _payWindow = win;
+    }
 
     /// <summary>FEAT-ECON-02: the confirmation before any money moves.</summary>
     private void ShowBuyWindow(SLNG.Core.ECS.Entity entity, uint localId)
