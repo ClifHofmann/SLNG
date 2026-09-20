@@ -35,6 +35,15 @@ namespace SLNG.App
         // happened to own a window.
         private bool _editSessionOpen;
 
+        /// <summary>Is this collider one of the LOCAL agent's worn items? Only those carry one at
+        /// all (see AvatarRenderer.AddAttachmentPickBody), so the entity lookup is what decides.</summary>
+        private bool IsOwnAttachmentBody(StaticBody3D body)
+        {
+            if (_world == null || !body.HasMeta("EntityId")) return false;
+            if (!System.Guid.TryParse(body.GetMeta("EntityId").AsString(), out var id)) return false;
+            return _world.GetEntity(id)?.GetComponent<AttachmentComponent>() != null;
+        }
+
         // The selection, oldest first. The LAST entry is the primary: it is what the edit window
         // shows, and on a link it becomes the linkset's root -- keeping its own position while
         // everything else turns into an offset from it. A List and not a HashSet precisely
@@ -214,6 +223,31 @@ namespace SLNG.App
                     while (result.Count > 0 && result.ContainsKey("collider"))
                     {
                         var col = result["collider"].As<Node>();
+
+                        // FEAT-UI-23: your own worn items are pickable now, and in third person
+                        // they sit between the camera and everything else -- prim hair over the
+                        // head is directly in the way of most of the screen. Left through, they
+                        // swallow every click meant for the world, which is what "ich kann meine
+                        // Objekte nicht auswählen" was.
+                        //
+                        // So they get the same treatment the local avatar already gets: peek
+                        // behind, and if there is anything else there, use that instead. A worn
+                        // item is only picked when nothing is behind it, which is exactly the
+                        // gesture that means "I want THIS" -- pointing at it against the sky, or
+                        // stepping back so nothing lines up.
+                        if (col is StaticBody3D wornBody && IsOwnAttachmentBody(wornBody))
+                        {
+                            var behind = new Godot.Collections.Array<Rid>(exclude) { wornBody.GetRid() };
+                            var behindResult = RaycastFromMouse(mouseBtn.Position, behind);
+                            if (behindResult.Count > 0 && behindResult.ContainsKey("collider"))
+                            {
+                                exclude.Add(wornBody.GetRid());
+                                result = behindResult;
+                                continue;
+                            }
+                            break;
+                        }
+
                         if (col is StaticBody3D sb && sb.HasMeta("LocalId") && sb.GetMeta("LocalId").AsString() == "Avatar")
                         {
                             if (mouseBtn.ButtonIndex == MouseButton.Left)
