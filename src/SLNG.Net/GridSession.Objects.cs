@@ -919,6 +919,38 @@ public sealed partial class GridSession
         _client.Objects.DeselectObject(_client.Network.CurrentSim, localId);
     }
 
+    /// <summary>Selects every prim of an object at once -- what the reference viewer does for any
+    /// click that is not "edit linked parts".</summary>
+    /// <remarks>
+    /// LLSelectMgr::selectObjectAndFamily walks up to the linkset's root, collects
+    /// <c>addThisAndNonJointChildren</c>, and sends ONE ObjectSelect naming all of them
+    /// (llselectmgr.cpp:521). It is not a formality: the simulator keeps a per-agent selection,
+    /// and an edit that is meant to act on the whole linkset acts on what that selection holds.
+    /// Selecting the root alone left every other prim unselected, and a linked-set resize then
+    /// visibly changed the root prim and nothing else.
+    /// </remarks>
+    public void SelectObjects(System.Collections.Generic.IReadOnlyList<uint> localIds)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+        if (localIds.Count == 0) return;
+        if (localIds.Count == 1) { SelectObject(localIds[0]); return; }
+
+        var ids = new uint[localIds.Count];
+        for (int i = 0; i < localIds.Count; i++) ids[i] = localIds[i];
+        _client.Objects.SelectObjects(_client.Network.CurrentSim, ids);
+    }
+
+    public void DeselectObjects(System.Collections.Generic.IReadOnlyList<uint> localIds)
+    {
+        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
+        if (localIds.Count == 0) return;
+        if (localIds.Count == 1) { DeselectObject(localIds[0]); return; }
+
+        var ids = new uint[localIds.Count];
+        for (int i = 0; i < localIds.Count; i++) ids[i] = localIds[i];
+        _client.Objects.DeselectObjects(_client.Network.CurrentSim, ids);
+    }
+
     /// <summary>FEAT-UI-05: links standalone objects into one linkset.</summary>
     /// <param name="rootLocalId">The prim that becomes the linkset's root -- in the viewer, the
     /// object selected LAST. It keeps its position and rotation; every other prim's transform
@@ -984,20 +1016,47 @@ public sealed partial class GridSession
     /// teleports the entire linkset to that offset read as a region coordinate -- from the
     /// viewer's point of view the object simply vanishes, which is how this was found.</para>
     /// </param>
-    public void UpdateObjectTransform(uint localId, System.Numerics.Vector3 position, System.Numerics.Quaternion rotation, System.Numerics.Vector3 scale, bool singlePrim = false)
+    public void UpdateObjectTransform(uint localId, System.Numerics.Vector3 position, System.Numerics.Quaternion rotation, System.Numerics.Vector3 scale, bool singlePrim = false, TransformFields fields = TransformFields.All, bool uniformScale = false)
     {
         if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
 
-        var slPos = new LibreMetaverse.Vector3(position.X, position.Y, position.Z);
-        var slRot = new LibreMetaverse.Quaternion(rotation.X, rotation.Y, rotation.Z, rotation.W);
-        var slScale = new LibreMetaverse.Vector3(scale.X, scale.Y, scale.Z);
+        if (fields == TransformFields.None) return;
 
-        // childOnly is LibreMetaverse's name for "do not set UpdateType.Linked". Its own doc
-        // comment on the position overload describes a DeselectObject call instead, which the
-        // body does not do -- read the body, not the comment.
-        _client.Objects.SetPosition(_client.Network.CurrentSim, localId, slPos, childOnly: singlePrim);
-        _client.Objects.SetRotation(_client.Network.CurrentSim, localId, slRot, childOnly: singlePrim);
-        _client.Objects.SetScale(_client.Network.CurrentSim, localId, slScale, true, false);
+        // ONE MultipleObjectUpdate carrying everything that changed, which is what the reference
+        // viewer sends (LLSelectMgr::packMultipleUpdate: position, then rotation, then scale,
+        // each 12 bytes, in that order, and only the ones the type mask names).
+        //
+        // LibreMetaverse offers SetPosition / SetRotation / SetScale instead, one packet each.
+        // For a world prim that is equivalent. For an ATTACHMENT it is not: a stretch then
+        // reaches the simulator as a scale update with no position beside it, and Second Life
+        // answers that by reporting the attachment back at a REGION coordinate -- which a viewer
+        // reads as an offset from the attach point, so the item lands a hundred metres away.
+        // Reported in-world as "I stretch it and it is gone". No real viewer sends the pieces
+        // separately, so no real viewer sees it.
+        //
+        // The three helpers also disagreed about the linked flag: SetScale's third argument is
+        // childOnly, not linked, and was passed positionally as `true`, so the scale always went
+        // out as a single-prim update whatever the caller asked for.
+        var (type, data) = TransformUpdatePayload.Build(fields, singlePrim, position, rotation, scale, uniformScale);
+
+        var update = new LibreMetaverse.Packets.MultipleObjectUpdatePacket
+        {
+            AgentData =
+            {
+                AgentID = _client.Self.AgentID,
+                SessionID = _client.Self.SessionID,
+            },
+            ObjectData = new[]
+            {
+                new LibreMetaverse.Packets.MultipleObjectUpdatePacket.ObjectDataBlock
+                {
+                    ObjectLocalID = localId,
+                    Type = type,
+                    Data = data,
+                },
+            },
+        };
+        _client.Network.SendPacket(update, _client.Network.CurrentSim);
     }
 
     /// <summary>Sets Physical/Temporary/Phantom/CastShadows together in one ObjectFlagUpdate --
