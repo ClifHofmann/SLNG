@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.31-alpha";
+    public const string AppVersion = "v0.24.32-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3331,6 +3331,8 @@ public partial class Boot : Control
             // whole thing rather than its root prim. WorldSimulation is the only holder of the
             // parent index, which is why this is wired from here rather than read by the gizmo.
             _selectionGizmo.LinksetParts = CollectLinksetParts;
+            _selectionGizmo.RecomposeLinkset = root =>
+                _worldSimulation?.RecomposeChildren(root.RegionHandle, root.LocalId);
             _objectSelectionController.LinksetParts = CollectLinksetParts;
             // FEAT-UI-06: here and not next to the context-menu wiring in SetupHud -- the
             // controller does not exist yet at that point, and assigning through it there threw

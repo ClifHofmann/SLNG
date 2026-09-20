@@ -687,7 +687,13 @@ public sealed class WorldSimulation : IDisposable
 
     /// <summary>Re-composes the world transform of every child linked to <paramref name="localId"/>
     /// — used when a linkset root arrives or moves so its children follow.</summary>
-    private void RecomposeChildren(ulong region, uint localId)
+    /// <remarks>
+    /// Public because the edit tools need it too. While a linkset is being dragged, only the root
+    /// is written locally; without re-composing here the other prims sit still until the
+    /// simulator's echo arrives and then jump, once per network update. The reference viewer has
+    /// no such lag because its manipulators move every selected prim themselves.
+    /// </remarks>
+    public void RecomposeChildren(ulong region, uint localId)
     {
         if (!_children.TryGetValue((region, localId), out var set) || set.Count == 0) return;
 
