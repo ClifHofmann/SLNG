@@ -30,12 +30,25 @@ public sealed class WorldSimulation : IDisposable
     /// happens on a link or an unlink. Lets the UI re-read a state it cannot poll for cheaply.</summary>
     public event System.EventHandler<Entity>? ObjectReparented;
 
+    /// <summary>Raised when an object that WAS an attachment is one no longer. Both renderers
+    /// have to swap sides on it: the avatar renderer drops the worn nodes it built on a bone,
+    /// and the object renderer builds the standalone visual it refused to build while the object
+    /// counted as worn.</summary>
+    public event System.EventHandler<Entity>? AttachmentCleared;
+
     /// <summary>FEAT-UI-05: does this prim have anything linked UNDER it -- i.e. is it a linkset
     /// root? A child knows its own parent through <c>TransformComponent.ParentLocalId</c>, but a
     /// root has nothing on itself that says so, and the alternative is scanning every entity in
     /// the region. This index already exists for re-composing children, so it answers for free.</summary>
     public bool HasChildren(ulong regionHandle, uint localId)
         => _children.TryGetValue((regionHandle, localId), out var set) && set.Count > 0;
+
+    /// <summary>The prims linked directly under this one. A linkset is flat -- every part names
+    /// the ROOT as its parent -- so for a root this is the whole rest of the object.</summary>
+    public IReadOnlyCollection<System.Guid> ChildrenOf(ulong regionHandle, uint localId)
+        => _children.TryGetValue((regionHandle, localId), out var set)
+            ? set
+            : (IReadOnlyCollection<System.Guid>)System.Array.Empty<System.Guid>();
 
     /// <summary>
     /// Raised when WorldSimulation determines that an animation on the local agent should be stopped
@@ -531,6 +544,56 @@ public sealed class WorldSimulation : IDisposable
                 SetAttachment(entity, parentEntity!.Id, e.AttachmentPoint);
             else if (parentAttachment != null)
                 SetAttachment(entity, parentAttachment.AvatarEntityId, parentAttachment.AttachmentPoint);
+            else if (parentEntity != null)
+                ClearAttachment(entity, transform, e.RegionHandle);
+        }
+        else
+        {
+            // No parent at all: a standalone world object. If it used to be worn, it is not any
+            // more -- it was detached, dropped, or rezzed from inventory into the world.
+            ClearAttachment(entity, transform, e.RegionHandle);
+        }
+    }
+
+    /// <summary>Takes attachment status away again.</summary>
+    /// <remarks>
+    /// The counterpart <see cref="SetAttachment"/> never had: the component was only ever added.
+    /// An object that stopped being worn -- detached, dropped, or re-parented into a world
+    /// linkset -- therefore kept it forever, and everything downstream went on treating it as
+    /// worn. Its position is the visible half of that: an attachment's Position stays LOCAL to
+    /// its attach point (see ResolveWorldTransform), so the region coordinate the simulator now
+    /// sends was read as an offset and the object was drawn a hundred metres from the avatar.
+    /// It was reported in-world as an object vanishing the moment it was resized -- a resize is
+    /// simply the first thing that makes the simulator send a fresh position.
+    ///
+    /// The other half is invisible: ObjectRenderer refuses to build a standalone visual for
+    /// anything carrying this component, so the object was drawn by the avatar renderer only,
+    /// at a bone, wherever it had once hung.
+    ///
+    /// Only called when the parent is KNOWN. A parent that has not streamed in yet is the
+    /// ordinary out-of-order case and must not be read as "not worn".
+    /// </remarks>
+    private void ClearAttachment(Entity entity, TransformComponent transform, ulong region)
+    {
+        if (entity.GetComponent<AttachmentComponent>() == null) return;
+
+        entity.RemoveComponent<AttachmentComponent>();
+
+        // The transform was composed earlier in this same update, while the answer was still
+        // "worn" -- which is exactly the case that leaves Position local. Redo it.
+        ResolveWorldTransform(transform, region);
+        _world.NotifyComponentUpdated(entity, transform);
+        AttachmentCleared?.Invoke(this, entity);
+
+        // Children inherited the status from this entity (PropagateAttachmentToChildren); they
+        // lose it with it.
+        if (!_children.TryGetValue((region, entity.LocalId), out var set)) return;
+        foreach (var childId in set.ToList())
+        {
+            var child = _world.GetEntity(childId);
+            var childTransform = child?.GetComponent<TransformComponent>();
+            if (child == null || childTransform == null) continue;
+            ClearAttachment(child, childTransform, region);
         }
     }
 

@@ -929,6 +929,10 @@ public partial class ObjectRenderer : Node3D
         state.ResourcesReleased = true;
     }
 
+    /// <summary>The object stopped being an attachment, so the visual this renderer declined to
+    /// build while it was worn is owed to it now.</summary>
+    public void EnsureStandaloneVisual(Guid entityId) => CallDeferred(nameof(CreateVisual), entityId.ToString());
+
     private void CreateVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
