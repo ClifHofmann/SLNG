@@ -30,7 +30,16 @@ public sealed class DialogQueueManager : IDisposable
         _session.ScriptDialogReceived += OnScriptDialogReceived;
     }
 
-    private void OnScriptDialogReceived(object? sender, ScriptDialogEvent e) => _pending.Enqueue(e);
+    private void OnScriptDialogReceived(object? sender, ScriptDialogEvent e)
+    {
+        // The other end of the [Click] line the selection controller writes: a touch goes out,
+        // and either the script answers with a dialog or it does not. Without this, "I click the
+        // vendor and nothing happens" cannot be told apart from "the dialog arrived and something
+        // here swallowed it".
+        Logger.Info($"[Dialog] from '{e.ObjectName}' ({e.ObjectId}) channel={e.Channel} " +
+                    $"buttons={e.ButtonLabels?.Count ?? 0}");
+        _pending.Enqueue(e);
+    }
 
     /// <summary>Call once per frame from the main thread. The only place popups are created.</summary>
     public void Pump()
