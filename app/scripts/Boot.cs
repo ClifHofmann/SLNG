@@ -334,7 +334,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.48-alpha";
+    public const string AppVersion = "v0.24.49-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -929,6 +929,7 @@ public partial class Boot : Control
 
         _notificationWindow = new SLNG.App.UI.NotificationWindow { Name = "NotificationWindow" };
         hudLayer.AddChild(_notificationWindow);
+        _notificationWindow.OnOpenProfileRequested = (id, n) => OpenUserProfileWindow(hudLayer, id, n);
         _notificationWindow.Initialize(_notifications);
 
         _notificationToasts = new SLNG.App.UI.NotificationToastOverlay { Name = "NotificationToasts" };
@@ -3655,8 +3656,13 @@ public partial class Boot : Control
     {
         // Recorded as well as shown: a one-shot window that was closed or missed used to leave
         // nothing at all behind (FEAT-UI-33).
+        // GroupInvitationEvent carries the group and the inviter's NAME, but not their id, so
+        // there is nothing to link a profile to. Marked as a group so the window renders it as
+        // plain text rather than linking the group id to an avatar profile, which would open a
+        // wrong window rather than a missing one.
         _notifications.Add(SLNG.Core.NotificationKind.Group, e.GroupId,
-            SLNG.App.UI.L10n.TrFormat("ui.notifications.group_invite", e.FromName));
+            SLNG.App.UI.L10n.TrFormat("ui.notifications.group_invite", e.FromName),
+            senderIsGroup: true);
         _pendingGroupInvites.Enqueue(e);
     }
 
@@ -3793,8 +3799,11 @@ public partial class Boot : Control
 
     private void OnInventoryOfferReceived(object? sender, SLNG.Core.InventoryOfferEvent e)
     {
-        _notifications.Add(SLNG.Core.NotificationKind.Invitation, System.Guid.Empty,
-            SLNG.App.UI.L10n.TrFormat("ui.notifications.inventory_offer", e.FromName, e.ItemName));
+        // An OBJECT can make an offer too, and an object has no profile -- so the name is only
+        // linkable when a person sent it.
+        _notifications.Add(SLNG.Core.NotificationKind.Invitation, e.FromTask ? System.Guid.Empty : e.FromId,
+            SLNG.App.UI.L10n.TrFormat("ui.notifications.inventory_offer", e.FromName, e.ItemName),
+            senderName: e.FromTask ? string.Empty : e.FromName);
         _pendingInventoryOffers.Enqueue(e);
     }
 
@@ -3955,7 +3964,10 @@ public partial class Boot : Control
 
         // FEAT-UI-33: and into the record, where it can still be found tomorrow. The chat line is
         // the glance; this is the ledger.
-        _notifications.Add(SLNG.Core.NotificationKind.Transaction, e.OtherPartyId, text);
+        // senderName is whatever went INTO the sentence -- the resolved name when it was known,
+        // otherwise the placeholder, which ResolveSender later swaps in both places at once.
+        _notifications.Add(SLNG.Core.NotificationKind.Transaction, e.OtherPartyId, text,
+            senderName: name, senderIsGroup: e.OtherPartyIsGroup);
     }
 
     /// <summary>Main-thread half of a notification toast. Takes the pieces rather than the entry

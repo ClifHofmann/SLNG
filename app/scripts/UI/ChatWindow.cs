@@ -447,7 +447,10 @@ public partial class ChatWindow : SLNGWindow
         message.StartsWith("/me ", StringComparison.Ordinal) ||
         message.StartsWith("/me'", StringComparison.Ordinal);
 
-    private static string BbEscape(string s) => s.Replace("[", "[lb]");
+    /// <summary>Neutralises BBCode in text that came from the network or from a translation.
+    /// Internal because the notification window renders the same kind of text through the same
+    /// kind of RichTextLabel, and two copies of this would be one copy too many.</summary>
+    internal static string BbEscape(string s) => s.Replace("[", "[lb]");
 
     // ---- Chat page: vertical conversation list (left) + message log/input (right) ----------
 

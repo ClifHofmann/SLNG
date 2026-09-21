@@ -39,6 +39,10 @@ public partial class NotificationWindow : SLNGWindow
     private Button _dismissAllButton = null!;
     private readonly HashSet<Guid> _expanded = new();
 
+    /// <summary>Asked to open a resident's profile, when their name in an entry is clicked.
+    /// Boot owns the profile windows, same as everywhere else.</summary>
+    public Action<Guid, string>? OnOpenProfileRequested;
+
     public override void _Ready()
     {
         base._Ready();
@@ -207,14 +211,7 @@ public partial class NotificationWindow : SLNGWindow
         textColumn.AddThemeConstantOverride("separation", 2);
         row.AddChild(textColumn);
 
-        var text = new Label
-        {
-            Text = entry.Text,
-            AutowrapMode = TextServer.AutowrapMode.WordSmart,
-            SizeFlagsHorizontal = SizeFlags.ExpandFill,
-        };
-        text.AddThemeFontSizeOverride("font_size", 12);
-        textColumn.AddChild(text);
+        textColumn.AddChild(BuildText(entry));
 
         // Local time, and labelled as such. Firestorm writes "SLT" here, which is the grid's own
         // clock -- we do not convert to it, so claiming it would be a lie on the face of the row.
@@ -268,6 +265,62 @@ public partial class NotificationWindow : SLNGWindow
         row.AddChild(dismiss);
 
         return panel;
+    }
+
+    /// <summary>
+    /// The entry's line, with the sender's name as a link to their profile where there is one.
+    /// </summary>
+    /// <remarks>
+    /// Same idiom the chat log already uses — <c>[url=avatar:&lt;guid&gt;]</c> in a
+    /// RichTextLabel — so a name behaves the same wherever it appears. A plain Label is used when
+    /// there is nothing to link to, rather than a RichTextLabel with the markup left out: the
+    /// escaping and the BBCode parser are pure cost for a line that is only ever text.
+    /// </remarks>
+    private Control BuildText(NotificationEntry entry)
+    {
+        bool linkable = entry.SenderId != Guid.Empty
+            && !entry.SenderIsGroup
+            && !string.IsNullOrEmpty(entry.SenderName)
+            && entry.Text.Contains(entry.SenderName, StringComparison.Ordinal);
+
+        if (!linkable)
+        {
+            var plain = new Label
+            {
+                Text = entry.Text,
+                AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            };
+            plain.AddThemeFontSizeOverride("font_size", 12);
+            return plain;
+        }
+
+        int at = entry.Text.IndexOf(entry.SenderName, StringComparison.Ordinal);
+        string before = ChatWindow.BbEscape(entry.Text[..at]);
+        string after = ChatWindow.BbEscape(entry.Text[(at + entry.SenderName.Length)..]);
+        string linked = $"[url=avatar:{entry.SenderId}][color=#7ec0ee]{ChatWindow.BbEscape(entry.SenderName)}[/color][/url]";
+
+        var rich = new RichTextLabel
+        {
+            BbcodeEnabled = true,
+            FitContent = true,
+            ScrollActive = false,
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            Text = before + linked + after,
+        };
+        rich.AddThemeFontSizeOverride("normal_font_size", 12);
+        rich.MetaClicked += meta =>
+        {
+            var m = meta.AsString();
+            const string prefix = "avatar:";
+            if (m.StartsWith(prefix, StringComparison.Ordinal)
+                && Guid.TryParse(m.AsSpan(prefix.Length), out var id))
+            {
+                OnOpenProfileRequested?.Invoke(id, entry.SenderName);
+            }
+        };
+        return rich;
     }
 
     public override void _ExitTree()

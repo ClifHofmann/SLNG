@@ -119,6 +119,21 @@ public class NotificationStoreTests
     }
 
     [Fact]
+    public void ALateNameAlsoFixesWhatTheWindowLinks()
+    {
+        // The window makes the sender's name a link by finding SenderName inside Text. If only
+        // the text were rewritten, it would then look for "Someone" and find the real name there
+        // instead -- and the link would quietly disappear at the moment it became useful.
+        var store = new NotificationStore();
+        store.Add(NotificationKind.Transaction, Alice, "Someone paid you L$ 10.", senderName: "Someone");
+
+        store.ResolveSender(Alice, "Someone", "De Nise");
+
+        Assert.Equal("De Nise", store.Entries[0].SenderName);
+        Assert.Contains(store.Entries[0].SenderName, store.Entries[0].Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ResolvingAnUnknownSenderChangesNothing()
     {
         var store = new NotificationStore();

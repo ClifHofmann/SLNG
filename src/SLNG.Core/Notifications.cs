@@ -34,6 +34,11 @@ public enum NotificationKind
 /// <param name="ReceivedUtc">When it arrived.</param>
 /// <param name="Read">Whether the user has actually looked at the tab this sits in. Drives the
 /// badge on the toolbar button — the whole reason to distinguish it from "still in the list".</param>
+/// <param name="SenderName">The sender's name exactly as it appears inside <paramref name="Text"/>,
+/// so the window can make that one word a link without guessing where the name ends. Kept in step
+/// by <see cref="NotificationStore.ResolveSender"/> when a name arrives late.</param>
+/// <param name="SenderIsGroup">A group, not a person. Groups get no profile link — opening an
+/// avatar profile for a group id would be a wrong window, not a missing one.</param>
 public sealed record NotificationEntry(
     Guid Id,
     NotificationKind Kind,
@@ -41,7 +46,9 @@ public sealed record NotificationEntry(
     string Text,
     string Detail,
     DateTime ReceivedUtc,
-    bool Read = false);
+    bool Read = false,
+    string SenderName = "",
+    bool SenderIsGroup = false);
 
 /// <summary>
 /// What the notification window shows: entries, per-kind counts, and dismissal.
@@ -82,11 +89,14 @@ public sealed class NotificationStore
     public int CountOf(NotificationKind kind) => _entries.Count(e => e.Kind == kind);
 
     /// <summary>Adds an entry and returns it. Newest goes to the front.</summary>
-    public NotificationEntry Add(NotificationKind kind, Guid senderId, string text, string detail = "", DateTime? receivedUtc = null)
+    public NotificationEntry Add(
+        NotificationKind kind, Guid senderId, string text, string detail = "",
+        string senderName = "", bool senderIsGroup = false, DateTime? receivedUtc = null)
     {
         var entry = new NotificationEntry(
             Guid.NewGuid(), kind, senderId, text ?? string.Empty, detail ?? string.Empty,
-            receivedUtc ?? DateTime.UtcNow);
+            receivedUtc ?? DateTime.UtcNow, Read: false,
+            SenderName: senderName ?? string.Empty, SenderIsGroup: senderIsGroup);
 
         _entries.Insert(0, entry);
 
@@ -168,7 +178,13 @@ public sealed class NotificationStore
             var e = _entries[i];
             if (e.SenderId != senderId || !e.Text.Contains(placeholder, StringComparison.Ordinal)) continue;
 
-            _entries[i] = e with { Text = e.Text.Replace(placeholder, name, StringComparison.Ordinal) };
+            _entries[i] = e with
+            {
+                Text = e.Text.Replace(placeholder, name, StringComparison.Ordinal),
+                // In step with the text, or the window would look for the placeholder to link and
+                // find the real name sitting there instead.
+                SenderName = name,
+            };
             changed++;
         }
 
