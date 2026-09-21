@@ -2286,12 +2286,44 @@ public partial class InventoryPanel : SLNGWindow
         }
     }
 
+    /// <summary>Forgets every folder BELOW a row: that it was loaded, and which TreeItem it was.
+    /// Called before the row's children are freed, so the two views cannot disagree.</summary>
+    /// <remarks>
+    /// The row itself is deliberately left alone — it is the one being populated, so it stays
+    /// loaded. Only its descendants are about to stop existing.
+    /// </remarks>
+    private void ForgetSubtreeBookkeeping(TreeItem parent)
+    {
+        for (var child = parent.GetFirstChild(); child != null; child = child.GetNext())
+        {
+            ForgetSubtreeBookkeeping(child);
+
+            var meta = child.GetMetadata(0).AsString();
+            if (string.IsNullOrEmpty(meta) || meta.Contains(',')) continue; // an item, not a folder
+            if (!Guid.TryParse(meta, out var folderId)) continue;
+
+            _loadedFolders.Remove(folderId);
+            _folderItems.Remove(folderId);
+        }
+    }
+
     private void Populate(TreeItem item, IReadOnlyList<SLNG.Core.InventoryEntry> children, Guid? knownItemId = null, Guid? knownAssetId = null)
     {
         _pendingFetches = Math.Max(0, _pendingFetches - 1);
         if (!IsInstanceValid(_tree) || !IsInstanceValid(this)) return;
 
         // Drop the "…" placeholder (and anything else stale under this folder).
+        //
+        // BUG-INV-06: the rows go, so the bookkeeping about them has to go with them. Every
+        // subfolder row freed here is about to be recreated by AddFolderItem with a fresh "…"
+        // placeholder -- but its id was still in _loadedFolders, and LoadFolder starts with
+        // `if (!_loadedFolders.Add(folderId) && !force) return;`. The rebuilt folder therefore
+        // refused to ever load again: expanding it did nothing, and it sat on "…" for the rest of
+        // the session. Reported in-world after a cut-and-paste, which refreshes the source folder
+        // and so rebuilds its children -- but any refresh of any parent did this, and had since
+        // long before the clipboard existed.
+        ForgetSubtreeBookkeeping(item);
+
         var child = item.GetFirstChild();
         while (child != null)
         {
