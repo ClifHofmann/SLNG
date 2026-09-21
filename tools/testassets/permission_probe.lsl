@@ -32,6 +32,13 @@
 //      Expect: the prompt still lists the unknown bit, as a raw number, instead of hiding it.
 //      Granting something the prompt never mentioned is the one outcome it must prevent.
 //
+//      MEASURED 2026-09-21: this phase CANNOT be tested on OpenSim. The script asked for
+//      1073741840 and the viewer received 0x10 -- animation alone. The simulator strips bits it
+//      does not recognise before it ever sends the ScriptQuestion, so the prompt has nothing
+//      unknown to show and a correct viewer and a broken one look identical here. Left in place
+//      because the phase costs nothing and a grid that passes the bit through would make it
+//      meaningful again; the viewer-side behaviour is pinned by DescribePermissions instead.
+//
 // The phases cycle, so touching again starts over at phase 1.
 
 integer PHASE = 0;

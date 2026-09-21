@@ -408,7 +408,7 @@ Three phases, one per touch, each announced in local chat before the prompt appe
 |---|---|---|---|
 | 1 | Animation + TrackCamera | Grant | Prompt names both; chat reports both granted |
 | 2 | **Debit** | **Deny**, or just close the window | Prompt says "spend your money" rather than a bare number, Deny is focused — and chat reports `granted: (none)` |
-| 3 | Animation + an unnamed bit | either | The unknown bit is still listed, as a raw number |
+| 3 | Animation + an unnamed bit | either | — see below: not testable on OpenSim |
 
 Phase 2 is the one that matters most. A refusal is a real answer, not silence: the reference
 viewer always replies and zeroes the granted bits (`llviewermessage.cpp:5600-5632`). A viewer
@@ -417,3 +417,10 @@ indistinguishable from a broken script — so if chat stays quiet after a denial
 not working, however right the prompt looked.
 
 The script never calls `llGiveMoney` and cannot spend anything whichever way phase 2 is answered.
+
+**Phase 3 does not work on OpenSim, measured 2026-09-21.** The script asked for `1073741840`
+and the viewer received `0x10` — animation alone (`[ScriptPerm] "Object" (…) asks for 0x10`).
+The simulator strips bits it does not recognise before it ever sends the `ScriptQuestion`, so
+the prompt has nothing unknown to show, and a viewer that hides unknown flags and one that
+displays them look exactly the same from in-world. The phase is left in because it costs
+nothing and a grid that passes the bit through would make it meaningful again.
