@@ -64,7 +64,7 @@ public partial class FriendsPanel : Control
             Visible = false,
         };
         _emptyLabel.AddThemeFontSizeOverride("font_size", ChatWindow.BodyFontSize);
-        _emptyLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        _emptyLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         leftVBox.AddChild(_emptyLabel);
 
         var scroll = new ScrollContainer
@@ -239,7 +239,7 @@ public partial class FriendsPanel : Control
 
         _countLabel = new Label { HorizontalAlignment = HorizontalAlignment.Right, Text = "Friends: 0" };
         _countLabel.AddThemeFontSizeOverride("font_size", ChatWindow.MetaFontSize);
-        _countLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        _countLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         panel.AddChild(_countLabel);
 
         return panel;

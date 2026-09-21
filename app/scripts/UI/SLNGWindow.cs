@@ -135,9 +135,20 @@ public partial class SLNGWindow : MarginContainer
 
         var styleBox = new StyleBoxFlat
         {
-            // Darker than the original 0.5 -- text contrast against a bright in-world background
-            // (sky, snow, a light-colored build) was reported too low across every SLNGWindow.
-            BgColor = new Color(0, 0, 0, 0.65f),
+            // The panel is BLACK AT AN ALPHA, so what sits behind the text is whatever the world
+            // shows through it -- and the world is not a background we control. Over a bright one
+            // (sky, snow, a white build) the composite is (1 - alpha), and that is what the text
+            // has to stand out against.
+            //
+            // Reported in-world TWICE. The first report moved this from 0.50 to 0.65, which took
+            // secondary text from 1.40:1 to 2.45:1 -- still nowhere near the 4.5:1 WCAG AA asks
+            // for normal text, so it stayed unreadable and the report came back with a screenshot.
+            // 0.85 gives 5.29:1 with the old grey and 7.57:1 with UiTheme.SecondaryText, which is
+            // the other half of the same fix; neither half is sufficient alone.
+            //
+            // Still translucent on purpose -- a viewer UI that blacks out the world it floats over
+            // is its own problem. BUG-UI-04 is the slider that would let this be a preference.
+            BgColor = new Color(0, 0, 0, 0.85f),
             CornerRadiusTopLeft = 16,
             CornerRadiusTopRight = 16,
             CornerRadiusBottomLeft = 16,

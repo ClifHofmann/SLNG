@@ -45,7 +45,7 @@ public partial class ScriptDialogWindow : SLNGWindow
 
         var ownerLabel = new Label { Text = $"by {e.OwnerName}" };
         ownerLabel.AddThemeFontSizeOverride("font_size", 11);
-        ownerLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        ownerLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         _contentVBox.AddChild(ownerLabel);
 
         var scroll = new ScrollContainer

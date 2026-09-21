@@ -124,7 +124,7 @@ public partial class SnapshotWindow : SLNGWindow
 
         _resolutionLabel = new Label { HorizontalAlignment = HorizontalAlignment.Center };
         _resolutionLabel.AddThemeFontSizeOverride("font_size", 11);
-        _resolutionLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        _resolutionLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         vbox.AddChild(_resolutionLabel);
 
         // There is no "hide HUD" switch here any more. CaptureAsync takes every overlay out of the
@@ -488,7 +488,7 @@ public partial class SnapshotWindow : SLNGWindow
 
         _dofAutoFocusReadout = new Label { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         _dofAutoFocusReadout.AddThemeFontSizeOverride("font_size", 11);
-        _dofAutoFocusReadout.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        _dofAutoFocusReadout.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         autoRow.AddChild(_dofAutoFocusReadout);
 
         // --- The three sliders ---------------------------------------------------------------

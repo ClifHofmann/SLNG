@@ -72,7 +72,7 @@ public partial class InventoryOfferWindow : SLNGWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         from.AddThemeFontSizeOverride("font_size", 11);
-        from.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        from.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         _contentVBox.AddChild(from);
 
         // The item name comes from the simulator's own message body, shown as-is: it is the only

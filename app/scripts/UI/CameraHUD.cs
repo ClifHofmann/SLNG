@@ -87,7 +87,7 @@ public partial class CameraHUD : SLNGWindow
 
         _statusLabel = new Label { Text = L10n.Tr("ui.camera.waiting"), HorizontalAlignment = HorizontalAlignment.Center };
         _statusLabel.AddThemeFontSizeOverride("font_size", 12);
-        _statusLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        _statusLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         mainVBox.AddChild(_statusLabel);
 
         var hbox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };

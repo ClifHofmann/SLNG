@@ -56,7 +56,7 @@ public partial class AnimationPreferencesPage : VBoxContainer
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         };
         moveHint.AddThemeFontSizeOverride("font_size", 11);
-        moveHint.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        moveHint.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         AddChild(moveHint);
 
         var separator = new HSeparator();
@@ -88,7 +88,7 @@ public partial class AnimationPreferencesPage : VBoxContainer
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         };
         hint.AddThemeFontSizeOverride("font_size", 11);
-        hint.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        hint.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         AddChild(hint);
 
         var separator2 = new HSeparator();
@@ -121,7 +121,7 @@ public partial class AnimationPreferencesPage : VBoxContainer
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         };
         typingHint.AddThemeFontSizeOverride("font_size", 11);
-        typingHint.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        typingHint.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         AddChild(typingHint);
 
         var gazeCheck = new CheckBox
@@ -145,7 +145,7 @@ public partial class AnimationPreferencesPage : VBoxContainer
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         };
         gazeHint.AddThemeFontSizeOverride("font_size", 11);
-        gazeHint.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        gazeHint.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         AddChild(gazeHint);
     }
 }

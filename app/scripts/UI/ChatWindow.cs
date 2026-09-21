@@ -452,7 +452,7 @@ public partial class ChatWindow : SLNGWindow
 
         var sectionLabel = new Label { Text = L10n.Tr("ui.chat.contacts") };
         sectionLabel.AddThemeFontSizeOverride("font_size", MetaFontSize);
-        sectionLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        sectionLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         listVBox.AddChild(sectionLabel);
 
         var listScroll = new ScrollContainer
@@ -1058,7 +1058,7 @@ public partial class ChatWindow : SLNGWindow
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         };
         headlineLabel.AddThemeFontSizeOverride("font_size", BodyFontSize);
-        headlineLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        headlineLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         box.AddChild(headlineLabel);
 
         var subLabel = new Label

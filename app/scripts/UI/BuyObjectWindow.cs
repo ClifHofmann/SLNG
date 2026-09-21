@@ -86,7 +86,7 @@ public partial class BuyObjectWindow : SLNGWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         what.AddThemeFontSizeOverride("font_size", 11);
-        what.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        what.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         _contentVBox.AddChild(what);
 
         var priceLabel = new Label { Text = L10n.TrFormat("ui.buy.price", $"{price:N0}") };
@@ -103,7 +103,7 @@ public partial class BuyObjectWindow : SLNGWindow
         {
             var balance = new Label { Text = L10n.TrFormat("ui.buy.balance", $"{session.Balance:N0}") };
             balance.AddThemeFontSizeOverride("font_size", 11);
-            balance.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+            balance.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
             _contentVBox.AddChild(balance);
         }
 

@@ -1,4 +1,4 @@
-using Godot;
+﻿using Godot;
 
 namespace SLNG.App.UI;
 
@@ -27,6 +27,28 @@ namespace SLNG.App.UI;
 /// </summary>
 public static class UiTheme
 {
+    /// <summary>
+    /// The colour for secondary text — hints, counts, "Dein Kontostand", the line under a title.
+    /// </summary>
+    /// <remarks>
+    /// Was <c>0.6</c> grey, repeated as a literal in 31 places across 18 windows. That is a
+    /// readability problem and not a taste one, and it can be measured: an SLNGWindow's panel is
+    /// BLACK AT AN ALPHA, so what sits behind the text is whatever the world shows through it. Over
+    /// a bright in-world background — sky, snow, a white build — 0.6 grey on the old 0.65-alpha
+    /// panel came to <b>2.45:1</b>, against the 4.5:1 WCAG AA asks for normal text. Reported
+    /// in-world twice: the panel was already raised once, from 0.50 to 0.65, and that only moved it
+    /// to 2.45:1 from 1.40:1, so it stayed unreadable and the second report followed.
+    ///
+    /// <para>0.72 on the 0.85-alpha panel (see <see cref="SLNGWindow"/>) is <b>7.57:1</b> in that
+    /// same worst case. Both halves were needed: 0.85 with the old grey is 5.29:1, which passes but
+    /// leaves nothing for a small font, and 0.72 on the old panel is 3.50:1, which does not pass at
+    /// all.</para>
+    ///
+    /// <para>It lives here so the next adjustment is one edit rather than 31, which is how it
+    /// drifted out of reach in the first place.</para>
+    /// </remarks>
+    public static readonly Color SecondaryText = new(0.72f, 0.72f, 0.72f);
+
     // The app's accent, matching the top bar's border and version label.
     private static readonly Color Accent = new(0.24f, 0.66f, 0.94f);
     private static readonly Color OffOutline = new(0.62f, 0.67f, 0.74f);

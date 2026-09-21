@@ -66,7 +66,7 @@ public partial class GroupInvitationWindow : SLNGWindow
         {
             var from = new Label { Text = L10n.TrFormat("ui.group_invite.from", e.FromName) };
             from.AddThemeFontSizeOverride("font_size", 11);
-            from.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+            from.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
             _contentVBox.AddChild(from);
         }
 
@@ -98,7 +98,7 @@ public partial class GroupInvitationWindow : SLNGWindow
         };
         fee.AddThemeFontSizeOverride("font_size", 12);
         fee.AddThemeColorOverride("font_color",
-            e.MembershipFee > 0 ? new Color(0.95f, 0.75f, 0.35f) : new Color(0.6f, 0.6f, 0.6f));
+            e.MembershipFee > 0 ? new Color(0.95f, 0.75f, 0.35f) : UiTheme.SecondaryText);
         _contentVBox.AddChild(fee);
 
         var row = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };

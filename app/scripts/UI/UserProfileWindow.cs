@@ -400,7 +400,7 @@ public partial class UserProfileWindow : SLNGWindow
 
         _bornLabel = new Label { Text = "" };
         _bornLabel.AddThemeFontSizeOverride("font_size", 10);
-        _bornLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        _bornLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         col.AddChild(_bornLabel);
     }
 
@@ -962,7 +962,7 @@ public partial class UserProfileWindow : SLNGWindow
     {
         var l = new Label { Text = text };
         l.AddThemeFontSizeOverride("font_size", 10);
-        l.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        l.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         return l;
     }
 

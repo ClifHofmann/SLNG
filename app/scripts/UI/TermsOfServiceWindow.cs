@@ -76,7 +76,7 @@ public partial class TermsOfServiceWindow : SLNGWindow
 
         var gridLabel = new Label { Text = gridLoginUri };
         gridLabel.AddThemeFontSizeOverride("font_size", 11);
-        gridLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        gridLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         _contentVBox.AddChild(gridLabel);
 
         // The grid's text verbatim, selectable and scrollable. Not summarised, not reformatted:

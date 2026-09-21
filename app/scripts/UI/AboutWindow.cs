@@ -67,7 +67,7 @@ public partial class AboutWindow : SLNGWindow
 
         var channel = new Label { Text = L10n.TrFormat("ui.about.channel", ViewerChannel, Boot.AppVersion.TrimStart('v')) };
         channel.AddThemeFontSizeOverride("font_size", 11);
-        channel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        channel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         _contentVBox.AddChild(channel);
 
         var blurb = new Label

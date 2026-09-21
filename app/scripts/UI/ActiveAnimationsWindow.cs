@@ -103,7 +103,7 @@ public partial class ActiveAnimationsWindow : SLNGWindow
             VerticalAlignment = VerticalAlignment.Center,
             SizeFlagsVertical = Control.SizeFlags.ExpandFill,
         };
-        _emptyLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        _emptyLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         _emptyLabel.AddThemeFontSizeOverride("font_size", 12);
         _listContainer.AddChild(_emptyLabel);
 
@@ -230,7 +230,7 @@ public partial class ActiveAnimationsWindow : SLNGWindow
             VerticalAlignment = VerticalAlignment.Center,
         };
         sourceLabel.AddThemeFontSizeOverride("font_size", 10);
-        sourceLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        sourceLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         hbox.AddChild(sourceLabel);
 
         // Stop button

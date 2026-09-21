@@ -59,7 +59,7 @@ public partial class ChatHistoryWindow : SLNGWindow
             HorizontalAlignment = HorizontalAlignment.Center,
         };
         _pageLabel.AddThemeFontSizeOverride("font_size", ChatWindow.MetaFontSize);
-        _pageLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        _pageLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         nav.AddChild(_pageLabel);
 
         _nextButton = new Button { Text = "Next >", FocusMode = FocusModeEnum.None };

@@ -76,7 +76,7 @@ public partial class PayObjectWindow : SLNGWindow
         {
             var balance = new Label { Text = L10n.TrFormat("ui.buy.balance", $"{session.Balance:N0}") };
             balance.AddThemeFontSizeOverride("font_size", 11);
-            balance.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+            balance.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
             _contentVBox.AddChild(balance);
         }
 
@@ -102,7 +102,7 @@ public partial class PayObjectWindow : SLNGWindow
 
         _amountLabel = new Label { Text = L10n.Tr("ui.pay.other_amount") };
         _amountLabel.AddThemeFontSizeOverride("font_size", 11);
-        _amountLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        _amountLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         _contentVBox.AddChild(_amountLabel);
 
         _amount = new SpinBox

@@ -76,12 +76,12 @@ public partial class MaturityPreferencesPage : VBoxContainer
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             Visible = false,
         };
-        _unsupportedLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        _unsupportedLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         AddChild(_unsupportedLabel);
 
         _statusLabel = new Label { Text = "" };
         _statusLabel.AddThemeFontSizeOverride("font_size", 11);
-        _statusLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        _statusLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         AddChild(_statusLabel);
     }
 

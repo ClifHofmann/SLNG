@@ -89,7 +89,7 @@ public partial class ScriptPermissionWindow : SLNGWindow
 
         var asks = new Label { Text = L10n.Tr("ui.script_permission.asks_for") };
         asks.AddThemeFontSizeOverride("font_size", 11);
-        asks.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        asks.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         _contentVBox.AddChild(asks);
 
         foreach (var line in DescribePermissions(request.Permissions))
