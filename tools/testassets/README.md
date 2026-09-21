@@ -389,3 +389,31 @@ Its RGB is pure white everywhere — the texture is nothing but an alpha mask �
 a very narrow core (flat to r=0.10) with a long faint halo. A gentler ramp of the same width
 renders as a fat mushy blob instead of a bright speck, which is what a hand-tuned gradient
 produced before this was measured.
+
+## Script permission probe (FEAT-NET-01)
+
+`permission_probe.lsl` — a box that asks the toucher for permissions and then reports what it
+was actually granted.
+
+The feature under test is the prompt that appears when a script calls `llRequestPermissions`,
+and on a real grid you cannot make that happen on demand. The obvious test — a pose stand —
+exercises the one path that never prompts at all, because sitting on something grants animation
+permission implicitly; that is why "the pose stand does nothing" went unexplained for as long as
+it did. And no-modify content will not say which bits it asked for, so a prompt naming the wrong
+permission looks exactly like a correct one.
+
+Three phases, one per touch, each announced in local chat before the prompt appears:
+
+| Phase | Asks for | What to do | What proves it |
+|---|---|---|---|
+| 1 | Animation + TrackCamera | Grant | Prompt names both; chat reports both granted |
+| 2 | **Debit** | **Deny**, or just close the window | Prompt says "spend your money" rather than a bare number, Deny is focused — and chat reports `granted: (none)` |
+| 3 | Animation + an unnamed bit | either | The unknown bit is still listed, as a raw number |
+
+Phase 2 is the one that matters most. A refusal is a real answer, not silence: the reference
+viewer always replies and zeroes the granted bits (`llviewermessage.cpp:5600-5632`). A viewer
+that merely closes the window leaves the script waiting forever, and from the outside that is
+indistinguishable from a broken script — so if chat stays quiet after a denial, the feature is
+not working, however right the prompt looked.
+
+The script never calls `llGiveMoney` and cannot spend anything whichever way phase 2 is answered.
