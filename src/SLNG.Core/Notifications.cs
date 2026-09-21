@@ -31,14 +31,17 @@ public enum NotificationKind
 /// known.</param>
 /// <param name="Text">The finished line, in the user's language.</param>
 /// <param name="Detail">The longer version behind the expander, or empty when there is none.</param>
-/// <param name="ReceivedUtc">When it arrived. Rendered in grid time by the window.</param>
+/// <param name="ReceivedUtc">When it arrived.</param>
+/// <param name="Read">Whether the user has actually looked at the tab this sits in. Drives the
+/// badge on the toolbar button — the whole reason to distinguish it from "still in the list".</param>
 public sealed record NotificationEntry(
     Guid Id,
     NotificationKind Kind,
     Guid SenderId,
     string Text,
     string Detail,
-    DateTime ReceivedUtc);
+    DateTime ReceivedUtc,
+    bool Read = false);
 
 /// <summary>
 /// What the notification window shows: entries, per-kind counts, and dismissal.
@@ -63,6 +66,13 @@ public sealed class NotificationStore
     /// raised for a no-op dismissal.</summary>
     public event EventHandler? Changed;
 
+    /// <summary>Raised for a NEW entry only.</summary>
+    /// <remarks>
+    /// Separate from <see cref="Changed"/> because a toast must appear when something arrives and
+    /// must NOT reappear when something is dismissed — and dismissal changes the list too.
+    /// </remarks>
+    public event EventHandler<NotificationEntry>? Added;
+
     /// <summary>Newest first, which is the order the window shows them in.</summary>
     public IReadOnlyList<NotificationEntry> Entries => _entries;
 
@@ -84,7 +94,38 @@ public sealed class NotificationStore
         if (_entries.Count > MaxEntries) _entries.RemoveRange(MaxEntries, _entries.Count - MaxEntries);
 
         Changed?.Invoke(this, EventArgs.Empty);
+        Added?.Invoke(this, entry);
         return entry;
+    }
+
+    /// <summary>How many entries the user has not looked at, in one tab or in total.</summary>
+    public int UnreadOf(NotificationKind kind) => _entries.Count(e => e.Kind == kind && !e.Read);
+
+    /// <summary>Total unread, for the badge on the toolbar button.</summary>
+    public int UnreadCount => _entries.Count(e => !e.Read);
+
+    /// <summary>
+    /// Marks one tab, or everything, as seen. Returns how many entries changed.
+    /// </summary>
+    /// <remarks>
+    /// Per TAB rather than wholesale, because the window shows one tab at a time: opening it on
+    /// Transactions must not silently clear the badge for three unread group notices the user has
+    /// not looked at.
+    /// </remarks>
+    public int MarkRead(NotificationKind? kind = null)
+    {
+        int changed = 0;
+        for (int i = 0; i < _entries.Count; i++)
+        {
+            var e = _entries[i];
+            if (e.Read || (kind is { } k && e.Kind != k)) continue;
+
+            _entries[i] = e with { Read = true };
+            changed++;
+        }
+
+        if (changed > 0) Changed?.Invoke(this, EventArgs.Empty);
+        return changed;
     }
 
     /// <summary>Removes one entry. Returns false if it was already gone, and raises nothing —

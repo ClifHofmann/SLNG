@@ -31,12 +31,19 @@ public sealed class ToolbarItemDefinition
     /// updating in response to its own click.</summary>
     public Func<bool>? IsActive { get; }
 
-    public ToolbarItemDefinition(string id, string label, string iconGlyph, Action toggle, Func<bool>? isActive = null)
+    /// <summary>Optional: how many unread things are waiting behind this button, drawn as a small
+    /// count in its corner. Return 0 for none. Polled, like <see cref="IsActive"/> — the bar
+    /// already asks every button about itself once a frame, and a badge that lags a frame behind
+    /// is not a problem worth an event subscription per panel.</summary>
+    public Func<int>? Badge { get; }
+
+    public ToolbarItemDefinition(string id, string label, string iconGlyph, Action toggle, Func<bool>? isActive = null, Func<int>? badge = null)
     {
         Id = id;
         Label = label;
         IconGlyph = iconGlyph;
         Toggle = toggle;
         IsActive = isActive;
+        Badge = badge;
     }
 }

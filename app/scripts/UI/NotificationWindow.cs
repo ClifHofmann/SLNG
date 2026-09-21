@@ -119,22 +119,35 @@ public partial class NotificationWindow : SLNGWindow
     public void Toggle()
     {
         Visible = !Visible;
-        if (Visible) MoveToFront();
+        if (!Visible) return;
+
+        MoveToFront();
+        MarkActiveTabRead();
     }
 
     /// <summary>Opens the window on the tab a particular kind lives in — used when the user
     /// clicks a toast, so they land where the thing they clicked actually is.</summary>
     public void ShowTab(NotificationKind kind)
     {
-        SelectTab(kind);
         Visible = true;
         MoveToFront();
+        SelectTab(kind);
     }
 
     private void SelectTab(NotificationKind kind)
     {
         _active = kind;
+        // Looking at a tab is what "read" means. Only THIS tab: opening the window on
+        // Transactions must not clear the badge for three group notices nobody has seen, or the
+        // badge stops meaning anything.
+        if (Visible) MarkActiveTabRead();
         Rebuild();
+    }
+
+    private void MarkActiveTabRead()
+    {
+        // MarkRead raises Changed, which redraws -- so no Rebuild call here, and none is missed.
+        if (_store.MarkRead(_active) == 0) Rebuild();
     }
 
     private void Rebuild()

@@ -74,6 +74,7 @@ public partial class Boot : Control
     /// does not lose notifications.</summary>
     private readonly SLNG.Core.NotificationStore _notifications = new();
     private SLNG.App.UI.NotificationWindow? _notificationWindow;
+    private SLNG.App.UI.NotificationToastOverlay? _notificationToasts;
 
     /// <summary>Objects already reported by <see cref="OnParticleWireDiagnostic"/>, so a busy
     /// region logs one line per emitter instead of one per update. Touched from network threads.</summary>
@@ -333,7 +334,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.47-alpha";
+    public const string AppVersion = "v0.24.48-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -930,6 +931,13 @@ public partial class Boot : Control
         hudLayer.AddChild(_notificationWindow);
         _notificationWindow.Initialize(_notifications);
 
+        _notificationToasts = new SLNG.App.UI.NotificationToastOverlay { Name = "NotificationToasts" };
+        AddChild(_notificationToasts);
+        _notificationToasts.Clicked += kind => _notificationWindow?.ShowTab(kind);
+        // Added, not Changed: a toast appears when something ARRIVES and must not reappear when
+        // something is dismissed. Off a network thread, so the hop is not optional.
+        _notifications.Added += (s, entry) => CallDeferred(MethodName.ShowNotificationToast, entry.Text, (int)entry.Kind);
+
         _snapshotWindow = new SLNG.App.UI.SnapshotWindow { Name = "SnapshotWindow" };
         hudLayer.AddChild(_snapshotWindow);
         _snapshotWindow.Initialize(hudLayer);
@@ -1332,7 +1340,8 @@ public partial class Boot : Control
         {
             new("chat", "Chat", "chat",
                 () => ActivateLauncher(_chatWindow, () => _chatWindow.Visible = !_chatWindow.Visible),
-                () => _chatWindow.Visible),
+                () => _chatWindow.Visible,
+                () => _chatWindow?.TotalUnread ?? 0),
             new("camera", "Camera Controls", "photo_camera",
                 () => ActivateLauncher(cameraHud, cameraHud.Toggle),
                 () => cameraHud.Visible),
@@ -1353,7 +1362,8 @@ public partial class Boot : Control
                 () => _worldMapWindow.Visible),
             new("notifications", SLNG.App.UI.L10n.Tr("ui.notifications.toolbar"), "notifications",
                 () => { var win = _notificationWindow; if (win != null) ActivateLauncher(win, win.Toggle); },
-                () => _notificationWindow?.Visible ?? false),
+                () => _notificationWindow?.Visible ?? false,
+                () => _notifications.UnreadCount),
         };
         _toolbarItems = toolbarItems;
 
@@ -3946,6 +3956,16 @@ public partial class Boot : Control
         // FEAT-UI-33: and into the record, where it can still be found tomorrow. The chat line is
         // the glance; this is the ledger.
         _notifications.Add(SLNG.Core.NotificationKind.Transaction, e.OtherPartyId, text);
+    }
+
+    /// <summary>Main-thread half of a notification toast. Takes the pieces rather than the entry
+    /// itself: CallDeferred marshals Variants, and a C# record is not one.</summary>
+    private void ShowNotificationToast(string text, int kind)
+    {
+        if (_notificationToasts == null || !Godot.GodotObject.IsInstanceValid(_notificationToasts)) return;
+        _notificationToasts.Show(new SLNG.Core.NotificationEntry(
+            System.Guid.NewGuid(), (SLNG.Core.NotificationKind)kind, System.Guid.Empty,
+            text, string.Empty, System.DateTime.UtcNow));
     }
 
     private void OnProfileNameResolved(object? sender, SLNG.Core.NameResolvedEvent e)

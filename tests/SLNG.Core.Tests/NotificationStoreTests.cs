@@ -131,6 +131,72 @@ public class NotificationStoreTests
     }
 
     [Fact]
+    public void NewEntriesStartUnread()
+    {
+        var store = new NotificationStore();
+        store.Add(NotificationKind.Transaction, Alice, "paid you");
+        store.Add(NotificationKind.Group, Guid.Empty, "notice");
+
+        Assert.Equal(2, store.UnreadCount);
+        Assert.Equal(1, store.UnreadOf(NotificationKind.Transaction));
+    }
+
+    [Fact]
+    public void ReadingOneTabLeavesTheOthersAlone()
+    {
+        // Opening the window on Transactions must not silently clear the badge for group notices
+        // the user has not looked at -- the badge would then be lying about what is waiting.
+        var store = new NotificationStore();
+        store.Add(NotificationKind.Transaction, Alice, "paid you");
+        store.Add(NotificationKind.Group, Guid.Empty, "notice");
+
+        Assert.Equal(1, store.MarkRead(NotificationKind.Transaction));
+
+        Assert.Equal(0, store.UnreadOf(NotificationKind.Transaction));
+        Assert.Equal(1, store.UnreadOf(NotificationKind.Group));
+        Assert.Equal(1, store.UnreadCount);
+    }
+
+    [Fact]
+    public void ReadingIsIdempotent()
+    {
+        var store = new NotificationStore();
+        store.Add(NotificationKind.System, Guid.Empty, "hello");
+
+        Assert.Equal(1, store.MarkRead());
+        Assert.Equal(0, store.MarkRead());
+        Assert.Equal(0, store.UnreadCount);
+    }
+
+    [Fact]
+    public void DismissingAnUnreadEntryTakesItsBadgeWithIt()
+    {
+        var store = new NotificationStore();
+        var entry = store.Add(NotificationKind.Transaction, Alice, "paid you");
+
+        Assert.Equal(1, store.UnreadCount);
+        store.Dismiss(entry.Id);
+        Assert.Equal(0, store.UnreadCount);
+    }
+
+    [Fact]
+    public void AddedFiresOnlyForNewEntries()
+    {
+        // A toast must appear when something ARRIVES and must not reappear when something is
+        // dismissed -- and dismissal changes the list too, so Changed alone cannot drive it.
+        var store = new NotificationStore();
+        int added = 0;
+        store.Added += (_, _) => added++;
+
+        var entry = store.Add(NotificationKind.Transaction, Alice, "paid you");
+        Assert.Equal(1, added);
+
+        store.Dismiss(entry.Id);
+        store.MarkRead();
+        Assert.Equal(1, added);
+    }
+
+    [Fact]
     public void AddingRaisesChanged()
     {
         var store = new NotificationStore();

@@ -156,6 +156,24 @@ public partial class ChatWindow : SLNGWindow
 
     /// <summary>FEAT-UI-13: wired by Boot to its profile-window opener. Fired by clicking a
     /// resident's (linked) name in the chat log and by the Friends tab's "Profile" button.</summary>
+    /// <summary>
+    /// Unread messages across every conversation, for the badge on the toolbar's chat button.
+    /// </summary>
+    /// <remarks>
+    /// A plain sum of the per-tab counters the window already keeps for its own badges — no
+    /// special case for "the window is open", because selecting a tab zeroes its counter anyway.
+    /// A conversation you are looking at therefore contributes nothing on its own.
+    /// </remarks>
+    public int TotalUnread
+    {
+        get
+        {
+            int total = 0;
+            foreach (var tab in _chatTabs) total += tab.UnreadCount;
+            return total;
+        }
+    }
+
     public Action<Guid, string>? OnOpenProfileRequested;
 
     /// <summary>MVP5-2: the Friends tab's "Pay..." action, forwarded to whoever owns the pay

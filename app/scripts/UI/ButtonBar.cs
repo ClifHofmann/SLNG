@@ -38,6 +38,9 @@ public partial class ButtonBar : Control
 
     private Font _iconFont = null!;
 
+    private const string BadgeName = "Badge";
+    private const int BadgeCap = 9;
+
     public override void _Ready()
     {
         _iconFont = GD.Load<Font>("res://assets/fonts/MaterialSymbolsOutlined.ttf");
@@ -138,6 +141,33 @@ public partial class ButtonBar : Control
         btn.AddThemeStyleboxOverride("hover", hoverStyle);
         btn.AddThemeStyleboxOverride("pressed", pressedStyle);
         btn.AddThemeStyleboxOverride("hover_pressed", pressedStyle);
+
+        if (def.Badge != null)
+        {
+            // A Label parented to the button, anchored to its top-right corner and ignoring the
+            // mouse, so the whole button stays one click target. Not part of the button's own
+            // text: the glyph comes from the Material Symbols font, and a digit rendered in that
+            // font is not a digit.
+            var badge = new Label
+            {
+                Name = BadgeName,
+                Visible = false,
+                MouseFilter = Control.MouseFilterEnum.Ignore,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                AnchorLeft = 1f, AnchorRight = 1f, AnchorTop = 0f, AnchorBottom = 0f,
+                OffsetLeft = -20, OffsetRight = -2, OffsetTop = 1, OffsetBottom = 15,
+            };
+            badge.AddThemeFontSizeOverride("font_size", 10);
+            badge.AddThemeColorOverride("font_color", new Color(1, 1, 1));
+            badge.AddThemeStyleboxOverride("normal", new StyleBoxFlat
+            {
+                BgColor = new Color(0.85f, 0.25f, 0.2f, 0.95f),
+                CornerRadiusTopLeft = 7, CornerRadiusTopRight = 7,
+                CornerRadiusBottomLeft = 7, CornerRadiusBottomRight = 7,
+            });
+            btn.AddChild(badge);
+        }
 
         btn.Pressed += () => def.Toggle();
         btn.GuiInput += (@event) => OnButtonGuiInput(btn, @event);
@@ -240,6 +270,15 @@ public partial class ButtonBar : Control
             var id = (string)btn.GetMeta(MetaKey);
             var def = _items.FirstOrDefault(i => i.Id == id);
             if (def?.IsActive != null) btn.ButtonPressed = def.IsActive();
+
+            if (def?.Badge != null && btn.GetNodeOrNull<Label>(BadgeName) is { } badge)
+            {
+                int count = def.Badge();
+                badge.Visible = count > 0;
+                // Capped, because the badge is 18px wide and "127" in it is a smear. The point is
+                // "something is waiting", not the exact number.
+                if (count > 0) badge.Text = count > BadgeCap ? $"{BadgeCap}+" : count.ToString();
+            }
         }
     }
 }
