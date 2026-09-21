@@ -19,7 +19,9 @@ namespace SLNG.App.UI;
 public partial class InventoryPanel : SLNGWindow
 {
     private GridSession? _session;
-    private Tree _tree = null!;
+    // Typed as InventoryTree, not Tree: the subclass is what carries the drag payload and the
+    // drop handler (FEAT-INV-08), and a base-typed field hid both from every call site.
+    private InventoryTree _tree = null!;
     private Label _status = null!;
     // Folders already fetched (or currently fetching) — the expand signal fires on every
     // re-expand, and a re-fetch would duplicate the subtree under the item.
@@ -30,6 +32,10 @@ public partial class InventoryPanel : SLNGWindow
     private readonly Dictionary<Guid, TreeItem> _folderItems = new();
     private bool _rootsPopulated;
     private PopupMenu _contextMenu = null!;
+    private PopupMenu _folderMenu = null!;
+    /// <summary>Which folder the folder menu was opened on. Read when the menu fires rather than
+    /// re-reading the selection, which a click elsewhere may already have moved.</summary>
+    private Guid _folderMenuTarget;
     private LineEdit _searchBox = null!;
     // While a search is active the tree is fetched depth-first so the filter can see folders
     // the user never expanded (otherwise "search only finds what's already loaded"). One extra
@@ -182,6 +188,16 @@ public partial class InventoryPanel : SLNGWindow
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.play_inworld"), 8);
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.stop_animation"), 9);
         _contextMenu.IdPressed += OnContextMenuIdPressed;
+
+        // FEAT-INV-08: right-clicking a FOLDER used to do nothing at all -- the handler bailed
+        // unless the row carried an item's metadata tuple -- so there was no way to make a folder,
+        // rename one, or get rid of one.
+        _folderMenu = new PopupMenu();
+        _folderMenu.AddItem(L10n.Tr("ui.inventory_folder.new"), 0);
+        _folderMenu.AddSeparator();
+        _folderMenu.AddItem(L10n.Tr("ui.inventory_folder.rename"), 1);
+        _folderMenu.AddItem(L10n.Tr("ui.inventory_folder.delete"), 2);
+        _folderMenu.IdPressed += OnFolderMenuIdPressed;
         
         _tree = new InventoryTree 
         { 
@@ -191,6 +207,8 @@ public partial class InventoryPanel : SLNGWindow
             AllowRmbSelect = true 
         };
         _tree.AddChild(_contextMenu);
+        _tree.AddChild(_folderMenu);
+        _tree.OnDropIntoFolder = MoveIntoFolder;
         
         _tree.ItemCollapsed += OnItemCollapsed;
         // FEAT-INV-07 Phase 3: remember the picked row so clearing the search box can put the user
@@ -280,21 +298,27 @@ public partial class InventoryPanel : SLNGWindow
         _outfitsView.AddChild(outfitsStatusMargin);
 
         _outfitsMenu = new PopupMenu();
-        _outfitsMenu.AddItem("Aktuelles Outfit ersetzen", 0);
-        _outfitsMenu.AddItem("Zu aktuellem Outfit hinzufügen", 1);
-        _outfitsMenu.AddItem("Von aktuellem Outfit entfernen", 2);
+        // The two that used to say "ersetzen" act in OPPOSITE directions -- id 0 changes your
+        // AVATAR, id 4 changes the SAVED folder -- and a live report of "Outfit ersetzen geht
+        // nicht" could not be read without asking which was meant (FEAT-INV-08).
+        _outfitsMenu.AddItem(L10n.Tr("ui.outfit_menu.wear"), 0);
+        _outfitsMenu.SetItemTooltip(_outfitsMenu.GetItemIndex(0), L10n.Tr("ui.outfit_menu.wear_tooltip"));
+        _outfitsMenu.AddItem(L10n.Tr("ui.outfit_menu.add"), 1);
+        _outfitsMenu.SetItemTooltip(_outfitsMenu.GetItemIndex(1), L10n.Tr("ui.outfit_menu.add_tooltip"));
+        _outfitsMenu.AddItem(L10n.Tr("ui.outfit_menu.take_off"), 2);
         _outfitsMenu.AddSeparator();
-        _outfitsMenu.AddItem("Outfit neu benennen", 3);
-        _outfitsMenu.AddItem("Outfit speichern (= akt. Getrage)", 4);
+        _outfitsMenu.AddItem(L10n.Tr("ui.outfit_menu.rename"), 3);
+        _outfitsMenu.AddItem(L10n.Tr("ui.outfit_menu.overwrite"), 4);
+        _outfitsMenu.SetItemTooltip(_outfitsMenu.GetItemIndex(4), L10n.Tr("ui.outfit_menu.overwrite_tooltip"));
         _outfitsMenu.AddSeparator();
-        _outfitsMenu.AddItem("Outfit löschen", 5);
+        _outfitsMenu.AddItem(L10n.Tr("ui.outfit_menu.delete"), 5);
         _outfitsMenu.IdPressed += OnOutfitsMenuPressed;
 
         _outfitItemMenu = new PopupMenu();
-        _outfitItemMenu.AddItem("Anziehen", 0);
-        _outfitItemMenu.AddItem("Ausziehen", 1);
+        _outfitItemMenu.AddItem(L10n.Tr("ui.outfit_menu.item_wear"), 0);
+        _outfitItemMenu.AddItem(L10n.Tr("ui.outfit_menu.item_take_off"), 1);
         _outfitItemMenu.AddSeparator();
-        _outfitItemMenu.AddItem("Aus diesem Outfit entfernen", 2);
+        _outfitItemMenu.AddItem(L10n.Tr("ui.outfit_menu.item_remove"), 2);
         _outfitItemMenu.IdPressed += OnOutfitItemMenuPressed;
 
         _outfitsTree = new Tree
@@ -338,6 +362,63 @@ public partial class InventoryPanel : SLNGWindow
             SetDragPreview(preview);
 
             return payload;
+        }
+
+        /// <summary>FEAT-INV-08: dropping onto a folder row moves the dragged thing into it. Set
+        /// by the panel, because the tree has no session of its own.</summary>
+        internal Action<Guid, bool, Guid, string>? OnDropIntoFolder;
+
+        public override bool _CanDropData(Vector2 atPosition, Variant data)
+        {
+            return TryReadDrop(atPosition, data, out _, out _, out _, out _);
+        }
+
+        public override void _DropData(Vector2 atPosition, Variant data)
+        {
+            if (!TryReadDrop(atPosition, data, out var draggedId, out bool isFolder,
+                             out var targetFolder, out string targetName)) return;
+            OnDropIntoFolder?.Invoke(draggedId, isFolder, targetFolder, targetName);
+        }
+
+        /// <summary>Whether this drop is one we can make sense of, and what it means. The same
+        /// test answers "may it be dropped here" and "what do I do with it", so the highlight the
+        /// user sees and the action that follows cannot disagree.</summary>
+        private bool TryReadDrop(Vector2 atPosition, Variant data, out Guid draggedId,
+                                 out bool isFolder, out Guid targetFolder, out string targetName)
+        {
+            draggedId = Guid.Empty; isFolder = false; targetFolder = Guid.Empty; targetName = string.Empty;
+
+            if (data.VariantType != Variant.Type.String) return false;
+            var parts = data.AsString().Split('|');
+            if (parts.Length < 6 || parts[0] != "slng_item") return false;
+            if (!Guid.TryParse(parts[1], out draggedId)) return false;
+            if (!bool.TryParse(parts[4], out isFolder)) return false;
+
+            var row = GetItemAtPosition(atPosition);
+            if (row == null) return false;
+
+            // Only a folder row is a destination: a comma in the metadata means an item.
+            var meta = row.GetMetadata(0).AsString();
+            if (meta.Contains(',') || !Guid.TryParse(meta, out targetFolder)) return false;
+
+            if (targetFolder == draggedId) return false; // a folder cannot contain itself
+
+            // Nor can it contain its own ancestor -- that detaches the whole subtree from the
+            // inventory root and there is no UI left to get it back with.
+            if (isFolder)
+            {
+                for (var up = row.GetParent(); up != null; up = up.GetParent())
+                {
+                    var upMeta = up.GetMetadata(0).AsString();
+                    if (!upMeta.Contains(',') && Guid.TryParse(upMeta, out var upId) && upId == draggedId)
+                        return false;
+                }
+            }
+
+            string text = row.GetText(0);
+            int space = text.IndexOf(' ');
+            targetName = space > 0 && space < 4 ? text.Substring(space + 1).Trim() : text.Trim();
+            return true;
         }
     }
 
@@ -764,7 +845,7 @@ public partial class InventoryPanel : SLNGWindow
         if (_renamingOutfitId is { } renameId)
         {
             if (name.Length == 0) { _outfitsStatus.Text = "Erst einen Namen eingeben."; return; }
-            bool ok = _session.RenameOutfitAsync(renameId, name);
+            bool ok = _session.RenameFolder(renameId, name);
             if (ok)
             {
                 _outfitsStatus.Text = $"Umbenannt in „{name}“.";
@@ -985,7 +1066,7 @@ public partial class InventoryPanel : SLNGWindow
 
     private void DeleteOutfitAsync(Guid folderId)
     {
-        if (_session?.DeleteOutfitAsync(folderId) == true)
+        if (_session?.DeleteFolder(folderId) == true)
         {
             _outfitsStatus.Text = "Outfit in den Papierkorb verschoben.";
             RefreshOutfits();
@@ -1465,6 +1546,25 @@ public partial class InventoryPanel : SLNGWindow
             {
                 var metaStr = item.GetMetadata(0).AsString();
                 var parts = metaStr.Split(',');
+
+                // A folder row's metadata is the bare id; an item's is a comma-joined tuple.
+                if (parts.Length < 7 && Guid.TryParse(metaStr, out var rightClickedFolder))
+                {
+                    _tree.SetSelected(item, 0);
+                    _folderMenuTarget = rightClickedFolder;
+
+                    // A system folder -- Objects, Clothing, Trash, #Outfits -- may be filled but
+                    // not renamed or removed: the grid routes arriving content by its preferred
+                    // type, so deleting one takes the destination for a whole class of things.
+                    bool system = _session?.IsSystemFolder(rightClickedFolder) == true;
+                    _folderMenu.SetItemDisabled(_folderMenu.GetItemIndex(1), system);
+                    _folderMenu.SetItemDisabled(_folderMenu.GetItemIndex(2), system);
+
+                    _folderMenu.Position = (Vector2I)GetGlobalMousePosition();
+                    _folderMenu.Popup();
+                    return;
+                }
+
                 if (parts.Length >= 7)
                 {
                     bool canCopy = bool.Parse(parts[1]);
@@ -1520,6 +1620,148 @@ public partial class InventoryPanel : SLNGWindow
                 }
             }
         }
+    }
+
+    /// <summary>FEAT-INV-08: something was dragged onto a folder row.</summary>
+    /// <remarks>
+    /// The move goes out as the legacy UDP reparent (<c>GridSession.MoveInventoryAsync</c>), which
+    /// is the only one Second Life accepts — LibreMetaverse's own MoveItem/MoveFolder prefer AIS
+    /// and are answered with HTTP 400, silently. Both folders are refreshed rather than the row
+    /// being moved by hand: the source has lost a child and the destination has gained one, and
+    /// letting the tree re-read both is cheaper than keeping two views in step.
+    /// </remarks>
+    private void MoveIntoFolder(Guid draggedId, bool isFolder, Guid targetFolderId, string targetName)
+    {
+        if (_session == null || draggedId == Guid.Empty || targetFolderId == Guid.Empty) return;
+
+        Guid sourceFolderId = Guid.Empty;
+        if (_folderItems.TryGetValue(draggedId, out var draggedRow) && IsInstanceValid(draggedRow))
+        {
+            var parentMeta = draggedRow.GetParent()?.GetMetadata(0).AsString() ?? string.Empty;
+            if (!parentMeta.Contains(',')) Guid.TryParse(parentMeta, out sourceFolderId);
+        }
+
+        _ = _session.MoveInventoryAsync(draggedId, targetFolderId, isFolder, targetName);
+
+        // UDP is fire-and-forget, so give the grid a moment before asking it what it now holds.
+        var timer = GetTree()?.CreateTimer(1.0f);
+        if (timer != null)
+        {
+            timer.Timeout += () =>
+            {
+                if (!IsInstanceValid(this)) return;
+                RefreshFolder(targetFolderId);
+                if (sourceFolderId != Guid.Empty) RefreshFolder(sourceFolderId);
+            };
+        }
+
+        _status.Text = L10n.TrFormat("ui.inventory_folder.moved", FolderRowName(draggedId), targetName);
+    }
+
+    private void OnFolderMenuIdPressed(long id)
+    {
+        if (_session == null || _folderMenuTarget == Guid.Empty) return;
+        var folderId = _folderMenuTarget;
+        string name = FolderRowName(folderId);
+
+        switch (id)
+        {
+            case 0: PromptNewFolder(folderId, name); break;
+            case 1: PromptRenameFolder(folderId, name); break;
+            case 2: PromptDeleteFolder(folderId, name); break;
+        }
+    }
+
+    /// <summary>A folder's name as the tree shows it, without the type glyph the row prefixes.
+    /// Used in the prompts, where "Neuer Name für „📁 Objects“" would read as part of the name.
+    /// </summary>
+    private string FolderRowName(Guid folderId)
+    {
+        if (!_folderItems.TryGetValue(folderId, out var row) || !IsInstanceValid(row))
+            return folderId.ToString();
+
+        string text = row.GetText(0);
+        int space = text.IndexOf(' ');
+        return space > 0 && space < 4 ? text.Substring(space + 1).Trim() : text.Trim();
+    }
+
+    /// <summary>Puts a prompt window on the HUD layer, which is where every floating window in
+    /// this client lives -- parenting it to the panel would hide it when the panel closes.</summary>
+    private T ShowPrompt<T>() where T : SLNGWindow, new()
+    {
+        var win = new T();
+        var host = GetTree()?.Root?.GetNodeOrNull<CanvasLayer>("Boot/HudLayer")
+                   ?? (Node?)GetParent() ?? this;
+        host.AddChild(win);
+        return win;
+    }
+
+    private void PromptNewFolder(Guid parentId, string parentName)
+    {
+        var win = ShowPrompt<TextPromptWindow>();
+        win.Initialize(
+            L10n.Tr("ui.inventory_folder.new_title"),
+            L10n.TrFormat("ui.inventory_folder.new_prompt", parentName),
+            L10n.Tr("ui.inventory_folder.new_default"),
+            L10n.Tr("ui.inventory_folder.create"));
+        win.Confirmed += name =>
+        {
+            var created = _session!.CreateInventoryFolder(parentId, name);
+            if (created == Guid.Empty) return;
+
+            // CreateFolder is a fire-and-forget UDP packet with a client-side id, so the server
+            // has not acknowledged it yet. Expanding the parent is what makes the new folder
+            // appear, and a refresh a moment later is what makes it appear with the server's own
+            // view of it rather than only ours.
+            if (_folderItems.TryGetValue(parentId, out var parentRow) && IsInstanceValid(parentRow))
+                parentRow.Collapsed = false;
+            RefreshFolder(parentId);
+            var timer = GetTree()?.CreateTimer(1.2f);
+            if (timer != null) timer.Timeout += () => { if (IsInstanceValid(this)) RefreshFolder(parentId); };
+        };
+    }
+
+    private void PromptRenameFolder(Guid folderId, string currentName)
+    {
+        var win = ShowPrompt<TextPromptWindow>();
+        win.Initialize(
+            L10n.Tr("ui.inventory_folder.rename_title"),
+            L10n.TrFormat("ui.inventory_folder.rename_prompt", currentName),
+            currentName,
+            L10n.Tr("ui.inventory_folder.rename_ok"));
+        win.Confirmed += name =>
+        {
+            if (_session?.RenameFolder(folderId, name) != true) return;
+            // The row is ours to repaint: the rename goes out over UDP and the store is updated
+            // locally, so nothing else will tell the tree about it.
+            if (_folderItems.TryGetValue(folderId, out var row) && IsInstanceValid(row))
+            {
+                string text = row.GetText(0);
+                int space = text.IndexOf(' ');
+                row.SetText(0, space > 0 && space < 4 ? text.Substring(0, space + 1) + name : name);
+            }
+        };
+    }
+
+    private void PromptDeleteFolder(Guid folderId, string name)
+    {
+        var win = ShowPrompt<ConfirmWindow>();
+        win.Initialize(
+            L10n.Tr("ui.inventory_folder.delete_title"),
+            L10n.TrFormat("ui.inventory_folder.delete_prompt", name),
+            L10n.Tr("ui.inventory_folder.delete_ok"),
+            danger: true);
+        win.Confirmed += () =>
+        {
+            if (_session?.DeleteFolder(folderId) != true) return;
+            if (_folderItems.TryGetValue(folderId, out var row) && IsInstanceValid(row))
+            {
+                row.GetParent()?.RemoveChild(row);
+                row.Free();
+            }
+            _folderItems.Remove(folderId);
+            _loadedFolders.Remove(folderId);
+        };
     }
 
     private void OnContextMenuIdPressed(long id)

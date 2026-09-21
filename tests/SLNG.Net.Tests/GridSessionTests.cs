@@ -271,8 +271,8 @@ public class GridSessionTests
         Assert.Equal(0, await session.ReplaceOutfitWithCurrentAsync(Guid.NewGuid()));
         Assert.Equal((0, 0), await session.ReplaceWornWithOutfitAsync(Guid.NewGuid()));
         Assert.Equal(0, await session.RemoveOutfitFromWornAsync(Guid.NewGuid()));
-        Assert.False(session.RenameOutfitAsync(Guid.NewGuid(), "x"));
-        Assert.False(session.DeleteOutfitAsync(Guid.NewGuid()));
+        Assert.False(session.RenameFolder(Guid.NewGuid(), "x"));
+        Assert.False(session.DeleteFolder(Guid.NewGuid()));
     }
 
     // MVP2-3: minimap radar. OnCoarseLocationUpdate is private (same LMV-boundary reasoning as

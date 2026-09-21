@@ -565,6 +565,40 @@
       "failed": "Zahlung fehlgeschlagen: L$ {1} an {0}.",
       "someone": "Jemand"
     },
+    "common": {
+      "cancel": "Abbrechen"
+    },
+    "outfit_menu": {
+      "wear": "Dieses Outfit anziehen",
+      "wear_tooltip": "Ersetzt, was du trägst, durch dieses Outfit.",
+      "add": "Zusätzlich anziehen",
+      "add_tooltip": "Legt dieses Outfit zu dem, was du schon trägst.",
+      "take_off": "Teile dieses Outfits ausziehen",
+      "rename": "Outfit umbenennen",
+      "overwrite": "Mit aktuell Getragenem überschreiben",
+      "overwrite_tooltip": "Ändert den GESPEICHERTEN Ordner, nicht deinen Avatar.",
+      "delete": "Outfit löschen",
+      "item_wear": "Anziehen",
+      "item_take_off": "Ausziehen",
+      "item_remove": "Aus diesem Outfit entfernen"
+    },
+    "inventory_folder": {
+      "new": "Neuer Ordner…",
+      "new_title": "NEUER ORDNER",
+      "new_prompt": "Name des neuen Ordners in „{0}“:",
+      "new_default": "Neuer Ordner",
+      "create": "Anlegen",
+      "rename": "Umbenennen…",
+      "rename_title": "ORDNER UMBENENNEN",
+      "rename_prompt": "Neuer Name für „{0}“:",
+      "rename_ok": "Umbenennen",
+      "delete": "Ordner löschen",
+      "delete_title": "ORDNER LÖSCHEN",
+      "delete_prompt": "„{0}“ und alles darin in den Papierkorb verschieben?",
+      "delete_ok": "In den Papierkorb",
+      "system_folder": "„{0}“ ist ein Systemordner und kann nicht umbenannt oder gelöscht werden.",
+      "moved": "„{0}“ nach „{1}“ verschoben."
+    },
     "eventqueue": {
       "stalled": "Die Region „{0}“ liefert keine Ereignisse mehr — bis zur erneuten Verbindung fehlen von dort Gruppenchat, Teleport-Fortschritt, Objektmedien und Umgebungswechsel.",
       "stalled_detail": "Die Ereigniswarteschlange von „{0}“ hat {1}-mal in Folge nicht geantwortet und erholt sich nicht von selbst. Ihre Capability ist weg — ein Regions-Neustart macht das. Ein Teleport dorthin und zurück, oder eine Neuanmeldung, stellt sie wieder her.",

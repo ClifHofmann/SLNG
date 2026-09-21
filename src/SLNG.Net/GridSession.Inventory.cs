@@ -456,10 +456,30 @@ public sealed partial class GridSession
     public Task MoveToTrashAsync(Guid itemId, bool isFolder)
     {
         if (TrashFolderId is not { } trashId) return Task.CompletedTask;
+        return MoveInventoryAsync(itemId, trashId, isFolder, "Trash");
+    }
+
+    /// <summary>
+    /// Moves an item or folder into another folder. FEAT-INV-08.
+    /// </summary>
+    /// <param name="destinationLabel">What to call the destination in the log line; the folder's
+    /// own name where the caller knows it.</param>
+    /// <remarks>
+    /// The same legacy UDP reparent <see cref="MoveToTrashAsync"/> sends, which is that method's
+    /// whole point and is documented there: <c>InventoryManager.MoveItem</c>/<c>MoveFolder</c>
+    /// prefer AIS whenever it is available and PATCH <c>{cap}/item/{id}</c> with a bare
+    /// <c>parent_id</c>, which Second Life answers with <b>HTTP 400</b>. Every move made that way
+    /// failed silently and the thing stayed where it was. Trash was simply the first destination
+    /// this project needed; nothing about the mechanism is specific to it.
+    /// </remarks>
+    public Task MoveInventoryAsync(Guid itemId, Guid newParentId, bool isFolder, string destinationLabel = "")
+    {
+        if (itemId == Guid.Empty || newParentId == Guid.Empty) return Task.CompletedTask;
+        if (itemId == newParentId) return Task.CompletedTask; // a folder cannot contain itself
         if (!_client.Network.Connected) return Task.CompletedTask;
 
         var id = new UUID(itemId);
-        var trash = new UUID(trashId);
+        var trash = new UUID(newParentId);
 
         // Keep the local store in step with what we are about to tell the grid.
         if (_client.Inventory.Store?.GetNodeOrDefault(id)?.Data is { } node)
@@ -500,7 +520,8 @@ public sealed partial class GridSession
         // UDP is fire-and-forget: unlike the AIS call this replaces, a failure here is silent, so
         // say what was sent. This line is how the 400 that made Delete a no-op was found.
         Console.Error.WriteLine(
-            $"[Inventory] MoveInventory{(isFolder ? "Folder" : "Item")} {id} -> Trash {trash}");
+            $"[Inventory] MoveInventory{(isFolder ? "Folder" : "Item")} {id} -> " +
+            $"{(string.IsNullOrEmpty(destinationLabel) ? "folder" : destinationLabel)} {trash}");
 
         return Task.CompletedTask;
     }
@@ -2728,8 +2749,15 @@ public sealed partial class GridSession
         return removed;
     }
 
-    /// <summary>Renames a saved outfit folder. FEAT-INV-04.</summary>
-    public bool RenameOutfitAsync(Guid folderId, string newName)
+    /// <summary>Renames any inventory folder. FEAT-INV-04 named it after outfits because that was
+    /// the only caller; nothing in it is outfit-specific, and FEAT-INV-08 needed the same thing for
+    /// ordinary folders.</summary>
+    /// <remarks>
+    /// Keeps the folder's <c>PreferredType</c>. Dropping it would turn a system folder — Objects,
+    /// Clothing, #Outfits — into a plain one on a rename, and the grid places new content by that
+    /// type.
+    /// </remarks>
+    public bool RenameFolder(Guid folderId, string newName)
     {
         newName = newName?.Trim() ?? string.Empty;
         if (folderId == Guid.Empty || newName.Length == 0) return false;
@@ -2739,7 +2767,7 @@ public sealed partial class GridSession
         return true;
     }
 
-    /// <summary>Deletes a saved outfit folder (recoverable — on SL an AIS category delete lands it
+    /// <summary>Deletes any inventory folder (recoverable — on SL an AIS category delete lands it
     /// in Trash; the linked items stay in inventory). FEAT-INV-04.
     ///
     /// <para><c>RemoveFolderAsync</c> (AIS <c>DELETE {cap}/category/{id}</c> on SL, a
@@ -2747,7 +2775,7 @@ public sealed partial class GridSession
     /// a <c>parent_id</c> PATCH of an <c>#Outfits</c> subfolder HTTP-400s on SL
     /// (<c>warn: Move category … Bad Request</c>) and the outfit stayed visible — the same
     /// move-to-Trash trap BUG-INV-01 already retired for items and COF links.</para></summary>
-    public bool DeleteOutfitAsync(Guid folderId)
+    public bool DeleteFolder(Guid folderId)
     {
         if (folderId == Guid.Empty) return false;
         var folderUuid = new LibreMetaverse.UUID(folderId);
@@ -2767,6 +2795,23 @@ public sealed partial class GridSession
         var node = _client.Inventory.Store?.GetNodeOrDefault(folderUuid);
         if (node != null) node.Parent?.Nodes.Remove(folderUuid);
         return true;
+    }
+
+    /// <summary>Whether a folder is one the grid maintains itself — Objects, Clothing, Trash,
+    /// #Outfits, Current Outfit and the rest. FEAT-INV-08.</summary>
+    /// <remarks>
+    /// The test is <c>PreferredType</c>, which is also what the grid routes new content by: a
+    /// received object lands in the folder whose preferred type is Object, not in the one called
+    /// "Objects". Renaming such a folder is therefore survivable but confusing, and deleting one
+    /// takes the destination for a whole class of arrivals with it — so the UI refuses both rather
+    /// than letting the user find out.
+    /// </remarks>
+    public bool IsSystemFolder(Guid folderId)
+    {
+        if (folderId == Guid.Empty) return false;
+        var node = _client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(folderId));
+        return node?.Data is LibreMetaverse.InventoryFolder f
+               && f.PreferredType != LibreMetaverse.FolderType.None;
     }
 
     /// <summary>Creates a new inventory subfolder — used for the Create Landmark dialog's
