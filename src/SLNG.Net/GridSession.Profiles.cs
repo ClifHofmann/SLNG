@@ -95,11 +95,20 @@ public sealed partial class GridSession
         _client.Self.SendTeleportLure(new UUID(agentId), message);
     }
 
-    /// <summary>Pays L$ to another avatar. No-op for a non-positive amount.</summary>
-    public void PayAvatar(Guid agentId, int amount)
+    /// <summary>Pays L$ to another avatar. Returns whether it actually went out.</summary>
+    /// <remarks>
+    /// Returns a bool rather than void for the same reason <see cref="PayObject"/> does: the
+    /// caller tells the user what happened, and "I sent it" printed after a refused send is worse
+    /// than nothing. Refuses a non-positive amount and anything past SL's own per-transaction
+    /// ceiling -- the free-entry field is where a digit too many gets typed.
+    /// </remarks>
+    public bool PayAvatar(Guid agentId, int amount)
     {
-        if (agentId == Guid.Empty || amount <= 0 || !_client.Network.Connected) return;
+        if (agentId == Guid.Empty || !_client.Network.Connected) return false;
+        if (amount <= 0 || amount > SLNG.Core.PaymentCheck.MaxAmount) return false;
+
         _client.Self.GiveAvatarMoney(new UUID(agentId), amount);
+        return true;
     }
 
     /// <summary>Asks the sim to (re)send the account mute list, so <see cref="IsAvatarMuted"/>

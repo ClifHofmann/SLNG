@@ -280,9 +280,7 @@
       "action_offer_tp": "Offer TP",
       "action_mute": "Mute",
       "action_unmute": "Unmute",
-      "action_send": "Send",
       "status_friend_sent": "Friendship offer sent.",
-      "status_paid": "Paid L${0}.",
       "status_tp_sent": "Teleport offer sent.",
       "status_muted": "Avatar muted.",
       "status_unmuted": "Avatar unmuted.",
@@ -549,7 +547,15 @@
       "confirm": "Pay",
       "menu": "Pay …",
       "sent": "Paid: {0} — L$ {1}.",
-      "other_amount": "Other amount"
+      "other_amount": "Other amount",
+      "confirm_large": "Send L$ {0} to {1}. This cannot be undone.",
+      "confirm_large_button": "Send L$ {0}"
+    },
+    "pay_avatar": {
+      "title": "Pay resident",
+      "subtitle": "Send money straight to this person",
+      "menu": "Pay …",
+      "sent": "Paid {0}: L$ {1}."
     }
   }
 }

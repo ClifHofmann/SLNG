@@ -101,11 +101,15 @@ public partial class UserProfileWindow : SLNGWindow
     // Social actions (view mode only)
     private Button? _addFriendBtn;
     private Button? _muteBtn;
-    private HBoxContainer? _payRow;
-    private SpinBox? _paySpin;
 
     /// <summary>Wired by Boot to <c>ChatWindow.OpenOrFocusImTab</c> — the "IM" action button.</summary>
     public Action<Guid, string>? OnOpenImRequested;
+
+    /// <summary>MVP5-2: asks the owner to open the pay window for this person. The profile used
+    /// to pay inline -- a spinbox and a Send button, with no balance, no shortfall and no
+    /// confirmation -- which was less care than the client took over a L$ 199 purchase, for a
+    /// transfer that cannot be taken back.</summary>
+    public Action<Guid, string>? OnPayRequested;
 
     /// <summary>Fired from the close button so Boot can drop this window from its per-agent map.</summary>
     public Action? Closed;
@@ -707,20 +711,6 @@ public partial class UserProfileWindow : SLNGWindow
             return;
         }
 
-        _payRow = new HBoxContainer { Visible = false };
-        _payRow.AddThemeConstantOverride("separation", 6);
-        _paySpin = new SpinBox
-        {
-            MinValue = 1, MaxValue = 100000, Step = 1, Value = 10,
-            SizeFlagsHorizontal = SizeFlags.ExpandFill,
-        };
-        _payRow.AddChild(new Label { Text = "L$" });
-        _payRow.AddChild(_paySpin);
-        var paySend = new Button { Text = Tr("action_send"), FocusMode = FocusModeEnum.None };
-        paySend.Pressed += OnPaySendPressed;
-        _payRow.AddChild(paySend);
-        _actionHost.AddChild(_payRow);
-
         var grid = new GridContainer { Columns = 3 };
         grid.AddThemeConstantOverride("h_separation", 4);
         grid.AddThemeConstantOverride("v_separation", 4);
@@ -730,7 +720,7 @@ public partial class UserProfileWindow : SLNGWindow
         _muteBtn = ActionButton(Tr("action_mute"), OnMutePressed);
         grid.AddChild(_addFriendBtn);
         grid.AddChild(ActionButton(Tr("action_im"), OnImPressed));
-        grid.AddChild(ActionButton(Tr("action_pay"), () => _payRow.Visible = !_payRow.Visible));
+        grid.AddChild(ActionButton(Tr("action_pay"), OnPayPressed));
         grid.AddChild(ActionButton(Tr("action_offer_tp"), OnOfferTeleportPressed));
         grid.AddChild(_muteBtn);
 
@@ -778,13 +768,8 @@ public partial class UserProfileWindow : SLNGWindow
     private void OnImPressed() =>
         OnOpenImRequested?.Invoke(_agentId, string.IsNullOrWhiteSpace(_agentName) ? "" : _agentName);
 
-    private void OnPaySendPressed()
-    {
-        int amount = (int)(_paySpin?.Value ?? 0);
-        _session?.PayAvatar(_agentId, amount);
-        if (_payRow != null) _payRow.Visible = false;
-        _statusLabel.Text = TrF("status_paid", amount);
-    }
+    private void OnPayPressed() =>
+        OnPayRequested?.Invoke(_agentId, string.IsNullOrWhiteSpace(_agentName) ? "" : _agentName);
 
     private void OnOfferTeleportPressed()
     {

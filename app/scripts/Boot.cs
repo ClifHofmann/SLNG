@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.43-alpha";
+    public const string AppVersion = "v0.24.44-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -911,6 +911,7 @@ public partial class Boot : Control
         _inWorldContextMenu.OnAvatarProfileClicked = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
         _inWorldContextMenu.OnAvatarImClicked = (agentId, name) => _chatWindow.OpenOrFocusImTab(agentId, name);
         _inWorldContextMenu.OnAvatarOfferTeleportClicked = (agentId, name) => _session?.OfferTeleport(agentId);
+        _inWorldContextMenu.OnAvatarPayClicked = (agentId, name) => ShowPayAvatarWindow(agentId, name);
         _inWorldContextMenu.OnAvatarMuteToggleClicked = (agentId, name) =>
             _session?.SetAvatarMuted(agentId, name, !_session.IsAvatarMuted(agentId));
         _inWorldContextMenu.OnCreatePrimClicked = (godotPos, type) =>
@@ -1092,6 +1093,27 @@ public partial class Boot : Control
         _payWindow = win;
     }
 
+    private SLNG.App.UI.PayAvatarWindow? _payAvatarWindow;
+
+    /// <summary>MVP5-2: paying another person -- from the right-click menu or from their profile,
+    /// both landing here so there is one payment path rather than two with different rules.</summary>
+    private void ShowPayAvatarWindow(System.Guid agentId, string name)
+    {
+        var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+        if (_session == null || hudLayer == null || agentId == System.Guid.Empty) return;
+
+        if (_payAvatarWindow != null && Godot.GodotObject.IsInstanceValid(_payAvatarWindow)) _payAvatarWindow.QueueFree();
+        _payAvatarWindow = null;
+
+        var win = new SLNG.App.UI.PayAvatarWindow();
+        hudLayer.AddChild(win);
+        win.Closed += () => _payAvatarWindow = null;
+        win.Paid += (who, amount) =>
+            LogMessage($"[color=#f0d060][L$] {SLNG.App.UI.L10n.TrFormat("ui.pay_avatar.sent", who, $"{amount:N0}")}[/color]");
+        win.Initialize(_session, agentId, name);
+        _payAvatarWindow = win;
+    }
+
     /// <summary>FEAT-ECON-02: the confirmation before any money moves.</summary>
     private void ShowBuyWindow(SLNG.Core.ECS.Entity entity, uint localId)
     {
@@ -1245,6 +1267,7 @@ public partial class Boot : Control
         hudLayer.AddChild(win);
         win.CascadeIndex = _userProfileWindows.Count % 8;
         win.OnOpenImRequested = (id, n) => _chatWindow.OpenOrFocusImTab(id, n);
+        win.OnPayRequested = (id, n) => ShowPayAvatarWindow(id, n);
         win.Closed += () =>
         {
             if (_userProfileWindows.Remove(agentId)) _openProfileWindows = _userProfileWindows.Count;

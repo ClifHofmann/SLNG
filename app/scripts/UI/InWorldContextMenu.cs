@@ -32,6 +32,11 @@ namespace SLNG.App.UI
         public Action<Guid, string>? OnAvatarImClicked;
         /// <inheritdoc cref="OnAvatarProfileClicked"/>
         public Action<Guid, string>? OnAvatarOfferTeleportClicked;
+
+        /// <summary>MVP5-2: paying a person. Reachable from the right-click menu because that is
+        /// where the reference viewer keeps it -- it used to be buried in the profile window, and
+        /// something you cannot find is not something you have.</summary>
+        public Action<Guid, string>? OnAvatarPayClicked;
         /// <summary>Mute/Unmute is a single toggle button whose label already reflects the
         /// CURRENT state (set by the caller via <see cref="ShowAvatarMenu"/>'s <c>isMuted</c>) --
         /// this fires regardless of which way it's currently pointing, so the handler is
@@ -62,6 +67,7 @@ namespace SLNG.App.UI
         private VBoxContainer _avatarButtons = null!;
         private Button _avatarImButton = null!;
         private Button _avatarTeleportButton = null!;
+        private Button _avatarPayButton = null!;
         private Button _avatarMuteButton = null!;
         private VBoxContainer _createRoot = null!;
         private Button _sitButton = null!, _deleteButton = null!, _detachButton = null!, _buyButton = null!, _payButton = null!;
@@ -109,6 +115,7 @@ namespace SLNG.App.UI
             AddMenuButton(_avatarButtons, "👤 Profile", () => OnAvatarProfileClicked?.Invoke(_currentAvatarId, _currentAvatarName));
             _avatarImButton = AddMenuButton(_avatarButtons, "💬 IM", () => OnAvatarImClicked?.Invoke(_currentAvatarId, _currentAvatarName));
             _avatarTeleportButton = AddMenuButton(_avatarButtons, "🚀 Offer Teleport", () => OnAvatarOfferTeleportClicked?.Invoke(_currentAvatarId, _currentAvatarName));
+            _avatarPayButton = AddMenuButton(_avatarButtons, "💰 " + L10n.Tr("ui.pay_avatar.menu"), () => OnAvatarPayClicked?.Invoke(_currentAvatarId, _currentAvatarName));
             _avatarMuteButton = AddMenuButton(_avatarButtons, "🔇 Mute", () => OnAvatarMuteToggleClicked?.Invoke(_currentAvatarId, _currentAvatarName));
 
 
@@ -300,6 +307,8 @@ namespace SLNG.App.UI
             _avatarButtons.Visible = true;
             _avatarImButton.Visible = !isSelf;
             _avatarTeleportButton.Visible = !isSelf;
+            // Paying yourself is not a transaction, and the simulator refuses it anyway.
+            _avatarPayButton.Visible = !isSelf;
             _avatarMuteButton.Visible = !isSelf;
             _avatarMuteButton.Text = isMuted ? "🔊 Unmute" : "🔇 Mute";
 

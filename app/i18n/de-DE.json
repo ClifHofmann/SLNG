@@ -280,9 +280,7 @@
       "action_offer_tp": "TP anbieten",
       "action_mute": "Ignorieren",
       "action_unmute": "Freigeben",
-      "action_send": "Senden",
       "status_friend_sent": "Freundschaftsangebot gesendet.",
-      "status_paid": "L${0} bezahlt.",
       "status_tp_sent": "Teleport-Angebot gesendet.",
       "status_muted": "Avatar wird ignoriert.",
       "status_unmuted": "Avatar wird nicht mehr ignoriert.",
@@ -549,7 +547,15 @@
       "confirm": "Bezahlen",
       "menu": "Bezahlen …",
       "sent": "Bezahlt: {0} — L$ {1}.",
-      "other_amount": "Anderer Betrag"
+      "other_amount": "Anderer Betrag",
+      "confirm_large": "L$ {0} an {1} senden. Das lässt sich nicht rückgängig machen.",
+      "confirm_large_button": "L$ {0} senden"
+    },
+    "pay_avatar": {
+      "title": "Person bezahlen",
+      "subtitle": "Geld direkt an diese Person senden",
+      "menu": "Bezahlen …",
+      "sent": "An {0} gezahlt: L$ {1}."
     }
   }
 }
