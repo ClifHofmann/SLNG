@@ -173,3 +173,13 @@ All features, tasks, and specs MUST use a unified Feature ID scheme across code,
   `main` that touches the roadmap, `docs/specs/**` or the script. `docs/dashboard.html`
   is a generated artifact, never hand-edited, git-ignored. Update procedure (edit flags,
   commit, push — identical for Claude Code and Gemini): **`docs/PROGRESS_UPDATE.md`**.
+
+## Releases
+
+- **Release notes are written in English — always**, title and body. The chat with the
+  maintainer may be in German; a GitHub release is read by the grid, which is not.
+  `docs/BENUTZERHANDBUCH.md` is the exception and stays German: it is written for the
+  German-speaking users of the viewer, not for the repository.
+- A release is tagged `vX.Y.Z-alpha` and marked as a pre-release. The `-alpha` suffix is
+  what the workflow keys the pre-release flag off, so a tag without it silently becomes
+  GitHub's "Latest" and is offered as the stable download (this happened to `v0.23`).
