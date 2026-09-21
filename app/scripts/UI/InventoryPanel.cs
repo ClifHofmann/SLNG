@@ -1678,7 +1678,7 @@ public partial class InventoryPanel : SLNGWindow
             };
         }
 
-        _status.Text = L10n.TrFormat("ui.inventory_folder.moved", FolderRowName(draggedId), targetName);
+        _status.Text = L10n.TrFormat("ui.inventory_folder.moved", InventoryName(draggedId), targetName);
     }
 
     private void OnFolderMenuIdPressed(long id)
@@ -1730,8 +1730,7 @@ public partial class InventoryPanel : SLNGWindow
         var idStr = isFolder ? meta : meta.Split(',')[0];
         if (!Guid.TryParse(idStr, out var rowId)) return;
 
-        string rowName = row.GetText(0).Replace("  ⇢", "").Trim();
-        if (isFolder) rowName = FolderRowName(rowId);
+        string rowName = InventoryName(rowId);
 
         switch (key.Keycode)
         {
@@ -1847,17 +1846,34 @@ public partial class InventoryPanel : SLNGWindow
         return chain;
     }
 
-    /// <summary>A folder's name as the tree shows it, without the type glyph the row prefixes.
-    /// Used in the prompts, where "Neuer Name für „📁 Objects“" would read as part of the name.
-    /// </summary>
+    /// <summary>The real name of an inventory item or folder.</summary>
+    /// <remarks>
+    /// From the inventory store, never from the row's text. A row reads
+    /// <c>"{icon} {name}{worn marker}{permission suffix}"</c>, and BUG-INV-07 was exactly that
+    /// mistake: a copy taken under the displayed string was genuinely named with the icon and the
+    /// permission suffix baked into it on the grid, and then drew a second icon in front of the
+    /// first. The stripped row text is only a fallback for a name the store has not got yet,
+    /// which is a display problem rather than a naming one.
+    /// </remarks>
+    private string InventoryName(Guid id)
+    {
+        if (_session != null && _session.TryGetInventoryName(id, out var real)) return real;
+
+        if (_folderItems.TryGetValue(id, out var row) && IsInstanceValid(row))
+        {
+            string text = row.GetText(0);
+            int space = text.IndexOf(' ');
+            return space > 0 && space < 4 ? text.Substring(space + 1).Trim() : text.Trim();
+        }
+        return string.Empty;
+    }
+
+    /// <summary>The folder-flavoured <see cref="InventoryName"/>, for the prompts -- which only
+    /// ever ask about folders and need something printable even for an unknown one.</summary>
     private string FolderRowName(Guid folderId)
     {
-        if (!_folderItems.TryGetValue(folderId, out var row) || !IsInstanceValid(row))
-            return folderId.ToString();
-
-        string text = row.GetText(0);
-        int space = text.IndexOf(' ');
-        return space > 0 && space < 4 ? text.Substring(space + 1).Trim() : text.Trim();
+        var name = InventoryName(folderId);
+        return name.Length > 0 ? name : folderId.ToString();
     }
 
     /// <summary>Puts a prompt window on the HUD layer, which is where every floating window in
@@ -1954,7 +1970,8 @@ public partial class InventoryPanel : SLNGWindow
         // which is where the user is pointing -- an item is not a destination.
         if (id is 10 or 11 or 12)
         {
-            string rowName = item.GetText(0).Replace("  ⇢", "").Trim();
+            // The store's name, NOT the row's text -- see InventoryName (BUG-INV-07).
+            string rowName = InventoryName(itemId);
             switch (id)
             {
                 case 10: ClipboardTake(itemId, isFolder, rowName, SLNG.Core.InventoryClipboardMode.Cut); break;

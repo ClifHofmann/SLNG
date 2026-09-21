@@ -2797,6 +2797,26 @@ public sealed partial class GridSession
         return true;
     }
 
+    /// <summary>An item's or folder's real name, straight from the inventory store.</summary>
+    /// <remarks>
+    /// Exists so that callers stop reading names out of the UI. An inventory row's text is
+    /// <c>"{icon} {name}{worn marker}{permission suffix}"</c>, and a copy made under that string is
+    /// genuinely named "(box icon) Thing (no modify) (no transfer)" on the grid -- reported
+    /// in-world 2026-09-21 as an item that had grown a second icon (BUG-INV-07). The display
+    /// string is for reading; this is the name.
+    /// </remarks>
+    public bool TryGetInventoryName(Guid id, out string name)
+    {
+        name = string.Empty;
+        if (id == Guid.Empty) return false;
+
+        var data = _client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(id))?.Data;
+        if (data == null || string.IsNullOrEmpty(data.Name)) return false;
+
+        name = data.Name;
+        return true;
+    }
+
     /// <summary>Whether a folder is one the grid maintains itself — Objects, Clothing, Trash,
     /// #Outfits, Current Outfit and the rest. FEAT-INV-08.</summary>
     /// <remarks>
