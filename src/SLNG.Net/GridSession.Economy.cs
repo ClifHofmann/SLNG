@@ -71,13 +71,21 @@ public partial class GridSession
         System.Guid dest = info?.DestID.Guid ?? System.Guid.Empty;
 
         // The reply carries a description in two places: the MoneyData one the simulator composes
-        // into a sentence, and the item description from the transaction itself. Prefer the
-        // latter -- it is what the payer actually wrote -- and fall back to the sentence.
-        string itemDescription = info?.ItemDescription ?? string.Empty;
+        // into a sentence ("Clifton Howlett paid you L$1."), and the item description from the
+        // transaction itself, which is what the payer actually wrote. Prefer the latter -- but
+        // only when it says something: a gift with no reason arrives as the literal "Payment"
+        // (measured on Agni), and appending "-- Payment" to every tip would bury the one case
+        // that does carry a reason. MoneyReason.For applies the viewer's own test for that.
+        string itemDescription = info != null
+            ? SLNG.Core.MoneyReason.For(info.TransactionType, info.ItemDescription ?? string.Empty)
+            : string.Empty;
+        // The simulator's own sentence. Used ONLY when there are no parties -- it already reads
+        // "Clifton Howlett paid you L$1.", so handing it to a Received/Paid line as the reason
+        // would produce "Clifton Howlett hat dir L$ 1 gezahlt -- Clifton Howlett paid you L$1."
         string replyDescription = e.Description ?? string.Empty;
-        string description = !string.IsNullOrWhiteSpace(itemDescription) ? itemDescription : replyDescription;
 
-        bool hasDescription = !string.IsNullOrWhiteSpace(description);
+        bool hasDescription = !string.IsNullOrWhiteSpace(itemDescription)
+            || !string.IsNullOrWhiteSpace(replyDescription);
 
         if (SLNG.Core.Diag.Verbose)
         {
@@ -95,7 +103,7 @@ public partial class GridSession
         {
             MoneyTransaction?.Invoke(this, new SLNG.Core.MoneyTransactionEvent(
                 e.TransactionID.Guid, SLNG.Core.MoneyDirection.Unknown,
-                System.Guid.Empty, false, info?.Amount ?? 0, description,
+                System.Guid.Empty, false, info?.Amount ?? 0, replyDescription,
                 info?.TransactionType ?? 0, e.Success));
             return;
         }
@@ -109,7 +117,7 @@ public partial class GridSession
             wePaid ? dest : source,
             wePaid ? (info?.IsDestGroup ?? false) : (info?.IsSourceGroup ?? false),
             info?.Amount ?? 0,
-            description,
+            itemDescription,
             info?.TransactionType ?? 0,
             e.Success));
     }

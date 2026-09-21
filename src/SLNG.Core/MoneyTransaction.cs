@@ -20,8 +20,12 @@ public enum MoneyDirection
     /// reply's plain Description, and the reference viewer prints exactly that as a system
     /// message rather than dropping it ("Only old dev grids will not supply the TransactionInfo
     /// block, so we can just use the hard-coded English string" — llviewermessage.cpp:4558).
-    /// Measured live on OpenSim: money arrived and nothing was said, because the parties were
-    /// both empty and the transaction was taken for a plain balance answer.
+    ///
+    /// <para>NOT the case on Second Life, contrary to what an earlier version of this comment
+    /// claimed: measured on Agni, the block arrives complete — source, dest, amount, type 5001,
+    /// item 'Payment'. So this is the fallback it was meant to be and not the ordinary path; a
+    /// payment there takes <see cref="Received"/> or <see cref="Paid"/> and keeps the clickable
+    /// name that comes with knowing who the other party was.</para>
     /// </remarks>
     Unknown,
 }
@@ -45,6 +49,50 @@ public readonly record struct MoneyTransactionEvent(
     string Description,
     int TransactionType,
     bool Success);
+
+/// <summary>SL transaction types this client distinguishes (lltransactiontypes.h).</summary>
+public static class MoneyTransactionType
+{
+    /// <summary>One person handing another money, with no object involved.</summary>
+    public const int Gift = 5001;
+}
+
+/// <summary>Turns a transaction's own fields into the "for ..." clause, or nothing.</summary>
+public static class MoneyReason
+{
+    /// <summary>
+    /// What the simulator puts in ItemDescription when the payer gave NO reason.
+    /// </summary>
+    /// <remarks>
+    /// The literal English string, matched literally — which is parity rather than a hack: the
+    /// reference viewer does exactly the same comparison, and comments it "Simulator returns
+    /// 'Payment' if no custom description has been entered"
+    /// (<c>reason_from_transaction_type</c>, llviewermessage.cpp). It comes from the server, not
+    /// from a translation, so it does not change with the user's language.
+    /// </remarks>
+    public const string NoReasonGiven = "Payment";
+
+    /// <summary>
+    /// The reason to show, or empty when there is none worth showing.
+    /// </summary>
+    /// <remarks>
+    /// Measured on Agni: a plain gift with no reason arrives as <c>item='Payment'</c>, so
+    /// printing the item description unconditionally would append "— Payment" to every tip and
+    /// make the one case that DOES carry a reason harder to spot, not easier.
+    /// </remarks>
+    public static string For(int transactionType, string itemDescription)
+    {
+        if (string.IsNullOrWhiteSpace(itemDescription)) return string.Empty;
+
+        if (transactionType == MoneyTransactionType.Gift
+            && string.Equals(itemDescription, NoReasonGiven, StringComparison.Ordinal))
+        {
+            return string.Empty;
+        }
+
+        return itemDescription;
+    }
+}
 
 /// <summary>
 /// Decides which <c>MoneyBalanceReply</c> messages are worth telling the user about.
