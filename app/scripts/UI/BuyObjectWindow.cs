@@ -30,6 +30,9 @@ public partial class BuyObjectWindow : SLNGWindow
 
     private GridSession _session = null!;
     private uint _localId;
+    /// <summary>The object's own region, which is what the purchase is addressed to -- not the
+    /// agent's. See GridSession.SimulatorFor (BUG-NET-19).</summary>
+    private ulong _regionHandle;
     private PrimSaleType _saleType;
     private int _price;
     private string _objectName = "";
@@ -52,9 +55,10 @@ public partial class BuyObjectWindow : SLNGWindow
         margin.AddChild(_contentVBox);
     }
 
-    public void Initialize(GridSession session, uint localId, string objectName, PrimSaleType saleType, int price)
+    public void Initialize(GridSession session, ulong regionHandle, uint localId, string objectName, PrimSaleType saleType, int price)
     {
         _session = session;
+        _regionHandle = regionHandle;
         _localId = localId;
         _objectName = string.IsNullOrWhiteSpace(objectName) ? L10n.Tr("ui.buy.unnamed") : objectName;
         _saleType = saleType;
@@ -160,7 +164,7 @@ public partial class BuyObjectWindow : SLNGWindow
         if (_closing) return;
         _closing = true;
 
-        if (buy && _session.BuyObject(_localId, _saleType, _price))
+        if (buy && _session.BuyObject(_regionHandle, _localId, _saleType, _price))
         {
             Bought?.Invoke(_objectName, _price);
         }

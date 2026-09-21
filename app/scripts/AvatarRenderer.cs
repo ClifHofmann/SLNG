@@ -5059,6 +5059,7 @@ public partial class AvatarRenderer : Node3D
         if (Diagnostics.Enabled) GD.Print($"[HUD] clicked entity {entityId:N} (LocalId {entity.LocalId}) face={hitFaceIndex} uv=({hitUvSl.X:0.###}, {hitUvSl.Y:0.###}){where}{how}");
 
         _ = _session.ClickObjectAsync(
+            entity.RegionHandle,
             entity.LocalId,
             faceIndex: hitFaceIndex,
             position: hitPosSl,

@@ -684,9 +684,9 @@ namespace SLNG.App.UI
         {
             Visible = false;
 
-            if (_session != null && _currentLocalId != 0)
+            if (_session != null && _currentEntity != null && _currentLocalId != 0)
             {
-                _session.DeselectObject(_currentLocalId);
+                _session.DeselectObject(_currentEntity.RegionHandle, _currentLocalId);
             }
             // Only this window's own entity. Everything else in the selection belongs to the
             // controller, which clears it from EndEditSession when Closed fires (FEAT-UI-05).

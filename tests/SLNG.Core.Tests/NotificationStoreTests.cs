@@ -222,4 +222,138 @@ public class NotificationStoreTests
 
         Assert.Equal(1, raised);
     }
+
+    // ---- BUG-UI-12: entries that still have a decision behind them ---------------------------
+
+    [Fact]
+    public void AnEntryCarriesItsActionKey()
+    {
+        var store = new NotificationStore();
+        var key = Guid.NewGuid();
+
+        var entry = store.Add(NotificationKind.Group, Alice, "invited you", actionKey: key);
+
+        Assert.Equal(key, entry.ActionKey);
+        Assert.Equal(key, store.Entries[0].ActionKey);
+    }
+
+    [Fact]
+    public void AnEntryWithoutAnActionHasAnEmptyKey()
+    {
+        // The default, and the one that matters: most notifications are records, not questions,
+        // and the window keys the "open" button off exactly this.
+        var store = new NotificationStore();
+
+        var entry = store.Add(NotificationKind.Transaction, Alice, "paid you");
+
+        Assert.Equal(Guid.Empty, entry.ActionKey);
+    }
+
+    [Fact]
+    public void CompletingAnActionClearsTheWayBackButKeepsTheEntry()
+    {
+        // The whole point: the record of "you were invited and joined" is worth keeping, but the
+        // button must go -- the simulator will not take a second answer.
+        var store = new NotificationStore();
+        var key = Guid.NewGuid();
+        store.Add(NotificationKind.Group, Alice, "invited you", actionKey: key);
+
+        int changed = store.CompleteAction(key, "invited you -- joined.");
+
+        Assert.Equal(1, changed);
+        Assert.Single(store.Entries);
+        Assert.Equal(Guid.Empty, store.Entries[0].ActionKey);
+        Assert.Equal("invited you -- joined.", store.Entries[0].Text);
+    }
+
+    [Fact]
+    public void CompletingWithoutNewTextLeavesTheTextAlone()
+    {
+        // Used at session teardown, where the answer was never given and there is nothing new to
+        // say -- only the way back has to go.
+        var store = new NotificationStore();
+        var key = Guid.NewGuid();
+        store.Add(NotificationKind.Group, Alice, "invited you", actionKey: key);
+
+        store.CompleteAction(key);
+
+        Assert.Equal("invited you", store.Entries[0].Text);
+        Assert.Equal(Guid.Empty, store.Entries[0].ActionKey);
+    }
+
+    [Fact]
+    public void CompletingAnEmptyKeyTouchesNothing()
+    {
+        // A caller that lost track of its key must not be able to strip the action off every
+        // entry that never had one -- which is what matching Guid.Empty would do.
+        var store = new NotificationStore();
+        var live = Guid.NewGuid();
+        store.Add(NotificationKind.Transaction, Alice, "paid you");
+        store.Add(NotificationKind.Group, Alice, "invited you", actionKey: live);
+
+        int changed = store.CompleteAction(Guid.Empty);
+
+        Assert.Equal(0, changed);
+        Assert.Equal(live, store.Entries[0].ActionKey);
+    }
+
+    [Fact]
+    public void CompletingTwiceChangesNothingTheSecondTime()
+    {
+        var store = new NotificationStore();
+        var key = Guid.NewGuid();
+        store.Add(NotificationKind.Group, Alice, "invited you", actionKey: key);
+
+        Assert.Equal(1, store.CompleteAction(key, "joined"));
+        Assert.Equal(0, store.CompleteAction(key, "joined again"));
+        Assert.Equal("joined", store.Entries[0].Text);
+    }
+
+    [Fact]
+    public void CompletingAnActionRaisesChangedOnlyWhenSomethingChanged()
+    {
+        var store = new NotificationStore();
+        var key = Guid.NewGuid();
+        store.Add(NotificationKind.Group, Alice, "invited you", actionKey: key);
+
+        int raised = 0;
+        store.Changed += (_, _) => raised++;
+
+        store.CompleteAction(key);
+        Assert.Equal(1, raised);
+
+        store.CompleteAction(key);
+        Assert.Equal(1, raised);
+    }
+
+    [Fact]
+    public void CompletingAnActionDoesNotRaiseAdded()
+    {
+        // Otherwise answering an invitation would pop a toast announcing it all over again.
+        var store = new NotificationStore();
+        var key = Guid.NewGuid();
+        store.Add(NotificationKind.Group, Alice, "invited you", actionKey: key);
+
+        int added = 0;
+        store.Added += (_, _) => added++;
+
+        store.CompleteAction(key, "joined");
+
+        Assert.Equal(0, added);
+    }
+
+    [Fact]
+    public void CompletingAnActionDoesNotMarkTheEntryRead()
+    {
+        // Answering from the window is not the same as having seen the tab it sits in, and the
+        // badge counts the latter.
+        var store = new NotificationStore();
+        var key = Guid.NewGuid();
+        store.Add(NotificationKind.Group, Alice, "invited you", actionKey: key);
+
+        store.CompleteAction(key, "joined");
+
+        Assert.False(store.Entries[0].Read);
+        Assert.Equal(1, store.UnreadOf(NotificationKind.Group));
+    }
 }

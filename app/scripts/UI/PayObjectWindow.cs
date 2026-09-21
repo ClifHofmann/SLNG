@@ -20,11 +20,17 @@ namespace SLNG.App.UI;
 public partial class PayObjectWindow : PayWindowBase
 {
     private Guid _objectId;
+    /// <summary>The object's own region and local id -- the pay-price question is addressed to the
+    /// region the object is in, not the one the agent stands in (BUG-NET-19).</summary>
+    private ulong _regionHandle;
+    private uint _localId;
 
     protected override string TitleKey => "ui.pay.title";
 
-    public void Initialize(GridSession session, Guid objectId, string objectName)
+    public void Initialize(GridSession session, ulong regionHandle, uint localId, Guid objectId, string objectName)
     {
+        _regionHandle = regionHandle;
+        _localId = localId;
         _objectId = objectId;
         Build(session, objectName);
     }
@@ -35,7 +41,7 @@ public partial class PayObjectWindow : PayWindowBase
     protected override void AfterBuild()
     {
         Session.PayPriceReceived += OnPayPriceReceived;
-        Session.RequestPayPrice(_objectId);
+        Session.RequestPayPrice(_regionHandle, _localId, _objectId);
     }
 
     protected override void BeforeClose() => Session.PayPriceReceived -= OnPayPriceReceived;

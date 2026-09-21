@@ -334,7 +334,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.51-alpha";
+    public const string AppVersion = "v0.24.54-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -930,6 +930,12 @@ public partial class Boot : Control
         _notificationWindow = new SLNG.App.UI.NotificationWindow { Name = "NotificationWindow" };
         hudLayer.AddChild(_notificationWindow);
         _notificationWindow.OnOpenProfileRequested = (id, n) => OpenUserProfileWindow(hudLayer, id, n);
+        // BUG-UI-12: the way back to a decision the user closed without answering. The window
+        // hands back only the opaque key, so it never learns what kind of prompt it re-opens.
+        _notificationWindow.ActionRequested += key =>
+        {
+            if (_notificationActions.TryGetValue(key, out var reopen)) reopen();
+        };
         _notificationWindow.Initialize(_notifications);
 
         _notificationToasts = new SLNG.App.UI.NotificationToastOverlay { Name = "NotificationToasts" };
@@ -1109,7 +1115,7 @@ public partial class Boot : Control
         win.Closed += () => _payWindow = null;
         // See ShowPayAvatarWindow: the visible line is the simulator's, not ours.
         win.Paid += (name, amount) => SLNG.App.Logger.Info($"[Pay] sent L$ {amount} to object '{name}'");
-        win.Initialize(_session, meta.Id, meta.Name);
+        win.Initialize(_session, entity.RegionHandle, entity.LocalId, meta.Id, meta.Name);
         _payWindow = win;
     }
 
@@ -1157,7 +1163,7 @@ public partial class Boot : Control
         win.Closed += () => _buyWindow = null;
         win.Bought += (name, price) =>
             LogMessage($"[color=#f0d060][L$] {SLNG.App.UI.L10n.TrFormat("ui.buy.sent", name, $"{price:N0}")}[/color]");
-        win.Initialize(_session, localId, meta.Name, meta.SaleType, meta.SalePrice);
+        win.Initialize(_session, entity.RegionHandle, localId, meta.Name, meta.SaleType, meta.SalePrice);
         _buyWindow = win;
     }
 
@@ -3170,6 +3176,15 @@ public partial class Boot : Control
         _groupInviteWindows.Clear();
         while (_pendingGroupInvites.TryDequeue(out _)) { }
 
+        // BUG-UI-12: every pending decision belonged to the session that carried it. Re-opening
+        // one across a relogin would send an answer the new session's simulator knows nothing
+        // about. The entries stay -- they are still a record of what happened -- but the way back
+        // to an answer goes, which is exactly what CompleteAction leaves behind.
+        foreach (var key in _notificationActions.Keys) _notifications.CompleteAction(key);
+        _notificationActions.Clear();
+        _groupInviteActionKeys.Clear();
+        _inventoryOfferActionKeys.Clear();
+
         _lastArrivalRegionShown = ""; // MVP2-3: a relogin into the same region must still toast
         _world = new SLNG.Core.ECS.World();
         _session = new GridSession();
@@ -3188,7 +3203,7 @@ public partial class Boot : Control
         // deselect path -- clicking empty space, selecting a different object, or
         // closing the edit window -- so ObjectSelectionController and ObjectEditWindow
         // don't each need to remember to notify the sim.
-        _world.EntityDeselected += (s, e) => _session?.DeselectObject(e.Entity.LocalId);
+        _world.EntityDeselected += (s, e) => _session?.DeselectObject(e.Entity.RegionHandle, e.Entity.LocalId);
 
         string cacheDir = ProjectSettings.GlobalizePath("user://cache/assets");
         _assetService = new SLNG.Assets.AssetService(_session, cacheDir);
@@ -3660,9 +3675,16 @@ public partial class Boot : Control
         // there is nothing to link a profile to. Marked as a group so the window renders it as
         // plain text rather than linking the group id to an avatar profile, which would open a
         // wrong window rather than a missing one.
+        // BUG-UI-12: an invitation is the entry with a DECISION behind it. Closing the window
+        // with the × sends nothing, so without this the invitation would be unreachable -- the
+        // entry would record that an answer was wanted and offer no way to give one.
+        var actionKey = System.Guid.NewGuid();
+        _notificationActions[actionKey] = () => ShowGroupInvitation(e);
+        _groupInviteActionKeys[e.GroupId] = actionKey;
+
         _notifications.Add(SLNG.Core.NotificationKind.Group, e.GroupId,
             SLNG.App.UI.L10n.TrFormat("ui.notifications.group_invite", e.FromName),
-            senderIsGroup: true);
+            senderIsGroup: true, actionKey: actionKey);
         _pendingGroupInvites.Enqueue(e);
     }
 
@@ -3682,10 +3704,24 @@ public partial class Boot : Control
         hudLayer.AddChild(win);
         win.CascadeIndex = _groupInviteWindows.Count % 8;
         win.Closed += () => _groupInviteWindows.Remove(e.GroupId);
+        // Only a real answer retires the action; the × leaves the invitation open on purpose.
+        win.Answered += accept => CompleteGroupInviteAction(e, accept);
         _groupInviteWindows[e.GroupId] = win;
         win.Initialize(_session, e);
 
         GD.Print($"[GroupInvite] {e.FromName} -> group {e.GroupId} fee L${e.MembershipFee}");
+    }
+
+    /// <summary>The invitation has been answered, so the entry keeps the record and loses the
+    /// button (BUG-UI-12).</summary>
+    private void CompleteGroupInviteAction(SLNG.Core.GroupInvitationEvent e, bool accept)
+    {
+        if (!_groupInviteActionKeys.Remove(e.GroupId, out var key)) return;
+        _notificationActions.Remove(key);
+
+        _notifications.CompleteAction(key, SLNG.App.UI.L10n.TrFormat(
+            accept ? "ui.notifications.group_invite_joined" : "ui.notifications.group_invite_declined",
+            e.FromName));
     }
 
     // ---- FEAT-INV-07 Phase 2: background inventory fill ----------------------------------------
@@ -3792,6 +3828,27 @@ public partial class Boot : Control
     /// resent offer raises the existing window instead of stacking a second one.</summary>
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.InventoryOfferWindow> _inventoryOfferWindows = new();
 
+    /// <summary>
+    /// BUG-UI-12: how a notification entry gets back to the prompt it is about. Keyed by the
+    /// entry's <c>ActionKey</c>; the value re-opens the window from the payload it captured.
+    /// </summary>
+    /// <remarks>
+    /// Only prompts that can be left UNANSWERED are in here. A group invitation and an inventory
+    /// offer send nothing when dismissed with the title-bar ×, so the question stays open; a
+    /// script permission request refuses on dismissal (FEAT-NET-01) and is therefore always
+    /// settled — offering to re-ask it would offer to answer something twice.
+    ///
+    /// <para>An entry keeps its place in the list once answered but loses this action, so the
+    /// record survives and the dead button does not.</para>
+    /// </remarks>
+    private readonly System.Collections.Generic.Dictionary<System.Guid, System.Action> _notificationActions = new();
+
+    /// <summary>Which notification entry belongs to which still-open prompt, so answering it can
+    /// find the entry again. Keyed by group id and by offer id respectively — the same keys the
+    /// window dictionaries use.</summary>
+    private readonly System.Collections.Generic.Dictionary<System.Guid, System.Guid> _groupInviteActionKeys = new();
+    private readonly System.Collections.Generic.Dictionary<System.Guid, System.Guid> _inventoryOfferActionKeys = new();
+
     /// <summary>Offers buffered off the network thread — same reason as the group invitations
     /// above: an InventoryOfferEvent is a plain record and so not Variant-safe for CallDeferred.
     /// </summary>
@@ -3801,9 +3858,14 @@ public partial class Boot : Control
     {
         // An OBJECT can make an offer too, and an object has no profile -- so the name is only
         // linkable when a person sent it.
+        // BUG-UI-12: same as a group invitation -- dismissing the window answers nothing.
+        var actionKey = System.Guid.NewGuid();
+        _notificationActions[actionKey] = () => ShowInventoryOffer(e);
+        _inventoryOfferActionKeys[e.OfferId] = actionKey;
+
         _notifications.Add(SLNG.Core.NotificationKind.Invitation, e.FromTask ? System.Guid.Empty : e.FromId,
             SLNG.App.UI.L10n.TrFormat("ui.notifications.inventory_offer", e.FromName, e.ItemName),
-            senderName: e.FromTask ? string.Empty : e.FromName);
+            senderName: e.FromTask ? string.Empty : e.FromName, actionKey: actionKey);
         _pendingInventoryOffers.Enqueue(e);
     }
 
@@ -3838,6 +3900,15 @@ public partial class Boot : Control
     private void OnInventoryOfferAnswered(SLNG.Core.InventoryOfferEvent e, bool accept, System.Guid? folderId)
     {
         GD.Print($"[InvOffer] {(accept ? "accepted" : "declined")} \"{e.ItemName}\" -> folder {folderId}");
+
+        // BUG-UI-12: answered, so the entry keeps the record and loses the button.
+        if (_inventoryOfferActionKeys.Remove(e.OfferId, out var actionKey))
+        {
+            _notificationActions.Remove(actionKey);
+            _notifications.CompleteAction(actionKey, SLNG.App.UI.L10n.TrFormat(
+                accept ? "ui.notifications.inventory_offer_accepted" : "ui.notifications.inventory_offer_declined",
+                e.FromName, e.ItemName));
+        }
 
         LogMessage(accept
             ? $"[color=lightgreen]{SLNG.App.UI.L10n.TrFormat("ui.inventory_offer.accepted", e.ItemName)}[/color]"

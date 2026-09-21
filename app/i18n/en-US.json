@@ -576,6 +576,11 @@
       "dismiss_all": "Close all",
       "expand": "Show more",
       "toolbar": "Notifications",
+      "open": "Open",
+      "group_invite_joined": "{0} invited you to a group — joined.",
+      "group_invite_declined": "{0} invited you to a group — declined.",
+      "inventory_offer_accepted": "{0} is offering you “{1}” — accepted.",
+      "inventory_offer_declined": "{0} is offering you “{1}” — declined.",
       "group_invite": "{0} invited you to a group.",
       "inventory_offer": "{0} is offering you “{1}”.",
       "script_permission": "“{0}” by {1} is asking for permissions."

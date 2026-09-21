@@ -887,6 +887,54 @@ public sealed partial class GridSession
         }
     }
 
+    /// <summary>
+    /// The simulator a message about an object must be addressed to: the region the OBJECT is
+    /// in, never the agent's own. Null when that region is not connected, and the caller must
+    /// then send nothing (BUG-NET-19).
+    /// </summary>
+    /// <remarks>
+    /// A local id is unique only WITHIN one simulator, and SLNG draws neighbouring regions
+    /// (BUG-NET-03), so at a border the object under the cursor routinely belongs to a different
+    /// simulator than the agent. Sending its id to <c>CurrentSim</c> has two outcomes and no
+    /// third: that simulator drops it, or -- worse -- it resolves the same id to a DIFFERENT
+    /// object and acts on that one. Both are silent, which is how this survived: "nothing
+    /// happened" reads as an object that simply does not react.
+    ///
+    /// <para>The reference viewer addresses the object's region explicitly and never the
+    /// agent's: <c>send_ObjectGrab_message</c> ends
+    /// <c>msg-&gt;sendMessage(object-&gt;getRegion()-&gt;getHost())</c> (lltoolgrab.cpp:1174), and
+    /// <c>handleHoverNonPhysical</c>'s ObjectGrabUpdate does the same.</para>
+    ///
+    /// <para>Not connected means not sent. A message to the wrong simulator is worse than no
+    /// message, because only one of the two can act on the wrong object.</para>
+    /// </remarks>
+    private Simulator? SimulatorFor(ulong regionHandle, string what, uint localId)
+    {
+        if (!_client.Network.Connected) return null;
+
+        var current = _client.Network.CurrentSim;
+        // A caller that genuinely means "wherever I am" -- an own HUD, an agent-level action --
+        // passes 0 rather than inventing a handle.
+        if (regionHandle == 0) return current;
+        if (current != null && current.Handle == regionHandle) return current;
+
+        var sim = _client.Network.FindSimulator(regionHandle);
+        if (sim == null)
+        {
+            Console.Error.WriteLine(
+                $"[Region] {what} for {localId}: object is in region {regionHandle}, which is not " +
+                $"connected -- nothing sent (addressing {current?.Name ?? "no region"} instead " +
+                "could act on a different object with the same local id)");
+            return null;
+        }
+
+        if (SLNG.Core.Diag.Verbose)
+            Console.WriteLine(
+                $"[Region] {what} for {localId}: object is in {sim.Name}, not the current region " +
+                $"{current?.Name ?? "?"} -- addressed {sim.Name}");
+        return sim;
+    }
+
     /// <summary>Touches (clicks) an object — the SL grab/de-grab pair
     /// <see cref="ObjectManager.ClickObjectAsync"/> sends 50ms apart, which is what fires
     /// touch_start/touch_end on any touch script the object carries. <paramref name="localId"/>
@@ -894,7 +942,10 @@ public sealed partial class GridSession
     /// Surface hit details are optional (all-zero if omitted, like LibreMetaverse's own
     /// no-detail overload) — a HUD button script rarely inspects them, but pass real ones (face
     /// index, hit position/normal) when available for scripts that do.</summary>
+    /// <param name="regionHandle">The region the object is in -- <c>Entity.RegionHandle</c>, not
+    /// the agent's. 0 means the agent's own region, for an own HUD or attachment.</param>
     public async System.Threading.Tasks.Task ClickObjectAsync(
+        ulong regionHandle,
         uint localId,
         int faceIndex = 0,
         System.Numerics.Vector3 position = default,
@@ -903,11 +954,11 @@ public sealed partial class GridSession
         System.Numerics.Vector3 stCoord = default,
         System.Numerics.Vector3 binormal = default)
     {
-        var sim = _client.Network.CurrentSim;
+        var sim = SimulatorFor(regionHandle, "touch", localId);
         if (sim == null)
         {
             if (SLNG.Core.Diag.Verbose)
-                Console.WriteLine($"[Touch] {localId}: no current simulator -- nothing sent");
+                Console.WriteLine($"[Touch] {localId}: no simulator to send to -- nothing sent");
             return;
         }
 
@@ -931,16 +982,18 @@ public sealed partial class GridSession
         }
     }
 
-    public void SelectObject(uint localId)
+    public void SelectObject(ulong regionHandle, uint localId)
     {
-        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
-        _client.Objects.SelectObject(_client.Network.CurrentSim, localId);
+        var sim = SimulatorFor(regionHandle, "select", localId);
+        if (sim == null) return;
+        _client.Objects.SelectObject(sim, localId);
     }
 
-    public void DeselectObject(uint localId)
+    public void DeselectObject(ulong regionHandle, uint localId)
     {
-        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
-        _client.Objects.DeselectObject(_client.Network.CurrentSim, localId);
+        var sim = SimulatorFor(regionHandle, "deselect", localId);
+        if (sim == null) return;
+        _client.Objects.DeselectObject(sim, localId);
     }
 
     /// <summary>Selects every prim of an object at once -- what the reference viewer does for any
@@ -953,26 +1006,30 @@ public sealed partial class GridSession
     /// Selecting the root alone left every other prim unselected, and a linked-set resize then
     /// visibly changed the root prim and nothing else.
     /// </remarks>
-    public void SelectObjects(System.Collections.Generic.IReadOnlyList<uint> localIds)
+    public void SelectObjects(ulong regionHandle, System.Collections.Generic.IReadOnlyList<uint> localIds)
     {
-        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
         if (localIds.Count == 0) return;
-        if (localIds.Count == 1) { SelectObject(localIds[0]); return; }
+        if (localIds.Count == 1) { SelectObject(regionHandle, localIds[0]); return; }
+
+        var sim = SimulatorFor(regionHandle, "select", localIds[0]);
+        if (sim == null) return;
 
         var ids = new uint[localIds.Count];
         for (int i = 0; i < localIds.Count; i++) ids[i] = localIds[i];
-        _client.Objects.SelectObjects(_client.Network.CurrentSim, ids);
+        _client.Objects.SelectObjects(sim, ids);
     }
 
-    public void DeselectObjects(System.Collections.Generic.IReadOnlyList<uint> localIds)
+    public void DeselectObjects(ulong regionHandle, System.Collections.Generic.IReadOnlyList<uint> localIds)
     {
-        if (!_client.Network.Connected || _client.Network.CurrentSim == null) return;
         if (localIds.Count == 0) return;
-        if (localIds.Count == 1) { DeselectObject(localIds[0]); return; }
+        if (localIds.Count == 1) { DeselectObject(regionHandle, localIds[0]); return; }
+
+        var sim = SimulatorFor(regionHandle, "deselect", localIds[0]);
+        if (sim == null) return;
 
         var ids = new uint[localIds.Count];
         for (int i = 0; i < localIds.Count; i++) ids[i] = localIds[i];
-        _client.Objects.DeselectObjects(_client.Network.CurrentSim, ids);
+        _client.Objects.DeselectObjects(sim, ids);
     }
 
     /// <summary>FEAT-UI-05: links standalone objects into one linkset.</summary>

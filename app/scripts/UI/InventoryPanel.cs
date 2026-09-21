@@ -1004,10 +1004,14 @@ public partial class InventoryPanel : SLNGWindow
         RunOnMainThread(() =>
         {
             if (!IsInstanceValid(this)) return;
+            // (-1, -1) is BUG-INV-05's readiness gate: nothing was changed, and saying so beats
+            // reporting "0 abgelegt, 0 angezogen", which reads as "the outfit was already on".
             _outfitsStatus.Text = err != null
                 ? $"Fehler: {err}"
-                : $"{r.Removed} abgelegt, {r.Worn} angezogen — Kleidung wird nach dem Rebake sichtbar.";
-            if (err == null) RefreshOutfits(); // the ✅ "getragen" marker moved
+                : r.Removed < 0
+                    ? "Deine Sachen sind noch nicht geladen — gleich nochmal versuchen."
+                    : $"{r.Removed} abgelegt, {r.Worn} angezogen — Kleidung wird nach dem Rebake sichtbar.";
+            if (err == null && r.Removed >= 0) RefreshOutfits(); // the ✅ "getragen" marker moved
         });
     }
 

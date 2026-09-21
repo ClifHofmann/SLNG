@@ -138,11 +138,14 @@ public partial class GridSession
     /// delivery lands: the Objects folder for an object, the inventory root for contents, which
     /// is the split llfloaterbuy / llfloaterbuycontents make.
     /// </remarks>
-    public bool BuyObject(uint localId, SLNG.Core.PrimSaleType saleType, int price)
+    public bool BuyObject(ulong regionHandle, uint localId, SLNG.Core.PrimSaleType saleType, int price)
     {
-        var sim = _client.Network.CurrentSim;
-        if (!_client.Network.Connected || sim == null) return false;
         if (localId == 0 || saleType == SLNG.Core.PrimSaleType.NotForSale || price < 0) return false;
+
+        // The object's region, not the agent's -- a purchase addressed to the wrong simulator
+        // either vanishes or buys whatever carries that local id over there (BUG-NET-19).
+        var sim = SimulatorFor(regionHandle, "buy", localId);
+        if (sim == null) return false;
 
         var folderType = saleType == SLNG.Core.PrimSaleType.Contents
             ? LibreMetaverse.FolderType.Root
@@ -164,10 +167,11 @@ public partial class GridSession
     /// own amounts rather than a blank field -- llSetPayPrice is how a vendor states its price,
     /// and a viewer that ignores it makes the user guess a number the script will refuse.
     /// </remarks>
-    public void RequestPayPrice(System.Guid objectId)
+    public void RequestPayPrice(ulong regionHandle, uint localId, System.Guid objectId)
     {
-        var sim = _client.Network.CurrentSim;
-        if (!_client.Network.Connected || sim == null || objectId == System.Guid.Empty) return;
+        if (objectId == System.Guid.Empty) return;
+        var sim = SimulatorFor(regionHandle, "pay price", localId);
+        if (sim == null) return;
         _client.Objects.RequestPayPrice(sim, new LibreMetaverse.UUID(objectId));
     }
 
