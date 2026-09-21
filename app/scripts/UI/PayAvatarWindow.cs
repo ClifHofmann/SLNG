@@ -26,11 +26,15 @@ public partial class PayAvatarWindow : PayWindowBase
     /// distinguish "give this person money" from the object case the same layout serves.</summary>
     protected override string? SubtitleKey => "ui.pay_avatar.subtitle";
 
+    /// <summary>A person can read a reason; an object's script cannot. Asked for in-world:
+    /// "normal kann man beim Geld senden sagen warum".</summary>
+    protected override bool OffersReason => true;
+
     public void Initialize(GridSession session, Guid agentId, string agentName)
     {
         _agentId = agentId;
         Build(session, agentName);
     }
 
-    protected override bool Send(int amount) => Session.PayAvatar(_agentId, amount);
+    protected override bool Send(int amount) => Session.PayAvatar(_agentId, amount, Reason);
 }

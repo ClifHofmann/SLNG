@@ -34,6 +34,7 @@ public abstract partial class PayWindowBase : SLNGWindow
     private SpinBox _amount = null!;
     private Label _amountLabel = null!;
     private Label? _shortLabel;
+    private LineEdit? _reason;
     private Button _payButton = null!;
     private HBoxContainer _buttonRow = null!;
     private HBoxContainer? _confirmRow;
@@ -47,6 +48,13 @@ public abstract partial class PayWindowBase : SLNGWindow
     /// <summary>A line under the name saying what kind of payment this is, as an L10n key.
     /// Null for none.</summary>
     protected virtual string? SubtitleKey => null;
+
+    /// <summary>Whether to offer a free-text reason. Only worth it where somebody can read it:
+    /// a person's client shows it beside the amount, an object's script never looks at it.</summary>
+    protected virtual bool OffersReason => false;
+
+    /// <summary>What the user typed as the reason, trimmed. Empty when not offered.</summary>
+    protected string Reason => _reason?.Text?.Trim() ?? string.Empty;
 
     /// <summary>Hands the payment to the session. Returns whether it actually went out.</summary>
     protected abstract bool Send(int amount);
@@ -142,6 +150,25 @@ public abstract partial class PayWindowBase : SLNGWindow
         };
         _amount.ValueChanged += _ => RefreshAffordable();
         _contentVBox.AddChild(_amount);
+
+        if (OffersReason)
+        {
+            var reasonLabel = new Label { Text = L10n.Tr("ui.pay.reason") };
+            reasonLabel.AddThemeFontSizeOverride("font_size", 11);
+            reasonLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
+            _contentVBox.AddChild(reasonLabel);
+
+            _reason = new LineEdit
+            {
+                PlaceholderText = L10n.Tr("ui.pay.reason_hint"),
+                // The wire field is a length-prefixed string with one byte of length, so anything
+                // past 254 would be truncated somewhere out of sight. Cut it here, where the
+                // person typing can see it happen.
+                MaxLength = 254,
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            };
+            _contentVBox.AddChild(_reason);
+        }
 
         _buttonRow = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         _buttonRow.AddThemeConstantOverride("separation", 8);

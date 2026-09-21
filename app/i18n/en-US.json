@@ -546,16 +546,24 @@
       "title": "Pay object",
       "confirm": "Pay",
       "menu": "Pay …",
-      "sent": "Paid: {0} — L$ {1}.",
       "other_amount": "Other amount",
       "confirm_large": "Send L$ {0} to {1}. This cannot be undone.",
-      "confirm_large_button": "Send L$ {0}"
+      "confirm_large_button": "Send L$ {0}",
+      "reason": "What for? (optional)",
+      "reason_hint": "e.g. rent, tip, paying you back …"
     },
     "pay_avatar": {
       "title": "Pay resident",
       "subtitle": "Send money straight to this person",
-      "menu": "Pay …",
-      "sent": "Paid {0}: L$ {1}."
+      "menu": "Pay …"
+    },
+    "money": {
+      "received": "{0} paid you L$ {1}.",
+      "received_for": "{0} paid you L$ {1} — {2}",
+      "paid": "You paid {0} L$ {1}.",
+      "paid_for": "You paid {0} L$ {1} — {2}",
+      "failed": "Payment failed: L$ {1} to {0}.",
+      "someone": "Someone"
     }
   }
 }

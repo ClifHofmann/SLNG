@@ -102,12 +102,18 @@ public sealed partial class GridSession
     /// than nothing. Refuses a non-positive amount and anything past SL's own per-transaction
     /// ceiling -- the free-entry field is where a digit too many gets typed.
     /// </remarks>
-    public bool PayAvatar(Guid agentId, int amount)
+    /// <param name="description">Why, in the payer's own words. Rides along in
+    /// <c>MoneyTransferRequest.Description</c> and is what the recipient's own client can show
+    /// beside the amount. The reference viewer sends nothing here for a person-to-person gift
+    /// (<c>give_money</c>'s <c>desc</c> defaults to empty, llviewermessage.cpp:402), so this is a
+    /// deliberate addition rather than parity: a bare "L$ 500 arrived" leaves the recipient
+    /// guessing, and the field is already on the wire.</param>
+    public bool PayAvatar(Guid agentId, int amount, string description = "")
     {
         if (agentId == Guid.Empty || !_client.Network.Connected) return false;
         if (amount <= 0 || amount > SLNG.Core.PaymentCheck.MaxAmount) return false;
 
-        _client.Self.GiveAvatarMoney(new UUID(agentId), amount);
+        _client.Self.GiveAvatarMoney(new UUID(agentId), amount, description ?? string.Empty);
         return true;
     }
 

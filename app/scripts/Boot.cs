@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.45-alpha";
+    public const string AppVersion = "v0.24.46-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1088,8 +1088,8 @@ public partial class Boot : Control
         var win = new SLNG.App.UI.PayObjectWindow();
         hudLayer.AddChild(win);
         win.Closed += () => _payWindow = null;
-        win.Paid += (name, amount) =>
-            LogMessage($"[color=#f0d060][L$] {SLNG.App.UI.L10n.TrFormat("ui.pay.sent", name, $"{amount:N0}")}[/color]");
+        // See ShowPayAvatarWindow: the visible line is the simulator's, not ours.
+        win.Paid += (name, amount) => SLNG.App.Logger.Info($"[Pay] sent L$ {amount} to object '{name}'");
         win.Initialize(_session, meta.Id, meta.Name);
         _payWindow = win;
     }
@@ -1109,8 +1109,13 @@ public partial class Boot : Control
         var win = new SLNG.App.UI.PayAvatarWindow();
         hudLayer.AddChild(win);
         win.Closed += () => _payAvatarWindow = null;
-        win.Paid += (who, amount) =>
-            LogMessage($"[color=#f0d060][L$] {SLNG.App.UI.L10n.TrFormat("ui.pay_avatar.sent", who, $"{amount:N0}")}[/color]");
+        // Deliberately NOT announced here. The line the user reads comes from the simulator's
+        // own MoneyBalanceReply (OnMoneyTransaction), which fires when the money actually MOVED --
+        // this one would fire when the request was merely sent, and the two together would report
+        // every payment twice. Same order as the reference viewer, which shows nothing locally and
+        // waits for PaymentSent. Kept behind --diag so a grid whose money module never answers is
+        // still diagnosable: a [Pay] line with no [L$] line after it is that grid.
+        win.Paid += (who, amount) => SLNG.App.Logger.Info($"[Pay] sent L$ {amount} to {who}");
         win.Initialize(_session, agentId, name);
         _payAvatarWindow = win;
     }
@@ -3207,6 +3212,10 @@ public partial class Boot : Control
         _session.AvatarPicksReceived += OnAvatarProfilePicksReceived;
         _session.AvatarPickDetailReceived += OnAvatarProfilePickDetailReceived;
         _session.AvatarClassifiedsReceived += OnAvatarProfileClassifiedsReceived;
+        // MVP5-2: money that MOVED, as opposed to the balance that changed. Without this the
+        // client says nothing at all when somebody pays you -- reported in-world as wanting
+        // "wieviel und warum". Off a network thread, hence the deferred hop in the handler.
+        _session.MoneyTransaction += OnMoneyTransaction;
         _session.NameResolved += OnProfileNameResolved;
         _session.DisplayNameResolved += OnProfileNameResolved;
         // A particle system can vanish at three separate places between the wire and the screen
@@ -3851,6 +3860,46 @@ public partial class Boot : Control
 
     private void OnAvatarProfileClassifiedsReceived(object? sender, SLNG.Core.AvatarClassifiedsEvent e)
         => EnqueueProfileWork(e.AgentId, w => w.ApplyClassifieds(e.Classifieds));
+
+    /// <summary>
+    /// Announces a payment in chat, the way the reference viewer raises PaymentReceived /
+    /// PaymentSent (llviewermessage.cpp's process_money_balance_reply_extended).
+    /// </summary>
+    /// <remarks>
+    /// The other party's name is usually already cached; when it is not, the id is asked for and
+    /// the line goes out with a neutral placeholder rather than a raw UUID or nothing at all. A
+    /// payment is worth saying late more than it is worth saying unreadably.
+    /// </remarks>
+    private void OnMoneyTransaction(object? sender, SLNG.Core.MoneyTransactionEvent e)
+    {
+        string name;
+        if (_session == null || !_session.TryGetCachedName(e.OtherPartyId, out name))
+        {
+            name = SLNG.App.UI.L10n.Tr("ui.money.someone");
+            if (e.OtherPartyIsGroup) _session?.RequestGroupName(e.OtherPartyId);
+            else _session?.RequestAvatarName(e.OtherPartyId);
+        }
+
+        string amount = $"{e.Amount:N0}";
+        bool hasReason = !string.IsNullOrWhiteSpace(e.Description);
+
+        string key = !e.Success
+            ? "ui.money.failed"
+            : e.Direction == SLNG.Core.MoneyDirection.Received
+                ? (hasReason ? "ui.money.received_for" : "ui.money.received")
+                : (hasReason ? "ui.money.paid_for" : "ui.money.paid");
+
+        string text = hasReason && e.Success
+            ? SLNG.App.UI.L10n.TrFormat(key, name, amount, e.Description)
+            : SLNG.App.UI.L10n.TrFormat(key, name, amount);
+
+        // Green for money in, the same amber as the other L$ lines for money out, red for a
+        // refusal -- the direction should be readable without parsing the sentence.
+        string colour = !e.Success ? "#e08060"
+            : e.Direction == SLNG.Core.MoneyDirection.Received ? "#70d070" : "#f0d060";
+
+        CallDeferred(MethodName.LogMessage, $"[color={colour}][L$] {text}[/color]");
+    }
 
     private void OnProfileNameResolved(object? sender, SLNG.Core.NameResolvedEvent e)
     {

@@ -39,6 +39,58 @@ public partial class GridSession
 
     private void OnMoneyBalance(object? sender, LibreMetaverse.BalanceEventArgs e) => SetBalance(e.Balance);
 
+    /// <summary>MVP5-2: money actually moved — somebody paid us, or we paid somebody.</summary>
+    /// <remarks>
+    /// Off a background thread like everything else here. Raised only for replies that describe a
+    /// real transaction: see <see cref="SLNG.Core.MoneyTransactionFilter"/> for why a plain
+    /// balance answer must not reach this.
+    /// </remarks>
+    public event EventHandler<SLNG.Core.MoneyTransactionEvent>? MoneyTransaction;
+
+    private readonly SLNG.Core.MoneyTransactionFilter _transactionFilter = new();
+
+    /// <summary>
+    /// The half of MoneyBalanceReply the session used to throw away.
+    /// </summary>
+    /// <remarks>
+    /// <c>MoneyBalance</c> carries the new figure and nothing else, so money arrived and the
+    /// client said nothing — reported in-world as wanting to see "wieviel und warum" when
+    /// somebody pays you. The reply's own TransactionInfo block has the other party, the amount,
+    /// the transaction type and the description, which is what
+    /// <c>process_money_balance_reply_extended</c> builds the viewer's PaymentReceived /
+    /// PaymentSent notifications from.
+    ///
+    /// <para>Direction is decided the viewer's way: <c>source_id == gAgentID</c> means we paid.
+    /// Not from the sign of the balance change, which says nothing when two transactions land in
+    /// the same second.</para>
+    /// </remarks>
+    private void OnMoneyBalanceReply(object? sender, LibreMetaverse.MoneyBalanceReplyEventArgs e)
+    {
+        var info = e.TransactionInfo;
+        if (info == null) return;
+
+        System.Guid source = info.SourceID.Guid;
+        System.Guid dest = info.DestID.Guid;
+
+        if (!_transactionFilter.ShouldAnnounce(e.TransactionID.Guid, source, dest)) return;
+
+        bool wePaid = info.SourceID == _client.Self.AgentID;
+        var direction = wePaid ? SLNG.Core.MoneyDirection.Paid : SLNG.Core.MoneyDirection.Received;
+
+        MoneyTransaction?.Invoke(this, new SLNG.Core.MoneyTransactionEvent(
+            e.TransactionID.Guid,
+            direction,
+            wePaid ? dest : source,
+            wePaid ? info.IsDestGroup : info.IsSourceGroup,
+            info.Amount,
+            // The reply carries a description in two places: the MoneyData one the simulator
+            // composes, and the item description from the transaction itself. Prefer the latter --
+            // it is what the payer actually wrote.
+            !string.IsNullOrWhiteSpace(info.ItemDescription) ? info.ItemDescription : (e.Description ?? string.Empty),
+            info.TransactionType,
+            e.Success));
+    }
+
     /// <summary>FEAT-ECON-02: buys a for-sale object.</summary>
     /// <param name="localId">The object's root prim.</param>
     /// <param name="saleType">What it sells, as the SIMULATOR reported it.</param>

@@ -532,10 +532,12 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Groups.CurrentGroups += OnCurrentGroups;
         _client.Self.GroupChatJoined += OnGroupChatJoined;
         _client.Self.AlertMessage += OnAlertMessage;
-        // FEAT-ECON-01. MoneyBalance rather than MoneyBalanceReply: the reply carries a whole
-        // transaction record (description, meters credit) that nothing here consumes yet, and
-        // both are raised from the same packet.
+        // FEAT-ECON-01 takes the bare figure from MoneyBalance; MVP5-2 takes the transaction
+        // record from MoneyBalanceReply, which is where the other party, the amount and the
+        // reason live. Both are raised from the same packet, so subscribing to both costs
+        // nothing and keeps "what is my balance" separate from "somebody paid you".
         _client.Self.MoneyBalance += OnMoneyBalance;
+        _client.Self.MoneyBalanceReply += OnMoneyBalanceReply;
         _client.Objects.PayPriceReply += OnPayPriceReply;
         _client.Objects.KillObject += OnKillObject;
         _client.Objects.KillObjects += OnKillObjects;
@@ -660,6 +662,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Friends.FriendOffline -= OnFriendOffline;
         _client.Self.IM -= OnInstantMessage;
         _client.Self.ScriptDialog -= OnScriptDialog;
+        _client.Self.MoneyBalanceReply -= OnMoneyBalanceReply;
         _client.Avatars.AvatarPropertiesReply -= OnAvatarPropertiesReply;
         _client.Avatars.AvatarInterestsReply -= OnAvatarInterestsReply;
         _client.Avatars.AvatarGroupsReply -= OnAvatarGroupsReply;

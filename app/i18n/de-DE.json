@@ -546,16 +546,24 @@
       "title": "Objekt bezahlen",
       "confirm": "Bezahlen",
       "menu": "Bezahlen …",
-      "sent": "Bezahlt: {0} — L$ {1}.",
       "other_amount": "Anderer Betrag",
       "confirm_large": "L$ {0} an {1} senden. Das lässt sich nicht rückgängig machen.",
-      "confirm_large_button": "L$ {0} senden"
+      "confirm_large_button": "L$ {0} senden",
+      "reason": "Wofür? (optional)",
+      "reason_hint": "z. B. Miete, Trinkgeld, Rückzahlung …"
     },
     "pay_avatar": {
       "title": "Person bezahlen",
       "subtitle": "Geld direkt an diese Person senden",
-      "menu": "Bezahlen …",
-      "sent": "An {0} gezahlt: L$ {1}."
+      "menu": "Bezahlen …"
+    },
+    "money": {
+      "received": "{0} hat dir L$ {1} gezahlt.",
+      "received_for": "{0} hat dir L$ {1} gezahlt — {2}",
+      "paid": "Du hast {0} L$ {1} gezahlt.",
+      "paid_for": "Du hast {0} L$ {1} gezahlt — {2}",
+      "failed": "Zahlung fehlgeschlagen: L$ {1} an {0}.",
+      "someone": "Jemand"
     }
   }
 }
