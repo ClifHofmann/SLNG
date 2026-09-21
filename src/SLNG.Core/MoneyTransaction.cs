@@ -11,6 +11,19 @@ public enum MoneyDirection
 
     /// <summary>We paid somebody.</summary>
     Paid,
+
+    /// <summary>
+    /// Money moved and the simulator described it only in words.
+    /// </summary>
+    /// <remarks>
+    /// Not a defensive default: a grid that fills no TransactionInfo block still fills the
+    /// reply's plain Description, and the reference viewer prints exactly that as a system
+    /// message rather than dropping it ("Only old dev grids will not supply the TransactionInfo
+    /// block, so we can just use the hard-coded English string" — llviewermessage.cpp:4558).
+    /// Measured live on OpenSim: money arrived and nothing was said, because the parties were
+    /// both empty and the transaction was taken for a plain balance answer.
+    /// </remarks>
+    Unknown,
 }
 
 /// <summary>
@@ -65,10 +78,14 @@ public sealed class MoneyTransactionFilter
     /// Stateful on purpose — asking twice about the same id answers true then false, which is the
     /// whole point. Call it once per reply.
     /// </remarks>
-    public bool ShouldAnnounce(Guid transactionId, Guid sourceId, Guid destId)
+    /// <param name="hasDescription">Whether the reply said anything in words. A reply with no
+    /// parties AND nothing to say is a balance answer; one with no parties but a description is a
+    /// grid that does not fill TransactionInfo, and its words are all there is.</param>
+    public bool ShouldAnnounce(Guid transactionId, Guid sourceId, Guid destId, bool hasDescription = false)
     {
-        // Nobody on either end: an answer to "what is my balance", not a payment.
-        if (sourceId == Guid.Empty && destId == Guid.Empty) return false;
+        // Nobody on either end and nothing to say: an answer to "what is my balance", not a
+        // payment.
+        if (sourceId == Guid.Empty && destId == Guid.Empty && !hasDescription) return false;
 
         // A zero transaction id cannot be deduplicated, so it is never remembered — but it is
         // still a transaction, and suppressing it would be worse than repeating it.

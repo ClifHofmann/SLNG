@@ -69,6 +69,12 @@ public partial class Boot : Control
     private SLNG.Core.WorldSimulation _worldSimulation = null!;
     private SLNG.App.UI.DialogQueueManager? _dialogQueueManager;
 
+    /// <summary>FEAT-UI-33: the record of what arrived while you were not looking. Created once
+    /// and kept for the session; the window is a view of it, not its owner, so a closed window
+    /// does not lose notifications.</summary>
+    private readonly SLNG.Core.NotificationStore _notifications = new();
+    private SLNG.App.UI.NotificationWindow? _notificationWindow;
+
     /// <summary>Objects already reported by <see cref="OnParticleWireDiagnostic"/>, so a busy
     /// region logs one line per emitter instead of one per update. Touched from network threads.</summary>
     private readonly HashSet<uint> _particleSourcesLogged = new();
@@ -327,7 +333,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.46-alpha";
+    public const string AppVersion = "v0.24.47-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -920,6 +926,10 @@ public partial class Boot : Control
             _session.CreatePrim(type, RenderConfig.FromGodot(_session.CurrentRegionHandle, godotPos));
         };
 
+        _notificationWindow = new SLNG.App.UI.NotificationWindow { Name = "NotificationWindow" };
+        hudLayer.AddChild(_notificationWindow);
+        _notificationWindow.Initialize(_notifications);
+
         _snapshotWindow = new SLNG.App.UI.SnapshotWindow { Name = "SnapshotWindow" };
         hudLayer.AddChild(_snapshotWindow);
         _snapshotWindow.Initialize(hudLayer);
@@ -1341,6 +1351,9 @@ public partial class Boot : Control
             new("worldmap", "World Map", "map",
                 () => ActivateLauncher(_worldMapWindow, _worldMapWindow.Toggle),
                 () => _worldMapWindow.Visible),
+            new("notifications", SLNG.App.UI.L10n.Tr("ui.notifications.toolbar"), "notifications",
+                () => { var win = _notificationWindow; if (win != null) ActivateLauncher(win, win.Toggle); },
+                () => _notificationWindow?.Visible ?? false),
         };
         _toolbarItems = toolbarItems;
 
@@ -3238,7 +3251,11 @@ public partial class Boot : Control
         _session.LoginProgress += OnLoginProgressStage;
         // Surfaces sim-side rejections that otherwise fail silently, e.g. "Object physics
         // cancelled because it exceeds limits for physical prims" when a Physical toggle is denied.
-        _session.AlertMessageReceived += (s, e) => CallDeferred(MethodName.LogMessage, $"[color=orange][Alert] {e.Message}[/color]");
+        _session.AlertMessageReceived += (s, e) =>
+        {
+            CallDeferred(MethodName.LogMessage, $"[color=orange][Alert] {e.Message}[/color]");
+            _notifications.Add(SLNG.Core.NotificationKind.System, System.Guid.Empty, e.Message);
+        };
         // Recenter the floating origin every time we actually move to a new region -- login AND
         // every subsequent teleport/region-crossing (GridSession.RegionConnected only fires for the
         // primary sim, not neighbor sims connected near a border). Previously this was a single
@@ -3625,7 +3642,13 @@ public partial class Boot : Control
     private readonly System.Collections.Concurrent.ConcurrentQueue<SLNG.Core.GroupInvitationEvent> _pendingGroupInvites = new();
 
     private void OnGroupInvitationReceived(object? sender, SLNG.Core.GroupInvitationEvent e)
-        => _pendingGroupInvites.Enqueue(e);
+    {
+        // Recorded as well as shown: a one-shot window that was closed or missed used to leave
+        // nothing at all behind (FEAT-UI-33).
+        _notifications.Add(SLNG.Core.NotificationKind.Group, e.GroupId,
+            SLNG.App.UI.L10n.TrFormat("ui.notifications.group_invite", e.FromName));
+        _pendingGroupInvites.Enqueue(e);
+    }
 
     private void ShowGroupInvitation(SLNG.Core.GroupInvitationEvent e)
     {
@@ -3719,7 +3742,11 @@ public partial class Boot : Control
     private readonly System.Collections.Concurrent.ConcurrentQueue<SLNG.Core.ScriptPermissionRequestEvent> _pendingScriptPermissions = new();
 
     private void OnScriptPermissionRequested(object? sender, SLNG.Core.ScriptPermissionRequestEvent e)
-        => _pendingScriptPermissions.Enqueue(e);
+    {
+        _notifications.Add(SLNG.Core.NotificationKind.System, System.Guid.Empty,
+            SLNG.App.UI.L10n.TrFormat("ui.notifications.script_permission", e.ObjectName, e.ObjectOwner));
+        _pendingScriptPermissions.Enqueue(e);
+    }
 
     private void ShowScriptPermissionRequest(SLNG.Core.ScriptPermissionRequestEvent e)
     {
@@ -3755,7 +3782,11 @@ public partial class Boot : Control
     private readonly System.Collections.Concurrent.ConcurrentQueue<SLNG.Core.InventoryOfferEvent> _pendingInventoryOffers = new();
 
     private void OnInventoryOfferReceived(object? sender, SLNG.Core.InventoryOfferEvent e)
-        => _pendingInventoryOffers.Enqueue(e);
+    {
+        _notifications.Add(SLNG.Core.NotificationKind.Invitation, System.Guid.Empty,
+            SLNG.App.UI.L10n.TrFormat("ui.notifications.inventory_offer", e.FromName, e.ItemName));
+        _pendingInventoryOffers.Enqueue(e);
+    }
 
     private void ShowInventoryOffer(SLNG.Core.InventoryOfferEvent e)
     {
@@ -3883,15 +3914,27 @@ public partial class Boot : Control
         string amount = $"{e.Amount:N0}";
         bool hasReason = !string.IsNullOrWhiteSpace(e.Description);
 
-        string key = !e.Success
-            ? "ui.money.failed"
-            : e.Direction == SLNG.Core.MoneyDirection.Received
-                ? (hasReason ? "ui.money.received_for" : "ui.money.received")
-                : (hasReason ? "ui.money.paid_for" : "ui.money.paid");
+        string text;
+        if (e.Direction == SLNG.Core.MoneyDirection.Unknown)
+        {
+            // The grid filled no TransactionInfo, so its own sentence is the whole story --
+            // printed verbatim rather than wrapped in wording that would claim more than it says
+            // (which way the money went, and who the other party was, are exactly what is
+            // missing). Same branch the reference viewer takes.
+            text = e.Description;
+        }
+        else
+        {
+            string key = !e.Success
+                ? "ui.money.failed"
+                : e.Direction == SLNG.Core.MoneyDirection.Received
+                    ? (hasReason ? "ui.money.received_for" : "ui.money.received")
+                    : (hasReason ? "ui.money.paid_for" : "ui.money.paid");
 
-        string text = hasReason && e.Success
-            ? SLNG.App.UI.L10n.TrFormat(key, name, amount, e.Description)
-            : SLNG.App.UI.L10n.TrFormat(key, name, amount);
+            text = hasReason && e.Success
+                ? SLNG.App.UI.L10n.TrFormat(key, name, amount, e.Description)
+                : SLNG.App.UI.L10n.TrFormat(key, name, amount);
+        }
 
         // Green for money in, the same amber as the other L$ lines for money out, red for a
         // refusal -- the direction should be readable without parsing the sentence.
@@ -3899,10 +3942,19 @@ public partial class Boot : Control
             : e.Direction == SLNG.Core.MoneyDirection.Received ? "#70d070" : "#f0d060";
 
         CallDeferred(MethodName.LogMessage, $"[color={colour}][L$] {text}[/color]");
+
+        // FEAT-UI-33: and into the record, where it can still be found tomorrow. The chat line is
+        // the glance; this is the ledger.
+        _notifications.Add(SLNG.Core.NotificationKind.Transaction, e.OtherPartyId, text);
     }
 
     private void OnProfileNameResolved(object? sender, SLNG.Core.NameResolvedEvent e)
     {
+        // A payment is recorded the moment it lands, usually before the payer's name has
+        // resolved. Without this the entry keeps saying "Jemand hat dir L$ 2200 bezahlt" -- the
+        // one thing it exists to answer.
+        _notifications.ResolveSender(e.Id, SLNG.App.UI.L10n.Tr("ui.money.someone"), e.Name);
+
         if (_openProfileWindows == 0) return; // network thread -- see _openProfileWindows
         var id = e.Id;
         var name = e.Name;

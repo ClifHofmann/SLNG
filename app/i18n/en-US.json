@@ -564,6 +564,21 @@
       "paid_for": "You paid {0} L$ {1} — {2}",
       "failed": "Payment failed: L$ {1} to {0}.",
       "someone": "Someone"
+    },
+    "notifications": {
+      "title": "Notifications",
+      "tab_system": "System",
+      "tab_transactions": "Transactions",
+      "tab_invitations": "Invitations",
+      "tab_group": "Group",
+      "empty": "Nothing new.",
+      "dismiss": "Dismiss",
+      "dismiss_all": "Close all",
+      "expand": "Show more",
+      "toolbar": "Notifications",
+      "group_invite": "{0} invited you to a group.",
+      "inventory_offer": "{0} is offering you “{1}”.",
+      "script_permission": "“{0}” by {1} is asking for permissions."
     }
   }
 }

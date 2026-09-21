@@ -33,6 +33,18 @@ public class MoneyTransactionFilterTests
     }
 
     [Fact]
+    public void AGridThatFillsNoPartiesButSaysSomethingIsStillAnnounced()
+    {
+        // Measured live on OpenSim: money arrived and the client said nothing, because the reply
+        // named neither party and was taken for a plain balance answer. The reference viewer has
+        // a branch for exactly this -- it prints the reply's own sentence verbatim
+        // (llviewermessage.cpp:4558) -- and without it such a grid is simply silent about money.
+        var filter = new MoneyTransactionFilter();
+
+        Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Guid.Empty, Guid.Empty, hasDescription: true));
+    }
+
+    [Fact]
     public void OnlyOneEndIsEnoughToBeATransaction()
     {
         // A fee to the system has a payer and no payee -- still something the user paid.

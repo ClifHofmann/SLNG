@@ -564,6 +564,21 @@
       "paid_for": "Du hast {0} L$ {1} gezahlt — {2}",
       "failed": "Zahlung fehlgeschlagen: L$ {1} an {0}.",
       "someone": "Jemand"
+    },
+    "notifications": {
+      "title": "Benachrichtigungen",
+      "tab_system": "System",
+      "tab_transactions": "Transaktionen",
+      "tab_invitations": "Einladungen",
+      "tab_group": "Gruppe",
+      "empty": "Nichts Neues.",
+      "dismiss": "Wegräumen",
+      "dismiss_all": "Alle schließen",
+      "expand": "Mehr anzeigen",
+      "toolbar": "Benachrichtigungen",
+      "group_invite": "{0} hat dich in eine Gruppe eingeladen.",
+      "inventory_offer": "{0} bietet dir „{1}“ an.",
+      "script_permission": "„{0}“ von {1} bittet um Berechtigungen."
     }
   }
 }

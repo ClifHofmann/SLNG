@@ -67,27 +67,50 @@ public partial class GridSession
     private void OnMoneyBalanceReply(object? sender, LibreMetaverse.MoneyBalanceReplyEventArgs e)
     {
         var info = e.TransactionInfo;
-        if (info == null) return;
+        System.Guid source = info?.SourceID.Guid ?? System.Guid.Empty;
+        System.Guid dest = info?.DestID.Guid ?? System.Guid.Empty;
 
-        System.Guid source = info.SourceID.Guid;
-        System.Guid dest = info.DestID.Guid;
+        // The reply carries a description in two places: the MoneyData one the simulator composes
+        // into a sentence, and the item description from the transaction itself. Prefer the
+        // latter -- it is what the payer actually wrote -- and fall back to the sentence.
+        string itemDescription = info?.ItemDescription ?? string.Empty;
+        string replyDescription = e.Description ?? string.Empty;
+        string description = !string.IsNullOrWhiteSpace(itemDescription) ? itemDescription : replyDescription;
 
-        if (!_transactionFilter.ShouldAnnounce(e.TransactionID.Guid, source, dest)) return;
+        bool hasDescription = !string.IsNullOrWhiteSpace(description);
 
-        bool wePaid = info.SourceID == _client.Self.AgentID;
+        if (SLNG.Core.Diag.Verbose)
+        {
+            Console.Error.WriteLine($"[Money] reply tx={e.TransactionID} ok={e.Success} " +
+                $"balance={e.Balance} source={source} dest={dest} amount={info?.Amount ?? 0} " +
+                $"type={info?.TransactionType ?? 0} item='{itemDescription}' desc='{replyDescription}'");
+        }
+
+        if (!_transactionFilter.ShouldAnnounce(e.TransactionID.Guid, source, dest, hasDescription)) return;
+
+        // No parties at all, but the grid said something: it does not fill TransactionInfo, and
+        // its sentence is the whole story. The reference viewer prints it verbatim as a system
+        // message rather than dropping it (llviewermessage.cpp:4558).
+        if (source == System.Guid.Empty && dest == System.Guid.Empty)
+        {
+            MoneyTransaction?.Invoke(this, new SLNG.Core.MoneyTransactionEvent(
+                e.TransactionID.Guid, SLNG.Core.MoneyDirection.Unknown,
+                System.Guid.Empty, false, info?.Amount ?? 0, description,
+                info?.TransactionType ?? 0, e.Success));
+            return;
+        }
+
+        bool wePaid = source == _client.Self.AgentID.Guid;
         var direction = wePaid ? SLNG.Core.MoneyDirection.Paid : SLNG.Core.MoneyDirection.Received;
 
         MoneyTransaction?.Invoke(this, new SLNG.Core.MoneyTransactionEvent(
             e.TransactionID.Guid,
             direction,
             wePaid ? dest : source,
-            wePaid ? info.IsDestGroup : info.IsSourceGroup,
-            info.Amount,
-            // The reply carries a description in two places: the MoneyData one the simulator
-            // composes, and the item description from the transaction itself. Prefer the latter --
-            // it is what the payer actually wrote.
-            !string.IsNullOrWhiteSpace(info.ItemDescription) ? info.ItemDescription : (e.Description ?? string.Empty),
-            info.TransactionType,
+            wePaid ? (info?.IsDestGroup ?? false) : (info?.IsSourceGroup ?? false),
+            info?.Amount ?? 0,
+            description,
+            info?.TransactionType ?? 0,
             e.Success));
     }
 
