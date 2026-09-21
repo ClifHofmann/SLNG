@@ -815,7 +815,7 @@ public class AssetService
     {
         if (isSculpt || screenPixelArea <= 0f) return 0;
         if (!TryReadJ2kSize(bytes, out int w, out int h, out _)) return 0;
-        return TextureLod.ReduceFactorFor(TextureLod.DiscardLevelFor(w, h, screenPixelArea));
+        return TextureLod.ResolutionStepsFor(TextureLod.DiscardLevelFor(w, h, screenPixelArea));
     }
 
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false, float screenPixelArea = 0f)
@@ -1434,15 +1434,207 @@ public class AssetService
         return false;
     }
 
-    /// <param name="reduceFactor">JPEG-2000 decoder reduce level -- see <see cref="TextureLod"/>.
-    /// 0 decodes the full image. This is a DECODER option on a complete codestream (OpenJPEG's
-    /// cp_reduce, reached through Magick's <c>jp2:reduce-factor</c> define); it is unrelated to the
-    /// disabled network-side truncation, which fails because Magick will not read a codestream that
-    /// ends early. Ignored for sculpt maps, whose samples are vertex coordinates -- decoding those
-    /// at a lower resolution would silently drop vertices.</param>
-    internal static TextureData? DecodeTexture(byte[] bytes, bool isSculpt = false, int reduceFactor = 0)
+    /// <summary>
+    /// The number of wavelet decomposition levels the codestream was encoded with, from its COD
+    /// marker. False when it cannot be read.
+    /// </summary>
+    /// <remarks>
+    /// Needed because a J2K decoder's resolution parameter is ABSOLUTE - 0 is the smallest
+    /// available image and the full one is at <c>levels</c>. "Two steps smaller" is therefore
+    /// <c>levels - 2</c>, which cannot be computed without this number.
+    ///
+    /// <para>Same bounded, structurally-validated scan as <see cref="TryReadJ2kSize"/>, and for
+    /// the same reason: SL serves raw codestreams while the tests encode JP2-boxed files, and the
+    /// marker sits inside the codestream either way.</para>
+    /// </remarks>
+    internal static bool TryReadJ2kDecompositionLevels(byte[] bytes, out int levels)
     {
-        if (isSculpt) reduceFactor = 0;
+        levels = -1;
+        if (bytes == null || bytes.Length < 16) return false;
+
+        int limit = System.Math.Min(bytes.Length - 14, 8192);
+        for (int i = 0; i < limit; i++)
+        {
+            if (bytes[i] != 0xFF || bytes[i + 1] != 0x52) continue; // COD
+
+            // Byte-for-byte from the marker (ITU-T T.800 Table A-12), because an off-by-one here
+            // decodes one resolution level too small and looks exactly like a working reduction:
+            //   i+0..1  FF 52      the marker
+            //   i+2..3  Lcod       segment length
+            //   i+4     Scod       coding style
+            //   i+5     SGcod      progression order
+            //   i+6..7  SGcod      number of layers
+            //   i+8     SGcod      multiple component transform
+            //   i+9     SPcod      number of decomposition levels   <- this one
+            int lcod = (bytes[i + 2] << 8) | bytes[i + 3];
+            // 12 for the usual case; up to 12 + levels + 1 when precinct sizes are present.
+            if (lcod < 12 || lcod > 45) continue;
+
+            int candidate = bytes[i + 9];
+            // T.800 allows 0..32; anything else means this was not really a COD marker.
+            if (candidate > 32) continue;
+
+            levels = candidate;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Decodes a texture at a lower resolution, whole.
+    /// </summary>
+    /// <remarks>
+    /// CoreJ2K rather than Magick.NET, and that is the entire point of this method.
+    /// <b>Magick's <c>jp2:reduce-factor=N</c> does not return the whole image at a lower
+    /// resolution - it returns the top-left <c>1/2^N</c> region downscaled by <c>2^N</c>.</b>
+    /// Measured on three independent complete cached assets (BUG-RENDER-36): against the full
+    /// decode, "whole image, downscaled" differs by 62-71 per channel while "top-left quadrant"
+    /// differs by 1.4-4.1. Its read-size hint crops as well - at half size it is an exact 1:1
+    /// crop. In-world that was a wall of vendor panels showing a zoomed close-up with the product
+    /// name cut off, righting itself only once you flew near enough to force a full re-decode.
+    ///
+    /// <para>CoreJ2K's <c>res</c> is a real resolution-level reconstruction: the same measurement
+    /// puts it 1.7-7.4 from the downscaled full decode, i.e. simply softer. 512 squared costs
+    /// 75 ms against Magick's broken 63-92 ms, so correctness here is nearly free - whereas
+    /// decoding in full and downscaling ourselves measured 460-760 ms, 7-30x more.</para>
+    ///
+    /// <para>Returns null rather than throwing on anything unexpected; the caller then decodes in
+    /// full, which is always correct and only slower.</para>
+    /// </remarks>
+    private static TextureData? TryDecodeReduced(byte[] bytes, int steps)
+    {
+        if (steps <= 0) return null;
+        if (!TryReadJ2kSize(bytes, out int fullWidth, out int fullHeight, out _)) return null;
+        if (!TryReadJ2kDecompositionLevels(bytes, out int levels) || levels <= 0) return null;
+
+        // Absolute level, counted from 0 = smallest. Asking for more steps than the codestream has
+        // decompositions is not an error, it just cannot go that small.
+        int res = levels - steps;
+        if (res < 0) return null;
+
+        int expectedWidth = TextureLod.ReducedDimension(fullWidth, steps);
+        int expectedHeight = TextureLod.ReducedDimension(fullHeight, steps);
+
+        try
+        {
+            SkiaSharp.SKBitmap? bitmap;
+            lock (_coreJ2kLogLock)
+            {
+                var originalOut = Console.Out;
+                var originalError = Console.Error;
+                try
+                {
+                    Console.SetOut(System.IO.TextWriter.Null);
+                    Console.SetError(System.IO.TextWriter.Null);
+                    bitmap = CoreJ2K.J2kImage.DecodeToImage<SkiaSharp.SKBitmap>(bytes, DecoderParameters(res));
+                }
+                finally
+                {
+                    Console.SetOut(originalOut);
+                    Console.SetError(originalError);
+                }
+            }
+
+            if (bitmap == null) return null;
+            using (bitmap)
+            {
+                if (bitmap.Width <= 0 || bitmap.Height <= 0) return null;
+
+                // A wrong size means the decoder did something other than what was asked. Fall
+                // through to a full decode rather than hand the renderer a mystery - this is the
+                // exact class of silent wrongness the whole change exists to remove.
+                if (bitmap.Width != expectedWidth || bitmap.Height != expectedHeight) return null;
+
+                byte[] rgba = ToRgba(bitmap);
+                // Not degraded: it is smaller ON PURPOSE. Flagging it would make the disk-cache
+                // path delete the .j2c that produced it, and the source size is what lets the
+                // renderer tell "decoded small deliberately" from "this IS the whole asset".
+                return new TextureData(bitmap.Width, bitmap.Height, rgba, false, fullWidth, fullHeight);
+            }
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>A decoder parameter list asking for an absolute resolution level.</summary>
+    /// <remarks>
+    /// Two traps, either of which makes CoreJ2K's resolution support look broken when it is not.
+    /// <c>GetDefaultDecoderParameterList(pinfo)</c> returns the DEFAULTS, and the decoder reads
+    /// through a list's parent chain, so it has to be handed a CHILD of them or
+    /// <c>FileBitstreamReaderAgent</c> dereferences a null default list. The parameterless
+    /// overload returns an unpopulated list that fails the same way, so the private
+    /// <c>decoder_pinfo</c> table is the only route to a usable one.
+    /// </remarks>
+    private static CoreJ2K.j2k.util.ParameterList DecoderParameters(int res)
+    {
+        var pl = new CoreJ2K.j2k.util.ParameterList(DecoderDefaults.Value);
+        pl["res"] = res.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return pl;
+    }
+
+    private static readonly Lazy<CoreJ2K.j2k.util.ParameterList> DecoderDefaults = new(() =>
+    {
+        var field = typeof(CoreJ2K.J2kImage).GetField("decoder_pinfo",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic
+            | System.Reflection.BindingFlags.Public);
+        var pinfo = (string[][]?)field?.GetValue(null);
+        // No pinfo means no usable defaults at all, and the decoder would NPE deep inside rather
+        // than tell us. Fail loudly here instead; TryDecodeReduced catches it and decodes in full.
+        if (pinfo == null) throw new InvalidOperationException("CoreJ2K decoder_pinfo is unavailable");
+        return CoreJ2K.J2kImage.GetDefaultDecoderParameterList(pinfo);
+    });
+
+    /// <summary>Copies an SKBitmap out as tightly packed RGBA, row stride and colour type handled.
+    /// Shared by the reduced path and the CoreJ2K fallback.</summary>
+    private static byte[] ToRgba(SkiaSharp.SKBitmap bitmap)
+    {
+        var rgbaBitmap = bitmap.ColorType == SkiaSharp.SKColorType.Rgba8888
+            ? bitmap
+            : bitmap.Copy(SkiaSharp.SKColorType.Rgba8888);
+        try
+        {
+            int width = bitmap.Width, height = bitmap.Height;
+            byte[] exact = new byte[width * height * 4];
+            IntPtr ptr = rgbaBitmap.GetPixels();
+            if (rgbaBitmap.RowBytes == width * 4)
+            {
+                System.Runtime.InteropServices.Marshal.Copy(ptr, exact, 0, exact.Length);
+            }
+            else
+            {
+                for (int y = 0; y < height; y++)
+                    System.Runtime.InteropServices.Marshal.Copy(ptr + y * rgbaBitmap.RowBytes, exact, y * width * 4, width * 4);
+            }
+            return exact;
+        }
+        finally
+        {
+            if (!ReferenceEquals(rgbaBitmap, bitmap)) rgbaBitmap.Dispose();
+        }
+    }
+
+    /// <param name="resolutionSteps">How many halvings of each dimension to leave out of the
+    /// reconstruction -- see <see cref="TextureLod"/>. 0 decodes the full image. This is a DECODER
+    /// option on a complete codestream; it is unrelated to the disabled network-side truncation,
+    /// which fails because Magick will not read a codestream that ends early. Ignored for sculpt
+    /// maps, whose samples are vertex coordinates -- decoding those at a lower resolution would
+    /// silently drop vertices.</param>
+    internal static TextureData? DecodeTexture(byte[] bytes, bool isSculpt = false, int resolutionSteps = 0)
+    {
+        if (isSculpt) resolutionSteps = 0;
+
+        // A reduced decode goes to CoreJ2K, NOT to Magick. Magick's jp2:reduce-factor returns the
+        // top-left region rather than the whole image -- see TryDecodeReduced for the measurement
+        // and for what it looked like in-world (BUG-RENDER-36). Anything unexpected there comes
+        // back null and falls through to the full decode below, which is correct and only slower.
+        if (resolutionSteps > 0)
+        {
+            var reduced = TryDecodeReduced(bytes, resolutionSteps);
+            if (reduced != null) return reduced;
+        }
+
         try
         {
             // Magick.NET wraps OpenJPEG. On a genuinely truncated/corrupt J2C bitstream (dropped
@@ -1470,12 +1662,6 @@ public class AssetService
             if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0x4F)
             {
                 settings.Format = ImageMagick.MagickFormat.J2c;
-            }
-            if (reduceFactor > 0)
-            {
-                // The define is registered under "jp2" for both the JP2 and raw-J2C coders -- they
-                // are the same reader in ImageMagick.
-                settings.SetDefine(ImageMagick.MagickFormat.Jp2, "reduce-factor", reduceFactor.ToString());
             }
             using var image = new ImageMagick.MagickImage(bytes, settings);
             image.Warning += (s, e) => { /* Suppress Magick.NET console spam */ };
@@ -1551,17 +1737,18 @@ public class AssetService
                 trueComponents = sizC;
             }
 
-            // A reduce-level decode is SUPPOSED to come out smaller, so the truncation check has to
-            // compare against the size the reduce factor asks for, not the codestream's full size --
-            // otherwise every reduced decode reports as a truncated thumbnail, and (worse) the disk
-            // cache path deletes the perfectly good .j2c that produced it.
-            int expectedWidth = TextureLod.ReducedDimension(trueWidth, reduceFactor);
-            int expectedHeight = TextureLod.ReducedDimension(trueHeight, reduceFactor);
+            // This path always decodes in full now -- a reduction is served by TryDecodeReduced
+            // above and never reaches here -- so the truncation check compares against the
+            // codestream's own declared size. It used to have to allow for the reduce factor, and
+            // getting that wrong made every reduced decode read as a truncated thumbnail, which
+            // also made the disk-cache path delete the perfectly good .j2c that produced it.
+            int expectedWidth = trueWidth;
+            int expectedHeight = trueHeight;
             if (trueWidth > 0 && trueHeight > 0 && (width * height < expectedWidth * expectedHeight))
             {
                 // Accept the thumbnail but mark as degraded so it isn't cached
                 Console.WriteLine($"[AssetService] Magick decoded thumbnail {width}x{height}, expected {expectedWidth}x{expectedHeight}" +
-                    (reduceFactor > 0 ? $" (reduce={reduceFactor} of {trueWidth}x{trueHeight})" : "") + ". Marked as degraded.");
+                    ". Marked as degraded.");
                 isDegraded = true;
             }
 
