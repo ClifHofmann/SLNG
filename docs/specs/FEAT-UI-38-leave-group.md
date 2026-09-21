@@ -1,4 +1,4 @@
-# Feature: FEAT-UI-22 (Leave Group & Fee Warning)
+# Feature: FEAT-UI-38 (Leave Group & Fee Warning)
 
 ## Context
 Currently, the `GroupsPanel` displays a user's joined groups, but the "Leave" (Verlassen) button is functionally just a placeholder. The user requested the ability to actually leave groups, combined with a crucial economic safety feature: a warning if the group has an enrollment fee. Leaving a paid group means the user would have to pay the fee again to rejoin, so they must be explicitly warned before confirming the departure.

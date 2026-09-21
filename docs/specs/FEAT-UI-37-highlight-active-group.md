@@ -1,4 +1,4 @@
-# Polish: FEAT-UI-21 (Highlight Active Group in Groups List)
+# Polish: FEAT-UI-37 (Highlight Active Group in Groups List)
 
 ## Context
 In the current `GroupsPanel` (implemented in `M5-3`), the list displays all joined groups equally. There is no visual indication showing which group is currently set as the "Active Group" (the one providing the active title over the avatar's head). The user requested a QoL improvement: *"das man die gruppe die aktiv ist in der Gruppenauswahl auch sieht"*.
