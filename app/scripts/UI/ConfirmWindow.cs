@@ -26,7 +26,7 @@ public partial class ConfirmWindow : SLNGWindow
     {
         base._Ready();
 
-        CustomMinimumSize = new Vector2(360, 0); // 0 -> shrink-wrap the contents
+        CustomMinimumSize = new Vector2(360, 0); // height comes from FitAndCentre
         Size = CustomMinimumSize;
         OnCloseRequested = () => Close(confirm: false);
     }
@@ -83,7 +83,7 @@ public partial class ConfirmWindow : SLNGWindow
     private void FocusCancel()
     {
         if (!IsInstanceValid(this)) return;
-        PositionWindow();
+        FitAndCentre();
         foreach (var child in GetChildren())
             if (FindCancelButton(child) is { } b) { b.GrabFocus(); return; }
     }
@@ -96,12 +96,34 @@ public partial class ConfirmWindow : SLNGWindow
         return null;
     }
 
-    private void PositionWindow()
+
+    /// <summary>Sizes the frame to exactly what its contents need, and centres it.</summary>
+    /// <remarks>
+    /// Not left to <c>Size.Y = 0</c>. A Godot <c>Control</c> does not shrink-wrap: the height it
+    /// ends up with depends on how the layout settles, and this window came out the full height of
+    /// the viewport in-world. <c>GetCombinedMinimumSize()</c> is the layout's own answer to "how
+    /// much room do these children need", which is the question being asked — the same call
+    /// <see cref="SLNGWindow"/> uses to collapse a frame to its title bar.
+    ///
+    /// <para>Deferred, because the answer is only correct once the children are in the tree and
+    /// their wrapped text has been measured. The width is clamped to the viewport too: a prompt
+    /// wider than the window it appears in has its buttons off the edge, which a narrow client
+    /// makes easy to hit.</para>
+    /// </remarks>
+    private void FitAndCentre()
     {
-        var viewportSize = GetViewport()?.GetVisibleRect().Size ?? new Vector2(1280, 720);
+        if (!IsInstanceValid(this)) return;
+
+        var viewport = GetViewport()?.GetVisibleRect().Size ?? new Vector2(1280, 720);
+        float width = Mathf.Min(CustomMinimumSize.X, Mathf.Max(220f, viewport.X - 24f));
+
+        // Width first: the height of wrapped text depends on it.
+        Size = new Vector2(width, Size.Y);
+        Size = new Vector2(width, GetCombinedMinimumSize().Y);
+
         Position = new Vector2(
-            Mathf.Max(0, (viewportSize.X - Size.X) / 2),
-            Mathf.Max(0, (viewportSize.Y - Size.Y) / 3));
+            Mathf.Max(0, (viewport.X - Size.X) / 2),
+            Mathf.Max(0, (viewport.Y - Size.Y) / 3));
     }
 
     private void Close(bool confirm)
