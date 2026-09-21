@@ -24,6 +24,11 @@ public partial class GroupInvitationWindow : SLNGWindow
     /// same pattern as <see cref="ScriptDialogWindow.Closed"/>.</summary>
     public event Action? Closed;
 
+    /// <summary>Fired with the answer when one was actually SENT, so the owner can retire the
+    /// notification entry's re-open action. Not fired for the title-bar ×, which sends nothing and
+    /// therefore leaves the invitation open (BUG-UI-12).</summary>
+    public event Action<bool>? Answered;
+
     /// <summary>Set by the owner before Initialize so several invitations cascade instead of
     /// stacking exactly on top of each other.</summary>
     public int CascadeIndex { get; set; }
@@ -132,7 +137,11 @@ public partial class GroupInvitationWindow : SLNGWindow
         if (_closing) return;
         _closing = true;
 
-        if (respond) _session.RespondToGroupInvitation(_groupId, _sessionId, accept);
+        if (respond)
+        {
+            _session.RespondToGroupInvitation(_groupId, _sessionId, accept);
+            Answered?.Invoke(accept);
+        }
 
         Closed?.Invoke();
         QueueFree();

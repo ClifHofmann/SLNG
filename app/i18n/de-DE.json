@@ -576,6 +576,11 @@
       "dismiss_all": "Alle schließen",
       "expand": "Mehr anzeigen",
       "toolbar": "Benachrichtigungen",
+      "open": "Öffnen",
+      "group_invite_joined": "{0} hat dich in eine Gruppe eingeladen — beigetreten.",
+      "group_invite_declined": "{0} hat dich in eine Gruppe eingeladen — abgelehnt.",
+      "inventory_offer_accepted": "{0} bietet dir „{1}“ an — angenommen.",
+      "inventory_offer_declined": "{0} bietet dir „{1}“ an — abgelehnt.",
       "group_invite": "{0} hat dich in eine Gruppe eingeladen.",
       "inventory_offer": "{0} bietet dir „{1}“ an.",
       "script_permission": "„{0}“ von {1} bittet um Berechtigungen."

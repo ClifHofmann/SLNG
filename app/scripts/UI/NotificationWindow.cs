@@ -187,6 +187,12 @@ public partial class NotificationWindow : SLNGWindow
         _dismissAllButton.Disabled = shown == 0;
     }
 
+    /// <summary>
+    /// The user wants back to the decision behind an entry. The key is the owner's own, so this
+    /// window never learns what kind of prompt it re-opens.
+    /// </summary>
+    public event Action<Guid>? ActionRequested;
+
     private Control BuildRow(NotificationEntry entry)
     {
         var panel = new PanelContainer();
@@ -231,6 +237,21 @@ public partial class NotificationWindow : SLNGWindow
             detail.AddThemeFontSizeOverride("font_size", 11);
             detail.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
             textColumn.AddChild(detail);
+        }
+
+        // The way back to an unanswered decision (BUG-UI-12). Shown only where there IS one:
+        // an entry whose question has been settled -- or never had one -- gets no button at all,
+        // because a button that re-asks something already answered reads as broken.
+        if (entry.ActionKey != Guid.Empty)
+        {
+            var open = new Button
+            {
+                Text = L10n.Tr("ui.notifications.open"),
+                FocusMode = FocusModeEnum.None,
+            };
+            var key = entry.ActionKey;
+            open.Pressed += () => ActionRequested?.Invoke(key);
+            row.AddChild(open);
         }
 
         if (!string.IsNullOrWhiteSpace(entry.Detail))
