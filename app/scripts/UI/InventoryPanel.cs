@@ -1795,7 +1795,12 @@ public partial class InventoryPanel : SLNGWindow
         }
         else
         {
-            _ = _session.CopyItemAsync(_clipboard.Id, targetFolderId, name);
+            // NO name. The reference viewer passes std::string() here
+            // (llinventoryfunctions.cpp:1592-1600) and LibreMetaverse omits the field entirely for
+            // an empty one, so the server keeps the original — which is what a copy should be
+            // called. Handing it a name is what produced BUG-INV-07; not handing it one makes that
+            // class of bug unreachable rather than merely fixed.
+            _ = _session.CopyItemAsync(_clipboard.Id, targetFolderId, string.Empty);
             // A copy stays on the clipboard: pasting the same thing into several folders is the
             // reason to have copied it.
             sourceFolderId = Guid.Empty; // nothing left the source
