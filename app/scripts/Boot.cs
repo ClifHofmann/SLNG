@@ -334,7 +334,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.51-alpha";
+    public const string AppVersion = "v0.24.52-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1109,7 +1109,7 @@ public partial class Boot : Control
         win.Closed += () => _payWindow = null;
         // See ShowPayAvatarWindow: the visible line is the simulator's, not ours.
         win.Paid += (name, amount) => SLNG.App.Logger.Info($"[Pay] sent L$ {amount} to object '{name}'");
-        win.Initialize(_session, meta.Id, meta.Name);
+        win.Initialize(_session, entity.RegionHandle, entity.LocalId, meta.Id, meta.Name);
         _payWindow = win;
     }
 
@@ -1157,7 +1157,7 @@ public partial class Boot : Control
         win.Closed += () => _buyWindow = null;
         win.Bought += (name, price) =>
             LogMessage($"[color=#f0d060][L$] {SLNG.App.UI.L10n.TrFormat("ui.buy.sent", name, $"{price:N0}")}[/color]");
-        win.Initialize(_session, localId, meta.Name, meta.SaleType, meta.SalePrice);
+        win.Initialize(_session, entity.RegionHandle, localId, meta.Name, meta.SaleType, meta.SalePrice);
         _buyWindow = win;
     }
 
@@ -3188,7 +3188,7 @@ public partial class Boot : Control
         // deselect path -- clicking empty space, selecting a different object, or
         // closing the edit window -- so ObjectSelectionController and ObjectEditWindow
         // don't each need to remember to notify the sim.
-        _world.EntityDeselected += (s, e) => _session?.DeselectObject(e.Entity.LocalId);
+        _world.EntityDeselected += (s, e) => _session?.DeselectObject(e.Entity.RegionHandle, e.Entity.LocalId);
 
         string cacheDir = ProjectSettings.GlobalizePath("user://cache/assets");
         _assetService = new SLNG.Assets.AssetService(_session, cacheDir);

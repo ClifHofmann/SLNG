@@ -88,7 +88,7 @@ public class BalanceTests
     {
         using var session = new GridSession();
 
-        Assert.False(session.BuyObject(localId: 42, saleType, price));
+        Assert.False(session.BuyObject(regionHandle: 0, localId: 42, saleType, price));
     }
 
     [Fact]
@@ -96,7 +96,7 @@ public class BalanceTests
     {
         using var session = new GridSession();
 
-        Assert.False(session.BuyObject(localId: 0, SLNG.Core.PrimSaleType.Copy, 10));
+        Assert.False(session.BuyObject(regionHandle: 0, localId: 0, SLNG.Core.PrimSaleType.Copy, 10));
     }
 
     /// <summary>Asking while disconnected is a no-op, not a throw: the readout is wired up before
@@ -119,9 +119,26 @@ public class BalanceTests
         using var session = new GridSession();
 
         bool sent = true;
-        var exception = Record.Exception(() => sent = session.BuyObject(7, SLNG.Core.PrimSaleType.Original, 250));
+        var exception = Record.Exception(() => sent = session.BuyObject(0, 7, SLNG.Core.PrimSaleType.Original, 250));
 
         Assert.Null(exception);
         Assert.False(sent);
+    }
+
+    /// <summary>BUG-NET-19: a purchase addressed to a region we are not connected to sends
+    /// NOTHING. It must not fall back to the agent's own region.</summary>
+    /// <remarks>
+    /// The fallback is the tempting thing to write and the wrong thing to write: a local id is
+    /// unique only within one simulator, so the "harmless" fallback can buy a different object
+    /// that happens to carry the same id. Silence is the safe answer, and the caller is told so
+    /// by the return value rather than left guessing.
+    /// </remarks>
+    [Fact]
+    public void BuyingInARegionWeAreNotConnectedToSendsNothing()
+    {
+        using var session = new GridSession();
+
+        Assert.False(session.BuyObject(regionHandle: 1096213093149184UL, localId: 684,
+                                       SLNG.Core.PrimSaleType.Original, 250));
     }
 }

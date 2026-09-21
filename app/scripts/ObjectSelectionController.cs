@@ -67,14 +67,14 @@ namespace SLNG.App
         {
             if (SelectionSettings.EditLinkedParts)
             {
-                _session.SelectObject(localId);
+                _session.SelectObject(entity.RegionHandle, localId);
                 return;
             }
 
             var parts = LinksetParts?.Invoke(entity);
             if (parts == null || parts.Count == 0)
             {
-                _session.SelectObject(localId);
+                _session.SelectObject(entity.RegionHandle, localId);
                 return;
             }
 
@@ -83,7 +83,8 @@ namespace SLNG.App
             {
                 if (part.LocalId != localId) ids.Add(part.LocalId);
             }
-            _session.SelectObjects(ids);
+            // A linkset cannot span regions, so the root's region is every part's.
+            _session.SelectObjects(entity.RegionHandle, ids);
         }
 
         /// <summary>Is this collider one of the LOCAL agent's worn items? Only those carry one at
@@ -658,7 +659,7 @@ namespace SLNG.App
                 Logger.Info($"[Touch] {localId} face={face} st=({st.X:0.###},{st.Y:0.###}) " +
                             $"uv=({uv.X:0.###},{uv.Y:0.###})");
                 _ = _session.ClickObjectAsync(
-                    localId, face, hitPosSl, normal,
+                    entity.RegionHandle, localId, face, hitPosSl, normal,
                     new System.Numerics.Vector3(uv.X, uv.Y, 0f),
                     new System.Numerics.Vector3(st.X, st.Y, 0f),
                     binormal);
@@ -666,7 +667,7 @@ namespace SLNG.App
             }
 
             Logger.Info($"[Touch] {localId}: no surface detail -- geometry not resident");
-            _ = _session.ClickObjectAsync(localId, position: hitPosSl);
+            _ = _session.ClickObjectAsync(entity.RegionHandle, localId, position: hitPosSl);
         }
 
         private Godot.Collections.Dictionary RaycastFromMouse(Vector2 mousePos, Godot.Collections.Array<Rid>? exclude = null)
