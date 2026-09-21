@@ -334,7 +334,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.54-alpha";
+    public const string AppVersion = "v0.24.55-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3281,6 +3281,20 @@ public partial class Boot : Control
         {
             CallDeferred(MethodName.LogMessage, $"[color=orange][Alert] {e.Message}[/color]");
             _notifications.Add(SLNG.Core.NotificationKind.System, System.Guid.Empty, e.Message);
+        };
+        // BUG-NET-20: a region whose event queue died stops delivering group chat invitations,
+        // teleport progress, object media and parcel/environment changes -- all of it silently.
+        // Told to the user rather than only logged, because every symptom of it looks like
+        // something else ("nobody is talking", "this object has no media").
+        _session.EventQueueStalled += (s, e) =>
+        {
+            string where = string.IsNullOrEmpty(e.RegionName)
+                ? SLNG.App.UI.L10n.Tr("ui.eventqueue.unknown_region")
+                : e.RegionName;
+            string text = SLNG.App.UI.L10n.TrFormat("ui.eventqueue.stalled", where);
+            CallDeferred(MethodName.LogMessage, $"[color=orange][Region] {text}[/color]");
+            _notifications.Add(SLNG.Core.NotificationKind.System, System.Guid.Empty, text,
+                detail: SLNG.App.UI.L10n.TrFormat("ui.eventqueue.stalled_detail", where, e.FailureCount));
         };
         // Recenter the floating origin every time we actually move to a new region -- login AND
         // every subsequent teleport/region-crossing (GridSession.RegionConnected only fires for the

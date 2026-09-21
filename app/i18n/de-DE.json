@@ -565,6 +565,11 @@
       "failed": "Zahlung fehlgeschlagen: L$ {1} an {0}.",
       "someone": "Jemand"
     },
+    "eventqueue": {
+      "stalled": "Die Region „{0}“ liefert keine Ereignisse mehr — bis zur erneuten Verbindung fehlen von dort Gruppenchat, Teleport-Fortschritt, Objektmedien und Umgebungswechsel.",
+      "stalled_detail": "Die Ereigniswarteschlange von „{0}“ hat {1}-mal in Folge nicht geantwortet und erholt sich nicht von selbst. Ihre Capability ist weg — ein Regions-Neustart macht das. Ein Teleport dorthin und zurück, oder eine Neuanmeldung, stellt sie wieder her.",
+      "unknown_region": "eine Region"
+    },
     "notifications": {
       "title": "Benachrichtigungen",
       "tab_system": "System",

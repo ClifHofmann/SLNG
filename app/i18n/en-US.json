@@ -565,6 +565,11 @@
       "failed": "Payment failed: L$ {1} to {0}.",
       "someone": "Someone"
     },
+    "eventqueue": {
+      "stalled": "Region “{0}” has stopped delivering events — until you reconnect, group chat, teleport progress, object media and environment changes will not arrive from it.",
+      "stalled_detail": "The event queue for “{0}” has failed {1} times in a row and is not recovering. Its capability is gone — a region restart does that. Teleporting away and back, or logging in again, restores it.",
+      "unknown_region": "a region"
+    },
     "notifications": {
       "title": "Notifications",
       "tab_system": "System",
