@@ -12,9 +12,10 @@ namespace SLNG.App.UI;
 /// list (left) plus a fixed per-friend action panel (right), matching the reviewed mockup
 /// (docs/specs/M5-3-tabbed-chat-window.md §1). Filtering, row selection, and "IM / Call" (the IM
 /// half only -- voice is a separate, much larger, unbuilt subsystem) are functional. Profile,
-/// Teleport, Pay, Remove, and Add all still need net-layer plumbing that doesn't exist yet
-/// (teleport requests, payments, friendship management), so they stay disabled with a "(not
-/// implemented)" tooltip rather than silently omitted.
+/// Teleport and Pay were placeholders here from the days when the net layer had neither;
+/// both exist now (GridSession.OfferTeleport, MVP5-2's PayAvatarWindow) and are wired. Remove
+/// and Add still are not: there is no friendship-termination call in the session at all, so they
+/// keep the "(not implemented)" tooltip rather than being silently omitted.
 /// </summary>
 public partial class FriendsPanel : Control
 {
@@ -33,6 +34,13 @@ public partial class FriendsPanel : Control
     /// <summary>FEAT-UI-13: wired (through ChatWindow) to Boot's profile-window opener -- fired by
     /// the "Profile" action button.</summary>
     public Action<Guid, string>? OnOpenProfileRequested;
+
+    /// <summary>MVP5-2: the "Pay..." action. The button sat here unwired long enough that it read
+    /// as broken rather than unbuilt.</summary>
+    public Action<Guid, string>? OnPayRequested;
+
+    /// <summary>Offers this friend a teleport to where we are standing.</summary>
+    public Action<Guid, string>? OnOfferTeleportRequested;
 
     public override void _Ready()
     {
@@ -230,8 +238,21 @@ public partial class FriendsPanel : Control
         };
         panel.AddChild(profileButton);
 
-        panel.AddChild(BuildActionButton("Teleport..."));
-        panel.AddChild(BuildActionButton("Pay..."));
+        var teleportButton = BuildActionButton("Teleport...", implemented: true);
+        teleportButton.TooltipText = "Offer this friend a teleport to your location";
+        teleportButton.Pressed += () =>
+        {
+            if (_selectedFriendId is { } id) OnOfferTeleportRequested?.Invoke(id, _selectedFriendName);
+        };
+        panel.AddChild(teleportButton);
+
+        var payButton = BuildActionButton("Pay...", implemented: true);
+        payButton.TooltipText = "Send this friend L$";
+        payButton.Pressed += () =>
+        {
+            if (_selectedFriendId is { } id) OnPayRequested?.Invoke(id, _selectedFriendName);
+        };
+        panel.AddChild(payButton);
         panel.AddChild(BuildActionButton("Remove...", warn: true));
         panel.AddChild(BuildActionButton("Add..."));
 
@@ -247,13 +268,15 @@ public partial class FriendsPanel : Control
 
     // Deliberately NOT using Button.Disabled here -- see the matching comment on
     // ChatWindow.BuildIconButton for why (it silently kills tooltip hover).
-    private static Button BuildActionButton(string text, bool accent = false, bool warn = false)
+    private static Button BuildActionButton(string text, bool accent = false, bool warn = false, bool implemented = false)
     {
         var btn = new Button
         {
             Text = text,
             ClipText = true,
-            TooltipText = $"{text.TrimEnd('.')} (not implemented)",
+            // The caller replaces this for anything that works. A button that does nothing must
+            // SAY it does nothing -- silence reads as a bug, which is how this one was reported.
+            TooltipText = implemented ? text.TrimEnd('.') : $"{text.TrimEnd('.')} (not implemented)",
             FocusMode = FocusModeEnum.None,
             CustomMinimumSize = new Vector2(0, 26),
         };

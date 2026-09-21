@@ -158,6 +158,10 @@ public partial class ChatWindow : SLNGWindow
     /// resident's (linked) name in the chat log and by the Friends tab's "Profile" button.</summary>
     public Action<Guid, string>? OnOpenProfileRequested;
 
+    /// <summary>MVP5-2: the Friends tab's "Pay..." action, forwarded to whoever owns the pay
+    /// window.</summary>
+    public Action<Guid, string>? OnPayRequested;
+
     public void Initialize(ChatLogger logger)
     {
         _logger = logger;
@@ -208,6 +212,8 @@ public partial class ChatWindow : SLNGWindow
         _friendsPanel = new FriendsPanel();
         _friendsPanel.OnOpenImRequested = OpenOrFocusImTab;
         _friendsPanel.OnOpenProfileRequested = (id, name) => OnOpenProfileRequested?.Invoke(id, name);
+        _friendsPanel.OnPayRequested = (id, name) => OnPayRequested?.Invoke(id, name);
+        _friendsPanel.OnOfferTeleportRequested = (id, _) => _session?.OfferTeleport(id);
         AddOuterTab("Friends", "person", _friendsPanel);
         _groupsPanel = new GroupsPanel();
         _groupsPanel.OnOpenGroupChatRequested = OpenOrFocusGroupTab;

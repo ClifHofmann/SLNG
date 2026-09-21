@@ -327,7 +327,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.44-alpha";
+    public const string AppVersion = "v0.24.45-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -986,6 +986,7 @@ public partial class Boot : Control
         _chatWindow.OnSendLocalChat = (text) => _session?.SendChat(text);
         // FEAT-UI-13: clicking a resident's name in chat, or the Friends tab's "Profile" button.
         _chatWindow.OnOpenProfileRequested = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
+        _chatWindow.OnPayRequested = (agentId, name) => ShowPayAvatarWindow(agentId, name);
 
         // FEAT-UI-18: modal teleport loading overlay. Its own CanvasLayer (Layer 100), added to
         // Boot rather than hudLayer so it covers the HUD and every window and stays up even if
