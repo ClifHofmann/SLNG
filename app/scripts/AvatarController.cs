@@ -845,7 +845,7 @@ public partial class AvatarController : Camera3D
                 bool isLeft = !isPoseStand && (Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A)) && !hasUiFocus;
                 bool isRight = !isPoseStand && (Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D)) && !hasUiFocus;
                 bool isUp = !isPoseStand && (Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up")) && !hasUiFocus;
-                bool isDown = !isPoseStand && (Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
+                bool isDown = !isPoseStand && (Input.IsKeyPressed(Key.Q) || (Input.IsKeyPressed(Key.C) && !Input.IsKeyPressed(Key.Ctrl)) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
 
                 // Pressing up engages fly automatically (matches the "E = go up" instinct);
                 // Home toggles it off. See _Input. Suspended while sitting -- see isSitting's
@@ -1311,7 +1311,7 @@ public partial class AvatarController : Camera3D
         bool left = !isPoseStand && (Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A)) && !hasUiFocus;
         bool right = !isPoseStand && (Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D)) && !hasUiFocus;
         bool up = !isPoseStand && (Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up")) && !hasUiFocus;
-        bool down = !isPoseStand && (Input.IsKeyPressed(Key.Q) || Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
+        bool down = !isPoseStand && (Input.IsKeyPressed(Key.Q) || (Input.IsKeyPressed(Key.C) && !Input.IsKeyPressed(Key.Ctrl)) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
 
         var curRot = Rotation;
 
@@ -1386,6 +1386,9 @@ public partial class AvatarController : Camera3D
     /// part of the world view and must not lock movement out just because one was clicked once.
     /// A window is the thing that is supposed to take over the keyboard while it is open.
     /// </summary>
+    // C alone is crouch; Ctrl+C is the inventory's copy shortcut (FEAT-INV-08). A movement key
+    // held with a modifier is somebody's shortcut, not a request to move, and the avatar sinking
+    // while the user copies a folder is the kind of thing that looks like two separate bugs.
     private static bool BlocksMovement(Control? focusOwner)
     {
         if (focusOwner is LineEdit || focusOwner is TextEdit) return true;

@@ -582,6 +582,20 @@
       "item_take_off": "Take off",
       "item_remove": "Remove from this outfit"
     },
+    "inventory_clipboard": {
+      "cut": "Cut",
+      "copy": "Copy",
+      "paste": "Paste",
+      "cut_done": "Cut “{0}” — pick a destination folder and paste.",
+      "copy_done": "Copied “{0}” — pick a destination folder and paste.",
+      "pasted": "Pasted “{0}” into “{1}”.",
+      "nothing": "Nothing to paste.",
+      "into_itself": "A folder cannot go inside itself.",
+      "into_descendant": "A folder cannot go inside one of its own subfolders — that detaches it from your inventory.",
+      "folder_copy_unsupported": "Copying a whole folder is not supported yet. Cut and paste moves it.",
+      "no_op": "It is already there.",
+      "no_copy_permission": "“{0}” cannot be copied."
+    },
     "inventory_folder": {
       "new": "New folder…",
       "new_title": "NEW FOLDER",

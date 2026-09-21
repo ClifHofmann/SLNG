@@ -33,6 +33,11 @@ public partial class InventoryPanel : SLNGWindow
     private bool _rootsPopulated;
     private PopupMenu _contextMenu = null!;
     private PopupMenu _folderMenu = null!;
+
+    /// <summary>FEAT-INV-08: the inventory's own cut/copy/paste. Not the system clipboard — this
+    /// holds an inventory id, and pasting it is a grid operation, so Ctrl+C here and Ctrl+C in a
+    /// text field must not share a buffer.</summary>
+    private readonly SLNG.Core.InventoryClipboard _clipboard = new();
     /// <summary>Which folder the folder menu was opened on. Read when the menu fires rather than
     /// re-reading the selection, which a click elsewhere may already have moved.</summary>
     private Guid _folderMenuTarget;
@@ -187,6 +192,10 @@ public partial class InventoryPanel : SLNGWindow
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.play_local"), 7);
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.play_inworld"), 8);
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.stop_animation"), 9);
+        _contextMenu.AddSeparator();
+        _contextMenu.AddItem(L10n.Tr("ui.inventory_clipboard.cut"), 10);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory_clipboard.copy"), 11);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory_clipboard.paste"), 12);
         _contextMenu.IdPressed += OnContextMenuIdPressed;
 
         // FEAT-INV-08: right-clicking a FOLDER used to do nothing at all -- the handler bailed
@@ -197,6 +206,10 @@ public partial class InventoryPanel : SLNGWindow
         _folderMenu.AddSeparator();
         _folderMenu.AddItem(L10n.Tr("ui.inventory_folder.rename"), 1);
         _folderMenu.AddItem(L10n.Tr("ui.inventory_folder.delete"), 2);
+        _folderMenu.AddSeparator();
+        _folderMenu.AddItem(L10n.Tr("ui.inventory_clipboard.cut"), 3);
+        _folderMenu.AddItem(L10n.Tr("ui.inventory_clipboard.copy"), 4);
+        _folderMenu.AddItem(L10n.Tr("ui.inventory_clipboard.paste"), 5);
         _folderMenu.IdPressed += OnFolderMenuIdPressed;
         
         _tree = new InventoryTree 
@@ -1559,6 +1572,11 @@ public partial class InventoryPanel : SLNGWindow
                     bool system = _session?.IsSystemFolder(rightClickedFolder) == true;
                     _folderMenu.SetItemDisabled(_folderMenu.GetItemIndex(1), system);
                     _folderMenu.SetItemDisabled(_folderMenu.GetItemIndex(2), system);
+                    // A system folder may be pasted INTO -- that is what it is for -- but not
+                    // itself taken away.
+                    _folderMenu.SetItemDisabled(_folderMenu.GetItemIndex(3), system);
+                    _folderMenu.SetItemDisabled(_folderMenu.GetItemIndex(4), system);
+                    _folderMenu.SetItemDisabled(_folderMenu.GetItemIndex(5), !_clipboard.HasContent);
 
                     _folderMenu.Position = (Vector2I)GetGlobalMousePosition();
                     _folderMenu.Popup();
@@ -1614,6 +1632,11 @@ public partial class InventoryPanel : SLNGWindow
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(7), !isAnimation); // Play Locally
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(8), !isAnimation); // Play Inworld
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(9), !isAnimation); // Stop
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(10), false); // Cut
+                    // Copy follows the item's own permission: offering it on a no-copy item would
+                    // promise something the grid will refuse.
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(11), !canCopy);
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(12), !_clipboard.HasContent);
 
                     _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
                     _contextMenu.Popup();
@@ -1669,7 +1692,159 @@ public partial class InventoryPanel : SLNGWindow
             case 0: PromptNewFolder(folderId, name); break;
             case 1: PromptRenameFolder(folderId, name); break;
             case 2: PromptDeleteFolder(folderId, name); break;
+            case 3: ClipboardTake(folderId, isFolder: true, name, SLNG.Core.InventoryClipboardMode.Cut); break;
+            case 4: ClipboardTake(folderId, isFolder: true, name, SLNG.Core.InventoryClipboardMode.Copy); break;
+            case 5: ClipboardPasteInto(folderId); break;
         }
+    }
+
+    /// <summary>Ctrl+X / Ctrl+C / Ctrl+V over the inventory panel.</summary>
+    /// <remarks>
+    /// Handled in <c>_Input</c> rather than through focus, because this tree deliberately takes no
+    /// keyboard focus (a focused Tree eats the movement keys). The guard is the cursor: the panel
+    /// only claims these keys while the pointer is over it, so Ctrl+C anywhere else — the chat, a
+    /// search field, the world — still means what it always meant.
+    ///
+    /// <para>And a text field always wins. Somebody typing into a LineEdit is copying TEXT, and a
+    /// panel that grabbed Ctrl+C from under them would break the more ordinary of the two
+    /// meanings.</para>
+    /// </remarks>
+    public override void _Input(InputEvent @event)
+    {
+        if (!Visible || _session == null) return;
+        if (@event is not InputEventKey { Pressed: true, CtrlPressed: true, Echo: false } key) return;
+        if (key.Keycode is not (Key.C or Key.X or Key.V)) return;
+
+        var viewport = GetViewport();
+        if (viewport == null) return;
+        if (viewport.GuiGetFocusOwner() is LineEdit or TextEdit) return;
+
+        var hovered = viewport.GuiGetHoveredControl();
+        if (hovered == null || (hovered != this && !IsAncestorOf(hovered))) return;
+
+        var row = _tree.GetSelected();
+        if (row == null) return;
+
+        var meta = row.GetMetadata(0).AsString();
+        bool isFolder = !meta.Contains(',');
+        var idStr = isFolder ? meta : meta.Split(',')[0];
+        if (!Guid.TryParse(idStr, out var rowId)) return;
+
+        string rowName = row.GetText(0).Replace("  ⇢", "").Trim();
+        if (isFolder) rowName = FolderRowName(rowId);
+
+        switch (key.Keycode)
+        {
+            case Key.X: ClipboardTake(rowId, isFolder, rowName, SLNG.Core.InventoryClipboardMode.Cut); break;
+            case Key.C: ClipboardTake(rowId, isFolder, rowName, SLNG.Core.InventoryClipboardMode.Copy); break;
+            case Key.V:
+                var target = isFolder ? rowId : ParentFolderOf(rowId, false);
+                if (target != Guid.Empty) ClipboardPasteInto(target);
+                break;
+        }
+
+        viewport.SetInputAsHandled();
+    }
+
+    // ---- FEAT-INV-08: cut / copy / paste -----------------------------------------------------
+
+    /// <summary>Puts something on the inventory clipboard. Nothing moves yet — a cut only takes
+    /// effect when it is pasted, so the user can change their mind by doing nothing.</summary>
+    private void ClipboardTake(Guid id, bool isFolder, string name, SLNG.Core.InventoryClipboardMode mode)
+    {
+        _clipboard.Set(mode, id, isFolder, name, ParentFolderOf(id, isFolder));
+        _status.Text = L10n.TrFormat(
+            mode == SLNG.Core.InventoryClipboardMode.Cut
+                ? "ui.inventory_clipboard.cut_done" : "ui.inventory_clipboard.copy_done",
+            name);
+    }
+
+    /// <summary>Performs the pending cut or copy into a folder, or says why it cannot.</summary>
+    private void ClipboardPasteInto(Guid targetFolderId)
+    {
+        if (_session == null || targetFolderId == Guid.Empty) return;
+
+        var check = _clipboard.CanPasteInto(targetFolderId, AncestorFoldersOf(targetFolderId));
+        if (check != SLNG.Core.InventoryPasteCheck.Ok)
+        {
+            _status.Text = check switch
+            {
+                SLNG.Core.InventoryPasteCheck.IntoItself => L10n.Tr("ui.inventory_clipboard.into_itself"),
+                SLNG.Core.InventoryPasteCheck.IntoOwnDescendant => L10n.Tr("ui.inventory_clipboard.into_descendant"),
+                SLNG.Core.InventoryPasteCheck.FolderCopyUnsupported => L10n.Tr("ui.inventory_clipboard.folder_copy_unsupported"),
+                _ => L10n.Tr("ui.inventory_clipboard.nothing"),
+            };
+            return;
+        }
+
+        if (_clipboard.IsNoOpInto(targetFolderId))
+        {
+            _status.Text = L10n.Tr("ui.inventory_clipboard.no_op");
+            return;
+        }
+
+        Guid sourceFolderId = _clipboard.SourceFolderId;
+        string name = _clipboard.Name;
+        string targetName = FolderRowName(targetFolderId);
+
+        if (_clipboard.Mode == SLNG.Core.InventoryClipboardMode.Cut)
+        {
+            _ = _session.MoveInventoryAsync(_clipboard.Id, targetFolderId, _clipboard.IsFolder, targetName);
+            // A cut is spent once pasted; leaving it armed invites a second paste that moves the
+            // same thing again from a place it is no longer in.
+            _clipboard.Clear();
+        }
+        else
+        {
+            _ = _session.CopyItemAsync(_clipboard.Id, targetFolderId, name);
+            // A copy stays on the clipboard: pasting the same thing into several folders is the
+            // reason to have copied it.
+            sourceFolderId = Guid.Empty; // nothing left the source
+        }
+
+        _status.Text = L10n.TrFormat("ui.inventory_clipboard.pasted", name, targetName);
+        RefreshAfterGridWrite(targetFolderId, sourceFolderId);
+    }
+
+    /// <summary>Re-reads one or two folders a moment after a fire-and-forget grid write.</summary>
+    private void RefreshAfterGridWrite(Guid first, Guid second)
+    {
+        var timer = GetTree()?.CreateTimer(1.0f);
+        if (timer == null) return;
+        timer.Timeout += () =>
+        {
+            if (!IsInstanceValid(this)) return;
+            if (first != Guid.Empty) RefreshFolder(first);
+            if (second != Guid.Empty && second != first) RefreshFolder(second);
+        };
+    }
+
+    /// <summary>The folder a row currently sits in, read from the tree rather than the store: the
+    /// tree is what the user is looking at, and it is the thing that has to be refreshed.</summary>
+    private Guid ParentFolderOf(Guid id, bool isFolder)
+    {
+        TreeItem? row = null;
+        if (isFolder) _folderItems.TryGetValue(id, out row);
+        else row = _tree.GetSelected();
+        if (row == null || !IsInstanceValid(row)) return Guid.Empty;
+
+        var meta = row.GetParent()?.GetMetadata(0).AsString() ?? string.Empty;
+        return !meta.Contains(',') && Guid.TryParse(meta, out var parent) ? parent : Guid.Empty;
+    }
+
+    /// <summary>Every folder from a folder up to the root of the tree. The clipboard needs it to
+    /// refuse a paste into a folder's own descendant, and only the tree knows the shape.</summary>
+    private System.Collections.Generic.List<Guid> AncestorFoldersOf(Guid folderId)
+    {
+        var chain = new System.Collections.Generic.List<Guid>();
+        if (!_folderItems.TryGetValue(folderId, out var row) || !IsInstanceValid(row)) return chain;
+
+        for (var up = row.GetParent(); up != null; up = up.GetParent())
+        {
+            var meta = up.GetMetadata(0).AsString();
+            if (!meta.Contains(',') && Guid.TryParse(meta, out var id)) chain.Add(id);
+        }
+        return chain;
     }
 
     /// <summary>A folder's name as the tree shows it, without the type glyph the row prefixes.
@@ -1774,6 +1949,23 @@ public partial class InventoryPanel : SLNGWindow
         if (!Guid.TryParse(idStr, out var itemId)) return;
 
         bool isFolder = !metaStr.Contains(',');
+
+        // FEAT-INV-08: cut / copy / paste. Paste on an ITEM means "into the folder it sits in",
+        // which is where the user is pointing -- an item is not a destination.
+        if (id is 10 or 11 or 12)
+        {
+            string rowName = item.GetText(0).Replace("  ⇢", "").Trim();
+            switch (id)
+            {
+                case 10: ClipboardTake(itemId, isFolder, rowName, SLNG.Core.InventoryClipboardMode.Cut); break;
+                case 11: ClipboardTake(itemId, isFolder, rowName, SLNG.Core.InventoryClipboardMode.Copy); break;
+                case 12:
+                    var host = ParentFolderOf(itemId, isFolder);
+                    if (host != Guid.Empty) ClipboardPasteInto(host);
+                    break;
+            }
+            return;
+        }
 
         if (id == 4) // Delete
         {

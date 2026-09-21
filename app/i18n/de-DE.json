@@ -582,6 +582,20 @@
       "item_take_off": "Ausziehen",
       "item_remove": "Aus diesem Outfit entfernen"
     },
+    "inventory_clipboard": {
+      "cut": "Ausschneiden",
+      "copy": "Kopieren",
+      "paste": "Einfügen",
+      "cut_done": "„{0}“ ausgeschnitten — Zielordner wählen und einfügen.",
+      "copy_done": "„{0}“ kopiert — Zielordner wählen und einfügen.",
+      "pasted": "„{0}“ in „{1}“ eingefügt.",
+      "nothing": "Nichts zum Einfügen.",
+      "into_itself": "Ein Ordner kann nicht in sich selbst.",
+      "into_descendant": "Ein Ordner kann nicht in einen eigenen Unterordner — das hängt ihn vom Inventar ab.",
+      "folder_copy_unsupported": "Ordner kopieren geht noch nicht. Ausschneiden und einfügen verschiebt ihn.",
+      "no_op": "Liegt schon dort.",
+      "no_copy_permission": "„{0}“ darf nicht kopiert werden."
+    },
     "inventory_folder": {
       "new": "Neuer Ordner…",
       "new_title": "NEUER ORDNER",
