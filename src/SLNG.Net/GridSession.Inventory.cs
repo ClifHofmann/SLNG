@@ -2545,7 +2545,10 @@ public sealed partial class GridSession
     /// the only way someone tried to change a skin.</para>
     ///
     /// <para>Removal runs before the wear pass so a new clothing layer's stack index counts only
-    /// the layers the outfit itself wants. FEAT-INV-04 / FEAT-AVATAR-01.</para></summary>
+    /// the layers the outfit itself wants. FEAT-INV-04 / FEAT-AVATAR-01.</para>
+    ///
+    /// <para><b>Returns (-1, -1) when the scene has not caught up yet</b> and nothing was done —
+    /// see the readiness gate below (BUG-INV-05).</para></summary>
     public async Task<(int Removed, int Worn)> ReplaceWornWithOutfitAsync(
         Guid outfitFolderId, CancellationToken ct = default)
     {
@@ -2559,9 +2562,36 @@ public sealed partial class GridSession
         // Everything the outfit references, so nothing it wants kept is taken off first.
         var targetAll = new HashSet<Guid>(contents.Select(w => w.ItemId));
 
+        // BUG-INV-05: the removal pass reads the SCENE for "what am I wearing", and the scene is
+        // the last thing to arrive after a teleport or a relogin. An empty read there does not
+        // mean "nothing is on" -- it means the prims have not rezzed yet -- and taking it at face
+        // value removes nothing and then wears the new outfit ON TOP of the old one. That is the
+        // in-world report: "ich hab beide Outfits an", with a log showing wearable removals, no
+        // detaches at all, and an accepted appearance update.
+        //
+        // Same rule CleanUpCurrentOutfit already applies as its `sceneReady` half, which is why
+        // this bug survived: the gate existed one method away. The COF is the cross-check -- it
+        // knows which attachments SHOULD be on regardless of what has rezzed, so an avatar that
+        // genuinely wears no objects is not held up by this.
+        var sceneAttachments = GetSceneWornAttachments();
+        if (sceneAttachments.Count == 0 && CofExpectsAttachments())
+        {
+            // One grace period first: a second or two after arrival this resolves itself, and a
+            // deferral the user has to repeat by hand is worse than a short wait.
+            try { await Task.Delay(1500, ct).ConfigureAwait(false); } catch (OperationCanceledException) { throw; }
+            sceneAttachments = GetSceneWornAttachments();
+        }
+        if (sceneAttachments.Count == 0 && CofExpectsAttachments())
+        {
+            Console.Error.WriteLine(
+                "[Outfit] replace deferred -- the Current Outfit folder lists attachments but none " +
+                "have rezzed yet; wearing now would leave both outfits on. Nothing changed.");
+            return (-1, -1);
+        }
+
         int removed = 0, worn = 0;
 
-        foreach (var id in GetSceneWornAttachments().Keys.ToList())
+        foreach (var id in sceneAttachments.Keys.ToList())
         {
             if (targetAll.Contains(id)) continue;
             ct.ThrowIfCancellationRequested();
@@ -2593,6 +2623,26 @@ public sealed partial class GridSession
 
         await SetCurrentOutfitLinkAsync(outfitFolderId, ct).ConfigureAwait(false);
         return (removed, worn);
+    }
+
+    /// <summary>Whether the Current Outfit folder references any object attachment at all.
+    /// The authority for "should something be on my avatar right now", independent of whether it
+    /// has rezzed — which is exactly what makes it usable as a cross-check against the scene
+    /// (BUG-INV-05).</summary>
+    /// <remarks>
+    /// Counts links whether or not they are live: an entry that is referenced but not live is the
+    /// very case this exists to catch. HUD points count too — a HUD is an attachment and rezzes on
+    /// the same schedule.
+    /// </remarks>
+    private bool CofExpectsAttachments()
+    {
+        try
+        {
+            foreach (var w in GetWornItems())
+                if (w.Category is WornCategory.Attachment or WornCategory.Hud) return true;
+        }
+        catch { }
+        return false;
     }
 
     /// <summary>Points the Current Outfit Folder at a saved outfit — trashes any existing
