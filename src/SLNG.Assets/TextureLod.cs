@@ -42,26 +42,29 @@ public static class TextureLod
     }
 
     /// <summary>
-    /// Converts a discard level into a JPEG-2000 decoder reduce factor.
-    ///
-    /// <para>MEASURED, not assumed: ImageMagick's <c>jp2:reduce-factor=N</c> divides each dimension
-    /// by <b>4^N</b>, not the 2^N the name suggests (verified per-file over 40 real cached assets,
-    /// 2026-09-03: 1024 -> 256 at N=1, -> 64 at N=2, -> 16 at N=3). A discard level is one halving,
-    /// so one reduce factor covers TWO discard levels and an odd level leaves one halving for the
-    /// caller's own resize.</para>
-    ///
-    /// <para>Decode cost over those same assets: 47.6 ms at N=0, 13.1 ms at N=1, 3.8 ms at N=2.
-    /// This is a decoder option applied to a COMPLETE codestream and has nothing to do with the
-    /// disabled network-side truncation — see <c>AssetService.FetchAndDecodeTextureAsync</c>.</para>
+    /// Converts a discard level into a JPEG-2000 decoder resolution step — how many halvings of
+    /// each dimension to leave out of the reconstruction.
     /// </summary>
-    public static int ReduceFactorFor(int discardLevel) => System.Math.Max(0, discardLevel) / 2;
+    /// <remarks>
+    /// One discard level is one halving, and one J2K resolution level is one halving too, so this
+    /// is the identity. It stays a named function because the two things are different ideas that
+    /// happen to share a number, and because this is where the last mapping went wrong.
+    ///
+    /// <para><b>It used to divide by two</b>, on the measured belief that ImageMagick's
+    /// <c>jp2:reduce-factor=N</c> scaled by 4^N so one factor covered two discard levels. The
+    /// dimensions did come out that way — but only because that define returns the top-left
+    /// <c>1/2^N</c> CROP downscaled by 2^N, never the whole image (BUG-RENDER-36: vendor panels
+    /// showed a zoomed close-up until you flew near enough to force a full re-decode). The
+    /// decoder is now CoreJ2K's real resolution-level reconstruction, where one step is one
+    /// halving and the picture stays whole.</para>
+    /// </remarks>
+    public static int ResolutionStepsFor(int discardLevel) => System.Math.Max(0, discardLevel);
 
-    /// <summary>The dimension a reduce factor produces, so a caller can tell a correctly reduced
-    /// decode from a truncated one.</summary>
-    public static int ReducedDimension(int dimension, int reduceFactor)
+    /// <summary>The dimension a given number of halvings produces, so a caller can tell a
+    /// correctly reduced decode from a truncated one.</summary>
+    public static int ReducedDimension(int dimension, int steps)
     {
-        if (reduceFactor <= 0) return dimension;
-        int divisor = 1 << (2 * reduceFactor);
-        return System.Math.Max(1, (dimension + divisor - 1) / divisor);
+        if (steps <= 0) return dimension;
+        return System.Math.Max(1, dimension >> steps);
     }
 }
