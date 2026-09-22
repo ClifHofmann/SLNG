@@ -345,12 +345,46 @@ public sealed partial class GridSession
             TeleportStatus.Cancelled => TeleportStage.Cancelled,
             _ => null,
         };
+        // Through RaiseTeleportStage rather than raising directly, so the arrival side effects
+        // below happen for a LibreMetaverse-reported finish as well as a synthetic one.
         if (stage.HasValue)
-            TeleportProgress?.Invoke(this, new TeleportProgressEvent(stage.Value, e.Message ?? string.Empty));
+            RaiseTeleportStage(stage.Value, e.Message ?? string.Empty);
     }
 
-    private void RaiseTeleportStage(TeleportStage stage, string message) =>
+    /// <summary>Raises a teleport stage, and on arrival does what the reference viewer does on
+    /// arrival. BUG-ANIM-04.</summary>
+    /// <remarks>
+    /// Reported in-world 2026-09-22: teleporting while seated kept the sit pose. The log showed
+    /// the seat's animation coming BACK after <c>[RegionEnter]</c> while the seated state was
+    /// already correctly clear — a sit pose is a high-priority full-body animation, so it
+    /// overrides the standing one.
+    ///
+    /// <para>The reference viewer does not filter the stale animation; it never receives one,
+    /// and the first of the three things it does for that is this: <c>process_teleport_finish</c>
+    /// carries the literal comment <c>// Make sure we're standing</c> followed by
+    /// <c>gAgent.standUp()</c> (llviewermessage.cpp:2913), unconditionally on <b>every</b>
+    /// teleport, before the new region is even contacted. It does not wait to be told that it is
+    /// standing — it asserts it. <see cref="Stand"/> already does exactly that plus stopping the
+    /// seat's own motions; nothing called it on a teleport, it hung off the Stand Up button
+    /// alone.</para>
+    ///
+    /// <para>The viewer's other two are closing the old region down (<c>LLWorld::addRegion</c> →
+    /// <c>removeRegion(old_host)</c>, llworld.cpp:174-176) and disabling its circuit
+    /// (<c>process_disable_simulator</c>, llworld.cpp:1213). LibreMetaverse does neither on a
+    /// teleport, so if the old simulator keeps talking this alone may not be enough — that is
+    /// what the in-world test has to show.</para>
+    /// </remarks>
+    private void RaiseTeleportStage(TeleportStage stage, string message)
+    {
+        if (stage == TeleportStage.Finished)
+        {
+            // Never worth failing the arrival notification over.
+            try { Stand(); }
+            catch (Exception ex) { Console.Error.WriteLine($"[Teleport] stand-up on arrival failed: {ex.Message}"); }
+        }
+
         TeleportProgress?.Invoke(this, new TeleportProgressEvent(stage, message));
+    }
 
     /// <summary>Raises the terminal <see cref="TeleportProgress"/> event for a completed attempt
     /// and returns the result unchanged -- a timeout produces no LibreMetaverse event, so an
