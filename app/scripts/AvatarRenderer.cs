@@ -254,7 +254,7 @@ public partial class AvatarRenderer : Node3D
     // AvatarVisual.PelvisFixups) once the entity itself (not just the mesh) is torn down —
     // OnEntityRemoved only survives the CallDeferred hop as a bare Guid, so the owner has to be
     // captured here at attach time rather than re-looked-up from the (by-then-gone) entity.
-    private readonly Dictionary<Guid, (Guid MeshId, FaceTexture[]? Faces, FaceTexture DefaultFace, Guid AvatarEntityId)> _attachmentMeshIds = new();
+    private readonly Dictionary<Guid, (Guid MeshId, FaceTexture[]? Faces, FaceTexture DefaultFace, Guid AvatarEntityId, MeshDetailLevel Lod)> _attachmentMeshIds = new();
     private Godot.CanvasLayer? _nameTagLayer;
 
 
@@ -1951,9 +1951,13 @@ public partial class AvatarRenderer : Node3D
         // alpha-scissor blending, wasted GPU cost). Must compare Faces/DefaultFace too (see
         // _attachmentMeshIds doc) — same mesh id, changed face textures, is a real update
         // (an applier HUD swapping the placeholder skin for the real one), not a dupe.
+        // FEAT-PERF-09 adds the LOD to this comparison. The dedupe is what makes the re-ask on
+        // the cull sweep work at all: same mesh, same faces, but a level the camera has since
+        // earned is a REAL update, not a duplicate.
         if (isMeshAttachment && _attachmentMeshIds.TryGetValue(entityId, out var loaded)
             && loaded.MeshId == prim!.MeshId
             && loaded.DefaultFace == defaultFace
+            && loaded.Lod == PickAttachmentDetailLevel(avatarVisual)
             && (loaded.Faces == prim.Faces || (loaded.Faces != null && prim.Faces != null && loaded.Faces.SequenceEqual(prim.Faces))))
             return;
 
@@ -2035,7 +2039,8 @@ public partial class AvatarRenderer : Node3D
                 // redundant UpdateAttachment arriving while this load is still in flight sees
                 // it immediately and hits the early-return guard above instead of starting an
                 // overlapping duplicate load.
-                _attachmentMeshIds[entityId] = (prim.MeshId, prim.Faces, defaultFace, attachment.AvatarEntityId);
+                _attachmentMeshIds[entityId] = (prim.MeshId, prim.Faces, defaultFace,
+                                                attachment.AvatarEntityId, PickAttachmentDetailLevel(avatarVisual));
                 Logger.Debug($"[Attachment] REQUESTING MESH {prim.MeshId} for entity {entityId}");
                 _ = LoadAndApplyAttachmentMeshAsync(pointNode, avatarVisual, prim.MeshId,
                     prim.Faces, defaultFace,
@@ -2061,6 +2066,41 @@ public partial class AvatarRenderer : Node3D
                     entityId);
             }
         }
+    }
+
+    /// <summary>FEAT-PERF-09: asks again for more detail once the camera has come closer.</summary>
+    /// <remarks>
+    /// Reported in-world 2026-09-22, and the reasoning behind the question was right: *"der LOD
+    /// Abstand sollte ja nach Zoompunkt gehen"*. It does — <see cref="PickAttachmentDetailLevel"/>
+    /// measures from the camera whenever the camera is the nearer of the two. What it did not do
+    /// was ask a second time, so camming onto a distant avatar kept the level her distance had
+    /// earned at load. The reference viewer never sees this because <c>calcLOD</c> runs
+    /// continuously; this is the same thing at 4 Hz, on the sweep that already exists.
+    ///
+    /// <para><b>Upwards only.</b> Lowering the level again would save nothing — the mesh is
+    /// already fetched and its triangles are already on the GPU — while costing a full re-rig,
+    /// and an avatar loitering on a threshold would re-rig for ever. That is also why this is not
+    /// symmetric with <c>ObjectRenderer</c>, which does lower prims: a prim swap is cheap and a
+    /// worn mesh's is not. The saving stays where it was earned: at first load, which is where the
+    /// crowd on a busy sim is.</para>
+    /// </remarks>
+    private void ReconsiderAttachmentDetail(Guid avatarEntityId, AvatarVisual visual)
+    {
+        var wanted = PickAttachmentDetailLevel(visual);
+
+        // One pass over this avatar's attachments; re-issuing an update is what re-fetches the
+        // mesh, because UpdateAttachment now compares the level too.
+        List<Guid>? stale = null;
+        foreach (var (attachmentId, record) in _attachmentMeshIds)
+        {
+            if (record.AvatarEntityId != avatarEntityId) continue;
+            if (record.Lod >= wanted) continue;
+            (stale ??= new List<Guid>()).Add(attachmentId);
+        }
+        if (stale == null) return;
+
+        foreach (var attachmentId in stale)
+            UpdateAttachment(attachmentId.ToString());
     }
 
     /// <summary>FEAT-PERF-09: which LOD of a worn mesh to fetch, from how far away its wearer is.
@@ -5384,7 +5424,7 @@ void fragment() {
         float nameTagMaxDist = 20.0f;
         float nameTagFadeStart = 15.0f;
 
-        foreach (var visual in _visuals.Values)
+        foreach (var (avatarEntityId, visual) in _visuals)
         {
             if (doCull && haveAgent)
             {
@@ -5395,6 +5435,10 @@ void fragment() {
             if (visual.IsSelf)
             {
                 UpdateSelfHeadGaze(visual, camera, dt);
+            }
+            else if (doCull)
+            {
+                ReconsiderAttachmentDetail(avatarEntityId, visual);
             }
 
             bool shouldAdvance = visual.AnimPlayer.IsPlaying
