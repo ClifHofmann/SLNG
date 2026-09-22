@@ -27,9 +27,25 @@ namespace SLNG.App.UI;
 /// </summary>
 public partial class StatsOverlay : PanelContainer
 {
-    /// <summary>~4 s of history at 60 FPS. Long enough to catch a periodic hitch, short enough that
-    /// walking into a busy parcel shows up immediately instead of being averaged away.</summary>
+    /// <summary>The ring's capacity: ~4 s of history at 60 FPS. The window actually SUMMARISED is
+    /// bounded by <see cref="HistorySeconds"/>, not by this.</summary>
     private const int HistoryFrames = 240;
+
+    /// <summary>How far back the numbers look, in real time.</summary>
+    /// <remarks>
+    /// A frame count is the wrong unit for this and it fails in exactly the case the overlay is
+    /// for: 240 frames is four seconds at 60 FPS but <b>thirty</b> at eight, so the worse things
+    /// got, the longer the window grew and the more it hid. Measured in-world 2026-09-22 on a
+    /// heavy parcel — the overlay said 11 FPS while the title bar, which counts frames against the
+    /// clock, said 5. The overlay was averaging half a minute of a slowdown that had lasted
+    /// seconds. Clamping by time makes the two agree when it matters and changes nothing at 60
+    /// FPS, where 240 frames already IS four seconds.
+    /// </remarks>
+    private const double HistorySeconds = 4.0;
+
+    /// <summary>Never summarise fewer than this many frames, however long they took — a single
+    /// 500 ms frame must not become the entire sample.</summary>
+    private const int MinHistoryFrames = 8;
 
     /// <summary>Text refresh rate. Every frame would make the digits unreadable and add its own
     /// (small) cost to the thing being measured; 5 Hz still reacts instantly to the eye.</summary>
@@ -285,6 +301,23 @@ public partial class StatsOverlay : PanelContainer
         // Oldest-first copy out of the ring, so the graph reads left-to-right in real time order.
         int start = n < HistoryFrames ? 0 : _frameHead;
         for (int i = 0; i < n; i++) _ordered[i] = _frameMs[(start + i) % HistoryFrames];
+
+        // Then keep only the last HistorySeconds of it -- see that constant for why the frame
+        // count alone is the wrong bound. Walks back from the NEWEST frame, so what is dropped is
+        // always the stale end.
+        double held = 0;
+        int keep = 0;
+        for (int i = n - 1; i >= 0; i--)
+        {
+            held += _ordered[i];
+            keep++;
+            if (held >= HistorySeconds * 1000.0 && keep >= MinHistoryFrames) break;
+        }
+        if (keep < n)
+        {
+            Array.Copy(_ordered, n - keep, _ordered, 0, keep);
+            n = keep;
+        }
 
         Array.Copy(_ordered, _sortScratch, n);
         Array.Sort(_sortScratch, 0, n);
