@@ -4191,8 +4191,15 @@ public partial class AvatarRenderer : Node3D
         return true;
     }
 
+    /// <param name="skinOnly">Build the bind matrices and stop — no geometry, no ArrayMesh.
+    /// <see cref="RebuildRiggedAttachmentSkins"/> wants nothing else, and building the rest for it
+    /// was BUG-PERF-01's largest single waste: measured in-world at <b>0.15 ms</b> for the binds
+    /// against <b>7.5 ms</b> for the whole method, on a path that runs once per worn mesh on every
+    /// shape change. The log showed 830 calls to this method behind only 109 rig queue items —
+    /// seven out of every eight builds existed to be discarded.</param>
     private MeshInstance3D? BuildRiggedMeshInstance(MeshData meshData, Skeleton3D skeleton, Guid meshId,
-        AvatarVisual visual, FaceTexture[]? faces, FaceTexture defaultFace, out int[] faceIndices)
+        AvatarVisual visual, FaceTexture[]? faces, FaceTexture defaultFace, out int[] faceIndices,
+        bool skinOnly = false)
     {
         faceIndices = System.Array.Empty<int>();
         var skinData = meshData.Skin!;
@@ -4293,6 +4300,17 @@ public partial class AvatarRenderer : Node3D
         }
         if (skin.GetBindCount() == 0) return null;
 
+        MainThreadWorkQueue.RecordExternal("avatar.rig.bind", buildClock.Elapsed.TotalMilliseconds);
+        if (skinOnly)
+        {
+            // Everything above is what a shape change actually needs; everything below is
+            // geometry it discards. The node carries the Skin and nothing else, so freeing it
+            // releases an instance RID rather than the mesh and buffer RIDs BUG-RENDER-13 was
+            // about — those are no longer created at all.
+            return new MeshInstance3D { Skin = skin };
+        }
+        buildClock.Restart();
+
         var arrayMesh = new ArrayMesh();
         var faceList = new List<int>();
 
@@ -4336,9 +4354,6 @@ public partial class AvatarRenderer : Node3D
         // (e.g. an unexpectedly huge mHead scale) without having to guess from bind-pose extent
         // alone, which is meaningless pre-skinning (see the no-rejection comment below).
         var slotWeightSum = new float[skin.GetBindCount()];
-
-        MainThreadWorkQueue.RecordExternal("avatar.rig.bind", buildClock.Elapsed.TotalMilliseconds);
-        buildClock.Restart();
 
         // BUG-RENDER-12: consecutive submeshes that resolve to the SAME face record are committed
         // as ONE surface, in their authored order.
@@ -4851,8 +4866,11 @@ public partial class AvatarRenderer : Node3D
         {
             if (!IsInstanceValid(mi) || meshData.Skin == null) continue;
             // Only the Skin is taken from the rebuild, so the face records -- and therefore
-            // BUG-RENDER-12's surface merging -- are irrelevant here; the geometry is discarded.
-            var rebuilt = BuildRiggedMeshInstance(meshData, visual.Skeleton, meshId, visual, null, default, out _);
+            // BUG-RENDER-12's surface merging -- are irrelevant here. BUG-PERF-01: the geometry
+            // used to be built anyway and then thrown away, once per worn mesh per shape change.
+            // It is not built at all now (skinOnly), which is a ~50x saving on this path.
+            var rebuilt = BuildRiggedMeshInstance(meshData, visual.Skeleton, meshId, visual, null, default, out _,
+                                                  skinOnly: true);
             if (rebuilt == null) continue;
             mi.Skin = rebuilt.Skin;
 
