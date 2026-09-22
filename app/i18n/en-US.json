@@ -592,9 +592,20 @@
       "nothing": "Nothing to paste.",
       "into_itself": "A folder cannot go inside itself.",
       "into_descendant": "A folder cannot go inside one of its own subfolders — that detaches it from your inventory.",
-      "folder_copy_unsupported": "Copying a whole folder is not supported yet. Cut and paste moves it.",
       "no_op": "It is already there.",
-      "no_copy_permission": "“{0}” cannot be copied."
+      "no_copy_permission": "“{0}” cannot be copied.",
+      "paste_link": "Paste As Link",
+      "copying_folder": "Copying “{0}” …",
+      "folder_copied": "Copied “{0}” into “{1}” — {2} folders, {3} items.",
+      "folder_copy_skipped": "{0} skipped (no copy permission).",
+      "folder_copy_truncated": "Nested very deep — the lowest folders were not copied.",
+      "folder_copy_failed": "“{0}” could not be copied.",
+      "linked": "Linked “{0}” into “{1}”.",
+      "link_failed": "The grid refused a link to “{0}”.",
+      "already_a_link": "That is already a link, and SL has no link to a link.",
+      "cannot_be_linked": "That cannot be linked to.",
+      "library_cannot_be_linked": "A #Library item is not yours — copy it into your inventory first.",
+      "system_folder": "System folders cannot be cut or copied."
     },
     "inventory_folder": {
       "new": "New folder…",

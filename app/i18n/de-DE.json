@@ -592,9 +592,20 @@
       "nothing": "Nichts zum Einfügen.",
       "into_itself": "Ein Ordner kann nicht in sich selbst.",
       "into_descendant": "Ein Ordner kann nicht in einen eigenen Unterordner — das hängt ihn vom Inventar ab.",
-      "folder_copy_unsupported": "Ordner kopieren geht noch nicht. Ausschneiden und einfügen verschiebt ihn.",
       "no_op": "Liegt schon dort.",
-      "no_copy_permission": "„{0}“ darf nicht kopiert werden."
+      "no_copy_permission": "„{0}“ darf nicht kopiert werden.",
+      "paste_link": "Als Verknüpfung einfügen",
+      "copying_folder": "Kopiere „{0}“ …",
+      "folder_copied": "„{0}“ nach „{1}“ kopiert — {2} Ordner, {3} Objekte.",
+      "folder_copy_skipped": "{0} übersprungen (kein Kopierrecht).",
+      "folder_copy_truncated": "Sehr tief verschachtelt — die untersten Ordner wurden nicht mitkopiert.",
+      "folder_copy_failed": "„{0}“ konnte nicht kopiert werden.",
+      "linked": "„{0}“ als Verknüpfung in „{1}“ angelegt.",
+      "link_failed": "Das Grid hat die Verknüpfung auf „{0}“ abgelehnt.",
+      "already_a_link": "Das ist schon eine Verknüpfung — auf eine Verknüpfung kann man nicht verweisen.",
+      "cannot_be_linked": "Darauf kann man nicht verweisen.",
+      "library_cannot_be_linked": "Ein #Library-Objekt gehört dir nicht — kopiere es erst in dein Inventar.",
+      "system_folder": "Systemordner können nicht ausgeschnitten oder kopiert werden."
     },
     "inventory_folder": {
       "new": "Neuer Ordner…",
