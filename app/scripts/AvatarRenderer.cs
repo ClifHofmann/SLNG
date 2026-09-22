@@ -2063,6 +2063,65 @@ public partial class AvatarRenderer : Node3D
         }
     }
 
+    /// <summary>FEAT-PERF-09: which LOD of a worn mesh to fetch, from how far away its wearer is.
+    /// </summary>
+    /// <remarks>
+    /// World objects have picked their mesh LOD by distance since FEAT-PERF-07; worn meshes never
+    /// did. <c>GetMeshAsync</c> defaults to <see cref="MeshDetailLevel.Highest"/>, so every mesh
+    /// body, head and hairstyle in the region was fetched and drawn at full resolution however far
+    /// away its wearer stood. What that is worth was already measured for FEAT-PERF-07, over 3643
+    /// cached meshes: <b>high_lod holds 28.2M triangles against medium_lod's 6.9M</b>.
+    ///
+    /// <para><b>Your own avatar is never reduced.</b> You look at it from arm's length, it is the
+    /// one avatar always on screen, and it is a single avatar — the saving would be invisible and
+    /// the cost obvious. The reference viewer makes the same exception.</para>
+    ///
+    /// <para><b>A first-load pick, not a running re-evaluation.</b> ObjectRenderer re-picks on its
+    /// cull sweep because swapping a static prim's mesh is cheap; swapping a WORN one means
+    /// rigging it again, and rigging is what BUG-PERF-01 just spent two rounds making rare. A
+    /// walking avatar must not re-rig its whole outfit every few metres. Same shape as
+    /// <c>PickMeshDetailLevel</c> otherwise, including its fallback: when the viewpoint is not
+    /// known yet (during login the agent has no position), nothing is reduced.</para>
+    /// </remarks>
+    private MeshDetailLevel PickAttachmentDetailLevel(AvatarVisual visual)
+    {
+        if (visual.IsSelf) return MeshDetailLevel.Highest;
+        if (_world == null || !RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos))
+            return MeshDetailLevel.Highest;
+        // Not in the tree yet means GlobalPosition is not a position yet -- it would read as the
+        // origin and under-detail an avatar standing right next to you.
+        if (visual.Root == null || !IsInstanceValid(visual.Root) || !visual.Root.IsInsideTree())
+            return MeshDetailLevel.Highest;
+
+        var wearerPos = visual.Root.GlobalPosition;
+
+        // The nearer of avatar and camera, exactly as ObjectRenderer's ViewpointFor does -- the
+        // two separate in mouselook and while cam-ing around, and a worn mesh that disagreed with
+        // the world objects beside it about the viewpoint would be visibly coarser than them.
+        var camera = GetViewport()?.GetCamera3D();
+        var viewpoint = camera != null && IsInstanceValid(camera)
+                        && wearerPos.DistanceSquaredTo(camera.GlobalPosition) < wearerPos.DistanceSquaredTo(agentPos)
+            ? camera.GlobalPosition
+            : agentPos;
+
+        float distance = wearerPos.DistanceTo(viewpoint);
+
+        // The WEARER's size, never the attachment's own. This is the one place the reference
+        // viewer treats rigged geometry differently, and getting it wrong would be visible: a
+        // rigged garment's host prim is routinely scaled to something meaningless (a few
+        // centimetres), and feeding that in as the radius would drop a mesh body to its coarsest
+        // LOD while its wearer stood next to you. LLVOVolume::calcLOD branches on
+        // LLDrawable::RIGGED for exactly this and uses the AVATAR's animated extents instead
+        // (llvovolume.cpp:1526-1557), with distance measured to the avatar rather than the part.
+        //
+        // We do not track an animated bounding box, so the avatar's height stands in for that
+        // diagonal -- for a standing humanoid the two differ by under ten percent, and the
+        // viewer's own comment concedes its figure is "2x off" anyway. Four LOD steps do not
+        // resolve finer than that.
+        float wearerSize = visual.BodySizeZ > 0.1f ? visual.BodySizeZ : 1.90f;
+        return SLNG.Core.VolumeLod.ForDistance(distance, wearerSize, RenderConfig.VolumeLodFactor);
+    }
+
     /// <summary>Fetches and applies a rigged/static MESH attachment (an item with a real LLMesh
     /// asset). Prim- and sculpt-based attachments go through
     /// <see cref="LoadAndApplyPrimAttachmentAsync"/> instead — both end in the same
@@ -2075,7 +2134,8 @@ public partial class AvatarRenderer : Node3D
     {
         if (_assetService == null) return;
 
-        var meshData = await _assetService.GetMeshAsync(meshId).ConfigureAwait(false);
+        var lod = PickAttachmentDetailLevel(avatarVisual);
+        var meshData = await _assetService.GetMeshAsync(meshId, lod).ConfigureAwait(false);
         if (meshData == null)
         {
             Logger.Warn($"[Attachment] mesh {meshId} failed to fetch/decode — skipped");
