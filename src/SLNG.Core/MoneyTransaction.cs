@@ -101,10 +101,14 @@ public static class MoneyReason
 /// Both rules are the reference viewer's, and both matter in practice
 /// (<c>process_money_balance_reply</c> / <c>_extended</c>, llviewermessage.cpp):
 ///
-/// <para><b>A pure balance update is not a transaction.</b> The simulator sends
-/// MoneyBalanceReply for the answer to MoneyBalanceRequest too — on connect, and whenever
-/// anything asks. Those carry no source and no destination, and announcing them would put "you
-/// were paid L$ 0" on screen at every login.</para>
+/// <para><b>A reply the grid did not put into words is not shown at all.</b> This is the
+/// viewer's first gate and it is unconditional: <c>if (desc.empty() …) return; // ...nothing to
+/// display</c> (llviewermessage.cpp:4527-4532), before it looks at parties, amount or type. It is
+/// what keeps the silent replies silent — a pure balance answer on connect, and, found in-world
+/// 2026-09-22, the reply the simulator sends when you <b>give somebody an inventory item</b>:
+/// source you, destination them, <c>amount = 0</c>, <c>type = 3000</c> (TRANS_GIVE_INVENTORY),
+/// description empty. Announced, that reads „Du hast Clifton Howlett L$ 0 gezahlt." — a payment
+/// that never happened, over a gift that did.</para>
 ///
 /// <para><b>The same transaction arrives more than once.</b> The viewer keeps a lookback of
 /// recent transaction ids for exactly this and drops repeats; without it one payment can be
@@ -126,14 +130,18 @@ public sealed class MoneyTransactionFilter
     /// Stateful on purpose — asking twice about the same id answers true then false, which is the
     /// whole point. Call it once per reply.
     /// </remarks>
-    /// <param name="hasDescription">Whether the reply said anything in words. A reply with no
-    /// parties AND nothing to say is a balance answer; one with no parties but a description is a
-    /// grid that does not fill TransactionInfo, and its words are all there is.</param>
-    public bool ShouldAnnounce(Guid transactionId, Guid sourceId, Guid destId, bool hasDescription = false)
+    /// <param name="gridDescribedIt">Whether the reply's own <c>MoneyData.Description</c> said
+    /// anything — the simulator's sentence, e.g. "Clifton Howlett paid you L$1.", NOT the item
+    /// description out of TransactionInfo. The viewer gates on exactly this field, so a reply the
+    /// grid left wordless is one it did not mean to be announced.</param>
+    public bool ShouldAnnounce(Guid transactionId, Guid sourceId, Guid destId, bool gridDescribedIt)
     {
-        // Nobody on either end and nothing to say: an answer to "what is my balance", not a
-        // payment.
-        if (sourceId == Guid.Empty && destId == Guid.Empty && !hasDescription) return false;
+        // The viewer's own first gate, and the whole of it. Parties and amount are deliberately
+        // NOT consulted: a give-inventory reply has both parties filled and is still not a
+        // payment, and a grid that fills no parties but says something in words is still worth
+        // repeating verbatim (llviewermessage.cpp:4558). The wordless reply is the one to drop,
+        // and it is the only one.
+        if (!gridDescribedIt) return false;
 
         // A zero transaction id cannot be deduplicated, so it is never remembered — but it is
         // still a transaction, and suppressing it would be worse than repeating it.
