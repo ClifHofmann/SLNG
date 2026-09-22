@@ -206,6 +206,31 @@ public partial class AvatarRenderer : Node3D
     // attachment entity ID → Rigged mesh node parented to the avatar skeleton
     private readonly Dictionary<Guid, MeshInstance3D> _riggedAttachments = new();
 
+    /// <summary>The newest rig request per worn entity, waiting for its queued turn. BUG-PERF-01.</summary>
+    /// <remarks>
+    /// Rigging is the most expensive single unit of main-thread work this client has: measured
+    /// in-world 2026-09-22 at <b>137 ms on average, 181 ms at worst</b>
+    /// (<c>[WorkCost] avatar.rig n=38 totalMs=5204,7</c> — 5.2 seconds inside a five-second
+    /// window). The frame budget cannot absorb that, and by <c>MainThreadWorkQueue.Pump</c>'s own
+    /// design it is not meant to: each lane runs one item even when the budget is gone, so the
+    /// floor on a frame is the cost of one item.
+    ///
+    /// <para>So the work has to happen less often. <c>UpdateAttachment</c> runs per object update
+    /// and queued a fresh rig every time — the log showed the same mesh on the same entity queued
+    /// five times in a row. The queue's own coalescing drops the repeats, but dropping them would
+    /// also drop whatever was NEW about them (a texture applier's faces), so the payload is kept
+    /// here instead: the repeats collapse to one queued item, and that item rigs the LATEST
+    /// request rather than the first. This is the "re-reads current state when it runs" shape
+    /// <c>Enqueue</c>'s doc comment says coalescing requires.</para>
+    ///
+    /// <para>Written from the mesh-load worker threads, read on the main thread.</para>
+    /// </remarks>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, PendingRig> _pendingRigs = new();
+
+    private sealed record PendingRig(
+        MeshData MeshData, AvatarVisual Visual, Skeleton3D Skeleton, Guid MeshId,
+        FaceTexture[]? Faces, FaceTexture DefaultFace);
+
     // FEAT-UI-23: the bone-parented colliders that make a rigged worn item clickable -- one per
     // bone the item is weighted to. They live on the SKELETON, not under the item's own mesh
     // instance, so freeing the mesh does not free them: every teardown path has to call
@@ -2365,6 +2390,24 @@ public partial class AvatarRenderer : Node3D
     /// the item's mesh instance -- a BoneAttachment3D only works directly under a Skeleton3D --
     /// so freeing the mesh leaves them behind, hanging in the air and eating every click that
     /// crosses them.</summary>
+    /// <summary>Removes whatever is currently rigged for a worn entity — the node, its pick
+    /// bodies, and the visual's own record of it. BUG-PERF-01.</summary>
+    /// <remarks>
+    /// <c>_riggedAttachments</c> holds one instance per entity and every cleanup path reads it, so
+    /// adding a second one without removing the first does not "replace" anything: it hides the
+    /// old node from the only bookkeeping that could ever free it. Both lists are cleared here so
+    /// they cannot drift apart.
+    /// </remarks>
+    private void DiscardRiggedAttachment(Guid entityId, AvatarVisual visual)
+    {
+        if (!_riggedAttachments.TryGetValue(entityId, out var existing)) return;
+
+        _riggedAttachments.Remove(entityId);
+        ClearRiggedPickBodies(entityId);
+        visual.RiggedAttachments.RemoveAll(r => r.Mi == existing);
+        if (IsInstanceValid(existing)) existing.QueueFree();
+    }
+
     private void ClearRiggedPickBodies(Guid entityId)
     {
         if (!_riggedPickBodies.TryGetValue(entityId, out var bodies)) return;
@@ -2510,32 +2553,48 @@ public partial class AvatarRenderer : Node3D
         // statically to one bone (which collapses it into a blob).
         if (meshData.Skin != null && skeleton != null)
         {
+            // BUG-PERF-01: the newest request wins, and the repeats collapse into one queued item.
+            _pendingRigs[entityId] = new PendingRig(meshData, avatarVisual, skeleton, meshId, faces, defaultFace);
+
             MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
-                if (!IsInstanceValid(skeleton)) return;
+                // Whatever the latest request is by the time this runs -- not what was captured
+                // when it was queued. Gone means a later item already rigged it.
+                if (!_pendingRigs.TryRemove(entityId, out var req)) return;
+                if (!IsInstanceValid(req.Skeleton)) return;
+
+                // Anything already rigged for this entity is replaced, not joined. Without this,
+                // several updates arriving before the queue drains each ADD a rigged MeshInstance
+                // to the skeleton while only the last is recorded in _riggedAttachments -- the
+                // earlier ones stay in the scene, untracked and unfreeable, costing triangles,
+                // draw calls and VRAM for the rest of the session. Measured on a busy sim:
+                // 22,500 draw calls, 38M triangles, 9.5 GB VRAM.
+                DiscardRiggedAttachment(entityId, req.Visual);
+
                 // The mesh may be rigged to shifted joint positions (mesh bodies/heads).
                 // Apply its joint-position overrides to the skeleton BEFORE binding, like the
                 // viewer does, so invBind·jointWorld cancels at the intended pose.
-                ApplyJointPositionOverrides(avatarVisual, skeleton, meshData.Skin, meshId);
-                var mi = BuildRiggedMeshInstance(meshData, skeleton, meshId, avatarVisual, faces, defaultFace, out var faceIndices);
+                ApplyJointPositionOverrides(req.Visual, req.Skeleton, req.MeshData.Skin!, req.MeshId);
+                var mi = BuildRiggedMeshInstance(req.MeshData, req.Skeleton, req.MeshId, req.Visual,
+                                                 req.Faces, req.DefaultFace, out var faceIndices);
                 if (mi == null) return;
                 mi.Name = "RiggedMesh";
-                
+
                 // Set a generous CustomAabb to prevent Godot from culling the mesh if the bind pose is far away
                 mi.CustomAabb = new Aabb(new Godot.Vector3(-4, -4, -4), new Godot.Vector3(8, 8, 8));
-                
-                skeleton.AddChild(mi);
-                AddRiggedPickBody(mi, avatarVisual, skeleton, entityId);
+
+                req.Skeleton.AddChild(mi);
+                AddRiggedPickBody(mi, req.Visual, req.Skeleton, entityId);
                 _riggedAttachments[entityId] = mi;
-                avatarVisual.RiggedAttachments.Add((mi, meshData, meshId));
+                req.Visual.RiggedAttachments.Add((mi, req.MeshData, req.MeshId));
 
                 // Skin is already assigned on the instance; the skeleton path must be set after
                 // the node is in the tree so Godot can resolve and drive the skinning.
-                mi.Skeleton = mi.GetPathTo(skeleton);
+                mi.Skeleton = mi.GetPathTo(req.Skeleton);
                 RestoreWornHighlight(entityId);
-                RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices, faces, defaultFace, meshId);
-                _ = ApplyFaceMaterialsAsync(mi, faceIndices, faces, defaultFace, avatarVisual, meshId);
-            }, label: "avatar.rig");
+                RegisterBomAndUpdateVisibility(req.Visual, mi, faceIndices, req.Faces, req.DefaultFace, req.MeshId);
+                _ = ApplyFaceMaterialsAsync(mi, faceIndices, req.Faces, req.DefaultFace, req.Visual, req.MeshId);
+            }, coalesceKey: $"avatar.rig:{entityId}", label: "avatar.rig");
             return;
         }
 
