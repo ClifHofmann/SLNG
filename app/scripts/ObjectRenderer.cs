@@ -869,8 +869,19 @@ public partial class ObjectRenderer : Node3D
                 // group, or pull it out. Cheap for the common case (already tracked -> one
                 // HashSet lookup and return).
                 EvaluateInstancing(state);
+
+                // BUG-PERF-02: count it. Only MESH assets -- a procedural prim has no mesh LOD.
+                if (state.MeshInstance.Visible && state.LoadedMeshId != Guid.Empty)
+                {
+                    _lodVisible++;
+                    if (state.LoadedMeshDetailLevel.HasValue)
+                        _lodTally[(int)state.LoadedMeshDetailLevel.Value]++;
+                    else
+                        _lodNoLevel++;
+                }
             }
             _cullCursor = end;
+            if (_cullCursor >= _cullOrder.Count) _lodPassDone = true;
         });
 
         // Reported apart from the scan so the two possible culprits are separable: walking the
@@ -880,6 +891,23 @@ public partial class ObjectRenderer : Node3D
         // FEAT-PERF-06: one [Instancing] line into the perf sidecar every 5 s, matching the
         // [Perf] cadence, so the batching's effect is visible while standing still in a loaded
         // scene (the whole reason this feature exists).
+        // BUG-PERF-02: what the scene is actually drawn at, as opposed to what the LOD rule says
+        // it should be. Standing alone with no avatar in sight still cost 13,500 draw calls and
+        // 25M triangles, and the arithmetic disagrees: at a 96 m draw distance almost every
+        // ordinary prim should be at the lowest level, and FEAT-PERF-07's own note measured the
+        // whole cache at low_lod as 0.8M triangles against high_lod's 28.2M. One of those two
+        // numbers is wrong about this scene, and a tally says which instead of another hypothesis.
+        if (_lodPassDone)
+        {
+            _lodPassDone = false;
+            System.Array.Copy(_lodTally, _lodTallyLast, _lodTally.Length);
+            _lodVisibleLast = _lodVisible;
+            _lodNoLevelLast = _lodNoLevel;
+            System.Array.Clear(_lodTally, 0, _lodTally.Length);
+            _lodVisible = 0;
+            _lodNoLevel = 0;
+        }
+
         _instanceStatsAccum += delta;
         if (_instanceStatsAccum >= 5.0)
         {
@@ -896,8 +924,28 @@ public partial class ObjectRenderer : Node3D
                 }
                 SLNG.App.UI.StatsOverlay.EmitPerfLine(line);
             }
+
+            if (_lodVisibleLast > 0)
+            {
+                SLNG.App.UI.StatsOverlay.EmitPerfLine(
+                    $"[MeshLod] visible mesh objects={_lodVisibleLast} " +
+                    $"high={_lodTallyLast[(int)MeshDetailLevel.Highest]} " +
+                    $"medium={_lodTallyLast[(int)MeshDetailLevel.High]} " +
+                    $"low={_lodTallyLast[(int)MeshDetailLevel.Medium]} " +
+                    $"lowest={_lodTallyLast[(int)MeshDetailLevel.Low]} " +
+                    $"neverPicked={_lodNoLevelLast}");
+            }
         }
     }
+
+    // BUG-PERF-02 tally. One pass of the spread cull sweep fills these; the completed pass is
+    // kept separately so the 5 s report always prints a whole scene rather than whatever slice
+    // the sweep happened to be in the middle of.
+    private readonly int[] _lodTally = new int[4];
+    private readonly int[] _lodTallyLast = new int[4];
+    private int _lodVisible, _lodVisibleLast;
+    private int _lodNoLevel, _lodNoLevelLast;
+    private bool _lodPassDone;
 
     /// <summary>Drops an out-of-range object's GPU resources so VRAM can be reclaimed. The
     /// load state is reset so <see cref="UpdateVisual"/> rebuilds it when it returns.</summary>
