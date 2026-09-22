@@ -870,10 +870,21 @@ public partial class ObjectRenderer : Node3D
                 // HashSet lookup and return).
                 EvaluateInstancing(state);
 
-                // BUG-PERF-02: count it. Only MESH assets -- a procedural prim has no mesh LOD.
-                if (state.MeshInstance.Visible && state.LoadedMeshId != Guid.Empty)
+                // BUG-PERF-02: count it -- but only things that HAVE a mesh LOD to count.
+                //
+                // The first cut of this tally counted anything with a LoadedMeshId, which put
+                // every SCULPT in the "never picked" bucket and made it look like a fault: a
+                // sculpt's geometry comes from its sculpt map, it has no four-level LOD ladder,
+                // and LoadedMeshDetailLevel is set to null for it on purpose
+                // (see the sculpt branch of UpdateVisual). 634 of them were counted as a defect
+                // that was not there. Instanced objects are split out for the opposite reason --
+                // there the exclusion IS real: the sweep skips them, so whatever level they
+                // loaded at is the level they keep.
+                if (state.MeshInstance.Visible && state.LoadedMeshId != Guid.Empty
+                    && state.LoadedSculptType == 0)
                 {
                     _lodVisible++;
+                    if (_instanceGroups != null && _instanceGroups.IsInstanced(id)) _lodInstanced++;
                     if (state.LoadedMeshDetailLevel.HasValue)
                         _lodTally[(int)state.LoadedMeshDetailLevel.Value]++;
                     else
@@ -903,9 +914,11 @@ public partial class ObjectRenderer : Node3D
             System.Array.Copy(_lodTally, _lodTallyLast, _lodTally.Length);
             _lodVisibleLast = _lodVisible;
             _lodNoLevelLast = _lodNoLevel;
+            _lodInstancedLast = _lodInstanced;
             System.Array.Clear(_lodTally, 0, _lodTally.Length);
             _lodVisible = 0;
             _lodNoLevel = 0;
+            _lodInstanced = 0;
         }
 
         _instanceStatsAccum += delta;
@@ -933,7 +946,7 @@ public partial class ObjectRenderer : Node3D
                     $"medium={_lodTallyLast[(int)MeshDetailLevel.High]} " +
                     $"low={_lodTallyLast[(int)MeshDetailLevel.Medium]} " +
                     $"lowest={_lodTallyLast[(int)MeshDetailLevel.Low]} " +
-                    $"neverPicked={_lodNoLevelLast}");
+                    $"neverPicked={_lodNoLevelLast} instanced={_lodInstancedLast}");
             }
         }
     }
@@ -945,6 +958,7 @@ public partial class ObjectRenderer : Node3D
     private readonly int[] _lodTallyLast = new int[4];
     private int _lodVisible, _lodVisibleLast;
     private int _lodNoLevel, _lodNoLevelLast;
+    private int _lodInstanced, _lodInstancedLast;
     private bool _lodPassDone;
 
     /// <summary>Drops an out-of-range object's GPU resources so VRAM can be reclaimed. The
