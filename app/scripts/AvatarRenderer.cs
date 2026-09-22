@@ -4203,6 +4203,8 @@ public partial class AvatarRenderer : Node3D
         // against its own bind pose, which need not equal our skeleton's rest. Binding to the
         // skeleton rest instead (as the body parts do) only works for meshes whose bind pose
         // matches exactly — these OpenSim meshes don't, and exploded into petals.
+        var buildClock = System.Diagnostics.Stopwatch.StartNew();
+
         var skin = new Skin();
         var slotForJoint = new int[jointCount];
 
@@ -4335,6 +4337,9 @@ public partial class AvatarRenderer : Node3D
         // alone, which is meaningless pre-skinning (see the no-rejection comment below).
         var slotWeightSum = new float[skin.GetBindCount()];
 
+        MainThreadWorkQueue.RecordExternal("avatar.rig.bind", buildClock.Elapsed.TotalMilliseconds);
+        buildClock.Restart();
+
         // BUG-RENDER-12: consecutive submeshes that resolve to the SAME face record are committed
         // as ONE surface, in their authored order.
         //
@@ -4366,11 +4371,32 @@ public partial class AvatarRenderer : Node3D
         var runFace = default(FaceTexture);
         int runVertexBase = 0;
 
+        // Reused across every vertex of every submesh. These were allocated fresh per vertex --
+        // two arrays each, on a mesh body of tens of thousands of vertices, for every rig. The
+        // session that found BUG-PERF-01 was carrying a 1.3-1.8 GB C# heap. SetBones/SetWeights
+        // marshal the contents into Godot's own packed arrays, so reusing the buffer is safe; it
+        // only has to be cleared, because AddInfluence writes only the slots it fills.
+        var bones = new int[4];
+        var wts = new float[4];
+
+        // BUG-PERF-01 step 2: the rig is one 137 ms queue item, so "which part of it" cannot be
+        // read off [WorkCost] -- that reports per QUEUE ITEM. MainThreadWorkQueue.Measure exists
+        // for exactly this ("so a single queue item can be broken down into its parts"), and these
+        // three labels are the whole of BuildRiggedMeshInstance's cost between them:
+        //   avatar.rig.bind      the skin, its bind matrices and the bone palette
+        //   avatar.rig.verts     the per-vertex submission loop
+        //   avatar.rig.tangents  GenerateTangents + Commit, Godot's own CPU passes
+        // Whichever of the three carries the seconds decides what step 2 actually has to change,
+        // instead of it being decided by whichever explanation sounded best.
         void FlushRun()
         {
             if (st == null) return;
-            st.GenerateTangents();
-            st.Commit(arrayMesh);
+            var flushing = st;
+            MainThreadWorkQueue.Measure("avatar.rig.tangents", () =>
+            {
+                flushing.GenerateTangents();
+                flushing.Commit(arrayMesh);
+            });
             st = null;
         }
 
@@ -4414,8 +4440,8 @@ public partial class AvatarRenderer : Node3D
                 bpMin = System.Numerics.Vector3.Min(bpMin, pSL);
                 bpMax = System.Numerics.Vector3.Max(bpMax, pSL);
 
-                var bones = new int[4];
-                var wts = new float[4];
+                System.Array.Clear(bones, 0, 4);
+                System.Array.Clear(wts, 0, 4);
                 int c = 0; float sum = 0f;
                 AddInfluence(w.Joint0, w.Weight0, slotForJoint, jointCount, bones, wts, ref c, ref sum, ref remappedInfluences);
                 AddInfluence(w.Joint1, w.Weight1, slotForJoint, jointCount, bones, wts, ref c, ref sum, ref remappedInfluences);
@@ -4464,6 +4490,10 @@ public partial class AvatarRenderer : Node3D
             runVertexBase += sub.Positions.Length;
         }
         FlushRun();
+
+        // Everything since the bind phase, minus what FlushRun already filed under
+        // avatar.rig.tangents -- so the three labels partition the method rather than overlap.
+        MainThreadWorkQueue.RecordExternal("avatar.rig.verts", buildClock.Elapsed.TotalMilliseconds);
 
         if (arrayMesh.GetSurfaceCount() == 0) return null;
 
