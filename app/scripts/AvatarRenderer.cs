@@ -2118,8 +2118,14 @@ public partial class AvatarRenderer : Node3D
         // diagonal -- for a standing humanoid the two differ by under ten percent, and the
         // viewer's own comment concedes its figure is "2x off" anyway. Four LOD steps do not
         // resolve finer than that.
+        //
+        // ForDistanceRigged, NOT ForDistance: the latter applies a mesh volume's mLODScaleBias,
+        // which halves the radius and moves every threshold a full level closer. The first cut of
+        // this went through ForDistance and was reported in-world the same evening -- an avatar
+        // standing "recht weit weg" was drawn with faceted limbs, because she had reached the
+        // lowest level at 40 m where the viewer would still have been one above the bottom.
         float wearerSize = visual.BodySizeZ > 0.1f ? visual.BodySizeZ : 1.90f;
-        return SLNG.Core.VolumeLod.ForDistance(distance, wearerSize, RenderConfig.VolumeLodFactor);
+        return SLNG.Core.VolumeLod.ForDistanceRigged(distance, wearerSize, RenderConfig.VolumeLodFactor);
     }
 
     /// <summary>Fetches and applies a rigged/static MESH attachment (an item with a real LLMesh

@@ -44,8 +44,12 @@ public static class VolumeLod
     /// <c>sDistanceFactor = 1 - factor*0.1</c> (<c>llappviewer.cpp:564</c>) -- which is why the
     /// viewer exposes one number rather than a set of distances.</param>
     public static MeshDetailLevel ForDistance(float distance, float scaleLength, float lodFactor)
+        => ForRadius(distance, scaleLength * MeshLodScaleBias, lodFactor);
+
+    /// <summary>The shared tail of both entry points: everything after the radius is settled.
+    /// Which radius to hand it is the whole difference between a prim and a rigged mesh.</summary>
+    private static MeshDetailLevel ForRadius(float distance, float radius, float lodFactor)
     {
-        float radius = scaleLength * MeshLodScaleBias;
         if (!(radius > 0f) || !(distance > 0f) || !(lodFactor > 0f)) return MeshDetailLevel.Highest;
 
         distance *= 1f - lodFactor * 0.1f;
@@ -67,6 +71,27 @@ public static class VolumeLod
 
         return ForTangent(lodFactor * radius / distance);
     }
+
+    /// <summary>
+    /// The level for RIGGED geometry — a mesh worn on an avatar — of a wearer
+    /// <paramref name="wearerExtent"/> metres across, seen from <paramref name="distance"/> metres.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="ForDistance"/> for one reason, and it is a factor of two:
+    /// <c>LLVOVolume::calcLOD</c> branches on <c>LLDrawable::RIGGED</c> and takes
+    /// <c>radius = diag.magVec()</c> from the avatar's animated extents — with <b>no</b>
+    /// <c>mLODScaleBias</c>, which appears only in the other branch
+    /// (llvovolume.cpp:1526-1568). Putting an avatar through the mesh path instead halves its
+    /// radius, and halving the radius moves every threshold a full level closer: measured, an
+    /// avatar went coarse at 8 m instead of 15 and reached the lowest level at 40 m instead of 80.
+    /// That is what a rigged mesh looks like when it is rendered as if it were a prim.
+    ///
+    /// <para>The distance is likewise to the AVATAR, not to the worn part — the viewer uses
+    /// <c>avatar-&gt;mDrawable-&gt;mDistanceWRTCamera</c> — because a garment's host prim carries
+    /// neither a meaningful size nor a meaningful position of its own.</para>
+    /// </remarks>
+    public static MeshDetailLevel ForDistanceRigged(float distance, float wearerExtent, float lodFactor)
+        => ForRadius(distance, wearerExtent, lodFactor);
 
     /// <summary><c>getDetailFromTan</c>: the first threshold the angle falls under wins; falling
     /// under none means the highest level.</summary>
