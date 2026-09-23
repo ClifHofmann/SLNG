@@ -593,6 +593,7 @@
       "into_itself": "A folder cannot go inside itself.",
       "into_descendant": "A folder cannot go inside one of its own subfolders — that detaches it from your inventory.",
       "no_op": "It is already there.",
+      "library_cannot_be_cut": "A #Library folder is not yours to move — copy it instead.",
       "no_copy_permission": "“{0}” cannot be copied.",
       "paste_link": "Paste As Link",
       "copying_folder": "Copying “{0}” …",

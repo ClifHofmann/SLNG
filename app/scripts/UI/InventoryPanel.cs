@@ -1818,17 +1818,27 @@ public partial class InventoryPanel : SLNGWindow
     /// effect when it is pasted, so the user can change their mind by doing nothing.</summary>
     private void ClipboardTake(Guid id, bool isFolder, string name, SLNG.Core.InventoryClipboardMode mode)
     {
-        // The context menu greys cut and copy out on a system folder; Ctrl+X and Ctrl+C never went
-        // near that menu, so the same rule has to live here too. A cut-and-pasted Objects folder
-        // takes the destination for every arriving object with it, and nothing in the UI says
-        // where it went.
-        if (isFolder && _session?.IsSystemFolder(id) == true)
+        var facts = FactsFor(id, isFolder);
+
+        // Both refusals apply to a CUT only, and both are checked here rather than at paste time
+        // for the reason InventoryCutCheck gives: a refused cut must not leave an entry armed.
+        // The context menu greys cut out on a system folder; Ctrl+X never went near that menu, so
+        // the rule has to live here too. A cut-and-pasted Objects folder takes the destination for
+        // every arriving object with it, and nothing in the UI says where it went. BUG-INV-10
+        // added the Library case, which produced an empty folder instead of a refusal.
+        if (mode == SLNG.Core.InventoryClipboardMode.Cut)
         {
-            _status.Text = L10n.Tr("ui.inventory_clipboard.system_folder");
-            return;
+            var cut = SLNG.Core.InventoryClipboard.CanCut(facts, isFolder);
+            if (cut != SLNG.Core.InventoryCutCheck.Ok)
+            {
+                _status.Text = L10n.Tr(cut == SLNG.Core.InventoryCutCheck.InLibrary
+                    ? "ui.inventory_clipboard.library_cannot_be_cut"
+                    : "ui.inventory_clipboard.system_folder");
+                return;
+            }
         }
 
-        _clipboard.Set(mode, id, isFolder, name, ParentFolderOf(id, isFolder), FactsFor(id, isFolder));
+        _clipboard.Set(mode, id, isFolder, name, ParentFolderOf(id, isFolder), facts);
         _status.Text = L10n.TrFormat(
             mode == SLNG.Core.InventoryClipboardMode.Cut
                 ? "ui.inventory_clipboard.cut_done" : "ui.inventory_clipboard.copy_done",

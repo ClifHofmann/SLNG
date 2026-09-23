@@ -42,6 +42,26 @@ public enum InventoryPasteCheck
     LibraryCannotBeLinked,
 }
 
+/// <summary>Why something may not be CUT, or that it may. BUG-INV-10.</summary>
+/// <remarks>
+/// Separate from <see cref="InventoryPasteCheck"/> because it is answered at a different moment:
+/// a paste is judged against a destination, a cut against the thing itself, before anything goes
+/// on the clipboard at all. The reference viewer draws the same line —
+/// <c>LLInvFVBridge::cutToClipboard</c> (llinventorybridge.cpp:349-372) refuses before the
+/// clipboard is touched, so a refused cut cannot leave a stale entry armed behind it.
+/// </remarks>
+public enum InventoryCutCheck
+{
+    Ok,
+
+    /// <summary>It lives under <c>#Library</c>, which is not your inventory and cannot be moved
+    /// out of.</summary>
+    InLibrary,
+
+    /// <summary>A folder the grid maintains itself (Objects, Clothing, #Outfits ...).</summary>
+    SystemFolder,
+}
+
 /// <summary>
 /// The facts about a clipboard entry that decide whether it may be pasted <b>as a link</b>.
 /// </summary>
@@ -137,6 +157,35 @@ public sealed class InventoryClipboard
         Name = name ?? string.Empty;
         SourceFolderId = sourceFolderId;
         Facts = facts;
+    }
+
+    /// <summary>Whether this may be cut at all. BUG-INV-10.</summary>
+    /// <remarks>
+    /// Reported in-world 2026-09-23: Ctrl+X on a <c>#Library</c> folder, pasted into inventory,
+    /// produced an <b>empty folder</b>. A cut is a MOVE, and the Library is not yours to move
+    /// anything out of — every grid refuses it, and what arrives is whatever the half-done request
+    /// left behind.
+    ///
+    /// <para>The reference viewer refuses the cut itself rather than the paste.
+    /// <c>cutToClipboard</c> requires <c>isItemRemovable()</c>, which for both items and folders
+    /// ends at the same root test —
+    /// <c>if (!model-&gt;isObjectDescendentOf(id, gInventory.getRootFolderID())) return false;</c>
+    /// (llinventoryfunctions.cpp:745 for an item, :828 for a folder), under the literal comment
+    /// <i>"Can't delete an item that's in the library."</i>. The Library hangs off
+    /// <c>getLibraryRootFolderID()</c>, a different root, so nothing in it passes.</para>
+    ///
+    /// <para><b>Copy stays allowed.</b> <c>copyToClipboard</c> asks only
+    /// <c>isItemCopyable()</c> (llinventorybridge.cpp:406-412) — copying out of the Library is
+    /// what the Library is FOR, and FEAT-INV-09's folder copy already handles it.</para>
+    ///
+    /// <para>The library test comes first so that a Library folder that is also a system folder
+    /// ("Clothing" exists under both roots) is explained by the reason the user can act on.</para>
+    /// </remarks>
+    public static InventoryCutCheck CanCut(InventoryClipboardFacts facts, bool isFolder)
+    {
+        if (facts.IsInLibrary) return InventoryCutCheck.InLibrary;
+        if (isFolder && facts.IsSystemFolder) return InventoryCutCheck.SystemFolder;
+        return InventoryCutCheck.Ok;
     }
 
     public void Clear()

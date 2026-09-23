@@ -301,4 +301,59 @@ public class InventoryClipboardTests
         Assert.False(InventoryLinkRules.CanLink(22));  // simstate
         Assert.False(InventoryLinkRules.CanLink(255)); // unknown
     }
+
+    // ---------------------------------------------------------------- BUG-INV-10: what may be cut
+
+    private static InventoryClipboardFacts Facts(bool inLibrary = false, bool systemFolder = false)
+        => new(IsLink: false, AssetType: AssetTypeIds.Folder, AssetId: Guid.Empty,
+               IsInLibrary: inLibrary, IsSystemFolder: systemFolder);
+
+    [Fact]
+    public void AnOrdinaryFolderMayBeCut()
+    {
+        Assert.Equal(InventoryCutCheck.Ok, InventoryClipboard.CanCut(Facts(), isFolder: true));
+    }
+
+    [Fact]
+    public void ALibraryFolderMayNotBeCut()
+    {
+        // Reported in-world: Ctrl+X on a #Library folder produced an EMPTY folder at the
+        // destination. The Library is not the agent's inventory, so a move out of it cannot
+        // succeed on any grid -- llinventoryfunctions.cpp:828 refuses it at the root test.
+        Assert.Equal(InventoryCutCheck.InLibrary,
+                     InventoryClipboard.CanCut(Facts(inLibrary: true), isFolder: true));
+    }
+
+    [Fact]
+    public void ALibraryITEMMayNotBeCutEither()
+    {
+        // The viewer uses the same root test for items, under the literal comment
+        // "Can't delete an item that's in the library." (llinventoryfunctions.cpp:745).
+        Assert.Equal(InventoryCutCheck.InLibrary,
+                     InventoryClipboard.CanCut(Facts(inLibrary: true), isFolder: false));
+    }
+
+    [Fact]
+    public void ASystemFolderMayNotBeCut()
+    {
+        Assert.Equal(InventoryCutCheck.SystemFolder,
+                     InventoryClipboard.CanCut(Facts(systemFolder: true), isFolder: true));
+    }
+
+    [Fact]
+    public void ASystemFolderInTheLibraryIsExplainedByTheLibrary()
+    {
+        // "Clothing" exists under both roots. The reason the user can act on is the Library one --
+        // copy it -- so that is the one the check reports.
+        Assert.Equal(InventoryCutCheck.InLibrary,
+                     InventoryClipboard.CanCut(Facts(inLibrary: true, systemFolder: true), isFolder: true));
+    }
+
+    [Fact]
+    public void TheSystemFolderRuleAppliesToFoldersOnly()
+    {
+        // An ITEM never carries a folder type, so the flag cannot speak about one.
+        Assert.Equal(InventoryCutCheck.Ok,
+                     InventoryClipboard.CanCut(Facts(systemFolder: true), isFolder: false));
+    }
 }

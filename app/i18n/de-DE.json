@@ -593,6 +593,7 @@
       "into_itself": "Ein Ordner kann nicht in sich selbst.",
       "into_descendant": "Ein Ordner kann nicht in einen eigenen Unterordner — das hängt ihn vom Inventar ab.",
       "no_op": "Liegt schon dort.",
+      "library_cannot_be_cut": "Ein #Library-Ordner gehört dir nicht — kopiere ihn stattdessen.",
       "no_copy_permission": "„{0}“ darf nicht kopiert werden.",
       "paste_link": "Als Verknüpfung einfügen",
       "copying_folder": "Kopiere „{0}“ …",
