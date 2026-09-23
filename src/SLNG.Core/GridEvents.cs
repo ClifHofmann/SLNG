@@ -462,3 +462,31 @@ public record MapRegionInfo(string Name, int GridX, int GridY, ulong RegionHandl
 /// <param name="FailureCount">How many failed polls in a row. The number is the point: it is what
 /// separates "a hiccup" from "the capability is gone".</param>
 public record EventQueueStalledEvent(string RegionName, int FailureCount);
+
+/// <summary>Why a session ended. BUG-NET-22.</summary>
+public enum SessionEndReason
+{
+    /// <summary>We logged out ourselves. The app already knows and needs no telling.</summary>
+    ClientInitiated,
+
+    /// <summary>The grid ended the session (kick, another login, shutdown).</summary>
+    ServerInitiated,
+
+    /// <summary>The simulator stopped answering.</summary>
+    NetworkTimeout,
+
+    /// <summary>The simulator went down under us.</summary>
+    SimShutdown,
+
+    /// <summary>The main region's event queue died, so nothing will improve until a relog
+    /// (BUG-NET-20).</summary>
+    EventQueueDead,
+}
+
+/// <summary>The session is over and the client must go back to the login screen. BUG-NET-22.</summary>
+/// <remarks>
+/// Raised on a LibreMetaverse network thread or a log callback -- marshal before touching a scene
+/// node. <see cref="Message"/> is already meant for the user; the reason is for deciding what else
+/// to do, not for building a sentence out of.
+/// </remarks>
+public record SessionEndedEvent(SessionEndReason Reason, string Message);

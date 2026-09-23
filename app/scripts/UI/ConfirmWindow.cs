@@ -35,7 +35,13 @@ public partial class ConfirmWindow : SLNGWindow
     /// Trash", not "OK" — so the button can be read without re-reading the question.</param>
     /// <param name="danger">Colours the confirming label as a warning. For an action that destroys
     /// or spends something.</param>
-    public void Initialize(string title, string question, string confirmLabel, bool danger = false)
+    /// <param name="cancelLabel">What the other button says. Defaults to "Cancel", which is right
+    /// while the question is still open. BUG-NET-22 needed something else: when the session has
+    /// already ended there is nothing left to cancel, and the honest second option is "stay here
+    /// and read the chat" — which is also the choice the reference viewer offers
+    /// (<c>YouHaveBeenLoggedOut</c>, llappviewer.cpp:5020).</param>
+    public void Initialize(string title, string question, string confirmLabel, bool danger = false,
+                           string? cancelLabel = null)
     {
         Title = title;
 
@@ -60,7 +66,7 @@ public partial class ConfirmWindow : SLNGWindow
 
         var cancel = new Button
         {
-            Text = L10n.Tr("ui.common.cancel"),
+            Text = cancelLabel ?? L10n.Tr("ui.common.cancel"),
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         cancel.Pressed += () => Close(confirm: false);
