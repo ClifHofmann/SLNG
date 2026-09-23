@@ -91,6 +91,24 @@ public partial class StatsOverlay : PanelContainer
 
     // Last values computed by Refresh (5 Hz), reused by the log line so it costs no extra work.
     private double _lastFps, _lastLowFps, _lastMean, _lastMedian, _lastP99;
+
+    /// <summary>The frame rate the title bar shows, so that it cannot disagree with this panel.
+    /// <c>null</c> while no overlay is in the tree.</summary>
+    /// <remarks>
+    /// BUG-UI-14, second round. Trimming this panel's window to four seconds narrowed the gap but
+    /// could not close it, because the two readouts were still two separate MEASUREMENTS: the title
+    /// bar asked <c>Engine.GetFramesPerSecond()</c>, which counts whole frames inside a one-second
+    /// bucket, while this panel divides 1000 by the mean frame time of the last four seconds. Both
+    /// are correct; they are simply answers to different questions, and no amount of tuning one
+    /// window makes two different questions agree.
+    ///
+    /// <para>So there is one measurement now and the title bar reads it. The panel keeps the longer
+    /// window on purpose — a number that is re-read twice a second has to be steady enough to read,
+    /// and a one-second bucket visibly jumps. The fallback matters for exactly one moment: the title
+    /// bar exists before the overlay is added to the tree, and a blank frame rate during login would
+    /// be a worse bug than the one being fixed.</para>
+    /// </remarks>
+    internal static double? CurrentFps { get; private set; }
     private double _lastProcessMs, _lastDrawCalls, _lastPrimitives, _lastVideoMb, _lastManagedMb, _lastNodes;
     private int _lastQueueDepth, _lastQueuePeak;
 
@@ -167,7 +185,12 @@ public partial class StatsOverlay : PanelContainer
         _gc2 = GC.CollectionCount(2);
     }
 
-    public override void _ExitTree() => SLNGWindow.GlobalUiScaleChanged -= OnGlobalUiScaleChanged;
+    public override void _ExitTree()
+    {
+        SLNGWindow.GlobalUiScaleChanged -= OnGlobalUiScaleChanged;
+        // Stop handing out a reading nothing is refreshing any more.
+        CurrentFps = null;
+    }
 
     private void OnGlobalUiScaleChanged(float scale) => Scale = new Vector2(scale, scale);
 
@@ -345,6 +368,7 @@ public partial class StatsOverlay : PanelContainer
         double hitchesPerSec = windowSeconds > 0 ? hitches / windowSeconds : 0;
 
         _lastFps = fps; _lastLowFps = lowFps; _lastMean = mean; _lastMedian = median; _lastP99 = p99;
+        CurrentFps = fps;
 
         SetValue("FPS", $"{fps:F0}    1% low {lowFps:F0}", ColorForMs(p99));
         SetValue("Frame", $"{mean:F1} ms   med {median:F1}   p99 {p99:F1}", ColorForMs(median));

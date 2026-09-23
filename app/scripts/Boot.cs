@@ -383,7 +383,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.77-alpha";
+    public const string AppVersion = "v0.24.78-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -2596,7 +2596,10 @@ public partial class Boot : Control
                     _topMenu.ClearLocation();
                 }
 
-                int fps = (int)System.Math.Round(Engine.GetFramesPerSecond());
+                // BUG-UI-14: the same number the stats panel shows -- see StatsOverlay.CurrentFps
+                // for why reading it separately could not be made to agree.
+                int fps = (int)System.Math.Round(
+                    SLNG.App.UI.StatsOverlay.CurrentFps ?? Engine.GetFramesPerSecond());
                 _topMenu.UpdateFps(fps);
             }
             else
