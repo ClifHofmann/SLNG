@@ -159,6 +159,69 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
 
     public event EventHandler<AlertMessageEvent>? AlertMessageReceived;
 
+    /// <summary>A region's event queue has stopped delivering and is not coming back by itself
+    /// (BUG-NET-20). Raised once per region, then at most every ten minutes while it lasts.</summary>
+    /// <remarks>
+    /// Worth surfacing to the user rather than only logging, because the consequences are all
+    /// invisible: that region stops delivering group chat invitations, teleport progress,
+    /// ObjectMedia, and parcel/environment pushes. Everything simply stops working quietly, which
+    /// is indistinguishable from "nobody is talking" and "this object has no media".
+    ///
+    /// <para>Raised on a LibreMetaverse logging thread, like every other event here — the handler
+    /// marshals.</para>
+    /// </remarks>
+    public event EventHandler<EventQueueStalledEvent>? EventQueueStalled;
+
+    private readonly SLNG.Core.EventQueueHealth _eventQueueHealth = new();
+
+    /// <summary>Sees every LibreMetaverse log line before it is printed. Returns false to swallow
+    /// it.</summary>
+    /// <remarks>
+    /// Two jobs, and the second is why this is a filter rather than a passive listener. It spots a
+    /// stalled event queue (BUG-NET-20) — the one condition the library reports nowhere else — and
+    /// it stops the resulting flood: the report that started this had <b>65 identical lines with
+    /// nothing between them</b>, which hid every other diagnostic in the session. Losing a
+    /// diagnostic to a noisy log is the same harm as not writing it.
+    ///
+    /// <para>The FIRST failure for a region is still printed verbatim. If this detection is ever
+    /// wrong, the raw evidence is in the log exactly once, which is enough to notice and not
+    /// enough to drown anything.</para>
+    ///
+    /// <para>Called on a LibreMetaverse network thread. <see cref="SLNG.Core.EventQueueHealth"/>
+    /// is not thread-safe, hence the lock; it is contended about once per second at worst.</para>
+    /// </remarks>
+    private bool FilterLibreMetaverseLog(Microsoft.Extensions.Logging.LogLevel level, string message)
+    {
+        if (!SLNG.Core.EventQueueHealth.TryReadEventQueueFailure(message, out var simulatorText))
+            return true;
+
+        string regionName = SLNG.Core.EventQueueHealth.RegionNameFromSimulatorText(simulatorText);
+        if (string.IsNullOrEmpty(simulatorText)) return true; // unrecognisable: keep the line
+
+        bool announce;
+        int count;
+        bool first;
+        lock (_eventQueueHealth)
+        {
+            first = _eventQueueHealth.FailureCount(simulatorText) == 0;
+            announce = _eventQueueHealth.ReportFailure(simulatorText, DateTime.UtcNow);
+            count = _eventQueueHealth.FailureCount(simulatorText);
+        }
+
+        if (announce)
+        {
+            Console.Error.WriteLine(
+                $"[EventQueue] {regionName}: the region's event queue has failed {count} times in a row and is " +
+                "not recovering -- its capability is gone (a region restart does this). Group chat invitations, " +
+                "teleport progress, object media and parcel/environment changes will not arrive from this region " +
+                "until you reconnect to it. Further identical warnings are suppressed.");
+
+            EventQueueStalled?.Invoke(this, new SLNG.Core.EventQueueStalledEvent(regionName, count));
+        }
+
+        return first;
+    }
+
     public event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
 
     public event EventHandler<TerrainSettingsEvent>? TerrainSettingsReceived;
@@ -341,10 +404,14 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // filtered to the level actually wanted.
         try
         {
+            // The relay prints exactly what AddSimpleConsole printed, and additionally lets us
+            // READ what LibreMetaverse says. That is not a convenience: a dead event queue is
+            // reported nowhere else in the library (BUG-NET-20), because the server's error comes
+            // back as HTTP 200 and every liveness flag stays green.
             LibreMetaverse.Logger.SetLoggerFactory(
                 Microsoft.Extensions.Logging.LoggerFactory.Create(b => b
                     .SetMinimumLevel(lmvLevel)
-                    .AddSimpleConsole(o => o.SingleLine = true)),
+                    .AddProvider(new LibreMetaverseLogRelay("SLNG", FilterLibreMetaverseLog))),
                 "SLNG");
         }
         catch (Exception ex)
@@ -651,6 +718,8 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Groups.CurrentGroups -= OnCurrentGroups;
         _client.Self.GroupChatJoined -= OnGroupChatJoined;
         _client.Self.AlertMessage -= OnAlertMessage;
+        // The next session's regions have nothing to do with this one's (BUG-NET-20).
+        lock (_eventQueueHealth) _eventQueueHealth.Clear();
         _client.Objects.KillObject -= OnKillObject;
         _client.Objects.KillObjects -= OnKillObjects;
         _client.Terrain.LandPatchReceived -= OnLandPatchReceived;

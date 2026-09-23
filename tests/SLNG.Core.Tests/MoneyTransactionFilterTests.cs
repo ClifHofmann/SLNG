@@ -18,18 +18,41 @@ public class MoneyTransactionFilterTests
     {
         var filter = new MoneyTransactionFilter();
 
-        Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Alice, Bob));
+        Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Alice, Bob, true));
     }
 
     [Fact]
     public void APureBalanceUpdateIsNotATransaction()
     {
         // The answer to MoneyBalanceRequest looks identical apart from having nobody at either
-        // end. Announcing it would put "you were paid L$ 0" on screen at every login, because the
-        // session asks for its balance as soon as it is in-world.
+        // end and saying nothing. Announcing it would put "you were paid L$ 0" on screen at every
+        // login, because the session asks for its balance as soon as it is in-world.
         var filter = new MoneyTransactionFilter();
 
-        Assert.False(filter.ShouldAnnounce(Guid.NewGuid(), Guid.Empty, Guid.Empty));
+        Assert.False(filter.ShouldAnnounce(Guid.NewGuid(), Guid.Empty, Guid.Empty, false));
+    }
+
+    [Fact]
+    public void GivingSomebodyAnInventoryItemIsNotAPayment()
+    {
+        // Measured in-world 2026-09-22: handing an item to another agent produces a reply with
+        // BOTH parties filled, amount 0, type 3000 (TRANS_GIVE_INVENTORY) and an empty
+        // description -- and the old rule announced it as "Du hast Clifton Howlett L$ 0 gezahlt."
+        // The reference viewer never reaches its notification code for this, because its very
+        // first test is on that empty description (llviewermessage.cpp:4527-4532).
+        var filter = new MoneyTransactionFilter();
+
+        Assert.False(filter.ShouldAnnounce(Guid.NewGuid(), Alice, Bob, gridDescribedIt: false));
+    }
+
+    [Fact]
+    public void AWordlessReplyIsNeverAnnouncedHoweverItIsAddressed()
+    {
+        // The gate comes before parties and amount, so none of them can talk their way past it.
+        var filter = new MoneyTransactionFilter();
+
+        Assert.False(filter.ShouldAnnounce(Guid.NewGuid(), Alice, Guid.Empty, false));
+        Assert.False(filter.ShouldAnnounce(Guid.NewGuid(), Guid.Empty, Bob, false));
     }
 
     [Fact]
@@ -41,7 +64,7 @@ public class MoneyTransactionFilterTests
         // this is the safety net for one that does not.
         var filter = new MoneyTransactionFilter();
 
-        Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Guid.Empty, Guid.Empty, hasDescription: true));
+        Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Guid.Empty, Guid.Empty, gridDescribedIt: true));
     }
 
     [Fact]
@@ -50,8 +73,8 @@ public class MoneyTransactionFilterTests
         // A fee to the system has a payer and no payee -- still something the user paid.
         var filter = new MoneyTransactionFilter();
 
-        Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Alice, Guid.Empty));
-        Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Guid.Empty, Bob));
+        Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Alice, Guid.Empty, true));
+        Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Guid.Empty, Bob, true));
     }
 
     [Fact]
@@ -60,9 +83,9 @@ public class MoneyTransactionFilterTests
         var filter = new MoneyTransactionFilter();
         var id = Guid.NewGuid();
 
-        Assert.True(filter.ShouldAnnounce(id, Alice, Bob));
-        Assert.False(filter.ShouldAnnounce(id, Alice, Bob));
-        Assert.False(filter.ShouldAnnounce(id, Alice, Bob));
+        Assert.True(filter.ShouldAnnounce(id, Alice, Bob, true));
+        Assert.False(filter.ShouldAnnounce(id, Alice, Bob, true));
+        Assert.False(filter.ShouldAnnounce(id, Alice, Bob, true));
     }
 
     [Fact]
@@ -70,8 +93,8 @@ public class MoneyTransactionFilterTests
     {
         var filter = new MoneyTransactionFilter();
 
-        Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Alice, Bob));
-        Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Alice, Bob));
+        Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Alice, Bob, true));
+        Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Alice, Bob, true));
     }
 
     [Fact]
@@ -81,8 +104,8 @@ public class MoneyTransactionFilterTests
         // dropping one, so it is announced and simply not remembered.
         var filter = new MoneyTransactionFilter();
 
-        Assert.True(filter.ShouldAnnounce(Guid.Empty, Alice, Bob));
-        Assert.True(filter.ShouldAnnounce(Guid.Empty, Alice, Bob));
+        Assert.True(filter.ShouldAnnounce(Guid.Empty, Alice, Bob, true));
+        Assert.True(filter.ShouldAnnounce(Guid.Empty, Alice, Bob, true));
     }
 
     [Fact]
@@ -95,12 +118,12 @@ public class MoneyTransactionFilterTests
 
         for (int i = 0; i < 500; i++)
         {
-            Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Alice, Bob));
+            Assert.True(filter.ShouldAnnounce(Guid.NewGuid(), Alice, Bob, true));
         }
 
         // And the most recent one is still remembered after all that trimming.
         var latest = Guid.NewGuid();
-        Assert.True(filter.ShouldAnnounce(latest, Alice, Bob));
-        Assert.False(filter.ShouldAnnounce(latest, Alice, Bob));
+        Assert.True(filter.ShouldAnnounce(latest, Alice, Bob, true));
+        Assert.False(filter.ShouldAnnounce(latest, Alice, Bob, true));
     }
 }

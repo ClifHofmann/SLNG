@@ -456,10 +456,35 @@ public sealed partial class GridSession
     public Task MoveToTrashAsync(Guid itemId, bool isFolder)
     {
         if (TrashFolderId is not { } trashId) return Task.CompletedTask;
+        // restamp: true, as the reference viewer does for a move to Trash and only for that
+        // (LLInventoryModel::removeItem / removeCategory, llinventorymodel.cpp:4277-4331). An
+        // ordinary reparent passes false; the flag rewrites the creation date, which is what keeps
+        // the Trash sorted by when things were thrown away rather than when they were made.
+        return MoveInventoryAsync(itemId, trashId, isFolder, "Trash", restamp: true);
+    }
+
+    /// <summary>
+    /// Moves an item or folder into another folder. FEAT-INV-08.
+    /// </summary>
+    /// <param name="destinationLabel">What to call the destination in the log line; the folder's
+    /// own name where the caller knows it.</param>
+    /// <remarks>
+    /// The same legacy UDP reparent <see cref="MoveToTrashAsync"/> sends, which is that method's
+    /// whole point and is documented there: <c>InventoryManager.MoveItem</c>/<c>MoveFolder</c>
+    /// prefer AIS whenever it is available and PATCH <c>{cap}/item/{id}</c> with a bare
+    /// <c>parent_id</c>, which Second Life answers with <b>HTTP 400</b>. Every move made that way
+    /// failed silently and the thing stayed where it was. Trash was simply the first destination
+    /// this project needed; nothing about the mechanism is specific to it.
+    /// </remarks>
+    public Task MoveInventoryAsync(
+        Guid itemId, Guid newParentId, bool isFolder, string destinationLabel = "", bool restamp = false)
+    {
+        if (itemId == Guid.Empty || newParentId == Guid.Empty) return Task.CompletedTask;
+        if (itemId == newParentId) return Task.CompletedTask; // a folder cannot contain itself
         if (!_client.Network.Connected) return Task.CompletedTask;
 
         var id = new UUID(itemId);
-        var trash = new UUID(trashId);
+        var trash = new UUID(newParentId);
 
         // Keep the local store in step with what we are about to tell the grid.
         if (_client.Inventory.Store?.GetNodeOrDefault(id)?.Data is { } node)
@@ -472,7 +497,7 @@ public sealed partial class GridSession
         {
             var move = new MoveInventoryFolderPacket
             {
-                AgentData = { AgentID = _client.Self.AgentID, SessionID = _client.Self.SessionID, Stamp = false },
+                AgentData = { AgentID = _client.Self.AgentID, SessionID = _client.Self.SessionID, Stamp = restamp },
                 InventoryData = new[]
                 {
                     new MoveInventoryFolderPacket.InventoryDataBlock { FolderID = id, ParentID = trash },
@@ -484,7 +509,7 @@ public sealed partial class GridSession
         {
             var move = new MoveInventoryItemPacket
             {
-                AgentData = { AgentID = _client.Self.AgentID, SessionID = _client.Self.SessionID, Stamp = false },
+                AgentData = { AgentID = _client.Self.AgentID, SessionID = _client.Self.SessionID, Stamp = restamp },
                 InventoryData = new[]
                 {
                     // Empty NewName = "keep the name", the same as the viewer's addString("NewName", NULL).
@@ -500,7 +525,8 @@ public sealed partial class GridSession
         // UDP is fire-and-forget: unlike the AIS call this replaces, a failure here is silent, so
         // say what was sent. This line is how the 400 that made Delete a no-op was found.
         Console.Error.WriteLine(
-            $"[Inventory] MoveInventory{(isFolder ? "Folder" : "Item")} {id} -> Trash {trash}");
+            $"[Inventory] MoveInventory{(isFolder ? "Folder" : "Item")} {id} -> " +
+            $"{(string.IsNullOrEmpty(destinationLabel) ? "folder" : destinationLabel)} {trash}");
 
         return Task.CompletedTask;
     }
@@ -534,15 +560,389 @@ public sealed partial class GridSession
     }
 
     /// <summary>
-    /// Copies an inventory item to a new parent folder.
+    /// Copies an inventory item to a new parent folder. An empty <paramref name="newName"/> means
+    /// "keep the name" -- LibreMetaverse omits the field entirely, so the server reuses the
+    /// original, which is what the reference viewer asks for as well (it passes
+    /// <c>std::string()</c>, llinventoryfunctions.cpp:1592-1600).
+    ///
+    /// <para>Goes through the plural <c>RequestCopyItemsWithResultAsync</c> rather than the
+    /// single-item <c>RequestCopyItemAsync</c> for one reason: the latter returns the copied
+    /// <c>InventoryBase</c>, and on an AIS grid that is <b>null even when the copy worked</b>,
+    /// because the AIS branch fills <c>CopiedItems</c> with nothing and the single-item wrapper
+    /// hands back <c>CopiedItems[0]</c> (InventoryManager.Async.cs:376-385). Reading a null there
+    /// as failure would report every successful copy on Second Life as a failure.</para>
+    ///
+    /// <para><b>Do not treat the return value as the truth.</b> A <c>false</c> means "no
+    /// confirmation arrived", which is not the same as "it did not happen": the UDP branch waits
+    /// on a <c>BulkUpdateInventory</c> carrying the callback id, and LibreMetaverse's own handler
+    /// is annotated <c>// TODO: Is this callback even triggered when items are copied?</c>
+    /// (InventoryManager.PacketHandlers.cs:314). A cancellation is swallowed into the same
+    /// <c>false</c> by the branch's catch-all. Every caller here treats this as fire-and-forget,
+    /// and the folder copy does not wait for it at all.</para>
     /// </summary>
-    public async Task CopyItemAsync(Guid itemId, Guid newParentId, string newName)
+    public async Task<bool> CopyItemAsync(
+        Guid itemId, Guid newParentId, string newName, CancellationToken ct = default)
     {
         var itemUuid = new LibreMetaverse.UUID(itemId);
-        var parentUuid = new LibreMetaverse.UUID(newParentId);
 
-        await _client.Inventory.RequestCopyItemAsync(itemUuid, parentUuid, newName, CancellationToken.None).ConfigureAwait(false);
+        // The item's OWNER, not necessarily us. CopyInventoryItem carries an OldAgentID and the
+        // reference viewer fills it from the item itself (`item->getPermissions().getOwner()`,
+        // llinventoryfunctions.cpp:1592-1600) -- which is the only reason copying a #Library item
+        // into your own inventory works at all. LibreMetaverse's short overload hardcodes the
+        // agent id instead, so ask the store. Falls back to us when the store has no owner
+        // recorded, which is the pre-existing behaviour.
+        var owner = (_client.Inventory.Store?.GetNodeOrDefault(itemUuid)?.Data
+            as LibreMetaverse.InventoryItem)?.OwnerID ?? LibreMetaverse.UUID.Zero;
+        if (owner == LibreMetaverse.UUID.Zero) owner = _client.Self.AgentID;
+
+        var result = await _client.Inventory.RequestCopyItemsWithResultAsync(
+            new List<LibreMetaverse.UUID> { itemUuid },
+            new List<LibreMetaverse.UUID> { new(newParentId) },
+            new List<string> { newName },
+            owner, ct).ConfigureAwait(false);
+        return result.Success;
     }
+
+    /// <summary>How deep a folder copy follows subfolders before it stops. FEAT-INV-09.</summary>
+    /// <remarks>
+    /// The reference viewer has no limit -- its recursion is bounded only by the tree. Ours is
+    /// bounded on purpose: every level is a folder create plus a request per item, all
+    /// fire-and-forget over a single circuit, and a mis-read tree would turn a misclick into a
+    /// flood the user cannot stop. Sixteen is far past any real inventory; the result says when it
+    /// was hit rather than pretending the copy was whole.
+    /// </remarks>
+    public const int MaxFolderCopyDepth = 16;
+
+    // LibreMetaverse's CreateFolder is a fire-and-forget UDP packet: it hands back the new id
+    // immediately and never waits for the grid to agree. Copying into that id in the same
+    // millisecond is a race -- the CopyInventoryItem can reach the simulator before the folder
+    // exists there. The reference viewer has no such race because its createNewCategory is an AIS
+    // request with a completion callback. This is the stand-in for that callback.
+    private const int FolderCreateSettleMs = 200;
+
+    // Nothing in a folder copy is waited on. Measured 2026-09-22 on a folder holding TWO items:
+    // 15 s, and then "0 items, 2 failed" -- because LibreMetaverse's copy call waits on a server
+    // callback that this grid never sent, and then answers a cancellation with a plain
+    // `Success = false` (the whole UDP branch sits inside one catch-all,
+    // InventoryManager.Async.cs:1250-1255), so the wait bought nothing and told us nothing either.
+    // The reference viewer never waits: copy_inventory_category_content fires every
+    // copy_inventory_item and moves on (llinventoryfunctions.cpp:526-561). Outcomes are logged
+    // from a background continuation instead, where a slow grid costs nobody anything.
+
+    // How many folders of the tree are built at once. The reference viewer has no explicit limit:
+    // each of its createNewCategory callbacks fires when its own round trip returns, so siblings
+    // naturally overlap. Four is that behaviour with a ceiling on it.
+    private const int MaxConcurrentFolderCopies = 4;
+
+    /// <summary>Whether an item or folder lives under the grid's <c>#Library</c> tree rather than
+    /// in the agent's own inventory. FEAT-INV-09.</summary>
+    public bool IsInLibrary(Guid id)
+        => id != Guid.Empty && IsUnderLibrary(new LibreMetaverse.UUID(id));
+
+    /// <summary>
+    /// Creates an inventory link -- a second name for one thing, not a second thing. FEAT-INV-09.
+    /// </summary>
+    /// <remarks>
+    /// This is the reference viewer's "Paste As Link" (<c>LLFolderBridge::pasteLinkFromClipboard</c>
+    /// -> <c>link_inventory_object</c>, llinventorybridge.cpp:4387-4465). Which things may be
+    /// linked is decided before the call, by <see cref="SLNG.Core.InventoryClipboard.CanPasteLinkInto"/>.
+    ///
+    /// <para>An AIS refusal is a <c>null</c> return, never an exception -- the same trap
+    /// <see cref="CreateCofLinkAsync"/> documents -- so the return value is the only honest signal
+    /// and the caller must read it.</para>
+    /// </remarks>
+    public async Task<bool> CreateInventoryLinkAsync(
+        Guid targetFolderId, Guid linkToId, CancellationToken ct = default)
+    {
+        if (targetFolderId == Guid.Empty || linkToId == Guid.Empty) return false;
+
+        var store = _client.Inventory.Store;
+        var data = store?.GetNodeOrDefault(new LibreMetaverse.UUID(linkToId))?.Data;
+        if (data == null) return false;
+
+        var invType = data is LibreMetaverse.InventoryItem item
+            ? item.InventoryType
+            : LibreMetaverse.InventoryType.Folder;
+
+        try
+        {
+            var created = await _client.Inventory.CreateLinkAsync(
+                new LibreMetaverse.UUID(targetFolderId), new LibreMetaverse.UUID(linkToId),
+                data.Name, string.Empty, invType, LibreMetaverse.UUID.Zero, ct).ConfigureAwait(false);
+            if (created != null) return true;
+
+            Console.Error.WriteLine(
+                $"[Inventory] link to '{data.Name}' ({linkToId}) in {targetFolderId} came back empty -- " +
+                "see the preceding 'Create inventory' warning for the AIS reason");
+            return false;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Inventory] CreateLinkAsync threw for {linkToId}: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Copies a folder and everything under it into another folder. FEAT-INV-09.
+    /// </summary>
+    /// <remarks>
+    /// There is no "copy this folder" message in the protocol. The reference viewer builds the
+    /// copy client-side and so does this: create the folder, then walk the original -- one copy
+    /// request per item, a fresh link per link, and recurse into each subfolder
+    /// (<c>copy_inventory_category</c> / <c>copy_inventory_category_content</c>,
+    /// llinventoryfunctions.cpp:433-451 and 498-573).
+    ///
+    /// <para>Three details are taken from there rather than invented:</para>
+    /// <list type="bullet">
+    /// <item>A <b>link is copied as a link</b>, not as a copy of what it points at. Copying an
+    /// outfit folder must not duplicate the clothes; it must duplicate the references to
+    /// them.</item>
+    /// <item>A <b>no-copy item is skipped</b>. The viewer can optionally move it instead
+    /// (<c>move_no_copy_items</c>), but its own paste never asks for that, and moving something
+    /// out of the original while "copying" it is not what the word means.</item>
+    /// <item>Only <b>FT_OUTFIT survives as a folder type</b>. A copy of any other system folder
+    /// becomes a plain folder, because the grid routes arriving content by preferred type and two
+    /// folders claiming the same one is a coin toss.</item>
+    /// </list>
+    ///
+    /// <para>The copy is announced by its counts, not by a bare success: partly-copied is the
+    /// normal outcome for a folder holding no-copy items, and a caller that said "copied" would be
+    /// lying about it.</para>
+    ///
+    /// <para><b>One deliberate difference from the reference viewer.</b> It never lets a folder
+    /// with a no-copy item anywhere inside it reach this code at all: <c>isClipboardPasteable</c>
+    /// walks the whole subtree and greys Paste out if any single item is not copyable
+    /// (llinventorybridge.cpp:636-679, 2533-2566). That is safe but mute — the user gets a dead
+    /// menu entry and no reason. We copy what may be copied and say how many were left behind,
+    /// which is the same outcome its own <c>copy_inventory_category_content</c> produces when it
+    /// does run, with the difference stated instead of hidden.</para>
+    /// </remarks>
+    public async Task<FolderCopyResult> CopyFolderAsync(
+        Guid sourceFolderId, Guid targetParentId, CancellationToken ct = default)
+    {
+        if (sourceFolderId == Guid.Empty || targetParentId == Guid.Empty) return FolderCopyResult.Nothing;
+        if (sourceFolderId == targetParentId) return FolderCopyResult.Nothing;
+        if (!_client.Network.Connected) return FolderCopyResult.Nothing;
+
+        if (!TryGetInventoryName(sourceFolderId, out var name)) name = "New Folder";
+
+        var tally = new FolderCopyTally();
+        // Claiming the source up front guards the recursion against a tree that points back at
+        // itself -- the same job the viewer's root_copy_id exclusion does, done for every folder
+        // rather than just the root.
+        tally.TryVisit(sourceFolderId);
+
+        var newRootId = await CopyFolderTreeAsync(
+            sourceFolderId, targetParentId, name, tally, depth: 0, ct).ConfigureAwait(false);
+
+        Console.Error.WriteLine(
+            $"[Inventory] copied folder '{name}' ({sourceFolderId}) -> {newRootId}: " +
+            $"{tally.Folders} folders, {tally.Items} items and {tally.Links} links requested, " +
+            $"{tally.SkippedNoCopy} skipped (no copy)" +
+            (tally.DepthTruncated != 0 ? $", stopped at depth {MaxFolderCopyDepth}" : string.Empty));
+
+        return new FolderCopyResult(
+            newRootId, tally.Folders, tally.Items, tally.Links,
+            tally.SkippedNoCopy, tally.DepthTruncated != 0);
+    }
+
+    /// <summary>Running totals for one <see cref="CopyFolderAsync"/>, shared down the
+    /// recursion.</summary>
+    /// <remarks>
+    /// Touched from several folder branches at once, so every counter moves through
+    /// <see cref="System.Threading.Interlocked"/> and the visited set behind a lock. Plain
+    /// <c>++</c> on a shared int loses increments, and the count is the whole point of the class.
+    /// </remarks>
+    private sealed class FolderCopyTally
+    {
+        public int Folders;
+        public int Items;
+        public int Links;
+        public int SkippedNoCopy;
+        public int DepthTruncated;
+
+        public readonly SemaphoreSlim Gate = new(MaxConcurrentFolderCopies, MaxConcurrentFolderCopies);
+
+        private readonly HashSet<Guid> _visited = new();
+
+        /// <summary>Claims a source folder. False means some other branch already has it, which is
+        /// the guard against a tree that points back at itself.</summary>
+        public bool TryVisit(Guid id)
+        {
+            lock (_visited) { return _visited.Add(id); }
+        }
+    }
+
+    private async Task<Guid> CopyFolderTreeAsync(
+        Guid sourceId, Guid parentId, string name, FolderCopyTally tally, int depth, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        // FT_OUTFIT is the one type the copy keeps, exactly as copy_inventory_category does
+        // (llinventoryfunctions.cpp:443-448) -- an outfit that came back as a plain folder would
+        // no longer be offered as an outfit anywhere.
+        var sourceFolder = _client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(sourceId))?.Data
+            as LibreMetaverse.InventoryFolder;
+        var preferred = sourceFolder?.PreferredType == LibreMetaverse.FolderType.Outfit
+            ? LibreMetaverse.FolderType.Outfit
+            : LibreMetaverse.FolderType.None;
+
+        var newFolderId = _client.Inventory
+            .CreateFolder(new LibreMetaverse.UUID(parentId), name, preferred).Guid;
+        if (newFolderId == Guid.Empty) return Guid.Empty;
+        Interlocked.Increment(ref tally.Folders);
+
+        await Task.Delay(FolderCreateSettleMs, ct).ConfigureAwait(false);
+
+        var children = await FetchInventoryChildrenAsync(sourceId, ct).ConfigureAwait(false);
+
+        var toCopy = new List<InventoryEntry>();
+        var toLink = new List<InventoryEntry>();
+        foreach (var entry in children)
+        {
+            if (entry.IsFolder) continue;
+            if (entry.IsLink) { toLink.Add(entry); continue; }   // copy the reference, not the referent
+            if (!entry.CanCopy) { Interlocked.Increment(ref tally.SkippedNoCopy); continue; }
+            toCopy.Add(entry);
+        }
+
+        // Everything this folder holds goes out at once and nothing is waited on. Awaiting each
+        // request made copying a folder take minutes -- reported in-world 2026-09-22, *"das
+        // Kopieren von Ordnern dauert ewig, bei FS geht das quasi direkt"*, and the log showed a
+        // TWO-item folder sitting for fifteen seconds before reporting "0 items, 2 failed". The
+        // wait was never how the reference viewer does it either.
+        StartItemCopies(toCopy, newFolderId, tally, ct);
+        StartLinkCreation(toLink, newFolderId, tally, ct);
+
+        var subfolders = new List<InventoryEntry>();
+        foreach (var entry in children)
+            if (entry.IsFolder && tally.TryVisit(entry.Id)) subfolders.Add(entry);
+
+        if (subfolders.Count > 0 && depth >= MaxFolderCopyDepth)
+        {
+            Interlocked.Exchange(ref tally.DepthTruncated, 1);
+            return newFolderId;
+        }
+
+        // Siblings are built at the same time, up to the gate's width.
+        var branches = new List<Task>(subfolders.Count);
+        foreach (var entry in subfolders)
+            branches.Add(CopyGatedAsync(entry.Id, newFolderId, entry.Name, tally, depth + 1, ct));
+        await Task.WhenAll(branches).ConfigureAwait(false);
+
+        return newFolderId;
+    }
+
+    private async Task CopyGatedAsync(
+        Guid sourceId, Guid parentId, string name, FolderCopyTally tally, int depth, CancellationToken ct)
+    {
+        await tally.Gate.WaitAsync(ct).ConfigureAwait(false);
+        try { await CopyFolderTreeAsync(sourceId, parentId, name, tally, depth, ct).ConfigureAwait(false); }
+        finally { tally.Gate.Release(); }
+    }
+
+    /// <summary>Asks the grid to copy a folder's items, in as few requests as the protocol
+    /// allows, and does not wait for it to say it did.</summary>
+    /// <remarks>
+    /// One <c>CopyInventoryItem</c> packet carries a block per item, and the AIS call takes a list
+    /// too, so a folder's worth of items is a single request -- not one per item. Grouped by
+    /// owner because the message carries ONE <c>OldAgentID</c> for the whole batch, and copying a
+    /// <c>#Library</c> folder is precisely the case where that is not the agent.
+    ///
+    /// <para>The counts a copy reports are therefore what was <b>asked for</b>, not what was
+    /// confirmed -- see the note above the constants for why waiting for confirmation was both
+    /// slow and uninformative. A refusal still reaches the log, just not the caller.</para>
+    /// </remarks>
+    private void StartItemCopies(
+        List<InventoryEntry> items, Guid targetFolderId, FolderCopyTally tally, CancellationToken ct)
+    {
+        if (items.Count == 0) return;
+
+        foreach (var group in items.GroupBy(e => e.OwnerId))
+        {
+            var owner = group.Key != Guid.Empty
+                ? new LibreMetaverse.UUID(group.Key)
+                : _client.Self.AgentID;
+
+            var ids = new List<LibreMetaverse.UUID>();
+            var targets = new List<LibreMetaverse.UUID>();
+            var names = new List<string>();
+            var targetUuid = new LibreMetaverse.UUID(targetFolderId);
+            foreach (var entry in group)
+            {
+                ids.Add(new LibreMetaverse.UUID(entry.Id));
+                targets.Add(targetUuid);
+                names.Add(string.Empty);   // keep the original name -- see CopyItemAsync
+            }
+
+            Interlocked.Add(ref tally.Items, ids.Count);
+
+            var sending = _client.Inventory
+                .RequestCopyItemsWithResultAsync(ids, targets, names, owner, ct);
+            ObserveInBackground(sending, ids.Count, targetFolderId);
+        }
+    }
+
+    /// <summary>Reports a fire-and-forget copy's eventual answer to the log and nowhere else.</summary>
+    private static void ObserveInBackground(
+        Task<LibreMetaverse.InventoryManager.CopyItemsResult> sending, int count, Guid targetFolderId)
+    {
+        _ = sending.ContinueWith(t =>
+        {
+            if (t.IsCanceled) return;
+            if (t.IsFaulted)
+            {
+                Console.Error.WriteLine(
+                    $"[Inventory] copy of {count} item(s) into {targetFolderId} threw: " +
+                    $"{t.Exception?.GetBaseException().Message}");
+                return;
+            }
+            if (!t.Result.Success)
+            {
+                // Not necessarily a failure: LibreMetaverse reports "no confirmation" and "refused"
+                // with the same false. Worth a line, not worth telling the user about.
+                Console.Error.WriteLine(
+                    $"[Inventory] copy of {count} item(s) into {targetFolderId} was not confirmed" +
+                    (t.Result.Error != null ? $" ({t.Result.Error.Message})" : string.Empty));
+            }
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    /// <summary>Recreates a folder's links as links, all at once, without waiting either.</summary>
+    /// <remarks>
+    /// One call per link rather than a batched request, because a link's outcome is per link: AIS
+    /// signals a refusal by handing back <c>null</c>, and a single "did the batch work" bool could
+    /// not say which of them it refused. Like the copies they are not awaited -- a link whose
+    /// confirmation never arrives would otherwise hold the whole folder for LibreMetaverse's full
+    /// sixty-second callback timeout.
+    /// </remarks>
+    private void StartLinkCreation(
+        List<InventoryEntry> links, Guid targetFolderId, FolderCopyTally tally, CancellationToken ct)
+    {
+        foreach (var entry in links)
+        {
+            Interlocked.Increment(ref tally.Links);
+
+            var targetId = entry.LinkTargetId;
+            var name = entry.Name;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (!await CreateInventoryLinkAsync(targetFolderId, targetId, ct).ConfigureAwait(false))
+                        Console.Error.WriteLine($"[Inventory] link to '{name}' was refused");
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[Inventory] link to '{name}' threw: {ex.Message}");
+                }
+            }, ct);
+        }
+    }
+
 
     /// <summary>
     /// Wears an inventory item. An attachment/object is attached via <c>Attach</c>. A system
@@ -2728,8 +3128,15 @@ public sealed partial class GridSession
         return removed;
     }
 
-    /// <summary>Renames a saved outfit folder. FEAT-INV-04.</summary>
-    public bool RenameOutfitAsync(Guid folderId, string newName)
+    /// <summary>Renames any inventory folder. FEAT-INV-04 named it after outfits because that was
+    /// the only caller; nothing in it is outfit-specific, and FEAT-INV-08 needed the same thing for
+    /// ordinary folders.</summary>
+    /// <remarks>
+    /// Keeps the folder's <c>PreferredType</c>. Dropping it would turn a system folder — Objects,
+    /// Clothing, #Outfits — into a plain one on a rename, and the grid places new content by that
+    /// type.
+    /// </remarks>
+    public bool RenameFolder(Guid folderId, string newName)
     {
         newName = newName?.Trim() ?? string.Empty;
         if (folderId == Guid.Empty || newName.Length == 0) return false;
@@ -2739,34 +3146,91 @@ public sealed partial class GridSession
         return true;
     }
 
-    /// <summary>Deletes a saved outfit folder (recoverable — on SL an AIS category delete lands it
-    /// in Trash; the linked items stay in inventory). FEAT-INV-04.
+    /// <summary>Moves a folder and everything in it to the Trash. FEAT-INV-04, BUG-INV-09.</summary>
+    /// <remarks>
+    /// <b>This used to destroy the folder.</b> It called <c>RemoveFolderAsync</c>, which is an AIS
+    /// <c>DELETE {cap}/category/{id}</c> where AIS exists and a <c>RemoveInventoryObjects</c>
+    /// packet where it does not (InventoryManager.cs:1252-1294) — and both of those are the
+    /// <i>purge</i>, not a move. Meanwhile the confirmation box asked „‚X‘ und alles darin in den
+    /// Papierkorb verschieben?" over a button reading „In den Papierkorb". The UI promised
+    /// recoverable and the code was not. Asked in-world 2026-09-22: *„Wenn ich auf löschen gehe,
+    /// sollte das da nicht erst mal im Trash landen?"* — yes, it should, and it did not.
     ///
-    /// <para><c>RemoveFolderAsync</c> (AIS <c>DELETE {cap}/category/{id}</c> on SL, a
-    /// <c>RemoveInventoryObjects</c> packet on OpenSim), <b>not</b> <c>MoveFolder → Trash</c>:
-    /// a <c>parent_id</c> PATCH of an <c>#Outfits</c> subfolder HTTP-400s on SL
-    /// (<c>warn: Move category … Bad Request</c>) and the outfit stayed visible — the same
-    /// move-to-Trash trap BUG-INV-01 already retired for items and COF links.</para></summary>
-    public bool DeleteOutfitAsync(Guid folderId)
+    /// <para>The reference viewer's folder Delete is a move: <c>LLFolderBridge::removeItem</c> →
+    /// <c>removeItemResponse</c> → <c>LLInventoryModel::removeCategory</c> →
+    /// <c>changeCategoryParent(cat, trash_id, true)</c> → a <c>MoveInventoryFolder</c> message
+    /// (llinventorybridge.cpp:3952-4001, llinventorymodel.cpp:4295-4331,
+    /// llviewerinventory.cpp:647-660). Its AIS <c>RemoveCategory</c> is reserved for purging —
+    /// emptying the Trash, „Delete Immediately" — which this viewer does not offer at all yet.</para>
+    ///
+    /// <para>The reason the AIS branch existed at all was that LibreMetaverse's
+    /// <c>MoveFolder</c> prefers AIS and HTTP-400s on Second Life (<c>warn: Move category …
+    /// Bad Request</c>, v0.20.98). That is no longer a reason: <see cref="MoveInventoryAsync"/>
+    /// sends the legacy UDP reparent itself — the same message the viewer sends, on every grid —
+    /// and has been confirmed in-world moving folders since FEAT-INV-08.</para>
+    /// </remarks>
+    public bool DeleteFolder(Guid folderId)
     {
         if (folderId == Guid.Empty) return false;
         var folderUuid = new LibreMetaverse.UUID(folderId);
         if (_client.Inventory.Store?.GetNodeOrDefault(folderUuid)?.Data is not LibreMetaverse.InventoryFolder)
             return false;
 
-        if (_client.AisClient?.IsAvailable == true)
-        {
-            _ = _client.Inventory.RemoveFolderAsync(folderUuid, System.Threading.CancellationToken.None);
-        }
-        else
-        {
-            if (TrashFolderId is not { } trashId || trashId == Guid.Empty) return false;
-            _client.Inventory.MoveFolder(folderUuid, new LibreMetaverse.UUID(trashId));
-        }
+        if (TrashFolderId is not { } trashId || trashId == Guid.Empty) return false;
+        if (folderId == trashId) return false;   // the Trash itself is not deletable
+        if (IsInTrash(folderId)) return false;   // already there -- the viewer refuses this too
 
-        var node = _client.Inventory.Store?.GetNodeOrDefault(folderUuid);
-        if (node != null) node.Parent?.Nodes.Remove(folderUuid);
+        _ = MoveToTrashAsync(folderId, isFolder: true);
         return true;
+    }
+
+    /// <summary>Whether something already sits inside the Trash folder.</summary>
+    private bool IsInTrash(Guid id)
+    {
+        if (TrashFolderId is not { } trashId || trashId == Guid.Empty) return false;
+
+        var store = _client.Inventory.Store;
+        var trashUuid = new LibreMetaverse.UUID(trashId);
+        for (var n = store?.GetNodeOrDefault(new LibreMetaverse.UUID(id)); n != null; n = n.Parent)
+            if (n.Data?.UUID == trashUuid) return true;
+        return false;
+    }
+
+    /// <summary>An item's or folder's real name, straight from the inventory store.</summary>
+    /// <remarks>
+    /// Exists so that callers stop reading names out of the UI. An inventory row's text is
+    /// <c>"{icon} {name}{worn marker}{permission suffix}"</c>, and a copy made under that string is
+    /// genuinely named "(box icon) Thing (no modify) (no transfer)" on the grid -- reported
+    /// in-world 2026-09-21 as an item that had grown a second icon (BUG-INV-07). The display
+    /// string is for reading; this is the name.
+    /// </remarks>
+    public bool TryGetInventoryName(Guid id, out string name)
+    {
+        name = string.Empty;
+        if (id == Guid.Empty) return false;
+
+        var data = _client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(id))?.Data;
+        if (data == null || string.IsNullOrEmpty(data.Name)) return false;
+
+        name = data.Name;
+        return true;
+    }
+
+    /// <summary>Whether a folder is one the grid maintains itself — Objects, Clothing, Trash,
+    /// #Outfits, Current Outfit and the rest. FEAT-INV-08.</summary>
+    /// <remarks>
+    /// The test is <c>PreferredType</c>, which is also what the grid routes new content by: a
+    /// received object lands in the folder whose preferred type is Object, not in the one called
+    /// "Objects". Renaming such a folder is therefore survivable but confusing, and deleting one
+    /// takes the destination for a whole class of arrivals with it — so the UI refuses both rather
+    /// than letting the user find out.
+    /// </remarks>
+    public bool IsSystemFolder(Guid folderId)
+    {
+        if (folderId == Guid.Empty) return false;
+        var node = _client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(folderId));
+        return node?.Data is LibreMetaverse.InventoryFolder f
+               && f.PreferredType != LibreMetaverse.FolderType.None;
     }
 
     /// <summary>Creates a new inventory subfolder — used for the Create Landmark dialog's

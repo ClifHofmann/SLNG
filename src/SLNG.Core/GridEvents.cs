@@ -456,3 +456,9 @@ public record MapRegionInfo(string Name, int GridX, int GridY, ulong RegionHandl
     public double GlobalX => GridX * 256.0;
     public double GlobalY => GridY * 256.0;
 }
+
+/// <summary>A region's event queue has stopped delivering and is not recovering (BUG-NET-20).</summary>
+/// <param name="RegionName">The region, or empty when the log line did not name it recognisably.</param>
+/// <param name="FailureCount">How many failed polls in a row. The number is the point: it is what
+/// separates "a hiccup" from "the capability is gone".</param>
+public record EventQueueStalledEvent(string RegionName, int FailureCount);

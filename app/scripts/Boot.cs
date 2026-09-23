@@ -118,6 +118,55 @@ public partial class Boot : Control
     /// 163 FPS at a 6.1ms frame with 0.0 hitches/s on this scene.</remarks>
     private const double ReflectionProbeUpdateIntervalSeconds = 0.5;
 
+    /// <summary>The cadence above is the FASTEST one; a frame that is already expensive gets this
+    /// one instead. BUG-PERF-03.</summary>
+    /// <remarks>
+    /// The 0.5 s figure and its justification are both sound, and its last sentence is where it
+    /// comes undone: <i>"Live headroom confirms there is room for it: the client reports 163 FPS
+    /// at a 6.1ms frame"</i>. On a busy sim there is no such headroom, and the same constant
+    /// means something completely different:
+    ///
+    /// <list type="bullet">
+    /// <item>At 163 FPS a bake starts every 82 frames, and Godot spreads it over six — about
+    /// <b>7%</b> of frames carry it.</item>
+    /// <item>At 25 FPS a bake starts every 12.5 frames, still spread over six — about
+    /// <b>48%</b>.</item>
+    /// </list>
+    ///
+    /// <para>Measured in-world 2026-09-22 on a heavy parcel: 100 bakes in 50 seconds, i.e. the
+    /// full two per second, while the avatar stood still at 25 FPS. Turning shadows off there
+    /// removed 5,000 draw calls and bought only 3 FPS, so the frame was not bound by draw
+    /// submission — and re-rendering the scene into six cubemap faces twice a second is the
+    /// largest remaining thing the renderer was asked to do.</para>
+    ///
+    /// <para>So the cadence follows the frame time rather than being picked for one scene. Fast
+    /// frames keep the responsiveness the 0.5 s was chosen for ("at 3s the reflection is stale for
+    /// most of any walk"); slow frames back off to the 3 s the original measurement supported. A
+    /// probe that refreshes twice a second is worth nothing if it is why the frame is slow.</para>
+    /// </remarks>
+    private const double ReflectionProbeUpdateIntervalSlowSeconds = 3.0;
+
+    /// <summary>Frame times between which the probe cadence slides from fast to slow.</summary>
+    private const double ReflectionProbeFastFrameMs = 8.0;   // ~125 FPS and better: full rate
+    private const double ReflectionProbeSlowFrameMs = 33.0;  // ~30 FPS and worse: slowest rate
+
+    /// <summary>Smoothed frame time the cadence is derived from. Smoothed because a single
+    /// hitch must not stall the probe for three seconds, and a single fast frame must not
+    /// restart it at full rate.</summary>
+    private double _smoothedFrameMs;
+
+    /// <summary>How often to re-bake right now, from how expensive the frames currently are.</summary>
+    private double ReflectionProbeInterval()
+    {
+        if (_smoothedFrameMs <= ReflectionProbeFastFrameMs) return ReflectionProbeUpdateIntervalSeconds;
+        if (_smoothedFrameMs >= ReflectionProbeSlowFrameMs) return ReflectionProbeUpdateIntervalSlowSeconds;
+
+        double t = (_smoothedFrameMs - ReflectionProbeFastFrameMs)
+                 / (ReflectionProbeSlowFrameMs - ReflectionProbeFastFrameMs);
+        return ReflectionProbeUpdateIntervalSeconds
+             + t * (ReflectionProbeUpdateIntervalSlowSeconds - ReflectionProbeUpdateIntervalSeconds);
+    }
+
     /// <summary>An avatar/vehicle/teleport that outruns the periodic cadence above gets an
     /// immediate re-bake instead of waiting out the rest of the interval with a stale, far-away
     /// reflection sitting at the old capture point.</summary>
@@ -334,7 +383,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.54-alpha";
+    public const string AppVersion = "v0.24.79-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -2058,12 +2107,15 @@ public partial class Boot : Control
 
         using var _phase = MainThreadPhase.Enter("reflection-probe");
 
+        // EMA over roughly the last second, so the cadence tracks the scene rather than one frame.
+        _smoothedFrameMs += ((delta * 1000.0) - _smoothedFrameMs) * 0.05;
+
         _reflectionProbeAccum += delta;
         var camPos = _avatarController.GlobalPosition;
         bool movedFar = !_reflectionProbeEverCaptured
             || camPos.DistanceTo(_reflectionProbeLastCapturePos) > ReflectionProbeMoveThresholdMeters;
 
-        if (!movedFar && _reflectionProbeAccum < ReflectionProbeUpdateIntervalSeconds) return;
+        if (!movedFar && _reflectionProbeAccum < ReflectionProbeInterval()) return;
 
         _reflectionProbeAccum = 0;
         _reflectionProbeEverCaptured = true;
@@ -2151,7 +2203,8 @@ public partial class Boot : Control
         {
             var env = _worldEnvironment?.Environment;
             GD.Print(
-                $"[ReflProbe] bake #{_reflectionProbeBakeCount} visible={_reflectionProbe.Visible} " +
+                $"[ReflProbe] bake #{_reflectionProbeBakeCount} every={ReflectionProbeInterval():0.##}s " +
+                $"frame={_smoothedFrameMs:0.#}ms visible={_reflectionProbe.Visible} " +
                 $"pos=({camPos.X:0.#},{camPos.Y:0.#},{camPos.Z:0.#}) size={_reflectionProbe.Size.X:0.#} " +
                 $"maxDist={_reflectionProbe.MaxDistance:0.#} interior={_reflectionProbe.Interior} " +
                 $"boxed={_reflectionProbeBoxed} " +
@@ -2543,7 +2596,10 @@ public partial class Boot : Control
                     _topMenu.ClearLocation();
                 }
 
-                int fps = (int)System.Math.Round(Engine.GetFramesPerSecond());
+                // BUG-UI-14: the same number the stats panel shows -- see StatsOverlay.CurrentFps
+                // for why reading it separately could not be made to agree.
+                int fps = (int)System.Math.Round(
+                    SLNG.App.UI.StatsOverlay.CurrentFps ?? Engine.GetFramesPerSecond());
                 _topMenu.UpdateFps(fps);
             }
             else
@@ -3281,6 +3337,20 @@ public partial class Boot : Control
         {
             CallDeferred(MethodName.LogMessage, $"[color=orange][Alert] {e.Message}[/color]");
             _notifications.Add(SLNG.Core.NotificationKind.System, System.Guid.Empty, e.Message);
+        };
+        // BUG-NET-20: a region whose event queue died stops delivering group chat invitations,
+        // teleport progress, object media and parcel/environment changes -- all of it silently.
+        // Told to the user rather than only logged, because every symptom of it looks like
+        // something else ("nobody is talking", "this object has no media").
+        _session.EventQueueStalled += (s, e) =>
+        {
+            string where = string.IsNullOrEmpty(e.RegionName)
+                ? SLNG.App.UI.L10n.Tr("ui.eventqueue.unknown_region")
+                : e.RegionName;
+            string text = SLNG.App.UI.L10n.TrFormat("ui.eventqueue.stalled", where);
+            CallDeferred(MethodName.LogMessage, $"[color=orange][Region] {text}[/color]");
+            _notifications.Add(SLNG.Core.NotificationKind.System, System.Guid.Empty, text,
+                detail: SLNG.App.UI.L10n.TrFormat("ui.eventqueue.stalled_detail", where, e.FailureCount));
         };
         // Recenter the floating origin every time we actually move to a new region -- login AND
         // every subsequent teleport/region-crossing (GridSession.RegionConnected only fires for the

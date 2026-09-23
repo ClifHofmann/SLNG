@@ -206,6 +206,31 @@ public partial class AvatarRenderer : Node3D
     // attachment entity ID → Rigged mesh node parented to the avatar skeleton
     private readonly Dictionary<Guid, MeshInstance3D> _riggedAttachments = new();
 
+    /// <summary>The newest rig request per worn entity, waiting for its queued turn. BUG-PERF-01.</summary>
+    /// <remarks>
+    /// Rigging is the most expensive single unit of main-thread work this client has: measured
+    /// in-world 2026-09-22 at <b>137 ms on average, 181 ms at worst</b>
+    /// (<c>[WorkCost] avatar.rig n=38 totalMs=5204,7</c> — 5.2 seconds inside a five-second
+    /// window). The frame budget cannot absorb that, and by <c>MainThreadWorkQueue.Pump</c>'s own
+    /// design it is not meant to: each lane runs one item even when the budget is gone, so the
+    /// floor on a frame is the cost of one item.
+    ///
+    /// <para>So the work has to happen less often. <c>UpdateAttachment</c> runs per object update
+    /// and queued a fresh rig every time — the log showed the same mesh on the same entity queued
+    /// five times in a row. The queue's own coalescing drops the repeats, but dropping them would
+    /// also drop whatever was NEW about them (a texture applier's faces), so the payload is kept
+    /// here instead: the repeats collapse to one queued item, and that item rigs the LATEST
+    /// request rather than the first. This is the "re-reads current state when it runs" shape
+    /// <c>Enqueue</c>'s doc comment says coalescing requires.</para>
+    ///
+    /// <para>Written from the mesh-load worker threads, read on the main thread.</para>
+    /// </remarks>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, PendingRig> _pendingRigs = new();
+
+    private sealed record PendingRig(
+        MeshData MeshData, AvatarVisual Visual, Skeleton3D Skeleton, Guid MeshId,
+        FaceTexture[]? Faces, FaceTexture DefaultFace);
+
     // FEAT-UI-23: the bone-parented colliders that make a rigged worn item clickable -- one per
     // bone the item is weighted to. They live on the SKELETON, not under the item's own mesh
     // instance, so freeing the mesh does not free them: every teardown path has to call
@@ -229,7 +254,7 @@ public partial class AvatarRenderer : Node3D
     // AvatarVisual.PelvisFixups) once the entity itself (not just the mesh) is torn down —
     // OnEntityRemoved only survives the CallDeferred hop as a bare Guid, so the owner has to be
     // captured here at attach time rather than re-looked-up from the (by-then-gone) entity.
-    private readonly Dictionary<Guid, (Guid MeshId, FaceTexture[]? Faces, FaceTexture DefaultFace, Guid AvatarEntityId)> _attachmentMeshIds = new();
+    private readonly Dictionary<Guid, (Guid MeshId, FaceTexture[]? Faces, FaceTexture DefaultFace, Guid AvatarEntityId, MeshDetailLevel Lod)> _attachmentMeshIds = new();
     private Godot.CanvasLayer? _nameTagLayer;
 
 
@@ -1926,9 +1951,13 @@ public partial class AvatarRenderer : Node3D
         // alpha-scissor blending, wasted GPU cost). Must compare Faces/DefaultFace too (see
         // _attachmentMeshIds doc) — same mesh id, changed face textures, is a real update
         // (an applier HUD swapping the placeholder skin for the real one), not a dupe.
+        // FEAT-PERF-09 adds the LOD to this comparison. The dedupe is what makes the re-ask on
+        // the cull sweep work at all: same mesh, same faces, but a level the camera has since
+        // earned is a REAL update, not a duplicate.
         if (isMeshAttachment && _attachmentMeshIds.TryGetValue(entityId, out var loaded)
             && loaded.MeshId == prim!.MeshId
             && loaded.DefaultFace == defaultFace
+            && loaded.Lod == PickAttachmentDetailLevel(avatarVisual)
             && (loaded.Faces == prim.Faces || (loaded.Faces != null && prim.Faces != null && loaded.Faces.SequenceEqual(prim.Faces))))
             return;
 
@@ -2010,7 +2039,8 @@ public partial class AvatarRenderer : Node3D
                 // redundant UpdateAttachment arriving while this load is still in flight sees
                 // it immediately and hits the early-return guard above instead of starting an
                 // overlapping duplicate load.
-                _attachmentMeshIds[entityId] = (prim.MeshId, prim.Faces, defaultFace, attachment.AvatarEntityId);
+                _attachmentMeshIds[entityId] = (prim.MeshId, prim.Faces, defaultFace,
+                                                attachment.AvatarEntityId, PickAttachmentDetailLevel(avatarVisual));
                 Logger.Debug($"[Attachment] REQUESTING MESH {prim.MeshId} for entity {entityId}");
                 _ = LoadAndApplyAttachmentMeshAsync(pointNode, avatarVisual, prim.MeshId,
                     prim.Faces, defaultFace,
@@ -2038,6 +2068,106 @@ public partial class AvatarRenderer : Node3D
         }
     }
 
+    /// <summary>FEAT-PERF-09: asks again for more detail once the camera has come closer.</summary>
+    /// <remarks>
+    /// Reported in-world 2026-09-22, and the reasoning behind the question was right: *"der LOD
+    /// Abstand sollte ja nach Zoompunkt gehen"*. It does — <see cref="PickAttachmentDetailLevel"/>
+    /// measures from the camera whenever the camera is the nearer of the two. What it did not do
+    /// was ask a second time, so camming onto a distant avatar kept the level her distance had
+    /// earned at load. The reference viewer never sees this because <c>calcLOD</c> runs
+    /// continuously; this is the same thing at 4 Hz, on the sweep that already exists.
+    ///
+    /// <para><b>Upwards only.</b> Lowering the level again would save nothing — the mesh is
+    /// already fetched and its triangles are already on the GPU — while costing a full re-rig,
+    /// and an avatar loitering on a threshold would re-rig for ever. That is also why this is not
+    /// symmetric with <c>ObjectRenderer</c>, which does lower prims: a prim swap is cheap and a
+    /// worn mesh's is not. The saving stays where it was earned: at first load, which is where the
+    /// crowd on a busy sim is.</para>
+    /// </remarks>
+    private void ReconsiderAttachmentDetail(Guid avatarEntityId, AvatarVisual visual)
+    {
+        var wanted = PickAttachmentDetailLevel(visual);
+
+        // One pass over this avatar's attachments; re-issuing an update is what re-fetches the
+        // mesh, because UpdateAttachment now compares the level too.
+        List<Guid>? stale = null;
+        foreach (var (attachmentId, record) in _attachmentMeshIds)
+        {
+            if (record.AvatarEntityId != avatarEntityId) continue;
+            if (record.Lod >= wanted) continue;
+            (stale ??= new List<Guid>()).Add(attachmentId);
+        }
+        if (stale == null) return;
+
+        foreach (var attachmentId in stale)
+            UpdateAttachment(attachmentId.ToString());
+    }
+
+    /// <summary>FEAT-PERF-09: which LOD of a worn mesh to fetch, from how far away its wearer is.
+    /// </summary>
+    /// <remarks>
+    /// World objects have picked their mesh LOD by distance since FEAT-PERF-07; worn meshes never
+    /// did. <c>GetMeshAsync</c> defaults to <see cref="MeshDetailLevel.Highest"/>, so every mesh
+    /// body, head and hairstyle in the region was fetched and drawn at full resolution however far
+    /// away its wearer stood. What that is worth was already measured for FEAT-PERF-07, over 3643
+    /// cached meshes: <b>high_lod holds 28.2M triangles against medium_lod's 6.9M</b>.
+    ///
+    /// <para><b>Your own avatar is never reduced.</b> You look at it from arm's length, it is the
+    /// one avatar always on screen, and it is a single avatar — the saving would be invisible and
+    /// the cost obvious. The reference viewer makes the same exception.</para>
+    ///
+    /// <para><b>A first-load pick, not a running re-evaluation.</b> ObjectRenderer re-picks on its
+    /// cull sweep because swapping a static prim's mesh is cheap; swapping a WORN one means
+    /// rigging it again, and rigging is what BUG-PERF-01 just spent two rounds making rare. A
+    /// walking avatar must not re-rig its whole outfit every few metres. Same shape as
+    /// <c>PickMeshDetailLevel</c> otherwise, including its fallback: when the viewpoint is not
+    /// known yet (during login the agent has no position), nothing is reduced.</para>
+    /// </remarks>
+    private MeshDetailLevel PickAttachmentDetailLevel(AvatarVisual visual)
+    {
+        if (visual.IsSelf) return MeshDetailLevel.Highest;
+        if (_world == null || !RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos))
+            return MeshDetailLevel.Highest;
+        // Not in the tree yet means GlobalPosition is not a position yet -- it would read as the
+        // origin and under-detail an avatar standing right next to you.
+        if (visual.Root == null || !IsInstanceValid(visual.Root) || !visual.Root.IsInsideTree())
+            return MeshDetailLevel.Highest;
+
+        var wearerPos = visual.Root.GlobalPosition;
+
+        // The nearer of avatar and camera, exactly as ObjectRenderer's ViewpointFor does -- the
+        // two separate in mouselook and while cam-ing around, and a worn mesh that disagreed with
+        // the world objects beside it about the viewpoint would be visibly coarser than them.
+        var camera = GetViewport()?.GetCamera3D();
+        var viewpoint = camera != null && IsInstanceValid(camera)
+                        && wearerPos.DistanceSquaredTo(camera.GlobalPosition) < wearerPos.DistanceSquaredTo(agentPos)
+            ? camera.GlobalPosition
+            : agentPos;
+
+        float distance = wearerPos.DistanceTo(viewpoint);
+
+        // The WEARER's size, never the attachment's own. This is the one place the reference
+        // viewer treats rigged geometry differently, and getting it wrong would be visible: a
+        // rigged garment's host prim is routinely scaled to something meaningless (a few
+        // centimetres), and feeding that in as the radius would drop a mesh body to its coarsest
+        // LOD while its wearer stood next to you. LLVOVolume::calcLOD branches on
+        // LLDrawable::RIGGED for exactly this and uses the AVATAR's animated extents instead
+        // (llvovolume.cpp:1526-1557), with distance measured to the avatar rather than the part.
+        //
+        // We do not track an animated bounding box, so the avatar's height stands in for that
+        // diagonal -- for a standing humanoid the two differ by under ten percent, and the
+        // viewer's own comment concedes its figure is "2x off" anyway. Four LOD steps do not
+        // resolve finer than that.
+        //
+        // ForDistanceRigged, NOT ForDistance: the latter applies a mesh volume's mLODScaleBias,
+        // which halves the radius and moves every threshold a full level closer. The first cut of
+        // this went through ForDistance and was reported in-world the same evening -- an avatar
+        // standing "recht weit weg" was drawn with faceted limbs, because she had reached the
+        // lowest level at 40 m where the viewer would still have been one above the bottom.
+        float wearerSize = visual.BodySizeZ > 0.1f ? visual.BodySizeZ : 1.90f;
+        return SLNG.Core.VolumeLod.ForDistanceRigged(distance, wearerSize, RenderConfig.VolumeLodFactor);
+    }
+
     /// <summary>Fetches and applies a rigged/static MESH attachment (an item with a real LLMesh
     /// asset). Prim- and sculpt-based attachments go through
     /// <see cref="LoadAndApplyPrimAttachmentAsync"/> instead — both end in the same
@@ -2050,7 +2180,8 @@ public partial class AvatarRenderer : Node3D
     {
         if (_assetService == null) return;
 
-        var meshData = await _assetService.GetMeshAsync(meshId).ConfigureAwait(false);
+        var lod = PickAttachmentDetailLevel(avatarVisual);
+        var meshData = await _assetService.GetMeshAsync(meshId, lod).ConfigureAwait(false);
         if (meshData == null)
         {
             Logger.Warn($"[Attachment] mesh {meshId} failed to fetch/decode — skipped");
@@ -2365,6 +2496,24 @@ public partial class AvatarRenderer : Node3D
     /// the item's mesh instance -- a BoneAttachment3D only works directly under a Skeleton3D --
     /// so freeing the mesh leaves them behind, hanging in the air and eating every click that
     /// crosses them.</summary>
+    /// <summary>Removes whatever is currently rigged for a worn entity — the node, its pick
+    /// bodies, and the visual's own record of it. BUG-PERF-01.</summary>
+    /// <remarks>
+    /// <c>_riggedAttachments</c> holds one instance per entity and every cleanup path reads it, so
+    /// adding a second one without removing the first does not "replace" anything: it hides the
+    /// old node from the only bookkeeping that could ever free it. Both lists are cleared here so
+    /// they cannot drift apart.
+    /// </remarks>
+    private void DiscardRiggedAttachment(Guid entityId, AvatarVisual visual)
+    {
+        if (!_riggedAttachments.TryGetValue(entityId, out var existing)) return;
+
+        _riggedAttachments.Remove(entityId);
+        ClearRiggedPickBodies(entityId);
+        visual.RiggedAttachments.RemoveAll(r => r.Mi == existing);
+        if (IsInstanceValid(existing)) existing.QueueFree();
+    }
+
     private void ClearRiggedPickBodies(Guid entityId)
     {
         if (!_riggedPickBodies.TryGetValue(entityId, out var bodies)) return;
@@ -2510,32 +2659,48 @@ public partial class AvatarRenderer : Node3D
         // statically to one bone (which collapses it into a blob).
         if (meshData.Skin != null && skeleton != null)
         {
+            // BUG-PERF-01: the newest request wins, and the repeats collapse into one queued item.
+            _pendingRigs[entityId] = new PendingRig(meshData, avatarVisual, skeleton, meshId, faces, defaultFace);
+
             MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
-                if (!IsInstanceValid(skeleton)) return;
+                // Whatever the latest request is by the time this runs -- not what was captured
+                // when it was queued. Gone means a later item already rigged it.
+                if (!_pendingRigs.TryRemove(entityId, out var req)) return;
+                if (!IsInstanceValid(req.Skeleton)) return;
+
+                // Anything already rigged for this entity is replaced, not joined. Without this,
+                // several updates arriving before the queue drains each ADD a rigged MeshInstance
+                // to the skeleton while only the last is recorded in _riggedAttachments -- the
+                // earlier ones stay in the scene, untracked and unfreeable, costing triangles,
+                // draw calls and VRAM for the rest of the session. Measured on a busy sim:
+                // 22,500 draw calls, 38M triangles, 9.5 GB VRAM.
+                DiscardRiggedAttachment(entityId, req.Visual);
+
                 // The mesh may be rigged to shifted joint positions (mesh bodies/heads).
                 // Apply its joint-position overrides to the skeleton BEFORE binding, like the
                 // viewer does, so invBind·jointWorld cancels at the intended pose.
-                ApplyJointPositionOverrides(avatarVisual, skeleton, meshData.Skin, meshId);
-                var mi = BuildRiggedMeshInstance(meshData, skeleton, meshId, avatarVisual, faces, defaultFace, out var faceIndices);
+                ApplyJointPositionOverrides(req.Visual, req.Skeleton, req.MeshData.Skin!, req.MeshId);
+                var mi = BuildRiggedMeshInstance(req.MeshData, req.Skeleton, req.MeshId, req.Visual,
+                                                 req.Faces, req.DefaultFace, out var faceIndices);
                 if (mi == null) return;
                 mi.Name = "RiggedMesh";
-                
+
                 // Set a generous CustomAabb to prevent Godot from culling the mesh if the bind pose is far away
                 mi.CustomAabb = new Aabb(new Godot.Vector3(-4, -4, -4), new Godot.Vector3(8, 8, 8));
-                
-                skeleton.AddChild(mi);
-                AddRiggedPickBody(mi, avatarVisual, skeleton, entityId);
+
+                req.Skeleton.AddChild(mi);
+                AddRiggedPickBody(mi, req.Visual, req.Skeleton, entityId);
                 _riggedAttachments[entityId] = mi;
-                avatarVisual.RiggedAttachments.Add((mi, meshData, meshId));
+                req.Visual.RiggedAttachments.Add((mi, req.MeshData, req.MeshId));
 
                 // Skin is already assigned on the instance; the skeleton path must be set after
                 // the node is in the tree so Godot can resolve and drive the skinning.
-                mi.Skeleton = mi.GetPathTo(skeleton);
+                mi.Skeleton = mi.GetPathTo(req.Skeleton);
                 RestoreWornHighlight(entityId);
-                RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices, faces, defaultFace, meshId);
-                _ = ApplyFaceMaterialsAsync(mi, faceIndices, faces, defaultFace, avatarVisual, meshId);
-            }, label: "avatar.rig");
+                RegisterBomAndUpdateVisibility(req.Visual, mi, faceIndices, req.Faces, req.DefaultFace, req.MeshId);
+                _ = ApplyFaceMaterialsAsync(mi, faceIndices, req.Faces, req.DefaultFace, req.Visual, req.MeshId);
+            }, coalesceKey: $"avatar.rig:{entityId}", label: "avatar.rig");
             return;
         }
 
@@ -4132,8 +4297,15 @@ public partial class AvatarRenderer : Node3D
         return true;
     }
 
+    /// <param name="skinOnly">Build the bind matrices and stop — no geometry, no ArrayMesh.
+    /// <see cref="RebuildRiggedAttachmentSkins"/> wants nothing else, and building the rest for it
+    /// was BUG-PERF-01's largest single waste: measured in-world at <b>0.15 ms</b> for the binds
+    /// against <b>7.5 ms</b> for the whole method, on a path that runs once per worn mesh on every
+    /// shape change. The log showed 830 calls to this method behind only 109 rig queue items —
+    /// seven out of every eight builds existed to be discarded.</param>
     private MeshInstance3D? BuildRiggedMeshInstance(MeshData meshData, Skeleton3D skeleton, Guid meshId,
-        AvatarVisual visual, FaceTexture[]? faces, FaceTexture defaultFace, out int[] faceIndices)
+        AvatarVisual visual, FaceTexture[]? faces, FaceTexture defaultFace, out int[] faceIndices,
+        bool skinOnly = false)
     {
         faceIndices = System.Array.Empty<int>();
         var skinData = meshData.Skin!;
@@ -4144,6 +4316,8 @@ public partial class AvatarRenderer : Node3D
         // against its own bind pose, which need not equal our skeleton's rest. Binding to the
         // skeleton rest instead (as the body parts do) only works for meshes whose bind pose
         // matches exactly — these OpenSim meshes don't, and exploded into petals.
+        var buildClock = System.Diagnostics.Stopwatch.StartNew();
+
         var skin = new Skin();
         var slotForJoint = new int[jointCount];
 
@@ -4232,6 +4406,17 @@ public partial class AvatarRenderer : Node3D
         }
         if (skin.GetBindCount() == 0) return null;
 
+        MainThreadWorkQueue.RecordExternal("avatar.rig.bind", buildClock.Elapsed.TotalMilliseconds);
+        if (skinOnly)
+        {
+            // Everything above is what a shape change actually needs; everything below is
+            // geometry it discards. The node carries the Skin and nothing else, so freeing it
+            // releases an instance RID rather than the mesh and buffer RIDs BUG-RENDER-13 was
+            // about — those are no longer created at all.
+            return new MeshInstance3D { Skin = skin };
+        }
+        buildClock.Restart();
+
         var arrayMesh = new ArrayMesh();
         var faceList = new List<int>();
 
@@ -4307,11 +4492,32 @@ public partial class AvatarRenderer : Node3D
         var runFace = default(FaceTexture);
         int runVertexBase = 0;
 
+        // Reused across every vertex of every submesh. These were allocated fresh per vertex --
+        // two arrays each, on a mesh body of tens of thousands of vertices, for every rig. The
+        // session that found BUG-PERF-01 was carrying a 1.3-1.8 GB C# heap. SetBones/SetWeights
+        // marshal the contents into Godot's own packed arrays, so reusing the buffer is safe; it
+        // only has to be cleared, because AddInfluence writes only the slots it fills.
+        var bones = new int[4];
+        var wts = new float[4];
+
+        // BUG-PERF-01 step 2: the rig is one 137 ms queue item, so "which part of it" cannot be
+        // read off [WorkCost] -- that reports per QUEUE ITEM. MainThreadWorkQueue.Measure exists
+        // for exactly this ("so a single queue item can be broken down into its parts"), and these
+        // three labels are the whole of BuildRiggedMeshInstance's cost between them:
+        //   avatar.rig.bind      the skin, its bind matrices and the bone palette
+        //   avatar.rig.verts     the per-vertex submission loop
+        //   avatar.rig.tangents  GenerateTangents + Commit, Godot's own CPU passes
+        // Whichever of the three carries the seconds decides what step 2 actually has to change,
+        // instead of it being decided by whichever explanation sounded best.
         void FlushRun()
         {
             if (st == null) return;
-            st.GenerateTangents();
-            st.Commit(arrayMesh);
+            var flushing = st;
+            MainThreadWorkQueue.Measure("avatar.rig.tangents", () =>
+            {
+                flushing.GenerateTangents();
+                flushing.Commit(arrayMesh);
+            });
             st = null;
         }
 
@@ -4355,8 +4561,8 @@ public partial class AvatarRenderer : Node3D
                 bpMin = System.Numerics.Vector3.Min(bpMin, pSL);
                 bpMax = System.Numerics.Vector3.Max(bpMax, pSL);
 
-                var bones = new int[4];
-                var wts = new float[4];
+                System.Array.Clear(bones, 0, 4);
+                System.Array.Clear(wts, 0, 4);
                 int c = 0; float sum = 0f;
                 AddInfluence(w.Joint0, w.Weight0, slotForJoint, jointCount, bones, wts, ref c, ref sum, ref remappedInfluences);
                 AddInfluence(w.Joint1, w.Weight1, slotForJoint, jointCount, bones, wts, ref c, ref sum, ref remappedInfluences);
@@ -4405,6 +4611,10 @@ public partial class AvatarRenderer : Node3D
             runVertexBase += sub.Positions.Length;
         }
         FlushRun();
+
+        // Everything since the bind phase, minus what FlushRun already filed under
+        // avatar.rig.tangents -- so the three labels partition the method rather than overlap.
+        MainThreadWorkQueue.RecordExternal("avatar.rig.verts", buildClock.Elapsed.TotalMilliseconds);
 
         if (arrayMesh.GetSurfaceCount() == 0) return null;
 
@@ -4762,8 +4972,11 @@ public partial class AvatarRenderer : Node3D
         {
             if (!IsInstanceValid(mi) || meshData.Skin == null) continue;
             // Only the Skin is taken from the rebuild, so the face records -- and therefore
-            // BUG-RENDER-12's surface merging -- are irrelevant here; the geometry is discarded.
-            var rebuilt = BuildRiggedMeshInstance(meshData, visual.Skeleton, meshId, visual, null, default, out _);
+            // BUG-RENDER-12's surface merging -- are irrelevant here. BUG-PERF-01: the geometry
+            // used to be built anyway and then thrown away, once per worn mesh per shape change.
+            // It is not built at all now (skinOnly), which is a ~50x saving on this path.
+            var rebuilt = BuildRiggedMeshInstance(meshData, visual.Skeleton, meshId, visual, null, default, out _,
+                                                  skinOnly: true);
             if (rebuilt == null) continue;
             mi.Skin = rebuilt.Skin;
 
@@ -5211,7 +5424,7 @@ void fragment() {
         float nameTagMaxDist = 20.0f;
         float nameTagFadeStart = 15.0f;
 
-        foreach (var visual in _visuals.Values)
+        foreach (var (avatarEntityId, visual) in _visuals)
         {
             if (doCull && haveAgent)
             {
@@ -5222,6 +5435,10 @@ void fragment() {
             if (visual.IsSelf)
             {
                 UpdateSelfHeadGaze(visual, camera, dt);
+            }
+            else if (doCull)
+            {
+                ReconsiderAttachmentDetail(avatarEntityId, visual);
             }
 
             bool shouldAdvance = visual.AnimPlayer.IsPlaying

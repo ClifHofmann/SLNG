@@ -19,7 +19,9 @@ namespace SLNG.App.UI;
 public partial class InventoryPanel : SLNGWindow
 {
     private GridSession? _session;
-    private Tree _tree = null!;
+    // Typed as InventoryTree, not Tree: the subclass is what carries the drag payload and the
+    // drop handler (FEAT-INV-08), and a base-typed field hid both from every call site.
+    private InventoryTree _tree = null!;
     private Label _status = null!;
     // Folders already fetched (or currently fetching) — the expand signal fires on every
     // re-expand, and a re-fetch would duplicate the subtree under the item.
@@ -30,6 +32,15 @@ public partial class InventoryPanel : SLNGWindow
     private readonly Dictionary<Guid, TreeItem> _folderItems = new();
     private bool _rootsPopulated;
     private PopupMenu _contextMenu = null!;
+    private PopupMenu _folderMenu = null!;
+
+    /// <summary>FEAT-INV-08: the inventory's own cut/copy/paste. Not the system clipboard — this
+    /// holds an inventory id, and pasting it is a grid operation, so Ctrl+C here and Ctrl+C in a
+    /// text field must not share a buffer.</summary>
+    private readonly SLNG.Core.InventoryClipboard _clipboard = new();
+    /// <summary>Which folder the folder menu was opened on. Read when the menu fires rather than
+    /// re-reading the selection, which a click elsewhere may already have moved.</summary>
+    private Guid _folderMenuTarget;
     private LineEdit _searchBox = null!;
     // While a search is active the tree is fetched depth-first so the filter can see folders
     // the user never expanded (otherwise "search only finds what's already loaded"). One extra
@@ -181,7 +192,27 @@ public partial class InventoryPanel : SLNGWindow
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.play_local"), 7);
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.play_inworld"), 8);
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.stop_animation"), 9);
+        _contextMenu.AddSeparator();
+        _contextMenu.AddItem(L10n.Tr("ui.inventory_clipboard.cut"), 10);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory_clipboard.copy"), 11);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory_clipboard.paste"), 12);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory_clipboard.paste_link"), 13);
         _contextMenu.IdPressed += OnContextMenuIdPressed;
+
+        // FEAT-INV-08: right-clicking a FOLDER used to do nothing at all -- the handler bailed
+        // unless the row carried an item's metadata tuple -- so there was no way to make a folder,
+        // rename one, or get rid of one.
+        _folderMenu = new PopupMenu();
+        _folderMenu.AddItem(L10n.Tr("ui.inventory_folder.new"), 0);
+        _folderMenu.AddSeparator();
+        _folderMenu.AddItem(L10n.Tr("ui.inventory_folder.rename"), 1);
+        _folderMenu.AddItem(L10n.Tr("ui.inventory_folder.delete"), 2);
+        _folderMenu.AddSeparator();
+        _folderMenu.AddItem(L10n.Tr("ui.inventory_clipboard.cut"), 3);
+        _folderMenu.AddItem(L10n.Tr("ui.inventory_clipboard.copy"), 4);
+        _folderMenu.AddItem(L10n.Tr("ui.inventory_clipboard.paste"), 5);
+        _folderMenu.AddItem(L10n.Tr("ui.inventory_clipboard.paste_link"), 6);
+        _folderMenu.IdPressed += OnFolderMenuIdPressed;
         
         _tree = new InventoryTree 
         { 
@@ -191,6 +222,9 @@ public partial class InventoryPanel : SLNGWindow
             AllowRmbSelect = true 
         };
         _tree.AddChild(_contextMenu);
+        _tree.AddChild(_folderMenu);
+        _tree.OnDropIntoFolder = MoveIntoFolder;
+        _tree.NameOf = InventoryName;
         
         _tree.ItemCollapsed += OnItemCollapsed;
         // FEAT-INV-07 Phase 3: remember the picked row so clearing the search box can put the user
@@ -280,21 +314,27 @@ public partial class InventoryPanel : SLNGWindow
         _outfitsView.AddChild(outfitsStatusMargin);
 
         _outfitsMenu = new PopupMenu();
-        _outfitsMenu.AddItem("Aktuelles Outfit ersetzen", 0);
-        _outfitsMenu.AddItem("Zu aktuellem Outfit hinzufügen", 1);
-        _outfitsMenu.AddItem("Von aktuellem Outfit entfernen", 2);
+        // The two that used to say "ersetzen" act in OPPOSITE directions -- id 0 changes your
+        // AVATAR, id 4 changes the SAVED folder -- and a live report of "Outfit ersetzen geht
+        // nicht" could not be read without asking which was meant (FEAT-INV-08).
+        _outfitsMenu.AddItem(L10n.Tr("ui.outfit_menu.wear"), 0);
+        _outfitsMenu.SetItemTooltip(_outfitsMenu.GetItemIndex(0), L10n.Tr("ui.outfit_menu.wear_tooltip"));
+        _outfitsMenu.AddItem(L10n.Tr("ui.outfit_menu.add"), 1);
+        _outfitsMenu.SetItemTooltip(_outfitsMenu.GetItemIndex(1), L10n.Tr("ui.outfit_menu.add_tooltip"));
+        _outfitsMenu.AddItem(L10n.Tr("ui.outfit_menu.take_off"), 2);
         _outfitsMenu.AddSeparator();
-        _outfitsMenu.AddItem("Outfit neu benennen", 3);
-        _outfitsMenu.AddItem("Outfit speichern (= akt. Getrage)", 4);
+        _outfitsMenu.AddItem(L10n.Tr("ui.outfit_menu.rename"), 3);
+        _outfitsMenu.AddItem(L10n.Tr("ui.outfit_menu.overwrite"), 4);
+        _outfitsMenu.SetItemTooltip(_outfitsMenu.GetItemIndex(4), L10n.Tr("ui.outfit_menu.overwrite_tooltip"));
         _outfitsMenu.AddSeparator();
-        _outfitsMenu.AddItem("Outfit löschen", 5);
+        _outfitsMenu.AddItem(L10n.Tr("ui.outfit_menu.delete"), 5);
         _outfitsMenu.IdPressed += OnOutfitsMenuPressed;
 
         _outfitItemMenu = new PopupMenu();
-        _outfitItemMenu.AddItem("Anziehen", 0);
-        _outfitItemMenu.AddItem("Ausziehen", 1);
+        _outfitItemMenu.AddItem(L10n.Tr("ui.outfit_menu.item_wear"), 0);
+        _outfitItemMenu.AddItem(L10n.Tr("ui.outfit_menu.item_take_off"), 1);
         _outfitItemMenu.AddSeparator();
-        _outfitItemMenu.AddItem("Aus diesem Outfit entfernen", 2);
+        _outfitItemMenu.AddItem(L10n.Tr("ui.outfit_menu.item_remove"), 2);
         _outfitItemMenu.IdPressed += OnOutfitItemMenuPressed;
 
         _outfitsTree = new Tree
@@ -330,14 +370,99 @@ public partial class InventoryPanel : SLNGWindow
             bool canTransfer = isFolder ? true : bool.Parse(parts[3]);
             bool isLink = isFolder ? false : bool.Parse(parts[6]);
             int assetType = isFolder ? -1 : int.Parse(parts[4]);
-            string name = item.GetText(0).Replace("  ⇢", "");
 
-            string payload = $"slng_item|{itemIdStr}|{name}|{canTransfer}|{isFolder}|{assetType}";
+            // The REAL name, not the row's text. A row reads "{icon} {name}{worn}{permissions}",
+            // and this payload is handed to ChatWindow, which offers the item to another agent
+            // under it -- so the recipient was offered "(box) Thing (no modify)". Same root as
+            // BUG-INV-07, third path. The row text stays as the fallback for a name the store has
+            // not got yet.
+            string rowText = item.GetText(0).Replace("  ⇢", "");
+            string name = Guid.TryParse(itemIdStr, out var dragId)
+                ? (NameOf?.Invoke(dragId) ?? string.Empty) : string.Empty;
+            if (name.Length == 0) name = rowText;
+
+            // Where it is being dragged FROM. Only the dragged row knows, and by the time the drop
+            // lands there is no other way to find out -- which is how BUG-INV-08 happened: the drop
+            // handler looked the parent up in _folderItems, a map of FOLDER rows only, so for an
+            // item it always came back empty and the source folder was never refreshed.
+            var sourceMeta = item.GetParent()?.GetMetadata(0).AsString() ?? string.Empty;
+            var sourceFolder = !sourceMeta.Contains(',') && Guid.TryParse(sourceMeta, out var sf)
+                ? sf : Guid.Empty;
+
+            string payload = $"slng_item|{itemIdStr}|{name}|{canTransfer}|{isFolder}|{assetType}|{sourceFolder}";
 
             var preview = new Label { Text = name };
             SetDragPreview(preview);
 
             return payload;
+        }
+
+        /// <summary>FEAT-INV-08: dropping onto a folder row moves the dragged thing into it. Set
+        /// by the panel, because the tree has no session of its own. The last argument is the
+        /// folder the thing came FROM (BUG-INV-08).</summary>
+        internal Action<Guid, bool, Guid, string, Guid>? OnDropIntoFolder;
+
+        /// <summary>An inventory id's real name. Same reason: the tree has no session.</summary>
+        internal Func<Guid, string>? NameOf;
+
+        public override bool _CanDropData(Vector2 atPosition, Variant data)
+        {
+            return TryReadDrop(atPosition, data, out _, out _, out _, out _, out _);
+        }
+
+        public override void _DropData(Vector2 atPosition, Variant data)
+        {
+            if (!TryReadDrop(atPosition, data, out var draggedId, out bool isFolder,
+                             out var targetFolder, out string targetName, out var sourceFolder)) return;
+            OnDropIntoFolder?.Invoke(draggedId, isFolder, targetFolder, targetName, sourceFolder);
+        }
+
+        /// <summary>Whether this drop is one we can make sense of, and what it means. The same
+        /// test answers "may it be dropped here" and "what do I do with it", so the highlight the
+        /// user sees and the action that follows cannot disagree.</summary>
+        private bool TryReadDrop(Vector2 atPosition, Variant data, out Guid draggedId,
+                                 out bool isFolder, out Guid targetFolder, out string targetName,
+                                 out Guid sourceFolder)
+        {
+            draggedId = Guid.Empty; isFolder = false; targetFolder = Guid.Empty; targetName = string.Empty;
+            sourceFolder = Guid.Empty;
+
+            if (data.VariantType != Variant.Type.String) return false;
+            var parts = data.AsString().Split('|');
+            if (parts.Length < 6 || parts[0] != "slng_item") return false;
+            if (!Guid.TryParse(parts[1], out draggedId)) return false;
+            if (!bool.TryParse(parts[4], out isFolder)) return false;
+            if (parts.Length >= 7) Guid.TryParse(parts[6], out sourceFolder);
+
+            var row = GetItemAtPosition(atPosition);
+            if (row == null) return false;
+
+            // Only a folder row is a destination: a comma in the metadata means an item.
+            var meta = row.GetMetadata(0).AsString();
+            if (meta.Contains(',') || !Guid.TryParse(meta, out targetFolder)) return false;
+
+            if (targetFolder == draggedId) return false; // a folder cannot contain itself
+
+            // Already in there. Sending the move anyway would be harmless on the wire but the row
+            // would be taken out of the tree and put back, which reads as a glitch.
+            if (sourceFolder != Guid.Empty && targetFolder == sourceFolder) return false;
+
+            // Nor can it contain its own ancestor -- that detaches the whole subtree from the
+            // inventory root and there is no UI left to get it back with.
+            if (isFolder)
+            {
+                for (var up = row.GetParent(); up != null; up = up.GetParent())
+                {
+                    var upMeta = up.GetMetadata(0).AsString();
+                    if (!upMeta.Contains(',') && Guid.TryParse(upMeta, out var upId) && upId == draggedId)
+                        return false;
+                }
+            }
+
+            string text = row.GetText(0);
+            int space = text.IndexOf(' ');
+            targetName = space > 0 && space < 4 ? text.Substring(space + 1).Trim() : text.Trim();
+            return true;
         }
     }
 
@@ -764,7 +889,7 @@ public partial class InventoryPanel : SLNGWindow
         if (_renamingOutfitId is { } renameId)
         {
             if (name.Length == 0) { _outfitsStatus.Text = "Erst einen Namen eingeben."; return; }
-            bool ok = _session.RenameOutfitAsync(renameId, name);
+            bool ok = _session.RenameFolder(renameId, name);
             if (ok)
             {
                 _outfitsStatus.Text = $"Umbenannt in „{name}“.";
@@ -985,7 +1110,7 @@ public partial class InventoryPanel : SLNGWindow
 
     private void DeleteOutfitAsync(Guid folderId)
     {
-        if (_session?.DeleteOutfitAsync(folderId) == true)
+        if (_session?.DeleteFolder(folderId) == true)
         {
             _outfitsStatus.Text = "Outfit in den Papierkorb verschoben.";
             RefreshOutfits();
@@ -1465,6 +1590,35 @@ public partial class InventoryPanel : SLNGWindow
             {
                 var metaStr = item.GetMetadata(0).AsString();
                 var parts = metaStr.Split(',');
+
+                // A folder row's metadata is the bare id; an item's is a comma-joined tuple.
+                if (parts.Length < 7 && Guid.TryParse(metaStr, out var rightClickedFolder))
+                {
+                    _tree.SetSelected(item, 0);
+                    _folderMenuTarget = rightClickedFolder;
+
+                    // A system folder -- Objects, Clothing, Trash, #Outfits -- may be filled but
+                    // not renamed or removed: the grid routes arriving content by its preferred
+                    // type, so deleting one takes the destination for a whole class of things.
+                    bool system = _session?.IsSystemFolder(rightClickedFolder) == true;
+                    _folderMenu.SetItemDisabled(_folderMenu.GetItemIndex(1), system);
+                    _folderMenu.SetItemDisabled(_folderMenu.GetItemIndex(2), system);
+                    // A system folder may be pasted INTO -- that is what it is for -- but not
+                    // itself taken away.
+                    _folderMenu.SetItemDisabled(_folderMenu.GetItemIndex(3), system);
+                    _folderMenu.SetItemDisabled(_folderMenu.GetItemIndex(4), system);
+                    _folderMenu.SetItemDisabled(_folderMenu.GetItemIndex(5), !_clipboard.HasContent);
+                    // Deliberately NOT greyed out by linkability, though the reference viewer
+                    // greys its own "Paste As Link" out: the refusals are the interesting part --
+                    // a link is already a link, a #Library item is not yours -- and a disabled
+                    // entry says none of that. Clicking it answers the question.
+                    _folderMenu.SetItemDisabled(_folderMenu.GetItemIndex(6), !_clipboard.HasContent);
+
+                    _folderMenu.Position = (Vector2I)GetGlobalMousePosition();
+                    _folderMenu.Popup();
+                    return;
+                }
+
                 if (parts.Length >= 7)
                 {
                     bool canCopy = bool.Parse(parts[1]);
@@ -1514,12 +1668,521 @@ public partial class InventoryPanel : SLNGWindow
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(7), !isAnimation); // Play Locally
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(8), !isAnimation); // Play Inworld
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(9), !isAnimation); // Stop
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(10), false); // Cut
+                    // Copy follows the item's own permission: offering it on a no-copy item would
+                    // promise something the grid will refuse.
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(11), !canCopy);
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(12), !_clipboard.HasContent);
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(13), !_clipboard.HasContent);
 
                     _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
                     _contextMenu.Popup();
                 }
             }
         }
+    }
+
+    /// <summary>FEAT-INV-08: something was dragged onto a folder row.</summary>
+    /// <remarks>
+    /// The move goes out as the legacy UDP reparent (<c>GridSession.MoveInventoryAsync</c>), which
+    /// is the only one Second Life accepts — LibreMetaverse's own MoveItem/MoveFolder prefer AIS
+    /// and are answered with HTTP 400, silently. The destination is re-read from the grid; the
+    /// source is not, its one lost row is simply taken out — see <see cref="TakeRowOutOfFolder"/>
+    /// for why that distinction matters (BUG-INV-08).
+    /// </remarks>
+    private void MoveIntoFolder(
+        Guid draggedId, bool isFolder, Guid targetFolderId, string targetName, Guid sourceFolderId)
+    {
+        if (_session == null || draggedId == Guid.Empty || targetFolderId == Guid.Empty) return;
+
+        string movedName = InventoryName(draggedId);
+
+        _ = _session.MoveInventoryAsync(draggedId, targetFolderId, isFolder, targetName);
+
+        // BUG-INV-08: take the row out of the folder it left, rather than re-reading that folder.
+        // If the row could not be found, fall back to re-reading it after all -- a stale row left
+        // behind is the bug itself, and a collapsed folder is only an annoyance.
+        bool removed = TakeRowOutOfFolder(sourceFolderId, draggedId);
+
+        // UDP is fire-and-forget, so give the grid a moment before asking it what it now holds.
+        RefreshAfterGridWrite(targetFolderId, removed ? Guid.Empty : sourceFolderId);
+
+        _status.Text = L10n.TrFormat("ui.inventory_folder.moved", movedName, targetName);
+    }
+
+    /// <summary>Removes a moved thing's row from the folder it has just left. BUG-INV-08.</summary>
+    /// <remarks>
+    /// Precise where a refresh of the source folder is blunt, and it has to be: the destination is
+    /// very often a SUBFOLDER of the source ("Test2 liegt im Test-Ordner"), and re-reading the
+    /// source frees and rebuilds that subfolder's row — collapsing the very folder the user just
+    /// dropped into, a second later, for no reason they can see.
+    ///
+    /// <para>Optimistic on purpose. <see cref="GridSession.MoveInventoryAsync"/> has already
+    /// reparented the item in LibreMetaverse's own store before the packet goes out, and the
+    /// reference viewer's <c>changeItemParent</c> does the same — the tree is showing the model,
+    /// and the model says it moved.</para>
+    /// </remarks>
+    /// <returns>Whether the row was found and removed.</returns>
+    private bool TakeRowOutOfFolder(Guid sourceFolderId, Guid movedId)
+    {
+        if (sourceFolderId == Guid.Empty || movedId == Guid.Empty) return false;
+        if (!_folderItems.TryGetValue(sourceFolderId, out var folderRow) || !IsInstanceValid(folderRow)) return false;
+
+        for (var child = folderRow.GetFirstChild(); child != null; child = child.GetNext())
+        {
+            var meta = child.GetMetadata(0).AsString();
+            var idStr = meta.Contains(',') ? meta.Split(',')[0] : meta;
+            if (!Guid.TryParse(idStr, out var id) || id != movedId) continue;
+
+            // A folder row takes its whole subtree's bookkeeping with it, or the rebuilt copy in
+            // the destination will be refused a load for ever -- that is BUG-INV-06 exactly.
+            ForgetSubtreeBookkeeping(child);
+            _loadedFolders.Remove(movedId);
+            _folderItems.Remove(movedId);
+
+            child.Free();
+            return true;
+        }
+
+        return false;
+    }
+
+    private void OnFolderMenuIdPressed(long id)
+    {
+        if (_session == null || _folderMenuTarget == Guid.Empty) return;
+        var folderId = _folderMenuTarget;
+        string name = FolderRowName(folderId);
+
+        switch (id)
+        {
+            case 0: PromptNewFolder(folderId, name); break;
+            case 1: PromptRenameFolder(folderId, name); break;
+            case 2: PromptDeleteFolder(folderId, name); break;
+            case 3: ClipboardTake(folderId, isFolder: true, name, SLNG.Core.InventoryClipboardMode.Cut); break;
+            case 4: ClipboardTake(folderId, isFolder: true, name, SLNG.Core.InventoryClipboardMode.Copy); break;
+            case 5: ClipboardPasteInto(folderId); break;
+            case 6: ClipboardPasteLinkInto(folderId); break;
+        }
+    }
+
+    /// <summary>Ctrl+X / Ctrl+C / Ctrl+V over the inventory panel.</summary>
+    /// <remarks>
+    /// Handled in <c>_Input</c> rather than through focus, because this tree deliberately takes no
+    /// keyboard focus (a focused Tree eats the movement keys). The guard is the cursor: the panel
+    /// only claims these keys while the pointer is over it, so Ctrl+C anywhere else — the chat, a
+    /// search field, the world — still means what it always meant.
+    ///
+    /// <para>And a text field always wins. Somebody typing into a LineEdit is copying TEXT, and a
+    /// panel that grabbed Ctrl+C from under them would break the more ordinary of the two
+    /// meanings.</para>
+    /// </remarks>
+    public override void _Input(InputEvent @event)
+    {
+        if (!Visible || _session == null) return;
+        if (@event is not InputEventKey { Pressed: true, CtrlPressed: true, Echo: false } key) return;
+        if (key.Keycode is not (Key.C or Key.X or Key.V)) return;
+
+        var viewport = GetViewport();
+        if (viewport == null) return;
+        if (viewport.GuiGetFocusOwner() is LineEdit or TextEdit) return;
+
+        var hovered = viewport.GuiGetHoveredControl();
+        if (hovered == null || (hovered != this && !IsAncestorOf(hovered))) return;
+
+        var row = _tree.GetSelected();
+        if (row == null) return;
+
+        var meta = row.GetMetadata(0).AsString();
+        bool isFolder = !meta.Contains(',');
+        var idStr = isFolder ? meta : meta.Split(',')[0];
+        if (!Guid.TryParse(idStr, out var rowId)) return;
+
+        string rowName = InventoryName(rowId);
+
+        switch (key.Keycode)
+        {
+            case Key.X: ClipboardTake(rowId, isFolder, rowName, SLNG.Core.InventoryClipboardMode.Cut); break;
+            case Key.C: ClipboardTake(rowId, isFolder, rowName, SLNG.Core.InventoryClipboardMode.Copy); break;
+            case Key.V:
+                var target = isFolder ? rowId : ParentFolderOf(rowId, false);
+                if (target != Guid.Empty) ClipboardPasteInto(target);
+                break;
+        }
+
+        viewport.SetInputAsHandled();
+    }
+
+    // ---- FEAT-INV-08: cut / copy / paste -----------------------------------------------------
+
+    /// <summary>Puts something on the inventory clipboard. Nothing moves yet — a cut only takes
+    /// effect when it is pasted, so the user can change their mind by doing nothing.</summary>
+    private void ClipboardTake(Guid id, bool isFolder, string name, SLNG.Core.InventoryClipboardMode mode)
+    {
+        var facts = FactsFor(id, isFolder);
+
+        // Both refusals apply to a CUT only, and both are checked here rather than at paste time
+        // for the reason InventoryCutCheck gives: a refused cut must not leave an entry armed.
+        // The context menu greys cut out on a system folder; Ctrl+X never went near that menu, so
+        // the rule has to live here too. A cut-and-pasted Objects folder takes the destination for
+        // every arriving object with it, and nothing in the UI says where it went. BUG-INV-10
+        // added the Library case, which produced an empty folder instead of a refusal.
+        if (mode == SLNG.Core.InventoryClipboardMode.Cut)
+        {
+            var cut = SLNG.Core.InventoryClipboard.CanCut(facts, isFolder);
+            if (cut != SLNG.Core.InventoryCutCheck.Ok)
+            {
+                _status.Text = L10n.Tr(cut == SLNG.Core.InventoryCutCheck.InLibrary
+                    ? "ui.inventory_clipboard.library_cannot_be_cut"
+                    : "ui.inventory_clipboard.system_folder");
+                return;
+            }
+        }
+
+        _clipboard.Set(mode, id, isFolder, name, ParentFolderOf(id, isFolder), facts);
+        _status.Text = L10n.TrFormat(
+            mode == SLNG.Core.InventoryClipboardMode.Cut
+                ? "ui.inventory_clipboard.cut_done" : "ui.inventory_clipboard.copy_done",
+            name);
+    }
+
+    /// <summary>Performs the pending cut or copy into a folder, or says why it cannot.</summary>
+    private void ClipboardPasteInto(Guid targetFolderId)
+    {
+        if (_session == null || targetFolderId == Guid.Empty) return;
+
+        var check = _clipboard.CanPasteInto(targetFolderId, AncestorFoldersOf(targetFolderId));
+        if (check != SLNG.Core.InventoryPasteCheck.Ok)
+        {
+            _status.Text = check switch
+            {
+                SLNG.Core.InventoryPasteCheck.IntoItself => L10n.Tr("ui.inventory_clipboard.into_itself"),
+                SLNG.Core.InventoryPasteCheck.IntoOwnDescendant => L10n.Tr("ui.inventory_clipboard.into_descendant"),
+                _ => L10n.Tr("ui.inventory_clipboard.nothing"),
+            };
+            return;
+        }
+
+        if (_clipboard.IsNoOpInto(targetFolderId))
+        {
+            _status.Text = L10n.Tr("ui.inventory_clipboard.no_op");
+            return;
+        }
+
+        Guid sourceFolderId = _clipboard.SourceFolderId;
+        string name = _clipboard.Name;
+        string targetName = FolderRowName(targetFolderId);
+
+        if (_clipboard.Mode == SLNG.Core.InventoryClipboardMode.Cut)
+        {
+            _ = _session.MoveInventoryAsync(_clipboard.Id, targetFolderId, _clipboard.IsFolder, targetName);
+            // Same as the drag path (BUG-INV-08): remove the row, do not re-read the folder it
+            // left. Cutting from a folder into one of its own subfolders is the ordinary case, and
+            // refreshing the source would collapse the destination.
+            TakeRowOutOfFolder(sourceFolderId, _clipboard.Id);
+            sourceFolderId = Guid.Empty;
+            // A cut is spent once pasted; leaving it armed invites a second paste that moves the
+            // same thing again from a place it is no longer in.
+            _clipboard.Clear();
+        }
+        else if (_clipboard.IsFolder)
+        {
+            // FEAT-INV-09. A folder copy is not one request but a whole tree of them, so it runs
+            // as its own task and reports what it managed -- see CopyFolderIntoAsync.
+            _status.Text = L10n.TrFormat("ui.inventory_clipboard.copying_folder", name);
+            _ = CopyFolderIntoAsync(_clipboard.Id, targetFolderId, name, targetName);
+            return;
+        }
+        else
+        {
+            // NO name. The reference viewer passes std::string() here
+            // (llinventoryfunctions.cpp:1592-1600) and LibreMetaverse omits the field entirely for
+            // an empty one, so the server keeps the original — which is what a copy should be
+            // called. Handing it a name is what produced BUG-INV-07; not handing it one makes that
+            // class of bug unreachable rather than merely fixed.
+            _ = _session.CopyItemAsync(_clipboard.Id, targetFolderId, string.Empty);
+            // A copy stays on the clipboard: pasting the same thing into several folders is the
+            // reason to have copied it.
+            sourceFolderId = Guid.Empty; // nothing left the source
+        }
+
+        _status.Text = L10n.TrFormat("ui.inventory_clipboard.pasted", name, targetName);
+        RefreshAfterGridWrite(targetFolderId, sourceFolderId);
+    }
+
+    /// <summary>Pastes the clipboard into a folder as a LINK — a second name for the one thing,
+    /// not a second thing. FEAT-INV-09.</summary>
+    /// <remarks>
+    /// This is what outfits are made of, which is why it earns a menu entry of its own: a link
+    /// costs no inventory, stays in step with the original, and is the only way to have one item
+    /// appear in several outfits at once. A cut on the clipboard is left armed — pasting a link
+    /// moves nothing, so the cut has not happened yet.
+    /// </remarks>
+    private void ClipboardPasteLinkInto(Guid targetFolderId)
+    {
+        if (_session == null || targetFolderId == Guid.Empty) return;
+
+        var check = _clipboard.CanPasteLinkInto(targetFolderId);
+        if (check != SLNG.Core.InventoryPasteCheck.Ok)
+        {
+            _status.Text = check switch
+            {
+                SLNG.Core.InventoryPasteCheck.AlreadyALink => L10n.Tr("ui.inventory_clipboard.already_a_link"),
+                SLNG.Core.InventoryPasteCheck.CannotBeLinked => L10n.Tr("ui.inventory_clipboard.cannot_be_linked"),
+                SLNG.Core.InventoryPasteCheck.LibraryCannotBeLinked => L10n.Tr("ui.inventory_clipboard.library_cannot_be_linked"),
+                _ => L10n.Tr("ui.inventory_clipboard.nothing"),
+            };
+            return;
+        }
+
+        _ = PasteLinkAsync(_clipboard.Id, targetFolderId, _clipboard.Name, FolderRowName(targetFolderId));
+    }
+
+    private async System.Threading.Tasks.Task PasteLinkAsync(
+        Guid linkToId, Guid targetFolderId, string name, string targetName)
+    {
+        bool ok = false;
+        string? err = null;
+        try { ok = await _session!.CreateInventoryLinkAsync(targetFolderId, linkToId).ConfigureAwait(false); }
+        catch (Exception ex) { err = ex.Message; }
+
+        RunOnMainThread(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            _status.Text = err != null
+                ? $"Fehler: {err}"
+                : ok ? L10n.TrFormat("ui.inventory_clipboard.linked", name, targetName)
+                     : L10n.TrFormat("ui.inventory_clipboard.link_failed", name);
+            if (ok) RefreshFolder(targetFolderId);
+        });
+    }
+
+    /// <summary>Copies a folder and its contents into another folder, then says what actually
+    /// happened. FEAT-INV-09.</summary>
+    /// <remarks>
+    /// Reports the counts rather than a bare "copied": a folder holding no-copy items is copied
+    /// incompletely by design — the reference viewer skips them silently — and the user is the one
+    /// who needs to know that the copy is short.
+    /// </remarks>
+    private async System.Threading.Tasks.Task CopyFolderIntoAsync(
+        Guid sourceFolderId, Guid targetFolderId, string name, string targetName)
+    {
+        SLNG.Net.FolderCopyResult result = SLNG.Net.FolderCopyResult.Nothing;
+        string? err = null;
+        try { result = await _session!.CopyFolderAsync(sourceFolderId, targetFolderId).ConfigureAwait(false); }
+        catch (Exception ex) { err = ex.Message; }
+
+        RunOnMainThread(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+
+            if (err != null) { _status.Text = $"Fehler: {err}"; return; }
+            if (!result.Success)
+            {
+                _status.Text = L10n.TrFormat("ui.inventory_clipboard.folder_copy_failed", name);
+                return;
+            }
+
+            var text = L10n.TrFormat(
+                "ui.inventory_clipboard.folder_copied", name, targetName,
+                result.Folders.ToString(), (result.Items + result.Links).ToString());
+            if (result.SkippedNoCopy > 0)
+                text += " " + L10n.TrFormat("ui.inventory_clipboard.folder_copy_skipped", result.SkippedNoCopy.ToString());
+            if (result.DepthTruncated)
+                text += " " + L10n.Tr("ui.inventory_clipboard.folder_copy_truncated");
+
+            _status.Text = text;
+            RefreshFolder(targetFolderId);
+        });
+    }
+
+    /// <summary>What is true about a row, for the clipboard to remember. See
+    /// <see cref="SLNG.Core.InventoryClipboardFacts"/> — gathered now because by paste time the
+    /// row may be gone.</summary>
+    private SLNG.Core.InventoryClipboardFacts FactsFor(Guid id, bool isFolder)
+    {
+        bool inLibrary = _session?.IsInLibrary(id) == true;
+
+        if (isFolder)
+        {
+            return new SLNG.Core.InventoryClipboardFacts(
+                IsLink: false, AssetType: SLNG.Core.AssetTypeIds.Folder, AssetId: Guid.Empty,
+                IsInLibrary: inLibrary, IsSystemFolder: _session?.IsSystemFolder(id) == true);
+        }
+
+        var row = _tree.GetSelected();
+        var meta = row != null && IsInstanceValid(row) ? row.GetMetadata(0).AsString() : string.Empty;
+        var parts = meta.Split(',');
+        bool sameRow = parts.Length >= 7 && Guid.TryParse(parts[0], out var rowId) && rowId == id;
+
+        int assetType = sameRow && int.TryParse(parts[4], out var at) ? at : -1;
+        Guid assetId = sameRow && Guid.TryParse(parts[5], out var aid) ? aid : Guid.Empty;
+        bool isLink = sameRow && bool.TryParse(parts[6], out var lk) && lk;
+
+        return new SLNG.Core.InventoryClipboardFacts(
+            isLink, assetType, assetId, inLibrary, IsSystemFolder: false);
+    }
+
+    /// <summary>Re-reads the Trash after something was thrown into it, so the promise the delete
+    /// dialog makes — „in den Papierkorb verschieben" — is visible rather than merely true.</summary>
+    private void RefreshTrashSoon()
+    {
+        if (_session?.TrashFolderId is { } trashId && trashId != Guid.Empty)
+            RefreshAfterGridWrite(trashId, Guid.Empty);
+    }
+
+    /// <summary>Re-reads one or two folders a moment after a fire-and-forget grid write.</summary>
+    private void RefreshAfterGridWrite(Guid first, Guid second)
+    {
+        var timer = GetTree()?.CreateTimer(1.0f);
+        if (timer == null) return;
+        timer.Timeout += () =>
+        {
+            if (!IsInstanceValid(this)) return;
+            if (first != Guid.Empty) RefreshFolder(first);
+            if (second != Guid.Empty && second != first) RefreshFolder(second);
+        };
+    }
+
+    /// <summary>The folder a row currently sits in, read from the tree rather than the store: the
+    /// tree is what the user is looking at, and it is the thing that has to be refreshed.</summary>
+    private Guid ParentFolderOf(Guid id, bool isFolder)
+    {
+        TreeItem? row = null;
+        if (isFolder) _folderItems.TryGetValue(id, out row);
+        else row = _tree.GetSelected();
+        if (row == null || !IsInstanceValid(row)) return Guid.Empty;
+
+        var meta = row.GetParent()?.GetMetadata(0).AsString() ?? string.Empty;
+        return !meta.Contains(',') && Guid.TryParse(meta, out var parent) ? parent : Guid.Empty;
+    }
+
+    /// <summary>Every folder from a folder up to the root of the tree. The clipboard needs it to
+    /// refuse a paste into a folder's own descendant, and only the tree knows the shape.</summary>
+    private System.Collections.Generic.List<Guid> AncestorFoldersOf(Guid folderId)
+    {
+        var chain = new System.Collections.Generic.List<Guid>();
+        if (!_folderItems.TryGetValue(folderId, out var row) || !IsInstanceValid(row)) return chain;
+
+        for (var up = row.GetParent(); up != null; up = up.GetParent())
+        {
+            var meta = up.GetMetadata(0).AsString();
+            if (!meta.Contains(',') && Guid.TryParse(meta, out var id)) chain.Add(id);
+        }
+        return chain;
+    }
+
+    /// <summary>The real name of an inventory item or folder.</summary>
+    /// <remarks>
+    /// From the inventory store, never from the row's text. A row reads
+    /// <c>"{icon} {name}{worn marker}{permission suffix}"</c>, and BUG-INV-07 was exactly that
+    /// mistake: a copy taken under the displayed string was genuinely named with the icon and the
+    /// permission suffix baked into it on the grid, and then drew a second icon in front of the
+    /// first. The stripped row text is only a fallback for a name the store has not got yet,
+    /// which is a display problem rather than a naming one.
+    /// </remarks>
+    private string InventoryName(Guid id)
+    {
+        if (_session != null && _session.TryGetInventoryName(id, out var real)) return real;
+
+        if (_folderItems.TryGetValue(id, out var row) && IsInstanceValid(row))
+        {
+            string text = row.GetText(0);
+            int space = text.IndexOf(' ');
+            return space > 0 && space < 4 ? text.Substring(space + 1).Trim() : text.Trim();
+        }
+        return string.Empty;
+    }
+
+    /// <summary>The folder-flavoured <see cref="InventoryName"/>, for the prompts -- which only
+    /// ever ask about folders and need something printable even for an unknown one.</summary>
+    private string FolderRowName(Guid folderId)
+    {
+        var name = InventoryName(folderId);
+        return name.Length > 0 ? name : folderId.ToString();
+    }
+
+    /// <summary>Puts a prompt window on the HUD layer, which is where every floating window in
+    /// this client lives -- parenting it to the panel would hide it when the panel closes.</summary>
+    private T ShowPrompt<T>() where T : SLNGWindow, new()
+    {
+        var win = new T();
+        var host = GetTree()?.Root?.GetNodeOrNull<CanvasLayer>("Boot/HudLayer")
+                   ?? (Node?)GetParent() ?? this;
+        host.AddChild(win);
+        return win;
+    }
+
+    private void PromptNewFolder(Guid parentId, string parentName)
+    {
+        var win = ShowPrompt<TextPromptWindow>();
+        win.Initialize(
+            L10n.Tr("ui.inventory_folder.new_title"),
+            L10n.TrFormat("ui.inventory_folder.new_prompt", parentName),
+            L10n.Tr("ui.inventory_folder.new_default"),
+            L10n.Tr("ui.inventory_folder.create"));
+        win.Confirmed += name =>
+        {
+            var created = _session!.CreateInventoryFolder(parentId, name);
+            if (created == Guid.Empty) return;
+
+            // CreateFolder is a fire-and-forget UDP packet with a client-side id, so the server
+            // has not acknowledged it yet. Expanding the parent is what makes the new folder
+            // appear, and a refresh a moment later is what makes it appear with the server's own
+            // view of it rather than only ours.
+            if (_folderItems.TryGetValue(parentId, out var parentRow) && IsInstanceValid(parentRow))
+                parentRow.Collapsed = false;
+            RefreshFolder(parentId);
+            var timer = GetTree()?.CreateTimer(1.2f);
+            if (timer != null) timer.Timeout += () => { if (IsInstanceValid(this)) RefreshFolder(parentId); };
+        };
+    }
+
+    private void PromptRenameFolder(Guid folderId, string currentName)
+    {
+        var win = ShowPrompt<TextPromptWindow>();
+        win.Initialize(
+            L10n.Tr("ui.inventory_folder.rename_title"),
+            L10n.TrFormat("ui.inventory_folder.rename_prompt", currentName),
+            currentName,
+            L10n.Tr("ui.inventory_folder.rename_ok"));
+        win.Confirmed += name =>
+        {
+            if (_session?.RenameFolder(folderId, name) != true) return;
+            // The row is ours to repaint: the rename goes out over UDP and the store is updated
+            // locally, so nothing else will tell the tree about it.
+            if (_folderItems.TryGetValue(folderId, out var row) && IsInstanceValid(row))
+            {
+                string text = row.GetText(0);
+                int space = text.IndexOf(' ');
+                row.SetText(0, space > 0 && space < 4 ? text.Substring(0, space + 1) + name : name);
+            }
+        };
+    }
+
+    private void PromptDeleteFolder(Guid folderId, string name)
+    {
+        var win = ShowPrompt<ConfirmWindow>();
+        win.Initialize(
+            L10n.Tr("ui.inventory_folder.delete_title"),
+            L10n.TrFormat("ui.inventory_folder.delete_prompt", name),
+            L10n.Tr("ui.inventory_folder.delete_ok"),
+            danger: true);
+        win.Confirmed += () =>
+        {
+            if (_session?.DeleteFolder(folderId) != true) return;
+            if (_folderItems.TryGetValue(folderId, out var row) && IsInstanceValid(row))
+            {
+                ForgetSubtreeBookkeeping(row);
+                row.GetParent()?.RemoveChild(row);
+                row.Free();
+            }
+            _folderItems.Remove(folderId);
+            _loadedFolders.Remove(folderId);
+
+            // It went to the Trash, it did not cease to exist (BUG-INV-09) -- so show it there.
+            // A no-op while the Trash has never been expanded, which is the usual case.
+            RefreshTrashSoon();
+        };
     }
 
     private void OnContextMenuIdPressed(long id)
@@ -1533,10 +2196,33 @@ public partial class InventoryPanel : SLNGWindow
 
         bool isFolder = !metaStr.Contains(',');
 
+        // FEAT-INV-08: cut / copy / paste. Paste on an ITEM means "into the folder it sits in",
+        // which is where the user is pointing -- an item is not a destination.
+        if (id is 10 or 11 or 12 or 13)
+        {
+            // The store's name, NOT the row's text -- see InventoryName (BUG-INV-07).
+            string rowName = InventoryName(itemId);
+            switch (id)
+            {
+                case 10: ClipboardTake(itemId, isFolder, rowName, SLNG.Core.InventoryClipboardMode.Cut); break;
+                case 11: ClipboardTake(itemId, isFolder, rowName, SLNG.Core.InventoryClipboardMode.Copy); break;
+                case 12:
+                    var host = ParentFolderOf(itemId, isFolder);
+                    if (host != Guid.Empty) ClipboardPasteInto(host);
+                    break;
+                case 13:
+                    var linkHost = ParentFolderOf(itemId, isFolder);
+                    if (linkHost != Guid.Empty) ClipboardPasteLinkInto(linkHost);
+                    break;
+            }
+            return;
+        }
+
         if (id == 4) // Delete
         {
             _ = _session.MoveToTrashAsync(itemId, isFolder);
             item.Free(); // Remove from UI immediately for responsiveness
+            RefreshTrashSoon();
         }
         else if (id == 1) // Copy
         {
@@ -1549,7 +2235,11 @@ public partial class InventoryPanel : SLNGWindow
             var parentIdStr = parentMetaStr.Contains(',') ? parentMetaStr.Split(',')[0] : parentMetaStr;
             if (!Guid.TryParse(parentIdStr, out var parentId)) return;
             
-            _ = _session.CopyItemAsync(itemId, parentId, item.GetText(0));
+            // No name, for the reason spelled out in ClipboardPasteInto: a row's text is
+            // "{icon} {name}{permission suffix}" and copying under it names the copy that on the
+            // grid (BUG-INV-07). This duplicate-in-place path had the same bug as the clipboard
+            // paste did.
+            _ = _session.CopyItemAsync(itemId, parentId, string.Empty);
             // Trigger a refresh of the parent folder to show the new item
             LoadFolder(parentItem, parentId, force: true); 
         }
@@ -1852,12 +2542,44 @@ public partial class InventoryPanel : SLNGWindow
         }
     }
 
+    /// <summary>Forgets every folder BELOW a row: that it was loaded, and which TreeItem it was.
+    /// Called before the row's children are freed, so the two views cannot disagree.</summary>
+    /// <remarks>
+    /// The row itself is deliberately left alone — it is the one being populated, so it stays
+    /// loaded. Only its descendants are about to stop existing.
+    /// </remarks>
+    private void ForgetSubtreeBookkeeping(TreeItem parent)
+    {
+        for (var child = parent.GetFirstChild(); child != null; child = child.GetNext())
+        {
+            ForgetSubtreeBookkeeping(child);
+
+            var meta = child.GetMetadata(0).AsString();
+            if (string.IsNullOrEmpty(meta) || meta.Contains(',')) continue; // an item, not a folder
+            if (!Guid.TryParse(meta, out var folderId)) continue;
+
+            _loadedFolders.Remove(folderId);
+            _folderItems.Remove(folderId);
+        }
+    }
+
     private void Populate(TreeItem item, IReadOnlyList<SLNG.Core.InventoryEntry> children, Guid? knownItemId = null, Guid? knownAssetId = null)
     {
         _pendingFetches = Math.Max(0, _pendingFetches - 1);
         if (!IsInstanceValid(_tree) || !IsInstanceValid(this)) return;
 
         // Drop the "…" placeholder (and anything else stale under this folder).
+        //
+        // BUG-INV-06: the rows go, so the bookkeeping about them has to go with them. Every
+        // subfolder row freed here is about to be recreated by AddFolderItem with a fresh "…"
+        // placeholder -- but its id was still in _loadedFolders, and LoadFolder starts with
+        // `if (!_loadedFolders.Add(folderId) && !force) return;`. The rebuilt folder therefore
+        // refused to ever load again: expanding it did nothing, and it sat on "…" for the rest of
+        // the session. Reported in-world after a cut-and-paste, which refreshes the source folder
+        // and so rebuilds its children -- but any refresh of any parent did this, and had since
+        // long before the clipboard existed.
+        ForgetSubtreeBookkeeping(item);
+
         var child = item.GetFirstChild();
         while (child != null)
         {

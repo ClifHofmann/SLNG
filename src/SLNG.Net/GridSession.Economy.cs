@@ -84,8 +84,11 @@ public partial class GridSession
         // would produce "Clifton Howlett hat dir L$ 1 gezahlt -- Clifton Howlett paid you L$1."
         string replyDescription = e.Description ?? string.Empty;
 
-        bool hasDescription = !string.IsNullOrWhiteSpace(itemDescription)
-            || !string.IsNullOrWhiteSpace(replyDescription);
+        // The gate is the GRID's sentence alone, exactly as the viewer gates on `desc`
+        // (llviewermessage.cpp:4527). Not the item description: giving somebody an inventory item
+        // produces a reply with both parties filled, amount 0 and type 3000, and announcing that
+        // reads "Du hast X L$ 0 gezahlt" over a gift that cost nothing (BUG-ECON-01).
+        bool gridDescribedIt = !string.IsNullOrWhiteSpace(replyDescription);
 
         if (SLNG.Core.Diag.Verbose)
         {
@@ -94,7 +97,7 @@ public partial class GridSession
                 $"type={info?.TransactionType ?? 0} item='{itemDescription}' desc='{replyDescription}'");
         }
 
-        if (!_transactionFilter.ShouldAnnounce(e.TransactionID.Guid, source, dest, hasDescription)) return;
+        if (!_transactionFilter.ShouldAnnounce(e.TransactionID.Guid, source, dest, gridDescribedIt)) return;
 
         // No parties at all, but the grid said something: it does not fill TransactionInfo, and
         // its sentence is the whole story. The reference viewer prints it verbatim as a system

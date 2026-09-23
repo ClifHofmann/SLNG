@@ -190,4 +190,84 @@ public class VolumeLodTests
         Assert.Equal(far, VolumeLod.ForDistanceWithHysteresis(200f, scaleLength, Factor, near));
         Assert.Equal(near, VolumeLod.ForDistanceWithHysteresis(2f, scaleLength, Factor, far));
     }
+
+    // ---- FEAT-PERF-09: rigged geometry is measured differently -------------------------------
+
+    /// <summary>The whole reason ForDistanceRigged exists: a mesh volume's mLODScaleBias halves
+    /// the radius, and the reference viewer applies it only in calcLOD's NON-rigged branch
+    /// (llvovolume.cpp:1526-1568). Put an avatar through the prim path and it goes coarse a full
+    /// level too early -- which is exactly what was reported in-world.</summary>
+    [Fact]
+    public void ForDistanceRigged_IsNeverCoarserThanThePrimPathForTheSameSize()
+    {
+        const float wearer = 1.90f;
+        foreach (float distance in new[] { 2f, 4f, 8f, 15f, 20f, 30f, 40f, 60f, 80f, 120f })
+        {
+            var rigged = VolumeLod.ForDistanceRigged(distance, wearer, Factor);
+            var asPrim = VolumeLod.ForDistance(distance, wearer, Factor);
+            Assert.True(rigged >= asPrim,
+                $"at {distance} m the rigged rule gave {rigged} but the prim rule gave {asPrim}");
+        }
+    }
+
+    /// <summary>And it is a real difference, not a no-op: somewhere in the ordinary viewing range
+    /// the two must actually disagree, or the bug would still be there.</summary>
+    [Fact]
+    public void ForDistanceRigged_ActuallyDiffersFromThePrimPath()
+    {
+        const float wearer = 1.90f;
+        bool anyDifferent = false;
+        foreach (float distance in new[] { 8f, 20f, 40f, 60f })
+        {
+            if (VolumeLod.ForDistanceRigged(distance, wearer, Factor)
+                != VolumeLod.ForDistance(distance, wearer, Factor))
+            {
+                anyDifferent = true;
+            }
+        }
+        Assert.True(anyDifferent);
+    }
+
+    /// <summary>An avatar close enough to talk to is drawn at full detail. The failing screenshot
+    /// was a distant avatar, but the cost of getting the radius wrong in the other direction is a
+    /// blocky avatar standing next to you.</summary>
+    [Fact]
+    public void ForDistanceRigged_AnAvatarWithinConversationRangeIsHighest()
+    {
+        Assert.Equal(MeshDetailLevel.Highest, VolumeLod.ForDistanceRigged(2f, 1.90f, Factor));
+        Assert.Equal(MeshDetailLevel.Highest, VolumeLod.ForDistanceRigged(5f, 1.90f, Factor));
+    }
+
+    /// <summary>Detail falls off with distance and never rises with it. A rule that could hand a
+    /// further avatar MORE geometry would make the whole measure meaningless.</summary>
+    [Fact]
+    public void ForDistanceRigged_NeverGainsDetailWithDistance()
+    {
+        const float wearer = 1.90f;
+        var previous = VolumeLod.ForDistanceRigged(1f, wearer, Factor);
+        for (float distance = 2f; distance <= 200f; distance += 1f)
+        {
+            var here = VolumeLod.ForDistanceRigged(distance, wearer, Factor);
+            Assert.True(here <= previous, $"detail rose from {previous} to {here} at {distance} m");
+            previous = here;
+        }
+    }
+
+    /// <summary>A taller wearer keeps her detail further out, exactly as a bigger prim does.</summary>
+    [Fact]
+    public void ForDistanceRigged_ABiggerWearerKeepsDetailLonger()
+    {
+        Assert.True(VolumeLod.ForDistanceRigged(30f, 3.0f, Factor)
+                 >= VolumeLod.ForDistanceRigged(30f, 1.5f, Factor));
+    }
+
+    /// <summary>Nonsense in, highest out -- the same refusal to guess the other entry point makes
+    /// when the viewpoint is not known yet.</summary>
+    [Fact]
+    public void ForDistanceRigged_RefusesToReduceOnMissingInputs()
+    {
+        Assert.Equal(MeshDetailLevel.Highest, VolumeLod.ForDistanceRigged(0f, 1.90f, Factor));
+        Assert.Equal(MeshDetailLevel.Highest, VolumeLod.ForDistanceRigged(30f, 0f, Factor));
+        Assert.Equal(MeshDetailLevel.Highest, VolumeLod.ForDistanceRigged(30f, 1.90f, 0f));
+    }
 }
