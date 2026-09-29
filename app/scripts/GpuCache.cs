@@ -570,6 +570,34 @@ public class GpuCache
     private static readonly SemaphoreSlim _imagePrepGate =
         new(Math.Max(2, System.Environment.ProcessorCount - 2));
 
+    private static volatile bool _shuttingDown;
+    private static int _imagePrepsRunning;
+
+    /// <summary>True once the client has started to quit. Worker threads that call into Godot
+    /// (<c>Image.CreateFromData</c> and friends) must not start new work after this.</summary>
+    public static bool ShuttingDown => _shuttingDown;
+
+    /// <summary>Stop the worker-side image preparation before the engine tears down, and wait
+    /// for whatever is already running to finish.
+    ///
+    /// <para>The image build calls into Godot from a thread-pool thread. If the engine is already
+    /// finalizing its C# interop when such a call lands, it dies inside
+    /// <c>UnmanagedGetManaged</c> with an <c>AccessViolationException</c> -- a fatal error on
+    /// every exit that happens while textures are still arriving (seen on quit during a texture
+    /// storm, ~70 images in flight). Setting the flag first and then waiting for the counter is
+    /// the safe order: a worker increments, THEN checks the flag, so it either sees the flag and
+    /// skips, or is counted and waited for.</para>
+    ///
+    /// <para>Bounded: the work is tens of milliseconds per texture, so a stuck worker must not be
+    /// able to hold the window open.</para></summary>
+    public static void BeginShutdown(int maxWaitMs = 2000)
+    {
+        _shuttingDown = true;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (Volatile.Read(ref _imagePrepsRunning) > 0 && clock.ElapsedMilliseconds < maxWaitMs)
+            Thread.Sleep(5);
+    }
+
     private static async Task<PreparedImage> PrepareImageAsync(
         Guid textureId, SLNG.Assets.TextureData textureData, bool generateMipmaps, float screenPixelArea)
     {
@@ -580,10 +608,15 @@ public class GpuCache
         // would run the whole image build on the main thread with no budget at all, which is worse
         // than the queued version it replaces.
         await _imagePrepGate.WaitAsync().ConfigureAwait(false);
+        Interlocked.Increment(ref _imagePrepsRunning);
         try
         {
             return await Task.Run(() =>
             {
+                // Counted first, checked second -- see BeginShutdown. The engine is going away;
+                // no texture is worth an AccessViolation on the way out.
+                if (_shuttingDown) return new PreparedImage(null, 0f);
+
                 Image? image = null;
                 float uploadedFor = 0f;
                 try
@@ -655,6 +688,7 @@ public class GpuCache
         }
         finally
         {
+            Interlocked.Decrement(ref _imagePrepsRunning);
             _imagePrepGate.Release();
         }
     }

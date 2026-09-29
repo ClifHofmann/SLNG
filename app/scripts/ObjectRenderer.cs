@@ -2970,7 +2970,7 @@ public partial class ObjectRenderer : Node3D
         _ = SLNG.Assets.MediaImageService.FetchAsync(url, fitWidth, fitHeight).ContinueWith(t =>
         {
             var data = t.IsFaulted ? null : t.Result;
-            if (data == null) return;
+            if (data == null || GpuCache.ShuttingDown) return;
 
             var image = Godot.Image.CreateFromData(data.Width, data.Height, false, Godot.Image.Format.Rgba8, data.Rgba);
             if (image == null) return;
