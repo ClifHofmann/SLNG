@@ -383,7 +383,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.91-alpha";
+    public const string AppVersion = "v0.24.93-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -4502,6 +4502,8 @@ public partial class Boot : Control
             // both exits -- QuitGracefully(true) from the window's × and from Exit, and
             // QuitGracefully(false) from Disconnect -- because a logout is just as much the end of
             // a session as a quit, and only one of them was ever going to be remembered otherwise.
+            // A session the GRID ended has normally lost its connection by now and skips this
+            // block; GridSession saved it the moment it ended (BUG-INV-13).
             _session.SaveInventoryCache();
             _session.SaveDisplayNameCache();
 

@@ -203,6 +203,16 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     private void RaiseSessionEnded(SessionEndReason reason, string message)
     {
         if (System.Threading.Interlocked.Exchange(ref _sessionEndRaised, 1) != 0) return;
+
+        // BUG-INV-13: keep what this session learned. The app saves both caches on its own quit and
+        // logout, but only while still connected -- and a session the grid ends never is by the
+        // time anybody clicks anything. The store is still whole here: LibreMetaverse drops it only
+        // when its InventoryManager is disposed, not on a disconnect. Before the event, because the
+        // app tears the session down in reaction to it. A local write with no network wait, so it
+        // is fine on whichever library thread noticed the end.
+        SaveInventoryCache();
+        SaveDisplayNameCache();
+
         SessionEnded?.Invoke(this, new SessionEndedEvent(reason, message));
     }
 

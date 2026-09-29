@@ -19,6 +19,10 @@ namespace SLNG.Net.Tests;
 /// than calling an open method directly: the order of that chain is the thing under test. A package
 /// bump that built the store later, or a GridSession that stopped opening the caches itself, fails
 /// here instead of quietly leaving them closed again.</para>
+///
+/// <para>BUG-INV-13: and a session the grid ends saves them as it ends. The app saves only while it
+/// is still connected, which a region restart, a kick or a timeout never is by the time anybody
+/// clicks anything.</para>
 /// </summary>
 public class SessionCacheTests : IDisposable
 {
@@ -238,6 +242,60 @@ public class SessionCacheTests : IDisposable
 
         Assert.Equal(DisplayNameCache.Freshness.Fresh, NameCache(second).Lookup(friend, DateTime.UtcNow, out var name));
         Assert.Equal("Remembered Name", name);
+    }
+
+    /// <summary>LibreMetaverse telling us the connection is gone for a reason that is not our own
+    /// logout — the handler it calls from <c>NetworkManager.ShutdownAsync</c>.</summary>
+    private static void GridDisconnects(GridSession session, NetworkManager.DisconnectType why) =>
+        typeof(GridSession).GetMethod("OnNetworkDisconnected", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(session, new object?[] { null, new DisconnectedEventArgs(why, "test") });
+
+    // BUG-INV-13. A region restart, a kick or a timeout: by the time anybody clicks anything the
+    // connection is gone, and the app saves only while it is connected.
+    [Fact]
+    public void A_session_the_grid_ends_saves_both_caches_before_the_app_hears_of_it()
+    {
+        var itemId = UUID.Random();
+        var friend = Guid.NewGuid();
+        using (var first = NewSession())
+        {
+            LogIn(first);
+            Fetched(first, _objectsId, (itemId, "Blatest"));
+            NameCache(first).Set(friend, "Remembered Name", DateTime.UtcNow);
+
+            // Checked from inside the handler: the app tears the session down in reaction to this
+            // event, so whatever is not on disk by then is lost.
+            bool savedWhenTold = false;
+            first.SessionEnded += (_, _) => savedWhenTold = File.Exists(InventoryFile);
+
+            GridDisconnects(first, NetworkManager.DisconnectType.NetworkTimeout);
+
+            Assert.True(savedWhenTold);
+            Assert.True(File.Exists(Path.Combine(NamesDir, $"{_agent.Guid:N}.names.json")));
+        }
+
+        // And it is a cache the next login can use, not merely a file.
+        using var second = NewSession();
+        LogIn(second);
+        Assert.True(second.IsFolderLocal(_objectsId.Guid));
+        Assert.Equal(DisplayNameCache.Freshness.Fresh, NameCache(second).Lookup(friend, DateTime.UtcNow, out _));
+    }
+
+    // The other way a session ends from the grid's side (BUG-NET-20/22): SLNG gives up on a region
+    // whose event queue died and logs out itself. It raises SessionEnded before the logout, while
+    // still connected, so the app's own save may or may not get there first.
+    [Fact]
+    public void A_dead_event_queue_saves_both_caches_as_it_ends_the_session()
+    {
+        using var session = NewSession();
+        LogIn(session);
+        Fetched(session, _objectsId, (UUID.Random(), "Blatest"));
+
+        typeof(GridSession).GetMethod("EndSessionOverDeadEventQueue", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(session, new object?[] { "Millenium" });
+
+        Assert.True(File.Exists(InventoryFile));
+        Assert.True(File.Exists(Path.Combine(NamesDir, $"{_agent.Guid:N}.names.json")));
     }
 
     // Both files are keyed by the agent id. Without one there is nothing to key them by, and a file

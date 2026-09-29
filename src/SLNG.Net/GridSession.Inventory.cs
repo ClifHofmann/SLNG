@@ -35,6 +35,10 @@ public sealed partial class GridSession
     // never a dependency.
     private string? _inventoryCachePath;
 
+    // BUG-INV-13: a session the grid ends is saved on a library thread, a quit on the main thread,
+    // and both write the one file.
+    private readonly object _inventoryCacheSaveGate = new();
+
     /// <summary>
     /// FEAT-INV-07: loads this account's on-disk inventory cache, so folders that have not changed
     /// since the last session are drawn without a CAPS round trip. Called by
@@ -243,7 +247,8 @@ public sealed partial class GridSession
 
     /// <summary>
     /// FEAT-INV-07: writes the inventory cache to disk. Call on quit <b>and</b> on explicit logout
-    /// — a clean quit is not the only way a session ends.
+    /// — a clean quit is not the only way a session ends. Nor is either of them: a session the grid
+    /// ends saves itself as it ends (<see cref="RaiseSessionEnded"/>, BUG-INV-13).
     ///
     /// <para>Writes only what the next login can check (<see cref="CacheSnapshot"/>), never the live
     /// store as it is. A session that knows no folder's contents at all leaves the file on disk
@@ -257,24 +262,27 @@ public sealed partial class GridSession
         var store = _client.Inventory.Store;
         if (store?.RootFolder == null) return;
 
-        try
+        lock (_inventoryCacheSaveGate)
         {
-            var snapshot = CacheSnapshot(_client, store, out int known, out int unknown);
-            if (known == 0)
+            try
             {
-                Console.Error.WriteLine("[InvCache] no folder's contents known this session -- leaving the cache on disk as it is");
-                return;
-            }
+                var snapshot = CacheSnapshot(_client, store, out int known, out int unknown);
+                if (known == 0)
+                {
+                    Console.Error.WriteLine("[InvCache] no folder's contents known this session -- leaving the cache on disk as it is");
+                    return;
+                }
 
-            snapshot.SaveToDisk(_inventoryCachePath);
-            var bytes = new FileInfo(_inventoryCachePath).Length;
-            Console.Error.WriteLine($"[InvCache] saved {snapshot.Count} node(s): {known} folder(s) with their contents, " +
-                $"{unknown} to fetch next time, {bytes / 1024} KB");
-        }
-        catch (Exception ex)
-        {
-            // Losing a cache costs speed, never correctness.
-            Console.Error.WriteLine($"[InvCache] could not save {_inventoryCachePath}: {ex.Message}");
+                snapshot.SaveToDisk(_inventoryCachePath);
+                var bytes = new FileInfo(_inventoryCachePath).Length;
+                Console.Error.WriteLine($"[InvCache] saved {snapshot.Count} node(s): {known} folder(s) with their contents, " +
+                    $"{unknown} to fetch next time, {bytes / 1024} KB");
+            }
+            catch (Exception ex)
+            {
+                // Losing a cache costs speed, never correctness.
+                Console.Error.WriteLine($"[InvCache] could not save {_inventoryCachePath}: {ex.Message}");
+            }
         }
     }
 

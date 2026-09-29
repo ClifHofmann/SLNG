@@ -305,23 +305,31 @@ public sealed partial class GridSession
     }
 
     /// <summary>Writes the Display Name cache. Call on quit and on logout, next to
-    /// <see cref="SaveInventoryCache"/>. Written to a side file and moved into place, so a crash
-    /// mid-write leaves the previous file intact instead of a half-written one.</summary>
+    /// <see cref="SaveInventoryCache"/>; a session the grid ends saves it by itself (BUG-INV-13).
+    /// Written to a side file and moved into place, so a crash mid-write leaves the previous file
+    /// intact instead of a half-written one.</summary>
     public void SaveDisplayNameCache()
     {
         if (_displayNameCachePath == null) return;
 
-        try
+        // The two writers are the quit on the main thread and a grid-ended session on a library
+        // thread; they share the side file.
+        lock (_displayNameCacheSaveGate)
         {
-            string temp = _displayNameCachePath + ".tmp";
-            File.WriteAllText(temp, _displayNameCache.ToJson());
-            File.Move(temp, _displayNameCachePath, overwrite: true);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[DisplayName] could not save the name cache {_displayNameCachePath}: {ex.Message}");
+            try
+            {
+                string temp = _displayNameCachePath + ".tmp";
+                File.WriteAllText(temp, _displayNameCache.ToJson());
+                File.Move(temp, _displayNameCachePath, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[DisplayName] could not save the name cache {_displayNameCachePath}: {ex.Message}");
+            }
         }
     }
+
+    private readonly object _displayNameCacheSaveGate = new();
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _displayNamesRequested = new();
     private volatile bool _displayNameFailureLogged;
