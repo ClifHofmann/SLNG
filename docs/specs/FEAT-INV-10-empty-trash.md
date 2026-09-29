@@ -30,7 +30,8 @@ therefore refuses anything outside the Trash itself, not only the menu.
 - [x] Nothing worn is purged: Empty Trash and Delete permanently both refuse, and say what is worn.
 - [x] Unit tests for the decisions (`TrashTests`); selftest builds the menus in a real tree.
 - [x] Restore confirmed in-world on Second Life, 2026-09-29 (Millenium; delete to Trash, restore to Objects).
-- [ ] Empty Trash and Delete permanently confirmed in-world — on SL both go through AIS `DELETE`.
+- [x] Delete permanently reported working by the user, 2026-09-29 (no `Purge` line in the surviving client logs).
+- [ ] Empty Trash confirmed in-world — on SL it goes through AIS `DELETE …/children`.
 - [ ] Confirmed on OpenSim (UDP path).
 
 ## Decisions
