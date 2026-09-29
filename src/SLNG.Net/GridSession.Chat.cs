@@ -110,7 +110,11 @@ public sealed partial class GridSession
                     // the capability that is forever. One line is enough to tell "the grid has no
                     // Display Names" apart from "the nametag code is broken", which is the
                     // distinction that cost a round trip here.
-                    if (!_displayNameFailureLogged)
+                    //
+                    // Diagnostic only: the first lookup can land before the capability handshake
+                    // and the retry above then succeeds, so a healthy SL login could print this
+                    // as an error for a failure that had already healed.
+                    if (Diag.Verbose && !_displayNameFailureLogged)
                     {
                         _displayNameFailureLogged = true;
                         Console.Error.WriteLine(

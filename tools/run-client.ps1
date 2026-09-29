@@ -182,4 +182,9 @@ if ($NoReattach) {
 if ($userArgs.Count -gt 0) {
     $clientArgs += @('--') + $userArgs
 }
-godot @clientArgs *>&1 | Tee-Object -FilePath $transcriptPath
+# Every stderr line the client writes (the engine's own warnings, the libraries' failure lines)
+# arrives here as an ErrorRecord, and left as one PowerShell renders it as a red "godot : ...
+# In run-client.ps1:NNN Zeichen:1 ... NativeCommandError" block -- which makes even a harmless
+# line look like the script crashed. Turning each record into its plain text first keeps the
+# line as the client wrote it.
+godot @clientArgs *>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $transcriptPath

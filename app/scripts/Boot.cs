@@ -383,7 +383,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.81-alpha";
+    public const string AppVersion = "v0.24.83-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -4304,6 +4304,7 @@ public partial class Boot : Control
         // -- see GpuCache.DisposeAll's doc comment for why (a late .NET GC finalizer touching an
         // already-destroyed RenderingServer is the documented cause of the "N RID allocations...
         // leaked at exit" / "RenderingServer::get_singleton() is null" pair seen at close).
+        GpuCache.BeginShutdown();
         _gpuCache?.DisposeAll();
 
         // Same reasoning, for the textures that are built once and kept in STATIC fields for the
@@ -4489,6 +4490,9 @@ public partial class Boot : Control
 
         if (quitProcess)
         {
+            // Before the engine starts tearing down: a texture worker that calls into Godot
+            // mid-teardown dies with an AccessViolationException (GpuCache.BeginShutdown).
+            GpuCache.BeginShutdown();
             GetTree().Quit();
         }
         else
