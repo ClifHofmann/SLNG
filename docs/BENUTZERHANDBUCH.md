@@ -3,6 +3,8 @@
 Willkommen beim Benutzerhandbuch für den **Puris Viewer** (internes Projekt: *SLNG*). Dieser Next-Generation-Viewer für Second Life und OpenSimulator kombiniert das bewährte LibreMetaverse-Protokoll mit der modernen Rendering-Engine von Godot 4.
 
 > **Status:** Alpha. Es kommen kontinuierlich neue Funktionen hinzu.
+>
+> Dieses Handbuch beschreibt Version **v0.24.88-alpha**. Die Version steht oben rechts in der Menüleiste und auf dem Anmeldebildschirm. Was nicht funktioniert, steht in Abschnitt 11.
 
 ---
 
@@ -44,6 +46,19 @@ Alle Menüs und schwebenden Fenster (UI-Fenster) bestehen aus ansprechenden, hal
 - **Reiter:** Das Inventar-Fenster hat drei Reiter – *Inventar* (der komplette Ordnerbaum), *Angezogen* (was Ihr Avatar gerade trägt) und *Outfits* (gespeicherte Outfits).
 - **Filterleiste:** Das Such-/Filterfeld sitzt fest oben unter den Reitern und wirkt in jedem Reiter. Der eingegebene Text filtert jeweils die gerade sichtbare Liste; beim Wechsel des Reiters bleibt der Filter erhalten.
 
+#### Ordner anlegen, verschieben, kopieren
+- **Ordner-Menü (Rechtsklick auf einen Ordner):** `Neuer Ordner…`, `Umbenennen…` und `Ordner löschen`. Gelöscht wird nichts endgültig: Der Ordner samt Inhalt wandert in den Papierkorb (`In den Papierkorb`).
+- **Verschieben per Ziehen:** Ziehen Sie eine Zeile auf einen Ordner, um sie dort hineinzulegen.
+- **Ausschneiden, Kopieren, Einfügen:** Funktioniert mit der Tastatur und über das Menü. **Ganze Ordner** lassen sich kopieren, auch verschachtelte. Zusätzlich gibt es `Als Verknüpfung einfügen` – das ist wichtig, weil Outfits aus Verknüpfungen bestehen.
+- **Schutzregeln:** Systemordner (z. B. „Objekte“) lassen sich weder umbenennen noch löschen noch ausschneiden, denn das Grid sortiert eingehende Gegenstände nach dem *Typ* des Ordners, nicht nach dem Namen. Ein Ordner kann nicht in sich selbst oder in einen eigenen Unterordner eingefügt werden. Aus `#Library` lässt sich nichts ausschneiden, denn das gehört Ihnen nicht – kopieren Sie es stattdessen.
+
+#### Outfits
+Rechtsklick auf ein gespeichertes Outfit im Reiter *Outfits*:
+- `Dieses Outfit anziehen` ersetzt, was Sie tragen, durch dieses Outfit.
+- `Zusätzlich anziehen` legt das Outfit zu dem, was Sie schon tragen.
+- `Teile dieses Outfits ausziehen`, `Outfit umbenennen` und `Outfit löschen` tun, was sie sagen.
+- `Mit aktuell Getragenem überschreiben` ändert den *gespeicherten* Ordner, nicht Ihren Avatar.
+
 ---
 
 ## 4. Kamera & Steuerung
@@ -54,6 +69,9 @@ Alle Menüs und schwebenden Fenster (UI-Fenster) bestehen aus ansprechenden, hal
   - *Stuhl-Symbol:* Ein Linksklick (oder Rechtsklick -> `Sit`) lässt Ihren Avatar Platz nehmen. Ein erneuter Druck auf eine Bewegungstaste lässt Sie aufstehen.
   - *Hand-Symbol:* Sie können das Objekt berühren (Touch).
 - **Fliegen:** Aktivieren Sie den Flugmodus (Standard: Taste `F` oder über das Menü), um die Region von oben zu erkunden.
+- **Klicken über Regionsgrenzen:** Objekte auf der anderen Seite einer Regionsgrenze lassen sich berühren, auswählen und kaufen wie Objekte in Ihrer eigenen Region.
+- **Berühren mit Fläche:** Ein Klick meldet dem Objekt auch, *welche Fläche* Sie getroffen haben. Verkaufstafeln mit einem Produkt pro Fläche reagieren deshalb richtig.
+- **Teleport im Sitzen:** Nach jedem Teleport steht Ihr Avatar am Ziel auf, statt in einer Sitzpose zu einem Stuhl zurückzufallen, der eine Region entfernt steht.
 
 ### Kamerasteuerung (Alt-Zoom & Co.)
 - **Mauskamera (Alt+Zoom):** Halten Sie `Alt` gedrückt und klicken Sie mit der linken Maustaste auf ein Objekt oder einen Avatar, um diesen zu fokussieren. Mit Mausbewegungen können Sie dann darum kreisen oder hineinzoomen.
@@ -97,6 +115,15 @@ Eines der Highlights des Viewers sind die modernen Navigations- und Karten-Tools
 - Nutzen Sie Landmarken aus Ihrem Inventar per Doppelklick zum Teleportieren.
 - Aktuelle Regionen lassen sich mühelos als neue Landmarke abspeichern.
 
+### Regions-Neustart
+Kündigt das Grid einen Neustart der Region an, in der Sie stehen, öffnet sich das Fenster **Regions-Neustart**:
+- Es nennt die Region und zählt die Zeit bis zum Neustart herunter (ab zehn Sekunden Restzeit wird die Zahl rot). Die Taskleiste blinkt, falls der Viewer im Hintergrund ist.
+- Unter **Teleportieren nach** wählen Sie das Ziel: `Zuhause` (vorgewählt) oder eine Ihrer Landmarken. `Teleportieren` bringt Sie dorthin und schließt das Fenster. Was bei einem nicht gesetzten oder unbrauchbaren Zuhause geschieht, entscheidet das Grid.
+- Kommt eine weitere Meldung ("noch eine Minute"), wird dasselbe Fenster aktualisiert – es öffnet sich kein zweites. Ein Regionswechsel schließt es. `Schließen` blendet es aus, ohne Sie zu teleportieren.
+- Die Meldung bleibt zusätzlich im Fenster **Benachrichtigungen** (Reiter *System*) stehen.
+
+**Wenn Sie bleiben:** Beim Neustart beendet das Grid Ihre Sitzung. Der Viewer zeigt dann **Du wurdest abgemeldet** mit dem Grund und zwei Knöpfen: `Zur Anmeldung` geht zum Anmeldebildschirm, `Hier bleiben` lässt Sie den Chat weiterlesen. Der Viewer sendet dabei ein ordentliches Abmelden an das Grid. Dasselbe passiert, wenn die Verbindung abläuft oder eine Region nicht mehr antwortet.
+
 ---
 
 ## 7. Profile
@@ -113,20 +140,64 @@ Das voll ausgestattete Benutzerprofil-Fenster ist zentral für Ihre SL-Identitä
 Der Puris Viewer legt höchsten Wert auf eine optisch ansprechende, korrekte Darstellung:
 - **Bento & Bakes-on-Mesh (BoM):** Moderne Mesh-Körper, Bento-Skelette, Animationen, Alpha-Masken und klassische Systemkleidung (über BoM gebacken) werden vollständig unterstützt.
 - **Grafikeinstellungen:** Im Einstellungsfenster (`Preferences`) -> `Grafik` können Sie Funktionen wie die Sichtweite (Draw Distance), Anti-Aliasing (MSAA) und die Qualität der dynamischen Echtzeit-Schatten (CSM) anpassen.
+- **Namensschilder:** Über dem Avatar steht der **Anzeigename**; darunter in Klammern der unveränderliche Benutzername, wenn beide verschieden sind. Avatare ohne eigenen Anzeigenamen zeigen nur ihren Namen. Darüber kann der Gruppentitel stehen. Unter `Einstellungen` -> `Anzeige` schalten Sie das ein oder aus: `Gruppentitel zeigen`, `Anzeigenamen verwenden`, `Benutzernamen unter dem Anzeigenamen zeigen` und `Meinen Gruppentitel vor allen verbergen` (das wirkt wirklich auf andere: Der Simulator sendet Ihren Titel dann an niemanden).
+  - Der Viewer **merkt sich Anzeigenamen** zwischen den Sitzungen, sie stehen beim nächsten Login sofort da. Ein bereits gemerkter Name wird nach 24 Stunden im Hintergrund neu abgefragt.
+  - Ändert jemand seinen Anzeigenamen und meldet das Grid es, aktualisiert sich das Namensschild, und im Fenster **Benachrichtigungen** (Reiter *System*) erscheint „*alter Name* (*Benutzername*) heißt jetzt *neuer Name*“.
 - **Asynchrones Textur-Streaming:** Um Ruckler ("Stutter") beim Erkunden zu vermeiden, lädt und dekodiert der Viewer JPEG2000-Texturen asynchron im Hintergrund. Texturen, die näher an der Kamera sind, werden priorisiert geladen.
 
 ---
 
-## 9. Bekannte Probleme (Troubleshooting)
+## 9. Geld & Zahlungen
+
+- **Kontostand:** Ihr Guthaben in Linden-Dollar steht in der Menüleiste oben rechts (`L$`). Es aktualisiert sich von selbst.
+- **Objekte kaufen:** Rechtsklick auf ein Objekt, das zum Verkauf steht -> `Kaufen (L$ …) …`. Das Fenster **Objekt kaufen** nennt nicht nur den Preis, sondern auch, *was* Sie kaufen: das **Original** (es wechselt den Besitzer und verschwindet von seinem Platz), eine **Kopie** (das Objekt bleibt stehen, die Kopie landet im Inventar) oder den **Inhalt**. Es zeigt Ihren Kontostand und, falls das Geld nicht reicht, *wie viel fehlt* – abgeschickt wird dann nichts.
+- **Objekte bezahlen:** Rechtsklick -> `Bezahlen …` öffnet **Objekt bezahlen**. Die Beträge bestimmt das Objekt (z. B. ein Trinkgeldgeber oder ein Verkaufsautomat); gibt es keine Vorgabe, stehen L$ 1, 5, 10 und 20 zur Wahl, und `Anderer Betrag` erlaubt einen freien Betrag, sofern das Objekt ihn nicht ausgeschlossen hat.
+- **Personen bezahlen:** Das Fenster **Person bezahlen** erreichen Sie per Rechtsklick auf die Person, aus ihrem Profil und aus der Freundesliste. Unter `Wofür? (optional)` können Sie einen Grund angeben, den der Empfänger sieht. **Über L$ 200** fragt der Viewer vorher nach und nennt Betrag und Empfänger: „L$ … an … senden. Das lässt sich nicht rückgängig machen.“
+- **Wenn Geld ankommt oder abgeht:** Der Viewer meldet, wer wie viel gezahlt hat und wofür (eingehend, ausgehend oder abgelehnt). Sie steht außerdem im Fenster **Benachrichtigungen** (Reiter *Transaktionen*).
+- **Nicht möglich:** Land kaufen ist noch nicht eingebaut.
+
+> **Vorsicht:** Kauf und Zahlung sind neu. Prüfen Sie Betrag und Empfänger im Fenster sorgfältig, und melden Sie sich mit einem Konto an, dessen Guthaben Sie verschmerzen könnten.
+
+---
+
+## 10. Benachrichtigungen & Anfragen
+
+### Das Fenster „Benachrichtigungen“
+Alles, was bei Ihnen *ankommt* und nicht in den Chat gehört, landet hier: Zahlungen, Inventarangebote, Meldungen des Simulators (z. B. ein angekündigter Regions-Neustart oder ein geänderter Anzeigename), Gruppeneinladungen und Rechteanfragen von Skripten. Öffnen Sie es über das Glocken-Symbol in der unteren Leiste.
+- **Vier Reiter:** *System*, *Transaktionen*, *Einladungen* und *Gruppe*. Die Zahl im Reiter sagt, was ungelesen ist.
+- **Hinweis oben rechts:** Bei einer neuen Benachrichtigung erscheint kurz ein Hinweis, der von selbst wieder verschwindet. Ein Klick darauf öffnet den passenden Reiter. Wegklicken löscht nichts.
+- **Ungelesen-Zähler** stehen an der Glocke und am Chat-Symbol. Gelesen wird pro Reiter gezählt: Wer *Transaktionen* öffnet, löscht nicht nebenbei den Zähler für ungesehene Gruppennachrichten.
+- **Namen anklicken** öffnet das Profil, wo es eines gibt (ein Objekt hat keins).
+- `Mehr anzeigen` klappt Einzelheiten auf, `Wegräumen` entfernt einen Eintrag, `Alle schließen` alle des Reiters.
+- **Offene Entscheidungen:** Eine Gruppeneinladung oder ein Inventarangebot, das Sie mit dem × schließen, ist damit *nicht* beantwortet. Der Eintrag hat dann einen Knopf `Öffnen`, der das Fenster zurückholt. Nach der Antwort bleibt der Eintrag als Verlauf stehen („… – beigetreten“, „… – abgelehnt“), nur der Knopf verschwindet.
+- Skript-Dialoge (`llDialog`) erscheinen **nicht** hier, sondern als eigene Fenster (siehe Abschnitt 5).
+
+### Rechteanfragen von Skripten
+Bittet ein Objekt um Erlaubnis (**Rechteanfrage**), nennt das Fenster das Objekt und seinen Besitzer und listet in Worten auf, was es möchte, z. B. *Deinen Avatar animieren* oder *Geld von deinem Konto abbuchen*. Die Zeile mit dem Geld ist hervorgehoben, denn sie ist die gefährlichste. `Ablehnen` steht links und hat den Fokus, `Erlauben` rechts. Das Schließen mit dem × zählt als Ablehnung.
+
+### Einladungen und Angebote
+Eine **Gruppeneinladung** zeigt den Einladenden und die Beitrittsgebühr (`Beitreten` / `Ablehnen`). Ein **Inventarangebot** zeigt, wer Ihnen was anbietet (`Annehmen` / `Ablehnen`).
+
+---
+
+## 11. Bekannte Probleme (Troubleshooting)
 
 Da sich der Client in einer laufenden Alpha-Phase befindet, helfen Ihnen folgende Hinweise:
 - **"Wolken-Avatare":** Wenn Avatare oder Objekte kurzzeitig grau/als Wolke dargestellt werden, warten Sie einen Augenblick. Das Hintergrund-Streaming (`CoreJ2K`) decodiert die Texturen gerade noch.
 - **Abbrechen von Teleports:** Wenn Sie im Weltkarten-Menü "A teleport is already in progress" lesen, läuft im Hintergrund bereits ein Teleport-Vorgang. Der Puris Viewer blockiert hier gezielt Überlappungen, um korrupte Verbindungen (Race Conditions) zu vermeiden.
 - **Objekt-Detach funktioniert nicht:** Ein Klick auf "Detach" im Inventar räumt nun automatisch kaputte Server-Verknüpfungen auf, falls ein Kleidungsstück fehlerhaft anhing. 
+- **Avatar sieht unvollständig aus** (Kopf leer, Haare wie ein Helm): Menü `Avatar` -> `Avatar neu backen` (`Strg+Alt+R`) lädt die Körpertexturen neu.
+- **Was noch fehlt (Alpha):**
+  - **Gruppenmitteilungen** (Group Notices) kommen nicht an. Der Gruppen*chat* funktioniert.
+  - **Freundesrechte** werden weder angezeigt noch lassen sie sich einstellen.
+  - Die **Minikarte** listet nur Avatare Ihrer eigenen Region und zeigt keinen Regions- oder Parzellenhinweis.
+  - **Land kaufen** gibt es nicht (Objekte kaufen und Zahlen schon).
+  - **Ton:** Es gibt noch keinen Ton in der Welt; der Lautsprecher-Knopf oben ist dafür reserviert.
+- **Neustart-Fenster:** Ob das Ziel *Zuhause* bei nicht gesetztem Zuhause an einem Hub landet, entscheidet das Grid; das ist noch nicht in allen Fällen erprobt.
 
 ---
 
-## 10. Lizenzen & TPV
+## 12. Lizenzen & TPV
 
 Dieser Viewer nutzt Texturen aus dem Bestand von Linden Lab (wie das Windlight Cloud Texture und den Terrain Blend Ramp). Details und rechtliche Rahmenbedingungen hierzu finden Sie unter dem Menüpunkt **Preferences → Licences** oder in der bereitgestellten `THIRD-PARTY-NOTICES.md`. 
 Zudem hält sich der Puris Viewer strikt an die Third-Party Viewer (TPV) Policy, respektiert Berechtigungen (Permissions) und umgeht keine DRM-Schutzmechanismen des Grids.
