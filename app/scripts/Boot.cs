@@ -383,7 +383,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.83-alpha";
+    public const string AppVersion = "v0.24.84-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -2366,6 +2366,9 @@ public partial class Boot : Control
         // FEAT-NET-01: script permission requests, same reason again.
         while (_pendingScriptPermissions.TryDequeue(out var ask)) ShowScriptPermissionRequest(ask);
 
+        // FEAT-UI-34: region restart notices, same reason again.
+        while (_pendingRegionRestarts.TryDequeue(out var restart)) ShowRegionRestart(restart);
+
         // MVP2-3 Phase 4: "Arrived in <region>" toast. RegionConnected only flags that we
         // arrived somewhere NEW -- the region's name usually isn't known yet at that exact
         // moment (it arrives via a later RegionHandshake), so this waits here until
@@ -3345,6 +3348,10 @@ public partial class Boot : Control
             CallDeferred(MethodName.LogMessage, $"[color=orange][Alert] {e.Message}[/color]");
             _notifications.Add(SLNG.Core.NotificationKind.System, System.Guid.Empty, e.Message);
         };
+        // FEAT-UI-34: a region restart is the one alert with a deadline, so it gets a popup with a
+        // countdown on top of the notification entry above. Buffered and shown from _Process: the
+        // event fires on a network thread and a record is not Variant-safe for CallDeferred.
+        _session.RegionRestartReceived += (s, e) => _pendingRegionRestarts.Enqueue(e);
         // BUG-NET-20: a region whose event queue died stops delivering group chat invitations,
         // teleport progress, object media and parcel/environment changes -- all of it silently.
         // Told to the user rather than only logged, because every symptom of it looks like
@@ -3904,6 +3911,48 @@ public partial class Boot : Control
         GD.Print($"[ScriptPerm] \"{e.ObjectName}\" ({e.ObjectOwner}) asks for 0x{e.Permissions:X}");
     }
 
+    // ---- FEAT-UI-34: region restart popup ------------------------------------------------------
+
+    /// <summary>Restart notices buffered off the network thread.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentQueue<SLNG.Core.RegionRestartEvent> _pendingRegionRestarts = new();
+
+    /// <summary>The one open restart popup, if any. A repeat notice updates it rather than opening
+    /// a second window; that is the whole point of holding the reference.</summary>
+    private SLNG.App.UI.RegionRestartWindow? _regionRestartWindow;
+
+    private void ShowRegionRestart(SLNG.Core.RegionRestartEvent restart)
+    {
+        if (_session == null) return;
+
+        // The notice normally names the region; if it did not, it is the one we are standing in.
+        if (string.IsNullOrEmpty(restart.RegionName))
+            restart = restart with { RegionName = _session.CurrentRegionName };
+
+        if (_regionRestartWindow != null && IsInstanceValid(_regionRestartWindow))
+        {
+            _regionRestartWindow.Update(restart);
+            return;
+        }
+
+        var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+        if (hudLayer == null) return;
+
+        var win = new SLNG.App.UI.RegionRestartWindow();
+        hudLayer.AddChild(win);
+        win.Closed += () => _regionRestartWindow = null;
+        _regionRestartWindow = win;
+        win.Initialize(_session, restart);
+
+        GD.Print($"[RegionRestart] \"{restart.RegionName}\" restarts in {restart.Seconds} s");
+    }
+
+    private void CloseRegionRestartWindow()
+    {
+        if (_regionRestartWindow != null && IsInstanceValid(_regionRestartWindow))
+            _regionRestartWindow.Close();
+        _regionRestartWindow = null;
+    }
+
     // ---- BUG-INV-04: inventory offers ----------------------------------------------------------
 
     /// <summary>Open "X is offering you an item" prompts, keyed by the offer's transaction id so a
@@ -4154,6 +4203,11 @@ public partial class Boot : Control
     // region handle can exceed long.MaxValue and ulong is not a Variant-safe CallDeferred arg.
     private void ApplyRegionOrigin(string regionHandle)
     {
+        // FEAT-UI-34: the restart popup is about the region we were standing in. Arriving
+        // anywhere else -- the teleport it offers, or any other -- ends its reason to exist,
+        // which is when the reference viewer closes it too.
+        CloseRegionRestartWindow();
+
         var handle = ulong.Parse(regionHandle);
         RenderConfig.SetRegionOrigin(handle);
         // BUG-NET-03: after the origin moves, tell the terrain renderer which region we're in so
@@ -4404,6 +4458,7 @@ public partial class Boot : Control
     {
         if (_isQuitting) return;
         _isQuitting = true;
+        CloseRegionRestartWindow();
         // Stop the _Process open-window snapshot: this method hides every window, and on a
         // disconnect (quitProcess == false) it also clears _isQuitting again afterwards, so
         // without this the throttle would persist an all-closed layout (BUG-UI-07).

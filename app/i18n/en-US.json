@@ -639,6 +639,20 @@
       "stalled_detail": "The event queue for “{0}” has failed {1} times in a row and is not recovering. Its capability is gone — a region restart does that. Teleporting away and back, or logging in again, restores it.",
       "unknown_region": "a region"
     },
+    "region_restart": {
+      "title": "Region restart",
+      "headline": "“{0}” is about to restart",
+      "headline_unnamed": "This region is about to restart",
+      "warning": "If you stay, you will be logged out when it restarts.",
+      "restarting": "Restarting now…",
+      "destination": "Teleport to one of your landmarks",
+      "loading": "Loading landmarks…",
+      "none": "No landmarks in your inventory.",
+      "teleport": "Teleport",
+      "teleporting": "Teleporting…",
+      "teleport_failed": "Teleport failed: {0}",
+      "dismiss": "Dismiss"
+    },
     "notifications": {
       "title": "Notifications",
       "tab_system": "System",

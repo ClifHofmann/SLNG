@@ -167,6 +167,22 @@ public sealed partial class GridSession
     private void OnAlertMessage(object? sender, AlertMessageEventArgs e)
     {
         AlertMessageReceived?.Invoke(this, new AlertMessageEvent(e.Message));
+
+        // FEAT-UI-34: NotificationId and ExtraParams used to be thrown away here, which is why a
+        // restart notice was only ever one line of text. The LLSD stays in this method -- the rest
+        // of the app gets a neutral RegionRestartEvent.
+        if (!RegionRestartAlert.IsRestartNotification(e.NotificationId)) return;
+
+        var extra = e.ExtraParams;
+        if (RegionRestartAlert.TryCreate(
+                e.NotificationId,
+                extra != null && extra.TryGetValue("NAME", out var name) ? name.AsString() : null,
+                extra != null && extra.TryGetValue("MINUTES", out var minutes) ? minutes.AsInteger() : null,
+                extra != null && extra.TryGetValue("SECONDS", out var seconds) ? seconds.AsInteger() : null,
+                out var restart))
+        {
+            RegionRestartReceived?.Invoke(this, restart);
+        }
     }
 
     /// <summary>Looks up an already-resolved user/group name from the local cache. Returns

@@ -326,6 +326,83 @@ public sealed partial class GridSession
         return false;
     }
 
+    /// <summary>Upper bound on folders fetched while collecting landmarks — a landmark folder tree
+    /// is a handful of folders, so this only stops a runaway, never a real inventory.</summary>
+    private const int MaxLandmarkFolderFetches = 200;
+
+    /// <summary>
+    /// FEAT-UI-34: every landmark the agent owns, outside the Trash, sorted by name — what the
+    /// region-restart popup offers as "where to go". Firestorm gathers them from the whole
+    /// inventory the same way (a landmark the user filed under Objects is still a landmark).
+    ///
+    /// <para>The Landmarks folder is fetched lazily like any other folder, so its subtree is
+    /// loaded first; without that a fresh login would offer an empty list exactly when the popup
+    /// is on screen and the clock is running. Landmarks elsewhere are included from whatever the
+    /// inventory cache already holds — they are not worth a full-inventory walk against a
+    /// countdown.</para>
+    ///
+    /// <para>A landmark whose asset id is not resolved yet is left out, never returned with
+    /// <see cref="Guid.Empty"/>: the wire protocol reads an empty landmark id as "teleport home"
+    /// (see the note on the inventory panel's teleport), so an unresolved entry must not be
+    /// selectable at all.</para>
+    /// </summary>
+    public async Task<IReadOnlyList<InventoryEntry>> GetLandmarksAsync(CancellationToken ct = default)
+    {
+        var store = _client.Inventory.Store;
+        if (store?.RootFolder == null) return Array.Empty<InventoryEntry>();
+
+        if (LandmarksFolderId is { } landmarksFolder && landmarksFolder != Guid.Empty)
+        {
+            var pending = new Queue<Guid>();
+            pending.Enqueue(landmarksFolder);
+            for (int fetches = 0; pending.Count > 0 && fetches < MaxLandmarkFolderFetches; fetches++)
+            {
+                ct.ThrowIfCancellationRequested();
+                foreach (var child in await FetchInventoryChildrenAsync(pending.Dequeue(), ct).ConfigureAwait(false))
+                    if (child.IsFolder) pending.Enqueue(child.Id);
+            }
+        }
+
+        var trash = TrashFolderId is { } t && t != Guid.Empty ? new LibreMetaverse.UUID(t) : LibreMetaverse.UUID.Zero;
+        var found = new Dictionary<Guid, InventoryEntry>();
+        var stack = new Stack<LibreMetaverse.UUID>();
+        stack.Push(store.RootFolder.UUID);
+        while (stack.Count > 0)
+        {
+            var node = store.GetNodeOrDefault(stack.Pop());
+            if (node == null) continue;
+            foreach (var child in node.Nodes.Values)
+            {
+                switch (child.Data)
+                {
+                    case LibreMetaverse.InventoryFolder f:
+                        if (f.UUID != trash) stack.Push(f.UUID);
+                        break;
+                    case LibreMetaverse.InventoryItem i
+                        when !i.IsLink()
+                        && (i.InventoryType == LibreMetaverse.InventoryType.Landmark || i is LibreMetaverse.InventoryLandmark)
+                        && i.ResolvedAssetID != LibreMetaverse.UUID.Zero:
+                        var owned = i.Permissions.OwnerMask;
+                        found[i.UUID.Guid] = new InventoryEntry(
+                            i.UUID.Guid, i.ParentUUID.Guid, i.OwnerID.Guid, i.Name,
+                            IsFolder: false, PreferredFolderType: -1,
+                            AssetId: i.ResolvedAssetID.Guid,
+                            AssetType: (int)LibreMetaverse.AssetType.Landmark,
+                            InventoryType: (int)i.InventoryType,
+                            IsLink: false, LinkTargetId: Guid.Empty,
+                            owned.HasFlag(LibreMetaverse.PermissionMask.Copy),
+                            owned.HasFlag(LibreMetaverse.PermissionMask.Modify),
+                            owned.HasFlag(LibreMetaverse.PermissionMask.Transfer));
+                        break;
+                }
+            }
+        }
+
+        return found.Values
+            .OrderBy(e => e.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+    }
+
     /// <summary>
     /// Fetches one folder's direct children (subfolders + items) — the lazy per-folder expansion
     /// unit for an inventory UI. One CAPS request (FetchInventoryDescendents2 — supported by

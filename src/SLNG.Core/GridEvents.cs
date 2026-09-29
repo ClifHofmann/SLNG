@@ -34,6 +34,13 @@ public record NameResolvedEvent(Guid Id, string Name) : IWorldEvent;
 /// side. Not world-state, so intentionally not an <see cref="IWorldEvent"/>.</summary>
 public record AlertMessageEvent(string Message);
 
+/// <summary>FEAT-UI-34: the simulator announced that the region the agent stands in is about to
+/// restart. <paramref name="Seconds"/> is the time left at the moment the notice arrived (minutes
+/// notices are already converted). Built by <see cref="RegionRestartAlert"/>; a repeat notice is
+/// a new event for the same restart and moves the deadline. Not world-state, so intentionally not
+/// an <see cref="IWorldEvent"/>.</summary>
+public record RegionRestartEvent(string RegionName, int Seconds);
+
 /// <summary>Stage of the login handshake, mirrored (by name) from LibreMetaverse's own
 /// <c>LoginStatus</c> enum so the real, server-driven handshake progress can be surfaced to the
 /// UI without an <c>OpenMetaverse</c>/<c>LibreMetaverse</c> type crossing the <c>SLNG.Net</c>

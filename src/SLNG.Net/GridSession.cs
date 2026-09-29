@@ -159,6 +159,12 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
 
     public event EventHandler<AlertMessageEvent>? AlertMessageReceived;
 
+    /// <summary>FEAT-UI-34: the region the agent stands in announced a restart. Raised in
+    /// addition to <see cref="AlertMessageReceived"/>, not instead of it: the alert text is still
+    /// the record, this is the deadline. Fires on a network thread; a repeat notice for the same
+    /// restart raises it again with the time that is left.</summary>
+    public event EventHandler<RegionRestartEvent>? RegionRestartReceived;
+
     /// <summary>A region's event queue has stopped delivering and is not coming back by itself
     /// (BUG-NET-20). Raised once per region, then at most every ten minutes while it lasts.</summary>
     /// <remarks>

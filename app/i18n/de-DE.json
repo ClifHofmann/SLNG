@@ -639,6 +639,20 @@
       "stalled_detail": "Die Ereigniswarteschlange von „{0}“ hat {1}-mal in Folge nicht geantwortet und erholt sich nicht von selbst. Ihre Capability ist weg — ein Regions-Neustart macht das. Ein Teleport dorthin und zurück, oder eine Neuanmeldung, stellt sie wieder her.",
       "unknown_region": "eine Region"
     },
+    "region_restart": {
+      "title": "Regions-Neustart",
+      "headline": "„{0}“ wird gleich neu gestartet",
+      "headline_unnamed": "Diese Region wird gleich neu gestartet",
+      "warning": "Wenn du bleibst, wirst du beim Neustart abgemeldet.",
+      "restarting": "Neustart läuft …",
+      "destination": "Zu einer deiner Landmarken teleportieren",
+      "loading": "Landmarken werden geladen …",
+      "none": "Keine Landmarken im Inventar.",
+      "teleport": "Teleportieren",
+      "teleporting": "Teleportiere …",
+      "teleport_failed": "Teleport fehlgeschlagen: {0}",
+      "dismiss": "Schließen"
+    },
     "notifications": {
       "title": "Benachrichtigungen",
       "tab_system": "System",
