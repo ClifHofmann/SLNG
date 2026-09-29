@@ -20,6 +20,11 @@ namespace SLNG.App.UI;
 /// the request was actually about is the destination: one of the resident's own landmarks and a
 /// Teleport button — deliberately not a free destination picker.</para>
 ///
+/// <para><b>Home is always the first entry, and the default.</b> It needs nothing from the
+/// inventory, so the Teleport button works the moment the window opens; the landmarks are appended
+/// when they have loaded. With no landmarks at all (or none loaded yet) there is still a way out,
+/// and what happens when home itself is unset or unusable is the grid's decision, not ours.</para>
+///
 /// <para>The countdown is a deadline held by <see cref="RegionRestartCountdown"/> and read against
 /// a monotonic clock every frame, so a stalled frame cannot make it drift. The camera shake of the
 /// reference viewer is not reproduced: it is optional there for a reason, and UI that moves the
@@ -45,6 +50,8 @@ public partial class RegionRestartWindow : SLNGWindow
     private Button _teleport = null!;
     private Label _status = null!;
 
+    /// <summary>The landmarks, in dropdown order after the Home entry: dropdown index N is
+    /// <c>_entries[N - 1]</c>; index 0 is Home.</summary>
     private IReadOnlyList<InventoryEntry> _entries = Array.Empty<InventoryEntry>();
     private int _shownSeconds = -1;
     private bool _teleporting;
@@ -107,10 +114,10 @@ public partial class RegionRestartWindow : SLNGWindow
         _landmarks = new OptionButton
         {
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            Disabled = true,
             FitToLongestItem = false,
         };
-        _landmarks.AddItem(L10n.Tr("ui.region_restart.loading"));
+        _landmarks.AddItem(L10n.Tr("ui.region_restart.home"));
+        _landmarks.Selected = 0;
         box.AddChild(_landmarks);
 
         var buttons = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
@@ -129,7 +136,6 @@ public partial class RegionRestartWindow : SLNGWindow
         {
             Text = L10n.Tr("ui.region_restart.teleport"),
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            Disabled = true,
         };
         _teleport.Pressed += OnTeleportPressed;
         buttons.AddChild(_teleport);
@@ -190,6 +196,11 @@ public partial class RegionRestartWindow : SLNGWindow
     /// private label.</summary>
     internal string ClockText => _clock.Text;
 
+    /// <summary>Destinations offered right now (Home plus any loaded landmarks) and whether the
+    /// Teleport button can be pressed. Selftest only, like <see cref="ClockText"/>.</summary>
+    internal int DestinationCount => _landmarks.ItemCount;
+    internal bool TeleportEnabled => !_teleport.Disabled;
+
     private static TimeSpan Now() => TimeSpan.FromMilliseconds(Time.GetTicksMsec());
 
     private async System.Threading.Tasks.Task LoadLandmarksAsync()
@@ -209,28 +220,22 @@ public partial class RegionRestartWindow : SLNGWindow
         // been closed or freed while the folders were being fetched.
         if (!IsInstanceValid(this) || _closed) return;
 
+        // Appended after Home: whatever the user has already picked (or not) is left alone.
         _entries = landmarks;
-        _landmarks.Clear();
-        if (_entries.Count == 0)
-        {
-            _landmarks.AddItem(L10n.Tr("ui.region_restart.none"));
-            return; // stays disabled: nowhere to go, and Teleport must not be offered
-        }
-
         foreach (var entry in _entries) _landmarks.AddItem(entry.Name);
-        _landmarks.Selected = 0;
-        _landmarks.Disabled = false;
-        _teleport.Disabled = _teleporting;
     }
 
     private async void OnTeleportPressed()
     {
         int index = _landmarks.Selected;
-        if (_teleporting || index < 0 || index >= _entries.Count) return;
+        if (_teleporting || index < 0 || index > _entries.Count) return;
 
-        var target = _entries[index];
-        // Never Guid.Empty: the protocol reads an empty landmark id as "teleport home".
-        if (target.AssetId == Guid.Empty) return;
+        // Index 0 is Home; the landmarks follow it.
+        bool home = index == 0;
+        InventoryEntry? target = home ? null : _entries[index - 1];
+        // A landmark is never sent with an empty id: the protocol reads that as "teleport home",
+        // which would send the resident somewhere they did not choose.
+        if (target != null && target.AssetId == Guid.Empty) return;
 
         _teleporting = true;
         _teleport.Disabled = true;
@@ -240,7 +245,9 @@ public partial class RegionRestartWindow : SLNGWindow
         bool success = false;
         try
         {
-            var result = await _session.TeleportToLandmarkAsync(target.AssetId);
+            var result = home
+                ? await _session.TeleportHomeAsync()
+                : await _session.TeleportToLandmarkAsync(target!.AssetId);
             success = result.Success;
             failure = result.Message;
         }

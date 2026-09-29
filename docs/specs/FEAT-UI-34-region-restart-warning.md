@@ -42,6 +42,13 @@ used to drop both. The LLSD stays inside `SLNG.Net`, the rest of the app sees a 
   a reason — UI that moves the camera is something some people cannot stand. If wanted, add it as a
   setting, off by default.
 - The taskbar flash uses `DisplayServer.WindowRequestAttention()`.
+- **Home is always the first entry and the default** (v0.24.88): it needs nothing from the inventory,
+  so Teleport works the moment the window opens and there is a way out with no landmarks at all.
+  `GridSession.TeleportHomeAsync` sends the landmark teleport with an empty id, as the reference
+  viewer's `teleportHome` does (LibreMetaverse: `GoHomeAsync`). What the grid does with an unset or
+  unusable home is its decision.
+- The popup closes when the session ends: its teleport needs a live session, and it used to sit
+  exactly under the "You have been logged out" dialog.
 
 ## Technical Specs & Affected Files
 - `src/SLNG.Core/RegionRestartAlert.cs`, `RegionRestartCountdown.cs`, `GridEvents.cs` (`RegionRestartEvent`)

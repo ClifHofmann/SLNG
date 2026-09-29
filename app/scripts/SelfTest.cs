@@ -209,13 +209,18 @@ public static class SelfTest
             win._Process(0);
             string second = win.ClockText;
 
+            // Before any landmark has loaded there is still a way out: Home, and Teleport works.
+            int destinations = win.DestinationCount;
+            bool canTeleport = win.TeleportEnabled;
+
             win.Close();
             win.Close(); // idempotent: the owner and the × can both ask
 
-            bool ok = first == "1:05" && second == "0:30" && closed == 1;
+            bool ok = first == "1:05" && second == "0:30" && closed == 1 && destinations == 1 && canTeleport;
             return new Check(Name, ok,
-                ok ? "opens at 1:05, a repeat notice moves it to 0:30, closes once"
-                   : $"clock '{first}' then '{second}' (want '1:05' then '0:30'), Closed fired {closed}x (want 1)");
+                ok ? "opens at 1:05, a repeat notice moves it to 0:30, Home is offered at once, closes once"
+                   : $"clock '{first}' then '{second}' (want '1:05' then '0:30'), Closed fired {closed}x (want 1), " +
+                     $"{destinations} destination(s) (want 1 = Home), Teleport enabled={canTeleport} (want True)");
         }
         catch (System.Exception ex)
         {

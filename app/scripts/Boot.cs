@@ -383,7 +383,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.87-alpha";
+    public const string AppVersion = "v0.24.88-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -4419,6 +4419,10 @@ public partial class Boot : Control
     {
         if (_sessionEndShown) return;
         _sessionEndShown = true;
+
+        // The restart popup's teleport needs a live session. Left open it also sits exactly under
+        // the dialog below and the two read as one garbled window.
+        CloseRegionRestartWindow();
 
         var reason = (SLNG.Core.SessionEndReason)reasonValue;
         string text = reason switch
