@@ -29,7 +29,9 @@ therefore refuses anything outside the Trash itself, not only the menu.
 - [x] An item or folder can be restored out of the Trash; the menu entry names the destination.
 - [x] Nothing worn is purged: Empty Trash and Delete permanently both refuse, and say what is worn.
 - [x] Unit tests for the decisions (`TrashTests`); selftest builds the menus in a real tree.
-- [ ] Confirmed in-world, on OpenSim and on Second Life.
+- [x] Restore confirmed in-world on Second Life, 2026-09-29 (Millenium; delete to Trash, restore to Objects).
+- [ ] Empty Trash and Delete permanently confirmed in-world — on SL both go through AIS `DELETE`.
+- [ ] Confirmed on OpenSim (UDP path).
 
 ## Decisions
 - **Restore does not go back to where the thing came from.** Nobody knows that: the grid keeps no
