@@ -130,6 +130,8 @@ cache. No `using Godot;` in `src/`, no LibreMetaverse type out of it.
 > total absence of `[InvCache]` lines in every client log. Fixed by letting the login open the
 > cache (see *What SLNG actually adds*), and by writing only what the next login can check, which
 > the version comparison alone did not guarantee.
+> **Confirmed in-world 2026-09-29:** the second login logged `[InvCache] restored 116 item(s)`
+> and the background fill had one folder left to fetch instead of 35.
 
 Restore on login, serve clean folders from the store, save on quit and logout. Browsing is
 instant for unchanged folders, and the existing search crawl gets dramatically cheaper because
