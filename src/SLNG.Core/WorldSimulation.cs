@@ -846,6 +846,7 @@ public sealed class WorldSimulation : IDisposable
         if (avatar == null)
         {
             avatar = new AvatarComponent(e.AgentId, e.FirstName, e.LastName, e.IsLocalAgent);
+            if (_displayNames.TryGetValue(e.AgentId, out var knownDisplayName)) avatar.DisplayName = knownDisplayName;
             avatar.ScaleZ = e.ScaleZ;
             avatar.GroupTitle = e.GroupTitle ?? string.Empty;  // FEAT-UI-30
             avatar.SittingOnLocalId = e.SittingOnLocalId;
@@ -864,6 +865,9 @@ public sealed class WorldSimulation : IDisposable
             // unrelated avatar's appearance/animation event land on the WRONG (already-resolved)
             // entity and clobber its real data with someone else's (or stale/default) values.
             if (e.AgentId != System.Guid.Empty) avatar.AgentId = e.AgentId;
+            // An avatar first seen before its agent id resolved has no name yet; pick it up now.
+            if (string.IsNullOrEmpty(avatar.DisplayName) && _displayNames.TryGetValue(avatar.AgentId, out var lateDisplayName))
+                avatar.DisplayName = lateDisplayName;
             if (!string.IsNullOrEmpty(e.FirstName)) avatar.FirstName = e.FirstName;
             if (!string.IsNullOrEmpty(e.LastName)) avatar.LastName = e.LastName;
             // FEAT-UI-30: null is "this event does not carry a title" (a terse update, or the
@@ -980,8 +984,19 @@ public sealed class WorldSimulation : IDisposable
         }
     }
 
+    /// <summary>Display Names resolved so far, by agent id, whether or not that agent is in the
+    /// world right now. The grid is asked for a name once per session per agent (see
+    /// <c>GridSession.RequestDisplayName</c>), so the answer has to outlive the avatar entity:
+    /// without this a name that arrived before the entity existed was dropped on the floor, and an
+    /// avatar that left and came back was rebuilt with no display name and never asked for one
+    /// again -- its nametag fell back to the legacy name for the rest of the session. Touched on
+    /// the drain thread only, like everything else <see cref="Pump"/> applies.</summary>
+    private readonly Dictionary<System.Guid, string> _displayNames = new();
+
     private void ApplyDisplayNameResolved(NameResolvedEvent e)
     {
+        if (e.Id != System.Guid.Empty && !string.IsNullOrEmpty(e.Name)) _displayNames[e.Id] = e.Name;
+
         var entity = FindAvatarEntityByAgentId(e.Id);
         if (entity != null)
         {

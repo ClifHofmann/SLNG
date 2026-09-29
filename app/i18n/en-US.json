@@ -671,7 +671,8 @@
       "inventory_offer_declined": "{0} is offering you “{1}” — declined.",
       "group_invite": "{0} invited you to a group.",
       "inventory_offer": "{0} is offering you “{1}”.",
-      "script_permission": "“{0}” by {1} is asking for permissions."
+      "script_permission": "“{0}” by {1} is asking for permissions.",
+      "display_name_changed": "{0} ({1}) is now known as {2}."
     }
   }
 }

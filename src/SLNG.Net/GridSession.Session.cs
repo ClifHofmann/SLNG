@@ -179,6 +179,11 @@ public sealed partial class GridSession
         // region is done now, unlike at RegionConnected.
         RegionCapabilitiesReady?.Invoke(this, e.Simulator.Handle);
 
+        // Display Name lookups that failed while the GetDisplayNames capability was still
+        // unresolved (all of a login's first ones): ask again now instead of waiting for a timer.
+        Volatile.Write(ref _displayNameRetryDelaySeconds, 1);
+        RetryWantedDisplayNames();
+
         // MVP3-3: the ObjectMedia cap races region entry the exact same way -- see
         // FetchAndPublishObjectMediaAsync's doc comment. Caps are confirmed resolved now, so
         // sweep every currently-known primitive once for any MOAP fetch that failed earlier.

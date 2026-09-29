@@ -383,7 +383,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.84-alpha";
+    public const string AppVersion = "v0.24.87-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3283,6 +3283,9 @@ public partial class Boot : Control
         // populates the root folders, and a fetch that starts before the restore lands would pay
         // for folders the cache was about to supply for free.
         _session.OpenInventoryCache(ProjectSettings.GlobalizePath("user://cache/inventory"));
+        // Display Names remembered from earlier sessions: nametags show the right name as soon as an
+        // avatar appears instead of after a lookup round trip.
+        _session.OpenDisplayNameCache(ProjectSettings.GlobalizePath("user://cache/displaynames"));
         StartInventoryPrefetch();
 
         _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
@@ -3323,6 +3326,13 @@ public partial class Boot : Control
         _session.MoneyTransaction += OnMoneyTransaction;
         _session.NameResolved += OnProfileNameResolved;
         _session.DisplayNameResolved += OnProfileNameResolved;
+        // A resident's Display Name changed: say so, as the reference viewer does. Same shape as the
+        // AlertMessage handler above -- the notification store takes entries from any thread.
+        _session.DisplayNameChanged += (s, e) =>
+        {
+            string text = SLNG.App.UI.L10n.TrFormat("ui.notifications.display_name_changed", e.OldName, e.UserName, e.NewName);
+            _notifications.Add(SLNG.Core.NotificationKind.System, e.AgentId, text, senderName: e.NewName);
+        };
         // A particle system can vanish at three separate places between the wire and the screen
         // -- no block in the ObjectUpdate, a CRC of 0, or an update that is not full -- and all
         // three look identical in-world: no particles. This says whether one ever arrived at all,
@@ -4477,6 +4487,7 @@ public partial class Boot : Control
             // QuitGracefully(false) from Disconnect -- because a logout is just as much the end of
             // a session as a quit, and only one of them was ever going to be remembered otherwise.
             _session.SaveInventoryCache();
+            _session.SaveDisplayNameCache();
 
             // Hide all UI components for a clean screenshot
             var loginScreen = GetNodeOrNull<Control>("%LoginScreen");

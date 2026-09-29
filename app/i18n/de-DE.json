@@ -671,7 +671,8 @@
       "inventory_offer_declined": "{0} bietet dir „{1}“ an — abgelehnt.",
       "group_invite": "{0} hat dich in eine Gruppe eingeladen.",
       "inventory_offer": "{0} bietet dir „{1}“ an.",
-      "script_permission": "„{0}“ von {1} bittet um Berechtigungen."
+      "script_permission": "„{0}“ von {1} bittet um Berechtigungen.",
+      "display_name_changed": "{0} ({1}) heißt jetzt {2}."
     }
   }
 }
