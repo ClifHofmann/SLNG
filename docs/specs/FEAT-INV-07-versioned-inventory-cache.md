@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-INV-07`
 - **Track:** `net` (+ `ui`)
-- **Status:** `✅ Done` — all three phases confirmed in-world 2026-09-14. Phase 1 v0.22.147-alpha; Phase 2 v0.22.148 ("810 folders, inventory is now local"); Phase 3 v0.22.149, made actually fast by v0.22.150 — the filter ran once per folder, not once per search.
+- **Status:** `✅ Done` — all three phases confirmed in-world 2026-09-14. Phase 1 v0.22.147-alpha; Phase 2 v0.22.148 ("810 folders, inventory is now local"); Phase 3 v0.22.149, made actually fast by v0.22.150 — the filter ran once per folder, not once per search. **Correction 2026-09-29 ([BUG-INV-12](file:///E:/Git/SLNG/docs/ROADMAP.md)): Phase 1 never restored anything across sessions until v0.24.91-alpha** — see the note under Phase 1.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -92,7 +92,9 @@ browser.
 
 ### What SLNG actually adds
 
-1. `GridSession.OpenInventoryCache(directory)` — after login, once the skeleton is in the store,
+1. `GridSession.UseCacheDirectories(inventoryDir, displayNameDir)` before login; GridSession then
+   opens the cache itself from a LibreMetaverse login-response callback (BUG-INV-12). Originally
+   `GridSession.OpenInventoryCache(directory)`, called by the app — after login, once the skeleton is in the store,
    restore `<agent-id>.inv.cache`. Keyed by agent id so two accounts, or the same name on two
    grids, never read each other's inventory. Ordering matters: with no skeleton there are no
    server versions to compare against and every cached folder is discarded as orphaned.
@@ -101,7 +103,10 @@ browser.
    for every skeleton folder and is cleared by exactly two things: a successful fetch this
    session, or a cache restore at a matching version. That default is what makes the whole scheme
    safe — the network is only skipped when something actively proved the contents good.
-3. `GridSession.SaveInventoryCache()` — on quit **and** on logout.
+3. `GridSession.SaveInventoryCache()` — on quit **and** on logout. Since BUG-INV-12 it writes only
+   what the next login can check: a folder never fetched goes out at `VERSION_UNKNOWN`, items under
+   the roots not at all, because LibreMetaverse does not save `NeedsUpdate` and would otherwise
+   bring such a folder back as current and empty.
 
 **Side benefit:** re-expanding a folder is now free. The old code refetched on every expand even
 though the answer was already in the store.
@@ -115,6 +120,16 @@ cache. No `using Godot;` in `src/`, no LibreMetaverse type out of it.
 ## Phases
 
 ### Phase 1 — versioned disk cache (the win) — ✅ done, v0.22.147-alpha
+
+> **Correction 2026-09-29 (BUG-INV-12).** Until v0.24.91-alpha no cache file was ever read or
+> written. `Boot` called `OpenInventoryCache` straight after `new GridSession()` — before
+> `LoginAsync`, with the agent id still zero — and the method returned without a word; the call sat
+> there from this phase's first commit (`c7a83f2`). The in-world confirmation of 2026-09-14 cannot
+> have seen a restore; what one session does show — a folder opened a second time comes from the
+> store — is the likely explanation. Found from the missing `cache/inventory/` directory and the
+> total absence of `[InvCache]` lines in every client log. Fixed by letting the login open the
+> cache (see *What SLNG actually adds*), and by writing only what the next login can check, which
+> the version comparison alone did not guarantee.
 
 Restore on login, serve clean folders from the store, save on quit and logout. Browsing is
 instant for unchanged folders, and the existing search crawl gets dramatically cheaper because
@@ -184,7 +199,8 @@ Two changes:
 
 ## Technical Specs & Affected Files
 
-- `src/SLNG.Net/GridSession.cs` — `OpenInventoryCache` / `SaveInventoryCache`; serve from the
+- `src/SLNG.Net/GridSession.Inventory.cs` — `OpenInventoryCache` / `SaveInventoryCache`, and since
+  BUG-INV-12 the login-response callback in `GridSession.Session.cs`; serve from the
   store in `FetchInventoryChildrenAsync` when `NeedsUpdate` is false.
 - `app/scripts/Boot.cs` — supply the cache directory; save on `NotificationWMCloseRequest`
   (`Boot.cs:2068-2075`) **and** on explicit logout (`Boot.cs:524`), since a crash-free quit is

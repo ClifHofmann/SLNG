@@ -681,6 +681,11 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // (handled by LibreMetaverse) then fires our OnSimDisconnected -> World.RemoveRegion to
         // unload a region we've moved away from.
         _client.Settings.Agent.MultipleSims = true;
+        // BUG-INV-12: the inventory and Display Name caches open while the login response is
+        // processed. Registered after GridClient's constructor has registered its own managers, so
+        // this runs after AgentManager has taken the agent id and InventoryManager has built the
+        // store from the skeleton -- see OnLoginResponseOpenCaches.
+        _client.Network.RegisterLoginResponseCallback(OnLoginResponseOpenCaches);
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
         _client.Objects.TerseObjectUpdate += OnTerseObjectUpdate;
@@ -809,6 +814,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _parcelEnvironmentPollCts.Cancel();
         _parcelEnvironmentPollCts.Dispose();
         try { _wearableRebakeCts?.Cancel(); _wearableRebakeCts?.Dispose(); } catch { }
+        _client.Network.UnregisterLoginResponseCallback(OnLoginResponseOpenCaches);
         _client.Self.ChatFromSimulator -= OnChatFromSimulator;
         _client.Objects.ObjectUpdate -= OnObjectUpdate;
         _client.Objects.TerseObjectUpdate -= OnTerseObjectUpdate;

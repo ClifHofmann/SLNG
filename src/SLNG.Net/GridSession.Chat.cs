@@ -255,21 +255,26 @@ public sealed partial class GridSession
 
     /// <summary>
     /// Loads the on-disk Display Name cache and replays what it holds to anyone already listening.
-    /// Call once per login with a directory the client owns (the app resolves <c>user://</c> --
-    /// <c>src/</c> does not know Godot's virtual filesystem), same shape as
-    /// <see cref="OpenInventoryCache"/>. Keyed by agent id so two accounts, or one name on two
-    /// grids, never read each other's file.
+    /// Called by <see cref="OnLoginResponseOpenCaches"/> once per login, with the directory
+    /// <see cref="UseCacheDirectories"/> recorded, same as <see cref="OpenInventoryCache"/>. Keyed
+    /// by agent id so two accounts, or one name on two grids, never read each other's file.
     ///
-    /// <para>Avatars that appeared before this call (the region is entered during login) already
-    /// asked and were answered from an empty cache, or are waiting on the failed-lookup retry;
-    /// the replay gives them their remembered name now instead of after the next round trip.</para>
+    /// <para>The login response is processed before the region is entered, so normally no avatar
+    /// has asked yet and every later <see cref="RequestDisplayName"/> is answered from the loaded
+    /// cache. The replay covers any that asked earlier: they get their remembered name now instead
+    /// of after the next round trip.</para>
     /// </summary>
-    public void OpenDisplayNameCache(string directory)
+    private void OpenDisplayNameCache(string? directory)
     {
-        if (string.IsNullOrWhiteSpace(directory)) return;
+        if (string.IsNullOrWhiteSpace(directory)) return; // no cache wanted (tests, tools)
 
         var agent = _client.Self.AgentID;
-        if (agent == UUID.Zero) return;
+        if (agent == UUID.Zero)
+        {
+            // Silent until BUG-INV-12, which is how a cache opened before the login went unnoticed.
+            Console.Error.WriteLine("[DisplayName] no agent id yet -- the name cache opens only once a login has succeeded; not opening it");
+            return;
+        }
 
         try
         {
