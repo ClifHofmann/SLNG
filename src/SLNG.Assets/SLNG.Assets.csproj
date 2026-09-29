@@ -13,13 +13,13 @@
     <PackageReference Include="LibreMetaverse" Version="3.1.6" />
     <PackageReference Include="LibreMetaverse.Rendering.MeshFoundry" Version="3.1.6" />
     <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.17.1" />
-    <PackageReference Include="SkiaSharp" Version="4.152.0" />
+    <PackageReference Include="SkiaSharp" Version="4.152.1" />
     <!-- The base SkiaSharp package ships native binaries for Windows/macOS only. Linux (the CI
          test runner, and any Linux dev/server build) must reference the native assets explicitly
          or SKImageInfo's static ctor throws TypeInitializationException. NoDependencies bundles
          freetype/fontconfig so a headless runner needs no apt packages. Keep the version pinned
          in lockstep with SkiaSharp above. -->
-    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.152.0" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.152.1" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.12" />
   </ItemGroup>
 
