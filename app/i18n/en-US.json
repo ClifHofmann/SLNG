@@ -639,6 +639,19 @@
       "stalled_detail": "The event queue for “{0}” has failed {1} times in a row and is not recovering. Its capability is gone — a region restart does that. Teleporting away and back, or logging in again, restores it.",
       "unknown_region": "a region"
     },
+    "region_restart": {
+      "title": "Region restart",
+      "headline": "“{0}” is about to restart",
+      "headline_unnamed": "This region is about to restart",
+      "warning": "If you stay, you will be logged out when it restarts.",
+      "restarting": "Restarting now…",
+      "destination": "Teleport to",
+      "home": "Home",
+      "teleport": "Teleport",
+      "teleporting": "Teleporting…",
+      "teleport_failed": "Teleport failed: {0}",
+      "dismiss": "Dismiss"
+    },
     "notifications": {
       "title": "Notifications",
       "tab_system": "System",
@@ -657,7 +670,8 @@
       "inventory_offer_declined": "{0} is offering you “{1}” — declined.",
       "group_invite": "{0} invited you to a group.",
       "inventory_offer": "{0} is offering you “{1}”.",
-      "script_permission": "“{0}” by {1} is asking for permissions."
+      "script_permission": "“{0}” by {1} is asking for permissions.",
+      "display_name_changed": "{0} ({1}) is now known as {2}."
     }
   }
 }

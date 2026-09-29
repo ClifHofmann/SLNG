@@ -83,47 +83,149 @@ public sealed partial class GridSession
             {
                 var (success, names, _) = await _client.Avatars.GetDisplayNamesAsync(ids).ConfigureAwait(false);
                 ok = success && names != null;
+                if (ok)
+                {
+                    Volatile.Write(ref _displayNameFailingSince, 0);
+                    Volatile.Write(ref _displayNameRetryDelaySeconds, 1);
+                }
+                if (Diag.Verbose)
+                    Console.Error.WriteLine(
+                        $"[DisplayName] asked for {ids.Count}: success={success} names={names?.Length ?? 0} " +
+                        $"default={names?.Count(x => x?.IsDefaultDisplayName == true) ?? 0} " +
+                        $"capability={_client.Avatars.DisplayNamesAvailable()}");
                 if (!ok) return;
+                var answeredAt = DateTime.UtcNow;
                 foreach (var n in names!)
                 {
+                    if (n == null) continue;
+
                     // IsDefaultDisplayName means the resident never set one and the grid is
                     // echoing the legacy name back. Raising it would make the nametag show the
-                    // same text twice, so treat it as "no display name".
-                    if (n == null || n.IsDefaultDisplayName || string.IsNullOrEmpty(n.DisplayName)) continue;
-                    DisplayNameResolved?.Invoke(this, new NameResolvedEvent(n.ID.Guid, n.DisplayName));
+                    // same text twice, so treat it as "no display name" -- and remember exactly
+                    // that, so the next login does not ask about them again.
+                    bool hasOwn = !n.IsDefaultDisplayName && !string.IsNullOrEmpty(n.DisplayName);
+                    _displayNameCache.Set(n.ID.Guid, hasOwn ? n.DisplayName : null, answeredAt);
+                    if (!hasOwn) continue;
+                    DisplayNameResolved?.Invoke(this, new NameResolvedEvent(n.ID.Guid, n.DisplayName!));
                 }
             }
-            catch { /* Optional capability -- absent on most OpenSim grids. */ }
+            catch (Exception ex)
+            {
+                // Optional capability -- absent on most OpenSim grids, so not an error by default.
+                if (Diag.Verbose)
+                    Console.Error.WriteLine($"[DisplayName] lookup threw {ex.GetType().Name}: {ex.Message}");
+            }
             finally
             {
-                // Un-claim on failure so a later avatar update retries. Deduping on the REQUEST
-                // rather than on success was wrong: the first call for an agent can land before
-                // the region's capability handshake has finished, and one early failure then
-                // blocked every retry for the rest of the session -- which is how the first cut
-                // of this shipped looking like it did nothing at all on SL.
-                if (!ok)
+                // A failed lookup is REMEMBERED and retried on its own clock (and the moment the
+                // region's capabilities are ready), instead of waiting for the next update of that
+                // avatar. The first call for an agent routinely lands before the capability
+                // handshake has finished -- at login it always does -- and a standing avatar sends
+                // an update only when something about it changes, so "retry on the next update"
+                // left nametags on the legacy name for as long as it took someone to move.
+                // The ids stay claimed meanwhile, so repeated updates do not queue duplicates.
+                if (ok)
                 {
-                    foreach (var id in ids) _displayNamesRequested.TryRemove(id.Guid, out _);
-
-                    // Once per session, not per attempt: with the retry above this fires on every
-                    // subsequent avatar update until it succeeds, and on an OpenSim grid without
-                    // the capability that is forever. One line is enough to tell "the grid has no
-                    // Display Names" apart from "the nametag code is broken", which is the
-                    // distinction that cost a round trip here.
-                    //
-                    // Diagnostic only: the first lookup can land before the capability handshake
-                    // and the retry above then succeeds, so a healthy SL login could print this
-                    // as an error for a failure that had already healed.
-                    if (Diag.Verbose && !_displayNameFailureLogged)
+                    foreach (var id in ids) _displayNamesWanted.TryRemove(id.Guid, out _);
+                }
+                else
+                {
+                    foreach (var id in ids)
                     {
-                        _displayNameFailureLogged = true;
-                        Console.Error.WriteLine(
-                            "[DisplayName] GetDisplayNames lookup failed -- nametags keep the legacy name. " +
-                            "Expected on grids without the capability; on SL it means the request did not go through.");
+                        _displayNamesRequested.TryAdd(id.Guid, 0);
+                        _displayNamesWanted[id.Guid] = 0;
                     }
+
+                    NoteDisplayNameFailure();
+                    ScheduleDisplayNameRetry();
                 }
             }
         });
+    }
+
+    /// <summary>The cap answers at most this many ids per request (LibreMetaverse's own limit).</summary>
+    private const int DisplayNameBatchMax = 90;
+
+    /// <summary>The retry delay doubles from one second up to this, so a grid that never answers
+    /// costs a request every few seconds and not a storm.</summary>
+    private const int DisplayNameRetryMaxDelaySeconds = 15;
+
+    /// <summary>Agents whose lookup failed and who still have no answer.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _displayNamesWanted = new();
+
+    private int _displayNameRetryScheduled;
+    private int _displayNameRetryDelaySeconds = 1;
+
+    /// <summary>Retry the wanted names after a growing delay. One timer at a time, however many
+    /// lookups fail.</summary>
+    private void ScheduleDisplayNameRetry()
+    {
+        if (Interlocked.Exchange(ref _displayNameRetryScheduled, 1) == 1) return;
+
+        int delay = Volatile.Read(ref _displayNameRetryDelaySeconds);
+        Volatile.Write(ref _displayNameRetryDelaySeconds, Math.Min(delay * 2, DisplayNameRetryMaxDelaySeconds));
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(delay)).ConfigureAwait(false);
+            Volatile.Write(ref _displayNameRetryScheduled, 0);
+            RetryWantedDisplayNames();
+        });
+    }
+
+    /// <summary>Asks again for every name still wanted, in batches. Called by the retry timer and
+    /// by <c>RegionCapabilitiesReady</c>, which is the moment the first attempt of a login can
+    /// finally succeed.</summary>
+    internal void RetryWantedDisplayNames()
+    {
+        if (!_client.Network.Connected) return;
+
+        var batch = new System.Collections.Generic.List<UUID>();
+        foreach (var id in _displayNamesWanted.Keys)
+        {
+            if (batch.Count >= DisplayNameBatchMax) break;
+            if (_displayNamesWanted.TryRemove(id, out _)) batch.Add(new UUID(id));
+        }
+
+        // A failure puts them back and re-arms the timer; more than one batch's worth left over
+        // gets its own turn.
+        if (batch.Count > 0) RequestDisplayNames(batch);
+        if (!_displayNamesWanted.IsEmpty) ScheduleDisplayNameRetry();
+    }
+
+    /// <summary>How long lookups have to keep failing, without one success in between, before it
+    /// is worth telling the user. The first lookup for an avatar routinely lands before the
+    /// region's capability handshake and the retry (timer, or caps-ready) succeeds seconds
+    /// later, so a failure on its own says nothing; a failure that persists does.</summary>
+    private const double DisplayNameFailureGraceSeconds = 30;
+
+    /// <summary>Stopwatch timestamp of the first failure in the current unbroken run of failures;
+    /// 0 when the last lookup succeeded (or none has failed yet).</summary>
+    private long _displayNameFailingSince;
+
+    /// <summary>Called for every failed lookup. Says something once per session, and only when the
+    /// failure has lasted <see cref="DisplayNameFailureGraceSeconds"/> with the capability PRESENT:
+    /// the grid offers Display Names and answering keeps failing, which is a fault. Without the
+    /// capability it is the normal state of an OpenSim grid, and stays a diagnostic line.
+    /// (Earlier this printed on the very first failed attempt, as an error, and then was hidden
+    /// entirely -- the first was noise on a healthy login, the second would have hidden the one
+    /// case where nametags really were stuck on legacy names.)</summary>
+    private void NoteDisplayNameFailure()
+    {
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        long since = Interlocked.CompareExchange(ref _displayNameFailingSince, now, 0);
+        if (since == 0) since = now;
+        if (System.Diagnostics.Stopwatch.GetElapsedTime(since, now).TotalSeconds < DisplayNameFailureGraceSeconds) return;
+        if (_displayNameFailureLogged) return;
+
+        bool capability = _client.Avatars.DisplayNamesAvailable();
+        if (!capability && !Diag.Verbose) return;
+
+        _displayNameFailureLogged = true;
+        Console.Error.WriteLine(capability
+            ? "[DisplayName] lookups have been failing for 30 s although the grid offers Display Names -- " +
+              "nametags stay on the legacy name."
+            : "[DisplayName] the grid offers no Display Names capability -- nametags show the legacy name.");
     }
 
     /// <summary>Requests one agent's Display Name, deduped against the ids already asked for.
@@ -133,20 +235,109 @@ public sealed partial class GridSession
     {
         if (agentId == Guid.Empty || !_client.Network.Connected) return;
         if (!_displayNamesRequested.TryAdd(agentId, 0)) return;
+
+        // What we remember from earlier sessions is on screen immediately, with no round trip. An
+        // answer we still trust ends there; an old one is shown now AND asked for again below, so
+        // a name that changed while we were away corrects itself within a moment.
+        var freshness = _displayNameCache.Lookup(agentId, DateTime.UtcNow, out var remembered);
+        if (freshness != DisplayNameCache.Freshness.Miss && remembered.Length > 0)
+            DisplayNameResolved?.Invoke(this, new NameResolvedEvent(agentId, remembered));
+        if (freshness == DisplayNameCache.Freshness.Fresh) return;
+
         RequestDisplayNames(new System.Collections.Generic.List<UUID> { new UUID(agentId) });
+    }
+
+    /// <summary>Display Names learned so far, this session and earlier ones. Always present, so
+    /// lookups are answered from it whether or not a file was ever opened.</summary>
+    private readonly DisplayNameCache _displayNameCache = new();
+
+    private string? _displayNameCachePath;
+
+    /// <summary>
+    /// Loads the on-disk Display Name cache and replays what it holds to anyone already listening.
+    /// Call once per login with a directory the client owns (the app resolves <c>user://</c> --
+    /// <c>src/</c> does not know Godot's virtual filesystem), same shape as
+    /// <see cref="OpenInventoryCache"/>. Keyed by agent id so two accounts, or one name on two
+    /// grids, never read each other's file.
+    ///
+    /// <para>Avatars that appeared before this call (the region is entered during login) already
+    /// asked and were answered from an empty cache, or are waiting on the failed-lookup retry;
+    /// the replay gives them their remembered name now instead of after the next round trip.</para>
+    /// </summary>
+    public void OpenDisplayNameCache(string directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory)) return;
+
+        var agent = _client.Self.AgentID;
+        if (agent == UUID.Zero) return;
+
+        try
+        {
+            Directory.CreateDirectory(directory);
+            _displayNameCachePath = System.IO.Path.Combine(directory, $"{agent.Guid:N}.names.json");
+
+            if (File.Exists(_displayNameCachePath))
+                _displayNameCache.Absorb(DisplayNameCache.FromJson(File.ReadAllText(_displayNameCachePath)));
+
+            // Only the agents already known to be in view: replaying the whole file would fill the
+            // world with names for people who are not here.
+            int replayed = 0;
+            foreach (var (id, name) in _displayNameCache.NamedEntries())
+            {
+                if (!_displayNamesRequested.ContainsKey(id)) continue;
+                DisplayNameResolved?.Invoke(this, new NameResolvedEvent(id, name));
+                replayed++;
+            }
+
+            if (Diag.Verbose)
+                Console.Error.WriteLine($"[DisplayName] cache: {_displayNameCache.Count} remembered, {replayed} replayed to avatars already in view");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[DisplayName] could not open the name cache in {directory}: {ex.Message}");
+            _displayNameCachePath = null;
+        }
+    }
+
+    /// <summary>Writes the Display Name cache. Call on quit and on logout, next to
+    /// <see cref="SaveInventoryCache"/>. Written to a side file and moved into place, so a crash
+    /// mid-write leaves the previous file intact instead of a half-written one.</summary>
+    public void SaveDisplayNameCache()
+    {
+        if (_displayNameCachePath == null) return;
+
+        try
+        {
+            string temp = _displayNameCachePath + ".tmp";
+            File.WriteAllText(temp, _displayNameCache.ToJson());
+            File.Move(temp, _displayNameCachePath, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[DisplayName] could not save the name cache {_displayNameCachePath}: {ex.Message}");
+        }
     }
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _displayNamesRequested = new();
     private volatile bool _displayNameFailureLogged;
 
-    private void OnDisplayNameUpdate(object? sender, DisplayNameUpdateEventArgs e)
+    internal void OnDisplayNameUpdate(object? sender, DisplayNameUpdateEventArgs e)
     {
         var id = e.DisplayName.ID.Guid;
         string? displayName = e.DisplayName.DisplayName;
-        if (!string.IsNullOrEmpty(displayName))
-        {
-            DisplayNameResolved?.Invoke(this, new NameResolvedEvent(id, displayName));
-        }
+        if (string.IsNullOrEmpty(displayName)) return;
+
+        _displayNameCache.Set(id, displayName, DateTime.UtcNow);
+
+        // Repaints the nametag (and, in WorldSimulation, replaces the name it remembers).
+        DisplayNameResolved?.Invoke(this, new NameResolvedEvent(id, displayName));
+
+        // The reference viewer also says so ("[OLD] ([SLID]) is now known as [NEW].",
+        // llviewerdisplayname.cpp:206). The username is what stays the same across the change, so
+        // it stands in for the old name when the grid did not send one.
+        string userName = e.DisplayName.UserName ?? string.Empty;
+        string oldName = string.IsNullOrEmpty(e.OldDisplayName) ? userName : e.OldDisplayName;
+        DisplayNameChanged?.Invoke(this, new DisplayNameChangedEvent(id, oldName, displayName, userName));
     }
 
     private void OnGroupNamesReply(object? sender, GroupNamesEventArgs e)
@@ -167,6 +358,22 @@ public sealed partial class GridSession
     private void OnAlertMessage(object? sender, AlertMessageEventArgs e)
     {
         AlertMessageReceived?.Invoke(this, new AlertMessageEvent(e.Message));
+
+        // FEAT-UI-34: NotificationId and ExtraParams used to be thrown away here, which is why a
+        // restart notice was only ever one line of text. The LLSD stays in this method -- the rest
+        // of the app gets a neutral RegionRestartEvent.
+        if (!RegionRestartAlert.IsRestartNotification(e.NotificationId)) return;
+
+        var extra = e.ExtraParams;
+        if (RegionRestartAlert.TryCreate(
+                e.NotificationId,
+                extra != null && extra.TryGetValue("NAME", out var name) ? name.AsString() : null,
+                extra != null && extra.TryGetValue("MINUTES", out var minutes) ? minutes.AsInteger() : null,
+                extra != null && extra.TryGetValue("SECONDS", out var seconds) ? seconds.AsInteger() : null,
+                out var restart))
+        {
+            RegionRestartReceived?.Invoke(this, restart);
+        }
     }
 
     /// <summary>Looks up an already-resolved user/group name from the local cache. Returns

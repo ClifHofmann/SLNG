@@ -639,6 +639,19 @@
       "stalled_detail": "Die Ereigniswarteschlange von „{0}“ hat {1}-mal in Folge nicht geantwortet und erholt sich nicht von selbst. Ihre Capability ist weg — ein Regions-Neustart macht das. Ein Teleport dorthin und zurück, oder eine Neuanmeldung, stellt sie wieder her.",
       "unknown_region": "eine Region"
     },
+    "region_restart": {
+      "title": "Regions-Neustart",
+      "headline": "„{0}“ wird gleich neu gestartet",
+      "headline_unnamed": "Diese Region wird gleich neu gestartet",
+      "warning": "Wenn du bleibst, wirst du beim Neustart abgemeldet.",
+      "restarting": "Neustart läuft …",
+      "destination": "Teleportieren nach",
+      "home": "Zuhause",
+      "teleport": "Teleportieren",
+      "teleporting": "Teleportiere …",
+      "teleport_failed": "Teleport fehlgeschlagen: {0}",
+      "dismiss": "Schließen"
+    },
     "notifications": {
       "title": "Benachrichtigungen",
       "tab_system": "System",
@@ -657,7 +670,8 @@
       "inventory_offer_declined": "{0} bietet dir „{1}“ an — abgelehnt.",
       "group_invite": "{0} hat dich in eine Gruppe eingeladen.",
       "inventory_offer": "{0} bietet dir „{1}“ an.",
-      "script_permission": "„{0}“ von {1} bittet um Berechtigungen."
+      "script_permission": "„{0}“ von {1} bittet um Berechtigungen.",
+      "display_name_changed": "{0} ({1}) heißt jetzt {2}."
     }
   }
 }

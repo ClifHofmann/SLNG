@@ -166,6 +166,7 @@ public static class SelfTest
         results.Add(CheckAvatarHoldMode());
         results.Add(CheckAvatarAnimationFreeze());
         results.Add(CheckAvatarAnimationLocalOverlay());
+        results.Add(CheckRegionRestartWindow(tree));
         // Last, so it sees everything the run did.
         results.Add(CheckUserDataUntouched());
 
@@ -179,6 +180,56 @@ public static class SelfTest
         GD.Print(failed == 0 ? "[SelfTest] PASS" : "[SelfTest] FAIL");
 
         tree.Quit(failed == 0 ? 0 : 1);
+    }
+
+    /// <summary>
+    /// FEAT-UI-34: the region-restart popup builds inside a real scene tree, shows a countdown, and
+    /// a repeat notice moves the deadline of the same window instead of needing a second one.
+    ///
+    /// <para>This is the part of the feature a unit test cannot reach: a Control tree that throws
+    /// in <c>_Ready</c> (a missing theme item, a bad container flag) would otherwise only show up
+    /// when a real restart notice arrives in-world — the one moment the window has to work.</para>
+    /// </summary>
+    private static Check CheckRegionRestartWindow(SceneTree tree)
+    {
+        const string Name = "region restart window";
+        var win = new SLNG.App.UI.RegionRestartWindow();
+        try
+        {
+            int closed = 0;
+            win.Closed += () => closed++;
+            tree.Root.AddChild(win);
+
+            win.Update(new SLNG.Core.RegionRestartEvent("Testland", 65));
+            win._Process(0);
+            string first = win.ClockText;
+
+            // A repeat notice with less time left: same window, new deadline.
+            win.Update(new SLNG.Core.RegionRestartEvent("Testland", 30));
+            win._Process(0);
+            string second = win.ClockText;
+
+            // Before any landmark has loaded there is still a way out: Home, and Teleport works.
+            int destinations = win.DestinationCount;
+            bool canTeleport = win.TeleportEnabled;
+
+            win.Close();
+            win.Close(); // idempotent: the owner and the × can both ask
+
+            bool ok = first == "1:05" && second == "0:30" && closed == 1 && destinations == 1 && canTeleport;
+            return new Check(Name, ok,
+                ok ? "opens at 1:05, a repeat notice moves it to 0:30, Home is offered at once, closes once"
+                   : $"clock '{first}' then '{second}' (want '1:05' then '0:30'), Closed fired {closed}x (want 1), " +
+                     $"{destinations} destination(s) (want 1 = Home), Teleport enabled={canTeleport} (want True)");
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(win)) win.QueueFree();
+        }
     }
 
     /// <summary>

@@ -179,6 +179,11 @@ public sealed partial class GridSession
         // region is done now, unlike at RegionConnected.
         RegionCapabilitiesReady?.Invoke(this, e.Simulator.Handle);
 
+        // Display Name lookups that failed while the GetDisplayNames capability was still
+        // unresolved (all of a login's first ones): ask again now instead of waiting for a timer.
+        Volatile.Write(ref _displayNameRetryDelaySeconds, 1);
+        RetryWantedDisplayNames();
+
         // MVP3-3: the ObjectMedia cap races region entry the exact same way -- see
         // FetchAndPublishObjectMediaAsync's doc comment. Caps are confirmed resolved now, so
         // sweep every currently-known primitive once for any MOAP fetch that failed earlier.
@@ -572,6 +577,14 @@ public sealed partial class GridSession
         }
     }
 
+    /// <summary>Teleports to the agent's home location. The wire message is the landmark
+    /// teleport with an empty landmark id, which is exactly what the reference viewer sends
+    /// (<c>teleportHome</c>); the grid, not the client, decides where "home" is and what happens
+    /// when it is unset or unusable. Named separately so callers say what they mean instead of
+    /// passing <see cref="Guid.Empty"/> to a method whose contract is "a landmark".</summary>
+    public Task<TeleportResult> TeleportHomeAsync(CancellationToken ct = default) =>
+        TeleportToLandmarkAsync(Guid.Empty, ct);
+
     /// <summary>Teleports to the region/position encoded in a landmark asset. LibreMetaverse
     /// resolves the landmark server-side from its asset UUID. If direct landmark teleport fails
     /// (e.g. server-side asset indexing delay on newly created landmarks), fetches the landmark
@@ -612,6 +625,11 @@ public sealed partial class GridSession
                 SyncLocalAgentPositionAfterTeleport();
                 return FinishTeleport(new TeleportResult(true, msg));
             }
+
+            // Home has no landmark asset to fall back on: an empty id means "home", and asking the
+            // asset service for the zero UUID would only turn a plain refusal into a timeout.
+            if (landmarkAssetId == Guid.Empty)
+                return FinishTeleport(new TeleportResult(false, msg));
 
             // Attempt 2: Fallback — fetch landmark asset, parse region ID & position, teleport by region handle
             var asset = await _client.Assets

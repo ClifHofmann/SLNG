@@ -157,7 +157,19 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
 
     public event EventHandler<NameResolvedEvent>? DisplayNameResolved;
 
+    /// <summary>A resident's Display Name changed and the grid told us. Raised in addition to
+    /// <see cref="DisplayNameResolved"/> (which is what repaints the nametag): this one carries the
+    /// OLD name too, so the user can be told "X is now known as Y" the way the reference viewer
+    /// does. Fires on a network thread.</summary>
+    public event EventHandler<DisplayNameChangedEvent>? DisplayNameChanged;
+
     public event EventHandler<AlertMessageEvent>? AlertMessageReceived;
+
+    /// <summary>FEAT-UI-34: the region the agent stands in announced a restart. Raised in
+    /// addition to <see cref="AlertMessageReceived"/>, not instead of it: the alert text is still
+    /// the record, this is the deadline. Fires on a network thread; a repeat notice for the same
+    /// restart raises it again with the time that is left.</summary>
+    public event EventHandler<RegionRestartEvent>? RegionRestartReceived;
 
     /// <summary>A region's event queue has stopped delivering and is not coming back by itself
     /// (BUG-NET-20). Raised once per region, then at most every ten minutes while it lasts.</summary>
@@ -445,6 +457,8 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     internal void RaiseObjectUpdate(ObjectUpdateEvent e) => ObjectUpdateReceived?.Invoke(this, e);
 
     internal void RaiseAvatarUpdate(AvatarUpdateEvent e) => AvatarUpdateReceived?.Invoke(this, e);
+
+    internal void RaiseDisplayNameResolved(NameResolvedEvent e) => DisplayNameResolved?.Invoke(this, e);
 
     internal void RaiseObjectRemoved(ObjectRemovedEvent e) => ObjectRemovedReceived?.Invoke(this, e);
 
