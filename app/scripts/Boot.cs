@@ -383,7 +383,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.79-alpha";
+    public const string AppVersion = "v0.24.81-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -2596,16 +2596,23 @@ public partial class Boot : Control
                     _topMenu.ClearLocation();
                 }
 
-                // BUG-UI-14: the same number the stats panel shows -- see StatsOverlay.CurrentFps
-                // for why reading it separately could not be made to agree.
-                int fps = (int)System.Math.Round(
-                    SLNG.App.UI.StatsOverlay.CurrentFps ?? Engine.GetFramesPerSecond());
-                _topMenu.UpdateFps(fps);
             }
             else
             {
                 _topMenu.ClearLocation();
             }
+
+            // BUG-UI-14: the same number the stats panel shows -- see StatsOverlay.CurrentFps
+            // for why reading it separately could not be made to agree.
+            //
+            // BUG-UI-15: OUTSIDE the connected branch. It used to sit inside it, so the moment the
+            // session went away the readout stopped being written and kept showing the last frame
+            // rate it had -- which is how a region restart produced a title bar reading 266 while
+            // the stats panel read 412. Nothing about the frame rate depends on being connected;
+            // an empty scene runs FASTER, which is exactly when a frozen number is most wrong.
+            int fps = (int)System.Math.Round(
+                SLNG.App.UI.StatsOverlay.CurrentFps ?? Engine.GetFramesPerSecond());
+            _topMenu.UpdateFps(fps);
         }
 
         if (_standUpButton != null)
@@ -3352,6 +3359,11 @@ public partial class Boot : Control
             _notifications.Add(SLNG.Core.NotificationKind.System, System.Guid.Empty, text,
                 detail: SLNG.App.UI.L10n.TrFormat("ui.eventqueue.stalled_detail", where, e.FailureCount));
         };
+        // BUG-NET-22: the session ended and is not coming back. Every path converges on this one
+        // event -- the grid kicked us, the simulator went down, the network timed out, or the
+        // region we are standing in stopped answering (BUG-NET-20).
+        _session.SessionEnded += (s, e) =>
+            CallDeferred(nameof(OnSessionEnded), (int)e.Reason, e.Message ?? string.Empty);
         // Recenter the floating origin every time we actually move to a new region -- login AND
         // every subsequent teleport/region-crossing (GridSession.RegionConnected only fires for the
         // primary sim, not neighbor sims connected near a border). Previously this was a single
@@ -4317,6 +4329,75 @@ public partial class Boot : Control
     // Merged with existing _Notification above
 
     private bool _isQuitting = false;
+
+    private bool _sessionEndShown;
+
+    /// <summary>The session is over: say why, then offer the way back. BUG-NET-22.</summary>
+    /// <remarks>
+    /// Reported in-world 2026-09-23 after a region restart: the client stayed in the scene with an
+    /// empty world, an avatar standing on nothing and a minimap still naming a region that was no
+    /// longer there — *"der Viewer sollte aber auch selber ausloggen (nicht ausgehen, aber
+    /// ausloggen)"*. Nothing was listening for the session ending at all:
+    /// <c>Network.Disconnected</c> had no subscriber.
+    ///
+    /// <para><b>Two buttons, not one</b>, and that is the reference viewer's shape rather than a
+    /// hedge. <c>forceDisconnect</c> sends a real logout and then asks
+    /// (<c>YouHaveBeenLoggedOut</c>, llappviewer.cpp:5018-5021); the session is already gone
+    /// either way, so the second button costs nothing and buys the chance to read the chat that
+    /// explains what happened. Ours goes to the login screen where the viewer's quits, which is
+    /// the one thing asked for explicitly.</para>
+    ///
+    /// <para>Guarded because it must run once: the dialog's two exits lead to the same place, and
+    /// <see cref="QuitGracefully"/> disposes the session.</para>
+    /// </remarks>
+    private void OnSessionEnded(int reasonValue, string detail)
+    {
+        if (_sessionEndShown) return;
+        _sessionEndShown = true;
+
+        var reason = (SLNG.Core.SessionEndReason)reasonValue;
+        string text = reason switch
+        {
+            SLNG.Core.SessionEndReason.EventQueueDead =>
+                SLNG.App.UI.L10n.TrFormat("ui.session_ended.event_queue", detail),
+            SLNG.Core.SessionEndReason.SimShutdown =>
+                SLNG.App.UI.L10n.Tr("ui.session_ended.sim_shutdown"),
+            SLNG.Core.SessionEndReason.NetworkTimeout =>
+                SLNG.App.UI.L10n.Tr("ui.session_ended.timeout"),
+            // The grid's own wording when it gave one -- it knows more about why than we do.
+            _ => string.IsNullOrWhiteSpace(detail)
+                ? SLNG.App.UI.L10n.Tr("ui.session_ended.server")
+                : detail,
+        };
+
+        LogMessage($"[color=orange][Region] {text}[/color]");
+
+        var host = GetNodeOrNull<CanvasLayer>("HudLayer");
+        if (host == null)
+        {
+            // No HUD to ask in -- leaving is still the right outcome.
+            QuitGracefully(false);
+            return;
+        }
+
+        bool going = false;
+        void GoToLogin()
+        {
+            if (going) return;
+            going = true;
+            QuitGracefully(false);
+        }
+
+        var win = new SLNG.App.UI.ConfirmWindow();
+        host.AddChild(win);
+        win.Initialize(
+            SLNG.App.UI.L10n.Tr("ui.session_ended.title"),
+            text,
+            SLNG.App.UI.L10n.Tr("ui.session_ended.to_login"),
+            danger: false,
+            cancelLabel: SLNG.App.UI.L10n.Tr("ui.session_ended.stay"));
+        win.Confirmed += GoToLogin;
+    }
 
     private async void QuitGracefully(bool quitProcess = true)
     {

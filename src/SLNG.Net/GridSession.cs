@@ -172,6 +172,43 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     /// </remarks>
     public event EventHandler<EventQueueStalledEvent>? EventQueueStalled;
 
+    /// <summary>The session is over; the client must return to the login screen. BUG-NET-22.</summary>
+    /// <remarks>
+    /// Raised at most once per session. Every path that ends a session converges here, including
+    /// the one BUG-NET-20 detects, so the client has one thing to handle rather than a list.
+    /// </remarks>
+    public event EventHandler<SessionEndedEvent>? SessionEnded;
+
+    private int _sessionEndRaised;
+
+    /// <summary>Raises <see cref="SessionEnded"/> exactly once.</summary>
+    /// <remarks>
+    /// Once, because the paths overlap by design: ending the session ourselves over a dead event
+    /// queue makes LibreMetaverse raise its own <c>Disconnected</c> a moment later, and the user
+    /// must not be told twice — nor be sent back to the login screen while already on the way
+    /// there.
+    /// </remarks>
+    private void RaiseSessionEnded(SessionEndReason reason, string message)
+    {
+        if (System.Threading.Interlocked.Exchange(ref _sessionEndRaised, 1) != 0) return;
+        SessionEnded?.Invoke(this, new SessionEndedEvent(reason, message));
+    }
+
+    private void OnNetworkDisconnected(object? sender, DisconnectedEventArgs e)
+    {
+        // Our own logout is not news: whoever called it is already showing the login screen.
+        if (e.Reason == NetworkManager.DisconnectType.ClientInitiated) return;
+
+        var reason = e.Reason switch
+        {
+            NetworkManager.DisconnectType.SimShutdown => SessionEndReason.SimShutdown,
+            NetworkManager.DisconnectType.NetworkTimeout => SessionEndReason.NetworkTimeout,
+            _ => SessionEndReason.ServerInitiated,
+        };
+        Console.Error.WriteLine($"[Net] session ended ({e.Reason}): {e.Message}");
+        RaiseSessionEnded(reason, e.Message ?? string.Empty);
+    }
+
     private readonly SLNG.Core.EventQueueHealth _eventQueueHealth = new();
 
     /// <summary>Sees every LibreMetaverse log line before it is printed. Returns false to swallow
@@ -190,6 +227,34 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     /// <para>Called on a LibreMetaverse network thread. <see cref="SLNG.Core.EventQueueHealth"/>
     /// is not thread-safe, hence the lock; it is contended about once per second at worst.</para>
     /// </remarks>
+    /// <summary>Logs out because the region we are in has stopped answering. BUG-NET-22.</summary>
+    /// <remarks>
+    /// A real logout, not a dropped socket: the grid is told, so the avatar does not linger for
+    /// everyone else until the session times out. Runs off the log callback's thread because
+    /// <c>Logout</c> blocks on the server's acknowledgement, and that callback is on
+    /// LibreMetaverse's own path -- blocking it would stall the library that has to deliver the
+    /// acknowledgement.
+    /// </remarks>
+    private void EndSessionOverDeadEventQueue(string regionName)
+    {
+        // Raised BEFORE the logout, so the client starts leaving immediately. The logout is
+        // courtesy to the grid; the user should not wait on it.
+        RaiseSessionEnded(SessionEndReason.EventQueueDead, regionName);
+
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                if (_client.Network.Connected) _client.Network.Logout();
+            }
+            catch (Exception ex)
+            {
+                // The session is over either way -- this is only about telling the grid.
+                Console.Error.WriteLine($"[Net] logout after a dead event queue failed: {ex.Message}");
+            }
+        });
+    }
+
     private bool FilterLibreMetaverseLog(Microsoft.Extensions.Logging.LogLevel level, string message)
     {
         if (!SLNG.Core.EventQueueHealth.TryReadEventQueueFailure(message, out var simulatorText))
@@ -217,6 +282,27 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
                 "until you reconnect to it. Further identical warnings are suppressed.");
 
             EventQueueStalled?.Invoke(this, new SLNG.Core.EventQueueStalledEvent(regionName, count));
+
+            // BUG-NET-22: if it is the region we are STANDING IN, the session is over -- log out
+            // and say so, rather than leave the user in a world that no longer answers.
+            //
+            // This is the reference viewer's own conclusion, in its own words
+            // (lleventpoll.cpp:273-287): "At this point we have given up and the viewer will not
+            // receive HTTP messages from the simulator. IMs, teleports, about land, selecting
+            // land, region crossing and more will all fail. They are essentially disconnected
+            // from the region even though some things may still work. Since things won't get
+            // better until they relog we force a disconnect now." -- and forceDisconnect
+            // (llappviewer.cpp:5018) sends a real logout first, it does not just drop the socket.
+            //
+            // The main/child distinction is the viewer's too, and it is the load-bearing half:
+            // a NEIGHBOUR's dead queue stops that queue and nothing else, because you are not in
+            // it. Ours compares region NAMES where the viewer compares host addresses -- we only
+            // have the name, because the only place this failure surfaces at all is a log line.
+            if (!string.IsNullOrEmpty(regionName)
+                && string.Equals(regionName, CurrentRegionName, StringComparison.OrdinalIgnoreCase))
+            {
+                EndSessionOverDeadEventQueue(regionName);
+            }
         }
 
         return first;
@@ -611,6 +697,10 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Terrain.LandPatchReceived += OnLandPatchReceived;
         _client.Network.SimConnected += OnSimConnected;
         _client.Network.SimDisconnected += OnSimDisconnected;
+        // BUG-NET-22: nothing was listening for the whole session ending. A region restart left
+        // the client sitting in an empty world, still drawing an avatar, with a minimap showing
+        // a region that is no longer there.
+        _client.Network.Disconnected += OnNetworkDisconnected;
         // BUG-NET-04: a teleport to a DISTANT region left the old region's terrain/objects
         // rendered indefinitely -- "nach dem Teleport sehe ich noch die sim auf der ich gerade
         // war". See OnSimChanged's doc comment for the mechanism; wired here, next to the two

@@ -625,6 +625,15 @@
       "system_folder": "„{0}“ ist ein Systemordner und kann nicht umbenannt oder gelöscht werden.",
       "moved": "„{0}“ nach „{1}“ verschoben."
     },
+    "session_ended": {
+      "title": "Du wurdest abgemeldet",
+      "to_login": "Zur Anmeldung",
+      "stay": "Hier bleiben",
+      "event_queue": "Die Region „{0}“ antwortet nicht mehr. Von dort kommt bis zu einer neuen Anmeldung nichts mehr an, deshalb wurde die Sitzung beendet.",
+      "sim_shutdown": "Der Simulator wurde heruntergefahren — ein Regions-Neustart macht das. Die Sitzung wurde beendet.",
+      "timeout": "Die Verbindung zum Grid ist abgelaufen. Die Sitzung wurde beendet.",
+      "server": "Das Grid hat die Sitzung beendet."
+    },
     "eventqueue": {
       "stalled": "Die Region „{0}“ liefert keine Ereignisse mehr — bis zur erneuten Verbindung fehlen von dort Gruppenchat, Teleport-Fortschritt, Objektmedien und Umgebungswechsel.",
       "stalled_detail": "Die Ereigniswarteschlange von „{0}“ hat {1}-mal in Folge nicht geantwortet und erholt sich nicht von selbst. Ihre Capability ist weg — ein Regions-Neustart macht das. Ein Teleport dorthin und zurück, oder eine Neuanmeldung, stellt sie wieder her.",

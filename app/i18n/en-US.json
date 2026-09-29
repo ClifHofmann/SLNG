@@ -625,6 +625,15 @@
       "system_folder": "“{0}” is a system folder and cannot be renamed or deleted.",
       "moved": "Moved “{0}” to “{1}”."
     },
+    "session_ended": {
+      "title": "You have been logged out",
+      "to_login": "Back to login",
+      "stay": "Stay here",
+      "event_queue": "Region “{0}” has stopped answering. Nothing will arrive from it again until you log in afresh, so the session has been ended.",
+      "sim_shutdown": "The simulator shut down — a region restart does that. The session has been ended.",
+      "timeout": "The connection to the grid timed out. The session has been ended.",
+      "server": "The grid ended the session."
+    },
     "eventqueue": {
       "stalled": "Region “{0}” has stopped delivering events — until you reconnect, group chat, teleport progress, object media and environment changes will not arrive from it.",
       "stalled_detail": "The event queue for “{0}” has failed {1} times in a row and is not recovering. Its capability is gone — a region restart does that. Teleporting away and back, or logging in again, restores it.",
