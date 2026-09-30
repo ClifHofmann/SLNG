@@ -2688,6 +2688,16 @@ public partial class AvatarRenderer : Node3D
 
                 // Set a generous CustomAabb to prevent Godot from culling the mesh if the bind pose is far away
                 mi.CustomAabb = new Aabb(new Godot.Vector3(-4, -4, -4), new Godot.Vector3(8, 8, 8));
+                mi.SortingOffset = RiggedAlphaSortTieBreak(entityId, req.Faces, req.DefaultFace, faceIndices);
+                // BUG-RENDER-38: the tie-break orders INSTANCES. Surfaces of one instance still tie
+                // with each other, so this names every surface's texture -- a hair that still blinks
+                // and shows more than one here is that case.
+                if (Diagnostics.Enabled)
+                    GD.Print($"[RiggedSort] {(req.Visual.IsSelf ? "self" : "other")} attachment={entityId.ToString("N")[..8]} " +
+                             $"mesh={req.MeshId.ToString("N")[..8]} offset={mi.SortingOffset:0.0000} " +
+                             $"{faceIndices.Length} surface(s): " +
+                             string.Join(", ", faceIndices.Select(fi =>
+                                 $"face {fi}={ResolveFaceTexture(req.Faces, req.DefaultFace, fi).TextureId.ToString("N")[..8]}")));
 
                 req.Skeleton.AddChild(mi);
                 AddRiggedPickBody(mi, req.Visual, req.Skeleton, entityId);
@@ -2791,6 +2801,41 @@ public partial class AvatarRenderer : Node3D
     /// value equality over every field the material is built from -- texture id, both material
     /// ids, tint, repeats, offsets, rotation, texgen and fullbright. Two faces that compare equal
     /// cannot produce different materials, which is what makes merging them invisible.</summary>
+    /// <summary>BUG-RENDER-38: a fixed draw order for one avatar's worn rigged meshes, so Godot's
+    /// transparent sort stops re-deciding it every frame.</summary>
+    /// <remarks>
+    /// Every rigged attachment is a child of the skeleton at the identity transform with the same
+    /// <c>CustomAabb</c>, so all of them sort at EXACTLY the same depth — Godot keys the
+    /// transparent sort on the instance's AABB centre alone, and its introsort is unstable, so a
+    /// tie is re-decided from whatever else is in the render list that frame (BUG-RENDER-16's
+    /// mechanism). Reported 2026-09-30 as hair strands fading in and out while zooming: a hair
+    /// drawn before the head lets the head's colour pass paint over every strand that is not
+    /// solid enough for the depth prepass.
+    ///
+    /// <para>The reference viewer never re-sorts rigged alpha at all — it keeps the original draw
+    /// order (llvovolume.cpp:6332-6335) — so any FIXED order is parity; this one also puts the
+    /// innermost layer first. A mesh that wears a bake (skin: body, head) draws before the rest,
+    /// and the rest are ordered by the sim LocalId, stable for the attachment's lifetime. Steps
+    /// of 0.1 mm over 256 values, so two pieces of one outfit rarely land on the same step (a
+    /// modulus of 16 left one pair in sixteen tied), up to 5.6 cm in all: far below any distance
+    /// at which two avatars' order is visible, and still well above float precision at 100 m.</para>
+    /// </remarks>
+    private float RiggedAlphaSortTieBreak(Guid entityId, FaceTexture[]? faces, FaceTexture defaultFace, int[] faceIndices)
+    {
+        bool wearsBake = false;
+        foreach (int faceIndex in faceIndices)
+        {
+            if (SLNG.Assets.BakedTextureIds.TryGetBakeIndex(ResolveFaceTexture(faces, defaultFace, faceIndex).TextureId, out _))
+            {
+                wearsBake = true;
+                break;
+            }
+        }
+
+        uint localId = _world?.GetEntity(entityId)?.LocalId ?? 0;
+        return (wearsBake ? 0f : 0.03f) + (localId % 256) * 0.0001f;
+    }
+
     private static FaceTexture ResolveFaceTexture(FaceTexture[]? faces, FaceTexture defaultFace, int faceIndex) =>
         (faces != null && faceIndex >= 0 && faceIndex < faces.Length) ? faces[faceIndex] : defaultFace;
 
@@ -2844,10 +2889,101 @@ public partial class AvatarRenderer : Node3D
             int s = surf;
             MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
-                if (IsInstanceValid(mi) && s < ((ArrayMesh)mi.Mesh).GetSurfaceCount())
+                if (!IsInstanceValid(mi) || s >= ((ArrayMesh)mi.Mesh).GetSurfaceCount()) return;
+                // BUG-RENDER-38: a surface already moved onto its own instance takes its new
+                // material there -- on the parent it would be drawn a second time.
+                if (mi.GetNodeOrNull<MeshInstance3D>(SortedSurfaceName(s)) is { } split)
+                    split.SetSurfaceOverrideMaterial(0, material);
+                else
                     mi.SetSurfaceOverrideMaterial(s, material);
             }, label: "avatar.face_material");
         }
+
+        // Same lane, queued after every surface's material: the lane is FIFO, so this runs once
+        // they are all in place and can tell which surfaces blend.
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => SplitSortedSurfaces(mi, meshId),
+            label: "avatar.split_sorted");
+    }
+
+    // ---- BUG-RENDER-38: per-surface transparent sorting for worn meshes ----------------------
+
+    private static string SortedSurfaceName(int surface) => $"SortedSurface{surface}";
+
+    private ShaderMaterial? _hiddenSurfaceMaterial;
+    private ShaderMaterial HiddenSurfaceMaterial => _hiddenSurfaceMaterial ??= new ShaderMaterial { Shader = PrimShaderFamily.Hidden };
+
+    /// <summary>Moves every blended surface of a worn mesh onto its own child instance once two
+    /// or more of them share one, so they stop tying in Godot's transparent sort.</summary>
+    /// <remarks>
+    /// Godot sorts transparent draws per INSTANCE (render_forward_clustered.cpp:961-966): every
+    /// surface of one <see cref="MeshInstance3D"/> sits at exactly the same depth, and the unstable
+    /// introsort re-decides that tie each frame from whatever else is in the render list.
+    /// BUG-RENDER-12 made the tie rare by merging consecutive faces with an EQUAL
+    /// <see cref="FaceTexture"/> into one surface; that merge cannot fire when the records differ,
+    /// and the hair reported on 2026-09-30 (WINGS-ES1105, mesh 25ec6ae0) is three faces carrying
+    /// the SAME texture whose records still differ -- three surfaces, one depth, strands blinking
+    /// in and out and inner cards painting hard dark patches over the outer ones.
+    ///
+    /// <para>The children draw in face order, one 10 µm step apart on top of the parent's own
+    /// tie-break (<see cref="RiggedAlphaSortTieBreak"/>, steps of 0.1 mm, so the two scales never
+    /// collide for SL's eight faces): the order the merge would have produced, and the reference
+    /// viewer's "original draw order" for rigged alpha (llvovolume.cpp:6332-6335). Same mechanism
+    /// as ObjectRenderer.SplitSortedSurfaces for world prims (BUG-RENDER-16).</para>
+    ///
+    /// <para>The parent keeps its full mesh and draws the moved surfaces with
+    /// <see cref="PrimShaderFamily.Hidden"/>, so the pick body, the selection outline and the
+    /// surface-indexed material updates all keep working unchanged. The price: the moved surfaces
+    /// are skinned twice (parent and child), and each is read back once to be copied -- paid only
+    /// by meshes with two or more blended surfaces, once per rig.</para>
+    /// </remarks>
+    private void SplitSortedSurfaces(MeshInstance3D mi, Guid meshId)
+    {
+        if (!IsInstanceValid(mi) || !mi.IsInsideTree() || mi.Mesh is not ArrayMesh mesh) return;
+        int count = mesh.GetSurfaceCount();
+        if (count < 2) return;
+
+        var blend = PrimShaderFamily.Select(PrimShaderFamily.Kind.Blend, PrimShaderFamily.Surface.Avatar);
+        int alreadySplit = 0;
+        List<int>? pending = null;
+        for (int s = 0; s < count; s++)
+        {
+            if (mi.GetNodeOrNull(SortedSurfaceName(s)) != null)
+            {
+                alreadySplit++;
+                continue;
+            }
+            if (mi.GetSurfaceOverrideMaterial(s) is ShaderMaterial sm && ReferenceEquals(sm.Shader, blend))
+                (pending ??= new List<int>()).Add(s);
+        }
+        if (pending == null || alreadySplit + pending.Count < 2) return;
+
+        var skeleton = mi.Skin != null ? mi.GetNodeOrNull<Skeleton3D>(mi.Skeleton) : null;
+        foreach (int s in pending)
+        {
+            var copy = new ArrayMesh();
+            copy.AddSurfaceFromArrays(mesh.SurfaceGetPrimitiveType(s), mesh.SurfaceGetArrays(s));
+            var child = new MeshInstance3D
+            {
+                Name = SortedSurfaceName(s),
+                Mesh = copy,
+                Skin = mi.Skin,
+                // A blended surface casts no shadow anyway (no depth write).
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+                Layers = mi.Layers,
+                SortingOffset = mi.SortingOffset + (s + 1) * 0.00001f,
+            };
+            // A rigged mesh's generous box, so the child sorts at the parent's depth and is not
+            // culled on a bind pose parked somewhere else. An unset one stays unset.
+            if (mi.CustomAabb.Size != Godot.Vector3.Zero) child.CustomAabb = mi.CustomAabb;
+            child.SetSurfaceOverrideMaterial(0, mi.GetSurfaceOverrideMaterial(s));
+            mi.AddChild(child);
+            if (skeleton != null) child.Skeleton = child.GetPathTo(skeleton);
+            mi.SetSurfaceOverrideMaterial(s, HiddenSurfaceMaterial);
+        }
+
+        if (Diagnostics.Enabled)
+            GD.Print($"[RiggedSort] mesh={meshId.ToString("N")[..8]}: surface(s) {string.Join(", ", pending)} blend -- " +
+                     $"moved onto their own instances in face order ({alreadySplit} already split)");
     }
 
     /// <summary>Builds a material for one SL face: optional albedo texture modulated by the
@@ -4979,6 +5115,10 @@ public partial class AvatarRenderer : Node3D
                                                   skinOnly: true);
             if (rebuilt == null) continue;
             mi.Skin = rebuilt.Skin;
+            // BUG-RENDER-38: surfaces split onto their own instances are bound by the same skin.
+            foreach (var child in mi.GetChildren())
+                if (child is MeshInstance3D split && split.Name.ToString().StartsWith("SortedSurface", StringComparison.Ordinal))
+                    split.Skin = rebuilt.Skin;
 
             // BUG-RENDER-13: and the discarded node has to be FREED, not just dropped. A Godot Node
             // is not reference-counted -- one that was never added to the tree keeps its RIDs (a
