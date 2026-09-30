@@ -691,6 +691,17 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // (handled by LibreMetaverse) then fires our OnSimDisconnected -> World.RemoveRegion to
         // unload a region we've moved away from.
         _client.Settings.Agent.MultipleSims = true;
+        // BUG-NET-23: LibreMetaverse's own AgentThrottle send is what stopped every outgoing packet
+        // for the rest of a session. With this on, each simulator connect calls Throttle.Set twice
+        // (Simulator.ConnectAsync after the handshake, NetworkManager.Connect after SimConnected),
+        // and Set ends in UdpThrottle.Update, which swaps in new TokenBucketRateLimiters and
+        // disposes the old ones at once -- while OutgoingPacketHandler may be holding or awaiting
+        // one of them (UdpThrottle.cs:104-117). The ObjectDisposedException escapes that loop's
+        // inner try and ends it for good (NetworkManager.cs:1086-1125; 3.1.3 through 3.1.6 and
+        // master). The swap buys nothing here: SLNG never changes Client.Throttle, so every Update
+        // rebuilt identical buckets. So the library's send is off, and OnSimConnected sends the
+        // same packet without the swap; the outgoing buckets keep the rates of the first connect.
+        _client.Settings.Agent.SendThrottle = false;
         // BUG-INV-12: the inventory and Display Name caches open while the login response is
         // processed. Registered after GridClient's constructor has registered its own managers, so
         // this runs after AgentManager has taken the agent id and InventoryManager has built the
