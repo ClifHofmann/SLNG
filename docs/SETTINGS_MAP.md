@@ -35,7 +35,7 @@ Dieses Dokument listet alle geplanten und bereits vorhandenen Viewer-Einstellung
 | | | Schriftgröße im Chat | ⏸️ Pending | |
 | | Farben | Chat-Farben (Owner, System, Fehler) | ⏸️ Pending | |
 | **Netzwerk & Cache**| Cache | Cache-Pfad | ✅ Done | In `Netzwerk` |
-| | | Cache-Größe & Leeren | ⏸️ Pending | |
+| | | Cache-Größe & Leeren | ✅ Done | In `Netzwerk`: ein Knopf für Asset- **und** Objekt-Cache (FEAT-NET-04), Größe getrennt angezeigt |
 | | Bandbreite | Max. Bandbreite (UDP/HTTP) | ⏸️ Pending | |
 
 ## Architektur & Platzersparnis (UI-Konzept)

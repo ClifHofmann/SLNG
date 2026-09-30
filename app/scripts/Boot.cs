@@ -393,7 +393,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.114-alpha";
+    public const string AppVersion = "v0.24.115-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1524,7 +1524,10 @@ public partial class Boot : Control
 
         var networkPage = new SLNG.App.UI.NetworkPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);
-        networkPage.Initialize(ProjectSettings.GlobalizePath("user://cache/assets"));
+        networkPage.Initialize(
+            ProjectSettings.GlobalizePath("user://cache/assets"),
+            ProjectSettings.GlobalizePath("user://cache/objects"),
+            () => _session?.ClearObjectCache()); // FEAT-NET-04: one button clears both caches
 
         // "Age settings" -- Second Life's content-rating preference (General/Moderate/Adult).
         // Rebound to the live session per login in BindSession, once a session exists to read

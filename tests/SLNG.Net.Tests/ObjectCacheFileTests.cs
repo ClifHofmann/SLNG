@@ -255,3 +255,38 @@ public sealed class ObjectCacheDiskTests : IDisposable
         Assert.False(new ObjectCacheDisk(Path.Combine(blocked, "sub")).TrySave(Here, new[] { Object(1) }));
     }
 }
+
+// The "clear cache" button in the preferences: one button, both caches.
+public sealed class ObjectCacheClearTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "slng-objclear-" + Guid.NewGuid().ToString("N"));
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_dir, recursive: true); }
+        catch (IOException) { }
+    }
+
+    [Fact]
+    public void Clearing_removes_the_cache_files_and_leaves_everything_else_alone()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(Path.Combine(_dir, "0000000000000001-aaaaaaaabbbbccccddddeeeeeeeeeeee" + ObjectCacheFile.Extension), "x");
+        File.WriteAllText(Path.Combine(_dir, "0000000000000002-aaaaaaaabbbbccccddddeeeeeeeeeeee" + ObjectCacheFile.Extension + ".tmp"), "x");
+        File.WriteAllText(Path.Combine(_dir, "notes.txt"), "not ours");
+        using var session = new GridSession();
+        session.UseObjectCacheDirectory(_dir);
+
+        session.ClearObjectCache();
+
+        Assert.Equal(new[] { "notes.txt" }, Directory.GetFiles(_dir).Select(Path.GetFileName));
+    }
+
+    [Fact]
+    public void Clearing_with_no_directory_set_is_harmless()
+    {
+        using var session = new GridSession();
+
+        session.ClearObjectCache();
+    }
+}
