@@ -452,8 +452,48 @@ public sealed partial class GridSession
         // BUG-NET-03: with neighbor circuits (MultipleSims) this now also fires for a neighbor
         // the grid told us to drop (DisableSimulator) as we moved away from a border -- the
         // consumer (WorldSimulation) unloads that region's entities/terrain via World.RemoveRegion.
-        Console.WriteLine($"[Neighbor] disconnected {e.Simulator.Name} ({e.Simulator.Handle})");
-        RegionDisconnectedReceived?.Invoke(this, new RegionDisconnectedEvent(e.Simulator.Handle));
+        //
+        // BUG-NET-24: and for every region at once when the grid ends the whole session. Those
+        // stay on screen behind the "logged out" message; unloading them left a naked avatar in an
+        // empty sea, because what the avatar wears belongs to the region too.
+        bool withSession = IsPartOfSessionEnd(
+            e.Reason,
+            isCurrentRegion: e.Simulator.Handle == _client.Network.CurrentSim?.Handle,
+            networkConnected: _client.Network.Connected,
+            sessionAlreadyEnded: System.Threading.Volatile.Read(ref _sessionEndRaised) != 0);
+        Console.WriteLine(withSession
+            ? $"[Neighbor] {e.Simulator.Name} ({e.Simulator.Handle}) went with the session ({e.Reason}) -- left on screen"
+            : $"[Neighbor] disconnected {e.Simulator.Name} ({e.Simulator.Handle})");
+        RegionDisconnectedReceived?.Invoke(this, new RegionDisconnectedEvent(e.Simulator.Handle, SessionEnded: withSession));
+    }
+
+    /// <summary>
+    /// BUG-NET-24: whether a region going away is part of the whole session ending, rather than one
+    /// region dropping out of a session that carries on.
+    ///
+    /// <para>Read off what LibreMetaverse 3.1.6 actually raises. <c>SimDisconnected</c> comes from
+    /// three places: <c>DisconnectSim</c>, for one region and always as <c>NetworkTimeout</c>; and
+    /// <c>ShutdownAsync</c>, for the neighbours and then the current region, with the shutdown's
+    /// own reason. So <c>ServerInitiated</c> (a kick) and <c>SimShutdown</c> (the last region
+    /// gone) only ever mean the session. <c>NetworkTimeout</c> takes a second look: the session
+    /// timing out as a whole clears <c>Connected</c> before it shuts down, and the region we stand
+    /// in going away ends the session either way. Anything else is one neighbour, or the region a
+    /// teleport left behind.</para>
+    ///
+    /// <para><c>ClientInitiated</c> is our own logout, on its way to the login screen -- unless the
+    /// session had been declared over already, which is how the dead-event-queue path ends it:
+    /// SessionEnded first, then a logout of our own.</para>
+    /// </summary>
+    internal static bool IsPartOfSessionEnd(
+        NetworkManager.DisconnectType reason, bool isCurrentRegion, bool networkConnected, bool sessionAlreadyEnded)
+    {
+        if (sessionAlreadyEnded) return true;
+        return reason switch
+        {
+            NetworkManager.DisconnectType.ServerInitiated or NetworkManager.DisconnectType.SimShutdown => true,
+            NetworkManager.DisconnectType.NetworkTimeout => !networkConnected || isCurrentRegion,
+            _ => false,
+        };
     }
 
     // BUG-INV-12: where the two per-account caches live, supplied by the app before the login.

@@ -361,7 +361,11 @@ public record TerrainSettingsEvent(
 ) : IWorldEvent;
 
 /// <summary>Represents a simulator disconnection or departure.</summary>
-public record RegionDisconnectedEvent(ulong RegionHandle) : IWorldEvent;
+/// <param name="SessionEnded">BUG-NET-24: the region went because the grid ended the whole
+/// session, not because the session moved on without it. Its content then stays on screen as the
+/// last picture behind the "logged out" message, the way the reference viewer leaves it, until the
+/// client leaves for the login screen.</param>
+public record RegionDisconnectedEvent(ulong RegionHandle, bool SessionEnded = false) : IWorldEvent;
 
 /// <summary>Represents an update to an avatar's visual appearance and baked textures.
 /// <paramref name="HoverOffsetZ"/> is the AppearanceHover Z offset (LibreMetaverse:

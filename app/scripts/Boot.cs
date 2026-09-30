@@ -383,7 +383,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.93-alpha";
+    public const string AppVersion = "v0.24.94-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -4587,6 +4587,12 @@ public partial class Boot : Control
                 _session.Dispose();
                 _session = null;
             }
+
+            // BUG-NET-24: a session the grid ended was left standing on screen behind its message,
+            // and leaving it for the login screen is where it goes. Our own logout never unloaded
+            // the world at all -- Dispose stops listening before it logs out -- so this also keeps
+            // the next login from starting on top of the last session's scene.
+            _worldSimulation?.UnloadAllRegions();
 
             var loginScreen = GetNodeOrNull<Control>("%LoginScreen");
             if (loginScreen != null) loginScreen.Visible = true;

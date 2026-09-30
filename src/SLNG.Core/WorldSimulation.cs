@@ -107,6 +107,10 @@ public sealed class WorldSimulation : IDisposable
                 case ObjectMediaEvent e: ApplyObjectMedia(e); break;
                 case TerrainPatchEvent e: ApplyTerrainPatch(e); break;
                 case TerrainSettingsEvent e: ApplyTerrainSettings(e); break;
+                // BUG-NET-24: a region the whole session took with it stays as it was --
+                // UnloadAllRegions clears it once the client leaves.
+                case RegionDisconnectedEvent { SessionEnded: true }:
+                    break;
                 case RegionDisconnectedEvent e:
                     _world.RemoveRegion(e.RegionHandle);
                     _avatarCacheDirty = true; // takes every avatar in that region with it
@@ -116,6 +120,21 @@ public sealed class WorldSimulation : IDisposable
                 case NameResolvedEvent e: ApplyDisplayNameResolved(e); break;
             }
         }
+    }
+
+    /// <summary>
+    /// BUG-NET-24: unloads every region still in the world, as a disconnect used to. Call on the
+    /// main thread when the client leaves a session for the login screen: a session the grid ended
+    /// is left standing on screen behind its message, and this is where it goes.
+    ///
+    /// <para>Whatever the session still had queued is dropped first. Nothing more arrives once it
+    /// has ended, and pumping the rest later would only re-create what this removes.</para>
+    /// </summary>
+    public void UnloadAllRegions()
+    {
+        while (_pending.TryDequeue(out _)) { }
+        _world.RemoveAllRegions();
+        _avatarCacheDirty = true;
     }
 
     // Deliberately much shorter than the real viewer's generic LLViewerObject::
