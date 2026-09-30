@@ -169,6 +169,7 @@ public static class SelfTest
         results.Add(CheckAvatarAnimationFreeze());
         results.Add(CheckAvatarAnimationLocalOverlay());
         results.Add(CheckRegionRestartWindow(tree));
+        results.Add(CheckInventoryTrashMenus(tree));
         // Last, so it sees everything the run did.
         results.Add(CheckUserDataUntouched());
 
@@ -231,6 +232,45 @@ public static class SelfTest
         finally
         {
             if (GodotObject.IsInstanceValid(win)) win.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// FEAT-INV-10: the inventory panel builds in a real tree with its two Trash menus, and every
+    /// label on them — and the counted question the Empty Trash prompt asks — is real text.
+    ///
+    /// <para>A missing string does not throw; it renders as <c>[ui.inventory_trash.purge]</c> on the
+    /// menu of the one action that cannot be undone. The locale check compares the language files
+    /// with each other only, so a key misspelt in the code, or missing from both, gets past it.</para>
+    /// </summary>
+    private static Check CheckInventoryTrashMenus(SceneTree tree)
+    {
+        const string Name = "inventory trash menus";
+        var panel = new SLNG.App.UI.InventoryPanel();
+        try
+        {
+            tree.Root.AddChild(panel);
+
+            var labels = panel.TrashMenuLabels().ToList();
+            int menuEntries = labels.Count;
+            labels.Add(SLNG.App.UI.InventoryPanel.CountText(1, 0));
+            labels.Add(SLNG.App.UI.InventoryPanel.CountText(3, 2));
+            labels.Add(SLNG.App.UI.L10n.TrFormat("ui.inventory_trash.restore", "Objects"));
+
+            var unresolved = labels.Where(l => string.IsNullOrWhiteSpace(l) || l.StartsWith('[')).ToList();
+            // Empty Trash; Restore and Delete permanently.
+            bool ok = menuEntries == 3 && unresolved.Count == 0;
+            return new Check(Name, ok, ok
+                ? string.Join(" | ", labels)
+                : $"{menuEntries} menu entr(y/ies) (want 3), unresolved: {string.Join(", ", unresolved)}");
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(panel)) panel.QueueFree();
         }
     }
 
