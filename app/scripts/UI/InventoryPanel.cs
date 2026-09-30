@@ -208,6 +208,8 @@ public partial class InventoryPanel : SLNGWindow
         _contextMenu.AddItem(L10n.Tr("ui.inventory_clipboard.copy"), 11);
         _contextMenu.AddItem(L10n.Tr("ui.inventory_clipboard.paste"), 12);
         _contextMenu.AddItem(L10n.Tr("ui.inventory_clipboard.paste_link"), 13);
+        _contextMenu.AddSeparator();
+        _contextMenu.AddItem(L10n.Tr("ui.inventory.context.show_original"), 14);
         _contextMenu.IdPressed += OnContextMenuIdPressed;
 
         // FEAT-INV-08: right-clicking a FOLDER used to do nothing at all -- the handler bailed
@@ -1764,6 +1766,7 @@ public partial class InventoryPanel : SLNGWindow
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(11), !canCopy);
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(12), !_clipboard.HasContent);
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(13), !_clipboard.HasContent);
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(14), LinkTargetOf(item) == Guid.Empty);
 
                     _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
                     _contextMenu.Popup();
@@ -2580,6 +2583,12 @@ public partial class InventoryPanel : SLNGWindow
 
         bool isFolder = !metaStr.Contains(',');
 
+        if (id == 14)
+        {
+            ShowOriginal(item);
+            return;
+        }
+
         // FEAT-INV-08: cut / copy / paste. Paste on an ITEM means "into the folder it sits in",
         // which is where the user is pointing -- an item is not a destination.
         if (id is 10 or 11 or 12 or 13)
@@ -2718,6 +2727,9 @@ public partial class InventoryPanel : SLNGWindow
     {
         var item = _tree.GetSelected();
         if (item == null || _session == null) return;
+        // A link does nothing else on a double-click: its landmark, animation and asset ids all
+        // live on the target, which is exactly where this takes the user.
+        if (ShowOriginal(item)) return;
         TryTeleportFromItem(item);
         TryPlayAnimationFromItem(item);
     }
@@ -3027,6 +3039,113 @@ public partial class InventoryPanel : SLNGWindow
                 ContinueSearchCrawl(item);
         }
 
+        ContinueShowOriginal();
         UpdateBusyStatus();
+    }
+
+    // ---- FEAT-INV-09: show the original of a link ---------------------------------------------
+
+    /// <summary>What a link row points at, or <see cref="Guid.Empty"/> for anything that is not
+    /// a link. Metadata layout: see <see cref="TryTeleportFromItem"/>.</summary>
+    private static Guid LinkTargetOf(TreeItem row)
+    {
+        var parts = row.GetMetadata(0).AsString().Split(',');
+        if (parts.Length < 8 || !bool.TryParse(parts[6], out var isLink) || !isLink) return Guid.Empty;
+        return Guid.TryParse(parts[7], out var target) ? target : Guid.Empty;
+    }
+
+    /// <summary>The item or folder "show original" is still opening its way towards, and the
+    /// folders it has to open to get there (root first). Empty when nothing is pending.</summary>
+    private Guid _originalTarget;
+    private IReadOnlyList<Guid> _originalPath = Array.Empty<Guid>();
+
+    /// <summary>Jumps from a link to what it points at — the reference viewer's "Find Original"
+    /// (<c>LLLinkFolderBridge::gotoItem</c>, llinventorybridge.cpp:8129-8141), including opening a
+    /// linked folder. Returns false for a row that is not a link.</summary>
+    /// <remarks>
+    /// Asked for in-world 2026-09-30 right after pasting a folder as a link: *„kann den da nicht
+    /// aufklappen“*. It cannot in the viewer either — a folder link is an entry, not a folder — but
+    /// there it is one click from the real one, and here it was a dead end.
+    ///
+    /// <para>The target is usually in a folder that has never been opened, and this tree loads a
+    /// folder's rows only when it is opened. So the path is opened one folder at a time, and each
+    /// arriving <see cref="Populate"/> calls <see cref="ContinueShowOriginal"/> to take the next
+    /// step. An active search is cleared first: it could hide the very row being shown.</para>
+    /// </remarks>
+    private bool ShowOriginal(TreeItem row)
+    {
+        var target = LinkTargetOf(row);
+        if (target == Guid.Empty) return false;
+
+        // From the first folder the tree has a row for: the store may hold nodes above the
+        // inventory root that the tree never shows.
+        var fullPath = _session?.InventoryFolderPathTo(target) ?? Array.Empty<Guid>();
+        var path = fullPath.SkipWhile(id => !_folderItems.ContainsKey(id)).ToList();
+        if (path.Count == 0)
+        {
+            _status.Text = L10n.Tr("ui.inventory.original_missing");
+            return true;
+        }
+
+        if (_searchBox != null && _searchBox.Text.Length > 0)
+        {
+            _searchBox.Text = "";
+            ApplyActiveFilter();
+        }
+
+        _originalTarget = target;
+        _originalPath = path;
+        ContinueShowOriginal();
+        return true;
+    }
+
+    /// <summary>One step of <see cref="ShowOriginal"/>: opens every folder on the path whose row
+    /// exists, and selects the target once its row does. Stops where a folder's rows have not
+    /// arrived yet; that folder's <see cref="Populate"/> calls back here.</summary>
+    private void ContinueShowOriginal()
+    {
+        if (_originalTarget == Guid.Empty) return;
+
+        var found = FindRowFor(_originalTarget, _originalPath[^1]);
+        if (found != null)
+        {
+            bool isFolder = _folderItems.ContainsKey(_originalTarget);
+            _originalTarget = Guid.Empty;
+            _lastSelectedRow = found;
+            found.Select(0);
+            RevealSelectedRow();
+            // A linked folder is shown open, as the viewer's gotoItem does (setOpen(true)).
+            if (isFolder) found.Collapsed = false;
+            return;
+        }
+
+        foreach (var folderId in _originalPath)
+        {
+            if (!_folderItems.TryGetValue(folderId, out var folderRow) || !IsInstanceValid(folderRow))
+                break;
+            // Opening fires ItemCollapsed, which loads the folder if it has never been loaded.
+            if (folderRow.Collapsed) folderRow.Collapsed = false;
+        }
+
+        // Nothing left in flight and still no row: the store knew the target but the grid's
+        // listing no longer has it there. Say so instead of waiting for ever.
+        if (_pendingFetches == 0 && FindRowFor(_originalTarget, _originalPath[^1]) == null)
+        {
+            _originalTarget = Guid.Empty;
+            _status.Text = L10n.Tr("ui.inventory.original_missing");
+        }
+    }
+
+    /// <summary>The Inventar row of an item or folder, looked for among the rows of the folder it
+    /// sits in. Null while that folder has not been populated.</summary>
+    private TreeItem? FindRowFor(Guid id, Guid parentFolderId)
+    {
+        if (_folderItems.TryGetValue(id, out var folderRow) && IsInstanceValid(folderRow)) return folderRow;
+        if (!_folderItems.TryGetValue(parentFolderId, out var parent) || !IsInstanceValid(parent)) return null;
+
+        string prefix = id + ",";
+        for (var child = parent.GetFirstChild(); child != null; child = child.GetNext())
+            if (child.GetMetadata(0).AsString().StartsWith(prefix, StringComparison.Ordinal)) return child;
+        return null;
     }
 }

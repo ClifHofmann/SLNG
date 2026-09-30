@@ -507,8 +507,10 @@
         "detach": "Ablegen",
         "play_local": "Lokal abspielen",
         "play_inworld": "Inworld abspielen",
-        "stop_animation": "Stoppen"
-      }
+        "stop_animation": "Stoppen",
+        "show_original": "Original anzeigen"
+      },
+      "original_missing": "Das Original ist nicht (mehr) im Inventar."
     },
     "active_animations": {
       "title": "Aktive Animationen",

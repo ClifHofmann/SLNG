@@ -507,8 +507,10 @@
         "detach": "Detach",
         "play_local": "Play Locally",
         "play_inworld": "Play Inworld",
-        "stop_animation": "Stop"
-      }
+        "stop_animation": "Stop",
+        "show_original": "Show Original"
+      },
+      "original_missing": "The original is no longer in your inventory."
     },
     "active_animations": {
       "title": "Active Animations",
