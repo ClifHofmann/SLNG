@@ -138,6 +138,6 @@ static content at once, on the simulators that speak the protocol -- Second Life
 ## Sub-tasks / Progress
 
 - [x] Read the viewer, OpenSim and LibreMetaverse sides (this document)
-- [ ] Phase 1: store, block parser, handshake takeover, probe handler, write path, kill switch
-- [ ] Phase 2: file format, budget, load/save
+- [x] Phase 1 (`v0.24.110-alpha`): store, block parser, probe handler, write path, kill switch (`--no-object-cache`). **Handshake:** not a takeover of LibreMetaverse's handler after all -- it has already replied `0x7` when our handler runs, so when the cache is not empty a **second** reply with `0x5` follows. OpenSim keeps the latest flags and reads them a few heartbeats later in `SendInitialData`; whether the SL simulator does is the open question above.
+- [x] Phase 2 (`v0.24.111-alpha`): `ObjectCacheFile` (versioned, checksummed, all-or-nothing), `ObjectCacheDisk` (atomic swap, 512 MB budget by age, older cache ids dropped), loaded before the handshake reply, written when a region is left, every 5 minutes while it changes, and at teardown. Files: `user://cache/objects/<handle>-<cacheId>.slobj`.
 - [ ] Phase 3: recovery hook, in-world measurements

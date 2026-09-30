@@ -393,7 +393,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.109-alpha";
+    public const string AppVersion = "v0.24.111-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3303,6 +3303,11 @@ public partial class Boot : Control
         _session.UseCacheDirectories(
             ProjectSettings.GlobalizePath("user://cache/inventory"),
             ProjectSettings.GlobalizePath("user://cache/displaynames"));
+
+        // FEAT-NET-04: the object cache is on; --no-object-cache puts the session back exactly as it
+        // was (handshake says "cache empty", every cached object is asked for). Read before login.
+        _session.ObjectCacheEnabled = !System.Array.Exists(OS.GetCmdlineUserArgs(), a => a == "--no-object-cache");
+        _session.UseObjectCacheDirectory(ProjectSettings.GlobalizePath("user://cache/objects"));
 
         _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, _gpuCache);

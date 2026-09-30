@@ -469,6 +469,7 @@ public sealed partial class GridSession
             sessionAlreadyEnded: System.Threading.Volatile.Read(ref _sessionEndRaised) != 0);
         // BUG-NET-21: what we held for this region, so it can be asked for by id if we come back.
         if (!withSession) RememberObjectsAtDeparture(e.Simulator);
+        if (!withSession) SaveRegionInBackground(e.Simulator.Handle); // FEAT-NET-04
         Console.WriteLine(withSession
             ? $"[Neighbor] {e.Simulator.Name} ({e.Simulator.Handle}) went with the session ({e.Reason}) -- left on screen"
             : $"[Neighbor] disconnected {e.Simulator.Name} ({e.Simulator.Handle})");
@@ -595,6 +596,10 @@ public sealed partial class GridSession
     public async Task<LoginResult> LoginAsync(LoginCredentials credentials, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(credentials);
+
+        // FEAT-NET-04: here rather than in the constructor -- whether the cache is used is decided by
+        // the app after the session exists and before it logs in.
+        RegisterObjectCache();
 
         // Known before the handshake even starts -- see _isLindenGrid's doc comment. Set
         // regardless of outcome: a failed attempt still needs the dump gate armed for whatever

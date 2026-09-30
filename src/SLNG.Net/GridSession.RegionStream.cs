@@ -86,6 +86,7 @@ public sealed partial class GridSession
                $"cached={Get(StreamPacket.Cached)} terse={Get(StreamPacket.Terse)} " +
                $"kill={Get(StreamPacket.Kill)}({Get(StreamPacket.KilledIds)} ids) " +
                $"terrainPackets={Get(StreamPacket.Terrain)} handshakes={Get(StreamPacket.Handshake)} | " +
+               $"{DescribeObjectCache()} | " +
                $"AgentUpdates sent={Interlocked.Read(ref _agentUpdatesSent)} " +
                $"skipped={Interlocked.Read(ref _agentUpdatesSkipped)}, " +
                $"last camera <{cam.X:0},{cam.Y:0},{cam.Z:0}> far={_lastCameraFar:0}";

@@ -877,6 +877,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _currentParcelName = null;
         _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
         UnregisterRegionStreamProbe();
+        UnregisterObjectCache();
         Logout();
     }
 }
