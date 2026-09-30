@@ -31,7 +31,7 @@ therefore refuses anything outside the Trash itself, not only the menu.
 - [x] Unit tests for the decisions (`TrashTests`); selftest builds the menus in a real tree.
 - [x] Restore confirmed in-world on Second Life, 2026-09-29 (Millenium; delete to Trash, restore to Objects).
 - [x] Delete permanently reported working by the user, 2026-09-29 (no `Purge` line in the surviving client logs).
-- [ ] Empty Trash confirmed in-world — on SL it goes through AIS `DELETE …/children`.
+- [x] Empty Trash reported working by the user, 2026-09-30 (on SL through AIS `DELETE …/children`; not visible in the surviving client logs).
 - [ ] Confirmed on OpenSim (UDP path).
 
 ## Decisions
