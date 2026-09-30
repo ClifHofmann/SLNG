@@ -38,11 +38,12 @@ public sealed partial class GridSession
     /// Ours is filled the same way (FEAT-INV-07), so this is normally free; the walk only costs
     /// anything for a folder that fetch has not reached yet.
     /// </remarks>
-    public async Task<TrashSummary> GetTrashSummaryAsync(CancellationToken ct = default)
+    /// <returns>Null when there is no inventory yet or no Trash folder we can be sure of.</returns>
+    public async Task<TrashSummary?> GetTrashSummaryAsync(CancellationToken ct = default)
     {
         var store = _client.Inventory.Store;
         var trash = VerifiedTrash();
-        if (store == null || trash == UUID.Zero) return TrashSummary.Unknown;
+        if (store == null || trash == UUID.Zero) return null;
 
         bool truncated = false;
         var pending = new Queue<Guid>();
@@ -300,7 +301,7 @@ public sealed partial class GridSession
     internal static TrashSummary SummarizeBelow(Inventory store, UUID folder, ICollection<Guid> wornItemIds)
     {
         var top = store.GetNodeOrDefault(folder);
-        if (top == null) return TrashSummary.Unknown;
+        if (top == null) return new TrashSummary(0, 0, Complete: false, Array.Empty<string>());
 
         int items = 0, folders = 0;
         bool complete = !top.NeedsUpdate;

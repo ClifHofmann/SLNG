@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 
 namespace SLNG.Net;
@@ -20,9 +19,6 @@ namespace SLNG.Net;
 /// (<c>LLVOAvatarSelf::hasAttachmentsInTrash</c>, llinventorybridge.cpp:4578).</param>
 public sealed record TrashSummary(int Items, int Folders, bool Complete, IReadOnlyList<string> WornNames)
 {
-    /// <summary>No inventory, or no Trash folder we can be sure of.</summary>
-    public static readonly TrashSummary Unknown = new(0, 0, false, Array.Empty<string>());
-
     /// <summary>Nothing known to be inside. Only a promise of emptiness when <see cref="Complete"/>
     /// is true too.</summary>
     public bool IsEmpty => Items == 0 && Folders == 0;
