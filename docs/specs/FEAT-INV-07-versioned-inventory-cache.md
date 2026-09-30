@@ -107,6 +107,8 @@ browser.
    what the next login can check: a folder never fetched goes out at `VERSION_UNKNOWN`, items under
    the roots not at all, because LibreMetaverse does not save `NeedsUpdate` and would otherwise
    bring such a folder back as current and empty.
+   And a session the grid ends (region restart, kick, timeout) saves itself as it ends, in
+   `GridSession.RaiseSessionEnded` — the app's own save only runs while connected (BUG-INV-13).
 
 **Side benefit:** re-expanding a folder is now free. The old code refetched on every expand even
 though the answer was already in the store.
