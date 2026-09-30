@@ -74,6 +74,8 @@ public sealed partial class GridSession
         _client.Network.RegisterCallback(PacketType.ObjectUpdateCompressed, OnCacheStore);
         if (_objectCacheDisk is not null)
             _objectCacheSaveTimer = new Timer(_ => SaveDirtyObjectCaches(), null, ObjectCacheSaveInterval, ObjectCacheSaveInterval);
+        _handshakeTakenOver = TryTakeOverRegionHandshake();
+        Console.WriteLine($"[ObjectCache] on; region handshake answered by {(_handshakeTakenOver ? "SLNG (one reply, with the cache's flags)" : "LibreMetaverse plus a second reply")}");
         _objectCacheWired = true;
     }
 
@@ -86,6 +88,7 @@ public sealed partial class GridSession
         _client.Network.UnregisterCallback(PacketType.RegionHandshake, OnCacheRegionHandshake);
         _client.Network.UnregisterCallback(PacketType.ObjectUpdateCached, OnCacheProbe);
         _client.Network.UnregisterCallback(PacketType.ObjectUpdateCompressed, OnCacheStore);
+        GiveBackRegionHandshake();
         _client.Settings.World.AlwaysRequestObjects = true;
         _objectCacheWired = false;
     }
@@ -93,7 +96,7 @@ public sealed partial class GridSession
     /// <summary>LibreMetaverse decodes a compressed block into a <c>Primitive</c> and raises the
     /// events our pipeline already converts. A cached block has to go the same way, and there is no
     /// public way in: the handler is protected. Fetched once, as a delegate.</summary>
-    private EventHandler<PacketReceivedEventArgs>? FindLibreMetaverseCompressedHandler()
+    internal EventHandler<PacketReceivedEventArgs>? FindLibreMetaverseCompressedHandler()
     {
         var method = typeof(ObjectManager).GetMethod(
             "ObjectUpdateCompressedHandler", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
@@ -119,6 +122,11 @@ public sealed partial class GridSession
     private void CacheRegionHandshake(PacketReceivedEventArgs e)
     {
         if (e.Packet is not RegionHandshakePacket handshake) return;
+        if (_handshakeTakenOver)
+        {
+            HandleRegionHandshake(e);
+            return;
+        }
 
         var key = new RegionKey(e.Simulator.Handle, handshake.RegionInfo.CacheID.Guid);
         RememberKey(key);
@@ -172,6 +180,13 @@ public sealed partial class GridSession
     }
 
     private long _cacheFaults;
+
+    private long _replayFailures;
+
+    /// <summary>Building objects from the cache has failed repeatedly. Whatever the cause, the cache
+    /// must not be what stands between the user and a region: from here on every probe is answered
+    /// by asking the simulator, exactly as it was before there was a cache.</summary>
+    private bool ReplayBroken => Interlocked.Read(ref _replayFailures) >= 3;
 
     private void RememberKey(RegionKey key)
     {
@@ -272,7 +287,9 @@ public sealed partial class GridSession
 
         foreach (var block in probe.ObjectData)
         {
-            switch (_objectCache.Probe(key, block.ID, block.CRC, out var held))
+            var verdict = _objectCache.Probe(key, block.ID, block.CRC, out var held);
+            if (verdict == CacheProbe.Hit && ReplayBroken) verdict = CacheProbe.TotalMiss; // cannot build from the cache: ask
+            switch (verdict)
             {
                 case CacheProbe.Hit:
                     hits.Add(new ObjectUpdateCompressedPacket.ObjectDataBlock { UpdateFlags = block.UpdateFlags, Data = held.Block });
@@ -326,6 +343,7 @@ public sealed partial class GridSession
             }
             catch (Exception ex)
             {
+                Interlocked.Increment(ref _replayFailures);
                 Console.Error.WriteLine($"[ObjectCache] replaying {packet.ObjectData.Length} cached objects failed: {ex.Message}");
             }
             finally
@@ -344,6 +362,7 @@ public sealed partial class GridSession
                 AgentData = { AgentID = _client.Self.AgentID, SessionID = _client.Self.SessionID },
                 ObjectData = new RequestMultipleObjectsPacket.ObjectDataBlock[message.Count],
             };
+            request.Header.Reliable = true; // a request lost on the wire is an object never shown; the viewer sends it reliably too
             for (int i = 0; i < message.Count; i++)
                 request.ObjectData[i] = new RequestMultipleObjectsPacket.ObjectDataBlock
                 {

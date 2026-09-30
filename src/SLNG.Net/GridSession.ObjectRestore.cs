@@ -69,6 +69,7 @@ public sealed partial class GridSession
             await Task.Delay(ProbeGrace).ConfigureAwait(false);
             if (!StillHere(sim)) return;
             if (ProbeSeen(sim.Handle)) return; // the simulator is probing: the protocol decides
+            if (ReplayBroken) return;
 
             var here = _client.Self.SimPosition;
             var candidates = ObjectRestorePlan.NearestFirst(

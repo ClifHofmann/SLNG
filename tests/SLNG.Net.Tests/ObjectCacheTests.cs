@@ -372,3 +372,26 @@ public class ObjectRestorePlanTests
         Assert.Equal(settled, ObjectRecoveryPlan.HasSettled(confirmed, polls));
     }
 }
+
+// The cache reaches into LibreMetaverse in two places no public API offers: the compressed-update
+// handler (to build a cached object) and the region handshake (to answer it with the cache's flags).
+// Both are looked up by name and shape. If a LibreMetaverse upgrade moves either, the cache must
+// notice here, not in a session that quietly stops using it -- or worse, stops connecting.
+public class ObjectCacheLibreMetaverseContractTests
+{
+    [Fact]
+    public void The_compressed_update_handler_is_where_the_cache_expects_it()
+    {
+        using var session = new GridSession();
+
+        Assert.NotNull(session.FindLibreMetaverseCompressedHandler());
+    }
+
+    [Fact]
+    public void The_region_handshake_can_be_taken_over_with_the_members_the_takeover_sets()
+    {
+        using var session = new GridSession();
+
+        Assert.True(session.TryTakeOverRegionHandshake());
+    }
+}
