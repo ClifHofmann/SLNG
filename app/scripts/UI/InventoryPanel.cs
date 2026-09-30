@@ -41,6 +41,17 @@ public partial class InventoryPanel : SLNGWindow
     /// <summary>Which folder the folder menu was opened on. Read when the menu fires rather than
     /// re-reading the selection, which a click elsewhere may already have moved.</summary>
     private Guid _folderMenuTarget;
+
+    /// <summary>FEAT-INV-10: the Trash folder's own menu, and the one for anything inside it. The
+    /// reference viewer swaps the whole menu there as well: inside the Trash a thing offers only
+    /// "Purge Item" and "Restore Item" (<c>addTrashContextMenuOptions</c>,
+    /// llinventorybridge.cpp:1062-1080), and the Trash itself offers "Empty Trash".</summary>
+    private PopupMenu _trashMenu = null!;
+    private PopupMenu _trashItemMenu = null!;
+    // Captured when the menu opens, like _folderMenuTarget, and for the same reason.
+    private Guid _trashItemTarget;
+    private Guid _trashItemParent;
+    private bool _trashItemIsFolder;
     private LineEdit _searchBox = null!;
     // While a search is active the tree is fetched depth-first so the filter can see folders
     // the user never expanded (otherwise "search only finds what's already loaded"). One extra
@@ -213,7 +224,19 @@ public partial class InventoryPanel : SLNGWindow
         _folderMenu.AddItem(L10n.Tr("ui.inventory_clipboard.paste"), 5);
         _folderMenu.AddItem(L10n.Tr("ui.inventory_clipboard.paste_link"), 6);
         _folderMenu.IdPressed += OnFolderMenuIdPressed;
-        
+
+        // FEAT-INV-10. Since BUG-INV-09 a Delete lands in the Trash, and nothing ever left it.
+        _trashMenu = new PopupMenu();
+        _trashMenu.AddItem(L10n.Tr("ui.inventory_trash.empty"), 0);
+        _trashMenu.IdPressed += OnTrashMenuIdPressed;
+
+        _trashItemMenu = new PopupMenu();
+        // The label is rewritten each time the menu opens, to name the destination.
+        _trashItemMenu.AddItem(L10n.Tr("ui.inventory_trash.restore_plain"), 0);
+        _trashItemMenu.AddSeparator();
+        _trashItemMenu.AddItem(L10n.Tr("ui.inventory_trash.purge"), 1);
+        _trashItemMenu.IdPressed += OnTrashItemMenuIdPressed;
+
         _tree = new InventoryTree 
         { 
             SizeFlagsVertical = SizeFlags.ExpandFill, 
@@ -223,6 +246,8 @@ public partial class InventoryPanel : SLNGWindow
         };
         _tree.AddChild(_contextMenu);
         _tree.AddChild(_folderMenu);
+        _tree.AddChild(_trashMenu);
+        _tree.AddChild(_trashItemMenu);
         _tree.OnDropIntoFolder = MoveIntoFolder;
         _tree.NameOf = InventoryName;
         
@@ -590,13 +615,39 @@ public partial class InventoryPanel : SLNGWindow
         (SLNG.Core.WornCategory.Hud, "HUDs"),
     };
 
-    /// <summary>Rebuilds the flat worn list from <see cref="GridSession.GetWornItems"/>. Main
+    /// <summary>Refreshes the flat worn list from <see cref="GridSession.GetWornItems"/>. Main
     /// thread only (mutates the Tree); the call is cheap (reads LibreMetaverse caches, no I/O).</summary>
     private void RefreshWorn()
     {
         if (_session == null || !IsInstanceValid(_wornTree)) return;
+        ShowWornItems(_session.GetWornItems());
+    }
 
-        var items = _session.GetWornItems();
+    /// <summary>What the worn list showed when it was last built. See <see cref="ShowWornItems"/>.</summary>
+    private HashSet<SLNG.Core.WornItem>? _shownWornItems;
+
+    /// <summary>
+    /// Puts these worn items into the list — unless it already shows exactly them, in which case the
+    /// tree is left alone. When it does change, the selected row stays selected.
+    /// </summary>
+    /// <remarks>
+    /// BUG-INV-11. The list used to be cleared and rebuilt on every call, and the safety-net
+    /// <see cref="_wornTimer"/> calls every 2.5 s while the tab is open. A rebuild frees every row
+    /// and the selection with them, so a right-click followed by an unhurried trip to „Ablegen" lost
+    /// its row on the way: the highlight vanished, and the detach went nowhere because the menu read
+    /// the selection only when it fired. The menu now acts on the item captured at the right-click
+    /// (<see cref="_wornMenuTarget"/>); this is what keeps the highlight where it was, and it stops
+    /// the list churning when nothing has changed.
+    /// </remarks>
+    internal void ShowWornItems(IReadOnlyList<SLNG.Core.WornItem> items)
+    {
+        if (!IsInstanceValid(_wornTree)) return;
+        // WornItem is a record, so this compares what a row shows, not object identity -- a name
+        // that has just resolved, or a link that has come alive, is a change and rebuilds.
+        if (_shownWornItems != null && _shownWornItems.SetEquals(items)) return;
+        _shownWornItems = new HashSet<SLNG.Core.WornItem>(items);
+
+        var keepSelected = SelectedWornId();
         _wornTree.Clear();
         var root = _wornTree.CreateItem();
 
@@ -634,18 +685,52 @@ public partial class InventoryPanel : SLNGWindow
             header.Collapsed = false;
         }
 
+        if (keepSelected != Guid.Empty) SelectWorn(keepSelected);
+
         // Keep the shared filter (FEAT-INV-06) applied across a rebuild -- the safety-net
         // _wornTimer refreshes this tree every 2.5 s while the tab is open.
         if (_tabs?.CurrentTab == 1 && FilterQuery.Length > 0)
             FilterTree(root, FilterQuery, ancestorMatched: false);
     }
 
+    /// <summary>The worn row for an item, or null.</summary>
+    internal TreeItem? WornRowFor(Guid itemId)
+    {
+        var root = _wornTree.GetRoot();
+        if (root == null) return null;
+        foreach (var header in root.GetChildren())
+            foreach (var row in header.GetChildren())
+                if (Guid.TryParse(row.GetMetadata(0).AsString(), out var id) && id == itemId) return row;
+        return null;
+    }
+
+    /// <summary>Selects an item's worn row. False if the list does not show it.</summary>
+    internal bool SelectWorn(Guid itemId)
+    {
+        var row = WornRowFor(itemId);
+        if (row == null) return false;
+        row.Select(0);
+        return true;
+    }
+
+    /// <summary>The item whose worn row is selected, or <see cref="Guid.Empty"/>.</summary>
+    internal Guid SelectedWornId()
+        => _wornTree.GetSelected() is { } row && Guid.TryParse(row.GetMetadata(0).AsString(), out var id)
+            ? id
+            : Guid.Empty;
+
+    /// <summary>BUG-INV-11: the worn item the menu was opened on, captured at the right-click for
+    /// the same reason as <see cref="_folderMenuTarget"/> -- here the list is rebuilt underneath an
+    /// open menu, not just clicked elsewhere.</summary>
+    private Guid _wornMenuTarget;
+
     private void OnWornGuiInput(InputEvent @event)
     {
         if (@event is not InputEventMouseButton mb || !mb.Pressed || mb.ButtonIndex != MouseButton.Right) return;
         var row = _wornTree.GetItemAtPosition(mb.Position);
-        if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out _)) return; // header / empty
+        if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out var itemId)) return; // header / empty
         row.Select(0);
+        _wornMenuTarget = itemId;
         _wornMenu.Position = (Vector2I)GetGlobalMousePosition();
         _wornMenu.Popup();
     }
@@ -659,9 +744,9 @@ public partial class InventoryPanel : SLNGWindow
 
     private void OnWornMenuPressed(long id)
     {
-        var row = _wornTree.GetSelected();
-        if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out var itemId)) return;
-        if (id == 0) _ = DetachWornAsync(itemId);
+        // The item that was right-clicked, not whatever happens to be selected by now.
+        if (_wornMenuTarget == Guid.Empty) return;
+        if (id == 0) _ = DetachWornAsync(_wornMenuTarget);
     }
 
     /// <summary>Status text computed off-thread by <see cref="DetachWornAsync"/>, consumed by
@@ -1591,6 +1676,11 @@ public partial class InventoryPanel : SLNGWindow
                 var metaStr = item.GetMetadata(0).AsString();
                 var parts = metaStr.Split(',');
 
+                // FEAT-INV-10: the Trash, and everything in it, get menus of their own. Checked
+                // first and against the store, not the tree: a search result deep in the Trash is
+                // in the Trash too.
+                if (TryShowTrashMenu(item, parts[0])) return;
+
                 // A folder row's metadata is the bare id; an item's is a comma-joined tuple.
                 if (parts.Length < 7 && Guid.TryParse(metaStr, out var rightClickedFolder))
                 {
@@ -2185,6 +2275,295 @@ public partial class InventoryPanel : SLNGWindow
         };
     }
 
+    // ---- FEAT-INV-10: the Trash -----------------------------------------------------------------
+
+    /// <summary>Opens the Trash menu or the menu for a thing inside the Trash, if the row is one of
+    /// those. Returns false for every other row, which keeps its usual menu.</summary>
+    private bool TryShowTrashMenu(TreeItem row, string idText)
+    {
+        if (_session == null || !Guid.TryParse(idText, out var id)) return false;
+
+        if (_session.IsTrashFolder(id))
+        {
+            _tree.SetSelected(row, 0);
+            _trashMenu.Position = (Vector2I)GetGlobalMousePosition();
+            _trashMenu.Popup();
+            return true;
+        }
+
+        if (!_session.IsInTrash(id)) return false;
+
+        _tree.SetSelected(row, 0);
+        bool isFolder = !row.GetMetadata(0).AsString().Contains(',');
+        _trashItemTarget = id;
+        _trashItemIsFolder = isFolder;
+        _trashItemParent = ParentFolderOf(id, isFolder);
+
+        // Restore does not put a thing back where it came from -- nobody knows where that was, see
+        // GridSession.RestoreFromTrash -- so the entry says where it WILL go.
+        var destination = _session.RestoreDestinationOf(id);
+        int restore = _trashItemMenu.GetItemIndex(0);
+        _trashItemMenu.SetItemText(restore, destination != Guid.Empty
+            ? L10n.TrFormat("ui.inventory_trash.restore", FolderRowName(destination))
+            : L10n.Tr("ui.inventory_trash.restore_plain"));
+
+        _trashItemMenu.Position = (Vector2I)GetGlobalMousePosition();
+        _trashItemMenu.Popup();
+        return true;
+    }
+
+    private void OnTrashMenuIdPressed(long id)
+    {
+        if (id == 0) _ = PrepareEmptyTrashAsync();
+    }
+
+    private void OnTrashItemMenuIdPressed(long id)
+    {
+        if (_session == null || _trashItemTarget == Guid.Empty) return;
+        switch (id)
+        {
+            case 0: RestoreFromTrash(_trashItemTarget, _trashItemParent); break;
+            case 1: PromptPurge(_trashItemTarget, _trashItemIsFolder, _trashItemParent); break;
+        }
+    }
+
+    /// <summary>Counts the Trash, then asks. The count comes first because the question is only an
+    /// honest one if it says how much is about to go.</summary>
+    private async System.Threading.Tasks.Task PrepareEmptyTrashAsync()
+    {
+        if (_session == null) return;
+        _status.Text = L10n.Tr("ui.inventory_trash.checking");
+
+        SLNG.Net.TrashSummary? summary = null;
+        string? err = null;
+        try { summary = await _session.GetTrashSummaryAsync().ConfigureAwait(false); }
+        catch (Exception ex) { err = ex.Message; }
+
+        RunOnMainThread(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            if (err != null) { _status.Text = $"Fehler: {err}"; return; }
+            if (summary == null) { _status.Text = L10n.Tr("ui.inventory_trash.unavailable"); return; }
+            if (summary.IsEmpty && summary.Complete) { _status.Text = L10n.Tr("ui.inventory_trash.already_empty"); return; }
+
+            // The reference viewer disables Empty Trash while a worn attachment is in it
+            // (hasAttachmentsInTrash): a worn thing whose item is gone has nowhere to go back to.
+            // Said here with the names, not as a greyed-out entry that explains nothing.
+            if (summary.WornNames.Count > 0)
+            {
+                _status.Text = L10n.TrFormat("ui.inventory_trash.worn_inside", string.Join(", ", summary.WornNames));
+                return;
+            }
+
+            PromptEmptyTrash(summary);
+        });
+    }
+
+    private void PromptEmptyTrash(SLNG.Net.TrashSummary summary)
+    {
+        string counts = CountText(summary.Items, summary.Folders);
+        string question = summary.IsEmpty
+            ? L10n.Tr("ui.inventory_trash.empty_prompt_unknown")
+            : L10n.TrFormat(summary.Complete
+                ? "ui.inventory_trash.empty_prompt"
+                : "ui.inventory_trash.empty_prompt_at_least", counts);
+
+        var win = ShowPrompt<ConfirmWindow>();
+        win.Initialize(
+            L10n.Tr("ui.inventory_trash.empty_title"),
+            question,
+            L10n.Tr("ui.inventory_trash.purge_ok"),
+            danger: true);
+        // A count that was only a lower bound is not repeated as if it were what went.
+        win.Confirmed += () => _ = EmptyTrashAsync(summary.Complete && !summary.IsEmpty ? counts : null);
+    }
+
+    private async System.Threading.Tasks.Task EmptyTrashAsync(string? counts)
+    {
+        // Held locally: the answer is read on the main thread later, and a logout in between clears
+        // the field.
+        var session = _session;
+        if (session == null) return;
+
+        var result = SLNG.Net.TrashPurgeResult.Unavailable;
+        string? err = null;
+        try { result = await session.EmptyTrashAsync().ConfigureAwait(false); }
+        catch (Exception ex) { err = ex.Message; }
+
+        RunOnMainThread(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            if (err != null) { _status.Text = $"Fehler: {err}"; return; }
+
+            if (result == SLNG.Net.TrashPurgeResult.Purged)
+            {
+                ForgetClipboardIfGone();
+                ClearTrashRows();
+            }
+
+            _status.Text = result switch
+            {
+                SLNG.Net.TrashPurgeResult.Purged => counts != null
+                    ? L10n.TrFormat("ui.inventory_trash.emptied", counts)
+                    : L10n.Tr("ui.inventory_trash.emptied_plain"),
+                SLNG.Net.TrashPurgeResult.NothingToDo => L10n.Tr("ui.inventory_trash.already_empty"),
+                SLNG.Net.TrashPurgeResult.WornItemsInside => L10n.TrFormat(
+                    "ui.inventory_trash.worn_inside",
+                    string.Join(", ", session.WornNamesIn(session.TrashFolderId ?? Guid.Empty))),
+                SLNG.Net.TrashPurgeResult.GridRefused => L10n.Tr("ui.inventory_trash.empty_failed"),
+                _ => L10n.Tr("ui.inventory_trash.unavailable"),
+            };
+        });
+    }
+
+    /// <summary>Takes every row out from under the Trash once it has been emptied.</summary>
+    /// <remarks>
+    /// By hand rather than by re-reading the folder. The store is already empty, but on OpenSim the
+    /// purge runs on the server after the message has been answered, so a read that reached the grid
+    /// could still bring the old contents back for a moment. A Trash never opened only holds its "…"
+    /// placeholder, which stays: the next expand reads it fresh.
+    /// </remarks>
+    private void ClearTrashRows()
+    {
+        if (_session?.TrashFolderId is not { } trashId || trashId == Guid.Empty) return;
+        if (!_loadedFolders.Contains(trashId)) return;
+        if (!_folderItems.TryGetValue(trashId, out var trashRow) || !IsInstanceValid(trashRow)) return;
+
+        ForgetSubtreeBookkeeping(trashRow);
+        for (var child = trashRow.GetFirstChild(); child != null;)
+        {
+            var next = child.GetNext();
+            child.Free();
+            child = next;
+        }
+        AddEmptyMarker(trashRow);
+    }
+
+    private void PromptPurge(Guid id, bool isFolder, Guid parentFolderId)
+    {
+        if (_session == null) return;
+        string name = InventoryName(id);
+        if (name.Length == 0) name = id.ToString();
+
+        // Refused with the reason instead of greyed out in the menu -- the same choice as "Als
+        // Verknüpfung einfügen": a disabled entry does not say why. The viewer does not purge worn
+        // things either (get_is_item_removable).
+        var worn = _session.WornNamesIn(id);
+        if (worn.Count > 0)
+        {
+            _status.Text = L10n.TrFormat("ui.inventory_trash.purge_worn", string.Join(", ", worn));
+            return;
+        }
+
+        var win = ShowPrompt<ConfirmWindow>();
+        win.Initialize(
+            L10n.Tr("ui.inventory_trash.purge_title"),
+            L10n.TrFormat(isFolder
+                ? "ui.inventory_trash.purge_folder_prompt"
+                : "ui.inventory_trash.purge_prompt", name),
+            L10n.Tr("ui.inventory_trash.purge_ok"),
+            danger: true);
+        win.Confirmed += () => _ = PurgeAsync(id, name, parentFolderId);
+    }
+
+    private async System.Threading.Tasks.Task PurgeAsync(Guid id, string name, Guid parentFolderId)
+    {
+        var session = _session; // see EmptyTrashAsync
+        if (session == null) return;
+
+        var result = SLNG.Net.TrashPurgeResult.Unavailable;
+        string? err = null;
+        try { result = await session.PurgeFromTrashAsync(id).ConfigureAwait(false); }
+        catch (Exception ex) { err = ex.Message; }
+
+        RunOnMainThread(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            if (err != null) { _status.Text = $"Fehler: {err}"; return; }
+
+            if (result == SLNG.Net.TrashPurgeResult.Purged)
+            {
+                ForgetClipboardIfGone();
+                if (TakeRowOutOfFolder(parentFolderId, id)) AddEmptyMarkerIfBare(parentFolderId);
+                else RefreshFolder(parentFolderId);
+            }
+
+            _status.Text = result switch
+            {
+                SLNG.Net.TrashPurgeResult.Purged => L10n.TrFormat("ui.inventory_trash.purged", name),
+                SLNG.Net.TrashPurgeResult.WornItemsInside => L10n.TrFormat(
+                    "ui.inventory_trash.purge_worn", string.Join(", ", session.WornNamesIn(id))),
+                SLNG.Net.TrashPurgeResult.NotInTrash => L10n.Tr("ui.inventory_trash.not_in_trash"),
+                SLNG.Net.TrashPurgeResult.GridRefused => L10n.TrFormat("ui.inventory_trash.purge_failed", name),
+                _ => L10n.Tr("ui.inventory_trash.unavailable"),
+            };
+        });
+    }
+
+    private void RestoreFromTrash(Guid id, Guid parentFolderId)
+    {
+        if (_session == null) return;
+        string name = InventoryName(id);
+
+        var destination = _session.RestoreFromTrash(id);
+        if (destination == Guid.Empty)
+        {
+            _status.Text = L10n.Tr("ui.inventory_trash.unavailable");
+            return;
+        }
+
+        // The same bookkeeping as a drag out of the Trash (BUG-INV-08): the row leaves, the
+        // destination is re-read once the grid has had a moment.
+        bool removed = TakeRowOutOfFolder(parentFolderId, id);
+        if (removed) AddEmptyMarkerIfBare(parentFolderId);
+        RefreshAfterGridWrite(destination, removed ? Guid.Empty : parentFolderId);
+
+        _status.Text = L10n.TrFormat("ui.inventory_trash.restored", name, FolderRowName(destination));
+    }
+
+    /// <summary>Drops the clipboard's entry once the thing on it no longer exists. The reference
+    /// viewer does the same when it purges (<c>purge_descendents_of</c>,
+    /// llviewerinventory.cpp:1659-1686): a paste of something deleted could only fail.</summary>
+    private void ForgetClipboardIfGone()
+    {
+        if (_session != null && _clipboard.HasContent && !_session.TryGetInventoryName(_clipboard.Id, out _))
+            _clipboard.Clear();
+    }
+
+    /// <summary>SelfTest: the labels the two Trash menus were built with, separators left out.</summary>
+    internal IEnumerable<string> TrashMenuLabels()
+    {
+        foreach (var menu in new[] { _trashMenu, _trashItemMenu })
+            for (int i = 0; i < menu.ItemCount; i++)
+                if (!menu.IsItemSeparator(i)) yield return menu.GetItemText(i);
+    }
+
+    /// <summary>The words for "this many items and folders", with the singular where it is one.</summary>
+    internal static string CountText(int items, int folders)
+    {
+        string i = L10n.TrFormat(items == 1 ? "ui.inventory_trash.items_one" : "ui.inventory_trash.items_many", items);
+        string f = L10n.TrFormat(folders == 1 ? "ui.inventory_trash.folders_one" : "ui.inventory_trash.folders_many", folders);
+        if (folders == 0) return i;
+        if (items == 0) return f;
+        return L10n.TrFormat("ui.inventory_trash.items_and_folders", i, f);
+    }
+
+    /// <summary>The greyed "(empty)" row a folder with nothing in it shows.</summary>
+    private void AddEmptyMarker(TreeItem folderRow)
+    {
+        var empty = _tree.CreateItem(folderRow);
+        empty.SetText(0, "(empty)");
+        empty.SetCustomColor(0, new Color(1, 1, 1, 0.4f));
+    }
+
+    /// <summary>Adds the "(empty)" row to a loaded folder whose last row has just been taken out.</summary>
+    private void AddEmptyMarkerIfBare(Guid folderId)
+    {
+        if (!_loadedFolders.Contains(folderId)) return;
+        if (!_folderItems.TryGetValue(folderId, out var row) || !IsInstanceValid(row)) return;
+        if (row.GetFirstChild() == null) AddEmptyMarker(row);
+    }
+
     private void OnContextMenuIdPressed(long id)
     {
         var item = _tree.GetSelected();
@@ -2626,12 +3005,7 @@ public partial class InventoryPanel : SLNGWindow
             ApplyWornMarker(row, wornMap);
         }
 
-        if (children.Count == 0)
-        {
-            var empty = _tree.CreateItem(item);
-            empty.SetText(0, "(empty)");
-            empty.SetCustomColor(0, new Color(1, 1, 1, 0.4f));
-        }
+        if (children.Count == 0) AddEmptyMarker(item);
 
         if (_searchBox != null && !string.IsNullOrEmpty(_searchBox.Text))
         {

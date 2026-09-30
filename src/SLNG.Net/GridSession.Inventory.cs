@@ -3348,7 +3348,8 @@ public sealed partial class GridSession
     /// <c>changeCategoryParent(cat, trash_id, true)</c> → a <c>MoveInventoryFolder</c> message
     /// (llinventorybridge.cpp:3952-4001, llinventorymodel.cpp:4295-4331,
     /// llviewerinventory.cpp:647-660). Its AIS <c>RemoveCategory</c> is reserved for purging —
-    /// emptying the Trash, „Delete Immediately" — which this viewer does not offer at all yet.</para>
+    /// emptying the Trash, „Delete Immediately" — which lives in <c>GridSession.Trash</c>
+    /// (FEAT-INV-10) and is only offered inside the Trash.</para>
     ///
     /// <para>The reason the AIS branch existed at all was that LibreMetaverse's
     /// <c>MoveFolder</c> prefers AIS and HTTP-400s on Second Life (<c>warn: Move category …
@@ -3364,23 +3365,14 @@ public sealed partial class GridSession
             return false;
 
         if (TrashFolderId is not { } trashId || trashId == Guid.Empty) return false;
+        // TrashFolderId falls back to the inventory root when there is no Trash folder; a "move to
+        // Trash" would then be a move to the root (FEAT-INV-10).
+        if (!IsTrashFolder(trashId)) return false;
         if (folderId == trashId) return false;   // the Trash itself is not deletable
         if (IsInTrash(folderId)) return false;   // already there -- the viewer refuses this too
 
         _ = MoveToTrashAsync(folderId, isFolder: true);
         return true;
-    }
-
-    /// <summary>Whether something already sits inside the Trash folder.</summary>
-    private bool IsInTrash(Guid id)
-    {
-        if (TrashFolderId is not { } trashId || trashId == Guid.Empty) return false;
-
-        var store = _client.Inventory.Store;
-        var trashUuid = new LibreMetaverse.UUID(trashId);
-        for (var n = store?.GetNodeOrDefault(new LibreMetaverse.UUID(id)); n != null; n = n.Parent)
-            if (n.Data?.UUID == trashUuid) return true;
-        return false;
     }
 
     /// <summary>An item's or folder's real name, straight from the inventory store.</summary>
