@@ -93,6 +93,10 @@ public sealed partial class GridSession
     {
         try
         {
+            // If the cache is being shown, let it finish: what it gives needs no asking for.
+            await WaitForRestoreToBeShown(sim.Handle).ConfigureAwait(false);
+            if (!StillHere(sim)) return;
+
             var knownIds = known.Select(k => k.LocalId).ToHashSet();
             var counts = new List<int>();
             var clock = Stopwatch.StartNew();

@@ -129,6 +129,7 @@ public sealed partial class GridSession
         }
 
         var key = new RegionKey(e.Simulator.Handle, handshake.RegionInfo.CacheID.Guid);
+        ForgetProbesForArrival(key.Handle);
         RememberKey(key);
         LoadFromDisk(key);
         bool empty = _objectCache.IsEmpty(key);

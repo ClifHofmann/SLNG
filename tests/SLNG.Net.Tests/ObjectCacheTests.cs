@@ -396,3 +396,46 @@ public class ObjectCacheLibreMetaverseContractTests
         Assert.True(session.TryTakeOverRegionHandshake());
     }
 }
+
+// Measured on Second Life: a region probed everything on the first visit and not one object when it
+// was entered again -- the simulator holds back what it sent before. "Probes were seen" is a fact
+// about one arrival. Carried over to the next, it switched off the very restore the return needed,
+// and the return was slow (BUG-NET-21, FEAT-NET-04).
+public class ObjectCacheProbePerArrivalTests
+{
+    private const ulong Region = 741070837455616ul;
+
+    [Fact]
+    public void A_probe_seen_counts_for_the_arrival_it_came_in()
+    {
+        using var session = new GridSession();
+        Assert.False(session.ProbeSeen(Region));
+
+        session.NoteProbeSeen(Region);
+
+        Assert.True(session.ProbeSeen(Region));
+    }
+
+    [Fact]
+    public void A_new_arrival_in_the_same_region_starts_with_no_probe_seen()
+    {
+        using var session = new GridSession();
+        session.NoteProbeSeen(Region);
+
+        session.ForgetProbesForArrival(Region);
+
+        Assert.False(session.ProbeSeen(Region));
+    }
+
+    [Fact]
+    public void Another_region_is_not_affected()
+    {
+        using var session = new GridSession();
+        session.NoteProbeSeen(Region);
+        session.NoteProbeSeen(Region + 1);
+
+        session.ForgetProbesForArrival(Region);
+
+        Assert.True(session.ProbeSeen(Region + 1));
+    }
+}

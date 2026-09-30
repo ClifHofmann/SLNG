@@ -23,7 +23,7 @@ namespace SLNG.Net;
 public sealed partial class GridSession
 {
     /// <summary>How long a simulator gets to start probing before the cache is used on trust.</summary>
-    private static readonly TimeSpan ProbeGrace = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan ProbeGrace = TimeSpan.FromSeconds(2);
 
     private const int RestoreChunkSize = 100;
     private const int SilentPolls = 8;
@@ -31,6 +31,11 @@ public sealed partial class GridSession
     private static readonly TimeSpan RestoreGiveUp = TimeSpan.FromSeconds(180);
 
     private readonly HashSet<ulong> _probesSeen = new();
+
+    /// <summary>Per region being restored: completed once what the cache holds has been shown, so the
+    /// re-request of objects known at departure (BUG-NET-21) asks only for what the cache could not
+    /// give instead of for everything while the cache is still being replayed.</summary>
+    private readonly ConcurrentDictionary<ulong, TaskCompletionSource> _restoreReplayed = new();
 
     /// <summary>Per region being verified: the local ids the simulator has shown a sign of life for.</summary>
     private readonly ConcurrentDictionary<ulong, ConcurrentDictionary<uint, byte>> _answered = new();
@@ -40,12 +45,21 @@ public sealed partial class GridSession
     [ThreadStatic]
     private static bool t_replaying;
 
-    private void NoteProbeSeen(ulong regionHandle)
+    /// <summary>A new arrival in a region starts from nothing. Measured on Second Life: the simulator
+    /// probed everything on a first visit and sent not one probe when the same region was entered
+    /// again (it holds back what it sent before) -- so "probes were seen" is a fact about THIS
+    /// arrival, not about the region.</summary>
+    internal void ForgetProbesForArrival(ulong regionHandle)
+    {
+        lock (_probesSeen) _probesSeen.Remove(regionHandle);
+    }
+
+    internal void NoteProbeSeen(ulong regionHandle)
     {
         lock (_probesSeen) _probesSeen.Add(regionHandle);
     }
 
-    private bool ProbeSeen(ulong regionHandle)
+    internal bool ProbeSeen(ulong regionHandle)
     {
         lock (_probesSeen) return _probesSeen.Contains(regionHandle);
     }
@@ -61,7 +75,16 @@ public sealed partial class GridSession
     private void ScheduleRestoreFromCache(Simulator sim, RegionKey key)
     {
         if (_objectCache.IsEmpty(key)) return;
+        _restoreReplayed[sim.Handle] = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _ = Task.Run(() => RestoreFromCacheAsync(sim, key));
+    }
+
+    /// <summary>Waits until the cache has been shown (or there was nothing to show). Bounded: the
+    /// caller must not hang on a restore that never finishes.</summary>
+    private async Task WaitForRestoreToBeShown(ulong regionHandle)
+    {
+        if (_restoreReplayed.TryGetValue(regionHandle, out var shown))
+            await Task.WhenAny(shown.Task, Task.Delay(TimeSpan.FromSeconds(30))).ConfigureAwait(false);
     }
 
     private async Task RestoreFromCacheAsync(Simulator sim, RegionKey key)
@@ -110,6 +133,7 @@ public sealed partial class GridSession
                 await Task.Delay(50).ConfigureAwait(false);
             }
 
+            if (_restoreReplayed.TryGetValue(sim.Handle, out var replayed)) replayed.TrySetResult();
             await VerifyRestoredAsync(sim, shown, answered).ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -118,6 +142,7 @@ public sealed partial class GridSession
         }
         finally
         {
+            if (_restoreReplayed.TryGetValue(sim.Handle, out var done)) done.TrySetResult();
             _answered.TryRemove(sim.Handle, out _);
         }
     }
