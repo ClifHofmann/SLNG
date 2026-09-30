@@ -76,6 +76,12 @@ void fragment() {
     ALBEDO = slng_apply_atmospherics(blended, v_view_position, atmos_additive);
     // Post-lighting, so the haze is not scaled by a low sun -- see the seam's doc comment.
     EMISSION = atmos_additive;
+    // The viewer's legacy terrain writes no specular and no reflection at all
+    // (deferred/terrainF.glsl:62, frag_data[1] = vec4(0,0,0,-1)): the ground is diffuse. Godot's
+    // default SPECULAR of 0.5 adds a Fresnel term that grows toward grazing angles and reflects
+    // the sky and the reflection probe -- which is what turned the ground pale and glossy at a
+    // distance while the reference viewer, at the same spot, stayed matte (BUG-RENDER-39).
+    SPECULAR = 0.0;
     ROUGHNESS = 0.9;
     METALLIC = 0.0;
 }

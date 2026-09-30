@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 using SLNG.Core;
 using SLNG.Core.ECS;
@@ -600,6 +601,40 @@ public partial class TerrainRenderer : Node3D
         }
     }
 
+    private readonly Dictionary<ulong, int> _terrainInfoCount = new();
+
+    /// <summary>A pale, reflective patch on the ground can be a terrain texture gone wrong or the
+    /// region's water plane cutting through terrain that dips below it -- and only the numbers tell
+    /// those apart: the water height against the heights the terrain really has, the four detail
+    /// textures, and the elevation ranges the blend runs on. Logged at the first and the fifth
+    /// rebuild of a region, so a half-streamed terrain and a complete one can be compared.</summary>
+    private void LogTerrainInfo(ulong regionHandle, RegionTerrain terrain, float[] heights)
+    {
+        int n = _terrainInfoCount.GetValueOrDefault(regionHandle) + 1;
+        _terrainInfoCount[regionHandle] = n;
+        if (n != 1 && n != 5) return;
+
+        float min = float.MaxValue, max = float.MinValue;
+        int loaded = 0, below = 0;
+        for (int y = 0; y < terrain.Height; y++)
+        {
+            for (int x = 0; x < terrain.Width; x++)
+            {
+                if (!terrain.TryGetKnownHeight(x, y, out var h)) continue;
+                loaded++;
+                if (h < min) min = h;
+                if (h > max) max = h;
+                if (h < terrain.WaterHeight) below++;
+            }
+        }
+        string Id(System.Guid g) => g == System.Guid.Empty ? "-" : g.ToString()[..8];
+        GD.Print($"[TerrainInfo] #{n} region {regionHandle}: water={terrain.WaterHeight:0.0} heights {min:0.0}..{max:0.0} " +
+                 $"({loaded} cells known, {(loaded == 0 ? 0 : 100 * below / loaded)}% below the water) " +
+                 $"detail=[{Id(terrain.TerrainDetail0)} {Id(terrain.TerrainDetail1)} {Id(terrain.TerrainDetail2)} {Id(terrain.TerrainDetail3)}] " +
+                 $"start=[{string.Join(" ", terrain.TerrainStartHeights.Select(v => v.ToString("0.0")))}] " +
+                 $"range=[{string.Join(" ", terrain.TerrainHeightRanges.Select(v => v.ToString("0.0")))}]");
+    }
+
     private void RebuildTerrain(ulong regionHandle)
     {
         if (_world == null) return;
@@ -631,6 +666,7 @@ public partial class TerrainRenderer : Node3D
         var heights = regionTerrain.GetHeights();
         int width = regionTerrain.Width;
         int height = regionTerrain.Height;
+        LogTerrainInfo(regionHandle, regionTerrain, heights);
 
         // Built as INDEXED arrays handed to Godot in one call, rather than per-vertex through
         // SurfaceTool. The watchdog caught this method holding the main thread for up to 12.2 s

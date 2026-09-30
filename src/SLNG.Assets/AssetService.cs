@@ -219,27 +219,20 @@ public class AssetService
     /// </summary>
     public Task<MeshData?> GetPrimMeshAsync(PrimShape shape, MeshDetailLevel lod = MeshDetailLevel.Medium)
     {
-        var key = (shape, lod);
+        var key = (Shape: shape, Lod: lod); // named: the lambda below reads them off the key
         if (_memCache.TryGetValue(key, out MeshData? cached))
         {
             return Task.FromResult(cached);
         }
-        return _inflightPrimMeshes.GetOrAdd(key, async k =>
+        return InFlight.GetOrStart(_inflightPrimMeshes, key, async k =>
         {
-            try
+            var result = await Task.Run(() => PrimMeshService.Generate(k.Shape, ToLibreMetaverseDetailLevel(k.Lod))).ConfigureAwait(false);
+            if (result != null)
             {
-                var result = await Task.Run(() => PrimMeshService.Generate(k.Shape, ToLibreMetaverseDetailLevel(k.Lod))).ConfigureAwait(false);
-                if (result != null)
-                {
-                    long size = EstimateMeshSize(result);
-                    _memCache.Set(k, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
-                }
-                return result;
+                long size = EstimateMeshSize(result);
+                _memCache.Set(k, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
             }
-            finally
-            {
-                _inflightPrimMeshes.TryRemove(k, out _);
-            }
+            return result;
         });
     }
 
@@ -264,28 +257,21 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightSculptMeshes.GetOrAdd((sculptId, sculptType), async k =>
+        return InFlight.GetOrStart(_inflightSculptMeshes, (Id: sculptId, Type: sculptType), async k =>
         {
             var id = k.Id;
-            try
-            {
-                var map = await GetTextureAsync(id, isSculpt: true).ConfigureAwait(false);
-                if (map == null) return null;
+            var map = await GetTextureAsync(id, isSculpt: true).ConfigureAwait(false);
+            if (map == null) return null;
 
-                var result = await Task.Run(() =>
-                    PrimMeshService.GenerateSculpt(map.Rgba, map.Width, map.Height, k.Type)).ConfigureAwait(false);
+            var result = await Task.Run(() =>
+                PrimMeshService.GenerateSculpt(map.Rgba, map.Width, map.Height, k.Type)).ConfigureAwait(false);
 
-                if (result != null)
-                {
-                    long size = EstimateMeshSize(result);
-                    _memCache.Set(cacheKey, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
-                }
-                return result;
-            }
-            finally
+            if (result != null)
             {
-                _inflightSculptMeshes.TryRemove(k, out _);
+                long size = EstimateMeshSize(result);
+                _memCache.Set(cacheKey, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
             }
+            return result;
         });
     }
 
@@ -321,22 +307,15 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightMeshes.GetOrAdd((meshId, lod), async k =>
+        return InFlight.GetOrStart(_inflightMeshes, (Id: meshId, Lod: lod), async k =>
         {
-            try
+            var result = await FetchAndDecodeMeshAsync(k.Id, k.Lod).ConfigureAwait(false);
+            if (result != null)
             {
-                var result = await FetchAndDecodeMeshAsync(k.Id, k.Lod).ConfigureAwait(false);
-                if (result != null)
-                {
-                    long size = 1024 * 10; // rough 10KB estimate per mesh
-                    _memCache.Set(cacheKey, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
-                }
-                return result;
+                long size = 1024 * 10; // rough 10KB estimate per mesh
+                _memCache.Set(cacheKey, result, new MemoryCacheEntryOptions { Size = size, SlidingExpiration = TimeSpan.FromMinutes(10) });
             }
-            finally
-            {
-                _inflightMeshes.TryRemove(k, out _);
-            }
+            return result;
         });
     }
 
@@ -1204,21 +1183,14 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightMaterials.GetOrAdd(materialId, async id =>
+        return InFlight.GetOrStart(_inflightMaterials, materialId, async id =>
         {
-            try
+            var result = await FetchMaterialAsync(id).ConfigureAwait(false);
+            if (result != null)
             {
-                var result = await FetchMaterialAsync(id).ConfigureAwait(false);
-                if (result != null)
-                {
-                    _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = 1024, SlidingExpiration = TimeSpan.FromMinutes(10) });
-                }
-                return result;
+                _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = 1024, SlidingExpiration = TimeSpan.FromMinutes(10) });
             }
-            finally
-            {
-                _inflightMaterials.TryRemove(id, out _);
-            }
+            return result;
         });
     }
 
@@ -1315,15 +1287,7 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        // A finished task is an answer to an earlier request, not a request in flight: whatever it
-        // said was stored if it was worth storing, so it is dropped here and the question asked again.
-        if (_inflightAnimations.TryGetValue(animId, out var finished) && finished.IsCompleted)
-        {
-            ((ICollection<KeyValuePair<Guid, Task<AnimationData?>>>)_inflightAnimations)
-                .Remove(new KeyValuePair<Guid, Task<AnimationData?>>(animId, finished));
-        }
-
-        var task = _inflightAnimations.GetOrAdd(animId, async id =>
+        return InFlight.GetOrStart(_inflightAnimations, animId, async id =>
         {
             var (result, real) = await FetchAndDecodeAnimationAsync(id).ConfigureAwait(false);
 
@@ -1336,17 +1300,6 @@ public class AssetService
             }
             return result;
         });
-
-        // Taken out once it has finished -- by the task itself, never from inside the factory. An
-        // async factory that finishes without ever yielding (the stand-in while not connected, a
-        // fetch that fails at once) ran its own clean-up BEFORE GetOrAdd had stored the task, so the
-        // finished task stayed in the dictionary for good and every later request got its answer:
-        // the stand-in, for ever, however well the grid answered afterwards.
-        _ = task.ContinueWith(
-            t => ((ICollection<KeyValuePair<Guid, Task<AnimationData?>>>)_inflightAnimations)
-                     .Remove(new KeyValuePair<Guid, Task<AnimationData?>>(animId, t)),
-            TaskScheduler.Default);
-        return task;
     }
 
     /// <summary>How the animation bytes are fetched from the grid; replaced in tests.</summary>

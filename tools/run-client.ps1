@@ -92,7 +92,13 @@ param(
     # e.g. an AO or an ankle lock, which every viewer sees). A Current-Outfit item the simulator
     # genuinely fails to rez then stays missing for the session, so this is for A/B testing against
     # a second viewer, not for everyday use. Passes --no-reattach.
-    [switch]$NoReattach
+    [switch]$NoReattach,
+
+    # FEAT-NET-04: start without the object cache. The handshake then says "cache empty" (as it did
+    # before the cache existed) and every object is streamed in full, every time. For A/B testing a
+    # rendering difference against the cache: if it goes away with this switch, the cache caused it.
+    # Passes --no-object-cache.
+    [switch]$NoObjectCache
 )
 
 $ErrorActionPreference = 'Stop'
@@ -178,6 +184,10 @@ if ($NoGroundDrop) {
 if ($NoReattach) {
     Write-Host "      login outfit reconcile OFF -- missing attachments stay missing (--no-reattach)" -ForegroundColor Magenta
     $userArgs += '--no-reattach'
+}
+if ($NoObjectCache) {
+    Write-Host "      object cache OFF -- every object is streamed in full (--no-object-cache)" -ForegroundColor Magenta
+    $userArgs += '--no-object-cache'
 }
 if ($userArgs.Count -gt 0) {
     $clientArgs += @('--') + $userArgs
