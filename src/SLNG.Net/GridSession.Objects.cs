@@ -387,6 +387,8 @@ public sealed partial class GridSession
         System.Numerics.Vector3? velocityOverride = null,
         float timeDilation = 1f)
     {
+        NoteObjectAnswered(simulator.Handle, prim.LocalID); // FEAT-NET-04: a sign of life, for the cache check
+
         // An object LibreMetaverse invented to answer a terse update carries no data at all --
         // no shape, no scale, no textures. Publishing it would either create a world entity out
         // of nothing or overwrite a good one with defaults. Drop it; the sim's full ObjectUpdate

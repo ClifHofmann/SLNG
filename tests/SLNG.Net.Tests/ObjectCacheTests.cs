@@ -270,3 +270,105 @@ public class ObjectCacheStoreDiskSupportTests
         Assert.False(store.TryGet(Here, 8, out _));
     }
 }
+
+// FEAT-NET-04, phase 3. A simulator that does not probe (none of the OSGrid regions tried so far
+// does) never tells us which objects it would send, so the cache cannot be checked object by object.
+// It is used optimistically instead: what is held is shown at once, nearest first, and then every one
+// of those objects is asked for again; whatever the simulator does not answer for is gone and is
+// taken back out. These pin the ordering and the verdict on "gone".
+public class ObjectRestorePlanTests
+{
+    private static byte[] BlockAt(uint localId, float x, float y, float z)
+    {
+        var data = new byte[80];
+        BitConverter.GetBytes(localId).CopyTo(data, 16);
+        data[20] = 9;
+        BitConverter.GetBytes(x).CopyTo(data, 40);
+        BitConverter.GetBytes(y).CopyTo(data, 44);
+        BitConverter.GetBytes(z).CopyTo(data, 48);
+        return data;
+    }
+
+    private static CachedObject At(uint id, float x, float y, float z) => new(id, id, 0, BlockAt(id, x, y, z));
+
+    [Fact]
+    public void A_block_gives_up_its_position()
+    {
+        Assert.True(CompressedObjectBlock.TryReadPosition(BlockAt(1, 10f, 20f, 30f), out var x, out var y, out var z));
+        Assert.Equal((10f, 20f, 30f), (x, y, z));
+    }
+
+    [Theory]
+    [InlineData(0x20u | 0x100u, true)]   // a child prim with name-values: worn
+    [InlineData(0x100u, false)]          // name-values on a root: not an attachment
+    [InlineData(0x20u, false)]           // a child of a linkset
+    [InlineData(0u, false)]
+    public void An_attachment_is_a_child_prim_carrying_name_values(uint flags, bool expected)
+    {
+        var data = BlockAt(1, 0, 0, 0);
+        BitConverter.GetBytes(flags).CopyTo(data, 64);
+
+        Assert.Equal(expected, CompressedObjectBlock.IsAttachment(data));
+    }
+
+    [Fact]
+    public void Too_little_data_to_tell_is_not_an_attachment()
+    {
+        Assert.False(CompressedObjectBlock.IsAttachment(new byte[60]));
+        Assert.False(CompressedObjectBlock.IsAttachment(null));
+    }
+
+    [Fact]
+    public void A_block_too_short_for_a_position_has_none()
+    {
+        Assert.False(CompressedObjectBlock.TryReadPosition(new byte[51], out _, out _, out _));
+        Assert.False(CompressedObjectBlock.TryReadPosition(null, out _, out _, out _));
+    }
+
+    [Fact]
+    public void Objects_come_nearest_first_from_where_the_avatar_stands()
+    {
+        var objects = new[] { At(1, 200, 200, 25), At(2, 130, 130, 25), At(3, 10, 10, 25), At(4, 128, 140, 25) };
+
+        var ordered = ObjectRestorePlan.NearestFirst(objects, 128f, 128f, 25f);
+
+        Assert.Equal(new uint[] { 2, 4, 1, 3 }, ordered.Select(o => o.LocalId));
+    }
+
+    [Fact]
+    public void An_object_with_no_readable_position_goes_last_but_is_not_lost()
+    {
+        var broken = new CachedObject(9, 9, 0, new byte[30]);
+        var objects = new[] { broken, At(1, 130, 130, 25) };
+
+        var ordered = ObjectRestorePlan.NearestFirst(objects, 128f, 128f, 25f);
+
+        Assert.Equal(new uint[] { 1, 9 }, ordered.Select(o => o.LocalId));
+    }
+
+    [Fact]
+    public void What_was_shown_and_never_answered_for_is_gone()
+    {
+        var shown = new uint[] { 1, 2, 3, 4 };
+        var answered = new HashSet<uint> { 2, 4, 99 };
+
+        Assert.Equal(new uint[] { 1, 3 }, ObjectRestorePlan.Unanswered(shown, answered));
+    }
+
+    [Fact]
+    public void When_everything_is_answered_nothing_is_gone()
+    {
+        Assert.Empty(ObjectRestorePlan.Unanswered(new uint[] { 1, 2 }, new HashSet<uint> { 1, 2 }));
+    }
+
+    // Deleting on silence is only safe once the simulator has stopped answering: one that is still
+    // working through a long queue is slow, not silent. Flat for a good while, and never on a timeout.
+    [Theory]
+    [InlineData(new[] { 100, 400, 900, 900, 900, 900, 900, 900, 900, 900 }, 8, true)]
+    [InlineData(new[] { 100, 400, 900, 900, 900, 901, 901, 901, 901, 901 }, 8, false)]
+    [InlineData(new[] { 900, 900, 900 }, 8, false)]
+    public void Silence_counts_only_after_the_answers_have_stopped_for_long_enough(int[] confirmed, int polls, bool settled)
+    {
+        Assert.Equal(settled, ObjectRecoveryPlan.HasSettled(confirmed, polls));
+    }
+}

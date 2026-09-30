@@ -18,6 +18,38 @@ internal static class CompressedObjectBlock
     /// <summary>The smallest block that has a whole head.</summary>
     public const int HeadLength = 26;
 
+    private const int PositionOffset = 40; // after Material(1) ClickAction(1) Scale(12)
+    private const int PositionEnd = PositionOffset + 12;
+
+    /// <summary>Where the object sits, region-local, for ordering and nothing else: for a child prim
+    /// this is an offset from its parent, which is close enough to sort by.</summary>
+    public static bool TryReadPosition(byte[]? data, out float x, out float y, out float z)
+    {
+        if (data is null || data.Length < PositionEnd)
+        {
+            x = y = z = 0f;
+            return false;
+        }
+        x = BitConverter.ToSingle(data, PositionOffset);
+        y = BitConverter.ToSingle(data, PositionOffset + 4);
+        z = BitConverter.ToSingle(data, PositionOffset + 8);
+        return true;
+    }
+
+    private const int FlagsOffset = 64; // after Rotation(12)
+    private const uint HasParent = 0x20;
+    private const uint HasNameValues = 0x100;
+
+    /// <summary>Something an avatar wears: a child prim that carries name-values, which is how the
+    /// simulator sends an attachment and how LibreMetaverse tells one. It belongs to the avatar, not
+    /// to the region; replayed without its avatar it would be an orphan.</summary>
+    public static bool IsAttachment(byte[]? data)
+    {
+        if (data is null || data.Length < FlagsOffset + 4) return false;
+        uint flags = BitConverter.ToUInt32(data, FlagsOffset);
+        return (flags & HasNameValues) != 0 && (flags & HasParent) != 0;
+    }
+
     public static bool TryRead(byte[]? data, out CompressedObjectHead head)
     {
         if (data is null || data.Length < HeadLength)

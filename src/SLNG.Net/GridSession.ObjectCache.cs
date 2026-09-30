@@ -129,12 +129,31 @@ public sealed partial class GridSession
                           $"{(empty ? "empty" : "not empty")}");
         if (empty) return; // what LibreMetaverse sent already says so
 
-        _client.Network.SendPacket(new RegionHandshakeReplyPacket
+        SendCacheHandshakeReply(e.Simulator);
+        // Said again a little later: the simulator reads the flags when it gets round to deciding
+        // between probes and full updates, and two packets in a row are not guaranteed to be handled
+        // in the order they were sent. The latest one is the one that counts, and they all say the same.
+        var sim = e.Simulator;
+        _ = Task.Run(async () =>
+        {
+            foreach (var delay in new[] { 500, 1000 })
+            {
+                await Task.Delay(delay).ConfigureAwait(false);
+                if (!_client.Network.Connected || !sim.Connected) return;
+                SendCacheHandshakeReply(sim);
+            }
+        });
+
+        // A simulator that does not probe never asks for the cache: use it on trust, and check it.
+        ScheduleRestoreFromCache(sim, key);
+    }
+
+    private void SendCacheHandshakeReply(Simulator sim)
+        => _client.Network.SendPacket(new RegionHandshakeReplyPacket
         {
             AgentData = { AgentID = _client.Self.AgentID, SessionID = _client.Self.SessionID },
             RegionInfo = { Flags = ObjectCacheProtocol.HandshakeFlags(cacheIsEmpty: false) },
-        }, e.Simulator);
-    }
+        }, sim);
 
     /// <summary>A cache is an optimisation: a packet it cannot make sense of is a packet it did not
     /// help with, never an exception on the network thread. Said once, so a bad packet stream does
@@ -225,6 +244,7 @@ public sealed partial class GridSession
         {
             if (!CompressedObjectBlock.TryRead(block.Data, out var head)) continue;
             if (!IsCacheablePCode(head.PCode)) continue;
+            if (CompressedObjectBlock.IsAttachment(block.Data)) continue; // belongs to its avatar, not the region
 
             _objectCache.Put(key, new CachedObject(head.LocalId, head.Crc, block.UpdateFlags, block.Data));
             Interlocked.Increment(ref _cacheStored);
@@ -246,6 +266,7 @@ public sealed partial class GridSession
 
         var sim = e.Simulator;
         var key = CacheKey(sim);
+        NoteProbeSeen(sim.Handle);
         var hits = new List<ObjectUpdateCompressedPacket.ObjectDataBlock>();
         var misses = new List<CacheMiss>();
 
@@ -297,6 +318,7 @@ public sealed partial class GridSession
                 ObjectData = blocks.GetRange(i, Math.Min(PerPacket, blocks.Count - i)).ToArray(),
             };
             var args = new PacketReceivedEventArgs(packet, sim);
+            t_replaying = true;
             try
             {
                 _replayCompressed!(this, args);
@@ -305,6 +327,10 @@ public sealed partial class GridSession
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[ObjectCache] replaying {packet.ObjectData.Length} cached objects failed: {ex.Message}");
+            }
+            finally
+            {
+                t_replaying = false;
             }
         }
     }
