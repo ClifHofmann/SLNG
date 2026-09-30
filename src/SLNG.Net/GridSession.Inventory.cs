@@ -37,9 +37,9 @@ public sealed partial class GridSession
 
     /// <summary>
     /// FEAT-INV-07: loads this account's on-disk inventory cache, so folders that have not changed
-    /// since the last session are drawn without a CAPS round trip. Call once per login, after the
-    /// inventory skeleton has arrived, with a directory the client owns (the app resolves
-    /// <c>user://</c> — <c>src/</c> must not know about Godot's virtual filesystem).
+    /// since the last session are drawn without a CAPS round trip. Called by
+    /// <see cref="OnLoginResponseOpenCaches"/> once per login, with the directory
+    /// <see cref="UseCacheDirectories"/> recorded — never by the app (BUG-INV-12).
     ///
     /// <para><b>The version comparison is LibreMetaverse's, not ours.</b> <c>RestoreFromDisk</c>
     /// implements exactly the algorithm the reference viewer uses in
@@ -54,12 +54,18 @@ public sealed partial class GridSession
     /// <para>Ordering matters: the skeleton must already be in the store, or there are no server
     /// versions to compare against and every cached folder is discarded as orphaned.</para>
     /// </summary>
-    public void OpenInventoryCache(string directory)
+    private void OpenInventoryCache(string? directory)
     {
-        if (string.IsNullOrWhiteSpace(directory)) return;
+        if (string.IsNullOrWhiteSpace(directory)) return; // no cache wanted (tests, tools)
 
         var agent = _client.Self.AgentID;
-        if (agent == UUID.Zero) return; // not logged in yet -- nothing to key the file by
+        if (agent == UUID.Zero)
+        {
+            // Not logged in: nothing to key the file by. This return used to be silent, and that is
+            // how a cache opened before the login went unnoticed from the day it shipped (BUG-INV-12).
+            Console.Error.WriteLine("[InvCache] no agent id yet -- the cache opens only once a login has succeeded; not opening it");
+            return;
+        }
 
         var store = _client.Inventory.Store;
         if (store?.RootFolder == null)
@@ -95,14 +101,6 @@ public sealed partial class GridSession
         }
     }
 
-    /// <summary>
-    /// FEAT-INV-07: writes the inventory cache to disk. Call on quit <b>and</b> on explicit logout
-    /// — a clean quit is not the only way a session ends.
-    ///
-    /// <para>Only worth doing once something has actually been fetched; saving an empty store
-    /// would replace a good cache with nothing, so a store still holding nothing but the skeleton
-    /// is left alone.</para>
-    /// </summary>
     /// <summary>FEAT-INV-07: whether a folder's contents are already local, so reading them costs
     /// nothing. True once the folder has been fetched this session or restored from the cache at a
     /// matching version — the same <c>NeedsUpdate</c> flag
@@ -243,6 +241,15 @@ public sealed partial class GridSession
         }
     }
 
+    /// <summary>
+    /// FEAT-INV-07: writes the inventory cache to disk. Call on quit <b>and</b> on explicit logout
+    /// — a clean quit is not the only way a session ends.
+    ///
+    /// <para>Writes only what the next login can check (<see cref="CacheSnapshot"/>), never the live
+    /// store as it is. A session that knows no folder's contents at all leaves the file on disk
+    /// alone: overwriting it would replace a cache that may still be good with one that is of no
+    /// use to anybody.</para>
+    /// </summary>
     public void SaveInventoryCache()
     {
         if (_inventoryCachePath == null) return;
@@ -252,15 +259,110 @@ public sealed partial class GridSession
 
         try
         {
-            store.SaveToDisk(_inventoryCachePath);
+            var snapshot = CacheSnapshot(_client, store, out int known, out int unknown);
+            if (known == 0)
+            {
+                Console.Error.WriteLine("[InvCache] no folder's contents known this session -- leaving the cache on disk as it is");
+                return;
+            }
+
+            snapshot.SaveToDisk(_inventoryCachePath);
             var bytes = new FileInfo(_inventoryCachePath).Length;
-            Console.Error.WriteLine($"[InvCache] saved {store.Count} node(s), {bytes / 1024} KB");
+            Console.Error.WriteLine($"[InvCache] saved {snapshot.Count} node(s): {known} folder(s) with their contents, " +
+                $"{unknown} to fetch next time, {bytes / 1024} KB");
         }
         catch (Exception ex)
         {
             // Losing a cache costs speed, never correctness.
             Console.Error.WriteLine($"[InvCache] could not save {_inventoryCachePath}: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// BUG-INV-12: the part of the store the next login can actually check, as a store of its own
+    /// for <c>SaveToDisk</c> to write.
+    ///
+    /// <para>Handing LibreMetaverse the live store would write something untrue. Whether a folder's
+    /// contents were ever fetched (<c>InventoryNode.NeedsUpdate</c>) is not part of what
+    /// <c>SaveToDisk</c> writes, and <c>RestoreFromDisk</c> trusts every cached folder whose version
+    /// matches the new skeleton's. A folder this session never opened still carries the version the
+    /// skeleton gave it, so the next login would mark it up to date with nothing in it — an empty
+    /// folder the grid is never asked about again (pinned in <c>InventoryCacheTests</c>). The
+    /// reference viewer writes a folder only when its version is known and its contents complete
+    /// (<c>LLInventoryModel::cache</c>, llinventorymodel.cpp:2354-2362).</para>
+    ///
+    /// <para>Three rules, each closing one way a folder could come back trusted and wrong:</para>
+    /// <list type="bullet">
+    /// <item>A folder whose contents are not in memory is written at
+    /// <c>InventoryFolder.VERSION_UNKNOWN</c>, which no skeleton reports, so the restore marks it
+    /// for fetching.</item>
+    /// <item>Every folder is written, known or not. Leaving one out does not work: adding its child
+    /// makes <c>UpdateNodeFor</c> invent the missing parent at the default version 1, which a real
+    /// folder can match.</item>
+    /// <item>Items only under a folder written with its version, and never directly under a root:
+    /// <c>RestoreFromDisk</c> never compares a root's version, so whatever is written there comes
+    /// back unchecked — and a later fetch adds to a folder, it does not prune it.</item>
+    /// </list>
+    ///
+    /// <para>Folders are copies, because the new store's <c>UpdateNodeFor</c> rewrites
+    /// <c>DescendentCount</c> on the folder objects it holds. Items are shared; adding one changes
+    /// nothing on it.</para>
+    /// </summary>
+    /// <param name="known">Folders below the roots written with their version and contents.</param>
+    /// <param name="unknown">Folders below the roots written as not known.</param>
+    private static LibreMetaverse.Inventory CacheSnapshot(
+        GridClient client, LibreMetaverse.Inventory store, out int known, out int unknown)
+    {
+        var snapshot = new LibreMetaverse.Inventory(client, store.Owner);
+        known = 0;
+        unknown = 0;
+
+        var seen = new HashSet<UUID>();
+        var pending = new Stack<LibreMetaverse.InventoryNode>();
+        foreach (var root in new[] { store.RootNode, store.LibraryRootNode })
+        {
+            if (root?.Data is not LibreMetaverse.InventoryFolder folder || !seen.Add(folder.UUID)) continue;
+            snapshot.UpdateNodeFor(Copy(folder, contentsKnown: !root.NeedsUpdate));
+            pending.Push(root);
+        }
+
+        while (pending.Count > 0)
+        {
+            var node = pending.Pop();
+            var folder = (LibreMetaverse.InventoryFolder)node.Data!;
+            bool itemsCheckable = !node.NeedsUpdate && folder.ParentUUID != UUID.Zero;
+
+            List<LibreMetaverse.InventoryBase> children;
+            try { children = store.GetContents(folder.UUID); }
+            catch (LibreMetaverse.InventoryException) { continue; } // removed while we walked
+
+            foreach (var child in children)
+            {
+                if (child is LibreMetaverse.InventoryFolder sub)
+                {
+                    if (!seen.Add(sub.UUID) || store.GetNodeOrDefault(sub.UUID) is not { } subNode) continue;
+                    snapshot.UpdateNodeFor(Copy(sub, contentsKnown: !subNode.NeedsUpdate));
+                    if (subNode.NeedsUpdate) unknown++;
+                    else known++;
+                    pending.Push(subNode);
+                }
+                else if (itemsCheckable)
+                {
+                    snapshot.UpdateNodeFor(child);
+                }
+            }
+        }
+
+        return snapshot;
+
+        static LibreMetaverse.InventoryFolder Copy(LibreMetaverse.InventoryFolder f, bool contentsKnown) => new(f.UUID)
+        {
+            ParentUUID = f.ParentUUID,
+            Name = f.Name,
+            OwnerID = f.OwnerID,
+            PreferredType = f.PreferredType,
+            Version = contentsKnown ? f.Version : LibreMetaverse.InventoryFolder.VERSION_UNKNOWN,
+        };
     }
 
     /// <summary>LibreMetaverse's <c>FindFolderForType</c> logs at ERROR level when the inventory

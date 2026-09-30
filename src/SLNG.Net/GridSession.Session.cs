@@ -456,6 +456,56 @@ public sealed partial class GridSession
         RegionDisconnectedReceived?.Invoke(this, new RegionDisconnectedEvent(e.Simulator.Handle));
     }
 
+    // BUG-INV-12: where the two per-account caches live, supplied by the app before the login.
+    private string? _inventoryCacheDirectory;
+    private string? _displayNameCacheDirectory;
+
+    /// <summary>
+    /// Where this session keeps the inventory cache (FEAT-INV-07) and the Display Name cache
+    /// (FEAT-UI-31) between logins -- directories the client owns (the app resolves
+    /// <c>user://</c>; <c>src/</c> must not know Godot's virtual filesystem). Call before
+    /// <see cref="LoginAsync"/>. Without it neither cache is read or written, which is what a test
+    /// or a tool wants.
+    ///
+    /// <para><b>This only records the paths; the login opens the caches.</b> Both files are keyed
+    /// by the agent id, and the inventory restore compares every cached folder against the version
+    /// the login skeleton reports -- so neither can open before the login response has been
+    /// processed, and both have to be open before anything fetches a folder. The app used to call
+    /// the open methods itself, before <c>LoginAsync</c>, and both returned silently every time: no
+    /// cache file was ever read or written (BUG-INV-12). <see cref="OnLoginResponseOpenCaches"/>
+    /// now does it at the one moment that satisfies both.</para>
+    /// </summary>
+    public void UseCacheDirectories(string inventoryDirectory, string displayNameDirectory)
+    {
+        _inventoryCacheDirectory = inventoryDirectory;
+        _displayNameCacheDirectory = displayNameDirectory;
+    }
+
+    /// <summary>
+    /// BUG-INV-12: opens both caches while LibreMetaverse processes a successful login response.
+    ///
+    /// <para>Registered in the constructor, after <c>new GridClient()</c>, so it runs after the
+    /// library's own handlers for the same response: <c>AgentManager</c> has taken the agent id and
+    /// <c>InventoryManager</c> has built the store from the skeleton. And it runs before the
+    /// simulator circuit exists, so nothing -- the Current Outfit fetch, the inventory window, the
+    /// background fill -- can have fetched a folder the cache was about to supply, and nothing
+    /// reads the store while <c>RestoreFromDisk</c> fills it (it takes no lock). The reference
+    /// viewer restores later, once the agent is in the region (llstartup.cpp,
+    /// STATE_INVENTORY_SKEL after AgentMovementComplete); what both share is skeleton first, cache
+    /// second, fetches last.</para>
+    ///
+    /// <para>On LibreMetaverse's login thread, which keeps the file read off the Godot main
+    /// thread.</para>
+    /// </summary>
+    private void OnLoginResponseOpenCaches(
+        bool loginSuccess, bool redirect, string message, string reason, LoginResponseData? reply)
+    {
+        if (!loginSuccess || reply == null) return;
+
+        OpenInventoryCache(_inventoryCacheDirectory);
+        OpenDisplayNameCache(_displayNameCacheDirectory);
+    }
+
     /// <summary>
     /// Attempts to log in to the grid described by <paramref name="credentials"/>.
     /// Uses LibreMetaverse's async login API; failures (including unreachable grids)

@@ -383,7 +383,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.88-alpha";
+    public const string AppVersion = "v0.24.91-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3211,6 +3211,10 @@ public partial class Boot : Control
         _teleportCameraResetPending = false;
         _teleportOverlay?.ForceHide();
 
+        // The last session's background fill goes with it. StartInventoryPrefetch used to do this
+        // as a side effect of being called here; since BUG-INV-12 it runs after the login, and a
+        // timer left armed by a session that ended early would otherwise pick up the new one.
+        CancelInventoryPrefetch();
         if (_session != null)
         {
             _session.Dispose();
@@ -3279,14 +3283,15 @@ public partial class Boot : Control
         // can reclaim under this cap.
         _gpuCache = new GpuCache((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024);
 
-        // FEAT-INV-07: restore the inventory cache BEFORE the panel is initialized -- Initialize
-        // populates the root folders, and a fetch that starts before the restore lands would pay
-        // for folders the cache was about to supply for free.
-        _session.OpenInventoryCache(ProjectSettings.GlobalizePath("user://cache/inventory"));
-        // Display Names remembered from earlier sessions: nametags show the right name as soon as an
-        // avatar appears instead of after a lookup round trip.
-        _session.OpenDisplayNameCache(ProjectSettings.GlobalizePath("user://cache/displaynames"));
-        StartInventoryPrefetch();
+        // FEAT-INV-07 inventory cache and the Display Names remembered from earlier sessions. This
+        // only tells the session where they live: it opens them itself while it processes the
+        // login response, once the agent id and the inventory skeleton exist and before anything
+        // can fetch a folder the cache was about to supply. They used to be opened right here,
+        // before the login, and both returned without a word -- no cache file was ever read or
+        // written (BUG-INV-12).
+        _session.UseCacheDirectories(
+            ProjectSettings.GlobalizePath("user://cache/inventory"),
+            ProjectSettings.GlobalizePath("user://cache/displaynames"));
 
         _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, _gpuCache);
@@ -3533,6 +3538,13 @@ public partial class Boot : Control
             {
                 LogMessage(result.Message);
             }
+
+            // FEAT-INV-07 Phase 2: the background fill counts its delay from a login that worked.
+            // It used to be armed at the login click, so a login slower than the delay -- a busy
+            // grid, a Terms of Service prompt left open -- made it fire before there was an
+            // inventory, find nothing, and never run that session (BUG-INV-12). The cache has been
+            // restored by now, so the fill only fetches what the cache could not supply.
+            StartInventoryPrefetch();
 
             // The background and loading screen stay up a little longer -- through the
             // post-login setup below -- so its final "Entering world" step actually reflects

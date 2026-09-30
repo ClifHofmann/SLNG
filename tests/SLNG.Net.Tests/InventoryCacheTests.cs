@@ -103,6 +103,38 @@ public class InventoryCacheTests : IDisposable
         Assert.Empty(second.GetContents(landmarksId));
     }
 
+    // BUG-INV-12: why GridSession.SaveInventoryCache does not hand LibreMetaverse the live store.
+    // Whether a folder's contents were ever fetched (InventoryNode.NeedsUpdate) is not part of what
+    // SaveToDisk writes, and RestoreFromDisk trusts every cached folder whose version matches the new
+    // skeleton's. A folder the session never opened still carries the skeleton's current version, so
+    // it comes back marked up to date, with nothing in it. If this starts failing, LibreMetaverse has
+    // changed that, and the filtering in SaveInventoryCache may no longer be needed.
+    [Fact]
+    public void A_folder_saved_without_ever_being_fetched_comes_back_current_and_empty()
+    {
+        var client = new GridClient();
+        var owner = UUID.Random();
+        UUID rootId = UUID.Random(), objectsId = UUID.Random(), landmarksId = UUID.Random(), itemId = UUID.Random();
+
+        // Session 1: Objects was fetched; Landmarks is known only from the skeleton.
+        var first = PopulatedStore(client, owner, rootId, objectsId, landmarksId, itemId, 5, 7);
+        first.GetNodeFor(objectsId).NeedsUpdate = false;
+        Assert.True(first.GetNodeFor(landmarksId).NeedsUpdate);
+        first.SaveToDisk(_path);
+
+        // Session 2: nothing changed on the grid.
+        var second = new Inventory(client, owner)
+        {
+            RootFolder = Folder(rootId, UUID.Zero, "My Inventory", 1, owner),
+        };
+        second.UpdateNodeFor(Folder(objectsId, rootId, "Objects", 5, owner));
+        second.UpdateNodeFor(Folder(landmarksId, rootId, "Landmarks", 7, owner));
+        second.RestoreFromDisk(_path);
+
+        Assert.False(second.GetNodeOrDefault(landmarksId)!.NeedsUpdate);
+        Assert.Empty(second.GetContents(landmarksId));
+    }
+
     // A folder the account deleted between sessions is in the cache but not in the new skeleton.
     // It must not come back from the dead.
     [Fact]
