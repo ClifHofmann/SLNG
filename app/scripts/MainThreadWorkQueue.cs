@@ -81,10 +81,14 @@ public static class MainThreadWorkQueue
 
     private static readonly Stopwatch _clock = new();
 
-    /// <summary>True while a pump is in the scene tree. Before that (and after it leaves) enqueued
-    /// work falls back to CallDeferred, so nothing is silently dropped during startup or shutdown --
-    /// unbudgeted is still far better than never.</summary>
-    private static bool _pumpActive;
+    /// <summary>Set once the pump has left the scene tree -- the client is quitting. From then on
+    /// <see cref="Enqueue"/> drops what it is given. Before the pump arrives nothing is dropped:
+    /// work waits in its lane until the pump's first frame.
+    ///
+    /// <para>This used to be "is a pump in the tree", with a CallDeferred fallback on either side of
+    /// its lifetime so nothing was lost. At shutdown that fallback was the crash (BUG-RENDER-37),
+    /// and at startup the lanes do the same job without calling into Godot.</para></summary>
+    private static volatile bool _pumpGone;
 
     /// <summary>Maintained with Interlocked rather than read from ConcurrentQueue.Count. Count has to
     /// walk the queue's internal segments, and at a depth of 20k that is not free -- it was being
@@ -119,6 +123,14 @@ public static class MainThreadWorkQueue
     /// </summary>
     public static void Enqueue(Lane lane, Action work, string? coalesceKey = null, string label = "?")
     {
+        // BUG-RENDER-37: the client is quitting, and nothing will drain the lanes again. This used
+        // to fall back to CallDeferred through a delegate-backed Callable -- main-thread-only in
+        // Godot .NET (see GpuCache's own note on that trap), and texture workers still finishing on
+        // the way out called it from the thread pool: a fatal AccessViolationException in
+        // godotsharp_callable_call_deferred. Work for a world that is going away is not worth that.
+        // Checked before the key is taken, so nothing is left holding one.
+        if (_pumpGone) return;
+
         if (coalesceKey != null)
         {
             lock (_keyLock)
@@ -127,20 +139,8 @@ public static class MainThreadWorkQueue
             }
         }
 
-        if (!_pumpActive)
-        {
-            if (coalesceKey != null)
-            {
-                string key = coalesceKey;
-                Godot.Callable.From(() => { ReleaseKey(key); work(); }).CallDeferred();
-            }
-            else
-            {
-                Godot.Callable.From(work).CallDeferred();
-            }
-            return;
-        }
-
+        // Before the pump exists, the work simply waits in its lane -- it drains the moment the
+        // pump's first frame runs. Nothing here touches Godot, from whatever thread this is.
         _lanes[(int)lane].Enqueue(new Item { Work = work, CoalesceKey = coalesceKey, Label = label });
 
         int depth = Interlocked.Increment(ref _depth);
@@ -264,5 +264,5 @@ public static class MainThreadWorkQueue
         return (Depth, peak);
     }
 
-    internal static void SetPumpActive(bool active) => _pumpActive = active;
+    internal static void SetPumpActive(bool active) => _pumpGone = !active;
 }
