@@ -3395,6 +3395,26 @@ public sealed partial class GridSession
         return true;
     }
 
+    /// <summary>FEAT-INV-09: the folders from the inventory root down to the one holding
+    /// <paramref name="id"/>, root first — the path a "show original" has to open. Empty when the
+    /// store does not know the node.</summary>
+    public IReadOnlyList<Guid> InventoryFolderPathTo(Guid id)
+        => FolderPathTo(_client.Inventory.Store, new LibreMetaverse.UUID(id));
+
+    internal static List<Guid> FolderPathTo(Inventory? store, UUID id)
+    {
+        var path = new List<Guid>();
+        if (store == null || id == UUID.Zero) return path;
+
+        // Bounded like IsBelow: a broken parent chain must not hang the caller.
+        int depth = 0;
+        for (var n = store.GetNodeOrDefault(id)?.Parent; n != null && depth < 256; n = n.Parent, depth++)
+            if (n.Data != null) path.Add(n.Data.UUID.Guid);
+
+        path.Reverse();
+        return path;
+    }
+
     /// <summary>Whether a folder is one the grid maintains itself — Objects, Clothing, Trash,
     /// #Outfits, Current Outfit and the rest. FEAT-INV-08.</summary>
     /// <remarks>
