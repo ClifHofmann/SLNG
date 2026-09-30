@@ -150,6 +150,19 @@ public class World
     }
 
     /// <summary>
+    /// <see cref="RemoveRegion"/> for every region the world holds entities or terrain for — the
+    /// local agent stays, as it does there.
+    /// </summary>
+    public void RemoveAllRegions()
+    {
+        var regions = _entities.Values.Select(e => e.RegionHandle)
+            .Concat(_terrains.Keys)
+            .Distinct()
+            .ToList();
+        foreach (var region in regions) RemoveRegion(region);
+    }
+
+    /// <summary>
     /// Gets or creates a terrain object for the specified region.
     /// </summary>
     public RegionTerrain GetOrCreateTerrain(ulong regionHandle,
