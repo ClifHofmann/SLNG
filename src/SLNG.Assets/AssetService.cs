@@ -1315,25 +1315,52 @@ public class AssetService
         {
             return Task.FromResult(cached);
         }
-        return _inflightAnimations.GetOrAdd(animId, async id =>
+        // A finished task is an answer to an earlier request, not a request in flight: whatever it
+        // said was stored if it was worth storing, so it is dropped here and the question asked again.
+        if (_inflightAnimations.TryGetValue(animId, out var finished) && finished.IsCompleted)
         {
-            try
+            ((ICollection<KeyValuePair<Guid, Task<AnimationData?>>>)_inflightAnimations)
+                .Remove(new KeyValuePair<Guid, Task<AnimationData?>>(animId, finished));
+        }
+
+        var task = _inflightAnimations.GetOrAdd(animId, async id =>
+        {
+            var (result, real) = await FetchAndDecodeAnimationAsync(id).ConfigureAwait(false);
+
+            // Only what the grid really served is remembered. The stand-in for "not connected"
+            // is not: it was cached for fifteen minutes (sliding, so for ever while in use) and
+            // outlived the login that would have replaced it.
+            if (result != null && real)
             {
-                var result = await FetchAndDecodeAnimationAsync(id).ConfigureAwait(false);
-                if (result != null)
-                {
-                    _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = 4096, SlidingExpiration = TimeSpan.FromMinutes(15) });
-                }
-                return result;
+                _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = 4096, SlidingExpiration = TimeSpan.FromMinutes(15) });
             }
-            finally
-            {
-                _inflightAnimations.TryRemove(id, out _);
-            }
+            return result;
         });
+
+        // Taken out once it has finished -- by the task itself, never from inside the factory. An
+        // async factory that finishes without ever yielding (the stand-in while not connected, a
+        // fetch that fails at once) ran its own clean-up BEFORE GetOrAdd had stored the task, so the
+        // finished task stayed in the dictionary for good and every later request got its answer:
+        // the stand-in, for ever, however well the grid answered afterwards.
+        _ = task.ContinueWith(
+            t => ((ICollection<KeyValuePair<Guid, Task<AnimationData?>>>)_inflightAnimations)
+                     .Remove(new KeyValuePair<Guid, Task<AnimationData?>>(animId, t)),
+            TaskScheduler.Default);
+        return task;
     }
 
-    private async Task<AnimationData?> FetchAndDecodeAnimationAsync(Guid animId)
+    /// <summary>How the animation bytes are fetched from the grid; replaced in tests.</summary>
+    internal Func<Guid, Task<byte[]?>>? AnimationFetchOverride { get; set; }
+
+    /// <summary>Whether there is a grid to fetch from; replaced in tests.</summary>
+    internal Func<bool>? IsConnectedOverride { get; set; }
+
+    /// <summary>Wait before the one retry of a fetch the grid did not answer.</summary>
+    internal TimeSpan AnimationRetryDelay { get; set; } = TimeSpan.FromSeconds(1.5);
+
+    /// <summary>The decoded animation, and whether the grid (or our disk cache of it) really supplied
+    /// it. <c>Real</c> is false only for the stand-in used while not connected.</summary>
+    private async Task<(AnimationData? Data, bool Real)> FetchAndDecodeAnimationAsync(Guid animId)
     {
         byte[]? bytes = null;
         string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, animId.ToString() + ".anim");
@@ -1345,10 +1372,21 @@ public class AssetService
 
         if (bytes == null || bytes.Length == 0)
         {
-            if (!_session.IsConnected) return GetDefaultStandingAnimation();
+            if (!(IsConnectedOverride?.Invoke() ?? _session.IsConnected)) return (GetDefaultStandingAnimation(), false);
 
-            bytes = await _session.FetchAnimationDataAsync(animId).ConfigureAwait(false);
-            if (bytes == null || bytes.Length == 0) return GetDefaultStandingAnimation();
+            var fetch = AnimationFetchOverride ?? _session.FetchAnimationDataAsync;
+            bytes = await fetch(animId).ConfigureAwait(false);
+            if (bytes == null || bytes.Length == 0)
+            {
+                // One more try a moment later: the first burst after a login is when transfers fail.
+                await Task.Delay(AnimationRetryDelay).ConfigureAwait(false);
+                bytes = await fetch(animId).ConfigureAwait(false);
+            }
+
+            // Not answered: null, and nothing remembered, so the next request asks again. A stand-in
+            // animation here (as there used to be) is worse than none -- it was cached, it decoded to
+            // two joints, and the avatar stood in a T-pose until the viewer was restarted.
+            if (bytes == null || bytes.Length == 0) return (null, false);
 
             if (cacheFile != null)
             {
@@ -1358,12 +1396,12 @@ public class AssetService
 
         try
         {
-            return await Task.Run(() => AnimationDecodeService.Decode(bytes)).ConfigureAwait(false);
+            return (await Task.Run(() => AnimationDecodeService.Decode(bytes)).ConfigureAwait(false), true);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[AssetService] Failed to decode animation {animId}: {ex.Message}");
-            return null;
+            return (null, false);
         }
     }
 
