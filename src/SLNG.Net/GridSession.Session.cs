@@ -24,6 +24,11 @@ public sealed partial class GridSession
     private void OnSimConnected(object? sender, LibreMetaverse.SimConnectedEventArgs e)
     {
         var sim = e.Simulator;
+
+        // BUG-NET-23: the AgentThrottle LibreMetaverse would have sent right after this event,
+        // without the limiter swap that came with it. SendThrottle is off -- see the constructor.
+        SendAgentThrottle(sim);
+
         var startHeights = new float[] { sim.TerrainStartHeight00, sim.TerrainStartHeight01, sim.TerrainStartHeight10, sim.TerrainStartHeight11 };
         var heightRanges = new float[] { sim.TerrainHeightRange00, sim.TerrainHeightRange01, sim.TerrainHeightRange10, sim.TerrainHeightRange11 };
 
@@ -545,6 +550,39 @@ public sealed partial class GridSession
         OpenInventoryCache(_inventoryCacheDirectory);
         OpenDisplayNameCache(_displayNameCacheDirectory);
     }
+
+    /// <summary>BUG-NET-23: tells a simulator how much bandwidth to use towards us -- the packet
+    /// LibreMetaverse's <c>AgentThrottle.Set</c> sends, without the <c>UdpThrottle.Update</c> that
+    /// follows it there. Without it a grid would fall back to its default rates for this agent.</summary>
+    private void SendAgentThrottle(Simulator sim)
+    {
+        try
+        {
+            _client.Network.SendPacket(
+                BuildAgentThrottlePacket(
+                    _client.Self.AgentID, _client.Self.SessionID, _client.Network.CircuitCode, _client.Throttle),
+                sim);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Throttle] could not send AgentThrottle to {sim.Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>The AgentThrottle packet exactly as LibreMetaverse builds it
+    /// (<c>AgentThrottle.Set</c>, AgentThrottle.cs:189-212): the seven rates as little-endian
+    /// floats, generation counter 0.</summary>
+    internal static AgentThrottlePacket BuildAgentThrottlePacket(
+        UUID agentId, UUID sessionId, uint circuitCode, AgentThrottle throttle)
+        => new()
+        {
+            AgentData = { AgentID = agentId, SessionID = sessionId, CircuitCode = circuitCode },
+            Throttle = { GenCounter = 0, Throttles = throttle.ToBytes() },
+        };
+
+    /// <summary>Whether LibreMetaverse sends AgentThrottle by itself. Must stay false -- see
+    /// BUG-NET-23 in the constructor. For the test that pins it.</summary>
+    internal bool LibrarySendsAgentThrottle => _client.Settings.Agent.SendThrottle;
 
     /// <summary>
     /// Attempts to log in to the grid described by <paramref name="credentials"/>.
