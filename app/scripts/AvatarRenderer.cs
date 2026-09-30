@@ -5451,14 +5451,17 @@ void fragment() {
                 visual.AnimPlayer.Advance(dt);
             }
 
+            // BUG-UI-16: the login screen too, not only the loading screen -- this layer draws above
+            // both, and the local avatar is still here after a session ends. Ahead of the camera
+            // test, so a camera that is gone by then cannot leave a tag standing.
+            if (global::Boot.IsWorldCovered && visual.NameTag != null && IsInstanceValid(visual.NameTag))
+            {
+                if (visual.NameTag.Visible) visual.NameTag.Visible = false;
+                continue;
+            }
+
             if (camPos.HasValue && visual.NameTag != null && IsInstanceValid(visual.NameTag))
             {
-                if (global::Boot.IsLoadingScreenVisible)
-                {
-                    if (visual.NameTag.Visible) visual.NameTag.Visible = false;
-                    continue;
-                }
-
                 float dist = visual.Root.GlobalPosition.DistanceTo(camPos.Value);
                 if (dist > nameTagMaxDist)
                 {
