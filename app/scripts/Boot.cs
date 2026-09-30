@@ -364,6 +364,16 @@ public partial class Boot : Control
 
     public static bool IsLoadingScreenVisible { get; private set; } = false;
 
+    /// <summary>BUG-UI-16: true while the login screen or the loading screen covers the world.
+    /// Anything drawn over the world in a canvas layer of its own -- the avatar nametags -- must not
+    /// show then; the local avatar outlives the session, and its tag sat over the login dialog.
+    /// The login screen is read off the node rather than tracked in a flag: four places show or
+    /// hide it, and one that forgot a flag would bring the tag back.</summary>
+    public static bool IsWorldCovered =>
+        IsLoadingScreenVisible || (_loginScreenNode is { } login && IsInstanceValid(login) && login.Visible);
+
+    private static Control? _loginScreenNode;
+
     private bool _waitingForWorldLoad = false;
     private System.Guid _myAgentId = System.Guid.Empty;
     private double _worldLoadWaitTime = 0.0;
@@ -383,7 +393,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.95-alpha";
+    public const string AppVersion = "v0.24.96-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -480,6 +490,7 @@ public partial class Boot : Control
         // Background is standard at startup. User-specific screenshot is loaded in OnLoginPressed.
 
         _vboxContainer = GetNode<VBoxContainer>("%VBoxContainer");
+        _loginScreenNode = GetNode<Control>("%LoginScreen");
         _profileDropdown = GetNode<OptionButton>("%ProfileDropdown");
         _gridDropdown = GetNode<OptionButton>("%GridDropdown");
         _gridInput = GetNode<LineEdit>("%GridInput");

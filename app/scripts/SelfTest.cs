@@ -163,6 +163,7 @@ public static class SelfTest
         results.AddRange(CheckWindlightPresets());
         results.Add(CheckInstanceSlotMap());
         results.Add(CheckWorkQueueOnceThePumpIsGone());
+        results.Add(CheckLoginScreenCoversTheWorld());
         results.Add(CheckAvatarAnimationPlayer());
         results.Add(CheckAvatarHoldMode());
         results.Add(CheckAvatarAnimationFreeze());
@@ -478,6 +479,24 @@ public static class SelfTest
             "windlight water presets",
             library.WaterNames.Count >= 5 && waterFailures == 0,
             waterFailures == 0 ? $"{library.WaterNames.Count} presets parse" : $"{waterFailures} of {library.WaterNames.Count} failed to parse");
+    }
+
+    /// <summary>
+    /// BUG-UI-16: the login screen counts as covering the world, so the avatar nametags — drawn in
+    /// a canvas layer of their own, above every screen of the boot UI — stay hidden while it is up.
+    /// Left out, the local avatar's tag sat across the login dialog after a session ended.
+    ///
+    /// <para>The selftest boots to the real login screen, so this checks the actual node, not a
+    /// flag someone remembered to set: a <c>%LoginScreen</c> lookup that stopped resolving would
+    /// read as "not covered" here.</para>
+    /// </summary>
+    private static Check CheckLoginScreenCoversTheWorld()
+    {
+        const string Name = "login screen covers the world";
+        bool covered = global::Boot.IsWorldCovered;
+        return new Check(Name, covered, covered
+            ? "nametags stay hidden while the login screen is up"
+            : "Boot.IsWorldCovered is false at the login screen -- nametags would draw over it");
     }
 
     /// <summary>
