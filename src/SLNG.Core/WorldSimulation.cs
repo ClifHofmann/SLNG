@@ -1061,11 +1061,12 @@ public sealed class WorldSimulation : IDisposable
     /// per region, not per packet.</summary>
     private readonly HashSet<ulong> _regionDataLogged = new();
 
-    // BUG-NET-21: what a region's terrain looked like when we left it. OpenSim treats an agent who
-    // comes back to a region it still holds as already there, aborts CompleteMovement and sends
-    // neither the terrain nor the region handshake -- the ground, its textures and the water height
-    // would simply be missing. So the terrain is kept aside at departure and put back when the
-    // region connects again; whatever the simulator does send overwrites it.
+    // BUG-NET-21: what a region's terrain looked like when we left it. Measured on Second Life
+    // (Agni): a region left and entered again sends only a fraction of its terrain packets (5-10
+    // against 42 on a first arrival) -- the ground, its textures and the water height would be
+    // missing. Why the simulator does that is not known. So the terrain is kept aside at
+    // departure and put back when the region connects again; whatever the simulator does send
+    // overwrites it.
     private const int MaxParkedTerrains = 4;
     private readonly Dictionary<ulong, RegionTerrain> _parkedTerrain = new();
     private readonly List<ulong> _parkedOrder = new();

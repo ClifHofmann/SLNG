@@ -5,11 +5,11 @@ using Xunit;
 namespace SLNG.Core.Tests;
 
 /// <summary>
-/// BUG-NET-21: leave a region and come back, and the ground is gone. OpenSim treats the returning
-/// agent as still present, aborts its <c>CompleteMovement</c> ("already root") and so sends no
-/// terrain and no region handshake -- the terrain and its textures and water height have to come
-/// from what the client held when it left. They are kept aside at departure and put back when the
-/// region connects again; anything the simulator does send still wins.
+/// BUG-NET-21: leave a region and come back, and the ground is gone. Measured on Second Life (Agni):
+/// a returning agent is sent a fraction of the terrain packets (5-10 against 42 on a first arrival);
+/// why is not known. The terrain, its textures and the water height have to come from what the
+/// client held when it left. They are kept aside at departure and put back when the region connects
+/// again; anything the simulator does send still wins.
 /// </summary>
 public class WorldSimulationTerrainReturnTests
 {

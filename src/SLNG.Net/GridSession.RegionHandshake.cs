@@ -10,8 +10,9 @@ namespace SLNG.Net;
 // The reply to RegionHandshake carries the object-cache flags: "my cache is empty, don't probe"
 // or not. The reference viewer loads its cache first and sends ONE reply with the truth
 // (llviewerregion.cpp:3201-3222). LibreMetaverse's handler sends 0x7 -- empty -- and there is no
-// setting for it. A second reply behind it only helps where the simulator reads the latest flags
-// (OpenSim does, a moment later); a simulator that acts on the first reply would never be told.
+// setting for it. A second reply behind it only helps where the simulator reads the latest flags;
+// one that acts on the first reply would never be told. Second Life's Agni simulators, measured
+// with the second reply, sent no probe at all -- which is what a first-reply simulator looks like.
 //
 // So the handler is replaced: the same assignments LibreMetaverse 3.1.6 makes
 // (NetworkManager.cs:1399-1458), the reply with the flags the cache calls for, and the same three

@@ -9,9 +9,11 @@ namespace SLNG.Net;
 // GridSession, optimistic restore from the object cache. FEAT-NET-04, phase 3.
 //
 // A simulator that probes tells us, object by object, which of the ones we hold it would send, and
-// the CRC says whether they are still good. Measured: neither OSGrid region tried so far probes
-// (cached=0 on every arrival, with a non-empty cache declared), so there the cache cannot be checked
-// object by object. It is used on trust instead, and the trust is then checked:
+// the CRC says whether they are still good. Measured on Second Life (Agni) while the handshake
+// still answered "cache empty" as its first reply: no probe ever arrived (cached=0 on every
+// arrival). Whatever the reason -- a simulator that does not probe, or one that acts on the first
+// reply -- a region that does not probe cannot be checked object by object. The cache is used on
+// trust instead, and the trust is then checked:
 //
 //   1. no probe within a few seconds of the handshake -> show what is held, nearest first;
 //   2. ask the simulator for every one of those objects (it answers with the full state);

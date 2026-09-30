@@ -271,7 +271,8 @@ public class ObjectCacheStoreDiskSupportTests
     }
 }
 
-// FEAT-NET-04, phase 3. A simulator that does not probe (none of the OSGrid regions tried so far
+// FEAT-NET-04, phase 3. A simulator that does not probe (no Agni region tried so far, while the
+// handshake said "cache empty" first
 // does) never tells us which objects it would send, so the cache cannot be checked object by object.
 // It is used optimistically instead: what is held is shown at once, nearest first, and then every one
 // of those objects is asked for again; whatever the simulator does not answer for is gone and is

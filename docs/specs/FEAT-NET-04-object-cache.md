@@ -14,7 +14,7 @@ the simulator does not send the objects again: it sends a short *probe* for each
 (id + CRC), the viewer recognises the ones it holds, builds them from disk without any network
 traffic, and asks only for the rest. SLNG has no cache at all, and it tells the simulator so
 (`RegionHandshakeReply` flags `0x7`, bit 1 = "my cache is empty"), so every arrival pays the full
-stream: measured on OSGrid, 5439 objects take about 60 s to arrive on every visit, and a return to
+stream: measured on Second Life (Agni, region Millenium), 5439 objects take about 60 s to arrive on every visit, and a return to
 a region costs the same as a first visit.
 
 Goal: a cache that makes the second arrival in a region (this session or a later one) show its
@@ -32,7 +32,11 @@ static content at once, on the simulators that speak the protocol -- Second Life
 | Save | `llviewerregion.cpp:806` | Written when the region goes away; entries not seen for a long time are dropped. |
 | Regions | `llworld.cpp:144-177` | A region the viewer still holds, same host and alive, is reused as it is -- which is what makes a quick return work without a cache at all. |
 
-## What OpenSim does with it (`OpenSim/Region/ClientStack/Linden/UDP/LLClientView.cs`, `ScenePresence.cs`)
+## What OpenSim does with it (background only -- the regions tested are Agni, not OpenSim)
+
+Source: `OpenSim/Region/ClientStack/Linden/UDP/LLClientView.cs`, `ScenePresence.cs`. It shows the shape of the protocol from the
+server side; it does **not** say what Linden's simulators do. (This document first took Millenium for an OSGrid region;
+it is an Agni region, `simhost-….agni.secondlife.io`.)
 
 - `HandlerRegionHandshakeReply` stores the reply flags when the simulator supports the cache
   (line 8995-9006); `GetViewerCaps` hands them to `ScenePresence.SendInitialData` (line 13422).
@@ -116,7 +120,7 @@ static content at once, on the simulators that speak the protocol -- Second Life
 - [ ] Phase 2: the size budget holds; a corrupt or foreign file is ignored, never fatal.
 - [ ] Phase 3: a return to a region answers BUG-NET-21's re-request from the cache.
 - [ ] Unit tests for the store, the block parser, the probe decision, the chunking, the file format.
-- [ ] Measured in-world against Millenium (OpenSim) and, separately, a Second Life region: arrival
+- [ ] Measured in-world against Millenium (Agni): arrival
       time and bytes received with and without the cache.
 
 ## Technical Specs & Affected Files
@@ -133,15 +137,15 @@ static content at once, on the simulators that speak the protocol -- Second Life
   whatever the flags say? Only the viewer side is visible to us; first check is in-world on Agni.
 - Replaying a block changes nothing in `Primitive` that a later terse update relies on? (LMV keeps
   per-`Simulator` dictionaries; the replayed block fills them exactly as a wire block would.)
-- Cache id changes on region restart on OpenSim? If it does not, a CRC is all there is to trust.
+- Cache id changes on region restart on Agni? If it does not, a CRC is all there is to trust.
 
 ## Sub-tasks / Progress
 
 - [x] Read the viewer, OpenSim and LibreMetaverse sides (this document)
-- [x] Phase 1 (`v0.24.110-alpha`): store, block parser, probe handler, write path, kill switch (`--no-object-cache`). **Handshake:** not a takeover of LibreMetaverse's handler after all -- it has already replied `0x7` when our handler runs, so when the cache is not empty a **second** reply with `0x5` follows. OpenSim keeps the latest flags and reads them a few heartbeats later in `SendInitialData`; whether the SL simulator does is the open question above.
+- [x] Phase 1 (`v0.24.110-alpha`): store, block parser, probe handler, write path, kill switch (`--no-object-cache`). **Handshake:** first a **second** reply with `0x5` behind LibreMetaverse's `0x7`; measured on Agni it did not make the simulator probe, hence the takeover in `v0.24.113`.
 - [x] Phase 2 (`v0.24.111-alpha`): `ObjectCacheFile` (versioned, checksummed, all-or-nothing), `ObjectCacheDisk` (atomic swap, 512 MB budget by age, older cache ids dropped), loaded before the handshake reply, written when a region is left, every 5 minutes while it changes, and at teardown. Files: `user://cache/objects/<handle>-<cacheId>.slobj`.
-- **Measured with `v0.24.111` (log in `scratch/logs/`):** cache read from disk (2387 objects) and declared non-empty (`0x5`), yet `cached=0`, `hit=0`, no `first probe` line -- **neither OSGrid region (Secret Love, Millenium) probes.** Either they do not support the viewer cache, or they read the flags before our second reply. So the cache cannot be checked per object there.
+- **Measured with `v0.24.111` (log in `scratch/logs/`):** cache read from disk (2387 objects) and declared non-empty (`0x5`), yet `cached=0`, `hit=0`, no `first probe` line -- **neither Agni region (Secret Love, Millenium) probed.** Second Life's simulators do probe viewers that say they have a cache, so the likely reading is that they act on the *first* reply (LibreMetaverse's "empty") and ignore a later one -- which is what `v0.24.113` fixes by answering once. So the cache cannot be checked per object there.
 - [x] Phase 3 (`v0.24.112-alpha`): **optimistic restore** for simulators that do not probe. Three seconds after the handshake, if no probe came: replay what is held (nearest first, attachments never cached), ask the simulator for every one of those objects, and once its answers have stopped (8 s flat, at least 10 s, never on a timeout) remove what it never answered for. Also: the non-empty handshake reply is sent three times (now, +0.5 s, +1 s) in case ordering is what hid it.
-- [x] **In-world on Millenium (OpenSim, `v0.24.112`, log in `scratch/logs/`):** login with the cache on disk: `[RegionLoad] +5s` **5422 entities, 18 069 scene nodes** (without the cache: 813-866 entities, ~4000 nodes at +5 s, about 60 s to the full region); the simulator had streamed only 870 objects by then. Verification: `4760 of 4760 cached objects confirmed by the simulator after 39s, 0 gone and removed`. Still open from the list below.
+- [x] **In-world on Millenium (Agni, `v0.24.112`, log in `scratch/logs/`):** login with the cache on disk: `[RegionLoad] +5s` **5422 entities, 18 069 scene nodes** (without the cache: 813-866 entities, ~4000 nodes at +5 s, about 60 s to the full region); the simulator had streamed only 870 objects by then. Verification: `4760 of 4760 cached objects confirmed by the simulator after 39s, 0 gone and removed`. Still open from the list below.
 - [x] **Needed on Second Life (`v0.24.113-alpha`):** the cache stays on for every grid. So the handshake is now answered **once, with the truth**, as the viewer does: LibreMetaverse's `RegionHandshakeHandler` is unregistered and replaced by `HandleRegionHandshake` (the same assignments, NetworkManager.cs:1399-1458, then `Simulator.connected`, `handshakeComplete` and `ConnectedEvent` by reflection). A second reply behind LibreMetaverse's would not reach a simulator that acts on the first. Guards: the members are checked before anything is touched (else LibreMetaverse's handler stays and the old second-reply fallback runs); the handshake is completed whatever goes wrong; two contract tests fail if a LibreMetaverse upgrade moves either reflection point. Also: `RequestMultipleObjects` and the handshake reply are sent **reliably** (the viewer does; a lost miss request is an object never shown), and after three failed replays every probe is answered by asking, as before the cache existed.
 - [ ] In-world, remaining: second login shows `has not probed: showing N objects from the cache`, the scene at once, then `N of M cached objects confirmed ... K gone and removed`. Open: Agni (probes expected), BUG-NET-21's id re-request answered from the cache, a settings entry and a clear-cache action.

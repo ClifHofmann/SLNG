@@ -7,8 +7,9 @@ namespace SLNG.Net;
 /// -- measured live: 3232 objects on the return against 5439 on a fresh arrival, which is the
 /// 2287 the first visit had delivered, taken away. We throw a region's objects out when we
 /// teleport, so the nearest ones (the simulator sends nearest first) are exactly what is missing.
-/// <c>RequestMultipleObjects</c> is answered with a full update whatever the simulator thinks we
-/// know (OpenSim <c>Scene.RequestPrim</c>), so the missing ones are simply asked for by id.</para>
+/// <c>RequestMultipleObjects</c> is answered with the object's full state (what the reference
+/// viewer relies on for every cache miss), so the missing ones are simply asked for by id. Measured
+/// on Second Life; why the simulator holds back what it sent is not known.</para>
 /// </summary>
 internal static class ObjectRecoveryPlan
 {
