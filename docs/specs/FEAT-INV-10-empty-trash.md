@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-INV-10`
 - **Track:** `ui` / `net`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -32,7 +32,7 @@ therefore refuses anything outside the Trash itself, not only the menu.
 - [x] Restore confirmed in-world on Second Life, 2026-09-29 (Millenium; delete to Trash, restore to Objects).
 - [x] Delete permanently reported working by the user, 2026-09-29 (no `Purge` line in the surviving client logs).
 - [x] Empty Trash reported working by the user, 2026-09-30 (on SL through AIS `DELETE …/children`; not visible in the surviving client logs).
-- [ ] Confirmed on OpenSim (UDP path).
+- [x] Confirmed on OpenSim (UDP path), 2026-09-30: OSGrid (Lbsa Plaza), `PurgeDescendents … via UDP: 238 item(s)` in the client log; and on SL via AIS, `PurgeDescendents … via AIS: 2 item(s)`.
 
 ## Decisions
 - **Restore does not go back to where the thing came from.** Nobody knows that: the grid keeps no
@@ -66,4 +66,4 @@ therefore refuses anything outside the Trash itself, not only the menu.
 ## Sub-tasks / Progress
 - [x] Network half + tests
 - [x] Menus, prompts, strings (de/en), selftest check
-- [ ] In-world confirmation
+- [x] In-world confirmation
