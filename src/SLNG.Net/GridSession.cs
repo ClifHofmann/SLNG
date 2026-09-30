@@ -715,6 +715,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // so it runs after it: LibreMetaverse decodes the object as usual (correctly, apart from
         // the particles) and this puts the particles back.
         _client.Network.RegisterCallback(PacketType.ObjectUpdateCompressed, OnObjectUpdateCompressedRaw);
+        RegisterRegionStreamProbe(); // BUG-NET-21
         _client.Objects.AvatarUpdate += OnAvatarUpdate;
         _client.Objects.ObjectPropertiesFamily += OnObjectPropertiesFamily;
         _client.Objects.ObjectProperties += OnObjectPropertiesFull;
@@ -851,6 +852,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Self.AlertMessage -= OnAlertMessage;
         // The next session's regions have nothing to do with this one's (BUG-NET-20).
         lock (_eventQueueHealth) _eventQueueHealth.Clear();
+        lock (_departureLock) { _objectsAtDeparture.Clear(); _departureOrder.Clear(); } // BUG-NET-21
         _client.Objects.KillObject -= OnKillObject;
         _client.Objects.KillObjects -= OnKillObjects;
         _client.Terrain.LandPatchReceived -= OnLandPatchReceived;
@@ -874,6 +876,8 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Parcels.ParcelProperties -= OnParcelPropertiesReceived;
         _currentParcelName = null;
         _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
+        UnregisterRegionStreamProbe();
+        UnregisterObjectCache();
         Logout();
     }
 }

@@ -112,6 +112,7 @@ public sealed class WorldSimulation : IDisposable
                 case RegionDisconnectedEvent { SessionEnded: true }:
                     break;
                 case RegionDisconnectedEvent e:
+                    ParkTerrain(e.RegionHandle);
                     _world.RemoveRegion(e.RegionHandle);
                     _avatarCacheDirty = true; // takes every avatar in that region with it
                     break;
@@ -133,6 +134,8 @@ public sealed class WorldSimulation : IDisposable
     public void UnloadAllRegions()
     {
         while (_pending.TryDequeue(out _)) { }
+        _parkedTerrain.Clear();
+        _parkedOrder.Clear();
         _world.RemoveAllRegions();
         _avatarCacheDirty = true;
     }
@@ -1058,8 +1061,44 @@ public sealed class WorldSimulation : IDisposable
     /// per region, not per packet.</summary>
     private readonly HashSet<ulong> _regionDataLogged = new();
 
+    // BUG-NET-21: what a region's terrain looked like when we left it. Measured on Second Life
+    // (Agni): a region left and entered again sends only a fraction of its terrain packets (5-10
+    // against 42 on a first arrival) -- the ground, its textures and the water height would be
+    // missing. Why the simulator does that is not known. So the terrain is kept aside at
+    // departure and put back when the region connects again; whatever the simulator does send
+    // overwrites it.
+    private const int MaxParkedTerrains = 4;
+    private readonly Dictionary<ulong, RegionTerrain> _parkedTerrain = new();
+    private readonly List<ulong> _parkedOrder = new();
+
+    private void ParkTerrain(ulong regionHandle)
+    {
+        if (!_world.Terrains.TryGetValue(regionHandle, out var terrain)) return;
+        _parkedTerrain[regionHandle] = terrain;
+        _parkedOrder.Remove(regionHandle);
+        _parkedOrder.Add(regionHandle);
+        while (_parkedOrder.Count > MaxParkedTerrains)
+        {
+            _parkedTerrain.Remove(_parkedOrder[0]);
+            _parkedOrder.RemoveAt(0);
+        }
+    }
+
+    /// <summary>Puts the terrain kept at departure back, if this region has none loaded. Called
+    /// before anything for the region touches the world's terrain.</summary>
+    private void RestoreParkedTerrain(ulong regionHandle)
+    {
+        if (_world.Terrains.ContainsKey(regionHandle)) return;
+        if (!_parkedTerrain.Remove(regionHandle, out var parked)) return;
+        _parkedOrder.Remove(regionHandle);
+        _world.RestoreTerrain(regionHandle, parked);
+        System.Console.WriteLine($"[RegionData] restored the terrain held for region {regionHandle} " +
+                                 "(the simulator does not resend it to a returning agent)");
+    }
+
     private void ApplyTerrainPatch(TerrainPatchEvent e)
     {
+        RestoreParkedTerrain(e.RegionHandle);
         bool firstPatch = !_world.Terrains.ContainsKey(e.RegionHandle);
         var terrain = _world.GetOrCreateTerrain(e.RegionHandle, e.RegionSizeX, e.RegionSizeY);
         terrain.ApplyPatch(e.X, e.Y, e.HeightMap);
@@ -1070,7 +1109,19 @@ public sealed class WorldSimulation : IDisposable
 
     private void ApplyTerrainSettings(TerrainSettingsEvent e)
     {
+        RestoreParkedTerrain(e.RegionHandle);
         var terrain = _world.GetOrCreateTerrain(e.RegionHandle, e.RegionSizeX, e.RegionSizeY);
+
+        // BUG-NET-21: a region whose handshake was never sent again reports nothing filled in.
+        // That is "unknown", not "no textures, water at zero" -- keep what we hold.
+        bool unfilled = e.Detail0 == Guid.Empty && e.Detail1 == Guid.Empty
+                        && e.Detail2 == Guid.Empty && e.Detail3 == Guid.Empty;
+        if (unfilled && terrain.TerrainDetail0 != Guid.Empty)
+        {
+            _world.NotifyTerrainSettingsUpdated(e.RegionHandle); // the restored terrain still needs its textures
+            return;
+        }
+
         terrain.TerrainDetail0 = e.Detail0;
         terrain.TerrainDetail1 = e.Detail1;
         terrain.TerrainDetail2 = e.Detail2;

@@ -1349,6 +1349,7 @@ public partial class AvatarController : Camera3D
             ulong currentRegion = _session.CurrentRegionHandle;
             if (currentRegion != 0 && localAgent != null && localAgent.RegionHandle != currentRegion)
             {
+                _session.NoteAgentUpdateSkipped(); // BUG-NET-21
                 return;
             }
 

@@ -54,6 +54,7 @@ public sealed partial class GridSession
             // the sim not streaming (interest list / camera), not a render bug.
             Console.WriteLine($"[RegionEnter] {sim.Name} ({sim.Handle}) is now the current region");
             RegionConnected?.Invoke(this, sim.Handle);
+            ScheduleObjectRecovery(sim); // BUG-NET-21: a region we left and are back in
             // FEAT-ECON-01: ask for the L$ balance on arrival. The simulator volunteers one only
             // when it changes, so without asking, a session that spends nothing never learns it.
             RequestBalance();
@@ -466,6 +467,9 @@ public sealed partial class GridSession
             isCurrentRegion: e.Simulator.Handle == _client.Network.CurrentSim?.Handle,
             networkConnected: _client.Network.Connected,
             sessionAlreadyEnded: System.Threading.Volatile.Read(ref _sessionEndRaised) != 0);
+        // BUG-NET-21: what we held for this region, so it can be asked for by id if we come back.
+        if (!withSession) RememberObjectsAtDeparture(e.Simulator);
+        if (!withSession) SaveRegionInBackground(e.Simulator.Handle); // FEAT-NET-04
         Console.WriteLine(withSession
             ? $"[Neighbor] {e.Simulator.Name} ({e.Simulator.Handle}) went with the session ({e.Reason}) -- left on screen"
             : $"[Neighbor] disconnected {e.Simulator.Name} ({e.Simulator.Handle})");
@@ -592,6 +596,10 @@ public sealed partial class GridSession
     public async Task<LoginResult> LoginAsync(LoginCredentials credentials, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(credentials);
+
+        // FEAT-NET-04: here rather than in the constructor -- whether the cache is used is decided by
+        // the app after the session exists and before it logs in.
+        RegisterObjectCache();
 
         // Known before the handshake even starts -- see _isLindenGrid's doc comment. Set
         // regardless of outcome: a failed attempt still needs the dump gate armed for whatever

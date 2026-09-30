@@ -4,7 +4,7 @@ Willkommen beim Benutzerhandbuch für den **Puris Viewer** (internes Projekt: *S
 
 > **Status:** Alpha. Es kommen kontinuierlich neue Funktionen hinzu.
 >
-> Dieses Handbuch beschreibt Version **v0.24.99-alpha**. Die Version steht oben rechts in der Menüleiste und auf dem Anmeldebildschirm. Was nicht funktioniert, steht in Abschnitt 11.
+> Dieses Handbuch beschreibt Version **v0.24.115-alpha**. Die Version steht oben rechts in der Menüleiste und auf dem Anmeldebildschirm. Was nicht funktioniert, steht in Abschnitt 11.
 
 ---
 
@@ -51,6 +51,7 @@ Alle Menüs und schwebenden Fenster (UI-Fenster) bestehen aus ansprechenden, hal
 - **Ordner-Menü (Rechtsklick auf einen Ordner):** `Neuer Ordner…`, `Umbenennen…` und `Ordner löschen`. Gelöscht wird nichts endgültig: Der Ordner samt Inhalt wandert in den Papierkorb (`In den Papierkorb`).
 - **Verschieben per Ziehen:** Ziehen Sie eine Zeile auf einen Ordner, um sie dort hineinzulegen.
 - **Ausschneiden, Kopieren, Einfügen:** Funktioniert mit der Tastatur und über das Menü. **Ganze Ordner** lassen sich kopieren, auch verschachtelte. Zusätzlich gibt es `Als Verknüpfung einfügen` – das ist wichtig, weil Outfits aus Verknüpfungen bestehen.
+- **Original einer Verknüpfung:** Per Doppelklick auf eine Verknüpfung oder über Rechtsklick -> `Original anzeigen` springt das Inventar zum echten Gegenstand. Bei einer Ordner-Verknüpfung klappt es den Ordner auf und wählt ihn aus; ist das Original nicht mehr im Inventar, sagt der Viewer es Ihnen.
 - **Schutzregeln:** Systemordner (z. B. „Objekte“) lassen sich weder umbenennen noch löschen noch ausschneiden, denn das Grid sortiert eingehende Gegenstände nach dem *Typ* des Ordners, nicht nach dem Namen. Ein Ordner kann nicht in sich selbst oder in einen eigenen Unterordner eingefügt werden. Aus `#Library` lässt sich nichts ausschneiden, denn das gehört Ihnen nicht – kopieren Sie es stattdessen.
 
 #### Papierkorb
@@ -149,6 +150,7 @@ Das voll ausgestattete Benutzerprofil-Fenster ist zentral für Ihre SL-Identitä
 Der Puris Viewer legt höchsten Wert auf eine optisch ansprechende, korrekte Darstellung:
 - **Bento & Bakes-on-Mesh (BoM):** Moderne Mesh-Körper, Bento-Skelette, Animationen, Alpha-Masken und klassische Systemkleidung (über BoM gebacken) werden vollständig unterstützt.
 - **Grafikeinstellungen:** Im Einstellungsfenster (`Preferences`) -> `Grafik` können Sie Funktionen wie die Sichtweite (Draw Distance), Anti-Aliasing (MSAA) und die Qualität der dynamischen Echtzeit-Schatten (CSM) anpassen.
+- **Objekt-Cache:** Der Viewer merkt sich die Objekte jeder Region, die Sie besucht haben, auf der Festplatte. Beim nächsten Besuch — auch nach einem Neustart oder wenn Sie schnell in eine Region zurückspringen — steht ein Großteil der Region sofort da, statt erst nach und nach vom Server zu kommen. Unter `Einstellungen` -> `Netzwerk` leert der Knopf `Asset- und Objekt-Cache leeren` beide Zwischenspeicher; daneben steht, wie viel Platz sie belegen. Wer den Objekt-Cache nicht nutzen will, startet den Viewer mit `--no-object-cache`.
 - **Namensschilder:** Über dem Avatar steht der **Anzeigename**; darunter in Klammern der unveränderliche Benutzername, wenn beide verschieden sind. Avatare ohne eigenen Anzeigenamen zeigen nur ihren Namen. Darüber kann der Gruppentitel stehen. Unter `Einstellungen` -> `Anzeige` schalten Sie das ein oder aus: `Gruppentitel zeigen`, `Anzeigenamen verwenden`, `Benutzernamen unter dem Anzeigenamen zeigen` und `Meinen Gruppentitel vor allen verbergen` (das wirkt wirklich auf andere: Der Simulator sendet Ihren Titel dann an niemanden).
   - Der Viewer **merkt sich Anzeigenamen** zwischen den Sitzungen, sie stehen beim nächsten Login sofort da. Ein bereits gemerkter Name wird nach 24 Stunden im Hintergrund neu abgefragt.
   - Ändert jemand seinen Anzeigenamen und meldet das Grid es, aktualisiert sich das Namensschild, und im Fenster **Benachrichtigungen** (Reiter *System*) erscheint „*alter Name* (*Benutzername*) heißt jetzt *neuer Name*“.

@@ -162,6 +162,16 @@ public class World
         foreach (var region in regions) RemoveRegion(region);
     }
 
+    /// <summary>Puts a terrain back that <see cref="RemoveRegion"/> took out, for a region that is
+    /// not holding one now. Returns whether it was put back.</summary>
+    public bool RestoreTerrain(ulong regionHandle, RegionTerrain terrain)
+    {
+        if (_terrains.ContainsKey(regionHandle)) return false;
+        _terrains[regionHandle] = terrain;
+        NotifyTerrainUpdated(regionHandle);
+        return true;
+    }
+
     /// <summary>
     /// Gets or creates a terrain object for the specified region.
     /// </summary>

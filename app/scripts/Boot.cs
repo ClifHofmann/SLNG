@@ -393,7 +393,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.104-alpha";
+    public const string AppVersion = "v0.24.115-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1524,7 +1524,10 @@ public partial class Boot : Control
 
         var networkPage = new SLNG.App.UI.NetworkPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);
-        networkPage.Initialize(ProjectSettings.GlobalizePath("user://cache/assets"));
+        networkPage.Initialize(
+            ProjectSettings.GlobalizePath("user://cache/assets"),
+            ProjectSettings.GlobalizePath("user://cache/objects"),
+            () => _session?.ClearObjectCache()); // FEAT-NET-04: one button clears both caches
 
         // "Age settings" -- Second Life's content-rating preference (General/Moderate/Adult).
         // Rebound to the live session per login in BindSession, once a session exists to read
@@ -3304,6 +3307,11 @@ public partial class Boot : Control
             ProjectSettings.GlobalizePath("user://cache/inventory"),
             ProjectSettings.GlobalizePath("user://cache/displaynames"));
 
+        // FEAT-NET-04: the object cache is on; --no-object-cache puts the session back exactly as it
+        // was (handshake says "cache empty", every cached object is asked for). Read before login.
+        _session.ObjectCacheEnabled = !System.Array.Exists(OS.GetCmdlineUserArgs(), a => a == "--no-object-cache");
+        _session.UseObjectCacheDirectory(ProjectSettings.GlobalizePath("user://cache/objects"));
+
         _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, _gpuCache);
         _avatarRenderer?.Initialize(_world, _assetService, _gpuCache, _session);
@@ -4242,11 +4250,48 @@ public partial class Boot : Control
         CloseRegionRestartWindow();
 
         var handle = ulong.Parse(regionHandle);
+        LogOriginChange(handle);
         RenderConfig.SetRegionOrigin(handle);
         // BUG-NET-03: after the origin moves, tell the terrain renderer which region we're in so
         // its void-water plane sits at this region's water height (order matters -- it reads the
         // origin we just set).
         _terrainRenderer?.SetPrimaryRegion(handle);
+    }
+
+    // BUG-NET-21: nodes are placed ONCE, relative to the origin of the moment they were built --
+    // nothing re-places them when the origin moves. So after a teleport the question "is the
+    // content there but mis-placed, or is it not there?" is answered by what the world still holds
+    // per region at the instant the origin moves. No log of the reported rapid-teleport session
+    // survived (client-output.log is overwritten on every launch), so this line is what the next
+    // repro reads.
+    private void LogOriginChange(ulong newHandle)
+    {
+        if (_world == null) return;
+        var perRegion = new System.Collections.Generic.SortedDictionary<ulong, int>();
+        foreach (var e in _world.GetAllEntities())
+            perRegion[e.RegionHandle] = perRegion.GetValueOrDefault(e.RegionHandle) + 1;
+        var held = string.Join(", ", perRegion.Select(kv =>
+            $"{kv.Key}{(kv.Key == newHandle ? "*" : "")}={kv.Value}"));
+        GD.Print($"[Origin] {(ulong)(RenderConfig.OriginX)},{(ulong)(RenderConfig.OriginY)} -> region {newHandle}; " +
+                 $"world holds {perRegion.Values.Sum()} entities [{held}], {_world.Terrains.Count} terrain(s)");
+
+        // The arrival itself proved nothing (the origin is correct and the old region's entities
+        // are simply still queued for removal), but a region that comes back at a fraction of its
+        // content stays that way. So follow it for a minute: entities the world holds for the
+        // region, scene nodes, and what the simulator actually streamed.
+        foreach (var seconds in new[] { 5, 15, 30, 60 })
+        {
+            GetTree().CreateTimer(seconds).Timeout += () => LogRegionLoad(newHandle, seconds);
+        }
+    }
+
+    private void LogRegionLoad(ulong regionHandle, int secondsAfterArrival)
+    {
+        if (_world == null || _session == null) return;
+        int entities = _world.GetAllEntities().Count(e => e.RegionHandle == regionHandle);
+        var nodes = (long)Performance.GetMonitor(Performance.Monitor.ObjectNodeCount);
+        GD.Print($"[RegionLoad] +{secondsAfterArrival}s region {regionHandle}: world holds {entities} entities for it, " +
+                 $"{nodes} scene nodes | {_session.DescribeRegionStream(regionHandle)}");
     }
 
     // Deferred target for GridSession.RegionCapabilitiesReady -- see that event's doc comment for

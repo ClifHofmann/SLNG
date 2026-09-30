@@ -241,6 +241,7 @@ public sealed partial class GridSession
                 ? new LibreMetaverse.Vector3(f.X, f.Y, f.Z)
                 : LibreMetaverse.Vector3.UnitX * slCameraQuat;
             _client.Self.Movement.Camera.LookAt(slPos, slPos + slFwd);
+            _lastCameraPosition = camPos; // BUG-NET-21: what the interest list was last told
         }
         else
         {
@@ -248,7 +249,10 @@ public sealed partial class GridSession
         }
 
         if (cameraFar > 0f)
+        {
             _client.Self.Movement.Camera.Far = cameraFar;
+            _lastCameraFar = cameraFar;
+        }
 
         // FEAT-ANIM-10: BodyRotation is always the avatar's body facing; HeadRotation follows
         // the camera rotation if HeadFollowsCamera is enabled, or stays aligned with the body if disabled.
@@ -280,6 +284,7 @@ public sealed partial class GridSession
 
         // Send the update to the server
         _client.Self.Movement.SendUpdate(false);
+        Interlocked.Increment(ref _agentUpdatesSent); // BUG-NET-21
     }
 
     private static readonly Lazy<IReadOnlyDictionary<LibreMetaverse.UUID, string>> _builtinAnimNames = new(() => LibreMetaverse.Animations.ToDictionary());
