@@ -4,7 +4,7 @@ Willkommen beim Benutzerhandbuch für den **Puris Viewer** (internes Projekt: *S
 
 > **Status:** Alpha. Es kommen kontinuierlich neue Funktionen hinzu.
 >
-> Dieses Handbuch beschreibt Version **v0.24.88-alpha**. Die Version steht oben rechts in der Menüleiste und auf dem Anmeldebildschirm. Was nicht funktioniert, steht in Abschnitt 11.
+> Dieses Handbuch beschreibt Version **v0.24.99-alpha**. Die Version steht oben rechts in der Menüleiste und auf dem Anmeldebildschirm. Was nicht funktioniert, steht in Abschnitt 11.
 
 ---
 
@@ -43,14 +43,23 @@ Alle Menüs und schwebenden Fenster (UI-Fenster) bestehen aus ansprechenden, hal
 - **Minimieren / Wiederherstellen:** Ein Doppelklick auf die Titelleiste eines Fensters (oder ein Klick auf `_`) klappt es auf die Titelleiste zusammen; ein erneuter Doppelklick klappt es wieder auf. Ein zusammengeklapptes Fenster lässt sich außerdem über seinen Knopf in der unteren Leiste oder im Schnellmenü wieder aufklappen.
 
 ### Inventar
-- **Reiter:** Das Inventar-Fenster hat drei Reiter – *Inventar* (der komplette Ordnerbaum), *Angezogen* (was Ihr Avatar gerade trägt) und *Outfits* (gespeicherte Outfits).
+- **Reiter:** Das Inventar-Fenster hat drei Reiter – *Inventar* (der komplette Ordnerbaum), *Angezogen* (was Ihr Avatar gerade trägt) und *Outfits* (gespeicherte Outfits). Im Reiter *Angezogen* legt ein Rechtsklick -> `Ablegen` oder ein Doppelklick genau das angeklickte Teil ab.
 - **Filterleiste:** Das Such-/Filterfeld sitzt fest oben unter den Reitern und wirkt in jedem Reiter. Der eingegebene Text filtert jeweils die gerade sichtbare Liste; beim Wechsel des Reiters bleibt der Filter erhalten.
+- **Schnellerer Start:** Der Viewer merkt sich Ihr Inventar zwischen den Sitzungen. Ab der zweiten Anmeldung sind Ordner, die sich nicht verändert haben, sofort da, statt erst vom Grid geladen zu werden. Gespeichert wird beim Abmelden, beim Beenden und auch dann, wenn das Grid die Sitzung beendet.
 
 #### Ordner anlegen, verschieben, kopieren
 - **Ordner-Menü (Rechtsklick auf einen Ordner):** `Neuer Ordner…`, `Umbenennen…` und `Ordner löschen`. Gelöscht wird nichts endgültig: Der Ordner samt Inhalt wandert in den Papierkorb (`In den Papierkorb`).
 - **Verschieben per Ziehen:** Ziehen Sie eine Zeile auf einen Ordner, um sie dort hineinzulegen.
 - **Ausschneiden, Kopieren, Einfügen:** Funktioniert mit der Tastatur und über das Menü. **Ganze Ordner** lassen sich kopieren, auch verschachtelte. Zusätzlich gibt es `Als Verknüpfung einfügen` – das ist wichtig, weil Outfits aus Verknüpfungen bestehen.
 - **Schutzregeln:** Systemordner (z. B. „Objekte“) lassen sich weder umbenennen noch löschen noch ausschneiden, denn das Grid sortiert eingehende Gegenstände nach dem *Typ* des Ordners, nicht nach dem Namen. Ein Ordner kann nicht in sich selbst oder in einen eigenen Unterordner eingefügt werden. Aus `#Library` lässt sich nichts ausschneiden, denn das gehört Ihnen nicht – kopieren Sie es stattdessen.
+
+#### Papierkorb
+Was Sie löschen, landet zuerst im Papierkorb. Von dort holen Sie es zurück oder entfernen es endgültig:
+- **Papierkorb leeren:** Rechtsklick auf den Papierkorb -> `Papierkorb leeren…`. Der Viewer zählt zuerst, was darin liegt, und fragt dann mit der Anzahl nach, z. B. „3 Objekte und 1 Ordner im Papierkorb endgültig löschen?“.
+- **Rechtsklick auf etwas im Papierkorb** bietet zwei Dinge an:
+  - `Wiederherstellen nach „…“` legt es zurück – allerdings nicht in den Ordner, aus dem es kam, denn das merkt sich weder das Grid noch ein anderer Viewer. Es landet im passenden Systemordner, z. B. „Objects“ oder „Clothing“; Schnappschüsse kommen ins Fotoalbum, Ordner ganz nach oben ins Inventar. Der Menüeintrag nennt das Ziel, bevor Sie klicken.
+  - `Endgültig löschen…` entfernt ein einzelnes Teil, bei einem Ordner mit allem darin, nach einer eigenen Rückfrage.
+- **Endgültig heißt endgültig:** Leeren und endgültiges Löschen lassen sich nicht rückgängig machen. Was Sie gerade tragen, wird nicht gelöscht: Der Viewer nennt dann das Teil – erst ausziehen, dann löschen.
 
 #### Outfits
 Rechtsklick auf ein gespeichertes Outfit im Reiter *Outfits*:
@@ -122,7 +131,7 @@ Kündigt das Grid einen Neustart der Region an, in der Sie stehen, öffnet sich 
 - Kommt eine weitere Meldung ("noch eine Minute"), wird dasselbe Fenster aktualisiert – es öffnet sich kein zweites. Ein Regionswechsel schließt es. `Schließen` blendet es aus, ohne Sie zu teleportieren.
 - Die Meldung bleibt zusätzlich im Fenster **Benachrichtigungen** (Reiter *System*) stehen.
 
-**Wenn Sie bleiben:** Beim Neustart beendet das Grid Ihre Sitzung. Der Viewer zeigt dann **Du wurdest abgemeldet** mit dem Grund und zwei Knöpfen: `Zur Anmeldung` geht zum Anmeldebildschirm, `Hier bleiben` lässt Sie den Chat weiterlesen. Der Viewer sendet dabei ein ordentliches Abmelden an das Grid. Dasselbe passiert, wenn die Verbindung abläuft oder eine Region nicht mehr antwortet.
+**Wenn Sie bleiben:** Beim Neustart beendet das Grid Ihre Sitzung. Der Viewer zeigt dann **Du wurdest abgemeldet** mit dem Grund und zwei Knöpfen: `Zur Anmeldung` geht zum Anmeldebildschirm, `Hier bleiben` lässt Sie den Chat weiterlesen. Der Viewer sendet dabei ein ordentliches Abmelden an das Grid. Dasselbe passiert, wenn die Verbindung abläuft, eine Region nicht mehr antwortet oder Sie sich mit demselben Avatar anderswo anmelden. Die Welt bleibt dabei stehen, wie sie war – Landschaft, Objekte und Ihr Avatar mit allem, was er trägt; erst `Zur Anmeldung` räumt sie ab.
 
 ---
 
