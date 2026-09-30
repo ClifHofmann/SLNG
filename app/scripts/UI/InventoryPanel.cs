@@ -1865,9 +1865,14 @@ public partial class InventoryPanel : SLNGWindow
     /// <para>And a text field always wins. Somebody typing into a LineEdit is copying TEXT, and a
     /// panel that grabbed Ctrl+C from under them would break the more ordinary of the two
     /// meanings.</para>
+    ///
+    /// <para>BUG-UI-17: <c>base._Input</c> first. That is where <see cref="SLNGWindow"/> raises a
+    /// clicked window above the others; without it the inventory stayed behind whatever overlapped
+    /// it, however often it was clicked.</para>
     /// </remarks>
     public override void _Input(InputEvent @event)
     {
+        base._Input(@event);
         if (!Visible || _session == null) return;
         if (@event is not InputEventKey { Pressed: true, CtrlPressed: true, Echo: false } key) return;
         if (key.Keycode is not (Key.C or Key.X or Key.V)) return;
