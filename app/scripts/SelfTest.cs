@@ -170,6 +170,7 @@ public static class SelfTest
         results.Add(CheckAvatarAnimationLocalOverlay());
         results.Add(CheckRegionRestartWindow(tree));
         results.Add(CheckInventoryTrashMenus(tree));
+        results.Add(CheckWornListKeepsSelection(tree));
         // Last, so it sees everything the run did.
         results.Add(CheckUserDataUntouched());
 
@@ -263,6 +264,57 @@ public static class SelfTest
             return new Check(Name, ok, ok
                 ? string.Join(" | ", labels)
                 : $"{menuEntries} menu entr(y/ies) (want 3), unresolved: {string.Join(", ", unresolved)}");
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(panel)) panel.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// BUG-INV-11: the worn list is refreshed every 2.5 s while its tab is open. A refresh that finds
+    /// nothing changed must leave the rows alone, and one that does rebuild must keep the selected
+    /// row selected. The old clear-and-rebuild dropped the selection under an open context menu, so
+    /// „Ablegen" went nowhere — reported in-world, invisible to every unit test.
+    /// </summary>
+    private static Check CheckWornListKeepsSelection(SceneTree tree)
+    {
+        const string Name = "worn list keeps its selection";
+        var panel = new SLNG.App.UI.InventoryPanel();
+        try
+        {
+            tree.Root.AddChild(panel);
+
+            static SLNG.Core.WornItem Worn(string name, string point) => new(
+                System.Guid.NewGuid(), name, SLNG.Core.WornCategory.Attachment, point, AssetType: 6, Live: true);
+            var hat = Worn("Hat", "Skull");
+            var shoe = Worn("Shoe", "Left Foot");
+            var ring = Worn("Ring", "Left Hand");
+
+            panel.ShowWornItems(new[] { hat, shoe });
+            bool selected = panel.SelectWorn(shoe.ItemId);
+            ulong rowBefore = panel.WornRowFor(shoe.ItemId)?.GetInstanceId() ?? 0;
+
+            // The same set in another order: nothing to rebuild.
+            panel.ShowWornItems(new[] { shoe, hat });
+            bool untouched = rowBefore != 0
+                && panel.WornRowFor(shoe.ItemId)?.GetInstanceId() == rowBefore
+                && panel.SelectedWornId() == shoe.ItemId;
+
+            // Something new arrived: rebuilt, and the selection survives it.
+            panel.ShowWornItems(new[] { hat, shoe, ring });
+            bool rebuilt = panel.WornRowFor(ring.ItemId) != null;
+            bool kept = panel.SelectedWornId() == shoe.ItemId;
+
+            bool ok = selected && untouched && rebuilt && kept;
+            return new Check(Name, ok, ok
+                ? "an unchanged refresh keeps the rows, a changed one keeps the selected row selected"
+                : $"selected={selected}, unchanged refresh left rows and selection alone={untouched}, " +
+                  $"change rebuilt the list={rebuilt}, selection survived the rebuild={kept}");
         }
         catch (System.Exception ex)
         {

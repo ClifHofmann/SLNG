@@ -615,13 +615,39 @@ public partial class InventoryPanel : SLNGWindow
         (SLNG.Core.WornCategory.Hud, "HUDs"),
     };
 
-    /// <summary>Rebuilds the flat worn list from <see cref="GridSession.GetWornItems"/>. Main
+    /// <summary>Refreshes the flat worn list from <see cref="GridSession.GetWornItems"/>. Main
     /// thread only (mutates the Tree); the call is cheap (reads LibreMetaverse caches, no I/O).</summary>
     private void RefreshWorn()
     {
         if (_session == null || !IsInstanceValid(_wornTree)) return;
+        ShowWornItems(_session.GetWornItems());
+    }
 
-        var items = _session.GetWornItems();
+    /// <summary>What the worn list showed when it was last built. See <see cref="ShowWornItems"/>.</summary>
+    private HashSet<SLNG.Core.WornItem>? _shownWornItems;
+
+    /// <summary>
+    /// Puts these worn items into the list — unless it already shows exactly them, in which case the
+    /// tree is left alone. When it does change, the selected row stays selected.
+    /// </summary>
+    /// <remarks>
+    /// BUG-INV-11. The list used to be cleared and rebuilt on every call, and the safety-net
+    /// <see cref="_wornTimer"/> calls every 2.5 s while the tab is open. A rebuild frees every row
+    /// and the selection with them, so a right-click followed by an unhurried trip to „Ablegen" lost
+    /// its row on the way: the highlight vanished, and the detach went nowhere because the menu read
+    /// the selection only when it fired. The menu now acts on the item captured at the right-click
+    /// (<see cref="_wornMenuTarget"/>); this is what keeps the highlight where it was, and it stops
+    /// the list churning when nothing has changed.
+    /// </remarks>
+    internal void ShowWornItems(IReadOnlyList<SLNG.Core.WornItem> items)
+    {
+        if (!IsInstanceValid(_wornTree)) return;
+        // WornItem is a record, so this compares what a row shows, not object identity -- a name
+        // that has just resolved, or a link that has come alive, is a change and rebuilds.
+        if (_shownWornItems != null && _shownWornItems.SetEquals(items)) return;
+        _shownWornItems = new HashSet<SLNG.Core.WornItem>(items);
+
+        var keepSelected = SelectedWornId();
         _wornTree.Clear();
         var root = _wornTree.CreateItem();
 
@@ -659,18 +685,52 @@ public partial class InventoryPanel : SLNGWindow
             header.Collapsed = false;
         }
 
+        if (keepSelected != Guid.Empty) SelectWorn(keepSelected);
+
         // Keep the shared filter (FEAT-INV-06) applied across a rebuild -- the safety-net
         // _wornTimer refreshes this tree every 2.5 s while the tab is open.
         if (_tabs?.CurrentTab == 1 && FilterQuery.Length > 0)
             FilterTree(root, FilterQuery, ancestorMatched: false);
     }
 
+    /// <summary>The worn row for an item, or null.</summary>
+    internal TreeItem? WornRowFor(Guid itemId)
+    {
+        var root = _wornTree.GetRoot();
+        if (root == null) return null;
+        foreach (var header in root.GetChildren())
+            foreach (var row in header.GetChildren())
+                if (Guid.TryParse(row.GetMetadata(0).AsString(), out var id) && id == itemId) return row;
+        return null;
+    }
+
+    /// <summary>Selects an item's worn row. False if the list does not show it.</summary>
+    internal bool SelectWorn(Guid itemId)
+    {
+        var row = WornRowFor(itemId);
+        if (row == null) return false;
+        row.Select(0);
+        return true;
+    }
+
+    /// <summary>The item whose worn row is selected, or <see cref="Guid.Empty"/>.</summary>
+    internal Guid SelectedWornId()
+        => _wornTree.GetSelected() is { } row && Guid.TryParse(row.GetMetadata(0).AsString(), out var id)
+            ? id
+            : Guid.Empty;
+
+    /// <summary>BUG-INV-11: the worn item the menu was opened on, captured at the right-click for
+    /// the same reason as <see cref="_folderMenuTarget"/> -- here the list is rebuilt underneath an
+    /// open menu, not just clicked elsewhere.</summary>
+    private Guid _wornMenuTarget;
+
     private void OnWornGuiInput(InputEvent @event)
     {
         if (@event is not InputEventMouseButton mb || !mb.Pressed || mb.ButtonIndex != MouseButton.Right) return;
         var row = _wornTree.GetItemAtPosition(mb.Position);
-        if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out _)) return; // header / empty
+        if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out var itemId)) return; // header / empty
         row.Select(0);
+        _wornMenuTarget = itemId;
         _wornMenu.Position = (Vector2I)GetGlobalMousePosition();
         _wornMenu.Popup();
     }
@@ -684,9 +744,9 @@ public partial class InventoryPanel : SLNGWindow
 
     private void OnWornMenuPressed(long id)
     {
-        var row = _wornTree.GetSelected();
-        if (row == null || !Guid.TryParse(row.GetMetadata(0).AsString(), out var itemId)) return;
-        if (id == 0) _ = DetachWornAsync(itemId);
+        // The item that was right-clicked, not whatever happens to be selected by now.
+        if (_wornMenuTarget == Guid.Empty) return;
+        if (id == 0) _ = DetachWornAsync(_wornMenuTarget);
     }
 
     /// <summary>Status text computed off-thread by <see cref="DetachWornAsync"/>, consumed by
