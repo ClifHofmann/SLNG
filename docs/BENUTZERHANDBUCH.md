@@ -4,7 +4,7 @@ Willkommen beim Benutzerhandbuch für den **Puris Viewer** (internes Projekt: *S
 
 > **Status:** Alpha. Es kommen kontinuierlich neue Funktionen hinzu.
 >
-> Dieses Handbuch beschreibt Version **v0.24.99-alpha**. Die Version steht oben rechts in der Menüleiste und auf dem Anmeldebildschirm. Was nicht funktioniert, steht in Abschnitt 11.
+> Dieses Handbuch beschreibt Version **v0.24.115-alpha**. Die Version steht oben rechts in der Menüleiste und auf dem Anmeldebildschirm. Was nicht funktioniert, steht in Abschnitt 11.
 
 ---
 
@@ -51,6 +51,7 @@ Alle Menüs und schwebenden Fenster (UI-Fenster) bestehen aus ansprechenden, hal
 - **Ordner-Menü (Rechtsklick auf einen Ordner):** `Neuer Ordner…`, `Umbenennen…` und `Ordner löschen`. Gelöscht wird nichts endgültig: Der Ordner samt Inhalt wandert in den Papierkorb (`In den Papierkorb`).
 - **Verschieben per Ziehen:** Ziehen Sie eine Zeile auf einen Ordner, um sie dort hineinzulegen.
 - **Ausschneiden, Kopieren, Einfügen:** Funktioniert mit der Tastatur und über das Menü. **Ganze Ordner** lassen sich kopieren, auch verschachtelte. Zusätzlich gibt es `Als Verknüpfung einfügen` – das ist wichtig, weil Outfits aus Verknüpfungen bestehen.
+- **Original einer Verknüpfung:** Per Doppelklick auf eine Verknüpfung oder über Rechtsklick -> `Original anzeigen` springt das Inventar zum echten Gegenstand. Bei einer Ordner-Verknüpfung klappt es den Ordner auf und wählt ihn aus; ist das Original nicht mehr im Inventar, sagt der Viewer es Ihnen.
 - **Schutzregeln:** Systemordner (z. B. „Objekte“) lassen sich weder umbenennen noch löschen noch ausschneiden, denn das Grid sortiert eingehende Gegenstände nach dem *Typ* des Ordners, nicht nach dem Namen. Ein Ordner kann nicht in sich selbst oder in einen eigenen Unterordner eingefügt werden. Aus `#Library` lässt sich nichts ausschneiden, denn das gehört Ihnen nicht – kopieren Sie es stattdessen.
 
 #### Papierkorb
