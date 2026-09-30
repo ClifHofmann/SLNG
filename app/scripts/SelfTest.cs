@@ -162,6 +162,7 @@ public static class SelfTest
         results.Add(CheckAvatarSkeleton());
         results.AddRange(CheckWindlightPresets());
         results.Add(CheckInstanceSlotMap());
+        results.Add(CheckWorkQueueOnceThePumpIsGone());
         results.Add(CheckAvatarAnimationPlayer());
         results.Add(CheckAvatarHoldMode());
         results.Add(CheckAvatarAnimationFreeze());
@@ -477,6 +478,54 @@ public static class SelfTest
             "windlight water presets",
             library.WaterNames.Count >= 5 && waterFailures == 0,
             waterFailures == 0 ? $"{library.WaterNames.Count} presets parse" : $"{waterFailures} of {library.WaterNames.Count} failed to parse");
+    }
+
+    /// <summary>
+    /// BUG-RENDER-37: once the pump has left the tree — the client quitting — work handed to
+    /// <see cref="MainThreadWorkQueue"/> from a worker thread is dropped, and its coalescing key is
+    /// not left held. The old fallback passed it to Godot through <c>Callable.From(...)
+    /// .CallDeferred()</c> from that worker thread, and texture workers finishing on the way out
+    /// died there with a fatal <c>AccessViolationException</c> — seen closing the viewer right
+    /// after the grid ended the session.
+    ///
+    /// <para>Under the old code this fails deterministically as well as crashing now and then: the
+    /// deferred item still holds its key when the same key is queued again, so the second enqueue
+    /// is coalesced away.</para>
+    /// </summary>
+    private static Check CheckWorkQueueOnceThePumpIsGone()
+    {
+        const string Name = "work queue once the pump is gone";
+        const string Key = "selftest.pump-gone";
+        int ran = 0;
+        try
+        {
+            int before = MainThreadWorkQueue.Depth;
+
+            MainThreadWorkQueue.SetPumpActive(false);
+            System.Threading.Tasks.Task.Run(() =>
+                MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => ran++, Key, "selftest")).Wait();
+            bool dropped = MainThreadWorkQueue.Depth == before;
+
+            // The pump back, and the same key queued again: it must be free.
+            MainThreadWorkQueue.SetPumpActive(true);
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => ran++, Key, "selftest");
+            bool keyFree = MainThreadWorkQueue.Depth == before + 1;
+            MainThreadWorkQueue.Pump(1000);
+            bool ranOnce = ran == 1;
+
+            bool ok = dropped && keyFree && ranOnce;
+            return new Check(Name, ok, ok
+                ? "work from a worker thread is dropped, not deferred through Godot; its key is not held"
+                : $"dropped={dropped}, key free again={keyFree}, ran={ran} (want 1)");
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            MainThreadWorkQueue.SetPumpActive(true);
+        }
     }
 
     /// <summary>
