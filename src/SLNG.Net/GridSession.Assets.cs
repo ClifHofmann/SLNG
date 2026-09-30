@@ -603,14 +603,62 @@ public sealed partial class GridSession
         return asset as LibreMetaverse.Assets.AssetMaterial;
     }
 
+    // Animation ids the HTTP path and the UDP path both gave up on, once per id -- a failing one is
+    // asked for again by every anim set that names it.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _animationFailureLogged = new();
+
     /// <summary>
-    /// Fetches the raw bytes of an animation asset from the simulator.
+    /// Fetches the raw bytes of an animation asset: over the region's <c>ViewerAsset</c> capability
+    /// first, the way the reference viewer asks for every asset type
+    /// (<c>LLViewerAssetStorage::getAssetURL</c>, llviewerassetstorage.cpp:640 -- the URL is
+    /// <c>{cap}/?animatn_id={id}</c>), then over the legacy UDP transfer.
+    ///
+    /// <para>UDP alone is not dependable on Second Life: with a cold asset cache a handful of the
+    /// built-in animations -- the <em>stand</em> among them -- came back
+    /// <c>Transfer failed with status code Error</c>, and the avatar stood in a T-pose for the rest
+    /// of the session (2026-09-30, right after the cache was cleared). The asset cache had hidden it
+    /// for as long as it was warm.</para>
     /// </summary>
     public async Task<byte[]?> FetchAnimationDataAsync(Guid animId)
     {
+        var viaHttp = await FetchAssetViaViewerAssetAsync(animId, "animatn").ConfigureAwait(false);
+        if (viaHttp is { Length: > 0 }) return viaHttp;
+
         var asset = await _client.Assets
             .RequestAssetAsync(new UUID(animId), AssetType.Animation, true, CancellationToken.None)
             .ConfigureAwait(false);
-        return asset?.AssetData;
+        var data = asset?.AssetData;
+        if (data is not { Length: > 0 } && _animationFailureLogged.TryAdd(animId, 0))
+            Console.Error.WriteLine($"[AnimFetch] {animId}: neither the ViewerAsset capability nor UDP delivered it");
+        return data;
+    }
+
+    /// <summary>One asset over the <c>ViewerAsset</c> capability, or null -- never throws. The
+    /// caller has the UDP path to fall back on.</summary>
+    private async Task<byte[]?> FetchAssetViaViewerAssetAsync(Guid assetId, string typeName)
+    {
+        var cap = _client.Network.CurrentSim?.Caps?.CapabilityURI("ViewerAsset");
+        if (cap is null) return null;
+
+        try
+        {
+            var url = new Uri($"{cap.ToString().TrimEnd('/')}/?{typeName}_id={assetId}");
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            await _textureFetchSemaphore.WaitAsync(timeout.Token).ConfigureAwait(false);
+            try
+            {
+                using var response = await _textureHttpClient.GetAsync(url, timeout.Token).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode) return null;
+                return await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _textureFetchSemaphore.Release();
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or UriFormatException)
+        {
+            return null;
+        }
     }
 }
