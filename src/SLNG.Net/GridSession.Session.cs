@@ -470,7 +470,7 @@ public sealed partial class GridSession
         // BUG-NET-21: what we held for this region, so it can be asked for by id if we come back.
         if (!withSession) RememberObjectsAtDeparture(e.Simulator);
         if (!withSession) SaveRegionInBackground(e.Simulator.Handle); // FEAT-NET-04
-        ForgetAnimatedMeshRegion(e.Simulator.Handle); // FEAT-ANIMESH-01: LocalIDs are reissued after a restart
+        ForgetObjectLatchesRegion(e.Simulator.Handle); // BUG-NET-25 / FEAT-ANIMESH-01: LocalIDs are reissued after a restart
         Console.WriteLine(withSession
             ? $"[Neighbor] {e.Simulator.Name} ({e.Simulator.Handle}) went with the session ({e.Reason}) -- left on screen"
             : $"[Neighbor] disconnected {e.Simulator.Name} ({e.Simulator.Handle})");

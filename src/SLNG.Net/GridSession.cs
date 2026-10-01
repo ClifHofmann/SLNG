@@ -80,30 +80,35 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     // both instead of duplicating the plumbing per name kind.
     private readonly ConcurrentDictionary<Guid, string> _nameCache = new();
 
-    // Whether the most recently seen raw ObjectUpdate packet for a given LocalID carried a
-    // Light (0x20) ExtraParams block. Needed because Primitive.Light is a latch, not a live
-    // value: LibreMetaverse only ever WRITES it inside SetExtraParamsFromBytes' Light case, and
-    // OpenSim omits the block entirely (no explicit "off" marker) once a light is disabled --
-    // so Primitive.Light keeps reporting the last-enabled state forever, even after the real
-    // light is turned off server-side and even across a relog. Populated by a raw packet
-    // callback (see OnRawObjectUpdatePacket) registered alongside ObjectManager's own internal
-    // handler, since the high-level Primitive/PrimEventArgs API exposes no such signal.
-    private readonly ConcurrentDictionary<uint, bool> _lightPresentByLocalId = new();
+    // The three ExtraParams latches (BUG-NET-25, FEAT-ANIMESH-01). Each exists because
+    // LibreMetaverse cannot say what an object's CURRENT ExtraParams contain, and OpenSim signals
+    // "switched off" by OMITTING a block rather than sending an off marker, so the only way to
+    // know a block is gone is to read the bytes of the update that left it out. Fed by the raw
+    // packet callbacks (OnRawObjectUpdatePacket for ObjectUpdate, OnObjectUpdateCompressedRaw for
+    // ObjectUpdateCompressed), registered alongside ObjectManager's own handlers, since the
+    // high-level Primitive/PrimEventArgs API exposes no such signal. See ExtraParamsScan.
+    //
+    // All three are keyed by region AS WELL AS LocalID -- LocalIDs are handed out per region and a
+    // neighbour (MultipleSims) routinely reuses the same number --, hold only the objects that
+    // matter (never one entry per prim in the region), and are pruned on kill and on region
+    // disconnect, so no entry outlives its object.
 
-    // The Reflection Probe (0x90) block of the most recent raw ObjectUpdate for a LocalID, or
-    // absent when that update carried none. Read here rather than off the Primitive because
-    // LibreMetaverse does not parse this block at all: ExtraParamType.ReflectionProbe = 0x90 is
-    // in its enum, but SetExtraParamsFromBytes has no branch for it and steps over the payload,
-    // so the high-level API cannot express "this object is a mirror". See ReflectionProbeParams.
-    private readonly ConcurrentDictionary<uint, SLNG.Core.ReflectionProbeParams?> _reflectionProbeByLocalId = new();
+    // Objects that once showed a Light (0x20) block: true while the latest ExtraParams still carry
+    // it, false once they no longer do. Primitive.Light is only ever WRITTEN, inside
+    // SetExtraParamsFromBytes' Light case, so after the block disappears it reports the last-enabled
+    // state forever -- even across a relog. "False" is the one fact the library cannot give us;
+    // "no entry" means trust the Primitive. See LatchLight / EffectiveLight.
+    private readonly ConcurrentDictionary<(ulong Region, uint LocalId), bool> _lightObjects = new();
 
-    // The objects whose most recent raw ObjectUpdate / ObjectUpdateCompressed carried an Extended
-    // Mesh (0x70) block with the animated-mesh bit set (FEAT-ANIMESH-01). LibreMetaverse skips the
-    // block, so this is the only place the flag exists. Holds ONLY the true entries -- every
-    // ordinary prim passes through the latch on every update and none of them belongs here -- and
-    // is keyed by region AS WELL AS LocalID, which the two dictionaries above are not: LocalIDs are
-    // handed out per region, and a neighbour (MultipleSims) routinely reuses the same number.
-    // Pruned on kill and on region disconnect, so no entry outlives its object.
+    // The Reflection Probe (0x90) block of the latest ExtraParams, for the objects that have one.
+    // LibreMetaverse does not parse this block at all: ExtraParamType.ReflectionProbe = 0x90 is in
+    // its enum, but SetExtraParamsFromBytes has no branch for it and steps over the payload, so the
+    // high-level API cannot express "this object is a mirror". See ReflectionProbeParams.
+    private readonly ConcurrentDictionary<(ulong Region, uint LocalId), SLNG.Core.ReflectionProbeParams> _reflectionProbes = new();
+
+    // The objects whose latest ExtraParams carry an Extended Mesh (0x70) block with the animated-mesh
+    // bit set (FEAT-ANIMESH-01). LibreMetaverse 3.1.6 does decode it (Primitive.ExtendedMeshFlags),
+    // but into a field that is never cleared when the block goes away, so the same latch applies.
     private readonly ConcurrentDictionary<(ulong Region, uint LocalId), bool> _animatedMeshObjects = new();
 
     /// <summary>MVP3-3 Phase 1: the last <c>x-mv:</c> media-version string a fetch was already
@@ -804,7 +809,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Parcels.ParcelProperties += OnParcelPropertiesReceived;
 
         // Coexists with ObjectManager's own internal ObjectUpdate handler (packet callbacks are
-        // multicast) -- see _lightPresentByLocalId for why this is needed.
+        // multicast) -- see _lightObjects for why this is needed.
         _client.Network.RegisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
 
         // FEAT-ENV-02: Intercept raw SimulatorViewerTimeMessage to sync the server's time
