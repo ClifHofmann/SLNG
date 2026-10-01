@@ -112,9 +112,25 @@ Eines der Highlights des Viewers sind die modernen Navigations- und Karten-Tools
 
 ### Minimap (Radar)
 - Die Minimap zeigt Ihren Avatar im Zentrum und alle Avatare in Ihrer Nähe als Punkte. Sie können stufenlos mit dem Mausrad hinein- und herauszoomen.
-- **Roster-Liste:** Neben der Karte sehen Sie eine Liste aller erfassten Avatare in der Region.
-- **Radar-Fokus:** Ein Klick auf einen Eintrag in der Liste markiert den Punkt des Avatars auf dem Radar.
-- **Kamera-Fokus:** Ein Doppelklick auf einen Namen dreht Ihre Kamera automatisch und sanft in eine frontale ("Portrait"-) Ansicht des entsprechenden Avatars.
+- **Regionsbild:** Unter den Punkten sehen Sie das Kartenbild der Region, wie im Firestorm. Nachbarregionen erscheinen etwas dunkler, und wo keine Region liegt, bleibt der Hintergrund dunkel. Das Bild kommt vom Kartenserver des Grids und wird auf Ihrem Rechner zwischengespeichert; erscheint es nicht sofort, wird es im Hintergrund nachgeladen.
+- **Aufbau:** Oben ein Namensfilter mit Zahnrad- und Sortier-Menü, darunter die Karte, darunter die Tabelle aller erfassten Avatare der Region. Die Trennlinie zwischen Karte und Tabelle lässt sich mit der Maus verschieben; die Höhe wird gemerkt.
+- **Punktfarben:** Freunde sind grün, andere Avatare rot, stumm geschaltete grau. Der ausgewählte Avatar hat einen weißen Ring. Dieselbe Farbe steht als Punkt vor dem Namen in der Tabelle.
+- **Höhe auf der Karte:** Ein Avatar, der mehr als 7 m über Ihnen ist, erscheint als Dreieck nach oben, einer mehr als 7 m unter Ihnen als Dreieck nach unten, auf gleicher Höhe als Punkt. Ist die Höhe nicht bekannt (nur grobe Ortung ganz oben), sehen Sie einen hohlen Ring.
+- **Chat-Ringe:** Um Ihren Avatar liegen drei Ringe: blau für Flüstern (10 m), gelb für Sagen (20 m) und rot für Schreien (100 m). Sie lassen sich im Kartenmenü einzeln oder alle zusammen ausschalten.
+- **Sichtkegel:** Ein heller Kegel zeigt, wohin Ihre Kamera schaut, so weit wie Ihre Sichtweite und so breit wie Ihr Sichtfeld.
+- **Kartenmenü:** Ein Rechtsklick auf die Karte (oder das Zahnrad) öffnet das Menü: Zoom (Sehr nah 32 m, Nah 64 m, Mittel 128 m, Weit 256 m), "Norden oben" oder "Kamera oben" (dann dreht sich die Karte mit Ihrer Blickrichtung), "Karte automatisch zentrieren", "Karte zentrieren", "Chat-Ringe" und "Weltkarte". Ein Rechtsklick direkt auf einen Punkt öffnet stattdessen das Avatar-Menü. Alle Einstellungen bleiben beim nächsten Start erhalten.
+- **Karte verschieben:** Mit gedrückter Umschalttaste (Shift) und gezogener linker Maustaste verschieben Sie die Ansicht. Ist "automatisch zentrieren" an, gleitet die Karte danach von selbst zurück.
+- **Tooltip:** Über einem Punkt zeigt die Karte Name und Entfernung, sonst Region und die Koordinaten unter dem Mauszeiger.
+- **Namen:** Der Standard-Nachname "Resident" wird weggelassen, wie im Firestorm: "Oz" statt "Oz Resident". Ein selbst gewählter Anzeigename bleibt unverändert.
+- **Tabelle:** Die Spalten sind Name, Sprachchat (bleibt leer, bis es Sprachchat gibt), In Region, Sitzt, Zahlungsinfo (`$` hinterlegt, `$$` bereits benutzt), Notiz, Alter (Account-Alter in Tagen, rot unter 7 Tagen, "n.a." wenn versteckt; mit der Maus darüber sehen Sie es als Jahre, Monate und Tage sowie den Rezz-Tag, also das Datum, an dem das Konto erstellt wurde), Zeit (wie lange der Avatar schon in der Liste ist) und Distanz. Über dem Namen steht `[Gesamt/in der Region/in Chat-Reichweite]`. Die Distanz ist amber innerhalb der Sagen-Reichweite (20 m), normal bis zur Schrei-Reichweite (100 m) und darüber gedämpft, und fett, solange der Avatar sichtbar gezeichnet wird.
+- **Notiz:** Hat der Avatar eine Notiz von Ihnen, steht in der Notiz-Spalte ein Symbol. Fahren Sie mit der Maus darüber, sehen Sie den Notiztext.
+- **Spalten ein- und ausblenden:** Rechtsklick auf eine Spaltenüberschrift, oder Zahnrad, dann "Spalten". Das Menü bleibt offen, solange Sie mehrere Spalten anhaken. "Spalten zurücksetzen" stellt die Voreinstellung wieder her. Der Name lässt sich nicht ausblenden.
+- **Sortieren:** Ein Klick auf eine Überschrift sortiert danach, ein zweiter Klick dreht die Richtung um. Alternativ über den Sortier-Knopf neben dem Zahnrad. Unbekannte Werte (zum Beispiel ein Alter, das noch nicht geladen ist) stehen immer am Ende. Spalten und Sortierung bleiben beim nächsten Start erhalten.
+- **Filtern:** Das Feld oben filtert die Tabelle nach dem Namen.
+- **Radar-Fokus:** Ein Klick auf eine Zeile markiert den Punkt des Avatars auf der Karte. Umgekehrt wählt ein Klick auf einen Punkt die Zeile aus.
+- **Kamera-Fokus:** Ein Doppelklick auf eine Zeile zoomt die Karte auf den Avatar und dreht Ihre Kamera automatisch und sanft in eine frontale ("Portrait"-) Ansicht. Solange die Karte auf jemand anderen zentriert ist, steht neben dem Regionsnamen "zentriert auf Name". Zurück zu sich selbst kommen Sie mit einem zweiten Doppelklick auf dieselbe Zeile oder über das Kartenmenü (Rechtsklick auf die Karte, "Karte zentrieren").
+- **Kontextmenü:** Rechtsklick auf eine Zeile öffnet das Avatar-Menü (Profil, IM, Teleport anbieten, Stummschalten).
+- **Teleport per Doppelklick:** Ein Doppelklick auf die Karte teleportiert Sie an diese Stelle der Region – knapp über den Boden. Ein einfacher Klick tut nichts, und ein Doppelklick außerhalb der Region wird ignoriert.
 
 ### Weltkarte
 - Über das Menü "World" öffnen Sie die große Weltkarte.
@@ -141,7 +157,7 @@ Kündigt das Grid einen Neustart der Region an, in der Sie stehen, öffnet sich 
 Das voll ausgestattete Benutzerprofil-Fenster ist zentral für Ihre SL-Identität:
 - **Eigene Bearbeitung:** Bearbeiten Sie Ihre eigene *1st-Life-* und *2nd-Life-Beschreibung*, fügen Sie Ihre Webseite hinzu und setzen Sie Einstellungen (Mature Content, In Search). Alles wird über "Save Profile" live im Grid gespeichert.
 - **Picks & Classifieds:** Bewundern Sie die Picks anderer Avatare. Der Puris Viewer zeigt vollständige Picks (inkl. Snapshot, Text und "Teleport"-Button zum Aufnahmeort) an.
-- **Lokale Notizen:** Sie können jedem Avatar lokale, nur für Sie sichtbare private Notizen hinzufügen.
+- **Private Notizen:** Sie können zu jedem Avatar eine Notiz speichern, die nur Sie sehen. Sie wird mit Ihrem Konto auf dem Grid gespeichert und erscheint deshalb auch in anderen Viewern wie Firestorm, und umgekehrt. Notizen, die Sie früher nur auf diesem Computer gespeichert hatten, werden beim ersten Öffnen des Profils einmalig übernommen, sofern das Grid noch keine Notiz zu dieser Person hat. Antwortet ein Grid nicht (manche OpenSim-Server), bleiben die Notizen ausnahmsweise nur lokal.
 
 ---
 

@@ -348,6 +348,7 @@ public partial class Boot : Control
     // MVP2-3: minimap radar overlay + world map/search window.
     private SLNG.App.UI.MinimapOverlay _minimapOverlay = null!;
     private SLNG.App.UI.WorldMapWindow _worldMapWindow = null!;
+    private MapTileTextures? _mapTileTextures; // FEAT-UI-39
     // FEAT-UI-18: teleport loading overlay. Fed by GridSession.TeleportProgress events buffered
     // off the network thread into _pendingTeleportProgress and drained in _Process.
     private SLNG.App.UI.TeleportOverlay _teleportOverlay = null!;
@@ -393,7 +394,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.119-alpha";
+    public const string AppVersion = "v0.24.131-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -461,6 +462,11 @@ public partial class Boot : Control
 
         _localizationManager = LoadLocalizationManager();
         SLNG.App.UI.L10n.Initialize(_localizationManager);
+
+        // Once, before any UI exists: the one tooltip look for the whole app (a dark box, readable
+        // over any world). Goes on the engine's default theme, which is why it lives here and not
+        // on a window -- see UiTheme.ApplyTooltipStyle.
+        SLNG.App.UI.UiTheme.ApplyTooltipStyle();
 
         // FEAT-PERF-01: J2K decoding is CPU-heavy. The default .NET ThreadPool scales up slowly 
         // (1-2 threads/sec) causing massive queues when entering a region. We bump MinThreads 
@@ -1059,6 +1065,16 @@ public partial class Boot : Control
         _minimapOverlay.OnFocusAvatarRequested = (pos, forward) => _avatarController?.FocusOnAvatarFrontal(pos, forward);
         _minimapOverlay.OnAvatarContextMenuRequested = (screenPos, agentId, name) =>
             _inWorldContextMenu.ShowAvatarMenu(screenPos, agentId, name, isSelf: false, _session?.IsAvatarMuted(agentId) ?? false);
+        // FEAT-UI-39: double-click on the radar teleports. Fire-and-forget on purpose -- the teleport
+        // overlay is driven by GridSession.TeleportProgress, so progress and failure show there.
+        // _session is read at call time, so this survives the session being replaced on re-login.
+        _minimapOverlay.OnTeleportRequested = (handle, local) =>
+        {
+            if (_session != null) _ = _session.TeleportToAsync(handle, local);
+        };
+        // FEAT-UI-39: "World map" in the radar's menu opens the window like the top menu does, but never
+        // closes one that is already up (the launcher is a toggle).
+        _minimapOverlay.OnWorldMapRequested = () => { if (_worldMapWindow.Visible && !_worldMapWindow.IsMinimized) _worldMapWindow.BringToFront(); else InvokeLauncher("worldmap"); };
         _worldMapWindow = new SLNG.App.UI.WorldMapWindow { Name = "WorldMapWindow" };
         hudLayer.AddChild(_worldMapWindow);
 
@@ -3323,7 +3339,12 @@ public partial class Boot : Control
         // for the marker/heading), and the asset plumbing (map tile textures) -- all three only
         // exist from here on, so this can't happen alongside the other window construction in
         // SetupHud().
-        _minimapOverlay.Initialize(_world, _session);
+        // FEAT-UI-39: the region images under the radar. One set per login -- a different grid has
+        // different tiles -- built here because it needs this login's GPU cache and asset service.
+        _mapTileTextures?.Clear();
+        _mapTileTextures = new MapTileTextures(_session, _gpuCache, _assetService,
+            ProjectSettings.GlobalizePath("user://cache/maptiles"));
+        _minimapOverlay.Initialize(_world, _session, _mapTileTextures);
         _worldMapWindow.Initialize(_session, _gpuCache, _assetService, _world);
 
         _session.ChatMessageReceived += OnChatMessage;
@@ -3344,6 +3365,9 @@ public partial class Boot : Control
         _session.AvatarPicksReceived += OnAvatarProfilePicksReceived;
         _session.AvatarPickDetailReceived += OnAvatarProfilePickDetailReceived;
         _session.AvatarClassifiedsReceived += OnAvatarProfileClassifiedsReceived;
+        // FEAT-UI-39: the private note on an avatar (and payment info, age) -- the profile window's
+        // Notes tab shows and saves it. Network thread; EnqueueProfileWork hops to the main thread.
+        _session.BriefProfileUpdated += (s, e) => EnqueueProfileWork(e.AgentId, w => w.ApplyBriefProfile(e));
         // MVP5-2: money that MOVED, as opposed to the balance that changed. Without this the
         // client says nothing at all when somebody pays you -- reported in-world as wanting
         // "wieviel und warum". Off a network thread, hence the deferred hop in the handler.

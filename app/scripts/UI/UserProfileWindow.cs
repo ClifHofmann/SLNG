@@ -10,7 +10,7 @@ namespace SLNG.App.UI;
 /// <summary>
 /// FEAT-UI-13: a Firestorm-style avatar profile window. For another resident it shows the
 /// "2nd Life" / "1st Life" pages, their Picks (with per-pick image / text / teleport) and
-/// Classifieds, and a local-only Notes field, plus the social actions (Add Friend, IM, Pay,
+/// Classifieds, and a private Notes field kept on the grid (FEAT-UI-39), plus the social actions (Add Friend, IM, Pay,
 /// Offer Teleport, Block/Mute). For <b>your own</b> avatar the 2nd Life / 1st Life / Interests
 /// fields become editable and a "Save Profile" button writes them back
 /// (<c>AvatarPropertiesUpdate</c> / <c>AvatarInterestsUpdate</c>); the social actions are hidden.
@@ -93,10 +93,21 @@ public partial class UserProfileWindow : SLNGWindow
     private LineEdit? _skillsEdit;
     private LineEdit? _wantToEdit;
 
-    // Notes (view mode only)
+    // Notes (view mode only). The note lives on the GRID (FEAT-UI-39), so the same note shows in
+    // every viewer. It arrives asynchronously, which is why the box starts read-only: typing before
+    // the grid's value is known would overwrite a note that is merely not here yet. If the grid
+    // never answers, the box falls back to the old local-only notes rather than offering none.
+    private enum NotesMode { Loading, Server, LocalFallback }
+    private const double NotesLoadTimeoutSec = 8.0;
+    private const string NotesImportedSection = "avatar_notes_imported";
     private TextEdit? _notesEdit;
+    private Label? _notesHint;
     private double _notesSaveTimer = -1.0;
-    private bool _notesLoaded;
+    private NotesMode _notesMode = NotesMode.Loading;
+    private double _notesLoadWaitSec;
+    private bool _notesTouched;            // the user has typed in the box
+    private bool _settingNotesText;        // a programmatic change, not typing
+    private string _notesOnServer = "";    // the last value known to be on the grid
 
     // Social actions (view mode only)
     private Button? _addFriendBtn;
@@ -191,7 +202,7 @@ public partial class UserProfileWindow : SLNGWindow
         ApplyCascade();
         UpdateNameHeader();
         _idLabel.Text = agentId.ToString();
-        if (!_isSelf) LoadNotes();
+        if (!_isSelf) BeginNotes();
 
         _session?.RequestAvatarProfile(agentId);
         _session?.RequestAvatarName(agentId);
@@ -668,7 +679,8 @@ public partial class UserProfileWindow : SLNGWindow
         var box = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         box.AddThemeConstantOverride("separation", 4);
 
-        box.AddChild(MutedLine(Tr("notes_hint")));
+        _notesHint = MutedLine(Tr("notes_loading"));
+        box.AddChild(_notesHint);
 
         _notesEdit = new TextEdit
         {
@@ -676,9 +688,15 @@ public partial class UserProfileWindow : SLNGWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             PlaceholderText = Tr("notes_placeholder"),
             WrapMode = TextEdit.LineWrappingMode.Boundary,
+            Editable = false, // until the grid's note is known -- see NotesMode
         };
         _notesEdit.AddThemeFontSizeOverride("font_size", 12);
-        _notesEdit.TextChanged += () => _notesSaveTimer = NotesSaveDebounceSec;
+        _notesEdit.TextChanged += () =>
+        {
+            if (_settingNotesText) return;
+            _notesTouched = true;
+            _notesSaveTimer = NotesSaveDebounceSec;
+        };
         box.AddChild(_notesEdit);
 
         return box;
@@ -793,21 +811,74 @@ public partial class UserProfileWindow : SLNGWindow
         _statusLabel.Text = TrF("status_teleporting", d.SimName);
     }
 
-    // ---- Notes persistence ---------------------------------------------------------------
+    // ---- Notes ----------------------------------------------------------------------------
 
-    private void LoadNotes()
+    /// <summary>Asks the grid for the note (forced: a window that has just opened wants the
+    /// current one, not a ten-minute-old cache entry) and shows the cached one at once if there is
+    /// one. The answer arrives through <see cref="ApplyBriefProfile"/>.</summary>
+    private void BeginNotes()
+    {
+        if (_session == null) return;
+        _session.RequestBriefProfile(_agentId, force: true);
+        if (_session.TryGetBriefProfile(_agentId, out var cached)) ApplyBriefProfile(cached);
+    }
+
+    /// <summary>Sink for <c>GridSession.BriefProfileUpdated</c> (Boot marshals to the main thread).
+    /// Only the note matters here. Once the user has typed, the box is theirs: a later update
+    /// (including the echo of our own save) never replaces what they are writing.</summary>
+    public void ApplyBriefProfile(AvatarBriefProfile profile)
+    {
+        if (_notesEdit == null || profile.AgentId != _agentId || profile.Notes == null) return;
+        // Typing locally after the grid failed to answer: a late reply must not pull the rug.
+        if (_notesMode == NotesMode.LocalFallback && _notesTouched) return;
+
+        _notesOnServer = profile.Notes;
+        _notesMode = NotesMode.Server;
+        if (_notesHint != null) _notesHint.Text = Tr("notes_hint");
+        _notesEdit.Editable = true;
+        if (_notesTouched) return;
+
+        string text = profile.Notes;
+        // One-time import of the notes this window used to keep only on this computer: if the grid
+        // has nothing for this avatar, offer what we had. The local copy stays (nothing is
+        // deleted), and a marker stops it being pushed again after the user clears the note.
+        if (text.Length == 0 && ReadLocalNote() is { Length: > 0 } local && !WasLocalNoteImported())
+        {
+            text = local;
+            MarkLocalNoteImported();
+            _notesOnServer = local;
+            _session?.SetAvatarNote(_agentId, local);
+        }
+        SetNotesText(text);
+    }
+
+    /// <summary>The grid never answered in time -- an OpenSim without a profile module, say. Keep
+    /// the old behaviour (notes on this computer) instead of a box that never opens.</summary>
+    private void EnterLocalNotes()
     {
         if (_notesEdit == null) return;
-        var cfg = new ConfigFile();
-        cfg.Load(NotesConfigPath); // fine if it doesn't exist yet
-        var key = _agentId.ToString();
-        if (cfg.HasSectionKey(NotesSection, key))
-            _notesEdit.Text = (string)cfg.GetValue(NotesSection, key);
-        _notesLoaded = true;
+        _notesMode = NotesMode.LocalFallback;
+        if (_notesHint != null) _notesHint.Text = Tr("notes_hint_local");
+        _notesEdit.Editable = true;
+        SetNotesText(ReadLocalNote());
+    }
+
+    private void SetNotesText(string text)
+    {
+        if (_notesEdit == null || _notesEdit.Text == text) return;
+        _settingNotesText = true;
+        _notesEdit.Text = text;
+        _settingNotesText = false;
     }
 
     public override void _Process(double delta)
     {
+        if (_notesMode == NotesMode.Loading && !_isSelf && _notesEdit != null)
+        {
+            _notesLoadWaitSec += delta;
+            if (_notesLoadWaitSec >= NotesLoadTimeoutSec) EnterLocalNotes();
+        }
+
         if (_notesSaveTimer <= 0) return;
         _notesSaveTimer -= delta;
         if (_notesSaveTimer <= 0) FlushNotes();
@@ -816,12 +887,36 @@ public partial class UserProfileWindow : SLNGWindow
     private void FlushNotes()
     {
         _notesSaveTimer = -1.0;
-        if (!_notesLoaded || _notesEdit == null || _agentId == Guid.Empty || !IsInstanceValid(_notesEdit)) return;
+        if (_notesEdit == null || _agentId == Guid.Empty || !IsInstanceValid(_notesEdit)) return;
 
+        string text = _notesEdit.Text;
+        switch (_notesMode)
+        {
+            case NotesMode.Server:
+                // Not on every close: only when the text actually differs from what the grid holds.
+                if (text == _notesOnServer) return;
+                _notesOnServer = text;
+                _session?.SetAvatarNote(_agentId, text);
+                break;
+            case NotesMode.LocalFallback:
+                WriteLocalNote(text);
+                break;
+        }
+    }
+
+    private string ReadLocalNote()
+    {
+        var cfg = new ConfigFile();
+        cfg.Load(NotesConfigPath); // fine if it doesn't exist yet
+        var key = _agentId.ToString();
+        return cfg.HasSectionKey(NotesSection, key) ? (string)cfg.GetValue(NotesSection, key) : "";
+    }
+
+    private void WriteLocalNote(string text)
+    {
         var cfg = new ConfigFile();
         cfg.Load(NotesConfigPath); // preserve window_geometry / other sections
         var key = _agentId.ToString();
-        var text = _notesEdit.Text;
         if (string.IsNullOrEmpty(text))
         {
             if (cfg.HasSectionKey(NotesSection, key)) cfg.EraseSectionKey(NotesSection, key);
@@ -830,6 +925,21 @@ public partial class UserProfileWindow : SLNGWindow
         {
             cfg.SetValue(NotesSection, key, text);
         }
+        cfg.Save(NotesConfigPath);
+    }
+
+    private bool WasLocalNoteImported()
+    {
+        var cfg = new ConfigFile();
+        cfg.Load(NotesConfigPath);
+        return cfg.HasSectionKey(NotesImportedSection, _agentId.ToString());
+    }
+
+    private void MarkLocalNoteImported()
+    {
+        var cfg = new ConfigFile();
+        cfg.Load(NotesConfigPath);
+        cfg.SetValue(NotesImportedSection, _agentId.ToString(), true);
         cfg.Save(NotesConfigPath);
     }
 

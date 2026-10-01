@@ -32,7 +32,7 @@ public partial class ItemPropertiesWindow : SLNGWindow
             return;
         }
 
-        Title = "Properties: {props.Name}";
+        Title = $"Properties: {props.Name}";
 
         _nameEdit.Text = props.Name;
         _descEdit.Text = props.Description;

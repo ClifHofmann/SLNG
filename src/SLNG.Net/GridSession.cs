@@ -707,6 +707,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // this runs after AgentManager has taken the agent id and InventoryManager has built the
         // store from the skeleton -- see OnLoginResponseOpenCaches.
         _client.Network.RegisterLoginResponseCallback(OnLoginResponseOpenCaches);
+        _client.Network.RegisterLoginResponseCallback(OnLoginResponseRememberMapServer);
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
         _client.Objects.TerseObjectUpdate += OnTerseObjectUpdate;
@@ -771,6 +772,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // (RequestAvatarProperties) makes the sim send Properties + Interests + Groups; Picks and
         // Classifieds have their own request/reply pairs (see RequestAvatarProfile).
         _client.Avatars.AvatarPropertiesReply += OnAvatarPropertiesReply;
+        _client.Avatars.AvatarNotesReply += OnAvatarNotesReply; // FEAT-UI-39
         _client.Avatars.AvatarInterestsReply += OnAvatarInterestsReply;
         _client.Avatars.AvatarGroupsReply += OnAvatarGroupsReply;
         _client.Avatars.AvatarPicksReply += OnAvatarPicksReply;
@@ -866,6 +868,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Self.ScriptDialog -= OnScriptDialog;
         _client.Self.MoneyBalanceReply -= OnMoneyBalanceReply;
         _client.Avatars.AvatarPropertiesReply -= OnAvatarPropertiesReply;
+        _client.Avatars.AvatarNotesReply -= OnAvatarNotesReply;
         _client.Avatars.AvatarInterestsReply -= OnAvatarInterestsReply;
         _client.Avatars.AvatarGroupsReply -= OnAvatarGroupsReply;
         _client.Avatars.AvatarPicksReply -= OnAvatarPicksReply;

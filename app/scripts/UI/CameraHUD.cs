@@ -14,6 +14,12 @@ public partial class CameraHUD : SLNGWindow
     private const float MinContentScale = 0.5f;
     private const float MaxContentScale = 1.5f;
 
+    /// <summary>What SLNGWindow puts around its ContentContainer besides the inset: the 8 px shadow
+    /// margin and the 1 px border on each side, plus the title bar above. Measured; if these change,
+    /// the cluster merely gains or loses a few px of gap at the default size.</summary>
+    private const float FrameWidth = 18f;
+    private const float FrameAndTitleBarHeight = 56f;
+
     // Built-in per-frame pad steps at 100% (CameraSettings multiplies these live). OrbitStep was
     // 0.05 and felt fast even at the default; 0.035 is calmer and the Preferences slider still
     // reaches 3x. PanStep was 1.0 (~60 m/s held at 60 fps -- the avatar shot off-screen on a tap).
@@ -61,8 +67,7 @@ public partial class CameraHUD : SLNGWindow
 
         Title = L10n.Tr("ui.camera.title");
         Visible = false;
-        // Room for the captioned groups, preset row, and focus toggle at 1:1
-        CustomMinimumSize = new Vector2(210, 215);
+        // CustomMinimumSize is set below, once the cluster has been built and measured.
         Position = new Vector2(100, 100);
 
         OnCloseRequested = Hide;
@@ -215,6 +220,14 @@ public partial class CameraHUD : SLNGWindow
         // RescaleContent is always relative to this, never to the previous frame's size.
         _referenceSize = mainVBox.GetCombinedMinimumSize();
         mainVBox.Size = _referenceSize;
+        // The window opens at its minimum, where RescaleContent runs the cluster at MinContentScale.
+        // Sizing that minimum to the cluster's own aspect (plus the standard inset and the frame)
+        // is what puts it 14/12 px from the frame at the default size; a minimum of a different
+        // shape left the centred cluster floating 36 px off the frame at the sides. Making the
+        // window bigger still scales the cluster up to fit.
+        CustomMinimumSize = new Vector2(
+            Mathf.Ceil(_referenceSize.X * MinContentScale) + 2 * DefaultContentMarginH + FrameWidth,
+            Mathf.Ceil(_referenceSize.Y * MinContentScale) + 2 * DefaultContentMarginV + FrameAndTitleBarHeight);
         CallDeferred(nameof(RescaleContent));
     }
 
