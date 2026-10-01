@@ -10,7 +10,13 @@ namespace SLNG.App.UI;
 /// <see cref="StatsOverlay"/>'s FrameGraph -- <see cref="Update"/> just stores the latest snapshot
 /// and requests a repaint; all drawing happens in <see cref="_Draw"/> on the main thread.
 /// Focus-centred and zoomable; zoom is mouse wheel over the canvas, reported back through
-/// <see cref="OnZoom"/> since the window (not the canvas) owns the visible range.
+/// <see cref="OnZoom"/> since the window (not the canvas) owns the visible range, and Shift-drag
+/// reports the pan the same way.
+///
+/// What is drawn, bottom to top: the region images, the region outline, the chat rings, the camera
+/// view wedge, the avatars' dots and the local avatar's arrow. The map can be turned so the camera
+/// looks up the canvas; every point, tile and click goes through the ONE <see cref="RadarProjection"/>
+/// built in <see cref="Update"/>, so what is drawn, picked and teleported to cannot disagree.
 /// </summary>
 internal sealed partial class RadarCanvas : Control
 {
@@ -19,14 +25,38 @@ internal sealed partial class RadarCanvas : Control
     public readonly record struct Tile(
         Texture2D? Texture, System.Numerics.Vector2 Origin, float Width, float Height, bool IsCurrent);
 
-    /// <summary>One avatar on the map; the relation picks its colour, the same one its table row uses.</summary>
-    public readonly record struct Dot(Guid AgentId, System.Numerics.Vector3 Position, RadarRelation Relation);
+    /// <summary>One avatar on the map. The relation picks its colour, the same one its table row uses;
+    /// the distance and whether the height is known are what its tooltip says and what shape it is drawn as.</summary>
+    public readonly record struct Dot(
+        Guid AgentId, System.Numerics.Vector3 Position, RadarRelation Relation,
+        string Name, float Distance, bool HeightKnown);
 
     /// <summary>How close a click has to land to a dot to pick it, in canvas pixels.</summary>
     private const float DotPickRadius = 8f;
     private const float DotRadius = 3.5f;
 
+    // Above/below markers: a triangle about as big as the round dot, pointing the way the avatar is.
+    private const float TriangleHalfWidth = 4.5f;
+    private const float TriangleHalfHeight = 4f;
+    private const float UnknownRingRadius = 3.2f;
+
+    private const float RingWidth = 2f;
+    private const int WedgeSegments = 24;
+
+    // The viewer's chat-range ring colours (llnetmap.cpp / Firestorm colors.xml), all at 30 % alpha.
+    private static readonly Color WhisperColour = new(0f, 0f, 1f, 0.3f);
+    private static readonly Color SayColour = new(1f, 1f, 0f, 0.3f);
+    private static readonly Color ShoutColour = new(1f, 0f, 0f, 0.3f);
+    private static readonly Color WedgeColour = new(1f, 1f, 1f, 0.12f);
+
+    // Firestorm tints a neighbour 0.8 grey so the region you are in reads as the brighter one.
+    private static readonly Color NeighbourTint = new(0.8f, 0.8f, 0.8f);
+
     public Action<float>? OnZoom;
+
+    /// <summary>Shift-drag: how far the view should move, in region metres, so the map follows the
+    /// cursor. The window owns the offset and decides whether it eases back.</summary>
+    public Action<System.Numerics.Vector2>? OnPan;
 
     /// <summary>Double-click inside the region rectangle, as region-local metres.</summary>
     public Action<System.Numerics.Vector2>? OnTeleportClick;
@@ -34,6 +64,23 @@ internal sealed partial class RadarCanvas : Control
     /// <summary>A single click on (within <see cref="DotPickRadius"/> of) an avatar's dot. A click
     /// that hits no dot reports nothing, so it never clears or changes the selection.</summary>
     public Action<Guid>? OnDotClicked;
+
+    /// <summary>Right-click on a dot: the avatar and where the click was, in screen coordinates.</summary>
+    public Action<Guid, Vector2>? OnDotContextMenu;
+
+    /// <summary>Right-click on the map away from any dot: where the click was, in screen coordinates.</summary>
+    public Action<Vector2>? OnMapContextMenu;
+
+    /// <summary>What is shown and how: the chat rings and the orientation. Owned by the window, which
+    /// changes it from its menus; read here every frame.</summary>
+    public RadarViewSettings View { get; set; } = new();
+
+    /// <summary>The current region's name, for the tooltip.</summary>
+    public string RegionName { get; set; } = "";
+
+    /// <summary>True from a Shift-press until the button is released. The window holds a panned view
+    /// where it is meanwhile, and only eases it back afterwards.</summary>
+    public bool IsPanning { get; private set; }
 
     private int _regionWidth = RegionTerrain.DefaultRegionSize;
     private int _regionHeight = RegionTerrain.DefaultRegionSize;
@@ -46,8 +93,18 @@ internal sealed partial class RadarCanvas : Control
     private Guid? _selectedAgentId;
     private bool _hasData;
 
-    // Firestorm tints a neighbour 0.8 grey so the region you are in reads as the brighter one.
-    private static readonly Color NeighbourTint = new(0.8f, 0.8f, 0.8f);
+    // The camera as of the last Update: its heading and horizontal field of view, in the radar's
+    // axes. Sampled once per frame there and used by drawing AND input, so a click is mapped through
+    // the same turned map that was drawn. The heading is kept when the camera looks straight down.
+    private bool _hasCamera;
+    private bool _hasWedge;
+    private float _cameraHeading = MathF.PI / 2f;
+    private float _cameraHFov;
+    private float _upHeading = MathF.PI / 2f;
+
+    // Reused every frame: the wedge's fan and a dot's triangle.
+    private readonly Vector2[] _wedge = new Vector2[WedgeSegments + 2];
+    private readonly Vector2[] _triangle = new Vector2[3];
 
     public void Update(int regionWidth, int regionHeight, System.Numerics.Vector3? center,
         System.Numerics.Vector3? ownPos, float heading, float visibleRangeMeters,
@@ -65,6 +122,12 @@ internal sealed partial class RadarCanvas : Control
         _tiles.Clear();
         _tiles.AddRange(tiles);
         _hasData = true;
+
+        // A release outside the window or a lost focus can swallow the button-up: do not stay panning.
+        if (IsPanning && !Input.IsMouseButtonPressed(MouseButton.Left)) EndPan();
+
+        SampleCamera();
+        _upHeading = View.CameraUp && _hasCamera ? _cameraHeading : MathF.PI / 2f;
         QueueRedraw();
     }
 
@@ -74,19 +137,87 @@ internal sealed partial class RadarCanvas : Control
         QueueRedraw();
     }
 
+    /// <summary>Reads the 3D camera: where it looks and how wide. Camera3D.Fov is vertical unless the
+    /// camera keeps its width, so the horizontal angle is derived from the viewport's aspect. The
+    /// engine's axes are Y-up with SL(X, Y, Z) = Godot(X, Z, -Y) (RenderConfig.ToGodot), which is a
+    /// pure axis permutation, so a direction converts the same way a position does.</summary>
+    private void SampleCamera()
+    {
+        _hasCamera = false;
+        _hasWedge = false;
+        var viewport = GetViewport();
+        var camera = viewport?.GetCamera3D();
+        if (viewport == null || camera == null) return;
+
+        var forward = -camera.GlobalTransform.Basis.Z;
+        if (RadarCamera.TryHeading(new System.Numerics.Vector2(forward.X, -forward.Z), out float heading))
+            _cameraHeading = heading;
+        _hasCamera = true;
+
+        if (camera.Projection != Camera3D.ProjectionType.Perspective) return;
+        float fov = Mathf.DegToRad(camera.Fov);
+        if (camera.KeepAspect == Camera3D.KeepAspectEnum.Width)
+        {
+            _cameraHFov = fov; // the angle is already the horizontal one
+        }
+        else
+        {
+            var size = viewport.GetVisibleRect().Size;
+            _cameraHFov = RadarCamera.HorizontalFov(fov, size.Y > 0f ? size.X / size.Y : 1f);
+        }
+        _hasWedge = true;
+    }
+
     public override void _GuiInput(InputEvent @event)
     {
-        if (@event is not InputEventMouseButton { Pressed: true } mb) return;
-
-        if (mb.ButtonIndex == MouseButton.WheelUp) OnZoom?.Invoke(0.8f);
-        else if (mb.ButtonIndex == MouseButton.WheelDown) OnZoom?.Invoke(1.25f);
-        else if (mb.ButtonIndex == MouseButton.Left)
+        if (@event is InputEventMouseMotion motion)
         {
-            // The first press of a double-click arrives as a plain click, so it may pick a dot;
-            // the second one (DoubleClick) is the teleport.
-            if (mb.DoubleClick) TeleportAt(mb.Position);
-            else PickDotAt(mb.Position);
+            if (IsPanning) PanBy(motion.Position, motion.Relative);
+            return;
         }
+        if (@event is not InputEventMouseButton mb) return;
+
+        if (!mb.Pressed)
+        {
+            if (mb.ButtonIndex == MouseButton.Left) EndPan();
+            return;
+        }
+
+        switch (mb.ButtonIndex)
+        {
+            case MouseButton.WheelUp:
+                OnZoom?.Invoke(0.8f);
+                break;
+            case MouseButton.WheelDown:
+                OnZoom?.Invoke(1.25f);
+                break;
+            case MouseButton.Left when mb.ShiftPressed:
+                // Shift-drag pans, as in Firestorm. The press itself selects and teleports nothing, and
+                // neither does the drag: those are only for a plain click.
+                IsPanning = true;
+                break;
+            case MouseButton.Left:
+                // The first press of a double-click arrives as a plain click, so it may pick a dot;
+                // the second one (DoubleClick) is the teleport.
+                if (mb.DoubleClick) TeleportAt(mb.Position);
+                else PickDotAt(mb.Position);
+                break;
+            case MouseButton.Right:
+                OpenContextMenu(mb.Position);
+                break;
+        }
+    }
+
+    private void EndPan() => IsPanning = false;
+
+    /// <summary>Moves the view so the map point that was under the cursor stays under it. Taken as the
+    /// difference of two projected points, so it is right for any scale and any turn of the map.</summary>
+    private void PanBy(Vector2 at, Vector2 relative)
+    {
+        if (!_hasData || Projection() is not { } projection) return;
+        var before = projection.ToRegion(new System.Numerics.Vector2(at.X - relative.X, at.Y - relative.Y));
+        var after = projection.ToRegion(new System.Numerics.Vector2(at.X, at.Y));
+        OnPan?.Invoke(before - after);
     }
 
     /// <summary>Inverts exactly what <see cref="_Draw"/> drew (same <see cref="RadarProjection"/>),
@@ -99,24 +230,54 @@ internal sealed partial class RadarCanvas : Control
         if (RadarProjection.Within(local, _regionWidth, _regionHeight)) OnTeleportClick?.Invoke(local);
     }
 
-    /// <summary>The nearest dot within <see cref="DotPickRadius"/> of the click, if any.</summary>
     private void PickDotAt(Vector2 canvasPos)
     {
-        if (!_hasData || Projection() is not { } projection) return;
+        if (DotAt(canvasPos) is { } dot) OnDotClicked?.Invoke(dot.AgentId);
+    }
 
-        Guid? best = null;
+    private void OpenContextMenu(Vector2 canvasPos)
+    {
+        var screen = GetGlobalTransformWithCanvas() * canvasPos;
+        if (DotAt(canvasPos) is { } dot) OnDotContextMenu?.Invoke(dot.AgentId, screen);
+        else OnMapContextMenu?.Invoke(screen);
+    }
+
+    /// <summary>The nearest dot within <see cref="DotPickRadius"/> of the point, if any.</summary>
+    private Dot? DotAt(Vector2 canvasPos)
+    {
+        if (!_hasData || Projection() is not { } projection) return null;
+
+        Dot? best = null;
         float bestSq = DotPickRadius * DotPickRadius;
         foreach (var dot in _dots)
         {
-            var c = projection.ToCanvas(new System.Numerics.Vector2(dot.Position.X, dot.Position.Y));
+            var c = projection.ToCanvas(Xy(dot.Position));
             float dx = c.X - canvasPos.X, dy = c.Y - canvasPos.Y;
             float sq = dx * dx + dy * dy;
             if (sq > bestSq) continue;
             bestSq = sq;
-            best = dot.AgentId;
+            best = dot;
         }
 
-        if (best is { } id) OnDotClicked?.Invoke(id);
+        return best;
+    }
+
+    /// <summary>Over a dot: the avatar and how far away. Elsewhere inside the region: the region and
+    /// the spot under the cursor, with what a double-click does there. Outside it: nothing of its own,
+    /// so the control's general hint shows.</summary>
+    public override string _GetTooltip(Vector2 atPosition)
+    {
+        if (!_hasData || Projection() is not { } projection) return "";
+
+        if (DotAt(atPosition) is { } dot)
+        {
+            string range = RadarTable.FormatRange(dot.Distance, dot.HeightKnown, RenderConfig.DrawDistance);
+            return $"{dot.Name}\n{L10n.Tr("ui.radar.distance")}: {range} m";
+        }
+
+        var local = projection.ToRegion(new System.Numerics.Vector2(atPosition.X, atPosition.Y));
+        if (!RadarProjection.Within(local, _regionWidth, _regionHeight)) return "";
+        return $"{RegionName} ({(int)local.X}, {(int)local.Y})\n{L10n.Tr("ui.minimap.teleport_hint")}";
     }
 
     private RadarProjection? Projection()
@@ -126,8 +287,11 @@ internal sealed partial class RadarCanvas : Control
         return new RadarProjection(
             new System.Numerics.Vector2(size.X, size.Y),
             new System.Numerics.Vector2(focus.X, focus.Y),
-            _visibleRangeMeters);
+            _visibleRangeMeters,
+            _upHeading);
     }
+
+    private static System.Numerics.Vector2 Xy(System.Numerics.Vector3 p) => new(p.X, p.Y);
 
     public override void _Draw()
     {
@@ -137,41 +301,29 @@ internal sealed partial class RadarCanvas : Control
         if (!_hasData || Projection() is not { } projection) return;
 
         // Projected relative to the FOCUS point, which is the local avatar by default but can be a
-        // double-clicked table row instead (MinimapOverlay._Process) -- so the local avatar's own
-        // dot is not assumed to sit at the canvas centre; it is drawn wherever it actually is
-        // relative to whatever the radar is centred on. The same RadarProjection turns a click
-        // back into region metres.
-        Vector2 ToCanvas(System.Numerics.Vector3 p)
+        // double-clicked table row (or a panned view) instead -- so the local avatar is not assumed to
+        // sit at the canvas centre; it is drawn wherever it actually is relative to whatever the
+        // radar is centred on. The same RadarProjection turns a click back into region metres.
+        Vector2 ToCanvas(System.Numerics.Vector2 p)
         {
-            var c = projection.ToCanvas(new System.Numerics.Vector2(p.X, p.Y));
+            var c = projection.ToCanvas(p);
             return new Vector2(c.X, c.Y);
         }
 
-        // The region images go first, so everything else is drawn over them. Where no region
-        // exists -- or its tile has not arrived -- only the background shows.
-        foreach (var tile in _tiles)
+        DrawRegionImages(projection, size);
+
+        // Everything below is projected point by point, so turning the map needs nothing more.
+        if (_ownPos is { } own)
         {
-            if (tile.Texture == null) continue;
-            // A map tile's top edge is north, and ToCanvas puts north at the top, so the
-            // north-west corner is where the rectangle starts and no flip is needed.
-            var northWest = projection.ToCanvas(new System.Numerics.Vector2(tile.Origin.X, tile.Origin.Y + tile.Height));
-            var extent = new Vector2(tile.Width, tile.Height) * projection.PixelsPerMetre;
-            DrawTextureRect(tile.Texture, new Rect2(new Vector2(northWest.X, northWest.Y), extent), false,
-                tile.IsCurrent ? Colors.White : NeighbourTint);
+            var ownScreen = ToCanvas(Xy(own));
+            DrawChatRings(ownScreen, projection.PixelsPerMetre);
+            DrawViewWedge(own, projection);
         }
 
-        // Region boundary, relative to the focus point -- only ever partly visible unless zoomed
-        // out past the region size, same as a real minimap's edge-of-region behaviour.
-        var c0 = ToCanvas(new System.Numerics.Vector3(0, 0, 0));
-        var c1 = ToCanvas(new System.Numerics.Vector3(_regionWidth, _regionHeight, 0));
-        DrawRect(new Rect2(
-            new Vector2(Math.Min(c0.X, c1.X), Math.Min(c0.Y, c1.Y)),
-            new Vector2(Math.Abs(c1.X - c0.X), Math.Abs(c1.Y - c0.Y))),
-            new Color(0.3f, 0.9f, 0.5f, 0.25f), false, 1f);
-
+        float ownZ = _ownPos?.Z ?? 0f;
         foreach (var dot in _dots)
         {
-            var p = ToCanvas(dot.Position);
+            var p = ToCanvas(Xy(dot.Position));
             // The selection is a white ring: the dots are red, green or grey now, so a coloured
             // ring would vanish into one of them.
             if (_selectedAgentId.HasValue && dot.AgentId == _selectedAgentId.Value)
@@ -179,17 +331,133 @@ internal sealed partial class RadarCanvas : Control
                 DrawCircle(p, 7f, new Color(1f, 1f, 1f, 0.2f));
                 DrawArc(p, 7f, 0, Mathf.Tau, 20, Colors.White, 2f);
             }
+
             var colour = RadarIcons.RelationColor(dot.Relation);
-            DrawCircle(p, DotRadius, new Color(colour.R, colour.G, colour.B, 0.95f));
+            DrawDotMarker(p, new Color(colour.R, colour.G, colour.B, 0.95f),
+                RadarHeight.MarkerFor(dot.Position.Z - ownZ, dot.HeightKnown && _ownPos != null));
         }
 
-        if (_ownPos is not { } own) return;
-        var ownScreen = ToCanvas(own);
-        DrawCircle(ownScreen, 4f, new Color(0.3f, 0.75f, 1f, 1f));
-        var dir = new Vector2(MathF.Cos(_heading), -MathF.Sin(_heading));
-        var tip = ownScreen + dir * 10f;
-        var left = ownScreen + dir.Rotated(Mathf.DegToRad(140)) * 6f;
-        var right = ownScreen + dir.Rotated(Mathf.DegToRad(-140)) * 6f;
+        if (_ownPos is not { } me) return;
+        var ownPoint = ToCanvas(Xy(me));
+        DrawCircle(ownPoint, 4f, new Color(0.3f, 0.75f, 1f, 1f));
+
+        // The arrow points where the avatar faces ON THE MAP: found by projecting a point ahead of it,
+        // so it stays right when the map is turned, instead of assuming north is up.
+        var ahead = ToCanvas(Xy(me) + new System.Numerics.Vector2(MathF.Cos(_heading), MathF.Sin(_heading)));
+        var dir = (ahead - ownPoint).Normalized();
+        var tip = ownPoint + dir * 10f;
+        var left = ownPoint + dir.Rotated(Mathf.DegToRad(140)) * 6f;
+        var right = ownPoint + dir.Rotated(Mathf.DegToRad(-140)) * 6f;
         DrawPolygon(new[] { tip, left, right }, new[] { new Color(0.3f, 0.75f, 1f, 1f) });
+    }
+
+    /// <summary>The region images and the region outline. Drawn north-up and turned as a whole by
+    /// <see cref="RadarProjection.CanvasRotationRadians"/> about the canvas centre (where the focus is),
+    /// which lands each corner exactly where <see cref="RadarProjection.ToCanvas"/> puts it -- one
+    /// transform instead of a rotated rectangle per tile.</summary>
+    private void DrawRegionImages(RadarProjection projection, Vector2 size)
+    {
+        var northUp = new RadarProjection(
+            new System.Numerics.Vector2(size.X, size.Y),
+            new System.Numerics.Vector2(_center!.Value.X, _center.Value.Y),
+            _visibleRangeMeters);
+        var centre = size / 2f;
+        float scale = projection.PixelsPerMetre;
+
+        // Points are given relative to the centre, which is the transform's origin.
+        Vector2 NorthUp(float x, float y)
+        {
+            var c = northUp.ToCanvas(new System.Numerics.Vector2(x, y));
+            return new Vector2(c.X, c.Y) - centre;
+        }
+
+        DrawSetTransform(centre, projection.CanvasRotationRadians, Vector2.One);
+
+        // The region images go first, so everything else is drawn over them. Where no region
+        // exists -- or its tile has not arrived -- only the background shows.
+        foreach (var tile in _tiles)
+        {
+            if (tile.Texture == null) continue;
+            // A map tile's top edge is north, and north-up puts north at the top, so the
+            // north-west corner is where the rectangle starts and no flip is needed.
+            DrawTextureRect(tile.Texture,
+                new Rect2(NorthUp(tile.Origin.X, tile.Origin.Y + tile.Height), new Vector2(tile.Width, tile.Height) * scale),
+                false, tile.IsCurrent ? Colors.White : NeighbourTint);
+        }
+
+        // Region boundary, relative to the focus point -- only ever partly visible unless zoomed
+        // out past the region size, same as a real minimap's edge-of-region behaviour.
+        DrawRect(new Rect2(NorthUp(0, _regionHeight), new Vector2(_regionWidth, _regionHeight) * scale),
+            new Color(0.3f, 0.9f, 0.5f, 0.25f), false, 1f);
+
+        DrawSetTransform(Vector2.Zero, 0f, Vector2.One);
+    }
+
+    /// <summary>Whisper, say and shout as full circles around the LOCAL avatar -- not the focus, so a
+    /// panned or focused map still shows who can hear you. A circle looks the same whichever way the
+    /// map is turned.</summary>
+    private void DrawChatRings(Vector2 centre, float pixelsPerMetre)
+    {
+        if (!View.ChatRings) return;
+        if (View.WhisperRing) DrawRing(centre, RadarChatRings.WhisperMetres * pixelsPerMetre, WhisperColour);
+        if (View.SayRing) DrawRing(centre, RadarChatRings.SayMetres * pixelsPerMetre, SayColour);
+        if (View.ShoutRing) DrawRing(centre, RadarChatRings.ShoutMetres * pixelsPerMetre, ShoutColour);
+    }
+
+    private void DrawRing(Vector2 centre, float radiusPixels, Color colour)
+    {
+        // About one point per two pixels of circumference's arc length keeps a big ring smooth.
+        int points = Math.Clamp((int)(radiusPixels * 0.75f), 32, 180);
+        DrawArc(centre, radiusPixels, 0f, Mathf.Tau, points, colour, RingWidth, true);
+    }
+
+    /// <summary>What the 3D camera sees: a fan from the local avatar, as far as the draw distance,
+    /// as wide as the camera's horizontal field of view, centred on where it looks. Projected point by
+    /// point, so it follows a turned map.</summary>
+    private void DrawViewWedge(System.Numerics.Vector3 own, RadarProjection projection)
+    {
+        if (!_hasWedge) return;
+
+        var apex = Xy(own);
+        float radius = RenderConfig.DrawDistance;
+        float start = _cameraHeading - _cameraHFov / 2f;
+
+        var apexCanvas = projection.ToCanvas(apex);
+        _wedge[0] = new Vector2(apexCanvas.X, apexCanvas.Y);
+        for (int i = 0; i <= WedgeSegments; i++)
+        {
+            float a = start + _cameraHFov * i / WedgeSegments;
+            var edge = projection.ToCanvas(apex + new System.Numerics.Vector2(MathF.Cos(a), MathF.Sin(a)) * radius);
+            _wedge[i + 1] = new Vector2(edge.X, edge.Y);
+        }
+
+        DrawColoredPolygon(_wedge, WedgeColour);
+    }
+
+    /// <summary>Level is a disc, above and below are triangles pointing that way, an unknown height is
+    /// a hollow ring. Markers stay upright on screen however the map is turned: "up" means higher.</summary>
+    private void DrawDotMarker(Vector2 p, Color colour, HeightMarker marker)
+    {
+        switch (marker)
+        {
+            case HeightMarker.Above:
+                _triangle[0] = p + new Vector2(0f, -TriangleHalfHeight - 1f);
+                _triangle[1] = p + new Vector2(-TriangleHalfWidth, TriangleHalfHeight);
+                _triangle[2] = p + new Vector2(TriangleHalfWidth, TriangleHalfHeight);
+                DrawColoredPolygon(_triangle, colour);
+                break;
+            case HeightMarker.Below:
+                _triangle[0] = p + new Vector2(0f, TriangleHalfHeight + 1f);
+                _triangle[1] = p + new Vector2(TriangleHalfWidth, -TriangleHalfHeight);
+                _triangle[2] = p + new Vector2(-TriangleHalfWidth, -TriangleHalfHeight);
+                DrawColoredPolygon(_triangle, colour);
+                break;
+            case HeightMarker.Unknown:
+                DrawArc(p, UnknownRingRadius, 0f, Mathf.Tau, 16, colour, 1.6f, true);
+                break;
+            default:
+                DrawCircle(p, DotRadius, colour);
+                break;
+        }
     }
 }

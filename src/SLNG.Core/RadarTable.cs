@@ -76,10 +76,15 @@ public static class RadarTable
     public static string FormatRange(RadarRow row, float farClipMetres)
     {
         ArgumentNullException.ThrowIfNull(row);
-        return row.HeightKnown
-            ? row.Distance.ToString("F2", CultureInfo.InvariantCulture)
-            : ">" + MathF.Max(row.Distance, farClipMetres).ToString("F2", CultureInfo.InvariantCulture);
+        return FormatRange(row.Distance, row.HeightKnown, farClipMetres);
     }
+
+    /// <summary><see cref="FormatRange(RadarRow, float)"/> for a caller that has the two numbers and no
+    /// row -- a dot on the map says the same thing in its tooltip as its row does in the table.</summary>
+    public static string FormatRange(float distanceMetres, bool heightKnown, float farClipMetres)
+        => heightKnown
+            ? distanceMetres.ToString("F2", CultureInfo.InvariantCulture)
+            : ">" + MathF.Max(distanceMetres, farClipMetres).ToString("F2", CultureInfo.InvariantCulture);
 
     /// <summary>The seen cell as h:mm:ss. Hours are not padded and never roll over into days -- 25 hours
     /// reads "25:00:00" -- and a negative span (a clock step) reads as zero rather than a minus sign.

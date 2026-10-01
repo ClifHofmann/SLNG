@@ -394,7 +394,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.126-alpha";
+    public const string AppVersion = "v0.24.127-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1067,6 +1067,9 @@ public partial class Boot : Control
         {
             if (_session != null) _ = _session.TeleportToAsync(handle, local);
         };
+        // FEAT-UI-39: "World map" in the radar's menu opens the window like the top menu does, but never
+        // closes one that is already up (the launcher is a toggle).
+        _minimapOverlay.OnWorldMapRequested = () => { if (_worldMapWindow.Visible && !_worldMapWindow.IsMinimized) _worldMapWindow.BringToFront(); else InvokeLauncher("worldmap"); };
         _worldMapWindow = new SLNG.App.UI.WorldMapWindow { Name = "WorldMapWindow" };
         hudLayer.AddChild(_worldMapWindow);
 

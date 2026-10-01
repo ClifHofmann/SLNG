@@ -10,7 +10,8 @@ namespace SLNG.App.UI;
 
 /// <summary>
 /// The radar window (MVP2-3, rebuilt for FEAT-UI-39 as Firestorm's People &gt; Nearby): a filter
-/// row, the zoomable north-up map of the CURRENT region, and under it a column table of everyone
+/// row, the zoomable map of the CURRENT region (north up, or turned so the camera looks up it, with
+/// chat rings, a view wedge and Shift-drag panning), and under it a column table of everyone
 /// nearby, the two separated by a draggable divider. NOT the same tool as <see cref="WorldMapWindow"/>
 /// -- see that class's doc comment for the 2026-08-28 clarification that these are two separate
 /// windows (grid-wide sim search vs. per-region avatar radar), not one feature with two entry points.
@@ -33,13 +34,15 @@ namespace SLNG.App.UI;
 /// </summary>
 public partial class MinimapOverlay : SLNGWindow
 {
-    private const float DefaultVisibleRangeMeters = 64f;
-    private const float MinVisibleRangeMeters = 16f;
-    private const float MaxVisibleRangeMeters = 512f;
     // Double-clicking a table row "jumps" the radar to them -- pan AND zoom, not just pan, so a
     // far-off avatar (found only via CoarseLocationUpdate, easily hundreds of metres away at the
-    // default 64 m view) is actually visible afterward rather than still off the edge.
+    // default 64 m view) is actually visible afterward rather than still off the edge. Transient:
+    // never saved, and un-focusing returns to the zoom the player chose.
     private const float FocusVisibleRangeMeters = 32f;
+
+    /// <summary>A wheel zoom is saved this long after the last tick, not on every tick: a flick of
+    /// the wheel is a dozen events and the preferences file is not rewritten a dozen times.</summary>
+    private const float ZoomSaveDelaySeconds = 0.5f;
 
     /// <summary>How often the table is refreshed, in seconds. Positions are not what it shows (the
     /// map does that every frame); ages, ranges and notes change slowly, and Firestorm refreshes
@@ -48,11 +51,6 @@ public partial class MinimapOverlay : SLNGWindow
 
     /// <summary>While the window is not showing, who is nearby is still noted this often.</summary>
     private const float HiddenTrackSeconds = 1f;
-
-    // Chat ranges for the range colouring and the in-range count. Fixed for now; a region's own
-    // values (OpenSim's say-range / shout-range) can replace these once they are parsed.
-    private const float SayRangeMetres = 20f;
-    private const float ShoutRangeMetres = 100f;
 
     // A coarse location carries its height in a byte of 4 m steps, so 1020 m is the pinned "no
     // idea" value: an avatar reported there has no usable height.
@@ -64,6 +62,32 @@ public partial class MinimapOverlay : SLNGWindow
     private const int SortAscendingId = 100;
     private const int SortDescendingId = 101;
     private const int ResetColumnsId = 102;
+
+    // The map's own menu items. The zoom presets take four consecutive ids from ZoomPresetId.
+    private const int ZoomPresetId = 200;
+    private const int OrientNorthId = 210;
+    private const int OrientCameraId = 211;
+    private const int AutoCenterId = 212;
+    private const int RecenterId = 213;
+    private const int RingsMasterId = 220;
+    private const int RingWhisperId = 221;
+    private const int RingSayId = 222;
+    private const int RingShoutId = 223;
+    private const int WorldMapId = 230;
+
+    private static readonly string[] ZoomPresetKeys =
+    {
+        "ui.radar.zoom_very_close", "ui.radar.zoom_close", "ui.radar.zoom_medium", "ui.radar.zoom_far",
+    };
+
+    /// <summary>A copy of the map's view menu: the host popup plus the two submenus that hang from it.
+    /// There are two (the gear's and the right-click menu), filled by the same code.</summary>
+    private sealed class ViewMenu
+    {
+        public PopupMenu Host = null!;
+        public PopupMenu Zoom = null!;
+        public PopupMenu Rings = null!;
+    }
 
     private World? _world;
     private GridSession? _session;
@@ -79,10 +103,13 @@ public partial class MinimapOverlay : SLNGWindow
     private MenuButton _sortButton = null!;
     private PopupMenu _gearColumnsMenu = null!;
     private PopupMenu _columnMenu = null!;
+    private ViewMenu _gearView = null!;
+    private ViewMenu _mapView = null!;
     private VSplitContainer _split = null!;
     private RadarTableView _table = null!;
 
     private RadarColumnSettings _settings = RadarColumnSettings.CreateDefault();
+    private RadarViewSettings _view = new();
     private bool _hadSavedPreferences;
     private bool _firstOpenHandled;
 
@@ -93,7 +120,14 @@ public partial class MinimapOverlay : SLNGWindow
     private NearbyAvatarsEvent? _lastNearby;
     private int _dataChanged;
 
-    private float _visibleRangeMeters = DefaultVisibleRangeMeters;
+    // What the map shows right now. Starts from, and after a user zoom equals, _view.VisibleRangeMetres;
+    // a focus jump moves only this one.
+    private float _visibleRangeMeters = RadarZoom.DefaultMetres;
+    private float _zoomSaveTimer;
+
+    // How far a Shift-drag has moved the view from its focus, in region metres. Eases back to zero
+    // once released if AutoCenter is on (RadarPan); zero for a view that was never panned.
+    private System.Numerics.Vector2 _pan;
     private Guid? _selectedAgentId;
 
     // Set by double-clicking a table row -- while non-null, the radar centres on THIS avatar
@@ -127,6 +161,10 @@ public partial class MinimapOverlay : SLNGWindow
     /// "unknown". Left null until the voice subsystem exists (MVP5-1) -- the column is shown and
     /// stays empty, so turning voice on later changes no table code.</summary>
     public Func<Guid, float?>? VoiceLevelSource;
+
+    /// <summary>"World map" in the radar's menu. Boot.cs opens the world map window; the radar does
+    /// not know how.</summary>
+    public Action? OnWorldMapRequested;
 
     // The local avatar's height at the last frame it was known -- the Z of a teleport click when
     // the terrain under the click has not arrived yet (RadarTeleportTarget).
@@ -169,7 +207,8 @@ public partial class MinimapOverlay : SLNGWindow
         CustomMinimumSize = new Vector2(380, 380);
         Visible = false;
 
-        _hadSavedPreferences = RadarPreferences.Load(out _settings, out int splitOffset);
+        _hadSavedPreferences = RadarPreferences.Load(out _settings, out _view, out int splitOffset);
+        _visibleRangeMeters = _view.VisibleRangeMetres;
         BuildLayout();
         _table.Configure(_settings.VisibleColumns);
         _table.SetSort(_settings.SortColumn, _settings.SortAscending);
@@ -220,6 +259,13 @@ public partial class MinimapOverlay : SLNGWindow
         _gearButton.GetPopup().AddChild(_gearColumnsMenu);
         _columnMenu = MakeColumnMenu();
         AddChild(_columnMenu);
+
+        // The map's view menu exists twice, built by the same code: in the gear, so every setting is
+        // reachable without a right-click, and as the right-click menu on the map itself.
+        _gearView = MakeViewMenu(_gearButton.GetPopup());
+        var mapPopup = new PopupMenu();
+        AddChild(mapPopup);
+        _mapView = MakeViewMenu(mapPopup);
         RebuildGearMenu();
 
         _regionLabel = new Label
@@ -249,9 +295,13 @@ public partial class MinimapOverlay : SLNGWindow
             TooltipText = L10n.Tr("ui.minimap.zoom_hint"),
             ClipContents = true, // a region tile can reach past the canvas edge
         };
+        _canvas.View = _view;
         _canvas.OnZoom = Zoom;
+        _canvas.OnPan = Pan;
         _canvas.OnTeleportClick = HandleTeleportClick;
         _canvas.OnDotClicked = OnDotClicked;
+        _canvas.OnDotContextMenu = OnDotContextMenu;
+        _canvas.OnMapContextMenu = OnMapContextMenu;
         _split.AddChild(_canvas);
 
         // The table is text, not picture, so it keeps the standard inset like any other window's
@@ -336,7 +386,8 @@ public partial class MinimapOverlay : SLNGWindow
         _pendingNearby = null;
         _ownZ = null;
         _ownPosition = null;
-        _visibleRangeMeters = DefaultVisibleRangeMeters;
+        _visibleRangeMeters = _view.VisibleRangeMetres;
+        _pan = System.Numerics.Vector2.Zero;
         _roster.Clear();
         ClearTracking();
 
@@ -352,6 +403,7 @@ public partial class MinimapOverlay : SLNGWindow
     public override void _ExitTree()
     {
         DetachSession();
+        if (_zoomSaveTimer > 0f) SavePreferences(); // a wheel zoom still waiting for its delay
         base._ExitTree();
     }
 
@@ -379,8 +431,26 @@ public partial class MinimapOverlay : SLNGWindow
         MoveToFront();
     }
 
-    private void Zoom(float factor) =>
-        _visibleRangeMeters = Math.Clamp(_visibleRangeMeters * factor, MinVisibleRangeMeters, MaxVisibleRangeMeters);
+    /// <summary>A wheel tick. The zoom is the player's choice, so it is remembered -- unlike the 32 m of
+    /// a focus jump -- but saved a moment after the last tick rather than on every one.</summary>
+    private void Zoom(float factor)
+    {
+        _visibleRangeMeters = RadarZoom.Clamp(_visibleRangeMeters * factor);
+        _view.VisibleRangeMetres = _visibleRangeMeters;
+        _zoomSaveTimer = ZoomSaveDelaySeconds;
+    }
+
+    private void SetZoomPreset(int index)
+    {
+        _visibleRangeMeters = RadarZoom.PresetsMetres[index];
+        _view.VisibleRangeMetres = _visibleRangeMeters;
+        _zoomSaveTimer = 0f;
+        SavePreferences();
+    }
+
+    /// <summary>Shift-drag: the view moves with the cursor, but never further than about a region
+    /// from the point it is centred on.</summary>
+    private void Pan(System.Numerics.Vector2 deltaMetres) => _pan = RadarPan.Clamp(_pan + deltaMetres);
 
     /// <summary>The canvas has already checked the click is inside the region it draws, which is
     /// always the current one -- the radar shows nothing else yet, so there is no neighbour to
@@ -403,8 +473,38 @@ public partial class MinimapOverlay : SLNGWindow
         _table.SelectRow(agentId, scrollTo: true);
     }
 
+    /// <summary>Right-click on a dot: the SAME shared avatar menu a table row opens (Boot.cs owns it),
+    /// and the avatar is selected first, as a right-click on a row selects it.</summary>
+    private void OnDotContextMenu(Guid agentId, Vector2 screenPosition)
+    {
+        OnDotClicked(agentId);
+        // The roster is rebuilt every frame, so it knows an avatar the table has not listed yet.
+        if (_byAgent.TryGetValue(agentId, out var entry))
+            OnAvatarContextMenuRequested?.Invoke(screenPosition, agentId, entry.Name);
+    }
+
+    /// <summary>Right-click on empty map: the view menu, rebuilt now so its checks and its language
+    /// are current.</summary>
+    private void OnMapContextMenu(Vector2 screenPosition)
+    {
+        FillViewMenu(_mapView, clearHost: true);
+        _mapView.Host.Position = (Vector2I)screenPosition;
+        _mapView.Host.Popup();
+    }
+
     public override void _Process(double delta)
     {
+        // A wheel zoom is saved once the wheel has been still for a moment.
+        if (_zoomSaveTimer > 0f)
+        {
+            _zoomSaveTimer -= (float)delta;
+            if (_zoomSaveTimer <= 0f)
+            {
+                _zoomSaveTimer = 0f;
+                SavePreferences();
+            }
+        }
+
         if (_world == null || _session == null) return;
 
         // The canvas is hidden with the window, with the HUD, and when the window is minimized, so
@@ -430,11 +530,13 @@ public partial class MinimapOverlay : SLNGWindow
                 RefreshTable();
             }
             _focusAgentId = null;
-            _visibleRangeMeters = DefaultVisibleRangeMeters;
+            _visibleRangeMeters = _view.VisibleRangeMetres;
+            _pan = System.Numerics.Vector2.Zero;
             return;
         }
 
         _regionLabel.Text = _session.CurrentRegionName;
+        _canvas.RegionName = _session.CurrentRegionName;
 
         int width = RegionTerrain.DefaultRegionSize, height = RegionTerrain.DefaultRegionSize;
         if (_world.Terrains.TryGetValue(regionHandle, out var terrain))
@@ -464,6 +566,13 @@ public partial class MinimapOverlay : SLNGWindow
             if (focusPos == null) _focusAgentId = null;
         }
         var center = focusPos ?? ownPos;
+
+        // A Shift-drag moves the view off its focus. Held while the button is down; afterwards it
+        // eases back (AutoCenter) or stays until "Re-center map". The offset is added HERE, to the
+        // focus the canvas is given, so drawing, picking and teleporting all see the panned view.
+        if (_pan != System.Numerics.Vector2.Zero && !_canvas.IsPanning && _view.AutoCenter)
+            _pan = RadarPan.EaseToZero(_pan, (float)delta);
+        if (center is { } focus) center = focus + new System.Numerics.Vector3(_pan, 0f);
 
         // A refresh is due on the timer, or sooner when a name or a profile has just arrived.
         _tableTimer -= (float)delta;
@@ -497,12 +606,16 @@ public partial class MinimapOverlay : SLNGWindow
         }
     }
 
-    /// <summary>Generous on purpose: the canvas can be wider than tall, so a square of one full
-    /// visible range around the focus on each side is always enough to cover it.</summary>
+    /// <summary>Generous on purpose: a square around the focus, as far each way as the canvas's corner
+    /// is from its centre. That covers the view at any orientation (a turned map shows what lies
+    /// under its corners) and any canvas shape, wide or tall.</summary>
     private bool ReachesView(System.Numerics.Vector2 origin, float width, float height, System.Numerics.Vector3? center)
     {
         if (center is not { } c) return false;
-        float reach = _visibleRangeMeters;
+        var canvas = _canvas.Size;
+        float shorter = MathF.Min(canvas.X, canvas.Y);
+        float halfDiagonal = shorter > 0f ? _visibleRangeMeters * 0.5f * canvas.Length() / shorter : _visibleRangeMeters;
+        float reach = MathF.Max(_visibleRangeMeters, halfDiagonal);
         return origin.X < c.X + reach && origin.X + width > c.X - reach
             && origin.Y < c.Y + reach && origin.Y + height > c.Y - reach;
     }
@@ -513,8 +626,26 @@ public partial class MinimapOverlay : SLNGWindow
         foreach (var entry in _roster)
         {
             _relations.TryGetValue(entry.AgentId, out var relation); // missing = Other, the default
-            _dots.Add(new RadarCanvas.Dot(entry.AgentId, entry.Position, relation));
+            var (distance, heightKnown) = RangeOf(entry);
+            _dots.Add(new RadarCanvas.Dot(entry.AgentId, entry.Position, relation, entry.Name, distance, heightKnown));
         }
+    }
+
+    /// <summary>How far away an avatar is, and whether that is a real 3D distance. A coarse-only avatar
+    /// whose height is pinned has no usable Z: its distance is measured on the ground plane only, which
+    /// is a true lower bound -- the range cell and the map tooltip then say "&gt;". The map's marker
+    /// shape and the table's range cell both come from here, so they cannot disagree.</summary>
+    private (float Distance, bool HeightKnown) RangeOf(RosterEntry entry)
+    {
+        bool heightKnown = entry.InWorld || entry.Position.Z < UnknownCoarseHeight;
+        if (_ownPosition is not { } own) return (0f, heightKnown);
+
+        float distance = heightKnown
+            ? System.Numerics.Vector3.Distance(own, entry.Position)
+            : System.Numerics.Vector2.Distance(
+                new System.Numerics.Vector2(own.X, own.Y),
+                new System.Numerics.Vector2(entry.Position.X, entry.Position.Y));
+        return (distance, heightKnown);
     }
 
     /// <summary>Merges World's exact-but-draw-distance-limited avatar entities with
@@ -631,18 +762,7 @@ public partial class MinimapOverlay : SLNGWindow
 
     private RadarRow BuildRow(RosterEntry entry, RadarRelation relation, DateTime now)
     {
-        // A coarse-only avatar whose height is pinned has no usable Z: its distance is measured on
-        // the ground plane only, which is a true lower bound -- the range cell then says ">".
-        bool heightKnown = entry.InWorld || entry.Position.Z < UnknownCoarseHeight;
-        float distance = 0f;
-        if (_ownPosition is { } own)
-        {
-            distance = heightKnown
-                ? System.Numerics.Vector3.Distance(own, entry.Position)
-                : System.Numerics.Vector2.Distance(
-                    new System.Numerics.Vector2(own.X, own.Y),
-                    new System.Numerics.Vector2(entry.Position.X, entry.Position.Y));
-        }
+        var (distance, heightKnown) = RangeOf(entry);
 
         AvatarBriefProfile? profile = null;
         if (_session != null && _session.TryGetBriefProfile(entry.AgentId, out var known)) profile = known;
@@ -669,7 +789,7 @@ public partial class MinimapOverlay : SLNGWindow
     {
         var shown = RadarTable.Sort(
             RadarTable.Filter(all, _filterEdit.Text), _settings.SortColumn, _settings.SortAscending, utcNow);
-        _table.Update(shown, all, utcNow, RenderConfig.DrawDistance, SayRangeMetres, ShoutRangeMetres);
+        _table.Update(shown, all, utcNow, RenderConfig.DrawDistance, RadarChatRings.SayMetres, RadarChatRings.ShoutMetres);
         // The selection is the window's: keep the table's highlight on it, including after a column
         // change rebuilt the table or the avatar came back into the list.
         _table.SelectRow(_selectedAgentId, scrollTo: false);
@@ -734,12 +854,15 @@ public partial class MinimapOverlay : SLNGWindow
         if (_focusAgentId == agentId)
         {
             _focusAgentId = null;
-            _visibleRangeMeters = DefaultVisibleRangeMeters;
+            _visibleRangeMeters = _view.VisibleRangeMetres;
+            _pan = System.Numerics.Vector2.Zero;
             return;
         }
 
+        // A jump puts the avatar in the middle: any pan from before is dropped.
         _focusAgentId = agentId;
         _visibleRangeMeters = FocusVisibleRangeMeters;
+        _pan = System.Numerics.Vector2.Zero;
         if (_session == null) return;
 
         ulong regionHandle = _session.CurrentRegionHandle;
@@ -814,7 +937,7 @@ public partial class MinimapOverlay : SLNGWindow
     private void SavePreferences()
     {
         var offsets = _split.SplitOffsets;
-        RadarPreferences.Save(_settings, offsets.Length > 0 ? offsets[0] : 0);
+        RadarPreferences.Save(_settings, _view, offsets.Length > 0 ? offsets[0] : 0);
     }
 
     private void OnColumnMenuId(long id)
@@ -843,14 +966,112 @@ public partial class MinimapOverlay : SLNGWindow
         SortChanged();
     }
 
-    /// <summary>(Re)builds the gear's popup: a Columns submenu. Rebuilt every time it opens so the
-    /// text follows the language and the checks follow the settings.</summary>
+    /// <summary>(Re)builds the gear's popup: a Columns submenu and the map's view items. Rebuilt every
+    /// time it opens so the text follows the language and the checks follow the settings.</summary>
     private void RebuildGearMenu()
     {
         var popup = _gearButton.GetPopup();
         popup.Clear();
         FillColumnMenu(_gearColumnsMenu);
         popup.AddSubmenuNodeItem(L10n.Tr("ui.radar.columns"), _gearColumnsMenu);
+        popup.AddSeparator();
+        FillViewMenu(_gearView, clearHost: false);
+    }
+
+    /// <summary>A view menu's host popup with its two submenus; the submenus must be children of the
+    /// host. All three report through <see cref="OnViewMenuId"/>.</summary>
+    private ViewMenu MakeViewMenu(PopupMenu host)
+    {
+        var menu = new ViewMenu { Host = host, Zoom = new PopupMenu(), Rings = new PopupMenu() };
+        host.AddChild(menu.Zoom);
+        host.AddChild(menu.Rings);
+        host.IdPressed += OnViewMenuId;
+        menu.Zoom.IdPressed += OnViewMenuId;
+        menu.Rings.IdPressed += OnViewMenuId;
+        return menu;
+    }
+
+    /// <summary>Fills one view menu from the current settings: the zoom presets, the orientation, the
+    /// centring items, the chat rings and the world map. One method for both copies of the menu, so
+    /// they cannot drift apart. <paramref name="clearHost"/> is false when the host already holds
+    /// other items (the gear's Columns submenu).</summary>
+    private void FillViewMenu(ViewMenu menu, bool clearHost)
+    {
+        var host = menu.Host;
+        if (clearHost) host.Clear();
+        menu.Zoom.Clear();
+        menu.Rings.Clear();
+
+        // Zoom: the preset nearest the current range is ticked, so a wheel zoom still reads sensibly.
+        int nearest = RadarZoom.NearestPresetIndex(_visibleRangeMeters);
+        for (int i = 0; i < ZoomPresetKeys.Length; i++)
+        {
+            menu.Zoom.AddRadioCheckItem(L10n.Tr(ZoomPresetKeys[i]), ZoomPresetId + i);
+            menu.Zoom.SetItemChecked(i, i == nearest);
+        }
+        host.AddSubmenuNodeItem(L10n.Tr("ui.radar.zoom"), menu.Zoom);
+
+        host.AddSeparator();
+        AddRadio(host, "ui.radar.orient_north", OrientNorthId, !_view.CameraUp);
+        AddRadio(host, "ui.radar.orient_camera", OrientCameraId, _view.CameraUp);
+
+        host.AddSeparator();
+        host.AddCheckItem(L10n.Tr("ui.radar.auto_center"), AutoCenterId);
+        host.SetItemChecked(host.GetItemIndex(AutoCenterId), _view.AutoCenter);
+        host.AddItem(L10n.Tr("ui.radar.recenter"), RecenterId);
+
+        AddCheck(menu.Rings, "ui.radar.show_chat_rings", RingsMasterId, _view.ChatRings);
+        AddCheck(menu.Rings, "ui.radar.ring_whisper", RingWhisperId, _view.WhisperRing);
+        AddCheck(menu.Rings, "ui.radar.ring_say", RingSayId, _view.SayRing);
+        AddCheck(menu.Rings, "ui.radar.ring_shout", RingShoutId, _view.ShoutRing);
+        host.AddSubmenuNodeItem(L10n.Tr("ui.radar.chat_rings"), menu.Rings);
+
+        host.AddSeparator();
+        host.AddItem(L10n.Tr("ui.radar.world_map"), WorldMapId);
+
+        static void AddRadio(PopupMenu m, string key, int id, bool on)
+        {
+            m.AddRadioCheckItem(L10n.Tr(key), id);
+            m.SetItemChecked(m.GetItemIndex(id), on);
+        }
+
+        static void AddCheck(PopupMenu m, string key, int id, bool on)
+        {
+            m.AddCheckItem(L10n.Tr(key), id);
+            m.SetItemChecked(m.GetItemIndex(id), on);
+        }
+    }
+
+    /// <summary>A pick from either copy of the view menu. Every change to the settings is saved at
+    /// once; re-centring and the world map change no setting.</summary>
+    private void OnViewMenuId(long id)
+    {
+        if (id >= ZoomPresetId && id < ZoomPresetId + RadarZoom.PresetsMetres.Count)
+        {
+            SetZoomPreset((int)id - ZoomPresetId);
+            return;
+        }
+
+        switch (id)
+        {
+            case OrientNorthId: _view.CameraUp = false; break;
+            case OrientCameraId: _view.CameraUp = true; break;
+            case AutoCenterId: _view.AutoCenter = !_view.AutoCenter; break;
+            case RingsMasterId: _view.ChatRings = !_view.ChatRings; break;
+            case RingWhisperId: _view.WhisperRing = !_view.WhisperRing; break;
+            case RingSayId: _view.SayRing = !_view.SayRing; break;
+            case RingShoutId: _view.ShoutRing = !_view.ShoutRing; break;
+            case RecenterId:
+                _pan = System.Numerics.Vector2.Zero;
+                return;
+            case WorldMapId:
+                OnWorldMapRequested?.Invoke();
+                return;
+            default:
+                return;
+        }
+
+        SavePreferences();
     }
 
     private void FillColumnMenu(PopupMenu menu)
