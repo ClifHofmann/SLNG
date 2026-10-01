@@ -154,7 +154,7 @@ Godot `TabContainer`, wrapping the existing `FriendsPanel`).
 
 ## Acceptance Criteria
 - [x] Double-clicking the map teleports to that spot; a click outside the region does nothing.
-- [ ] The map shows the region image, own region brighter than neighbours; black only where no region exists.
+- [x] The map shows the region image, own region brighter than neighbours; black only where no region exists.
 - [ ] A user with a note shows the "n" icon, tooltip = the note; a note written in Firestorm shows up.
 - [ ] Columns can be shown / hidden from a header right-click and the choice survives a restart.
 - [ ] Clicking a header sorts; the sort column is persisted.
@@ -176,7 +176,7 @@ Godot `TabContainer`, wrapping the existing `FriendsPanel`).
 - [ ] Later: voice indicator gets real data once `MVP5-1` exists
 - [ ] Later: language column once a source exists
 - [x] Phase 1 — double-click teleport (v0.24.120-alpha, confirmed in-world 2026-10-01)
-- [ ] Phase 2 — tile fetcher + map image (v0.24.121-alpha: `MapTileService`, `MapTileTextures`, own + neighbour regions drawn; in-world test pending on Agni and OpenSim). Still open: 2b object layer; switching `WorldMapWindow` over to the same tiles
+- [x] Phase 2 — tile fetcher + map image (v0.24.121-alpha: `MapTileService`, `MapTileTextures`, own + neighbour regions drawn; confirmed in-world 2026-10-01). Still open: 2b object layer; switching `WorldMapWindow` over to the same tiles
 - [ ] Phase 3 — profile / notes data layer
 - [ ] Phase 4 — Tree table, column chooser, sort, persistence (starts with the column-resize spike)
 - [ ] Phase 5 — rings, view wedge, dots, orientation, menus
