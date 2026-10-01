@@ -234,10 +234,11 @@ internal sealed partial class RadarTableView : Control
         // widths leave room for the sort arrow in the title, so changing the sort never shifts
         // the columns.
         RadarColumn.Name => (80, true, HorizontalAlignment.Left),
-        RadarColumn.Age => (44, false, HorizontalAlignment.Right),
-        RadarColumn.Seen => (60, false, HorizontalAlignment.Right),
-        RadarColumn.Range => (64, false, HorizontalAlignment.Right),
-        _ => (26, false, HorizontalAlignment.Center), // the icon columns
+        // Each width includes the 8 px of cell padding the Tree theme adds (RadarTree).
+        RadarColumn.Age => (50, false, HorizontalAlignment.Right),
+        RadarColumn.Seen => (68, false, HorizontalAlignment.Right),
+        RadarColumn.Range => (72, false, HorizontalAlignment.Right),
+        _ => (30, false, HorizontalAlignment.Center), // the icon columns
     };
 
     private TreeItem CreateRowItem(Guid agentId)

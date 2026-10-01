@@ -72,6 +72,10 @@ public partial class RadarTree : Tree
         AddThemeFontSizeOverride("title_button_font_size", 11);
 
         AddThemeConstantOverride("h_separation", 6);
+        // Air between a cell's text and the edge of its row's highlight: without it the first and
+        // last cells' text sat flush against the highlight, which read as "too close to the edge".
+        AddThemeConstantOverride("inner_item_margin_left", 3);
+        AddThemeConstantOverride("inner_item_margin_right", 5);
         AddThemeConstantOverride("v_separation", 5);
         AddThemeConstantOverride("draw_guides", 0);
         AddThemeConstantOverride("draw_relationship_lines", 0);

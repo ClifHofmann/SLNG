@@ -58,7 +58,7 @@ public partial class MinimapOverlay : SLNGWindow
     // idea" value: an avatar reported there has no usable height.
     private const float UnknownCoarseHeight = 1020f;
 
-    private static readonly Vector2 DefaultSize = new(460, 560);
+    private static readonly Vector2 DefaultSize = new(480, 560);
 
     // The ids the buttons' popups use. Columns use their enum value (0..10), so these stay clear of it.
     private const int SortAscendingId = 100;
@@ -183,11 +183,12 @@ public partial class MinimapOverlay : SLNGWindow
         ContentContainer.AddChild(root);
 
         // Filter row: the name filter, the options gear and the sort button. The content margin is
-        // 0 so the map reaches the frame, which means the controls around it carry their own.
+        // 0 so the map reaches the frame, which means the controls around it carry their own -- the
+        // STANDARD window inset, the same distance from the frame as in every other window.
         var filterMargin = new MarginContainer();
-        filterMargin.AddThemeConstantOverride("margin_left", 8);
-        filterMargin.AddThemeConstantOverride("margin_right", 8);
-        filterMargin.AddThemeConstantOverride("margin_top", 6);
+        filterMargin.AddThemeConstantOverride("margin_left", DefaultContentMarginH);
+        filterMargin.AddThemeConstantOverride("margin_right", DefaultContentMarginH);
+        filterMargin.AddThemeConstantOverride("margin_top", DefaultContentMarginV);
         root.AddChild(filterMargin);
 
         var filterRow = new HBoxContainer();
@@ -253,15 +254,16 @@ public partial class MinimapOverlay : SLNGWindow
         _canvas.OnDotClicked = OnDotClicked;
         _split.AddChild(_canvas);
 
-        // The table sits inside the window's rounded corners, so it gets a small inset of its own.
+        // The table is text, not picture, so it keeps the standard inset like any other window's
+        // content; only the map reaches the frame.
         var tableMargin = new MarginContainer
         {
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
-        tableMargin.AddThemeConstantOverride("margin_left", 6);
-        tableMargin.AddThemeConstantOverride("margin_right", 6);
-        tableMargin.AddThemeConstantOverride("margin_bottom", 8);
+        tableMargin.AddThemeConstantOverride("margin_left", DefaultContentMarginH);
+        tableMargin.AddThemeConstantOverride("margin_right", DefaultContentMarginH);
+        tableMargin.AddThemeConstantOverride("margin_bottom", DefaultContentMarginV);
         _split.AddChild(tableMargin);
 
         _table = new RadarTableView();
