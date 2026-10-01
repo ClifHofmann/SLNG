@@ -33,7 +33,7 @@ public class CompressedExtendedMeshTests
     private const uint HasSound = 0x10;
     private const uint HasNameValues = 0x100;
 
-    private static byte[] ExtraParams(params (ushort Type, byte[] Payload)[] blocks)
+    internal static byte[] ExtraParams(params (ushort Type, byte[] Payload)[] blocks)
     {
         var bytes = new List<byte> { (byte)blocks.Length };
         foreach (var (type, payload) in blocks)
@@ -45,11 +45,11 @@ public class CompressedExtendedMeshTests
         return bytes.ToArray();
     }
 
-    private static byte[] AnimeshOn() => ExtraParams((ExtendedMesh, BitConverter.GetBytes(ExtendedMeshParams.FlagAnimatedMesh)));
+    internal static byte[] AnimeshOn() => ExtraParams((ExtendedMesh, BitConverter.GetBytes(ExtendedMeshParams.FlagAnimatedMesh)));
 
     /// <summary>Assembles a compressed object, section by section in wire order. Returns the offset
     /// at which the ExtraParams count byte was written through <paramref name="extraParamsAt"/>.</summary>
-    private static byte[] Compressed(
+    internal static byte[] Compressed(
         uint flags, byte[] extraParams, out int extraParamsAt,
         bool withLegacyParticles = false, byte[]? newParticles = null)
     {

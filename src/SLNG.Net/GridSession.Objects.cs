@@ -22,37 +22,72 @@ namespace SLNG.Net;
 // can be read, reviewed and merged independently.
 public sealed partial class GridSession
 {
-    /// <summary>Scans each object's raw ExtraParams bytes for a Light (0x20) block, independent
-    /// of LibreMetaverse's own parsing -- see <see cref="_lightPresentByLocalId"/> for why this
-    /// can't be read back from the high-level Primitive object. Byte layout matches
-    /// Primitive.SetExtraParamsFromBytes: 1 count byte, then per entry a UInt16 type + UInt32
-    /// length + that many payload bytes. The same scan also reads the Reflection Probe (0x90) and,
-    /// for FEAT-ANIMESH-01, the Extended Mesh (0x70) block.</summary>
+    /// <summary>Reads each object's raw ExtraParams bytes -- the Light (0x20), Reflection Probe
+    /// (0x90) and Extended Mesh (0x70) blocks -- independent of LibreMetaverse's own parsing: see
+    /// <see cref="ExtraParamsScan"/> for why none of them can be read back from the high-level
+    /// Primitive object. Runs for every ObjectUpdate; <see cref="OnObjectUpdateCompressedRaw"/> does
+    /// the same for the compressed form.</summary>
     private void OnRawObjectUpdatePacket(object? sender, PacketReceivedEventArgs e)
     {
         if (e.Packet is not ObjectUpdatePacket update) return;
 
-        List<uint>? animatedMeshChanged = null;
-        foreach (var block in update.ObjectData)
-        {
-            _lightPresentByLocalId[block.ID] = ExtraParamsContainsLight(block.ExtraParams);
-            _reflectionProbeByLocalId[block.ID] = ExtraParamsReflectionProbe(block.ExtraParams);
-            if (LatchAnimatedMesh(e.Simulator.Handle, block.ID, ExtraParamsAnimatedMesh(block.ExtraParams)))
-                (animatedMeshChanged ??= new List<uint>()).Add(block.ID);
-        }
+        // BUG-NET-25 / FEAT-ANIMESH-01: this callback runs AFTER LibreMetaverse's own handler has
+        // queued the event for these same blocks (its handler sits ahead of ours in the same
+        // invocation list, and the event itself goes out on a thread-pool work item), so that event
+        // may have been built before the latches were written. Raised again once, only for an
+        // object whose stored answer actually changed -- otherwise a mirror, a light switched off or
+        // an animesh would be reported one update late. Done after the loop so one misbehaving
+        // subscriber cannot stop the rest of the packet's blocks being latched.
+        var changed = LatchObjectUpdateBlocks(e.Simulator.Handle, update.ObjectData);
+        RaiseUpdatesFor(e.Simulator, changed);
+    }
 
-        // FEAT-ANIMESH-01: this callback runs AFTER LibreMetaverse's own handler has queued the
-        // event for these same blocks (its handler sits ahead of ours in the same invocation
-        // list, and the event itself goes out on a thread-pool work item), so that event may have
-        // been built before the latch above was written. Raised again once, only for an object
-        // whose answer actually changed -- otherwise an animesh would be reported one update late
-        // and lie on its side until something else touched it. Done after the loop so one
-        // misbehaving subscriber cannot stop the rest of the packet's blocks being latched.
-        if (animatedMeshChanged is null) return;
-        foreach (uint localId in animatedMeshChanged)
+    /// <summary>Latches every block of one ObjectUpdate packet and returns the objects whose stored
+    /// answer changed -- each object once, however many of its latches moved or however many blocks
+    /// of the packet name it. A block whose ExtraParams are malformed changes nothing it cannot
+    /// vouch for (see <see cref="ExtraParamsScan"/>); in particular it does not stop the blocks
+    /// behind it.</summary>
+    internal List<uint> LatchObjectUpdateBlocks(
+        ulong regionHandle, IEnumerable<ObjectUpdatePacket.ObjectDataBlock> blocks)
+    {
+        var changed = new List<uint>();
+        foreach (var block in blocks)
         {
-            if (e.Simulator.ObjectsPrimitives.TryGetValue(localId, out Primitive? prim) && prim is not null)
-                RaiseObjectUpdate(e.Simulator, prim, isFullUpdate: true);
+            if (LatchExtraParams(regionHandle, block.ID, ExtraParamsScan.Read(block.ExtraParams))
+                && !changed.Contains(block.ID))
+            {
+                changed.Add(block.ID);
+            }
+        }
+        return changed;
+    }
+
+    /// <summary>The compressed counterpart of one block of <see cref="LatchObjectUpdateBlocks"/>:
+    /// reads the object's ExtraParams out of the middle of the blob and latches them. Returns
+    /// whether any stored answer changed. A layout that cannot be established changes nothing.</summary>
+    internal bool LatchCompressedExtraParams(ulong regionHandle, uint localId, byte[]? block)
+        => CompressedExtraParams(block) is { } scan && LatchExtraParams(regionHandle, localId, scan);
+
+    private bool LatchExtraParams(ulong regionHandle, uint localId, in ExtraParamsScan scan)
+    {
+        // Each kind is updated only when the scan KNOWS its answer: found, or the whole buffer was
+        // read and it is not there. All three are evaluated (no short-circuit): one object can
+        // change in several ways at once, and every latch has to see the update.
+        bool light = scan.LightKnown && LatchLight(regionHandle, localId, scan.Light);
+        bool probe = scan.ProbeKnown && LatchReflectionProbe(regionHandle, localId, scan.Probe);
+        bool mesh = scan.AnimatedMeshKnown && LatchAnimatedMesh(regionHandle, localId, scan.AnimatedMesh);
+        return light || probe || mesh;
+    }
+
+    /// <summary>Raises the update for each listed object once, from the Primitive LibreMetaverse
+    /// holds for it -- a no-op for one it does not (yet) have: the library's own event then
+    /// follows with the latches already written.</summary>
+    private void RaiseUpdatesFor(LibreMetaverse.Simulator simulator, IEnumerable<uint> localIds)
+    {
+        foreach (uint localId in localIds)
+        {
+            if (simulator.ObjectsPrimitives.TryGetValue(localId, out Primitive? prim) && prim is not null)
+                RaiseObjectUpdate(simulator, prim, isFullUpdate: true);
         }
     }
 
@@ -64,64 +99,60 @@ public sealed partial class GridSession
     /// <para>Wire layout (lldatapacker.cpp:292-334, llprimitive.cpp:2273-2285): <c>U8 count</c>, then
     /// per entry <c>U16 type</c>, <c>S32 size</c>, <c>size</c> payload bytes, all little-endian. The
     /// 0x70 payload is one <c>U32</c> flags word and <c>ANIMATED_MESH_ENABLED_FLAG</c> is bit 0
-    /// (<see cref="SLNG.Core.ExtendedMeshParams"/>). Note the size field is a SIGNED 32-bit value --
-    /// the Light and Reflection-Probe scans above read it as unsigned, which a negative or huge value
-    /// turns into an offset past the end of the buffer; this one checks it against what is
-    /// actually there before stepping over it.</para>
+    /// (<see cref="SLNG.Core.ExtendedMeshParams"/>). The walk, and its validation of the signed size
+    /// field, is <see cref="ExtraParamsScan"/>'s.</para>
     ///
     /// <para>A payload longer than four bytes is read for its first four, as the probe block is:
     /// if Linden Lab appends fields, the leading word still means what it means today. A payload
     /// shorter than four is refused.</para>
     /// </summary>
-    internal static bool ExtraParamsAnimatedMesh(byte[]? data) => data is not null && ScanAnimatedMesh(data);
+    internal static bool ExtraParamsAnimatedMesh(byte[]? data) => ExtraParamsScan.Read(data).AnimatedMesh;
 
-    private static bool ScanAnimatedMesh(ReadOnlySpan<byte> data)
-    {
-        const int EntryHeaderSize = 6; // U16 type + S32 size
-        if (data.Length < 1) return false;
+    /// <summary>Whether this ExtraParams buffer carries a Light (0x20) block. False for an absent
+    /// block and for anything malformed before it.</summary>
+    internal static bool ExtraParamsContainsLight(byte[]? data) => ExtraParamsScan.Read(data).Light;
 
-        int count = data[0];
-        int i = 1;
-        for (int k = 0; k < count; k++)
-        {
-            if (data.Length - i < EntryHeaderSize) return false;
-            ushort type = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(i, 2));
-            int size = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(i + 2, 4));
-            i += EntryHeaderSize;
-
-            // The declared size has to be real before it is used for anything, 0x70 or not: a
-            // block that lies about its length cannot be stepped over, and nothing behind it can
-            // be trusted either.
-            if (size < 0 || size > data.Length - i) return false;
-
-            if (type == SLNG.Core.ExtendedMeshParams.ParamType)
-            {
-                if (size < SLNG.Core.ExtendedMeshParams.WireSize) return false;
-                uint flags = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(i, SLNG.Core.ExtendedMeshParams.WireSize));
-                return (flags & SLNG.Core.ExtendedMeshParams.FlagAnimatedMesh) != 0;
-            }
-            i += size;
-        }
-        return false;
-    }
+    /// <summary>Reads the Reflection Probe (0x90) block out of the same raw ExtraParams scan, or
+    /// null when this update carries none. Payload is <c>LLReflectionProbeParams::pack</c>
+    /// (llprimitive.cpp:1837): F32 ambiance, F32 clip distance, U8 flags, little-endian.
+    ///
+    /// Length-checked against the payload the packet actually declares rather than assuming 9
+    /// bytes: the block is one Linden Lab could extend, and a short read of a longer future
+    /// block would silently produce nonsense flags -- which here means inventing or losing a
+    /// mirror.</summary>
+    internal static SLNG.Core.ReflectionProbeParams? ExtraParamsReflectionProbe(byte[]? data)
+        => ExtraParamsScan.Read(data).Probe;
 
     /// <summary>
-    /// <see cref="ExtraParamsAnimatedMesh"/> for an <c>ObjectUpdateCompressed</c> object, where the
-    /// ExtraParams are not a field of their own but a section in the middle of one blob. The offset
-    /// comes from <see cref="CompressedParticleRepair.TryFindExtraParams"/>, which shares its walk
-    /// with the particle repair. Null means the layout could not be established (too short, cut
-    /// off inside an optional section, or a scratch-pad object whose width the two decoders
-    /// disagree on) -- the caller must then leave what it already knows alone rather than treat it
-    /// as "not animesh". A located but malformed block is an answer: false.
+    /// The three ExtraParams blocks of an <c>ObjectUpdateCompressed</c> object, where the ExtraParams
+    /// are not a field of their own but a section in the middle of one blob. The offset comes from
+    /// <see cref="CompressedParticleRepair.TryFindExtraParams"/>, which shares its walk with the
+    /// particle repair. Null means the layout could not be established (too short, cut off inside
+    /// an optional section, or a scratch-pad object whose width the two decoders disagree on) -- the
+    /// caller must then leave what it already knows alone rather than treat it as "no blocks". A
+    /// located but malformed buffer is a scan like any other: what it showed, with
+    /// <see cref="ExtraParamsScan.Complete"/> false.
     /// </summary>
-    internal static bool? CompressedAnimatedMesh(byte[]? block)
+    internal static ExtraParamsScan? CompressedExtraParams(byte[]? block)
     {
         if (block is null || !CompressedParticleRepair.TryFindExtraParams(block, out int offset))
         {
             return null;
         }
-        return ScanAnimatedMesh(block.AsSpan(offset));
+        return ExtraParamsScan.Read(block.AsSpan(offset));
     }
+
+    /// <summary>
+    /// <see cref="ExtraParamsAnimatedMesh"/> for an <c>ObjectUpdateCompressed</c> object. Null means
+    /// the layout could not be established (see <see cref="CompressedExtraParams"/>); a located
+    /// but malformed block is an answer: false.
+    /// </summary>
+    internal static bool? CompressedAnimatedMesh(byte[]? block) => CompressedExtraParams(block)?.AnimatedMesh;
+
+    // --- The latches. Three, one shape: keyed by (region, LocalId) -- LocalIds are handed out per
+    // region and a neighbour (MultipleSims) reuses the same numbers --, holding only the objects
+    // that ever showed the block, answering "did the stored answer CHANGE" so the callback can
+    // re-raise once, and pruned with the object (kill) and with the region (disconnect).
 
     /// <summary>Records whether an object is an animated mesh, and says whether that CHANGED --
     /// which is what makes a re-raise worth doing. Only the true state is stored: "false" for an
@@ -135,13 +166,71 @@ public sealed partial class GridSession
     internal bool IsAnimatedMeshLatched(ulong regionHandle, uint localId) =>
         _animatedMeshObjects.ContainsKey((regionHandle, localId));
 
-    /// <summary>Drops one object's state without raising anything: it is gone, and its LocalID may
-    /// be handed to a different object that must start clean.</summary>
+    /// <summary>Records whether an object's current ExtraParams carry a Light block, and says
+    /// whether that CHANGED (appeared, went away, or came back).
+    ///
+    /// <para>The value is "the most recent ExtraParams positively had no Light block". It matters
+    /// only for an object that once showed a light -- <c>Primitive.Light</c> is never cleared, so a
+    /// light that went away is the one case it reports wrongly; every other object's is already the
+    /// default -- so only those objects are held: an entry exists once a light has been seen, true
+    /// while it is there and false once it is gone. No entry keeps meaning "trust the Primitive",
+    /// which is also what an object whose ExtraParams were never readable gets.</para></summary>
+    internal bool LatchLight(ulong regionHandle, uint localId, bool present)
+    {
+        var key = (regionHandle, localId);
+        if (present)
+        {
+            // First sighting, or false -> true. true -> true is no change (TryUpdate fails).
+            return _lightObjects.TryAdd(key, true) || _lightObjects.TryUpdate(key, true, false);
+        }
+        // true -> false. No entry, or already false: nothing to say.
+        return _lightObjects.TryUpdate(key, false, true);
+    }
+
+    /// <summary>True when this object showed a light and its latest ExtraParams no longer carry
+    /// one: <c>Primitive.Light</c> is then stale-on and must not be believed.</summary>
+    internal bool IsLightRemovedLatched(ulong regionHandle, uint localId) =>
+        _lightObjects.TryGetValue((regionHandle, localId), out bool present) && !present;
+
+    /// <summary>The light this object really has: the Primitive's, unless the latch says it was
+    /// switched off, in which case a fresh default (off) one. Never rewrites the Primitive:
+    /// LibreMetaverse owns it, and a re-enable arriving while a stale read is in flight would
+    /// otherwise be wiped -- leaving the re-raise nothing to bring back.</summary>
+    internal Primitive.LightData EffectiveLight(ulong regionHandle, uint localId, Primitive.LightData light) =>
+        light.Intensity > 0f && IsLightRemovedLatched(regionHandle, localId)
+            ? new Primitive.LightData()
+            : light;
+
+    /// <summary>Records an object's Reflection Probe block (null when its ExtraParams carry none)
+    /// and says whether that CHANGED. Only objects that have one are held; none and unknown both
+    /// read as null.</summary>
+    internal bool LatchReflectionProbe(ulong regionHandle, uint localId, SLNG.Core.ReflectionProbeParams? probe)
+    {
+        var key = (regionHandle, localId);
+        if (probe is not { } value)
+        {
+            return _reflectionProbes.TryRemove(key, out _);
+        }
+
+        while (true)
+        {
+            if (_reflectionProbes.TryAdd(key, value)) return true;
+            if (!_reflectionProbes.TryGetValue(key, out var old)) continue; // removed in between: add again
+            if (old.Equals(value)) return false;
+            if (_reflectionProbes.TryUpdate(key, value, old)) return true;
+        }
+    }
+
+    internal SLNG.Core.ReflectionProbeParams? ReflectionProbeLatched(ulong regionHandle, uint localId) =>
+        _reflectionProbes.TryGetValue((regionHandle, localId), out var probe) ? probe : null;
+
+    /// <summary>Drops one object's animesh state without raising anything: it is gone, and its
+    /// LocalID may be handed to a different object that must start clean.</summary>
     internal void ForgetAnimatedMesh(ulong regionHandle, uint localId) =>
         _animatedMeshObjects.TryRemove((regionHandle, localId), out _);
 
-    /// <summary>Drops every object of a region that has been disconnected: after a restart the
-    /// same LocalIDs belong to different objects.</summary>
+    /// <summary>Drops every animesh object of a region that has been disconnected: after a restart
+    /// the same LocalIDs belong to different objects.</summary>
     internal void ForgetAnimatedMeshRegion(ulong regionHandle)
     {
         foreach (var key in _animatedMeshObjects.Keys)
@@ -150,54 +239,26 @@ public sealed partial class GridSession
         }
     }
 
-    private static bool ExtraParamsContainsLight(byte[]? data)
+    /// <summary>Drops everything the ExtraParams latches hold for one object (kill).</summary>
+    internal void ForgetObjectLatches(ulong regionHandle, uint localId)
     {
-        if (data == null || data.Length < 1) return false;
-
-        int i = 0;
-        byte count = data[i++];
-        for (int k = 0; k < count; k++)
-        {
-            if (i + 6 > data.Length) break;
-            ushort type = Utils.BytesToUInt16(data, i); i += 2;
-            uint len = Utils.BytesToUInt(data, i); i += 4;
-            if (type == 0x20) return true; // ExtraParamType.Light
-            i += (int)len;
-        }
-        return false;
+        _lightObjects.TryRemove((regionHandle, localId), out _);
+        _reflectionProbes.TryRemove((regionHandle, localId), out _);
+        ForgetAnimatedMesh(regionHandle, localId);
     }
 
-    /// <summary>Reads the Reflection Probe (0x90) block out of the same raw ExtraParams scan, or
-    /// null when this update carries none. Payload is <c>LLReflectionProbeParams::pack</c>
-    /// (llprimitive.cpp:1837): F32 ambiance, F32 clip distance, U8 flags, little-endian.
-    ///
-    /// Length-checked against the payload the packet actually declares rather than assuming 9
-    /// bytes: the block is one Linden Lab could extend, and a short read of a longer future
-    /// block would silently produce nonsense flags -- which here means inventing or losing a
-    /// mirror.</summary>
-    internal static SLNG.Core.ReflectionProbeParams? ExtraParamsReflectionProbe(byte[]? data)
+    /// <summary>Drops everything the ExtraParams latches hold for a region (disconnect).</summary>
+    internal void ForgetObjectLatchesRegion(ulong regionHandle)
     {
-        if (data == null || data.Length < 1) return null;
-
-        int i = 0;
-        byte count = data[i++];
-        for (int k = 0; k < count; k++)
+        foreach (var key in _lightObjects.Keys)
         {
-            if (i + 6 > data.Length) break;
-            ushort type = Utils.BytesToUInt16(data, i); i += 2;
-            uint len = Utils.BytesToUInt(data, i); i += 4;
-            if (type == 0x90) // ExtraParamType.ReflectionProbe
-            {
-                if (len < SLNG.Core.ReflectionProbeParams.WireSize
-                    || i + SLNG.Core.ReflectionProbeParams.WireSize > data.Length) return null;
-                return new SLNG.Core.ReflectionProbeParams(
-                    Utils.BytesToFloat(data, i),
-                    Utils.BytesToFloat(data, i + 4),
-                    data[i + 8]);
-            }
-            i += (int)len;
+            if (key.Region == regionHandle) _lightObjects.TryRemove(key, out _);
         }
-        return null;
+        foreach (var key in _reflectionProbes.Keys)
+        {
+            if (key.Region == regionHandle) _reflectionProbes.TryRemove(key, out _);
+        }
+        ForgetAnimatedMeshRegion(regionHandle);
     }
 
     private void OnObjectPropertiesFamily(object? sender, ObjectPropertiesFamilyEventArgs e)
@@ -334,6 +395,7 @@ public sealed partial class GridSession
             return;
         }
 
+        List<uint>? toRaise = null;
         foreach (var block in packet.ObjectData)
         {
             if (!CompressedParticleRepair.TryReadLocalId(block.Data, out uint localId))
@@ -341,15 +403,16 @@ public sealed partial class GridSession
                 continue;
             }
 
-            // FEAT-ANIMESH-01: LibreMetaverse does not parse the Extended Mesh (0x70) ExtraParams
-            // block, and a compressed object carries it in the middle of its one blob, so the
-            // flag is read here -- once, for the cache replay as well, which feeds this same
-            // handler. A layout that cannot be established (null) leaves the latch as it was.
-            bool animatedMeshChanged = GridSession.CompressedAnimatedMesh(block.Data) is bool animatedMesh
-                && LatchAnimatedMesh(e.Simulator.Handle, localId, animatedMesh);
+            // BUG-NET-25 / FEAT-ANIMESH-01: LibreMetaverse does not parse the Reflection Probe
+            // block at all, and its Light and Extended Mesh fields are never cleared when a block
+            // goes away -- so, as for a full update, the ExtraParams are read here. A compressed
+            // object carries them in the middle of its one blob; this runs for the cache replay as
+            // well, which feeds this same handler. A layout that cannot be established leaves
+            // every latch as it was.
+            bool latchChanged = LatchCompressedExtraParams(e.Simulator.Handle, localId, block.Data);
 
             byte[]? raw = CompressedParticleRepair.ExtractParticleBlock(block.Data);
-            if (raw is null && !animatedMeshChanged)
+            if (raw is null && !latchChanged)
             {
                 continue;
             }
@@ -362,9 +425,9 @@ public sealed partial class GridSession
                 continue;
             }
 
-            // The library's event may have been built before the latch above was written (the
+            // The library's event may have been built before the latches above were written (the
             // same ordering OnRawObjectUpdatePacket describes), so a change is raised again.
-            bool raise = animatedMeshChanged;
+            bool raise = latchChanged;
             if (raw is not null)
             {
                 var repaired = new Primitive.ParticleSystem(raw, 0);
@@ -378,10 +441,16 @@ public sealed partial class GridSession
                 }
             }
 
-            if (raise)
+            // Once per object per packet, however much of it changed: deferred to after the loop.
+            if (raise && !(toRaise ??= new List<uint>()).Contains(localId))
             {
-                RaiseObjectUpdate(e.Simulator, prim, isFullUpdate: true);
+                toRaise.Add(localId);
             }
+        }
+
+        if (toRaise is not null)
+        {
+            RaiseUpdatesFor(e.Simulator, toRaise);
         }
     }
 
@@ -699,11 +768,6 @@ public sealed partial class GridSession
             pd.ProfileBegin, pd.ProfileEnd, pd.ProfileHollow,
             (byte)pd.PCode);
 
-        // Primitive.Light never resets itself when a light is disabled (see
-        // _lightPresentByLocalId) -- if our own raw-packet scan positively saw this update's
-        // ExtraParams WITHOUT a Light block, trust that over the stale Primitive.Light, and
-        // correct the shared Primitive object too so any other code reading prim.Light directly
-        // (not just this event) also sees the fix from here on.
         // llSetTextureAnim. LibreMetaverse copies the four wire bytes verbatim into
         // Primitive.TextureAnim without the viewer's unpack rules (signed face byte, non-smooth
         // size clamp), so the raw values go through TextureAnimation.FromWire rather than being
@@ -723,12 +787,16 @@ public sealed partial class GridSession
                 prim.TextureAnim.Rate);
         }
 
-        bool lightEnabled = prim.Light.Intensity > 0f;
-        if (_lightPresentByLocalId.TryGetValue(prim.LocalID, out bool lightBlockPresent) && !lightBlockPresent && lightEnabled)
-        {
-            prim.Light = new Primitive.LightData();
-            lightEnabled = false;
-        }
+        // Primitive.Light never resets itself when a light is disabled (see _lightObjects) -- if our
+        // own raw scan positively saw this object's latest ExtraParams WITHOUT a Light block, trust
+        // that over the stale Primitive.Light. BUG-NET-25: reported from a local copy and no longer
+        // written back into the Primitive. The write-back was safe only while the latch could not
+        // be stale; this event can be built just before the callback that writes the latch (see
+        // OnRawObjectUpdatePacket), and a light switched back ON in that window was read as
+        // "removed" and wiped from the shared object -- after which the corrective re-raise had
+        // nothing left to report. Nothing else reads prim.Light.
+        var light = EffectiveLight(simulator.Handle, prim.LocalID, prim.Light);
+        bool lightEnabled = light.Intensity > 0f;
 
         // MVP3-3 Phase 1: like TextureAnim/Light above, the media doorbell only exists on a full
         // update -- ImprovedTerseObjectUpdate carries neither a TextureEntry nor a MediaURL.
@@ -771,14 +839,13 @@ public sealed partial class GridSession
             // Light is an ExtraParams block, not a PrimFlags bit -- LibreMetaverse's own
             // convention (mirrored in SetObjectLight below) is Intensity>0 means "the block is
             // active"; Primitive.Light is never null (ObjectManager always constructs a default).
-            // lightEnabled (computed above) is prim.Light.Intensity>0f corrected for the
-            // never-resets-on-disable bug -- prim.Light itself is also corrected by then, so the
-            // fields below are consistent with it either way.
+            // `light` (taken above) is prim.Light corrected for the never-resets-on-disable bug,
+            // so lightEnabled and the fields below are one consistent snapshot.
             lightEnabled,
-            new System.Numerics.Vector3(prim.Light.Color.R, prim.Light.Color.G, prim.Light.Color.B),
-            prim.Light.Intensity,
-            prim.Light.Radius,
-            prim.Light.Falloff,
+            new System.Numerics.Vector3(light.Color.R, light.Color.G, light.Color.B),
+            light.Intensity,
+            light.Radius,
+            light.Falloff,
             // OpenMetaverse.Material and SLNG.Core.PrimMaterial share the same 0-6 numeric values
             // by design (see PrimMaterial's doc comment) -- the enum's rare/vestigial value 7
             // ("Light", unrelated to the point-light feature, not user-selectable in the real SL
@@ -799,7 +866,7 @@ public sealed partial class GridSession
             // The DEFAULT face's fullbright flag -- see FaceTexture.Fullbright. Per-face entries
             // in `faces` carry their own; this is for prims that send no per-face entries.
             defaultFace?.Fullbright ?? false,
-            _reflectionProbeByLocalId.TryGetValue(prim.LocalID, out var probe) ? probe : null,
+            ReflectionProbeLatched(simulator.Handle, prim.LocalID),
             prim.Flags.HasFlag(PrimFlags.Touch),
             prim.Flags.HasFlag(PrimFlags.Money),
             // FEAT-SEC-04: the sim's per-agent permission answer, already computed for us. These
@@ -999,7 +1066,7 @@ public sealed partial class GridSession
     private void OnKillObject(object? sender, KillObjectEventArgs e)
     {
         CheckAndStopMotionOnKill(e.Simulator, e.ObjectLocalID);
-        ForgetAnimatedMesh(e.Simulator.Handle, e.ObjectLocalID);
+        ForgetObjectLatches(e.Simulator.Handle, e.ObjectLocalID);
         ObjectRemovedReceived?.Invoke(this, new ObjectRemovedEvent(e.Simulator.Handle, e.ObjectLocalID));
     }
 
@@ -1008,7 +1075,7 @@ public sealed partial class GridSession
         foreach (var localId in e.ObjectLocalIDs)
         {
             CheckAndStopMotionOnKill(e.Simulator, localId);
-            ForgetAnimatedMesh(e.Simulator.Handle, localId);
+            ForgetObjectLatches(e.Simulator.Handle, localId);
             ObjectRemovedReceived?.Invoke(this, new ObjectRemovedEvent(e.Simulator.Handle, localId));
         }
     }
