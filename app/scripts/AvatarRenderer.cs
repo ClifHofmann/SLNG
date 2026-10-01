@@ -4145,7 +4145,16 @@ public partial class AvatarRenderer : Node3D
             // SlJointComposer.ComputeBodySize port ever reads a joint's POSITION override for
             // "mPelvis", only its SCALE, which this override does not touch — see ComputeBodySize's
             // pelvisScaleZ). It is a real, separate hazard worth guarding regardless.
-            if (boneDef != null && boneDef.ParentName == null)
+            //
+            // A CONTROL avatar is the opposite case, and the viewer's literal behaviour is right
+            // for it: its skeleton belongs to one animesh object, so there is no shared body and
+            // no other attachment to drag along. The pelvis override is how a creator whose rig
+            // does not stand a standard 1.067 m pelvis above the feet (every robot, every
+            // creature) says where the pelvis IS, and the mesh's own inverse bind matrices were
+            // authored against that height. Skipping it left W(mPelvis) at 1.067 while the IBM
+            // cancelled the authored height, so the whole mesh rendered higher by the difference
+            // (FEAT-ANIMESH-01: a robot hovering about a metre up).
+            if (boneDef != null && boneDef.ParentName == null && !visual.IsControlAvatar)
             {
                 if (Diagnostics.Enabled) GD.Print($"[JointOverride] mesh {meshId}: SKIPPED root-joint \"{boneName}\" override " +
                          $"(would-be shift {delta:0.###} m, raw pos {slPos.X:0.###},{slPos.Y:0.###},{slPos.Z:0.###}) " +

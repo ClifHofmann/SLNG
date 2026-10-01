@@ -573,7 +573,7 @@ public partial class AvatarRenderer
     /// turns it 90 degrees about X and scales it by <paramref name="scale"/>. The inverse bind
     /// matrix is the pelvis's own, so the chain <c>p * BSM * invBind * jointWorld</c> reduces to
     /// <c>p * BSM * (skeleton rotation)</c>.</summary>
-    internal MeshData SelfTestRiggedBar(float scale, out System.Numerics.Vector3[] corners)
+    internal MeshData SelfTestRiggedBar(float scale, out System.Numerics.Vector3[] corners, float? pelvisHeight = null)
     {
         var pelvis = _avatarSkeleton!.GetBone("mPelvis")!;
         corners = new System.Numerics.Vector3[8];
@@ -592,8 +592,16 @@ public partial class AvatarRenderer
         var submesh = new MeshSubmesh(corners, normals, uvs, indices, 0, weights);
 
         var bindShape = System.Numerics.Matrix4x4.CreateScale(scale) * System.Numerics.Matrix4x4.CreateRotationX(MathF.PI / 2f);
+        // pelvisHeight: a creator whose rig stands the pelvis somewhere other than the stock
+        // 1.067 m authors the inverse bind matrix against THAT height and states it as a joint
+        // position override (the alternate bind matrix's translation). The mesh then has to land
+        // exactly where it does with the stock pelvis -- but only if the override is honoured.
+        float authoredPelvisZ = pelvisHeight ?? pelvis.Position.Z;
         var skin = new MeshSkin(new[] { "mPelvis" },
-            new[] { System.Numerics.Matrix4x4.CreateTranslation(0f, 0f, -pelvis.Position.Z) }, bindShape, 0f);
+            new[] { System.Numerics.Matrix4x4.CreateTranslation(0f, 0f, -authoredPelvisZ) }, bindShape, 0f,
+            pelvisHeight.HasValue
+                ? new[] { System.Numerics.Matrix4x4.CreateTranslation(0f, 0f, authoredPelvisZ) }
+                : null);
         return new MeshData(new[] { submesh }, skin);
     }
 
@@ -710,13 +718,42 @@ public partial class AvatarRenderer
             bool freed = _controlAvatars.Count == 0 && _controlAvatarOfPrim.Count == 0
                          && ca.Visual.Root.IsQueuedForDeletion();
 
-            bool ok = extentOk && shareOk && upOk && followsOk && fixupOk && oneLeft && freed;
+            // 5. A rig whose pelvis is NOT at the stock height (a robot): the pelvis position override
+            //    must be applied to a control avatar, or the whole mesh rides higher by the difference.
+            //    Same bar, same known answer as step 1 -- the override cancels against the inverse bind.
+            bool pelvisOk;
+            string pelvisText;
+            {
+                var lowData = SelfTestRiggedBar(Scale, out _, pelvisHeight: 0.3f);
+                var lowMeshId = Guid.NewGuid();
+                var lowRoot = Guid.NewGuid();
+                var lowCa = GetOrCreateControlAvatar(lowRoot);
+                if (lowCa == null || !InstallControlAvatarPart(lowCa, lowRoot, true, lowData, lowMeshId, null, default,
+                        true, false, rootPos, objectRotation))
+                {
+                    FreeControlAvatar(lowRoot);
+                    return (false, "the low-pelvis bar produced no geometry");
+                }
+                var lowExt = lowCa.Parts[lowRoot].Extent;
+                bool lowOk = lowExt != null && lowExt.Valid;
+                var lowMin = lowOk ? new System.Numerics.Vector3(lowExt!.WorldMin.X, -lowExt.WorldMax.Z, lowExt.WorldMin.Y) : default;
+                var lowMax = lowOk ? new System.Numerics.Vector3(lowExt!.WorldMax.X, -lowExt.WorldMin.Z, lowExt.WorldMax.Y) : default;
+                pelvisOk = lowOk && (lowMin - expMin).Length() < 2e-3f && (lowMax - expMax).Length() < 2e-3f;
+                pelvisText = lowOk
+                    ? $"low-pelvis extent min=({lowMin.X:0.###}, {lowMin.Y:0.###}, {lowMin.Z:0.###}) max=({lowMax.X:0.###}, {lowMax.Y:0.###}, {lowMax.Z:0.###})"
+                    : "no extent measured for the low-pelvis bar";
+                FreeControlAvatar(lowRoot);
+                _controlAvatarOfPrim.Remove(lowRoot);
+            }
+
+            bool ok = extentOk && shareOk && upOk && followsOk && fixupOk && oneLeft && freed && pelvisOk;
             return (ok, ok
                 ? $"bind-shape X turn cancelled, bar stays upright and scaled ({extentText}); one skeleton for 2 meshes, " +
-                  "re-rig replaces, root follows, pelvis fixup lifts along world up, last release frees"
+                  "re-rig replaces, root follows, pelvis fixup lifts along world up, last release frees, " +
+                  "a pelvis override at a non-stock height cancels against its inverse bind"
                 : $"extent {(extentOk ? "ok" : "WRONG")} [{extentText}]; shared skeleton {(shareOk ? "ok" : $"WRONG ({_controlAvatars.Count} avatar(s), {ca.Parts.Count} part(s), {parts} node(s))")}; " +
                   $"up axis {(upOk ? "ok" : $"WRONG (got {gotUp}, want {wantUp})")}; follows root {(followsOk ? "ok" : "WRONG")}; " +
-                  $"pelvis fixup {(fixupOk ? "ok" : "WRONG")}; one skeleton left after the first release {(oneLeft ? "ok" : "WRONG")}; freed {(freed ? "ok" : "WRONG")}");
+                  $"pelvis fixup {(fixupOk ? "ok" : "WRONG")}; pelvis override {(pelvisOk ? "ok" : $"WRONG [{pelvisText}]")}; one skeleton left after the first release {(oneLeft ? "ok" : "WRONG")}; freed {(freed ? "ok" : "WRONG")}");
         }
         finally
         {
