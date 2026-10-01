@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-ANIMESH-01` (static, upright) and `FEAT-ANIMESH-02` (animated)
 - **Track:** `render` / `net`
-- **Status:** 🚧 In Progress
+- **Status:** ✅ Done
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
