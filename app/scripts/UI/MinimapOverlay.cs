@@ -73,7 +73,14 @@ public partial class MinimapOverlay : SLNGWindow
     private const int RingWhisperId = 221;
     private const int RingSayId = 222;
     private const int RingShoutId = 223;
+    private const int ObjectsId = 224;
+    private const int ObjectSizeId = 225; // three consecutive ids, one per size preset
     private const int WorldMapId = 230;
+
+    private static readonly string[] ObjectSizeKeys =
+    {
+        "ui.radar.object_min_small", "ui.radar.object_min_medium", "ui.radar.object_min_large",
+    };
 
     private static readonly string[] ZoomPresetKeys =
     {
@@ -87,6 +94,7 @@ public partial class MinimapOverlay : SLNGWindow
         public PopupMenu Host = null!;
         public PopupMenu Zoom = null!;
         public PopupMenu Rings = null!;
+        public PopupMenu Objects = null!;
     }
 
     private World? _world;
@@ -95,6 +103,12 @@ public partial class MinimapOverlay : SLNGWindow
 
     private readonly List<RadarCanvas.Tile> _tiles = new();
     private readonly List<RadarCanvas.Dot> _dots = new();
+
+    // The object layer: the prims the map shows, re-collected on a timer (see BuildObjects). Empty and
+    // untouched while the layer is switched off.
+    private readonly List<RadarObject> _objects = new();
+    private float _objectTimer;
+    private ulong _objectsRegion;
 
     private Label _regionLabel = null!;
     private RadarCanvas _canvas = null!;
@@ -141,8 +155,9 @@ public partial class MinimapOverlay : SLNGWindow
     /// business handing out raw SL-region-local coordinates) and, when known, their facing
     /// direction (also already converted to Godot space) -- null when the avatar is only known
     /// via <c>CoarseLocationUpdate</c> (outside draw distance), which carries no orientation at
-    /// all. Boot.cs wires this to <c>AvatarController.FocusOnAvatarFrontal</c>.</summary>
-    public Action<Vector3, Vector3?>? OnFocusAvatarRequested;
+    /// all. Also carries the avatar's agent id, so the camera can follow them if they move. Boot.cs wires
+    /// this to <c>AvatarController.FocusOnAvatarFrontal</c>.</summary>
+    public Action<Guid, Vector3, Vector3?>? OnFocusAvatarRequested;
 
     /// <summary>Right-click on a table row: fired with the click's screen position plus the
     /// target avatar's id/name, so Boot.cs can show the SAME shared avatar context menu
@@ -512,6 +527,7 @@ public partial class MinimapOverlay : SLNGWindow
         // nobody can see. Who is nearby, and since when, is still noted.
         if (!_canvas.IsVisibleInTree())
         {
+            _objectTimer = 0f; // whatever was collected is old by the time the radar is shown again
             TrackWhileHidden(delta);
             return;
         }
@@ -523,6 +539,7 @@ public partial class MinimapOverlay : SLNGWindow
         if (regionHandle == 0)
         {
             _regionLabel.Text = "";
+            _objects.Clear();
             _canvas.Clear();
             if (_roster.Count > 0)
             {
@@ -584,7 +601,39 @@ public partial class MinimapOverlay : SLNGWindow
 
         BuildTiles(regionHandle, center);
         BuildDots();
-        _canvas.Update(width, height, center, ownPos, heading, _visibleRangeMeters, _dots, _selectedAgentId, _tiles);
+        BuildObjects(regionHandle, (float)delta);
+        _canvas.Update(width, height, center, ownPos, heading, _visibleRangeMeters, _dots, _selectedAgentId, _tiles, _objects);
+    }
+
+    /// <summary>The object layer: what <see cref="RadarObjects.Collect"/> says belongs on the map, looked at
+    /// again every half second or so, and slower the more a look costs -- a crowded region's objects take
+    /// real milliseconds to go through, and a map must never be what makes a frame late. Switched off, it
+    /// does nothing at all: no scan, no list.</summary>
+    private void BuildObjects(ulong regionHandle, float delta)
+    {
+        if (!_view.ShowObjects || _world == null)
+        {
+            if (_objects.Count > 0) _objects.Clear();
+            _objectTimer = 0f; // switching it on again shows it at once
+            return;
+        }
+
+        // A list made relative to another region (a teleport, a region crossing) is wrong at once, so it
+        // is not held for the rest of the half second.
+        if (_objectsRegion != regionHandle)
+        {
+            _objects.Clear();
+            _objectsRegion = regionHandle;
+            _objectTimer = 0f;
+        }
+
+        _objectTimer -= delta;
+        if (_objectTimer > 0f) return;
+
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        RadarObjects.Collect(_world, regionHandle, _ownZ, _view.ObjectMinSizeMetres, _objects);
+        double seconds = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalSeconds;
+        _objectTimer = (float)RadarObjects.NextScanDelaySeconds(seconds);
     }
 
     /// <summary>The map tiles to draw: the current region always, and any loaded neighbour that
@@ -616,9 +665,7 @@ public partial class MinimapOverlay : SLNGWindow
     {
         if (center is not { } c) return false;
         var canvas = _canvas.Size;
-        float shorter = MathF.Min(canvas.X, canvas.Y);
-        float halfDiagonal = shorter > 0f ? _visibleRangeMeters * 0.5f * canvas.Length() / shorter : _visibleRangeMeters;
-        float reach = MathF.Max(_visibleRangeMeters, halfDiagonal);
+        float reach = RadarProjection.ViewReachMetres(new System.Numerics.Vector2(canvas.X, canvas.Y), _visibleRangeMeters);
         return origin.X < c.X + reach && origin.X + width > c.X - reach
             && origin.Y < c.Y + reach && origin.Y + height > c.Y - reach;
     }
@@ -892,7 +939,7 @@ public partial class MinimapOverlay : SLNGWindow
                 var fwdSl = System.Numerics.Vector3.Transform(System.Numerics.Vector3.UnitX, rot);
                 godotForward = new Vector3(fwdSl.X, fwdSl.Z, -fwdSl.Y);
             }
-            OnFocusAvatarRequested?.Invoke(godotPos, godotForward);
+            OnFocusAvatarRequested?.Invoke(agentId, godotPos, godotForward);
             break;
         }
     }
@@ -994,12 +1041,14 @@ public partial class MinimapOverlay : SLNGWindow
     /// host. All three report through <see cref="OnViewMenuId"/>.</summary>
     private ViewMenu MakeViewMenu(PopupMenu host)
     {
-        var menu = new ViewMenu { Host = host, Zoom = new PopupMenu(), Rings = new PopupMenu() };
+        var menu = new ViewMenu { Host = host, Zoom = new PopupMenu(), Rings = new PopupMenu(), Objects = new PopupMenu() };
         host.AddChild(menu.Zoom);
         host.AddChild(menu.Rings);
+        host.AddChild(menu.Objects);
         host.IdPressed += OnViewMenuId;
         menu.Zoom.IdPressed += OnViewMenuId;
         menu.Rings.IdPressed += OnViewMenuId;
+        menu.Objects.IdPressed += OnViewMenuId;
         return menu;
     }
 
@@ -1013,6 +1062,7 @@ public partial class MinimapOverlay : SLNGWindow
         if (clearHost) host.Clear();
         menu.Zoom.Clear();
         menu.Rings.Clear();
+        menu.Objects.Clear();
 
         // Zoom: the preset nearest the current range is ticked, so a wheel zoom still reads sensibly.
         int nearest = RadarZoom.NearestPresetIndex(_visibleRangeMeters);
@@ -1037,6 +1087,16 @@ public partial class MinimapOverlay : SLNGWindow
         AddCheck(menu.Rings, "ui.radar.ring_say", RingSayId, _view.SayRing);
         AddCheck(menu.Rings, "ui.radar.ring_shout", RingShoutId, _view.ShoutRing);
         host.AddSubmenuNodeItem(L10n.Tr("ui.radar.chat_rings"), menu.Rings);
+
+        // Objects: the switch, and below it how big a prim has to be. The sizes stay pickable while the
+        // layer is off, so the choice can be made first and the layer switched on after.
+        AddCheck(menu.Objects, "ui.radar.show_objects", ObjectsId, _view.ShowObjects);
+        menu.Objects.SetItemTooltip(menu.Objects.GetItemIndex(ObjectsId), L10n.Tr("ui.radar.show_objects_tip"));
+        menu.Objects.AddSeparator(L10n.Tr("ui.radar.object_min_size"));
+        int nearestSize = RadarObjects.NearestMinSizeIndex(_view.ObjectMinSizeMetres);
+        for (int i = 0; i < ObjectSizeKeys.Length; i++)
+            AddRadio(menu.Objects, ObjectSizeKeys[i], ObjectSizeId + i, i == nearestSize);
+        host.AddSubmenuNodeItem(L10n.Tr("ui.radar.objects"), menu.Objects);
 
         host.AddSeparator();
         host.AddItem(L10n.Tr("ui.radar.world_map"), WorldMapId);
@@ -1064,6 +1124,14 @@ public partial class MinimapOverlay : SLNGWindow
             return;
         }
 
+        if (id >= ObjectSizeId && id < ObjectSizeId + RadarObjects.MinSizePresetsMetres.Count)
+        {
+            _view.ObjectMinSizeMetres = RadarObjects.MinSizePresetsMetres[(int)id - ObjectSizeId];
+            _objectTimer = 0f; // collected again at once, not at the next tick
+            SavePreferences();
+            return;
+        }
+
         switch (id)
         {
             case OrientNorthId: _view.CameraUp = false; break;
@@ -1073,6 +1141,7 @@ public partial class MinimapOverlay : SLNGWindow
             case RingWhisperId: _view.WhisperRing = !_view.WhisperRing; break;
             case RingSayId: _view.SayRing = !_view.SayRing; break;
             case RingShoutId: _view.ShoutRing = !_view.ShoutRing; break;
+            case ObjectsId: _view.ShowObjects = !_view.ShowObjects; _objectTimer = 0f; break;
             case RecenterId:
                 // "Re-center" means back on me -- not only without a pan but without a focus jump too.
                 CentreOnSelf();

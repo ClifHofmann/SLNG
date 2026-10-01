@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using Godot;
 using SLNG.Core.Avatars;
@@ -245,8 +246,12 @@ public partial class AvatarController : Camera3D
     /// CoarseLocationUpdate-only avatar outside draw distance, which carries no orientation at
     /// all), this approaches from the direction they're facing so the shot is actually frontal
     /// (their face toward the camera, not their back or side); otherwise falls back to
-    /// approaching from wherever the camera already was.</summary>
-    public void FocusOnAvatarFrontal(Vector3 targetPosition, Vector3? avatarForwardGodot)
+    /// approaching from wherever the camera already was.
+    ///
+    /// FEAT-UI-40: the focus then FOLLOWS that avatar (<paramref name="agentId"/>) until the camera is
+    /// reset or aimed somewhere else, so someone who walks away stays in the shot. An avatar known only
+    /// from a coarse location has no body in the world to follow, and is aimed at as a fixed spot.</summary>
+    public void FocusOnAvatarFrontal(Guid agentId, Vector3 targetPosition, Vector3? avatarForwardGodot)
     {
         const float portraitDistance = 3.5f;
 
@@ -262,6 +267,107 @@ public partial class AvatarController : Camera3D
         approachDir = approachDir.Normalized();
 
         AimOrbitAt(target, target + approachDir * portraitDistance, portraitDistance);
+        _focusFollow = FollowAvatar(agentId, target);
+    }
+
+    /// <summary>FEAT-UI-40: follows this avatar by agent id, or null if the world holds no body for it.</summary>
+    private FocusFollow? FollowAvatar(Guid agentId, Vector3 focusPoint)
+    {
+        if (_world == null) return null;
+        var subject = AvatarSubject.Create(_world, agentId);
+        return subject == null ? null : FocusFollow.Of(subject.Position, focusPoint);
+    }
+
+    /// <summary>FEAT-UI-40: what an Alt+Click should leave the focus riding on: the body the ray hit, so
+    /// an avatar or an object that moves takes the camera with it. Terrain never moves, so it is left as a
+    /// fixed spot.</summary>
+    private static FocusFollow? FollowForHit(Godot.Collections.Dictionary hit, Vector3 focusPoint)
+    {
+        if (hit["collider"].AsGodotObject() is not CollisionObject3D body) return null;
+        if ((body.CollisionLayer & PhysicsLayers.Terrain) != 0) return null;
+        return FocusFollow.OfBody(body, focusPoint);
+    }
+
+    /// <summary>Re-reads where the focused subject is, once a frame, before the transition and the
+    /// camera math use it. During the pan to a new focus it is the pan's destination that moves, so the
+    /// camera arrives at the subject where it is by then; afterwards the focus point itself moves.</summary>
+    private void FollowFocusSubject()
+    {
+        if (_focusFollow == null) return;
+        if (_focusFollow.Current is not { } point)
+        {
+            _focusFollow = null; // gone: stay where it last was
+            return;
+        }
+
+        if (_transitioning) _transitionEndTarget = point;
+        else _orbitTarget = point;
+    }
+
+    /// <summary>FEAT-UI-40: where an avatar is, looked up by agent id in the world. A body that vanishes
+    /// for a moment (the avatar crossed into the next region, whose simulator sends it as a new object
+    /// before the old one is removed) is looked for again for a few seconds before giving up, and until
+    /// then the camera stays on the last place it was seen.</summary>
+    private sealed class AvatarSubject
+    {
+        private const double RetrySeconds = 0.5;
+        private const double GiveUpSeconds = 3.0;
+
+        private readonly World _world;
+        private readonly Guid _agentId;
+        private Entity? _entity;
+        private Godot.Vector3 _last;
+        private double _lostSince;
+        private double _nextLookup;
+
+        private AvatarSubject(World world, Guid agentId, Entity entity)
+        {
+            _world = world;
+            _agentId = agentId;
+            _entity = entity;
+            _last = Resolve(entity) ?? Godot.Vector3.Zero;
+        }
+
+        public static AvatarSubject? Create(World world, Guid agentId)
+        {
+            var entity = Find(world, agentId);
+            return entity == null ? null : new AvatarSubject(world, agentId, entity);
+        }
+
+        /// <summary>The avatar's position now, or null once it has been gone for good.</summary>
+        public Godot.Vector3? Position()
+        {
+            double now = Time.GetTicksMsec() / 1000.0;
+            if (_entity != null && _world.GetEntity(_entity.Id) == null)
+            {
+                _entity = null;
+                _lostSince = now;
+                _nextLookup = now;
+            }
+
+            if (_entity == null)
+            {
+                if (now - _lostSince > GiveUpSeconds) return null;
+                if (now >= _nextLookup)
+                {
+                    _nextLookup = now + RetrySeconds;
+                    _entity = Find(_world, _agentId);
+                }
+                if (_entity == null) return _last;
+            }
+
+            _last = Resolve(_entity) ?? _last;
+            return _last;
+        }
+
+        private static Godot.Vector3? Resolve(Entity entity)
+        {
+            var transform = entity.GetComponent<TransformComponent>();
+            return transform == null ? null : RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
+        }
+
+        private static Entity? Find(World world, Guid agentId) =>
+            world.Query<AvatarComponent>().FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.AgentId == agentId);
     }
 
     /// <summary>BUG-UI-09: turns a raw raycast hit into the point the user actually meant.
@@ -446,6 +552,7 @@ public partial class AvatarController : Camera3D
             _ => 0f, // "rear" and default
         };
 
+        _focusFollow = null; // back to following the local avatar: nothing else may move the focus now
         float endZoom = _cameraSettings?.RearDistance ?? 4.0f;
         var endTarget = GetLocalAvatarFollowTarget() ?? (Position - Transform.Basis.Z * _zoom);
         // Absolute end yaw = the avatar's own current facing plus the preset's orbit offset;
@@ -463,6 +570,12 @@ public partial class AvatarController : Camera3D
     private float _orbitYaw = 0f;
     private float _orbitPitch = 0f;
     private Godot.Vector3? _orbitTarget = null;
+
+    // FEAT-UI-40: what the focus point rides on, if it was set on something (an avatar, an object).
+    // While set, FollowFocusSubject re-reads where the subject is every frame, so the camera goes
+    // along with one that walks, drives or is animated. Null for a fixed spot (terrain) and once the
+    // subject is gone, which leaves the camera where it last was, as the reference viewer does.
+    private FocusFollow? _focusFollow;
 
     // Smooth camera transition (FocusOn/FocusOnAvatarFrontal) -- live-tested 2026-08-28: an
     // instant snap to the new framing read as a jarring hard cut, not the "pan there" feel a
@@ -789,7 +902,10 @@ public partial class AvatarController : Camera3D
             var result = spaceState.IntersectRay(query);
             if (result.Count > 0)
             {
-                FocusOn(RefineFocusHit(result, rayOrigin, rayDir));
+                var hit = RefineFocusHit(result, rayOrigin, rayDir);
+                FocusOn(hit);
+                // FEAT-UI-40: the focus rides on what was clicked, so it goes where that goes.
+                _focusFollow = FollowForHit(result, hit);
             }
         }
         else if (!wantOrbit && _altOrbitActive)
@@ -1250,6 +1366,7 @@ public partial class AvatarController : Camera3D
                     _zoom = Mathf.Min(200.0f, _zoom + 15.0f * (float)delta);
                 }
 
+                FollowFocusSubject();
                 UpdateTransition(delta);
 
                 Godot.Vector3 targetPos;
