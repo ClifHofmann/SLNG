@@ -394,7 +394,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.128-alpha";
+    public const string AppVersion = "v0.24.129-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -462,6 +462,11 @@ public partial class Boot : Control
 
         _localizationManager = LoadLocalizationManager();
         SLNG.App.UI.L10n.Initialize(_localizationManager);
+
+        // Once, before any UI exists: the one tooltip look for the whole app (a dark box, readable
+        // over any world). Goes on the engine's default theme, which is why it lives here and not
+        // on a window -- see UiTheme.ApplyTooltipStyle.
+        SLNG.App.UI.UiTheme.ApplyTooltipStyle();
 
         // FEAT-PERF-01: J2K decoding is CPU-heavy. The default .NET ThreadPool scales up slowly 
         // (1-2 threads/sec) causing massive queues when entering a region. We bump MinThreads 

@@ -13,7 +13,6 @@ public partial class RadarTree : Tree
 {
     /// <summary>A tooltip wraps beyond this width; a short one stays as narrow as its text.</summary>
     private const float MaxTooltipWidth = 320f;
-    private const int TooltipFontSize = 12;
 
     public override void _Ready() => ApplyStyle();
 
@@ -22,26 +21,25 @@ public partial class RadarTree : Tree
         // Nothing to say: hand back null so the engine shows no tooltip at all.
         if (string.IsNullOrEmpty(forText)) return null!;
 
-        var font = GetThemeDefaultFont();
-        float textWidth = font.GetStringSize(forText, HorizontalAlignment.Left, -1, TooltipFontSize).X;
-
+        // A "TooltipLabel" like the engine's own, so the font, colour and line spacing are the app-wide
+        // tooltip style (UiTheme.ApplyTooltipStyle); the engine's tooltip popup supplies the box and
+        // its padding, so nothing is added here.
         var label = new Label
         {
             Text = forText,
+            ThemeTypeVariation = "TooltipLabel",
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
-            CustomMinimumSize = new Vector2(Mathf.Min(MaxTooltipWidth, textWidth + 2f), 0f),
         };
-        label.AddThemeFontSizeOverride("font_size", TooltipFontSize);
 
-        // The engine wraps this in its own tooltip popup, which already has a background, so the
-        // panel only adds the padding.
-        var panel = new PanelContainer();
-        var padding = new StyleBoxEmpty();
-        padding.ContentMarginLeft = padding.ContentMarginRight = 6f;
-        padding.ContentMarginTop = padding.ContentMarginBottom = 4f;
-        panel.AddThemeStyleboxOverride("panel", padding);
-        panel.AddChild(label);
-        return panel;
+        // As wide as the WIDEST LINE needs, up to the cap. (Measuring the whole text as one line made
+        // a two-line tooltip as wide as both lines side by side, with a wide empty strip on its right.)
+        var font = label.GetThemeFont("font");
+        int fontSize = label.GetThemeFontSize("font_size");
+        float widest = 0f;
+        foreach (var line in forText.Split('\n'))
+            widest = Mathf.Max(widest, font.GetStringSize(line, HorizontalAlignment.Left, -1, fontSize).X);
+        label.CustomMinimumSize = new Vector2(Mathf.Min(MaxTooltipWidth, widest + 2f), 0f);
+        return label;
     }
 
     private void ApplyStyle()

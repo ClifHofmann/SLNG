@@ -172,6 +172,7 @@ public static class SelfTest
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
+        results.Add(CheckTooltipStyle());
         // Last, so it sees everything the run did.
         results.Add(CheckUserDataUntouched());
 
@@ -325,6 +326,16 @@ public static class SelfTest
         {
             if (GodotObject.IsInstanceValid(panel)) panel.QueueFree();
         }
+    }
+
+    /// <summary>Tooltips get the app's dark, near-opaque box (Boot applies UiTheme.ApplyTooltipStyle to the
+    /// engine's default theme); the stock one is 50 % black and unreadable over a bright world.</summary>
+    private static Check CheckTooltipStyle()
+    {
+        var box = ThemeDB.GetDefaultTheme().GetStylebox("panel", "TooltipPanel") as StyleBoxFlat;
+        return box is { BgColor.A: >= 0.95f }
+            ? new Check("tooltip style", true, $"opaque tooltip box (alpha {box.BgColor.A:0.00})")
+            : new Check("tooltip style", false, "the default theme's TooltipPanel is not the opaque one -- UiTheme.ApplyTooltipStyle was not applied");
     }
 
     /// <summary>
