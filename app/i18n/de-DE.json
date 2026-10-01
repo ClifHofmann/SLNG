@@ -630,6 +630,9 @@
       "failed": "Zahlung fehlgeschlagen: L$ {1} an {0}.",
       "someone": "Jemand"
     },
+    "chat": {
+      "contacts": "KONTAKTE"
+    },
     "common": {
       "cancel": "Abbrechen"
     },

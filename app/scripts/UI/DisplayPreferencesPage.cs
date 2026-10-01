@@ -25,7 +25,11 @@ public partial class DisplayPreferencesPage : VBoxContainer
         _settings = settings;
 
         // --- Language Settings ---
-        var langHeading = new Label { Text = L10n.Tr("ui.preferences.language_heading") };
+        var langHeading = new Label
+        {
+            Text = L10n.Tr("ui.preferences.language_heading"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+        };
         langHeading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
         AddChild(langHeading);
 
@@ -50,6 +54,7 @@ public partial class DisplayPreferencesPage : VBoxContainer
         var titlesCheck = new CheckBox
         {
             Text = L10n.Tr("ui.preferences.show_group_titles"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
             ButtonPressed = _settings.ShowGroupTitles,
             TooltipText = L10n.Tr("ui.preferences.show_group_titles_tip"),
         };
@@ -59,6 +64,7 @@ public partial class DisplayPreferencesPage : VBoxContainer
         var displayCheck = new CheckBox
         {
             Text = L10n.Tr("ui.preferences.show_display_names"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
             ButtonPressed = _settings.ShowDisplayNames,
             TooltipText = L10n.Tr("ui.preferences.show_display_names_tip"),
         };
@@ -71,6 +77,7 @@ public partial class DisplayPreferencesPage : VBoxContainer
         var hideOwnTitleCheck = new CheckBox
         {
             Text = L10n.Tr("ui.preferences.hide_own_group_title"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
             ButtonPressed = _settings.HideOwnGroupTitle,
             TooltipText = L10n.Tr("ui.preferences.hide_own_group_title_tip"),
         };
@@ -80,6 +87,7 @@ public partial class DisplayPreferencesPage : VBoxContainer
         var legacyCheck = new CheckBox
         {
             Text = L10n.Tr("ui.preferences.show_legacy_names"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
             ButtonPressed = _settings.ShowLegacyNames,
             TooltipText = L10n.Tr("ui.preferences.show_legacy_names_tip"),
         };

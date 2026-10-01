@@ -630,6 +630,9 @@
       "failed": "Payment failed: L$ {1} to {0}.",
       "someone": "Someone"
     },
+    "chat": {
+      "contacts": "CONTACTS"
+    },
     "common": {
       "cancel": "Cancel"
     },
