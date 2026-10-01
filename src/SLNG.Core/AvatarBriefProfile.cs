@@ -52,6 +52,11 @@ public sealed record AvatarBriefProfile(
         return Math.Max(0, (int)(utcNow - born).TotalDays);
     }
 
+    /// <summary>The age as calendar years, months and days (the tooltip's wording), or null if hidden
+    /// or unknown -- the same cases <see cref="AgeInDays"/> answers null for.</summary>
+    public AgeParts? AgePartsAt(DateTime utcNow) =>
+        AgeHidden || BornOnUtc is not { } born ? null : AgeParts.Between(born, utcNow);
+
     /// <summary>The two profile flags as one status: transacted beats identified, as in Firestorm
     /// (fsradar.cpp:343-351) -- "has paid" is the stronger statement and the two never show together.</summary>
     public static PaymentInfo PaymentFrom(bool identified, bool transacted) =>

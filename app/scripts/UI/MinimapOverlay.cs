@@ -561,6 +561,9 @@ public partial class MinimapOverlay : SLNGWindow
             {
                 if (entry.AgentId != focusId) continue;
                 focusPos = entry.Position;
+                // Said next to the region name, so a view that is not on you explains itself and the
+                // way back (double-click the row again, or the map menu's "Re-center map") is findable.
+                _regionLabel.Text = L10n.TrFormat("ui.radar.centred_on", _session.CurrentRegionName, entry.Name);
                 break;
             }
             if (focusPos == null) _focusAgentId = null;
@@ -692,9 +695,9 @@ public partial class MinimapOverlay : SLNGWindow
 
     private static string AvatarDisplayName(AvatarComponent avatar)
     {
-        if (!string.IsNullOrWhiteSpace(avatar.DisplayName)) return avatar.DisplayName;
-        var full = $"{avatar.FirstName} {avatar.LastName}".Trim();
-        return string.IsNullOrWhiteSpace(full) ? avatar.AgentId.ToString() : full;
+        // "Oz", not "Oz Resident": the default last name is left off, as in the reference viewers.
+        var name = AvatarNames.ForList(avatar.DisplayName, avatar.FirstName, avatar.LastName);
+        return name.Length == 0 ? avatar.AgentId.ToString() : name;
     }
 
     /// <summary>A CoarseLocationUpdate-only avatar (outside draw distance, no World entity yet)
@@ -703,7 +706,8 @@ public partial class MinimapOverlay : SLNGWindow
     private string ResolveName(Guid agentId)
     {
         if (_session == null) return agentId.ToString();
-        if (_session.TryGetCachedName(agentId, out var name) && !string.IsNullOrWhiteSpace(name)) return name;
+        if (_session.TryGetCachedName(agentId, out var name) && !string.IsNullOrWhiteSpace(name))
+            return AvatarNames.WithoutDefaultLastName(name);
         _session.RequestAvatarName(agentId);
         return agentId.ToString();
     }
@@ -843,6 +847,16 @@ public partial class MinimapOverlay : SLNGWindow
         _tableTimer = 0f;
     }
 
+    /// <summary>Back to centring on the local avatar: drops the avatar a row double-click jumped to, any
+    /// pan, and the focus jump's close zoom (the player's own zoom returns). Reached by double-clicking
+    /// the focused row again and by "Re-center map".</summary>
+    private void CentreOnSelf()
+    {
+        _focusAgentId = null;
+        _visibleRangeMeters = _view.VisibleRangeMetres;
+        _pan = System.Numerics.Vector2.Zero;
+    }
+
     private void OnRowActivated(Guid agentId)
     {
         // Double-click LMB: jumps the RADAR to this avatar (pan + zoom in) AND turns the real 3D
@@ -853,9 +867,7 @@ public partial class MinimapOverlay : SLNGWindow
         // "undo" for a one-shot camera look, unlike the radar's persistent centring.
         if (_focusAgentId == agentId)
         {
-            _focusAgentId = null;
-            _visibleRangeMeters = _view.VisibleRangeMetres;
-            _pan = System.Numerics.Vector2.Zero;
+            CentreOnSelf();
             return;
         }
 
@@ -1062,7 +1074,8 @@ public partial class MinimapOverlay : SLNGWindow
             case RingSayId: _view.SayRing = !_view.SayRing; break;
             case RingShoutId: _view.ShoutRing = !_view.ShoutRing; break;
             case RecenterId:
-                _pan = System.Numerics.Vector2.Zero;
+                // "Re-center" means back on me -- not only without a pan but without a focus jump too.
+                CentreOnSelf();
                 return;
             case WorldMapId:
                 OnWorldMapRequested?.Invoke();

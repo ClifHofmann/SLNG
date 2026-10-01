@@ -241,6 +241,30 @@ internal sealed partial class RadarTableView : Control
         _ => (30, false, HorizontalAlignment.Center), // the icon columns
     };
 
+    /// <summary>The age cell shows days, which sorts; the tooltip says the same age the way a person
+    /// does -- years, months, days -- and gives the account's creation date (the "rez day").</summary>
+    private static string AgeTooltip(AvatarBriefProfile? profile, DateTime utcNow)
+    {
+        if (profile == null) return "";
+        if (profile.AgeHidden) return L10n.Tr("ui.radar.age_hidden");
+        if (profile.AgePartsAt(utcNow) is not { } parts || profile.BornOnUtc is not { } born) return "";
+
+        // Units that are zero are left out ("2 years, 5 days"), but an age under a day still says "0 days".
+        var pieces = new List<string>(3);
+        if (parts.Years > 0) pieces.Add(Counted(parts.Years, "age_year"));
+        if (parts.Months > 0) pieces.Add(Counted(parts.Months, "age_month"));
+        if (parts.Days > 0 || pieces.Count == 0) pieces.Add(Counted(parts.Days, "age_day"));
+
+        // The date's pattern is itself a translation, so German reads 14.05.2007 and English 2007-05-14.
+        string rezDay = born.ToString(L10n.Tr("ui.radar.age_date_format"), System.Globalization.CultureInfo.InvariantCulture);
+        return string.Join(", ", pieces) + "\n" + L10n.TrFormat("ui.radar.age_rezday", rezDay);
+    }
+
+    /// <summary>"1 year" / "2 years": the singular and the plural are two keys, since languages differ
+    /// in more than an appended s.</summary>
+    private static string Counted(int count, string unitKey) =>
+        L10n.TrFormat($"ui.radar.{unitKey}_{(count == 1 ? "one" : "other")}", count);
+
     private TreeItem CreateRowItem(Guid agentId)
     {
         var item = _tree.CreateItem(_root);
@@ -303,6 +327,7 @@ internal sealed partial class RadarTableView : Control
 
                 case RadarColumn.Age:
                     item.SetText(i, RadarTable.FormatAge(row.Profile, utcNow));
+                    item.SetTooltipText(i, AgeTooltip(row.Profile, utcNow));
                     if (row.Profile?.AgeInDays(utcNow) is < NewAccountDays) item.SetCustomColor(i, NewAccountColour);
                     else item.ClearCustomColor(i);
                     break;
