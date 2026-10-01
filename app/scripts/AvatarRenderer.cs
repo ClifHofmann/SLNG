@@ -5577,11 +5577,12 @@ void fragment() {
     {
         using var _phase = MainThreadPhase.Enter("avatar-render");
 
-        // FEAT-ANIMESH-01: animated-mesh skeletons follow their root prim. Not part of the _visuals
-        // loop below -- a control avatar is not a person.
-        UpdateControlAvatars();
-
         float dt = (float)delta;
+
+        // FEAT-ANIMESH-01: animated-mesh skeletons follow their root prim, and (FEAT-ANIMESH-02)
+        // play what its scripts started. Not part of the _visuals loop below -- a control avatar is
+        // not a person.
+        UpdateControlAvatars(dt);
 
         // Recompute draw-distance visibility a few times a second (not every frame — the
         // agent lookup scans all entities). Animation still advances every frame, but only

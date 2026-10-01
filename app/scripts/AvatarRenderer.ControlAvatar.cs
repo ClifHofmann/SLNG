@@ -69,6 +69,21 @@ public partial class AvatarRenderer
         public Godot.Vector3 LastPosition;
         public Godot.Quaternion LastWrittenRotation;
 
+        // FEAT-ANIMESH-02 (AvatarRenderer.ControlAvatarAnimation.cs). The skeleton, and with it
+        // the player on Visual.AnimPlayer, outlives every re-rig of its meshes, so none of this is
+        // touched by one.
+        /// <summary>The union of what the object's prims signal, in animation-id order.</summary>
+        public SignaledAnimation[] Signaled = Array.Empty<SignaledAnimation>();
+        /// <summary>What the player was last handed (id and sequence id): the signalled animations
+        /// whose assets have arrived.</summary>
+        public SignaledAnimation[] Playing = Array.Empty<SignaledAnimation>();
+        public readonly Dictionary<Guid, AnimationData> Loaded = new();
+        public readonly HashSet<Guid> Fetching = new();
+        /// <summary>Some prim's list changed (or the avatar is new): recompute the union on the next
+        /// frame. A flag, not a recompute, so a linkset whose prims all change in one frame costs
+        /// one pass.</summary>
+        public bool AnimationsDirty = true;
+
         public ControlAvatar(Guid rootEntityId, AvatarVisual visual)
         {
             RootEntityId = rootEntityId;
@@ -341,6 +356,9 @@ public partial class AvatarRenderer
         ApplyShape(visual, skeleton, _avatarSkeleton, visual.LastDistortions);
         skeleton.ResetBonePoses();
 
+        // The player is bound once, here: it lives as long as the skeleton does.
+        visual.AnimPlayer.SetSkeleton(skeleton);
+
         var ca = new ControlAvatar(rootId, visual);
         _controlAvatars[rootId] = ca;
         return ca;
@@ -503,7 +521,7 @@ public partial class AvatarRenderer
     /// the same match on every root transform update and every frame (lldrawable.cpp:731-737,
     /// llvoavatar.cpp:4713). One dictionary walk, two component lookups per avatar, and a Node3D
     /// write only when something moved.</summary>
-    private void UpdateControlAvatars()
+    private void UpdateControlAvatars(float delta)
     {
         if (_controlAvatars.Count == 0 || _world == null) return;
 
@@ -519,6 +537,16 @@ public partial class AvatarRenderer
             }
             ApplyControlAvatarPlacement(ca, RenderConfig.ToGodot(root.RegionHandle, transform.Position),
                 transform.Rotation);
+
+            // FEAT-ANIMESH-02: re-read the signalled animations when a prim of the object said they
+            // changed, then move whatever is playing on. Both are a flag and a bool for an object
+            // with nothing signalled.
+            if (ca.AnimationsDirty)
+            {
+                ca.AnimationsDirty = false;
+                RecomputeControlAvatarAnimations(ca, root);
+            }
+            AdvanceControlAvatarAnimations(ca, delta);
         }
 
         if (_controlAvatarsToDrop.Count == 0) return;

@@ -38,6 +38,8 @@ public sealed class AvatarAnimationPlayer
     }
 
     private readonly List<PlayingAnimation> _active = new();
+    private readonly Dictionary<int, (int priority, Quaternion rotation)> _boneRots = new();
+    private readonly Dictionary<int, (int priority, Vector3 position)> _bonePositions = new();
     // FEAT-ANIM-06: local inventory / machinima animation overlay, independent of sim network updates
     private readonly List<PlayingAnimation> _localOverlay = new();
     private Skeleton3D? _skeleton;
@@ -267,6 +269,38 @@ public sealed class AvatarAnimationPlayer
         ApplyBonePoses();
     }
 
+    /// <summary>FEAT-ANIMESH-02: starts one active animation again from its in-point, leaving every
+    /// other animation alone. <see cref="SetActiveAnimations"/> keys on the animation id alone, so
+    /// an id that is already playing is never touched by it -- this is how a changed sequence id
+    /// reaches a running animation. False when <paramref name="animId"/> is not playing.</summary>
+    public bool Restart(Guid animId)
+    {
+        foreach (var anim in _active)
+        {
+            if (anim.AnimationId != animId) continue;
+            anim.CurrentTime = anim.Data.InPoint;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>FEAT-ANIMESH-02: true when <paramref name="animId"/> is playing, does not loop, and has
+    /// run to its end -- where <see cref="AdvanceAnimTime"/> clamps it and it holds its last pose.
+    /// The reference viewer's equivalent is a keyframe motion that has stopped itself and been
+    /// deactivated, the only steady state a new start request brings back to life.</summary>
+    public bool HasFinished(Guid animId)
+    {
+        foreach (var anim in _active)
+        {
+            if (anim.AnimationId != animId) continue;
+
+            float loopEnd = anim.Data.OutPoint > 0 ? anim.Data.OutPoint : anim.Data.Length;
+            bool loops = anim.Data.Loop && loopEnd > anim.Data.InPoint;
+            return !loops && anim.CurrentTime >= loopEnd;
+        }
+        return false;
+    }
+
     /// <summary>
     /// Returns the current playback time of the specified animation, or null if not playing.
     /// </summary>
@@ -378,8 +412,13 @@ public sealed class AvatarAnimationPlayer
         // affects it and apply that animation's value.
         // Rotation and position tracks are tracked separately so a rotation-only gesture
         // does not wipe out an underlying furniture pose's pelvis position track.
-        var boneRots = new Dictionary<int, (int priority, Quaternion rotation)>();
-        var bonePositions = new Dictionary<int, (int priority, Vector3 position)>();
+        // The two work tables are reused: this runs every frame for every animating avatar, and a
+        // fresh pair of dictionaries per call was ~7 KB of garbage per avatar per frame (measured).
+        // Cleared here and only ever used inside this method, on the main thread.
+        var boneRots = _boneRots;
+        var bonePositions = _bonePositions;
+        boneRots.Clear();
+        bonePositions.Clear();
 
         if (!_isFrozen && HoldMode == AvatarHoldMode.PoseStand)
         {

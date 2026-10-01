@@ -177,6 +177,14 @@ public partial class ObjectRenderer : Node3D
         // noticed once and cascaded to the rest of the linkset.
         public bool AnimeshFlagSeen;
 
+        // FEAT-ANIMESH-02: the animation list this prim had when UpdateVisual last looked, and the
+        // root it was counted under. WorldSimulation replaces a prim's list wholesale and only when
+        // it changed, so a different INSTANCE is a change -- the whole detector is one reference
+        // comparison. Empty (the shared empty array) and no root for the overwhelming majority of
+        // prims.
+        public IReadOnlyList<SignaledAnimation> SeenSignaled = Array.Empty<SignaledAnimation>();
+        public Guid AnimationRoot;
+
         // Sentinel distinct from Guid.Empty (which is a valid "no texture" value) so the
         // first update always applies.
         public static readonly Guid NotLoaded = new("ffffffff-ffff-ffff-ffff-ffffffffffff");
@@ -1791,6 +1799,9 @@ public partial class ObjectRenderer : Node3D
             // world's EntityRemoved. The skeleton goes with the prim that was its last mesh.
             ReleaseControlAvatar(state);
             _animeshNotRiggedWarned.Remove(entityId);
+            // FEAT-ANIMESH-02: the object's other prims go on playing without this one's list. The
+            // entity is already gone from the world, so the union read next frame leaves it out.
+            if (state.AnimationRoot != Guid.Empty) ControlAvatars?.MarkControlAvatarAnimationsDirty(state.AnimationRoot);
             ReleaseMeshRef(state);
             state.MeshInstance.QueueFree();
             if (_gpuCache != null)
@@ -2369,6 +2380,11 @@ public partial class ObjectRenderer : Node3D
 
             UpdateTextureAnimRegistration(state.EntityId, prim.TextureAnim);
 
+            // FEAT-ANIMESH-02: outside the in-range guard below -- the list lives on the component
+            // whether or not this prim is being drawn, and a plain child out of range can hold the
+            // animation its root's robot is playing.
+            SyncSignaledAnimations(entity, state, prim);
+
             // BUG-RENDER-16: an animation that arrives AFTER the mesh was built changes the merge
             // barrier, and nothing else in UpdateVisual re-plans for it -- a TextureAnim block
             // touches neither the shape nor the face records the two other re-plan triggers watch.
@@ -2718,6 +2734,41 @@ public partial class ObjectRenderer : Node3D
         var key = state.RiggedGeometryKey;
         ReleaseControlAvatar(state);
         if (data != null && key != Guid.Empty) AssignSharedMesh(state, key, data, flipV: true);
+    }
+
+    /// <summary>FEAT-ANIMESH-02: tells the object's control avatar that one of its prims' animation
+    /// lists changed, or that the prim moved to another linkset. The avatar plays the union over the
+    /// root and EVERY child, not just the rigged ones, so this is every prim's business and not only
+    /// the ones a control avatar owns.
+    ///
+    /// <para>The common case -- an ordinary prim, no list, never had one -- is one reference
+    /// comparison, a count and a Guid. Nothing here scans the linkset: it only raises a flag on the
+    /// root's avatar, which reads the lists itself once, next frame, however many prims raised it.
+    /// A prim that holds a list also looks up its root (a hop or two) whenever it is updated, which
+    /// is how a re-link is noticed.</para></summary>
+    private void SyncSignaledAnimations(Entity entity, VisualState state, PrimitiveComponent prim)
+    {
+        var controlAvatars = ControlAvatars;
+        if (controlAvatars == null || _world == null) return;
+
+        var signaled = prim.SignaledAnimations;
+        bool changed = !ReferenceEquals(signaled, state.SeenSignaled);
+        if (!changed && signaled.Count == 0 && state.AnimationRoot == Guid.Empty) return;
+
+        // Which object this prim's list belongs to. A prim with no list contributes nothing to
+        // anyone, and one whose root has not arrived yet cannot be counted: the root's control
+        // avatar reads every child's list when it is built, so nothing is lost by not saying so.
+        Guid root = signaled.Count > 0
+            ? AnimatedMeshLinkset.RootOf(_world, entity)?.Id ?? Guid.Empty
+            : Guid.Empty;
+        Guid previous = state.AnimationRoot;
+        if (!changed && root == previous) return;
+
+        if (root != Guid.Empty) controlAvatars.MarkControlAvatarAnimationsDirty(root);
+        if (previous != Guid.Empty && previous != root) controlAvatars.MarkControlAvatarAnimationsDirty(previous);
+
+        state.SeenSignaled = signaled;
+        state.AnimationRoot = root;
     }
 
     /// <summary>Re-evaluates, from the world as it is now, whether this prim's mesh belongs to a

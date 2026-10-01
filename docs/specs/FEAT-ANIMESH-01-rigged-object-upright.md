@@ -108,9 +108,12 @@ robot's limbs are off against Firestorm, look here first.
 ### FEAT-ANIMESH-02
 - [ ] `GridSession` forwards `ObjectAnimation` to the world as a neutral event; `Core` holds the
       object's current animation list.
-- [ ] The control avatar's `AvatarAnimationPlayer` plays that list, fetching assets through
-      `AssetService.GetAnimationAsync`.
-- [ ] A removed animation stops; an object with no animation stays in its bind pose.
+- [x] The control avatar's `AvatarAnimationPlayer` plays that list, fetching assets through
+      `AssetService.GetAnimationAsync`. The list is the UNION over the root and every child prim
+      (`ControlAvatarAnimations.Union`, larger sequence id wins); the headless selftests
+      `control avatar animation (animesh)` and `animesh animation hand-off` drive it with a
+      synthetic loader. Not yet seen with a real animesh.
+- [x] A removed animation stops; an object with no animation stays in its bind pose.
 
 ## Technical Specs & Affected Files
 
@@ -126,6 +129,10 @@ robot's limbs are off against Firestorm, look here first.
   assigning it to its own `MeshInstance3D`. Boot wires `ObjectRenderer.ControlAvatars`.
 - `src/SLNG.Core/ControlAvatarPlacement.cs` (the placement rotation, unit-tested) and
   `src/SLNG.Core/AnimatedMeshLinkset.cs` (root-only flag, "root unknown" = not animesh yet).
+- FEAT-ANIMESH-02, render half: `src/SLNG.Core/ControlAvatarAnimations.cs` (union + diff, unit-tested),
+  `app/scripts/AvatarRenderer.ControlAvatarAnimation.cs` (recompute, fetch, apply, per-frame advance),
+  `ObjectRenderer.SyncSignaledAnimations` (the trigger), `AvatarAnimationPlayer.Restart` /
+  `HasFinished` (additive). Boot wires `AvatarRenderer.LinksetChildren` to `WorldSimulation.ChildrenOf`.
 
 ## Sub-tasks / Progress
 - [x] 0x70 parse + tests

@@ -162,6 +162,8 @@ public static class SelfTest
         results.Add(CheckAvatarSkeleton());
         results.Add(CheckControlAvatar(tree));
         results.Add(CheckAnimeshHandOver(tree));
+        results.Add(CheckControlAvatarAnimation(tree));
+        results.Add(CheckAnimeshAnimation(tree));
         results.AddRange(CheckWindlightPresets());
         results.Add(CheckInstanceSlotMap());
         results.Add(CheckWorkQueueOnceThePumpIsGone());
@@ -681,6 +683,66 @@ public static class SelfTest
             objects.ControlAvatars = avatars;
 
             var (passed, detail) = objects.SelfTestAnimeshOrders(world, avatars);
+            return new Check(Name, passed, detail);
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(objects)) objects.QueueFree();
+            if (GodotObject.IsInstanceValid(avatars)) avatars.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// FEAT-ANIMESH-02: a control avatar plays what is signalled for its object, and nothing else.
+    ///
+    /// <para>Driven with a synthetic animation per id through the loader seam -- the fetch itself
+    /// needs a grid. The failure it exists for is silent: an animesh that stays in its T-pose looks
+    /// exactly like one nobody told to move.</para>
+    /// </summary>
+    private static Check CheckControlAvatarAnimation(SceneTree tree)
+    {
+        const string Name = "control avatar animation (animesh)";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(renderer);
+            var (passed, detail) = renderer.SelfTestControlAvatarAnimation();
+            return new Check(Name, passed, detail);
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(renderer)) renderer.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// FEAT-ANIMESH-02: the animations a linkset's prims signal reach the object's control avatar
+    /// through the real renderers and a real <see cref="World"/> -- the union over the root and every
+    /// child, plain ones included, following links, unlinks and derezzes.
+    /// </summary>
+    private static Check CheckAnimeshAnimation(SceneTree tree)
+    {
+        const string Name = "animesh animation hand-off";
+        var objects = new ObjectRenderer();
+        var avatars = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(objects);
+            tree.Root.AddChild(avatars);
+            var world = new SLNG.Core.ECS.World();
+            avatars.Initialize(world, null!, null!);
+            objects.Initialize(world, null!, null!);
+            objects.ControlAvatars = avatars;
+
+            var (passed, detail) = objects.SelfTestAnimeshAnimations(world, avatars);
             return new Check(Name, passed, detail);
         }
         catch (System.Exception ex)

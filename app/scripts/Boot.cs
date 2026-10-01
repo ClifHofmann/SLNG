@@ -398,7 +398,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.25.4-alpha";
+    public const string AppVersion = "v0.25.5-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3343,6 +3343,9 @@ public partial class Boot : Control
         _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, _gpuCache);
         _avatarRenderer?.Initialize(_world, _assetService, _gpuCache, _session);
+        // FEAT-ANIMESH-02: a control avatar plays the animations of its root AND every child prim, and
+        // the world simulation already keeps the index that says which prims those are.
+        if (_avatarRenderer != null) _avatarRenderer.LinksetChildren = _worldSimulation.ChildrenOf;
         if (_avatarRenderer != null) _avatarRenderer.HeadFollowsCamera = _animationSettings.HeadFollowsCamera;
         _inventoryPanel?.Initialize(_session);
         _maturityPage?.BindSession(_session);

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using Godot;
 using SLNG.Assets;
 using SLNG.Core;
@@ -183,6 +185,196 @@ public partial class ObjectRenderer
         return failures.Count == 0
             ? (true, "flag known first, flag after the mesh, flag removed, child follows its root's flag, a child's own flag ignored, " +
                      "unrigged flagged root reported, one skeleton per root, LOD swap replaces, out-of-range and derez free it")
+            : (false, string.Join("; ", failures));
+    }
+
+    private const ulong SelfTestRegion = 11437119954698752UL;
+
+    private Entity SelfTestAddPrim(World world, uint localId, uint parentLocalId, bool animated)
+    {
+        var e = world.GetOrCreateEntity(SelfTestRegion, localId);
+        e.SetComponent(new TransformComponent(new System.Numerics.Vector3(128f, 128f, 25f), System.Numerics.Quaternion.Identity)
+        {
+            ParentLocalId = parentLocalId,
+        });
+        var prim = new PrimitiveComponent(System.Numerics.Vector3.One, 0, isMesh: true, meshId: Guid.NewGuid())
+        {
+            IsAnimatedMesh = animated,
+        };
+        e.SetComponent(prim);
+        world.NotifyComponentUpdated(e, prim);
+        MainThreadWorkQueue.Pump(double.MaxValue);   // CreateVisual, then UpdateVisual
+        var state = _visuals[e.Id];
+        state.ResourcesReleased = false;             // in range -- the cull sweep does this in the client
+        state.MeshInstance.Visible = true;           // and shows it: a hidden prim's skeleton is not advanced
+        return e;
+    }
+
+    private void SelfTestArrive(Entity e, MeshData data)
+    {
+        var state = _visuals[e.Id];
+        var meshId = e.GetComponent<PrimitiveComponent>()!.MeshId;
+        state.LoadedMeshId = meshId;
+        state.LoadedMeshDetailLevel = MeshDetailLevel.Highest;
+        ApplyArrivedMesh(state, meshId, MeshDetailLevel.Highest, data);
+        MainThreadWorkQueue.Pump(double.MaxValue);
+    }
+
+    /// <summary>
+    /// FEAT-ANIMESH-02: the animations a linkset's prims signal reach its control avatar through the
+    /// real event flow -- ObjectAnimation's component update, UpdateVisual, the avatar's per-frame
+    /// pass -- and the avatar plays their UNION. The assets come from a synthetic loader.
+    ///
+    /// <para>What it pins down is the part that is invisible when it is wrong: a list that was
+    /// waiting before the avatar existed, a plain child prim whose script starts the animation, the
+    /// larger sequence id across prims, a prim that is unlinked, re-linked or derezzed, and the
+    /// avatar going away. An object whose animation does not play looks exactly like an object
+    /// nobody signalled.</para>
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestAnimeshAnimations(World world, AvatarRenderer avatars)
+    {
+        var failures = new List<string>();
+        void Expect(bool ok, string what) { if (!ok) failures.Add(what); }
+        void Settle() => MainThreadWorkQueue.Pump(double.MaxValue);
+        // One frame to notice the change and ask for the assets, the queue to apply them, one more
+        // frame to play: the client does the same over a few frames.
+        void Pulse() { avatars.SelfTestTick(0.05f); Settle(); avatars.SelfTestTick(0.05f); }
+
+        const string Shoulder = "mShoulderLeft";
+        const string Elbow = "mElbowLeft";
+        var keyA = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, MathF.PI / 3f);
+        var keyB = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, -MathF.PI / 4f);
+        var idA = Guid.NewGuid();
+        var idB = Guid.NewGuid();
+        var animA = AvatarRenderer.SelfTestAnimation(Shoulder, keyA, loop: true, length: 2f);
+        var animB = AvatarRenderer.SelfTestAnimation(Elbow, keyB, loop: true, length: 2f);
+
+        avatars.AnimationLoaderOverride = id =>
+            Task.FromResult<AnimationData?>(id == idA ? animA : id == idB ? animB : null);
+        // The world simulation's parent-to-children index, for a world that has no simulation.
+        avatars.LinksetChildren = (region, localId) => world.GetAllEntities()
+            .Where(e => e.RegionHandle == region && e.GetComponent<TransformComponent>()?.ParentLocalId == localId)
+            .Select(e => e.Id).ToList();
+
+        void Signal(Entity e, params (Guid id, int seq)[] list)
+        {
+            var prim = e.GetComponent<PrimitiveComponent>()!;
+            prim.SignaledAnimations = list.Select(i => new SignaledAnimation(i.id, i.seq)).ToArray();
+            world.NotifyComponentUpdated(e, prim);
+            Settle();   // UpdateVisual
+        }
+
+        bool Set(Guid rootId, params (Guid id, int seq)[] expected) =>
+            ControlAvatarAnimations.SameSet(avatars.SelfTestSignaled(rootId),
+                expected.Select(i => new SignaledAnimation(i.id, i.seq)).ToArray());
+
+        var rigged = avatars.SelfTestRiggedBar(0.5f, out _);
+        var plain = new MeshData(new[]
+        {
+            new MeshSubmesh(
+                new[] { System.Numerics.Vector3.Zero, System.Numerics.Vector3.UnitX, System.Numerics.Vector3.UnitY },
+                new[] { System.Numerics.Vector3.UnitZ, System.Numerics.Vector3.UnitZ, System.Numerics.Vector3.UnitZ },
+                new[] { System.Numerics.Vector2.Zero, System.Numerics.Vector2.UnitX, System.Numerics.Vector2.UnitY },
+                new[] { 0, 1, 2 }),
+        });
+
+        var made = new List<Entity>();
+        Entity Add(uint localId, uint parent, bool animated)
+        {
+            var e = SelfTestAddPrim(world, localId, parent, animated);
+            made.Add(e);
+            return e;
+        }
+
+        try
+        {
+            // A list that arrived before the avatar existed is read when it is built.
+            var root = Add(1, 0, animated: true);
+            Signal(root, (idA, 1));
+            SelfTestArrive(root, rigged);
+            Pulse();
+            Expect(Set(root.Id, (idA, 1)) && avatars.SelfTestAnimationTime(root.Id, idA) != null
+                   && avatars.SelfTestBoneAtKey(root.Id, Shoulder, keyA),
+                "a list that was waiting before the avatar existed must play once it is built " +
+                $"(signalled={avatars.SelfTestSignaled(root.Id).Length}, time={avatars.SelfTestAnimationTime(root.Id, idA)})");
+
+            // A PLAIN child's script starts a second animation: the union plays both.
+            var child = Add(2, 1, animated: false);
+            SelfTestArrive(child, plain);
+            Signal(child, (idB, 2));
+            Pulse();
+            Expect(Set(root.Id, (idA, 1), (idB, 2)) && avatars.SelfTestAnimationTime(root.Id, idB) != null
+                   && avatars.SelfTestBoneAtKey(root.Id, Elbow, keyB),
+                "an animation signalled by a plain child prim must play on the root's skeleton");
+
+            // The same animation in two prims: the larger sequence id, and B stops with its prim's list.
+            float timeA = avatars.SelfTestAnimationTime(root.Id, idA) ?? -1f;
+            Signal(child, (idA, 4));
+            Pulse();
+            Expect(Set(root.Id, (idA, 4)) && avatars.SelfTestAnimationTime(root.Id, idB) == null,
+                "the union must take the larger sequence id and drop what no prim signals any more");
+            Expect((avatars.SelfTestAnimationTime(root.Id, idA) ?? -1f) > timeA,
+                "an animation already playing must carry on, not restart, when its sequence id moves");
+
+            // Gone from the root but still in the child.
+            Signal(root);
+            Pulse();
+            Expect(Set(root.Id, (idA, 4)) && avatars.SelfTestAnimationTime(root.Id, idA) != null,
+                "an animation one prim stopped signalling but another still does must keep playing");
+
+            // Nobody signals anything: back to the rest pose.
+            Signal(child);
+            Pulse();
+            Expect(Set(root.Id) && avatars.SelfTestAnimationTime(root.Id, idA) == null
+                   && avatars.SelfTestBoneAtRest(root.Id, Shoulder),
+                "an object with nothing signalled must be at rest");
+
+            // Unlinking a child takes its animations with it; linking it back brings them back.
+            Signal(child, (idB, 1));
+            Pulse();
+            Expect(Set(root.Id, (idB, 1)), "the child's animation must play before it is unlinked");
+            var childTransform = child.GetComponent<TransformComponent>()!;
+            childTransform.ParentLocalId = 0;
+            world.NotifyComponentUpdated(child, childTransform);
+            Settle();
+            Pulse();
+            Expect(Set(root.Id) && avatars.SelfTestAnimationTime(root.Id, idB) == null,
+                "a child unlinked from the object must stop contributing to it");
+            childTransform.ParentLocalId = 1;
+            world.NotifyComponentUpdated(child, childTransform);
+            Settle();
+            Pulse();
+            Expect(Set(root.Id, (idB, 1)) && avatars.SelfTestAnimationTime(root.Id, idB) != null,
+                "a child linked back must contribute again");
+
+            // Derezzing the child.
+            world.RemoveEntity(SelfTestRegion, 2);
+            RemoveVisual(child.Id.ToString());
+            Pulse();
+            Expect(Set(root.Id) && avatars.SelfTestAnimationTime(root.Id, idB) == null,
+                "a removed child's animations must stop");
+
+            // Derezzing the root takes the avatar, and a late tick finds nothing to do.
+            Signal(root, (idA, 1));
+            Pulse();
+            Expect(avatars.SelfTestAnimationTime(root.Id, idA) != null, "the root's own animation must play again");
+            world.RemoveEntity(SelfTestRegion, 1);
+            RemoveVisual(root.Id.ToString());
+            Pulse();
+            Expect(avatars.SelfTestControlAvatarCount == 0, "removing the root must free the control avatar");
+        }
+        finally
+        {
+            avatars.AnimationLoaderOverride = null;
+            avatars.LinksetChildren = null;
+            foreach (var e in made)
+                if (_visuals.ContainsKey(e.Id)) RemoveVisual(e.Id.ToString());
+        }
+
+        return failures.Count == 0
+            ? (true, "a list waiting before the build, a plain child's script, the larger sequence id across prims, " +
+                     "an animation held by another prim, rest when nothing is signalled, unlink and re-link, " +
+                     "derezzing a child and the root")
             : (false, string.Join("; ", failures));
     }
 }
