@@ -66,8 +66,40 @@ entirely (llvovolume.cpp:5396-5400).
 root's and all child prims' lists, keeping the larger sequence id; a changed sequence id restarts that
 animation (llcontrolavatar.cpp:559-607; llvoavatar.cpp:6094-6104). Assets come through the normal
 animation path. **With nothing signalled the object stands in the rest pose** — no stand, no breathing
-(`mEnableDefaultMotions=false`, llcontrolavatar.cpp:56). The viewer never reads task inventory to
+(`mEnableDefaultMotions=false`, llcontrolavatar.cpp:56) — and once something has played it stays in the
+last pose it left (see "Joints nothing drives"). The viewer never reads task inventory to
 play anything; an animesh only moves when a script calls `llStartObjectAnimation`.
+
+**Pelvis position keys.** An animation's pelvis position key is the pelvis' ABSOLUTE local position, measured
+from the skeleton root, not an offset on its rest. `LLKeyframeMotion::applyKeyframes` hands the curve value
+straight to the joint state (llkeyframemotion.cpp:414-417; `PositionCurve::getValue` only interpolates the
+keys, :313-358); keyframe motions are `NORMAL_BLEND` (llkeyframemotion.h:127), so
+`LLJointStateBlender::blendJointStates` copies or lerps the joint states' positions and never adds a rest
+(llpose.cpp:322-329), and applies them with `setPosition(blended_pos + added_pos)` (:388), whose
+`apply_attachment_overrides` defaults to false (lljoint.h:233) -- the mesh's joint-position override does not
+apply while a key is active. What the key is measured from differs between the two kinds of avatar: a real
+avatar's root sits at pelvis height (`root_pos.z -= 0.5*bodySize - mPelvisToFoot`, llvoavatar.cpp:4677), so a
+stand animation's pelvis key is ~0 (the cached stand 2408fe9e keys (-0.028, 0.074, 0.016)); SLNG's avatar
+skeleton is rooted at the feet, which is why `rest + key` is the same place there. A control avatar is never
+lifted that way: `updateRootPositionAndRotation` hands it to `matchVolumeTransform` instead
+(llvoavatar.cpp:4713), which puts the root AT the root prim (`mRoot->setPosition(vol_pos + fixup)`,
+llcontrolavatar.cpp:244). So for a control avatar the key is the pelvis height above the root prim, and with
+`rest + key` every key displaces the mesh by the pelvis' own rest height too much (Paul: 0.295 m too high
+while crouching). `AvatarAnimationPlayer.AbsolutePelvisPosition` is the switch; ordinary avatars keep
+`rest + key`. With no pelvis key active the pelvis keeps what it had (below).
+
+**Joints nothing drives.** The viewer never resets a joint when a motion ends. `blendJointStates` starts
+from the joint's CURRENT position and rotation (llpose.cpp:257-258) and writes them back (:388-390); with no
+joint state it returns early, "instead of resetting joint state to default, just leave it unchanged from
+last frame" (:242-244); `LLPoseBlender::blendAndApply` visits only the blenders of joints that have an
+active joint state (:512-522); `LLMotion::deactivate` only zeroes the motion's pose weight
+(llmotion.cpp:157-170); `LLKeyframeMotion::onDeactivate` only releases constraints (llkeyframemotion.cpp:789-795);
+and llmotioncontroller.cpp resets joint SIGNATURES (:486-492), never joints. A control avatar has no default
+motions to take over (`mEnableDefaultMotions = false`, llcontrolavatar.cpp:56), so a joint no active animation
+drives KEEPS its last rotation (and, for the pelvis, position), also after the last animation stops; a joint
+that was never driven is at rest. `AvatarAnimationPlayer.HoldUndrivenBones` is the switch (control avatars
+only; an ordinary avatar always has a stand animation and keeps resetting). A held pose is restored after
+`ApplyJointPositionOverrides` resets the skeleton's poses for a second mesh (`ReapplyHeldPose`).
 
 **Linkset.** Any rigged child of an animesh root is skinned by the root's control avatar and its own prim
 transform is irrelevant; non-rigged children are rigid and follow the root prim.

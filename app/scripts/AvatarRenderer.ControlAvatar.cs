@@ -83,6 +83,8 @@ public partial class AvatarRenderer
         /// frame. A flag, not a recompute, so a linkset whose prims all change in one frame costs
         /// one pass.</summary>
         public bool AnimationsDirty = true;
+        /// <summary>--diag: print the pose once, after the change just applied has moved a frame.</summary>
+        public bool ReportPoseAfterAdvance;
 
         public ControlAvatar(Guid rootEntityId, AvatarVisual visual)
         {
@@ -356,8 +358,14 @@ public partial class AvatarRenderer
         ApplyShape(visual, skeleton, _avatarSkeleton, visual.LastDistortions);
         skeleton.ResetBonePoses();
 
-        // The player is bound once, here: it lives as long as the skeleton does.
+        // The player is bound once, here: it lives as long as the skeleton does. A control avatar's
+        // skeleton root is the root prim, not the pelvis-height point a real avatar's is, so a pelvis
+        // position key is an ABSOLUTE position here (AvatarAnimationPlayer.AbsolutePelvisPosition).
         visual.AnimPlayer.SetSkeleton(skeleton);
+        visual.AnimPlayer.AbsolutePelvisPosition = true;
+        // And a bone no active animation drives keeps its last value: nothing else moves the body of
+        // an object with no default motions (AvatarAnimationPlayer.HoldUndrivenBones).
+        visual.AnimPlayer.HoldUndrivenBones = true;
 
         var ca = new ControlAvatar(rootId, visual);
         _controlAvatars[rootId] = ca;
@@ -378,6 +386,14 @@ public partial class AvatarRenderer
         // worn path does, so invBind * jointWorld cancels at the intended pose. They accumulate
         // across the object's meshes in visual.JointPosOverrides.
         ApplyJointPositionOverrides(visual, skeleton, skin, meshId);
+        // A mesh that changes the skeleton (a new or different joint-position override, a newly
+        // locked scale) makes ApplyJointPositionOverrides rewrite every rest and call
+        // Skeleton3D.ResetBonePoses, which puts EVERY bone at its new rest -- including the ones a
+        // held animation pose was standing on. A second mesh arriving mid-animation would otherwise
+        // drop the robot into its T-pose for good (nothing re-drives a bone that no animation keys).
+        // A re-rig with the same overrides never gets that far. Only the bones the animations drove
+        // are put back; everything else keeps the fresh rest.
+        visual.AnimPlayer.ReapplyHeldPose();
 
         var extent = new RiggedExtent { Frame = new Basis(visual.Root.Quaternion) };
         var mi = BuildRiggedMeshInstance(meshData, skeleton, meshId, visual, faces, defaultFace, out var faceIndices,
@@ -468,7 +484,9 @@ public partial class AvatarRenderer
             ? ""
             : $" local={rootEntity.LocalId} uuid={(rootEntity.GetComponent<MetadataComponent>()?.Id ?? Guid.Empty).ToString("N")[..8]}";
 
+        var rootWorld = ControlAvatarRootSl(ca);
         GD.Print($"[Animesh] root={ca.RootEntityId.ToString("N")[..8]}{ids} mesh={meshId.ToString("N")[..8]} " +
+                 $"rootWorld=({rootWorld.X:0.###}, {rootWorld.Y:0.###}, {rootWorld.Z:0.###}) " +
                  $"prim={primId.ToString("N")[..8]} ({(isRoot ? "root" : "child")}) " +
                  $"joints={joints} resolved={resolved} " +
                  $"bindRot=({ownBind.X:0.#}, {ownBind.Y:0.#}, {ownBind.Z:0.#})deg " +
