@@ -204,6 +204,13 @@
       "ring_whisper": "Whisper",
       "ring_say": "Say",
       "ring_shout": "Shout",
+      "objects": "Objects",
+      "show_objects": "Show objects",
+      "show_objects_tip": "Your own prims and big ones as squares on the map: yours in cyan, other people's in dark grey.",
+      "object_min_size": "Smallest object shown",
+      "object_min_small": "From 7.5 m",
+      "object_min_medium": "From 15 m",
+      "object_min_large": "From 30 m",
       "world_map": "World map",
       "col": {
         "name": "Name",

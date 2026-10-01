@@ -204,6 +204,13 @@
       "ring_whisper": "Flüstern",
       "ring_say": "Sagen",
       "ring_shout": "Schreien",
+      "objects": "Objekte",
+      "show_objects": "Objekte anzeigen",
+      "show_objects_tip": "Deine eigenen Prims und große als Quadrate auf der Karte: deine in Cyan, die anderer in Dunkelgrau.",
+      "object_min_size": "Kleinstes angezeigtes Objekt",
+      "object_min_small": "Ab 7,5 m",
+      "object_min_medium": "Ab 15 m",
+      "object_min_large": "Ab 30 m",
       "world_map": "Weltkarte",
       "col": {
         "name": "Name",

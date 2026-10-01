@@ -101,8 +101,25 @@ borders to resize — no such API is documented, so Phase 4 starts with a one-ho
   fallback to `MapImageId` through `AssetService`/`GpuCache` (pin with `AddRef`, as `WorldMapWindow` does).
 - `RadarCanvas` draws one tinted quad per known region (`World.Terrains` keys → region handle →
   global position). Own region 1.0, neighbours 0.8, no region = background only.
-- Optional 2b: object layer from `PrimitiveComponent` + `MetadataComponent.OwnerId` / `YouAreOwner`
-  (owned or > 7.5 m, squares, rebuilt ≤ every 0.5 s on a worker thread).
+- 2b: object layer (v0.24.132, size steps and translucent look in v0.24.133). `RadarObjects.Collect`
+  (Core) reads `PrimitiveComponent` / `TransformComponent` and lists a prim when `YouAreOwner` or its
+  footprint (`sqrt(sx² + sy²)`) is longer than the chosen minimum, minus worn prims, foliage, orphaned
+  children and anything > 256 m above or below the avatar; the
+  square's radius is `(sx + sy) / 2 * 0.5 * 1.3`, capped at 16 m and raised to 2 m for your own.
+  Cyan = yours, dark grey = others, each darker under water, phantom at 90 % opacity (Firestorm's
+  colours). **Deviations from the viewer / the plan above, on purpose:** (1) the viewer's rule
+  (3D scale length > 7.5 m) picked up far too much on a built-up region in the first in-world test
+  (v0.24.132: "too granular"), so the size is the footprint (a tree or pole is not a big object) and
+  the player chooses it in the menu: from 7.5 m (the viewer's), 15 m (default) or 30 m, saved as
+  `object_min`; your own prims are always listed; (2) the squares are translucent fills with a 1 px
+  outline instead of solid blocks, so the region image stays readable; (3) they are drawn as vector
+  rects on the same turned transform as the tiles, not into a shared texture (sharp at every zoom,
+  nothing to re-render on pan or zoom); and the scan runs on the main thread, because `World` is not thread-safe,
+  paced by `RadarObjects.NextScanDelaySeconds` (0.5 s, stretching to 5 s so a scan never takes more than
+  0.5 % of the time). **Switchable:** "Show objects" in the map menu (`RadarViewSettings.ShowObjects`,
+  saved as `objects` in the `[radar]` section, default on as in Firestorm); off, there is no scan and
+  no list. Not done: group-owned purple (a prim's owner id only arrives once it has been selected, so
+  only "yours" can be told apart) and Firestorm's Physical / Scripted / Temp-on-rez accents.
 
 ### Phase 3 — Profile / notes data layer (needs the notes decision)
 - `GridSession`: neutral `AvatarListInfo` event (notes, payment flags, born-on / hide-age). SL: the
@@ -176,7 +193,7 @@ Godot `TabContainer`, wrapping the existing `FriendsPanel`).
 - [ ] Later: voice indicator gets real data once `MVP5-1` exists
 - [ ] Later: language column once a source exists
 - [x] Phase 1 — double-click teleport (v0.24.120-alpha, confirmed in-world 2026-10-01)
-- [x] Phase 2 — tile fetcher + map image (v0.24.121-alpha: `MapTileService`, `MapTileTextures`, own + neighbour regions drawn; confirmed in-world 2026-10-01). Still open: 2b object layer; switching `WorldMapWindow` over to the same tiles
+- [x] Phase 2 — tile fetcher + map image (v0.24.121-alpha: `MapTileService`, `MapTileTextures`, own + neighbour regions drawn; confirmed in-world 2026-10-01). 2b object layer built in v0.24.132-133 (see Phase 2; v0.24.132 was found too granular in-world, v0.24.133 confirmed in-world 2026-10-01). Still open: switching `WorldMapWindow` over to the same tiles
 - [x] Phase 3 — profile / notes data layer (v0.24.122-alpha, notes confirmed in-world 2026-10-01: `GridSession.RequestBriefProfile` / `SetAvatarNote`, profile window on server notes with one-time import and a local fallback; in-world test pending on Agni and OpenSim. The radar does not request anything yet — Phase 4 does.)
 - [x] Phase 4 — Tree table, column chooser, sort, persistence (v0.24.123-alpha, look and window margins confirmed in-world 2026-10-01 after the standard-inset fix in v0.24.125/126; Spike result: Godot 4.7 has no API for dragging column borders, so columns are not user-resizable; their widths are fixed and the name column flexes. Column order is the registry order, not user-orderable. `Seen` keeps counting while the window is closed.)
 - [x] Phase 5 — rings, view wedge, dots, orientation, menus (v0.24.127-alpha, confirmed in-world 2026-10-01; follow-ups in v0.24.128: "Re-center map" also leaves a row focus, a centred-on note beside the region name, "Resident" dropped from names, age tooltip with years/months/days and the rez day. Those follow-ups and the fixes through v0.24.131 (readable tooltips v0.24.129, icon cells v0.24.130, wrapped Display-tab labels v0.24.131) confirmed in-world 2026-10-01. Parcel lines and per-grid OpenSim chat ranges are not done: the rings use 10/20/100 m.)

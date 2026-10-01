@@ -80,6 +80,18 @@ public readonly struct RadarProjection
     /// keeps the four axis headings exact.</summary>
     private static float Snap(float v) => MathF.Abs(v) < 1e-6f ? 0f : v;
 
+    /// <summary>How far from the focus anything can still be on the canvas, in metres: the canvas's
+    /// corner is further from its centre than its sides are, and a turned map shows what lies under its
+    /// corners. A square around the focus this far each way therefore covers the view at any orientation
+    /// and any canvas shape, wide or tall, which is what a "could this reach the view?" test needs.</summary>
+    public static float ViewReachMetres(Vector2 canvasSize, float visibleRangeMetres)
+    {
+        float range = MathF.Max(MinVisibleRangeMetres, visibleRangeMetres);
+        float shorter = MathF.Min(canvasSize.X, canvasSize.Y);
+        float halfDiagonal = shorter > 0f ? range * 0.5f * canvasSize.Length() / shorter : range;
+        return MathF.Max(range, halfDiagonal);
+    }
+
     /// <summary>True if the point is inside a region of the given size. Half-open: the far edge
     /// belongs to the neighbour.</summary>
     public static bool Within(Vector2 region, float width, float height)

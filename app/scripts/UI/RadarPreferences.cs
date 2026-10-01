@@ -6,8 +6,8 @@ namespace SLNG.App.UI;
 
 /// <summary>
 /// Reads and writes the radar's settings (FEAT-UI-39): which columns show, how the table is sorted,
-/// where the map/table divider sits, and how the map looks (chat rings, orientation, auto-centre,
-/// zoom). They live in the <c>radar</c> section of <c>user://preferences.cfg</c>, the file the window
+/// where the map/table divider sits, and how the map looks (chat rings, objects, orientation,
+/// auto-centre, zoom). They live in the <c>radar</c> section of <c>user://preferences.cfg</c>, the file the window
 /// geometry already uses, so the file is loaded before it is written and every other section
 /// survives. Failure to read or write is not an error worth interrupting the player for: the radar
 /// just opens on its defaults.
@@ -43,6 +43,8 @@ internal static class RadarPreferences
             view.WhisperRing = ReadBool(cfg, "ring_whisper", view.WhisperRing);
             view.SayRing = ReadBool(cfg, "ring_say", view.SayRing);
             view.ShoutRing = ReadBool(cfg, "ring_shout", view.ShoutRing);
+            view.ShowObjects = ReadBool(cfg, "objects", view.ShowObjects);
+            view.ObjectMinSizeMetres = ReadFloat(cfg, "object_min", view.ObjectMinSizeMetres);
             view.CameraUp = ReadBool(cfg, "camera_up", view.CameraUp);
             view.AutoCenter = ReadBool(cfg, "auto_center", view.AutoCenter);
             view.VisibleRangeMetres = ReadFloat(cfg, "zoom", view.VisibleRangeMetres);
@@ -70,6 +72,8 @@ internal static class RadarPreferences
             cfg.SetValue(Section, "ring_whisper", view.WhisperRing);
             cfg.SetValue(Section, "ring_say", view.SayRing);
             cfg.SetValue(Section, "ring_shout", view.ShoutRing);
+            cfg.SetValue(Section, "objects", view.ShowObjects);
+            cfg.SetValue(Section, "object_min", view.ObjectMinSizeMetres);
             cfg.SetValue(Section, "camera_up", view.CameraUp);
             cfg.SetValue(Section, "auto_center", view.AutoCenter);
             cfg.SetValue(Section, "zoom", view.VisibleRangeMetres);

@@ -13,8 +13,9 @@ namespace SLNG.App.UI;
 /// <see cref="OnZoom"/> since the window (not the canvas) owns the visible range, and Shift-drag
 /// reports the pan the same way.
 ///
-/// What is drawn, bottom to top: the region images, the region outline, the chat rings, the camera
-/// view wedge, the avatars' dots and the local avatar's arrow. The map can be turned so the camera
+/// What is drawn, bottom to top: the region images, the region outline, the objects (your prims and
+/// the big ones, as squares), the chat rings, the camera view wedge, the avatars' dots and the local
+/// avatar's arrow. The map can be turned so the camera
 /// looks up the canvas; every point, tile and click goes through the ONE <see cref="RadarProjection"/>
 /// built in <see cref="Update"/>, so what is drawn, picked and teleported to cannot disagree.
 /// </summary>
@@ -39,6 +40,19 @@ internal sealed partial class RadarCanvas : Control
     private const float TriangleHalfWidth = 4.5f;
     private const float TriangleHalfHeight = 4f;
     private const float UnknownRingRadius = 3.2f;
+
+    // The viewer's mini-map object colours (Firestorm colors.xml, NetMap*OwnAbove/BelowWater): a prim of
+    // someone else is a dark grey square that goes darker under water; one of yours is cyan.
+    private static readonly Color OtherObjectColour = new(0.24f, 0.24f, 0.24f);
+    private static readonly Color OtherObjectBelowWaterColour = new(0.125f, 0.125f, 0.125f);
+    private static readonly Color YourObjectColour = new(0f, 1f, 1f);
+    private static readonly Color YourObjectBelowWaterColour = new(0f, 0.78f, 0.78f);
+
+    // The viewer paints them solid. Here a square is a translucent fill with a finer outline, so the
+    // region image underneath stays readable on a built-up region; yours are denser, so they still stand out.
+    private const float OtherObjectFillAlpha = 0.35f;
+    private const float YourObjectFillAlpha = 0.6f;
+    private const float ObjectOutlineAlpha = 0.85f;
 
     private const float RingWidth = 2f;
     private const int WedgeSegments = 24;
@@ -90,6 +104,7 @@ internal sealed partial class RadarCanvas : Control
     private float _visibleRangeMeters = 64f;
     private readonly List<Dot> _dots = new();
     private readonly List<Tile> _tiles = new();
+    private readonly List<RadarObject> _objects = new();
     private Guid? _selectedAgentId;
     private bool _hasData;
 
@@ -108,7 +123,7 @@ internal sealed partial class RadarCanvas : Control
 
     public void Update(int regionWidth, int regionHeight, System.Numerics.Vector3? center,
         System.Numerics.Vector3? ownPos, float heading, float visibleRangeMeters,
-        List<Dot> dots, Guid? selectedAgentId, List<Tile> tiles)
+        List<Dot> dots, Guid? selectedAgentId, List<Tile> tiles, List<RadarObject> objects)
     {
         _regionWidth = Math.Max(1, regionWidth);
         _regionHeight = Math.Max(1, regionHeight);
@@ -121,6 +136,8 @@ internal sealed partial class RadarCanvas : Control
         _selectedAgentId = selectedAgentId;
         _tiles.Clear();
         _tiles.AddRange(tiles);
+        _objects.Clear();
+        _objects.AddRange(objects);
         _hasData = true;
 
         // A release outside the window or a lost focus can swallow the button-up: do not stay panning.
@@ -390,7 +407,43 @@ internal sealed partial class RadarCanvas : Control
         DrawRect(new Rect2(NorthUp(0, _regionHeight), new Vector2(_regionWidth, _regionHeight) * scale),
             new Color(0.3f, 0.9f, 0.5f, 0.25f), false, 1f);
 
+        if (View.ShowObjects) DrawObjects(northUp, centre, scale);
+
         DrawSetTransform(Vector2.Zero, 0f, Vector2.One);
+    }
+
+    /// <summary>The prims as filled squares, on the same turned transform as the tiles, so they stay on
+    /// the ground they stand on whichever way the map is turned. Other people's first and yours over
+    /// them, so one of your small prims is never hidden under a neighbour's wall. Anything that cannot
+    /// reach the canvas is skipped before it costs a draw call.</summary>
+    private void DrawObjects(RadarProjection northUp, Vector2 centre, float pixelsPerMetre)
+    {
+        if (_objects.Count == 0 || _center is not { } focus) return;
+        float reach = RadarProjection.ViewReachMetres(new System.Numerics.Vector2(Size.X, Size.Y), _visibleRangeMeters);
+
+        for (int pass = 0; pass < 2; pass++)
+        {
+            bool yoursPass = pass == 1;
+            foreach (var obj in _objects)
+            {
+                if (obj.IsYours != yoursPass) continue;
+                if (MathF.Abs(obj.Position.X - focus.X) > reach + obj.Radius
+                    || MathF.Abs(obj.Position.Y - focus.Y) > reach + obj.Radius) continue;
+
+                var colour = obj.IsYours
+                    ? (obj.BelowWater ? YourObjectBelowWaterColour : YourObjectColour)
+                    : (obj.BelowWater ? OtherObjectBelowWaterColour : OtherObjectColour);
+                float phantom = obj.Phantom ? RadarObjects.PhantomOpacity : 1f;
+
+                // Axis-aligned in the region, so the turn of the whole transform is all it takes.
+                var corner = northUp.ToCanvas(new System.Numerics.Vector2(obj.Position.X - obj.Radius, obj.Position.Y + obj.Radius));
+                var topLeft = new Vector2(corner.X, corner.Y) - centre;
+                var rect = new Rect2(topLeft, new Vector2(obj.Radius * 2f, obj.Radius * 2f) * pixelsPerMetre);
+
+                DrawRect(rect, colour with { A = (obj.IsYours ? YourObjectFillAlpha : OtherObjectFillAlpha) * phantom });
+                DrawRect(rect, colour with { A = ObjectOutlineAlpha * phantom }, false, 1f);
+            }
+        }
     }
 
     /// <summary>Whisper, say and shout as full circles around the LOCAL avatar -- not the focus, so a
