@@ -51,7 +51,8 @@ public class CompressedExtendedMeshTests
     /// at which the ExtraParams count byte was written through <paramref name="extraParamsAt"/>.</summary>
     internal static byte[] Compressed(
         uint flags, byte[] extraParams, out int extraParamsAt,
-        bool withLegacyParticles = false, byte[]? newParticles = null)
+        bool withLegacyParticles = false, byte[]? newParticles = null,
+        byte[]? textureEntry = null, byte[]? textureAnim = null)
     {
         var data = new List<byte>();
         data.AddRange(new byte[16]);                       // UUID
@@ -64,7 +65,8 @@ public class CompressedExtendedMeshTests
         data.AddRange(new byte[12 * 3]);                   // Scale, Position, Rotation
 
         uint all = flags | (withLegacyParticles ? CompressedParticleRepair.HasParticlesLegacy : 0)
-            | (newParticles is not null ? CompressedParticleRepair.HasParticlesNew : 0);
+            | (newParticles is not null ? CompressedParticleRepair.HasParticlesNew : 0)
+            | (textureAnim is not null ? CompressedParticleRepair.HasTextureAnimation : 0);
         data.AddRange(BitConverter.GetBytes(all));
         data.AddRange(new byte[16]);                       // Owner
         Assert.Equal(SectionsStart, data.Count);
@@ -97,7 +99,15 @@ public class CompressedExtendedMeshTests
             data.Add(0);
         }
         data.AddRange(Enumerable.Repeat((byte)0xAB, 23));  // path + profile
-        data.AddRange(new byte[4]);                        // empty texture entry
+        // Texture entry and texture animation: each an S32 size then that many bytes
+        // (LLPrimitive::unpackTEMessage / LLTextureAnim::unpackTAMessage, both unpackBinaryData).
+        data.AddRange(BitConverter.GetBytes(textureEntry?.Length ?? 0));
+        if (textureEntry is not null) data.AddRange(textureEntry);
+        if (textureAnim is not null)
+        {
+            data.AddRange(BitConverter.GetBytes(textureAnim.Length));
+            data.AddRange(textureAnim);
+        }
         if (newParticles is not null) data.AddRange(newParticles);
         return data.ToArray();
     }

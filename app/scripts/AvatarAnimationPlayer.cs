@@ -68,6 +68,63 @@ public sealed class AvatarAnimationPlayer
     /// <summary>True if any animations (network or local) are currently loaded and playing.</summary>
     public bool IsPlaying => _active.Count > 0 || _localOverlay.Count > 0;
 
+    /// <summary>FEAT-ANIMESH-02: apply an animation's pelvis POSITION key as the bone's absolute local
+    /// position instead of an offset on its rest position. Off (an ordinary avatar) it is exactly
+    /// what it always was: <c>rest + key</c>. On (a control avatar) the pose position IS the key.
+    ///
+    /// <para>The viewer treats the key as absolute: <c>LLKeyframeMotion::applyKeyframes</c> hands the
+    /// curve value straight to the joint state (llkeyframemotion.cpp:414-417); keyframe motions are
+    /// <c>NORMAL_BLEND</c> (llkeyframemotion.h:127), so <c>LLJointStateBlender::blendJointStates</c>
+    /// copies or lerps the joint states' positions and never adds a rest
+    /// (llpose.cpp:322-329) and applies the result with <c>setPosition(blended_pos + added_pos)</c>
+    /// (:388), whose <c>apply_attachment_overrides</c> defaults to false (lljoint.h:233) -- so a
+    /// mesh's joint-position override does not apply while a key is active. Where the key is
+    /// measured FROM is the skeleton root. A real avatar's root sits at pelvis height
+    /// (llvoavatar.cpp:4677), so its stand animation's pelvis key is ~0, and SLNG's avatar skeleton
+    /// has its root at the feet, which is why <c>rest + key</c> (1.067 + ~0) is the same place there.
+    /// A control avatar's root is the root prim itself (llcontrolavatar.cpp:244; llvoavatar.cpp:4713
+    /// sends it there instead of to the lifted position), so the key IS the pelvis height, and adding
+    /// the rest to it displaces the whole mesh by the pelvis' own rest height.</para></summary>
+    public bool AbsolutePelvisPosition { get; set; }
+
+    /// <summary>FEAT-ANIMESH-02: a bone that no ACTIVE animation drives keeps whatever it was last
+    /// given -- rotation and, for the pelvis, position -- instead of snapping back to the rest pose
+    /// every frame. Off (an ordinary avatar) it is exactly what it always was: every frame starts
+    /// from the rest pose and only the driven bones are written. On (a control avatar) a bone that
+    /// has never been driven stays at rest, and every other bone holds its last value, including
+    /// after the last animation stops.
+    ///
+    /// <para>That is the viewer's behaviour. <c>LLJointStateBlender::blendJointStates</c> starts from
+    /// the joint's CURRENT position and rotation (llpose.cpp:257-258) and writes them back
+    /// (:388-390); with no joint state at all it returns early, "instead of resetting joint state to
+    /// default, just leave it unchanged from last frame" (:242-244). <c>LLPoseBlender::blendAndApply</c>
+    /// visits only the blenders of joints that have an active joint state (llpose.cpp:512-522), a
+    /// stopped motion only drops its pose weight to zero (<c>LLMotion::deactivate</c>,
+    /// llmotion.cpp:157-170) and releases its constraints (<c>LLKeyframeMotion::onDeactivate</c>,
+    /// llkeyframemotion.cpp:789-795), and the motion controller resets joint SIGNATURES, never joints
+    /// (llmotioncontroller.cpp:486-492). Nothing puts the body back: an ordinary avatar always has a
+    /// stand animation driving it, and a control avatar has no default motions
+    /// (<c>mEnableDefaultMotions = false</c>, llcontrolavatar.cpp:56).</para></summary>
+    public bool HoldUndrivenBones { get; set; }
+
+    // What a bone was last given while HoldUndrivenBones is on, so a reset that is not the player's
+    // own (a skeleton rebuilt around a held pose) can be undone by ReapplyHeldPose.
+    private readonly Dictionary<int, Quaternion> _heldRotations = new();
+    private readonly Dictionary<int, Vector3> _heldPositions = new();
+
+    /// <summary>Writes the held pose back onto the skeleton. For a caller that has just reset the
+    /// skeleton's poses for a reason of its own (<c>Skeleton3D.ResetBonePoses</c> after a joint
+    /// override changed) and must not lose what the animations had left there. Only the bones the
+    /// animations drove are touched, so every other bone keeps the fresh rest the reset gave it.
+    /// A no-op unless <see cref="HoldUndrivenBones"/> is on.</summary>
+    public void ReapplyHeldPose()
+    {
+        if (_skeleton == null || !HoldUndrivenBones) return;
+
+        foreach (var (boneIdx, rotation) in _heldRotations) _skeleton.SetBonePoseRotation(boneIdx, rotation);
+        foreach (var (boneIdx, position) in _heldPositions) _skeleton.SetBonePosePosition(boneIdx, position);
+    }
+
     /// <summary>FEAT-ANIM-06: Plays an animation as a local overlay.</summary>
     public void PlayLocal(Guid animId, AnimationData data, string? name = null)
     {
@@ -146,6 +203,8 @@ public sealed class AvatarAnimationPlayer
     public void SetSkeleton(Skeleton3D skeleton)
     {
         _skeleton = skeleton;
+        _heldRotations.Clear();
+        _heldPositions.Clear();
         _neckBoneIdx = skeleton.FindBone("mNeck");
         _headBoneIdx = skeleton.FindBone("mHead");
     }
@@ -193,7 +252,8 @@ public sealed class AvatarAnimationPlayer
             return true;
         });
 
-        if (_active.Count == 0 && _localOverlay.Count == 0 && removed > 0)
+        // (A holding player keeps the last pose when the last animation stops: see HoldUndrivenBones.)
+        if (_active.Count == 0 && _localOverlay.Count == 0 && removed > 0 && !HoldUndrivenBones)
         {
             if (Diagnostics.Enabled) GD.Print("[AnimPlayer] Active count is 0, resetting to rest pose");
             ResetToRestPose();
@@ -221,6 +281,9 @@ public sealed class AvatarAnimationPlayer
         _pendingAnimations = null;
         _active.Clear();
         _localOverlay.Clear();
+        // An explicit stop is the one thing that lets go of a held pose.
+        _heldRotations.Clear();
+        _heldPositions.Clear();
         ResetToRestPose();
     }
 
@@ -401,7 +464,9 @@ public sealed class AvatarAnimationPlayer
 
         // Reset all bones so any bone no longer animated snaps back to its rest pose.
         // (Avatar shape deformations are baked into the bone rests, so this only clears animations).
-        ResetToRestPose();
+        // A holding player (a control avatar, see HoldUndrivenBones) does not: a bone nothing drives
+        // this frame stays as it is, and only the driven ones are written below.
+        if (!HoldUndrivenBones) ResetToRestPose();
 
         if (!_isFrozen && HoldMode == AvatarHoldMode.BindPose)
         {
@@ -467,16 +532,21 @@ public sealed class AvatarAnimationPlayer
         foreach (var (boneIdx, pose) in boneRots)
         {
             _skeleton!.SetBonePoseRotation(boneIdx, pose.rotation);
+            if (HoldUndrivenBones) _heldRotations[boneIdx] = pose.rotation;
         }
 
         // Apply position channels (most commonly mPelvis offset authored into furniture/posestand/cuddle poses).
         // In Godot's Skeleton3D, SetBonePosePosition overrides the bone's local position (normally initialized
-        // to bone rest). Second Life animation position keys are offsets relative to the neutral rest position,
-        // so adding the bone's rest origin applies the animation offset faithfully without collapsing the bone.
+        // to bone rest). For an avatar whose skeleton root sits at the feet, the key is read as an offset on
+        // the neutral rest position, so adding the bone's rest origin applies it without collapsing the bone.
+        // A control avatar's root is the prim itself and the key is absolute -- see AbsolutePelvisPosition.
         foreach (var (boneIdx, pose) in bonePositions)
         {
-            var restPos = _skeleton!.GetBoneRest(boneIdx).Origin;
-            _skeleton.SetBonePosePosition(boneIdx, restPos + pose.position);
+            var written = AbsolutePelvisPosition
+                ? pose.position
+                : _skeleton!.GetBoneRest(boneIdx).Origin + pose.position;
+            _skeleton!.SetBonePosePosition(boneIdx, written);
+            if (HoldUndrivenBones) _heldPositions[boneIdx] = written;
         }
     }
 

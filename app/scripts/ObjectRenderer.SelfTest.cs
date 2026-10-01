@@ -322,12 +322,26 @@ public partial class ObjectRenderer
             Expect(Set(root.Id, (idA, 4)) && avatars.SelfTestAnimationTime(root.Id, idA) != null,
                 "an animation one prim stopped signalling but another still does must keep playing");
 
-            // Nobody signals anything: back to the rest pose.
+            // Nobody signals anything: nothing plays, and the body stays where the last animation left
+            // it (the viewer resets no joint; a joint nothing ever drove is still at rest).
             Signal(child);
             Pulse();
             Expect(Set(root.Id) && avatars.SelfTestAnimationTime(root.Id, idA) == null
-                   && avatars.SelfTestBoneAtRest(root.Id, Shoulder),
-                "an object with nothing signalled must be at rest");
+                   && avatars.SelfTestBoneAtKey(root.Id, Shoulder, keyA)
+                   && avatars.SelfTestBoneAtRest(root.Id, "mHipLeft"),
+                "an object with nothing signalled must stop playing but hold its last pose");
+
+            // One animation at a time, as the real robot's script cycles them: the shoulder animation
+            // goes, an elbow-only one comes, and the shoulder STAYS where the first one put it.
+            Signal(root, (idA, 1));
+            Pulse();
+            Signal(root, (idB, 1));
+            Pulse();
+            Expect(Set(root.Id, (idB, 1)) && avatars.SelfTestAnimationTime(root.Id, idA) == null
+                   && avatars.SelfTestBoneAtKey(root.Id, Elbow, keyB) && avatars.SelfTestBoneAtKey(root.Id, Shoulder, keyA),
+                "replacing one animation with another that drives fewer joints must leave the others where they were");
+            Signal(root);
+            Pulse();
 
             // Unlinking a child takes its animations with it; linking it back brings them back.
             Signal(child, (idB, 1));
@@ -373,7 +387,7 @@ public partial class ObjectRenderer
 
         return failures.Count == 0
             ? (true, "a list waiting before the build, a plain child's script, the larger sequence id across prims, " +
-                     "an animation held by another prim, rest when nothing is signalled, unlink and re-link, " +
+                     "an animation held by another prim, a held pose when nothing is signalled and when a smaller animation replaces a bigger one, unlink and re-link, " +
                      "derezzing a child and the root")
             : (false, string.Join("; ", failures));
     }

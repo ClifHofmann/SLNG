@@ -97,14 +97,51 @@ public partial class AvatarRenderer
     private static string Short(Guid id) => id.ToString("N")[..8];
     private static string Short(SignaledAnimation a) => $"{Short(a.AnimationId)}:{a.SequenceId}";
 
-    /// <summary>The one <c>[Animesh]</c> line per change of the effective set (--diag): the whole
-    /// set, and what the change started, stopped and restarted.</summary>
-    private static void ReportAnimationSet(ControlAvatar ca, AnimationSetChange change)
+    /// <summary>Where the control avatar's skeleton root is, in SL region axes (x, y, z up) -- the
+    /// root prim's position plus the pelvis fixup, which is what the skeleton was placed at. The
+    /// number to compare with the floor height a viewer shows.</summary>
+    private System.Numerics.Vector3 ControlAvatarRootSl(ControlAvatar ca)
+    {
+        ulong region = _world?.GetEntity(ca.RootEntityId)?.RegionHandle ?? 0;
+        return RenderConfig.FromGodot(region, ca.Visual.Root.Position);
+    }
+
+    private static string Fmt(System.Numerics.Vector3 v) => $"({v.X:0.###}, {v.Y:0.###}, {v.Z:0.###})";
+
+    /// <summary>The pelvis bone's CURRENT local position and its rest position, both relative to the
+    /// skeleton root and in SL axes (Godot (x, y, z) is SL (x, -z, y)). The first is where the
+    /// animation (or the rest) has put it; the second what the mesh's own override says.</summary>
+    private static string PelvisReading(ControlAvatar ca)
+    {
+        var skeleton = ca.Visual.Skeleton;
+        int pelvis = skeleton?.FindBone("mPelvis") ?? -1;
+        if (skeleton == null || pelvis < 0) return "pelvis=n/a";
+
+        var pose = skeleton.GetBonePosePosition(pelvis);
+        var rest = skeleton.GetBoneRest(pelvis).Origin;
+        return $"pelvis={Fmt(new System.Numerics.Vector3(pose.X, -pose.Z, pose.Y))} " +
+               $"pelvisRest={Fmt(new System.Numerics.Vector3(rest.X, -rest.Z, rest.Y))}";
+    }
+
+    /// <summary>The one <c>[Animesh] anim</c> line per change of the effective set (--diag): the whole
+    /// set, what the change started, stopped and restarted, and where the pelvis and the skeleton root
+    /// are. The pelvis reading is taken as the change arrives, so it is where the PREVIOUS set left it;
+    /// the <c>[Animesh] pose</c> line that follows once the new set has been applied and moved one
+    /// frame shows where the new one put it.</summary>
+    private void ReportAnimationSet(ControlAvatar ca, AnimationSetChange change)
     {
         GD.Print($"[Animesh] anim root={Short(ca.RootEntityId)} set=[{string.Join(' ', ca.Signaled.Select(a => Short(a)))}] " +
                  $"started=[{string.Join(' ', change.Start.Select(a => Short(a)))}] " +
                  $"stopped=[{string.Join(' ', change.Stop.Select(Short))}] " +
-                 $"restarted=[{string.Join(' ', change.Restart.Select(a => Short(a)))}]");
+                 $"restarted=[{string.Join(' ', change.Restart.Select(a => Short(a)))}] " +
+                 $"{PelvisReading(ca)} rootWorld={Fmt(ControlAvatarRootSl(ca))}");
+    }
+
+    /// <summary>--diag: the pose after a change has been applied and the player has moved one frame.</summary>
+    private void ReportAnimationPose(ControlAvatar ca)
+    {
+        GD.Print($"[Animesh] pose root={Short(ca.RootEntityId)} playing=[{string.Join(' ', ca.Playing.Select(a => Short(a)))}] " +
+                 $"{PelvisReading(ca)} rootWorld={Fmt(ControlAvatarRootSl(ca))}");
     }
 
     // ---- fetching ---------------------------------------------------------------------------------
@@ -209,6 +246,7 @@ public partial class AvatarRenderer
             }
 
             ca.Playing = target.ToArray();
+            if (Diagnostics.Enabled) ca.ReportPoseAfterAdvance = true;
         }
 
         // The cache holds what the set can still ask for and what is on its way, nothing else.
@@ -240,6 +278,12 @@ public partial class AvatarRenderer
         if (!visible) return;
 
         player.Advance(delta);
+
+        if (ca.ReportPoseAfterAdvance)
+        {
+            ca.ReportPoseAfterAdvance = false;
+            ReportAnimationPose(ca);
+        }
     }
 
     // ---- self-test ------------------------------------------------------------------------------------
@@ -256,11 +300,10 @@ public partial class AvatarRenderer
     /// <summary>One frame of the per-frame pass, for a world-driven self-test that has no frames.</summary>
     internal void SelfTestTick(float delta) => UpdateControlAvatars(delta);
 
-    /// <summary>Is the named bone of this object's skeleton at the pose this animation key sets?
-    /// (SL key in, compared as the Godot rotation the player writes.)</summary>
-    internal bool SelfTestBoneAtKey(Guid rootId, string bone, System.Numerics.Quaternion slKey)
+    /// <summary>Is the named bone at the pose this animation key sets? (SL key in, compared as the
+    /// Godot rotation the player writes; q and -q are the same rotation.)</summary>
+    internal static bool SelfTestAtKey(Skeleton3D skeleton, string bone, System.Numerics.Quaternion slKey)
     {
-        if (!_controlAvatars.TryGetValue(rootId, out var ca) || ca.Visual.Skeleton is not { } skeleton) return false;
         int idx = skeleton.FindBone(bone);
         if (idx < 0) return false;
         var want = new Godot.Quaternion(slKey.X, slKey.Z, -slKey.Y, slKey.W).Normalized();
@@ -269,14 +312,52 @@ public partial class AvatarRenderer
     }
 
     /// <summary>Is the named bone at its rest rotation?</summary>
-    internal bool SelfTestBoneAtRest(Guid rootId, string bone)
+    internal static bool SelfTestAtRest(Skeleton3D skeleton, string bone)
     {
-        if (!_controlAvatars.TryGetValue(rootId, out var ca) || ca.Visual.Skeleton is not { } skeleton) return false;
         int idx = skeleton.FindBone(bone);
         if (idx < 0) return false;
         var rest = skeleton.GetBoneRest(idx).Basis.GetRotationQuaternion();
         var have = skeleton.GetBonePoseRotation(idx);
         return have.IsEqualApprox(rest) || have.IsEqualApprox(-rest);
+    }
+
+    /// <summary>Is the named bone at its rest POSITION?</summary>
+    internal static bool SelfTestAtRestPosition(Skeleton3D skeleton, string bone)
+    {
+        int idx = skeleton.FindBone(bone);
+        return idx >= 0 && skeleton.GetBonePosePosition(idx).IsEqualApprox(skeleton.GetBoneRest(idx).Origin);
+    }
+
+    internal bool SelfTestBoneAtKey(Guid rootId, string bone, System.Numerics.Quaternion slKey) =>
+        _controlAvatars.TryGetValue(rootId, out var ca) && ca.Visual.Skeleton is { } skeleton
+        && SelfTestAtKey(skeleton, bone, slKey);
+
+    internal bool SelfTestBoneAtRest(Guid rootId, string bone) =>
+        _controlAvatars.TryGetValue(rootId, out var ca) && ca.Visual.Skeleton is { } skeleton
+        && SelfTestAtRest(skeleton, bone);
+
+    /// <summary>The skinned extent of a part of the synthetic bar in the skeleton's CURRENT pose, in
+    /// world axes relative to the control avatar's root: the same product Godot skins with
+    /// (global bone pose times bind), where <see cref="BuildRiggedMeshInstance"/> measures the rest
+    /// pose from the global REST. At rest the two agree, which the caller can check.</summary>
+    private (Godot.Vector3 Min, Godot.Vector3 Max) SelfTestPosedExtent(ControlAvatar ca, Guid primId,
+        System.Numerics.Vector3[] corners, System.Numerics.Matrix4x4 bindShape)
+    {
+        var skeleton = ca.Visual.Skeleton!;
+        var skin = ca.Parts[primId].Mi!.Skin!;
+        var frame = new Basis(ca.Visual.Root.Quaternion);
+        var palette = skeleton.GetBoneGlobalPose(skin.GetBindBone(0)) * skin.GetBindPose(0);
+
+        var min = new Godot.Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+        var max = new Godot.Vector3(float.MinValue, float.MinValue, float.MinValue);
+        foreach (var corner in corners)
+        {
+            var p = System.Numerics.Vector3.Transform(corner, bindShape);
+            var world = frame * (palette * new Godot.Vector3(p.X, p.Z, -p.Y));
+            min = new Godot.Vector3(Mathf.Min(min.X, world.X), Mathf.Min(min.Y, world.Y), Mathf.Min(min.Z, world.Z));
+            max = new Godot.Vector3(Mathf.Max(max.X, world.X), Mathf.Max(max.Y, world.Y), Mathf.Max(max.Z, world.Z));
+        }
+        return (min, max);
     }
 
     /// <summary>A one-joint rotation-only animation: <paramref name="slKey"/> held for its whole
@@ -342,6 +423,8 @@ public partial class AvatarRenderer
         var idD = Guid.NewGuid();   // gated
         var idE = Guid.NewGuid();   // never loads
         var idP = Guid.NewGuid();   // moves the pelvis
+        var idHA = Guid.NewGuid();  // drives the pelvis (rotation and position), the shoulder and the elbow
+        var idHB = Guid.NewGuid();  // drives the elbow only: the "4-joint head wobble" of the real robot
         var animA = SelfTestAnimation(Shoulder, keyA, loop: true, length: 2f);
         var animB = SelfTestAnimation("mElbowLeft", keyB, loop: false, length: 0.5f);
         // A pelvis position key: the one place the player writes a POSITION, as an offset on the rest.
@@ -361,6 +444,28 @@ public partial class AvatarRenderer
                 },
             },
         };
+        var pelvisTurn = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, MathF.PI / 9f);
+        var elbowBend = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitX, MathF.PI / 6f);
+        var animHA = new AnimationData
+        {
+            Length = 2f,
+            Loop = true,
+            InPoint = 0f,
+            OutPoint = 2f,
+            Priority = 4,
+            Joints = new[]
+            {
+                new AnimationJointData
+                {
+                    JointName = "mPelvis", Priority = 4,
+                    RotationKeys = new[] { new RotationKeyframe(0f, pelvisTurn) },
+                    PositionKeys = new[] { new PositionKeyframe(0f, new System.Numerics.Vector3(0f, 0f, -0.75f)) },
+                },
+                new AnimationJointData { JointName = Shoulder, Priority = 4, RotationKeys = new[] { new RotationKeyframe(0f, keyA) } },
+                new AnimationJointData { JointName = "mElbowLeft", Priority = 4, RotationKeys = new[] { new RotationKeyframe(0f, elbowBend) } },
+            },
+        };
+        var animHB = SelfTestAnimation("mElbowLeft", keyB, loop: true, length: 0.67f);
         var gates = new Dictionary<Guid, TaskCompletionSource<AnimationData?>>();
 
         AnimationLoaderOverride = id =>
@@ -369,6 +474,8 @@ public partial class AvatarRenderer
             if (id == idA) return Task.FromResult<AnimationData?>(animA);
             if (id == idB) return Task.FromResult<AnimationData?>(animB);
             if (id == idP) return Task.FromResult<AnimationData?>(animP);
+            if (id == idHA) return Task.FromResult<AnimationData?>(animHA);
+            if (id == idHB) return Task.FromResult<AnimationData?>(animHB);
             return Task.FromResult<AnimationData?>(null);
         };
 
@@ -425,10 +532,15 @@ public partial class AvatarRenderer
             Set((idA, 2), (idB, 3));
             Expect(MathF.Abs(Time(idB) - 0.1f) < 1e-4f, $"a one-shot still playing is not restarted (time {Time(idB)})");
 
-            // An emptied set: everything stops and the skeleton goes back to rest.
+            // An emptied set: every animation stops -- and the body stays where they left it. The
+            // viewer resets no joint when a motion ends, and an object has no default motion to take
+            // over; a joint that was never driven is still at rest.
             Set();
-            Expect(!player.IsPlaying && SelfTestBoneAtRest(rootId, Shoulder) && ca.Playing.Length == 0,
-                "an emptied set must stop everything and return the skeleton to rest");
+            Expect(!player.IsPlaying && ca.Playing.Length == 0
+                   && SelfTestBoneAtKey(rootId, Shoulder, keyA) && SelfTestBoneAtKey(rootId, "mElbowLeft", keyB)
+                   && SelfTestBoneAtRest(rootId, "mHipLeft"),
+                "an emptied set must stop everything but leave the pose where the animations left it, " +
+                "with a joint nothing ever drove still at rest");
 
             // Latest wins. C is slow: the set moves on to D, then C arrives -- and must not play.
             gates[idC] = new TaskCompletionSource<AnimationData?>();
@@ -474,14 +586,17 @@ public partial class AvatarRenderer
             Frame(0.1f);
             Expect(MathF.Abs(Time(idA) - hidden - 0.1f) < 1e-4f, "it must pick up where it stopped, not catch up");
 
-            // A mesh that moves the pelvis (a robot): the animation's pelvis offset is added to the
-            // OVERRIDDEN rest position, not to the stock one -- the authored joint positions survive.
+            // A mesh that moves the pelvis (a robot, authored 0.3 m up): the animation's pelvis key is the
+            // pelvis' ABSOLUTE position below the skeleton root, not an offset on that override. So the
+            // bone sits AT the key, and the skinned mesh moves by (key - override) from where it stood
+            // at rest -- not by the key, which is what rest + key would have given.
             {
                 var lowRoot = Guid.NewGuid();
                 var lowCa = GetOrCreateControlAvatar(lowRoot);
-                if (lowCa == null || !InstallControlAvatarPart(lowCa, lowRoot, true,
-                        SelfTestRiggedBar(0.5f, out _, pelvisHeight: 0.3f), Guid.NewGuid(), null, default, true, false,
-                        new Godot.Vector3(10f, 5f, -20f), System.Numerics.Quaternion.Identity))
+                var barScale = System.Numerics.Matrix4x4.CreateScale(0.5f) * System.Numerics.Matrix4x4.CreateRotationX(MathF.PI / 2f);
+                var lowData = SelfTestRiggedBar(0.5f, out var lowCorners, pelvisHeight: 0.3f);
+                if (lowCa == null || !InstallControlAvatarPart(lowCa, lowRoot, true, lowData, Guid.NewGuid(), null, default,
+                        true, false, new Godot.Vector3(10f, 5f, -20f), System.Numerics.Quaternion.Identity))
                 {
                     failures.Add("the low-pelvis bar produced no geometry");
                 }
@@ -490,15 +605,132 @@ public partial class AvatarRenderer
                     var lowSkeleton = lowCa.Visual.Skeleton!;
                     int pelvisBone = lowSkeleton.FindBone("mPelvis");
                     float restY = lowSkeleton.GetBoneRest(pelvisBone).Origin.Y;
+
+                    var (restMin, restMax) = SelfTestPosedExtent(lowCa, lowRoot, lowCorners, barScale);
+                    var measured = lowCa.Parts[lowRoot].Extent!;
+                    Expect((restMin - measured.WorldMin).Length() < 2e-3f && (restMax - measured.WorldMax).Length() < 2e-3f,
+                        "the posed-extent probe must agree with the rest-pose extent before anything is animated");
+
                     SetControlAvatarSignaledAnimations(lowCa, new[] { new SignaledAnimation(idP, 1) });
                     Settle();
                     AdvanceControlAvatarAnimations(lowCa, 0.05f);
                     float posedY = lowSkeleton.GetBonePosePosition(pelvisBone).Y;
-                    Expect(MathF.Abs(restY - 0.3f) < 1e-3f && MathF.Abs(posedY - (restY + 0.1f)) < 1e-3f,
-                        $"an animated pelvis must keep the mesh's authored joint position (rest {restY}, posed {posedY}, want {restY + 0.1f})");
+                    Expect(MathF.Abs(restY - 0.3f) < 1e-3f && MathF.Abs(posedY - 0.1f) < 1e-3f,
+                        $"a pelvis key is an absolute position (override {restY}, key 0.1, bone at {posedY}; rest + key would be {restY + 0.1f})");
+
+                    // The skinned mesh moved by (key - override) along the skeleton's up, turned into world
+                    // axes by the avatar's own rotation.
+                    var (posedMin, posedMax) = SelfTestPosedExtent(lowCa, lowRoot, lowCorners, barScale);
+                    var shift = new Basis(lowCa.Visual.Root.Quaternion) * new Godot.Vector3(0f, 0.1f - 0.3f, 0f);
+                    Expect(((posedMin - restMin) - shift).Length() < 2e-3f && ((posedMax - restMax) - shift).Length() < 2e-3f,
+                        $"the skinned mesh must move by (key - override) = -0.2 m, not by the key " +
+                        $"(min moved by {posedMin - restMin}, want {shift})");
                 }
                 FreeControlAvatar(lowRoot);
                 _controlAvatarOfPrim.Remove(lowRoot);
+            }
+
+            // A bone nothing drives this frame keeps its LAST value -- the pelvis POSITION included -- and
+            // an ordinary avatar still goes back to rest in the same sequence. One animation drives the
+            // pelvis (rotation and a position key), the shoulder and the elbow; the next drives the elbow
+            // alone, as the real robot's head wobble does; then nothing at all.
+            {
+                var holdRoot = Guid.NewGuid();
+                var holdCa = GetOrCreateControlAvatar(holdRoot);
+                var rigData = SelfTestRiggedBar(0.5f, out _);
+                if (holdCa == null || !InstallControlAvatarPart(holdCa, holdRoot, true, rigData, Guid.NewGuid(), null, default,
+                        true, false, new Godot.Vector3(10f, 5f, -20f), System.Numerics.Quaternion.Identity))
+                {
+                    failures.Add("the hold rig produced no geometry");
+                }
+                else
+                {
+                    var sk = holdCa.Visual.Skeleton!;
+                    int pelvisIdx = sk.FindBone("mPelvis");
+                    var heldPelvisPosition = new Godot.Vector3(0f, -0.75f, 0f);
+                    void Hold(params Guid[] ids)
+                    {
+                        SetControlAvatarSignaledAnimations(holdCa, ids.Select(i => new SignaledAnimation(i, 1)).OrderBy(a => a.AnimationId).ToArray());
+                        Settle();
+                        AdvanceControlAvatarAnimations(holdCa, 0.1f);
+                    }
+                    bool Nothing(Skeleton3D skeleton) =>
+                        SelfTestAtRest(skeleton, "mPelvis") && SelfTestAtRest(skeleton, Shoulder)
+                        && SelfTestAtRest(skeleton, "mElbowLeft") && SelfTestAtRestPosition(skeleton, "mPelvis");
+
+                    Expect(Nothing(sk), "before anything plays the control avatar must be at rest");
+
+                    Hold(idHA);
+                    Expect(SelfTestAtKey(sk, "mPelvis", pelvisTurn) && SelfTestAtKey(sk, Shoulder, keyA)
+                           && SelfTestAtKey(sk, "mElbowLeft", elbowBend)
+                           && sk.GetBonePosePosition(pelvisIdx).IsEqualApprox(heldPelvisPosition),
+                        "the first animation must drive the pelvis (rotation and position), the shoulder and the elbow " +
+                        $"(pelvis at {sk.GetBonePosePosition(pelvisIdx)}, want {heldPelvisPosition})");
+
+                    Hold(idHB);
+                    Expect(SelfTestAtKey(sk, "mElbowLeft", keyB), "the second animation must drive the elbow");
+                    Expect(SelfTestAtKey(sk, Shoulder, keyA) && SelfTestAtKey(sk, "mPelvis", pelvisTurn)
+                           && sk.GetBonePosePosition(pelvisIdx).IsEqualApprox(heldPelvisPosition)
+                           && !SelfTestAtRest(sk, Shoulder) && !SelfTestAtRest(sk, "mPelvis"),
+                        "bones the playing animation does not drive must keep the first one's LAST values -- " +
+                        $"rotation and the pelvis position (pelvis at {sk.GetBonePosePosition(pelvisIdx)}, want {heldPelvisPosition})");
+
+                    Hold();
+                    Expect(!holdCa.Visual.AnimPlayer.IsPlaying && SelfTestAtKey(sk, "mElbowLeft", keyB)
+                           && SelfTestAtKey(sk, Shoulder, keyA) && SelfTestAtKey(sk, "mPelvis", pelvisTurn)
+                           && sk.GetBonePosePosition(pelvisIdx).IsEqualApprox(heldPelvisPosition)
+                           && SelfTestAtRest(sk, "mHipLeft") && SelfTestAtRestPosition(sk, "mHipLeft"),
+                        "an emptied set must hold the whole pose, with a joint nothing ever drove still at rest");
+
+                    // A LOD re-rig keeps the skeleton and so the pose.
+                    InstallControlAvatarPart(holdCa, holdRoot, true, SelfTestRiggedBar(0.5f, out _), Guid.NewGuid(), null, default,
+                        true, false, new Godot.Vector3(10f, 5f, -20f), System.Numerics.Quaternion.Identity);
+                    Expect(SelfTestAtKey(sk, Shoulder, keyA) && sk.GetBonePosePosition(pelvisIdx).IsEqualApprox(heldPelvisPosition),
+                        "a re-rig must not disturb the held pose");
+
+                    // A SECOND mesh with a joint-position override the skeleton does not have yet rewrites every
+                    // rest and resets the poses (ApplyJointPositionOverrides); the held pose is put back.
+                    float restBefore = sk.GetBoneRest(pelvisIdx).Origin.Y;
+                    InstallControlAvatarPart(holdCa, Guid.NewGuid(), false,
+                        SelfTestRiggedBar(0.5f, out _, pelvisHeight: 0.4f), Guid.NewGuid(), null, default,
+                        true, false, new Godot.Vector3(10f, 5f, -20f), System.Numerics.Quaternion.Identity);
+                    Expect(MathF.Abs(sk.GetBoneRest(pelvisIdx).Origin.Y - 0.4f) < 1e-3f && MathF.Abs(restBefore - 0.4f) > 1e-3f,
+                        "the second mesh's pelvis override must have rewritten the rest (otherwise this check proves nothing)");
+                    Expect(SelfTestAtKey(sk, "mElbowLeft", keyB) && SelfTestAtKey(sk, Shoulder, keyA)
+                           && SelfTestAtKey(sk, "mPelvis", pelvisTurn)
+                           && sk.GetBonePosePosition(pelvisIdx).IsEqualApprox(heldPelvisPosition)
+                           && SelfTestAtRest(sk, "mHipLeft"),
+                        "a second mesh that resets the skeleton's poses must not wipe the held pose");
+
+                    // The same sequence on an ordinary avatar's player: rest + key, and everything the
+                    // playing animation does not drive snaps back to rest.
+                    var plainSkeleton = SkeletonBuilder.Build(_avatarSkeleton);
+                    AddChild(plainSkeleton);
+                    plainSkeleton.ResetBonePoses();
+                    var plainPlayer = new AvatarAnimationPlayer();
+                    plainPlayer.SetSkeleton(plainSkeleton);
+                    int plainPelvis = plainSkeleton.FindBone("mPelvis");
+                    var plainRest = plainSkeleton.GetBoneRest(plainPelvis).Origin;
+
+                    plainPlayer.SetActiveAnimations(new List<(Guid, AnimationData)> { (idHA, animHA) });
+                    plainPlayer.Advance(0.1f);
+                    Expect(plainSkeleton.GetBonePosePosition(plainPelvis).IsEqualApprox(plainRest + new Godot.Vector3(0f, -0.75f, 0f))
+                           && SelfTestAtKey(plainSkeleton, Shoulder, keyA),
+                        $"an ordinary avatar must still read a pelvis key as an offset on the rest (rest {plainRest}, pelvis at {plainSkeleton.GetBonePosePosition(plainPelvis)})");
+
+                    plainPlayer.SetActiveAnimations(new List<(Guid, AnimationData)> { (idHB, animHB) });
+                    plainPlayer.Advance(0.1f);
+                    Expect(SelfTestAtKey(plainSkeleton, "mElbowLeft", keyB)
+                           && SelfTestAtRest(plainSkeleton, Shoulder) && SelfTestAtRest(plainSkeleton, "mPelvis")
+                           && SelfTestAtRestPosition(plainSkeleton, "mPelvis"),
+                        "an ordinary avatar must still snap every bone its animations do not drive back to rest");
+
+                    plainPlayer.SetActiveAnimations(new List<(Guid, AnimationData)>());
+                    Expect(Nothing(plainSkeleton), "an ordinary avatar whose last animation stops must still return to rest");
+                    plainSkeleton.QueueFree();
+                }
+                FreeControlAvatar(holdRoot);
+                _controlAvatarOfPrim.Remove(holdRoot);
             }
 
             // Freed while a fetch is in flight: the late result applies to nothing.
@@ -520,8 +752,9 @@ public partial class AvatarRenderer
 
         return failures.Count == 0
             ? (true, "plays the signalled set, same set leaves it running, a new sequence id restarts a finished one-shot but not a playing loop, " +
-                     "an emptied set returns to rest, a late fetch loses to the newer set, one bad animation spares the rest, " +
-                     "a re-rig and a hidden object leave the clock alone, an animated pelvis keeps its authored position, " +
+                     "an emptied set stops everything but holds the pose, a late fetch loses to the newer set, one bad animation spares the rest, " +
+                     "a re-rig and a hidden object leave the clock alone, a pelvis key is absolute, an undriven bone holds its last pose (an ordinary avatar still resets), " +
+                     "a second mesh's skeleton reset leaves the held pose alone, " +
                      "a late fetch after the avatar is freed applies to nothing")
             : (false, string.Join("; ", failures));
     }
