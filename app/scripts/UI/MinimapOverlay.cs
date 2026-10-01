@@ -75,6 +75,17 @@ public partial class MinimapOverlay : SLNGWindow
     /// than this window building its own.</summary>
     public Action<Vector2, Guid, string>? OnAvatarContextMenuRequested;
 
+    /// <summary>Double-click on the radar itself (FEAT-UI-39): fired with the current region's
+    /// handle and the clicked spot as a full region-local position. Boot.cs wires this to
+    /// <c>GridSession.TeleportToAsync</c>, which already owns the in-flight guard and drives the
+    /// teleport overlay -- so a failure is shown there, not here. A single click does nothing,
+    /// as in Firestorm.</summary>
+    public Action<ulong, System.Numerics.Vector3>? OnTeleportRequested;
+
+    // The local avatar's height at the last frame it was known -- the Z of a teleport click when
+    // the terrain under the click has not arrived yet (RadarTeleportTarget).
+    private float? _ownZ;
+
     // Rebuilt every frame in _Process; feeds both the radar draw and the list. Rotation is only
     // ever known for World-tracked avatars (within draw distance) -- a CoarseLocationUpdate-only
     // entry (outside draw distance) has no orientation in the packet at all, hence nullable.
@@ -124,8 +135,10 @@ public partial class MinimapOverlay : SLNGWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
             MouseFilter = MouseFilterEnum.Stop,
+            TooltipText = L10n.Tr("ui.minimap.teleport_hint"),
         };
         _canvas.OnZoom = Zoom;
+        _canvas.OnTeleportClick = HandleTeleportClick;
         left.AddChild(_canvas);
 
         var zoomHint = new Label
@@ -185,6 +198,7 @@ public partial class MinimapOverlay : SLNGWindow
         _focusAgentId = null;
         _selectedAgentId = null;
         _lastNearby = null;
+        _ownZ = null;
         _visibleRangeMeters = DefaultVisibleRangeMeters;
         _session.NearbyAvatarsUpdated += (s, e) => _pendingNearby = e;
         // A name resolved after the roster was already built (RequestAvatarName is fire-and-
@@ -202,6 +216,19 @@ public partial class MinimapOverlay : SLNGWindow
 
     private void Zoom(float factor) =>
         _visibleRangeMeters = Math.Clamp(_visibleRangeMeters * factor, MinVisibleRangeMeters, MaxVisibleRangeMeters);
+
+    /// <summary>The canvas has already checked the click is inside the region it draws, which is
+    /// always the current one -- the radar shows nothing else yet, so there is no neighbour to
+    /// resolve and no region that might not exist.</summary>
+    private void HandleTeleportClick(System.Numerics.Vector2 local)
+    {
+        if (_session == null || _world == null) return;
+        ulong regionHandle = _session.CurrentRegionHandle;
+        if (regionHandle == 0) return;
+
+        _world.Terrains.TryGetValue(regionHandle, out var terrain);
+        OnTeleportRequested?.Invoke(regionHandle, RadarTeleportTarget.Resolve(terrain, local, _ownZ));
+    }
 
     public override void _Process(double delta)
     {
@@ -231,6 +258,7 @@ public partial class MinimapOverlay : SLNGWindow
         }
 
         BuildRoster(regionHandle, out var ownPos, out var heading);
+        if (ownPos is { } own) _ownZ = own.Z;
 
         // A focused avatar centres the radar in their place -- but if they've since left range
         // (dropped out of the roster entirely, e.g. they teleported away or moved out of both
@@ -459,6 +487,9 @@ public partial class MinimapOverlay : SLNGWindow
     {
         public Action<float>? OnZoom;
 
+        /// <summary>Double-click inside the region rectangle, as region-local metres.</summary>
+        public Action<System.Numerics.Vector2>? OnTeleportClick;
+
         private int _regionWidth = RegionTerrain.DefaultRegionSize;
         private int _regionHeight = RegionTerrain.DefaultRegionSize;
         private System.Numerics.Vector3? _center;
@@ -499,7 +530,28 @@ public partial class MinimapOverlay : SLNGWindow
             {
                 if (mb.ButtonIndex == MouseButton.WheelUp) OnZoom?.Invoke(0.8f);
                 else if (mb.ButtonIndex == MouseButton.WheelDown) OnZoom?.Invoke(1.25f);
+                else if (mb.ButtonIndex == MouseButton.Left && mb.DoubleClick) TeleportAt(mb.Position);
             }
+        }
+
+        /// <summary>Inverts exactly what <see cref="_Draw"/> drew (same <see cref="RadarProjection"/>),
+        /// so the spot clicked is the spot shown. A click outside the region rectangle -- the radar
+        /// can be zoomed out past the region edge -- does nothing.</summary>
+        private void TeleportAt(Vector2 canvasPos)
+        {
+            if (!_hasData || Projection() is not { } projection) return;
+            var local = projection.ToRegion(new System.Numerics.Vector2(canvasPos.X, canvasPos.Y));
+            if (RadarProjection.Within(local, _regionWidth, _regionHeight)) OnTeleportClick?.Invoke(local);
+        }
+
+        private RadarProjection? Projection()
+        {
+            if (_center is not { } focus) return null;
+            var size = Size;
+            return new RadarProjection(
+                new System.Numerics.Vector2(size.X, size.Y),
+                new System.Numerics.Vector2(focus.X, focus.Y),
+                _visibleRangeMeters);
         }
 
         public override void _Draw()
@@ -507,18 +559,18 @@ public partial class MinimapOverlay : SLNGWindow
             var size = Size;
             DrawRect(new Rect2(Vector2.Zero, size), new Color(0.02f, 0.05f, 0.03f, 0.9f));
             DrawRect(new Rect2(Vector2.Zero, size), new Color(0.3f, 0.9f, 0.5f, 0.4f), false, 1.5f);
-            if (!_hasData || _center is not { } focus) return;
-
-            float scale = Math.Min(size.X, size.Y) / _visibleRangeMeters;
-            var canvasCenter = size / 2f;
+            if (!_hasData || Projection() is not { } projection) return;
 
             // Projected relative to the FOCUS point, which is the local avatar by default but can
             // be a double-clicked roster entry instead (MinimapOverlay._Process) -- so the local
             // avatar's own dot is no longer assumed to sit at the canvas centre; it's drawn at
             // wherever it actually is relative to whatever the radar is currently centred on.
-            Vector2 ToCanvas(System.Numerics.Vector3 p) => canvasCenter + new Vector2(
-                (p.X - focus.X) * scale,
-                -(p.Y - focus.Y) * scale); // region Y is north; canvas Y grows downward
+            // The same RadarProjection turns a double-click back into region metres.
+            Vector2 ToCanvas(System.Numerics.Vector3 p)
+            {
+                var c = projection.ToCanvas(new System.Numerics.Vector2(p.X, p.Y));
+                return new Vector2(c.X, c.Y);
+            }
 
             // Region boundary, relative to the focus point -- only ever partly visible unless
             // zoomed out past the region size, same as a real minimap's edge-of-region behaviour.

@@ -115,6 +115,7 @@ Eines der Highlights des Viewers sind die modernen Navigations- und Karten-Tools
 - **Roster-Liste:** Neben der Karte sehen Sie eine Liste aller erfassten Avatare in der Region.
 - **Radar-Fokus:** Ein Klick auf einen Eintrag in der Liste markiert den Punkt des Avatars auf dem Radar.
 - **Kamera-Fokus:** Ein Doppelklick auf einen Namen dreht Ihre Kamera automatisch und sanft in eine frontale ("Portrait"-) Ansicht des entsprechenden Avatars.
+- **Teleport per Doppelklick:** Ein Doppelklick auf die Karte teleportiert Sie an diese Stelle der Region – knapp über den Boden. Ein einfacher Klick tut nichts, und ein Doppelklick außerhalb der Region wird ignoriert.
 
 ### Weltkarte
 - Über das Menü "World" öffnen Sie die große Weltkarte.

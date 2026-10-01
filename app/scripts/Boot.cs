@@ -393,7 +393,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.119-alpha";
+    public const string AppVersion = "v0.24.120-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1059,6 +1059,13 @@ public partial class Boot : Control
         _minimapOverlay.OnFocusAvatarRequested = (pos, forward) => _avatarController?.FocusOnAvatarFrontal(pos, forward);
         _minimapOverlay.OnAvatarContextMenuRequested = (screenPos, agentId, name) =>
             _inWorldContextMenu.ShowAvatarMenu(screenPos, agentId, name, isSelf: false, _session?.IsAvatarMuted(agentId) ?? false);
+        // FEAT-UI-39: double-click on the radar teleports. Fire-and-forget on purpose -- the teleport
+        // overlay is driven by GridSession.TeleportProgress, so progress and failure show there.
+        // _session is read at call time, so this survives the session being replaced on re-login.
+        _minimapOverlay.OnTeleportRequested = (handle, local) =>
+        {
+            if (_session != null) _ = _session.TeleportToAsync(handle, local);
+        };
         _worldMapWindow = new SLNG.App.UI.WorldMapWindow { Name = "WorldMapWindow" };
         hudLayer.AddChild(_worldMapWindow);
 

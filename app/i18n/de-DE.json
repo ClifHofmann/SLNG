@@ -165,7 +165,8 @@
     },
     "minimap": {
       "title": "Minikarte",
-      "zoom_hint": "Scrollen zum Zoomen",
+      "zoom_hint": "Scrollen zum Zoomen · Doppelklick auf die Karte teleportiert",
+      "teleport_hint": "Doppelklick zum Hinteleportieren",
       "nearby": "In der Nähe",
       "none_nearby": "Niemand sonst in der Nähe.",
       "jump_hint": "Doppelklick zum Hinspringen"
