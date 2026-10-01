@@ -160,6 +160,8 @@ public static class SelfTest
         results.AddRange(CheckShaderVariants());
         results.AddRange(CheckLocales());
         results.Add(CheckAvatarSkeleton());
+        results.Add(CheckControlAvatar(tree));
+        results.Add(CheckAnimeshHandOver(tree));
         results.AddRange(CheckWindlightPresets());
         results.Add(CheckInstanceSlotMap());
         results.Add(CheckWorkQueueOnceThePumpIsGone());
@@ -622,6 +624,73 @@ public static class SelfTest
         catch (Exception ex)
         {
             return new Check("avatar skeleton", false, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// FEAT-ANIMESH-01: an animated-mesh object's control avatar stands a rigged mesh upright.
+    ///
+    /// <para>The unit tests cover the arithmetic of the placement rotation; this runs the rest of
+    /// the chain through the real renderer, headless -- skeleton, shape, bind matrices, SL-to-Godot
+    /// conversions, the node it is placed with -- and compares the skinned result with a known
+    /// answer. The failure it exists for does not throw and does not log: a robot that is built
+    /// perfectly well and lies on its side.</para>
+    /// </summary>
+    private static Check CheckControlAvatar(SceneTree tree)
+    {
+        const string Name = "control avatar (animesh)";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(renderer);
+            var (passed, detail) = renderer.SelfTestControlAvatar();
+            return new Check(Name, passed, detail);
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(renderer)) renderer.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// FEAT-ANIMESH-01: the object renderer gives a rigged mesh to the control avatar exactly when
+    /// the object's root says "animated mesh", whichever of the two arrives first.
+    ///
+    /// <para>Runs the real renderers on a real <see cref="World"/> with no asset service, so
+    /// nothing is fetched and a decoded mesh is delivered by hand. The cases it exists for are the
+    /// silent ones: a flag that turns up after the mesh was already drawn statically, a child that
+    /// has to follow its root without any update of its own, and a skeleton left alive after its
+    /// object was derezzed or went out of range.</para>
+    /// </summary>
+    private static Check CheckAnimeshHandOver(SceneTree tree)
+    {
+        const string Name = "animesh hand-over";
+        var objects = new ObjectRenderer();
+        var avatars = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(objects);
+            tree.Root.AddChild(avatars);
+            var world = new SLNG.Core.ECS.World();
+            avatars.Initialize(world, null!, null!);
+            objects.Initialize(world, null!, null!);
+            objects.ControlAvatars = avatars;
+
+            var (passed, detail) = objects.SelfTestAnimeshOrders(world, avatars);
+            return new Check(Name, passed, detail);
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(objects)) objects.QueueFree();
+            if (GodotObject.IsInstanceValid(avatars)) avatars.QueueFree();
         }
     }
 

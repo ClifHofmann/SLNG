@@ -27,6 +27,11 @@ public partial class AvatarRenderer : Node3D
         // ungated: a busy sim puts a dozen other people's mesh bodies through the same code, and
         // their numbers are noise when the question is "why does MY avatar render short".
         public bool IsSelf { get; set; }
+        // FEAT-ANIMESH-01: a bodyless skeleton owned by an animated-mesh object (see
+        // AvatarRenderer.ControlAvatar.cs). Not an avatar, never in _visuals, no body parts, name
+        // tag or capsule. Widens exactly the gates that were IsSelf-only for log volume or cost
+        // (the rest-pose extent, the rigged pick bodies) -- not the avatar logic around them.
+        public bool IsControlAvatar { get; set; }
         // Bookkeeping for the stationary-gated [AvatarHeight] re-report (self only).
         public float LastRootY { get; set; } = float.NaN;
         public float LastLoggedRootY { get; set; } = float.NaN;
@@ -287,20 +292,13 @@ public partial class AvatarRenderer : Node3D
         return System.IO.Path.Combine(asmDir, "linden", "character");
     }
 
-    public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
+    /// <summary>Loads the SL Bento skeleton definition into <see cref="_avatarSkeleton"/>, or leaves
+    /// it null when the file cannot be read. Read via Godot's FileAccess so it works both from
+    /// source and from an exported .pck — System.IO + GlobalizePath cannot read resources packed
+    /// into the export, which silently fell back to a capsule. Its own method so the control-avatar
+    /// self-test can stand the renderer up without a world.</summary>
+    private void LoadAvatarSkeleton()
     {
-        // GD.Print($"[AvatarRenderer] BUILD MARKER: {BuildMarker}");
-        _world = world;
-        _assetService = assetService;
-        _session = session;
-        _gpuCache = gpuCache;
-
-        _nameTagLayer = new Godot.CanvasLayer { Layer = 1, Name = "AvatarNameTags" };
-        AddChild(_nameTagLayer);
-
-        // Load the SL Bento skeleton definition. Read via Godot's FileAccess so it works
-        // both from source and from an exported .pck — System.IO + GlobalizePath cannot
-        // read resources packed into the export, which silently fell back to a capsule.
         const string skeletonResPath = "res://assets/avatar/avatar_skeleton.xml";
         try
         {
@@ -317,6 +315,20 @@ public partial class AvatarRenderer : Node3D
         {
             _avatarSkeleton = null;
         }
+    }
+
+    public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
+    {
+        // GD.Print($"[AvatarRenderer] BUILD MARKER: {BuildMarker}");
+        _world = world;
+        _assetService = assetService;
+        _session = session;
+        _gpuCache = gpuCache;
+
+        _nameTagLayer = new Godot.CanvasLayer { Layer = 1, Name = "AvatarNameTags" };
+        AddChild(_nameTagLayer);
+
+        LoadAvatarSkeleton();
 
         _world.EntityAdded += OnEntityAdded;
         _world.EntityRemoved += OnEntityRemoved;
@@ -540,6 +552,10 @@ public partial class AvatarRenderer : Node3D
     private void RemoveVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
+        // FEAT-ANIMESH-01: an animated-mesh prim that leaves the world takes its share of the
+        // control avatar with it (and the skeleton itself when it was the last one). Idempotent --
+        // ObjectRenderer's own RemoveVisual releases the same part.
+        ReleaseControlAvatarMesh(entityId);
         if (_visuals.TryGetValue(entityId, out var visual))
         {
             visual.QueueFree();
@@ -2368,7 +2384,10 @@ public partial class AvatarRenderer : Node3D
     /// </remarks>
     private void AddRiggedPickBody(MeshInstance3D mi, AvatarVisual avatarVisual, Skeleton3D skeleton, Guid entityId)
     {
-        if (!avatarVisual.IsSelf || _world == null) return;
+        // A control avatar's mesh is the only thing there is to click on for an animesh -- its
+        // prim node carries no collision shape, since the unskinned geometry would sit in the
+        // wrong place -- so it gets the same bone-parented colliders a worn item of mine does.
+        if ((!avatarVisual.IsSelf && !avatarVisual.IsControlAvatar) || _world == null) return;
         if (mi.Mesh is not ArrayMesh mesh || mi.Skin is not Skin skin) return;
 
         var entity = _world.GetEntity(entityId);
@@ -4045,10 +4064,11 @@ public partial class AvatarRenderer : Node3D
                 RefreshBodyPartSkins(visual);
                 RefreshStaticAttachmentOffsets(visual);
 
-                GD.Print($"[ScaleLock] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} mesh {meshId}: " +
-                         $"{locked} joint scale(s) locked to skeleton default " +
-                         $"(lock_scale: {skinData.LockScaleIfJointPosition}) — " +
-                         $"total scale-locked joints: {visual.JointScaleLocks.Count}");
+                if (!visual.IsControlAvatar || Diagnostics.Enabled)
+                    GD.Print($"[ScaleLock] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} mesh {meshId}: " +
+                             $"{locked} joint scale(s) locked to skeleton default " +
+                             $"(lock_scale: {skinData.LockScaleIfJointPosition}) — " +
+                             $"total scale-locked joints: {visual.JointScaleLocks.Count}");
 
                 RecomputeFootOffset(visual, visual.LastDistortions);
                 LogAvatarHeight(visual, "scale lock");
@@ -4210,7 +4230,7 @@ public partial class AvatarRenderer : Node3D
             // login (only a mesh that declares the flag AND contributes NEW locks reaches it) and
             // it is the one line that separates "the fitted body froze the shape's bone scaling,
             // as the reference viewer does" from "SLNG never saw the flag" (BUG-AVATAR-07).
-            if (locked > 0)
+            if (locked > 0 && (!visual.IsControlAvatar || Diagnostics.Enabled))
                 GD.Print($"[JointOverride] mesh {meshId}: {locked} joint scale(s) locked to the skeleton " +
                          $"default (lock_scale_if_joint_position) — the shape's bone scaling is now off for " +
                          $"{visual.JointScaleLocks.Count} joint(s) on this avatar");
@@ -4439,9 +4459,14 @@ public partial class AvatarRenderer : Node3D
     /// against <b>7.5 ms</b> for the whole method, on a path that runs once per worn mesh on every
     /// shape change. The log showed 830 calls to this method behind only 109 rig queue items —
     /// seven out of every eight builds existed to be discarded.</param>
+    /// <param name="extentSink">FEAT-ANIMESH-01: when given, the rest-pose skinned extent is
+    /// measured into it -- in the skeleton's own space and in world axes through its
+    /// <see cref="RiggedExtent.Frame"/> -- whether or not this is the self avatar. A control
+    /// avatar needs the first for its culling box and the second for its <c>[Animesh]</c> line.
+    /// The self avatar's <c>[RenderExtent]</c> report is untouched by it.</param>
     private MeshInstance3D? BuildRiggedMeshInstance(MeshData meshData, Skeleton3D skeleton, Guid meshId,
         AvatarVisual visual, FaceTexture[]? faces, FaceTexture defaultFace, out int[] faceIndices,
-        bool skinOnly = false)
+        bool skinOnly = false, RiggedExtent? extentSink = null)
     {
         faceIndices = System.Array.Empty<int>();
         var skinData = meshData.Skin!;
@@ -4565,7 +4590,8 @@ public partial class AvatarRenderer : Node3D
         var palette = new Transform3D[skin.GetBindCount()];
         for (int sIdx = 0; sIdx < palette.Length; sIdx++)
             palette[sIdx] = ComputeGlobalRestTransform(skeleton, skin.GetBindBone(sIdx)) * skin.GetBindPose(sIdx);
-        bool measureRender = visual.IsSelf && !_loggedRenderExtent.Contains(meshId);
+        bool measureSelf = visual.IsSelf && !_loggedRenderExtent.Contains(meshId);
+        bool measureRender = measureSelf || extentSink != null;
         var rMin = new Godot.Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
         var rMax = new Godot.Vector3(float.MinValue, float.MinValue, float.MinValue);
 
@@ -4725,6 +4751,7 @@ public partial class AvatarRenderer : Node3D
                         acc /= wSum;
                         rMin = new Godot.Vector3(Mathf.Min(rMin.X, acc.X), Mathf.Min(rMin.Y, acc.Y), Mathf.Min(rMin.Z, acc.Z));
                         rMax = new Godot.Vector3(Mathf.Max(rMax.X, acc.X), Mathf.Max(rMax.Y, acc.Y), Mathf.Max(rMax.Z, acc.Z));
+                        extentSink?.Add(acc);
                     }
                 }
 
@@ -4778,7 +4805,7 @@ public partial class AvatarRenderer : Node3D
                      $"{meshData.Submeshes.Count} submeshes -> {arrayMesh.GetSurfaceCount()} surface(s) " +
                      "(same-material run, authored order preserved)");
 
-        if (measureRender && rMax.Y > rMin.Y)
+        if (measureSelf && rMax.Y > rMin.Y)
         {
             _loggedRenderExtent.Add(meshId);
             float rootZ = IsInstanceValid(visual.Root) ? visual.Root.GlobalPosition.Y : 0f;
@@ -5540,6 +5567,10 @@ void fragment() {
     public override void _Process(double delta)
     {
         using var _phase = MainThreadPhase.Enter("avatar-render");
+
+        // FEAT-ANIMESH-01: animated-mesh skeletons follow their root prim. Not part of the _visuals
+        // loop below -- a control avatar is not a person.
+        UpdateControlAvatars();
 
         float dt = (float)delta;
 

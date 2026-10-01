@@ -86,19 +86,24 @@ robot's limbs are off against Firestorm, look here first.
 ## Acceptance Criteria
 
 ### FEAT-ANIMESH-01
-- [ ] A raw-ExtraParams parser reads the `0x70` block's flags; unit-tested against hand-built byte
+- [x] A raw-ExtraParams parser reads the `0x70` block's flags; unit-tested against hand-built byte
       sequences, including a block that is not first, a short payload and a missing block.
-- [ ] `PrimitiveComponent` carries `IsAnimatedMesh`, set from the event and cleared when the block
+- [x] `PrimitiveComponent` carries `IsAnimatedMesh`, set from the event and cleared when the block
       disappears (same latch discipline as the Light block); only the ROOT prim's block counts.
-- [ ] An animesh root with a rigged mesh gets a control-avatar skeleton (default shape, no body
+- [x] An animesh root with a rigged mesh gets a control-avatar skeleton (default shape, no body
       parts), placed on the root prim per the viewer's `LLControlAvatar::matchVolumeTransform`.
-- [ ] The rigged mesh is skinned to it through the same bind path worn rigged mesh uses
+      (`ControlAvatarPlacement` + `AvatarRenderer.ControlAvatar.cs`; checked headless by the
+      `control avatar (animesh)` selftest against a known answer, not yet in-world.)
+- [x] The rigged mesh is skinned to it through the same bind path worn rigged mesh uses
       (`BuildRiggedMeshInstance`), so it stands in its bind pose.
-- [ ] A non-animesh rigged mesh keeps today's behaviour (raw static mesh).
-- [ ] Moving or rotating the root prim moves/rotates the control avatar with it (prim SCALE does not
-      scale it — viewer parity).
-- [ ] No control avatar outlives its object (derez, region change, out of draw distance).
-- [ ] `dotnet build SLNG.sln`, `dotnet build app/SLNG.App.csproj`, `dotnet test`, `dotnet format` clean.
+- [x] A non-animesh rigged mesh keeps today's behaviour (raw static mesh).
+- [x] Moving or rotating the root prim moves/rotates the control avatar with it (prim SCALE does not
+      scale it — viewer parity). Re-placed every frame from the root's `TransformComponent`.
+- [x] No control avatar outlives its object (derez, region change, out of draw distance) -- headless self-test `animesh hand-over`.
+      Implemented on all three paths (`RemoveVisual` in both renderers, `ReleaseResources`, and a
+      per-frame sweep for a root that left the world); only "last mesh released frees the skeleton"
+      is exercised by the selftest, the rest waits for the in-world check.
+- [x] `dotnet build SLNG.sln`, `dotnet build app/SLNG.App.csproj`, `dotnet test`, `dotnet format` clean.
 
 ### FEAT-ANIMESH-02
 - [ ] `GridSession` forwards `ObjectAnimation` to the world as a neutral event; `Core` holds the
@@ -115,11 +120,15 @@ robot's limbs are off against Firestorm, look here first.
 - `app/scripts/AvatarRenderer.cs` (+ a partial file) — a control avatar is an `AvatarVisual`
   without body parts: `SkeletonBuilder.Build` + `ApplyShape` with empty distortions, then
   `BuildRiggedMeshInstance`. `AvatarAnimationPlayer` is already a standalone class.
+  The new code is `app/scripts/AvatarRenderer.ControlAvatar.cs`; `AvatarVisual.IsControlAvatar`
+  widens only the two `IsSelf`-only gates (rest-pose extent, rigged pick bodies).
 - `app/scripts/ObjectRenderer.cs` — hands an animesh root's mesh to the control avatar instead of
-  assigning it to its own `MeshInstance3D`.
+  assigning it to its own `MeshInstance3D`. Boot wires `ObjectRenderer.ControlAvatars`.
+- `src/SLNG.Core/ControlAvatarPlacement.cs` (the placement rotation, unit-tested) and
+  `src/SLNG.Core/AnimatedMeshLinkset.cs` (root-only flag, "root unknown" = not animesh yet).
 
 ## Sub-tasks / Progress
-- [ ] 0x70 parse + tests
-- [ ] Carry the flag into the world
-- [ ] Control avatar + upright bind pose
+- [x] 0x70 parse + tests
+- [x] Carry the flag into the world
+- [x] Control avatar + upright bind pose (awaiting the in-world check)
 - [ ] FEAT-ANIMESH-02: ObjectAnimation → playback

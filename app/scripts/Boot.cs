@@ -398,7 +398,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.25.2-alpha";
+    public const string AppVersion = "v0.25.3-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -603,6 +603,9 @@ public partial class Boot : Control
 
         _avatarRenderer = new AvatarRenderer();
         AddChild(_avatarRenderer);
+        // FEAT-ANIMESH-01: an animated-mesh prim's mesh is skinned by a control avatar, which
+        // lives in the avatar renderer. The object renderer decides which prims those are.
+        _objectRenderer.ControlAvatars = _avatarRenderer;
 
         SetupEnvironment();
         SetupHud();
