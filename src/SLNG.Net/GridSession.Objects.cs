@@ -311,6 +311,17 @@ public sealed partial class GridSession
 
     private void OnObjectUpdate(object? sender, PrimEventArgs e) => RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: true);
 
+    /// <summary>FEAT-ANIMESH-02. The sim's <c>ObjectAnimation</c> message for one prim -- see
+    /// <see cref="ObjectAnimationConverter"/>. Every region's, not just the current one: a
+    /// neighbour's animated mesh moves too, and the world holds the neighbour's objects. Passed
+    /// straight on; WorldSimulation queues it and applies it on the pump thread.</summary>
+    private void OnObjectAnimation(object? sender, ObjectAnimationEventArgs e)
+    {
+        var evt = ObjectAnimationConverter.FromWire(e.Simulator.Handle, e.ObjectID, e.Animations);
+        if (Diag.Verbose) Console.Error.WriteLine(ObjectAnimationConverter.Describe(evt));
+        ObjectAnimationReceived?.Invoke(this, evt);
+    }
+
     /// <summary>
     /// Puts back the particle system LibreMetaverse drops from every <c>ObjectUpdateCompressed</c>
     /// object -- see <see cref="CompressedParticleRepair"/> for what it gets wrong and why the

@@ -162,6 +162,10 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
 
     public event EventHandler<ObjectMediaEvent>? ObjectMediaReceived;
 
+    /// <summary>FEAT-ANIMESH-02: the animations an animated-mesh prim has been told to play. Raised
+    /// on a LibreMetaverse worker thread, like every other event here.</summary>
+    public event EventHandler<ObjectAnimationEvent>? ObjectAnimationReceived;
+
     public event EventHandler<NameResolvedEvent>? NameResolved;
 
     public event EventHandler<NameResolvedEvent>? DisplayNameResolved;
@@ -485,6 +489,8 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
 
     internal void RaiseObjectMedia(ObjectMediaEvent e) => ObjectMediaReceived?.Invoke(this, e);
 
+    internal void RaiseObjectAnimation(ObjectAnimationEvent e) => ObjectAnimationReceived?.Invoke(this, e);
+
     internal void RaiseTerrainPatch(TerrainPatchEvent e) => TerrainPatchReceived?.Invoke(this, e);
 
     internal void RaiseTerrainSettings(TerrainSettingsEvent e) => TerrainSettingsReceived?.Invoke(this, e);
@@ -720,6 +726,10 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
         _client.Objects.TerseObjectUpdate += OnTerseObjectUpdate;
+        // FEAT-ANIMESH-02: what an animated mesh has been told to play. The library raises this for
+        // every ObjectAnimation packet, empty lists included; the region's seed request already
+        // asks for the capability OpenSim gates the message on (Caps.AllCapabilities).
+        _client.Objects.ObjectAnimation += OnObjectAnimation;
         // Repairs the particle system LibreMetaverse loses on every compressed update -- see
         // CompressedParticleRepair. Registered here rather than replacing the library's handler,
         // so it runs after it: LibreMetaverse decodes the object as usual (correctly, apart from
@@ -851,6 +861,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Self.ChatFromSimulator -= OnChatFromSimulator;
         _client.Objects.ObjectUpdate -= OnObjectUpdate;
         _client.Objects.TerseObjectUpdate -= OnTerseObjectUpdate;
+        _client.Objects.ObjectAnimation -= OnObjectAnimation;
         _client.Self.AgentDataReply -= OnAgentDataReply;
         _client.Objects.ObjectPropertiesFamily -= OnObjectPropertiesFamily;
         _client.Objects.ObjectProperties -= OnObjectPropertiesFull;

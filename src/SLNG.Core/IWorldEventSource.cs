@@ -15,6 +15,7 @@ public interface IWorldEventSource
     event EventHandler<ObjectPropertiesEvent>? ObjectPropertiesReceived;
     event EventHandler<PhysicsPropertiesEvent>? PhysicsPropertiesReceived;
     event EventHandler<ObjectMediaEvent>? ObjectMediaReceived;
+    event EventHandler<ObjectAnimationEvent>? ObjectAnimationReceived;
     event EventHandler<TerrainPatchEvent>? TerrainPatchReceived;
     event EventHandler<TerrainSettingsEvent>? TerrainSettingsReceived;
     event EventHandler<RegionDisconnectedEvent>? RegionDisconnectedReceived;

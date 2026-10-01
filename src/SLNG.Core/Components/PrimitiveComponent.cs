@@ -70,6 +70,21 @@ public class PrimitiveComponent : IComponent
     /// switched off -- and left alone by a terse one, which carries no ExtraParams at all.</summary>
     public bool IsAnimatedMesh { get; set; }
 
+    /// <summary>FEAT-ANIMESH-02: the animations the simulator last told THIS prim to play
+    /// (<c>ObjectAnimation</c>), exactly as sent -- see <see cref="ObjectAnimationEvent"/>. Never
+    /// null; empty until the sim signals something and again after it signals an empty list.
+    /// Per prim, like <see cref="IsAnimatedMesh"/>: an animesh's control avatar plays the union over
+    /// the linkset root and its child prims, which is the consumer's job, not this component's.
+    /// Replaced wholesale by <see cref="WorldSimulation"/>; only an ObjectAnimation message changes
+    /// it (an ObjectUpdate of any kind leaves it alone).</summary>
+    public IReadOnlyList<SignaledAnimation> SignaledAnimations
+    {
+        get => _signaledAnimations;
+        set => _signaledAnimations = value ?? Array.Empty<SignaledAnimation>();
+    }
+
+    private IReadOnlyList<SignaledAnimation> _signaledAnimations = Array.Empty<SignaledAnimation>();
+
     /// <summary>
     /// Procedural shape of a non-mesh prim. Used to regenerate real prim geometry
     /// (profile/path/cut/hollow/twist) instead of a box placeholder. Ignored when
