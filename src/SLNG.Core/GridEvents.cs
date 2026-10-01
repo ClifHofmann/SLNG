@@ -252,7 +252,12 @@ public record ObjectUpdateEvent(
     // Same terse-update staleness as IsPhysical and friends: they ride the full ObjectUpdate
     // only, so they are applied under IsFullUpdate.
     bool YouCanModify = false, bool YouCanMove = false, bool YouCanCopy = false,
-    bool YouCanTransfer = false, bool YouAreOwner = false
+    bool YouCanTransfer = false, bool YouAreOwner = false,
+    // FEAT-ANIMESH-01: this prim's Extended Mesh (0x70) ExtraParams block has the animated-mesh
+    // bit set. Read out of the raw packet bytes because LibreMetaverse skips the block; see
+    // ExtendedMeshParams. Per prim -- the viewer honours only the ROOT's. Same terse-update
+    // staleness as the light and reflection-probe fields, so applied under IsFullUpdate.
+    bool IsAnimatedMesh = false
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY

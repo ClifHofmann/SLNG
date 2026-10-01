@@ -61,6 +61,15 @@ public class PrimitiveComponent : IComponent
     /// creator flag, not something derivable from the faces. See ReflectionProbeParams.</summary>
     public ReflectionProbeParams? ReflectionProbe { get; set; }
 
+    /// <summary>FEAT-ANIMESH-01: this prim's own Extended Mesh (0x70) block says "animated mesh"
+    /// (<see cref="ExtendedMeshParams.FlagAnimatedMesh"/>). A fact about THIS prim's ExtraParams,
+    /// not about the object: the reference viewer honours only the linkset ROOT's flag
+    /// (<c>LLVOVolume::isAnimatedObject</c>, llvovolume.cpp:3854-3863) and ignores the block on a
+    /// child, so a consumer asking "is this an animesh?" must read the root's component. Cleared
+    /// by a full update that no longer carries the block -- the sim omits it when animesh is
+    /// switched off -- and left alone by a terse one, which carries no ExtraParams at all.</summary>
+    public bool IsAnimatedMesh { get; set; }
+
     /// <summary>
     /// Procedural shape of a non-mesh prim. Used to regenerate real prim geometry
     /// (profile/path/cut/hollow/twist) instead of a box placeholder. Ignored when

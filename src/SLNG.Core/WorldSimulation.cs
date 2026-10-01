@@ -528,6 +528,10 @@ public sealed class WorldSimulation : IDisposable
             // update does not carry -- applying a terse-sourced null would un-mirror every mirror
             // the moment something near it moved.
             prim.ReflectionProbe = e.ReflectionProbe;
+            // And again: the Extended Mesh block is ExtraParams too. A terse-sourced false would
+            // stand an animesh back up as a plain rigged mesh every time it moved, and the sim
+            // signals "no longer animesh" only by omitting the block from a FULL update.
+            prim.IsAnimatedMesh = e.IsAnimatedMesh;
         }
         _world.NotifyComponentUpdated(entity, prim);
 

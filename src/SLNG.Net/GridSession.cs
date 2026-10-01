@@ -97,6 +97,15 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     // so the high-level API cannot express "this object is a mirror". See ReflectionProbeParams.
     private readonly ConcurrentDictionary<uint, SLNG.Core.ReflectionProbeParams?> _reflectionProbeByLocalId = new();
 
+    // The objects whose most recent raw ObjectUpdate / ObjectUpdateCompressed carried an Extended
+    // Mesh (0x70) block with the animated-mesh bit set (FEAT-ANIMESH-01). LibreMetaverse skips the
+    // block, so this is the only place the flag exists. Holds ONLY the true entries -- every
+    // ordinary prim passes through the latch on every update and none of them belongs here -- and
+    // is keyed by region AS WELL AS LocalID, which the two dictionaries above are not: LocalIDs are
+    // handed out per region, and a neighbour (MultipleSims) routinely reuses the same number.
+    // Pruned on kill and on region disconnect, so no entry outlives its object.
+    private readonly ConcurrentDictionary<(ulong Region, uint LocalId), bool> _animatedMeshObjects = new();
+
     /// <summary>MVP3-3 Phase 1: the last <c>x-mv:</c> media-version string a fetch was already
     /// queued for, per LocalID. LibreMetaverse raises no event when a prim's MOAP media changes
     /// (verified: no <c>ObjectMedia</c> event is ever raised in the pinned 3.1.3), so this is the

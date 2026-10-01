@@ -16,7 +16,7 @@ nothing plays the object's animations. The reference viewer does the same for a 
 neither worn nor animesh; for animesh it creates a *control avatar* — an avatar-skeleton instance
 owned by the object — and skins the mesh to it.
 
-Goal: an animesh renders upright, at the right size, and plays the animations its scripts start.
+Goal: an animesh renders upright at its authored size (prim scale does not resize it, as in the viewer) and plays the animations its scripts start.
 
 ## Viewer parity (secondlife/viewer, `scratch/slviewer` @ 4ef9f8f1; paths relative to `indra/`)
 
