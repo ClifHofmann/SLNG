@@ -242,6 +242,7 @@ public sealed class EnvironmentDriver
 
         ApplySun(sun, sky, lighting, lightDirectionZ);
         ApplyAmbient(env, sky, lighting);
+        if (Diagnostics.Enabled) ReportLightBalance(sky, lighting, lightDirectionZ, sun, env);
         ApplySkyDome(env, sky, lighting, lightDirectionZ);
         ApplyFog(env, sky, lighting);
         ApplyWater(waterMaterial, water);
@@ -640,6 +641,56 @@ public sealed class EnvironmentDriver
             $"at 5.0deg={MeasureSkyGradientR(5.0f):0.###} " +
             $"at 20deg={MeasureSkyGradientR(20.0f):0.###} " +
             $"at 90deg={MeasureSkyGradientR(90.0f):0.###}");
+    }
+
+    private string _lastBalanceSig = "";
+
+    /// <summary>--diag: the numbers behind "the floor is pale and the shadows are not dark". For a
+    /// horizontal white surface, the radiance the viewer puts in sun and in shadow
+    /// (<see cref="SLNG.Core.ClassicLightBalance"/>, a mirror of softenLightF's classic path) next to
+    /// what this Godot setup produces from the same sky, the settings that add light that is not the
+    /// sun or the ambient (reflection probe, SSIL, SSAO, SSR, glow), and the specular veil a legacy
+    /// glossy face carries in each renderer. Printed when the sky's lighting changes, not per frame.
+    /// The viewer's sunlit green and blue are real here (SunDiffuse is logged in full).</summary>
+    private void ReportLightBalance(SkySettings sky, SkyLighting lighting, float lightDirectionZ,
+        DirectionalLight3D? sun, Godot.Environment env)
+    {
+        float sine = Math.Clamp(MathF.Abs(lightDirectionZ), 0f, 1f);
+        var balance = SLNG.Core.ClassicLightBalance.Compute(lighting.SunDiffuse, lighting.SunAmbient, sine);
+        var v = balance.Viewer;
+        var g = balance.Godot;
+
+        string sig = $"{lighting.SunDiffuse:0.###}|{lighting.SunAmbient:0.###}|{sine:0.##}|{sky.IsLegacy}";
+        if (sig == _lastBalanceSig) return;
+        _lastBalanceSig = sig;
+
+        static string F(System.Numerics.Vector3 x) => $"({x.X:0.###},{x.Y:0.###},{x.Z:0.###})";
+
+        var probe = sun?.GetTree()?.Root.FindChild("ReflectionProbe", true, false) as ReflectionProbe;
+        float probeIntensity = probe?.Intensity ?? 0f;
+        float veilGodot = SLNG.Core.ClassicLightBalance.GodotSpecularWeight(0.81f, probeIntensity);
+        float veilViewer = SLNG.Core.ClassicLightBalance.ViewerGlossEnvWeight(0.81f, 30f / 255f);
+
+        Console.Error.WriteLine(
+            $"[LightBalance] legacySky={sky.IsLegacy} sunElevation={MathF.Asin(sine) * 180f / MathF.PI:0.#}deg " +
+            $"sunDiffuse={F(lighting.SunDiffuse)} tmpAmbient={F(lighting.SunAmbient)} | " +
+            $"albedo-1 horizontal, linear: viewer shadow={F(v.Shadow)} lit={F(v.Lit)} lit/shadow={F(v.Ratio)} | " +
+            $"godot shadow={F(g.Shadow)} lit={F(g.Lit)} lit/shadow={F(g.Ratio)}");
+
+        string sunDesc = sun == null
+            ? "no sun"
+            : $"sun color=({sun.LightColor.R:0.###},{sun.LightColor.G:0.###},{sun.LightColor.B:0.###}) energy={sun.LightEnergy:0.###} " +
+              $"shadow={sun.ShadowEnabled} mode={sun.DirectionalShadowMode} maxDist={sun.DirectionalShadowMaxDistance:0} " +
+              $"blur={sun.ShadowBlur:0.##} bias={sun.ShadowBias:0.###} normalBias={sun.ShadowNormalBias:0.##} opacity={sun.ShadowOpacity:0.##}";
+        Console.Error.WriteLine(
+            $"[LightBalance] godot: {sunDesc} | ambient source={env.AmbientLightSource} color=({env.AmbientLightColor.R:0.###},{env.AmbientLightColor.G:0.###},{env.AmbientLightColor.B:0.###}) " +
+            $"energy={env.AmbientLightEnergy:0.###} | ssil={env.SsilEnabled} intensity={env.SsilIntensity:0.##} ssao={env.SsaoEnabled} " +
+            $"ssr={env.SsrEnabled} glow={env.GlowEnabled} tonemap={env.TonemapMode} adjustments={env.AdjustmentEnabled} | " +
+            $"probe={(probe == null ? "none" : $"intensity={probeIntensity:0.##} ambientMode={probe.AmbientMode} visible={probe.Visible}")}");
+        Console.Error.WriteLine(
+            $"[LightBalance] specular veil of the terrace-floor legacy material (gloss 30/255, specular luminance 0.81), " +
+            $"as a multiple of the reflected radiance: godot F0*probe = {veilGodot:0.####} (SPECULAR 0.81) vs viewer applyGlossEnv upper bound = {veilViewer:0.####} " +
+            $"({(veilViewer > 0f ? veilGodot / veilViewer : 0f):0}x)");
     }
 
     /// <summary>The sun direction in Godot world space, as last pushed to
