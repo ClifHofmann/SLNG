@@ -20,9 +20,9 @@ SLNG (branded in-app as *Puris Viewer*) keeps full grid compatibility by reusing
 
 Ready-to-use Windows installers are automatically built and published for every release:
 
-👉 **[Download Latest Release (`PurisViewer_Setup_*.exe`)](https://github.com/ClifHofmann/SLNG/releases/latest)**
+👉 **[Download the Latest Release (`PurisViewer_Setup_*.exe`)](https://github.com/ClifHofmann/SLNG/releases)**
 
-*No need to install .NET or Godot to try it out. Simply download the setup `.exe` from the latest release and run the installer.*  
+*No need to install .NET or Godot to try it out. Simply download the setup `.exe` from the newest release (the top one on that page) and run the installer. Every release is an alpha and so is marked "Pre-release", which is why GitHub has no "Latest" label to link to.*  
 *All releases and release notes can be found on the [GitHub Releases page](https://github.com/ClifHofmann/SLNG/releases).*
 
 > *Note: Windows SmartScreen or antivirus scanners may show an unknown publisher warning on first launch because the installer is not yet code-signed.*
