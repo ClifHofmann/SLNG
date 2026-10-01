@@ -394,7 +394,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.133-alpha";
+    public const string AppVersion = "v0.24.134-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1062,7 +1062,7 @@ public partial class Boot : Control
         // pan/zoom is separate, see MinimapOverlay's doc comment). Right-click -> the SAME shared
         // avatar context menu (Profile/IM/Offer Teleport/Mute) the in-world right-click gesture
         // shows -- never self (the roster excludes the local avatar by construction).
-        _minimapOverlay.OnFocusAvatarRequested = (pos, forward) => _avatarController?.FocusOnAvatarFrontal(pos, forward);
+        _minimapOverlay.OnFocusAvatarRequested = (agentId, pos, forward) => _avatarController?.FocusOnAvatarFrontal(agentId, pos, forward);
         _minimapOverlay.OnAvatarContextMenuRequested = (screenPos, agentId, name) =>
             _inWorldContextMenu.ShowAvatarMenu(screenPos, agentId, name, isSelf: false, _session?.IsAvatarMuted(agentId) ?? false);
         // FEAT-UI-39: double-click on the radar teleports. Fire-and-forget on purpose -- the teleport

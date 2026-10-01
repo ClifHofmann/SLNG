@@ -84,7 +84,7 @@ Rechtsklick auf ein gespeichertes Outfit im Reiter *Outfits*:
 - **Teleport im Sitzen:** Nach jedem Teleport steht Ihr Avatar am Ziel auf, statt in einer Sitzpose zu einem Stuhl zurückzufallen, der eine Region entfernt steht.
 
 ### Kamerasteuerung (Alt-Zoom & Co.)
-- **Mauskamera (Alt+Zoom):** Halten Sie `Alt` gedrückt und klicken Sie mit der linken Maustaste auf ein Objekt oder einen Avatar, um diesen zu fokussieren. Mit Mausbewegungen können Sie dann darum kreisen oder hineinzoomen.
+- **Mauskamera (Alt+Zoom):** Halten Sie `Alt` gedrückt und klicken Sie mit der linken Maustaste auf ein Objekt oder einen Avatar, um diesen zu fokussieren. Mit Mausbewegungen können Sie dann darum kreisen oder hineinzoomen. Die Kamera **folgt dem Ziel**: geht der Avatar weiter oder fährt, fliegt oder bewegt sich das Objekt, bleibt es im Bild, auch wenn Sie selbst weiterlaufen. Verschwindet das Ziel (Objekt gelöscht, Avatar gegangen), bleibt die Kamera an der letzten Stelle. Mit `Esc` oder einem neuen Alt-Klick ist das Folgen beendet.
 - **Sanfte Übergänge (Smooth Transitions):** Wenn Sie die Kamera zurücksetzen (z.B. mit Esc) oder ein neues Ziel anvisieren, fährt die Kamera weich an die neue Position, anstatt abrupt zu springen.
 - **Kamera-Einstellungen:** Unter `Preferences` -> `Kamera` finden Sie detaillierte Kameraoptionen:
   - **Sichtfeld (FOV):** Ändern Sie den Blickwinkel (Standard: 75°).
@@ -129,7 +129,7 @@ Eines der Highlights des Viewers sind die modernen Navigations- und Karten-Tools
 - **Sortieren:** Ein Klick auf eine Überschrift sortiert danach, ein zweiter Klick dreht die Richtung um. Alternativ über den Sortier-Knopf neben dem Zahnrad. Unbekannte Werte (zum Beispiel ein Alter, das noch nicht geladen ist) stehen immer am Ende. Spalten und Sortierung bleiben beim nächsten Start erhalten.
 - **Filtern:** Das Feld oben filtert die Tabelle nach dem Namen.
 - **Radar-Fokus:** Ein Klick auf eine Zeile markiert den Punkt des Avatars auf der Karte. Umgekehrt wählt ein Klick auf einen Punkt die Zeile aus.
-- **Kamera-Fokus:** Ein Doppelklick auf eine Zeile zoomt die Karte auf den Avatar und dreht Ihre Kamera automatisch und sanft in eine frontale ("Portrait"-) Ansicht. Solange die Karte auf jemand anderen zentriert ist, steht neben dem Regionsnamen "zentriert auf Name". Zurück zu sich selbst kommen Sie mit einem zweiten Doppelklick auf dieselbe Zeile oder über das Kartenmenü (Rechtsklick auf die Karte, "Karte zentrieren").
+- **Kamera-Fokus:** Ein Doppelklick auf eine Zeile zoomt die Karte auf den Avatar und dreht Ihre Kamera automatisch und sanft in eine frontale ("Portrait"-) Ansicht. Die Kamera folgt dem Avatar, auch wenn er weitergeht, bis Sie sie mit `Esc` zurücksetzen oder woanders hin ausrichten. Solange die Karte auf jemand anderen zentriert ist, steht neben dem Regionsnamen "zentriert auf Name". Zurück zu sich selbst kommen Sie mit einem zweiten Doppelklick auf dieselbe Zeile oder über das Kartenmenü (Rechtsklick auf die Karte, "Karte zentrieren").
 - **Kontextmenü:** Rechtsklick auf eine Zeile öffnet das Avatar-Menü (Profil, IM, Teleport anbieten, Stummschalten).
 - **Teleport per Doppelklick:** Ein Doppelklick auf die Karte teleportiert Sie an diese Stelle der Region – knapp über den Boden. Ein einfacher Klick tut nichts, und ein Doppelklick außerhalb der Region wird ignoriert.
 

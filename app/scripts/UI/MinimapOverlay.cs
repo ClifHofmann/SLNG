@@ -155,8 +155,9 @@ public partial class MinimapOverlay : SLNGWindow
     /// business handing out raw SL-region-local coordinates) and, when known, their facing
     /// direction (also already converted to Godot space) -- null when the avatar is only known
     /// via <c>CoarseLocationUpdate</c> (outside draw distance), which carries no orientation at
-    /// all. Boot.cs wires this to <c>AvatarController.FocusOnAvatarFrontal</c>.</summary>
-    public Action<Vector3, Vector3?>? OnFocusAvatarRequested;
+    /// all. Also carries the avatar's agent id, so the camera can follow them if they move. Boot.cs wires
+    /// this to <c>AvatarController.FocusOnAvatarFrontal</c>.</summary>
+    public Action<Guid, Vector3, Vector3?>? OnFocusAvatarRequested;
 
     /// <summary>Right-click on a table row: fired with the click's screen position plus the
     /// target avatar's id/name, so Boot.cs can show the SAME shared avatar context menu
@@ -938,7 +939,7 @@ public partial class MinimapOverlay : SLNGWindow
                 var fwdSl = System.Numerics.Vector3.Transform(System.Numerics.Vector3.UnitX, rot);
                 godotForward = new Vector3(fwdSl.X, fwdSl.Z, -fwdSl.Y);
             }
-            OnFocusAvatarRequested?.Invoke(godotPos, godotForward);
+            OnFocusAvatarRequested?.Invoke(agentId, godotPos, godotForward);
             break;
         }
     }
