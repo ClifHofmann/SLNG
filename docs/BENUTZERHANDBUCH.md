@@ -113,9 +113,16 @@ Eines der Highlights des Viewers sind die modernen Navigations- und Karten-Tools
 ### Minimap (Radar)
 - Die Minimap zeigt Ihren Avatar im Zentrum und alle Avatare in Ihrer Nähe als Punkte. Sie können stufenlos mit dem Mausrad hinein- und herauszoomen.
 - **Regionsbild:** Unter den Punkten sehen Sie das Kartenbild der Region, wie im Firestorm. Nachbarregionen erscheinen etwas dunkler, und wo keine Region liegt, bleibt der Hintergrund dunkel. Das Bild kommt vom Kartenserver des Grids und wird auf Ihrem Rechner zwischengespeichert; erscheint es nicht sofort, wird es im Hintergrund nachgeladen.
-- **Roster-Liste:** Neben der Karte sehen Sie eine Liste aller erfassten Avatare in der Region.
-- **Radar-Fokus:** Ein Klick auf einen Eintrag in der Liste markiert den Punkt des Avatars auf dem Radar.
-- **Kamera-Fokus:** Ein Doppelklick auf einen Namen dreht Ihre Kamera automatisch und sanft in eine frontale ("Portrait"-) Ansicht des entsprechenden Avatars.
+- **Aufbau:** Oben ein Namensfilter mit Zahnrad- und Sortier-Menü, darunter die Karte, darunter die Tabelle aller erfassten Avatare der Region. Die Trennlinie zwischen Karte und Tabelle lässt sich mit der Maus verschieben; die Höhe wird gemerkt.
+- **Punktfarben:** Freunde sind grün, andere Avatare rot, stumm geschaltete grau. Der ausgewählte Avatar hat einen weißen Ring. Dieselbe Farbe steht als Punkt vor dem Namen in der Tabelle.
+- **Tabelle:** Die Spalten sind Name, Sprachchat (bleibt leer, bis es Sprachchat gibt), In Region, Sitzt, Zahlungsinfo (`$` hinterlegt, `$$` bereits benutzt), Notiz, Alter (Account-Alter in Tagen, rot unter 7 Tagen, "n.a." wenn versteckt), Gesehen (wie lange der Avatar schon in der Liste ist) und Distanz. Über dem Namen steht `[Gesamt/in der Region/in Chat-Reichweite]`. Die Distanz ist amber innerhalb der Sagen-Reichweite (20 m), normal bis zur Schrei-Reichweite (100 m) und darüber gedämpft, und fett, solange der Avatar sichtbar gezeichnet wird.
+- **Notiz:** Hat der Avatar eine Notiz von Ihnen, steht in der Notiz-Spalte ein Symbol. Fahren Sie mit der Maus darüber, sehen Sie den Notiztext.
+- **Spalten ein- und ausblenden:** Rechtsklick auf eine Spaltenüberschrift, oder Zahnrad, dann "Spalten". Das Menü bleibt offen, solange Sie mehrere Spalten anhaken. "Spalten zurücksetzen" stellt die Voreinstellung wieder her. Der Name lässt sich nicht ausblenden.
+- **Sortieren:** Ein Klick auf eine Überschrift sortiert danach, ein zweiter Klick dreht die Richtung um. Alternativ über den Sortier-Knopf neben dem Zahnrad. Unbekannte Werte (zum Beispiel ein Alter, das noch nicht geladen ist) stehen immer am Ende. Spalten und Sortierung bleiben beim nächsten Start erhalten.
+- **Filtern:** Das Feld oben filtert die Tabelle nach dem Namen.
+- **Radar-Fokus:** Ein Klick auf eine Zeile markiert den Punkt des Avatars auf der Karte. Umgekehrt wählt ein Klick auf einen Punkt die Zeile aus.
+- **Kamera-Fokus:** Ein Doppelklick auf eine Zeile zoomt die Karte auf den Avatar und dreht Ihre Kamera automatisch und sanft in eine frontale ("Portrait"-) Ansicht. Ein zweiter Doppelklick auf dieselbe Zeile hebt den Karten-Fokus wieder auf.
+- **Kontextmenü:** Rechtsklick auf eine Zeile öffnet das Avatar-Menü (Profil, IM, Teleport anbieten, Stummschalten).
 - **Teleport per Doppelklick:** Ein Doppelklick auf die Karte teleportiert Sie an diese Stelle der Region – knapp über den Boden. Ein einfacher Klick tut nichts, und ein Doppelklick außerhalb der Region wird ignoriert.
 
 ### Weltkarte

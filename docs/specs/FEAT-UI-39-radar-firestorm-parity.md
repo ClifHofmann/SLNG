@@ -178,5 +178,5 @@ Godot `TabContainer`, wrapping the existing `FriendsPanel`).
 - [x] Phase 1 — double-click teleport (v0.24.120-alpha, confirmed in-world 2026-10-01)
 - [x] Phase 2 — tile fetcher + map image (v0.24.121-alpha: `MapTileService`, `MapTileTextures`, own + neighbour regions drawn; confirmed in-world 2026-10-01). Still open: 2b object layer; switching `WorldMapWindow` over to the same tiles
 - [x] Phase 3 — profile / notes data layer (v0.24.122-alpha, notes confirmed in-world 2026-10-01: `GridSession.RequestBriefProfile` / `SetAvatarNote`, profile window on server notes with one-time import and a local fallback; in-world test pending on Agni and OpenSim. The radar does not request anything yet — Phase 4 does.)
-- [ ] Phase 4 — Tree table, column chooser, sort, persistence (starts with the column-resize spike)
+- [ ] Phase 4 — Tree table, column chooser, sort, persistence (v0.24.123-alpha; in-world test pending. Spike result: Godot 4.7 has no API for dragging column borders, so columns are not user-resizable; their widths are fixed and the name column flexes. Column order is the registry order, not user-orderable. `Seen` keeps counting while the window is closed.)
 - [ ] Phase 5 — rings, view wedge, dots, orientation, menus
