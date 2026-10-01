@@ -171,6 +171,7 @@ public static class SelfTest
         results.Add(CheckRegionRestartWindow(tree));
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
+        results.Add(CheckWindowInsets(tree));
         // Last, so it sees everything the run did.
         results.Add(CheckUserDataUntouched());
 
@@ -324,6 +325,73 @@ public static class SelfTest
         {
             if (GodotObject.IsInstanceValid(panel)) panel.QueueFree();
         }
+    }
+
+    /// <summary>
+    /// Every SLNGWindow buildable without a login keeps the standard inset (SLNGWindow.DefaultContentMarginH/V,
+    /// 14 px left/right, 12 px top/bottom) between its frame and the nearest content control -- a Label,
+    /// Button, Tree... or painted box (styled panel, scroll area, tab container) -- whatever the nesting.
+    /// An extra wrapper margin, or an opt-out via SetContentMargin(0, 0), fails here. Layout is forced
+    /// synchronously (one call, no frames to wait for), at the default size and in the default tab; the
+    /// radar's full-bleed map is the one exception.
+    /// </summary>
+    private static Check CheckWindowInsets(SceneTree tree)
+    {
+        var session = new SLNG.Net.GridSession();
+        var log = new SLNG.Core.Services.ChatLogger(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "slng-selftest-no-chat"));
+        static (UI.SLNGWindow, Action) W<T>(Action<T>? init = null) where T : UI.SLNGWindow, new() { var w = new T(); return (w, () => init?.Invoke(w)); }
+        Guid id() => Guid.NewGuid();
+        var windows = new[]
+        {
+            W<UI.AboutWindow>(), W<UI.ActiveAnimationsWindow>(), W<UI.AvatarHoverWindow>(), W<UI.CameraHUD>(), W<UI.CreateLandmarkWindow>(),
+            W<UI.EnvironmentWindow>(), W<UI.InventoryPanel>(), W<UI.ItemPropertiesWindow>(), W<UI.MinimapOverlay>(), W<UI.SnapshotWindow>(), W<UI.WorldMapWindow>(),
+            W<UI.BuyObjectWindow>(w => w.Initialize(session, 0, 1, "Chair", PrimSaleType.Copy, 250)),
+            W<UI.ChatHistoryWindow>(w => w.Open(log, SLNG.Core.Services.ChatLogKind.Local, "", "Local chat")), W<UI.ChatWindow>(w => w.Initialize(log)),
+            W<UI.ConfirmWindow>(w => w.Initialize("Title", "Really do that?", "Do it")), W<UI.TextPromptWindow>(w => w.Initialize("Rename", "Name:", "Old", "OK")),
+            W<UI.GroupInvitationWindow>(w => w.Initialize(session, new GroupInvitationEvent(id(), id(), "Someone", "Join us", 0))),
+            W<UI.InventoryOfferWindow>(w => w.Initialize(session, new InventoryOfferEvent(id(), id(), "Someone", "Hat", id(), 6, false))),
+            W<UI.NotificationWindow>(w => w.Initialize(new NotificationStore())), W<UI.ObjectEditWindow>(w => w.Initialize(session, new SLNG.Core.ECS.World())),
+            W<UI.PayAvatarWindow>(w => w.Initialize(session, id(), "Someone")), W<UI.PayObjectWindow>(w => w.Initialize(session, 0, 1, id(), "Vendor")),
+            W<UI.PreferencesWindow>(w => w.AddTab("Test", new Label { Text = "Test" })), W<UI.RegionRestartWindow>(w => w.Initialize(session, new RegionRestartEvent("Testland", 120))),
+            W<UI.ScriptDialogWindow>(w => w.Initialize(session, new ScriptDialogEvent(id(), "Object", id(), "Owner", "Pick", 1, new[] { "Yes", "No" }))),
+            W<UI.ScriptPermissionWindow>(w => w.Initialize(session, new ScriptPermissionRequestEvent(id(), id(), "Object", "Owner", 4))),
+            W<UI.TermsOfServiceWindow>(w => w.Initialize("https://grid.invalid/login", "Accept the terms.", false)),
+            W<UI.UserProfileWindow>(w => w.Initialize(id(), "Someone", session, null, null)),
+        };
+        static void Layout(Control c) { if (c is Container) c.Notification((int)Container.NotificationSortChildren); foreach (var k in c.GetChildren()) if (k is Control kc) Layout(kc); }
+        var failures = new List<string>();
+        foreach (var (win, init) in windows)
+        {
+            try
+            {
+                tree.Root.AddChild(win); init(); win.Visible = true;
+                var want = win.Size; // the default the window gave itself
+                for (int pass = 0; pass < 3; pass++) { win.Size = want; Layout(win); } // 3: wrapped text settles once it has a width
+                var frame = win.ContentContainer.GetGlobalRect();
+                float[] got = { 1e9f, 1e9f, 1e9f, 1e9f }; // nearest content: left, right, top, bottom
+                void Walk(Node n)
+                {
+                    foreach (var c in n.GetChildren().OfType<Control>().Where(x => x.Visible && x is not Separator))
+                    {
+                        bool box = c is ScrollContainer or TabContainer || (c is PanelContainer or Panel && c.HasThemeStyleboxOverride("panel"));
+                        if (!box && (c is Container || c.GetType() == typeof(Control))) { Walk(c); continue; } // pure layout
+                        var g = c.GetGlobalTransform() * new Rect2(Vector2.Zero, c.Size);
+                        if (g.Size.X < 1 || g.Size.Y < 1) continue;
+                        got[0] = Math.Min(got[0], g.Position.X - frame.Position.X); got[1] = Math.Min(got[1], frame.End.X - g.End.X);
+                        got[2] = Math.Min(got[2], g.Position.Y - frame.Position.Y); got[3] = Math.Min(got[3], frame.End.Y - g.End.Y);
+                    }
+                }
+                Walk(win.ContentContainer);
+                float h = win is UI.MinimapOverlay ? 0 : UI.SLNGWindow.DefaultContentMarginH, v = UI.SLNGWindow.DefaultContentMarginV; // radar: map is full-bleed
+                if (new[] { h, h, v, v }.Zip(got).Any(p => Math.Abs(p.First - p.Second) > 2))
+                    failures.Add($"{win.GetType().Name} L/R/T/B = {got[0]:0.#}/{got[1]:0.#}/{got[2]:0.#}/{got[3]:0.#}");
+            }
+            catch (Exception ex) { failures.Add($"{win.GetType().Name} threw {ex.GetType().Name}: {ex.Message}"); }
+            finally { if (GodotObject.IsInstanceValid(win)) win.QueueFree(); }
+        }
+        return failures.Count == 0
+            ? new Check("window insets", true, $"{windows.Length} windows: 14/14/12/12 px from frame to content (radar map excepted)")
+            : new Check("window insets", false, $"off the standard 14/14/12/12 by more than 2 px: {string.Join("; ", failures)}");
     }
 
     /// <summary>

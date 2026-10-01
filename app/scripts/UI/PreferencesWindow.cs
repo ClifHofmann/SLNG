@@ -64,10 +64,9 @@ public partial class PreferencesWindow : SLNGWindow
             SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
             SizeFlagsVertical = Control.SizeFlags.ExpandFill,
         };
+        // Left only: the gap between the tab list and the page. Right, top and bottom are the
+        // window's standard inset (SLNGWindow); a margin there would stack a second one on it.
         pageMargin.AddThemeConstantOverride("margin_left", 16);
-        pageMargin.AddThemeConstantOverride("margin_right", 16);
-        pageMargin.AddThemeConstantOverride("margin_top", 12);
-        pageMargin.AddThemeConstantOverride("margin_bottom", 12);
         hbox.AddChild(pageMargin);
 
         _pageHost = new Control

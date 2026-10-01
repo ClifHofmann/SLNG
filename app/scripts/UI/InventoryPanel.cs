@@ -127,19 +127,14 @@ public partial class InventoryPanel : SLNGWindow
         _tabs.AddTab("Angezogen");
         _tabs.AddTab("Outfits");
         _tabs.TabChanged += OnTabChanged;
-        var tabsMargin = new MarginContainer();
-        tabsMargin.AddThemeConstantOverride("margin_left", 8);
-        tabsMargin.AddThemeConstantOverride("margin_right", 8);
-        tabsMargin.AddThemeConstantOverride("margin_top", 4);
-        tabsMargin.AddChild(_tabs);
-        vbox.AddChild(tabsMargin);
+        vbox.AddChild(_tabs);
 
         // FEAT-INV-06: the filter bar sits directly under the tabs, in `vbox` rather than inside
         // `_inventoryView`, so it stays visible on every tab (Inventar / Angezogen / Outfits) --
         // OnSearchTextChanged / OnTabChanged route the query to whichever tab's tree is showing.
+        // Vertical margins only: the gap between the tabs, the search box and the tree. The sides
+        // are the window's standard inset (SLNGWindow) -- the same left edge as the tree below.
         var searchContainer = new MarginContainer();
-        searchContainer.AddThemeConstantOverride("margin_left", 12);
-        searchContainer.AddThemeConstantOverride("margin_right", 12);
         searchContainer.AddThemeConstantOverride("margin_top", 12);
         searchContainer.AddThemeConstantOverride("margin_bottom", 12);
 
@@ -182,10 +177,7 @@ public partial class InventoryPanel : SLNGWindow
         vbox.AddChild(_inventoryView);
 
         _status = new Label();
-        var statusMargin = new MarginContainer();
-        statusMargin.AddThemeConstantOverride("margin_left", 12);
-        statusMargin.AddChild(_status);
-        _inventoryView.AddChild(statusMargin);
+        _inventoryView.AddChild(_status);
 
         // TPV Policy §2.b: exporting content requires verifying, per component, that the SL
         // creator name matches the viewer user's own name -- "full permissions" does not exempt
@@ -268,7 +260,6 @@ public partial class InventoryPanel : SLNGWindow
 
         _wornStatus = new Label();
         var wornStatusMargin = new MarginContainer();
-        wornStatusMargin.AddThemeConstantOverride("margin_left", 12);
         wornStatusMargin.AddThemeConstantOverride("margin_top", 8);
         wornStatusMargin.AddThemeConstantOverride("margin_bottom", 4);
         wornStatusMargin.AddChild(_wornStatus);
@@ -280,8 +271,6 @@ public partial class InventoryPanel : SLNGWindow
             "Papierkorb verschieben (Kleidung & Körperteile bleiben; alles wiederherstellbar).";
         _wornCleanupBtn.Pressed += OnWornCleanupPressed;
         var cleanupMargin = new MarginContainer();
-        cleanupMargin.AddThemeConstantOverride("margin_left", 8);
-        cleanupMargin.AddThemeConstantOverride("margin_right", 8);
         cleanupMargin.AddThemeConstantOverride("margin_bottom", 4);
         cleanupMargin.AddChild(_wornCleanupBtn);
         _wornView.AddChild(cleanupMargin);
@@ -326,8 +315,6 @@ public partial class InventoryPanel : SLNGWindow
         saveRow.AddChild(_outfitNameEdit);
         saveRow.AddChild(_outfitSaveBtn);
         var saveMargin = new MarginContainer();
-        saveMargin.AddThemeConstantOverride("margin_left", 8);
-        saveMargin.AddThemeConstantOverride("margin_right", 8);
         saveMargin.AddThemeConstantOverride("margin_top", 8);
         saveMargin.AddThemeConstantOverride("margin_bottom", 4);
         saveMargin.AddChild(saveRow);
@@ -335,7 +322,6 @@ public partial class InventoryPanel : SLNGWindow
 
         _outfitsStatus = new Label();
         var outfitsStatusMargin = new MarginContainer();
-        outfitsStatusMargin.AddThemeConstantOverride("margin_left", 12);
         outfitsStatusMargin.AddThemeConstantOverride("margin_bottom", 4);
         outfitsStatusMargin.AddChild(_outfitsStatus);
         _outfitsView.AddChild(outfitsStatusMargin);

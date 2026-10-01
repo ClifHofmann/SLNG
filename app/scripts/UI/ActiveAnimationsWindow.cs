@@ -32,16 +32,9 @@ public partial class ActiveAnimationsWindow : SLNGWindow
         Position = new Vector2(240, 180);
         Visible = false;
 
-        var margin = new MarginContainer();
-        margin.AddThemeConstantOverride("margin_left", 8);
-        margin.AddThemeConstantOverride("margin_right", 8);
-        margin.AddThemeConstantOverride("margin_top", 6);
-        margin.AddThemeConstantOverride("margin_bottom", 8);
-        ContentContainer.AddChild(margin);
-
         var vbox = new VBoxContainer();
         vbox.AddThemeConstantOverride("separation", 8);
-        margin.AddChild(vbox);
+        ContentContainer.AddChild(vbox);
 
         // Header action row
         var header = new HBoxContainer();

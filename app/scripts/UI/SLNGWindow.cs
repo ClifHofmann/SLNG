@@ -3,6 +3,13 @@ using System;
 
 namespace SLNG.App.UI;
 
+/// <summary>
+/// The frame every floating window inherits; a window puts its content in <see cref="ContentContainer"/>.
+/// <para>The standard inset (<see cref="DefaultContentMarginH"/> x <see cref="DefaultContentMarginV"/>) is applied
+/// by this base class, so a window must not wrap its content in another margin.</para>
+/// <para>A full-bleed window (a map that reaches the frame) calls <see cref="SetContentMargin"/>(0, 0) and
+/// insets only its text parts by hand with those same constants. SelfTest's "window insets" check enforces both.</para>
+/// </summary>
 public partial class SLNGWindow : MarginContainer
 {
     private Label _titleLabel = null!;

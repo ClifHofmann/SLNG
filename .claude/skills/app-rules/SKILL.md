@@ -30,6 +30,11 @@ All floating, draggable UI (Camera HUD, Inventory, Properties, …) **must** inh
 nodes or a bare `PanelContainer` for popups. This is what keeps the dark glassmorphism
 style, the drag behaviour, the shared HUD scale and the title bars uniform.
 
+The base class also applies the one standard content inset (14 px left/right, 12 px top/bottom,
+`SLNGWindow.DefaultContentMarginH/V`): **never wrap a window's content in another margin**. A
+full-bleed window (a map) uses `SetContentMargin(0, 0)` and insets only its text parts with those
+constants. `--selftest` ("window insets") fails if a window is more than 2 px off.
+
 ## Bump `AppVersion` on every user-visible change
 
 `app/scripts/Boot.cs` holds `public const string AppVersion`. It renders on the login

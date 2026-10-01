@@ -505,10 +505,10 @@ public partial class ChatWindow : SLNGWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
+        // Left is the gap to the contact list and top the gap under the tab strip; right and
+        // bottom are the window frame, whose inset comes from SLNGWindow.
         rightMargin.AddThemeConstantOverride("margin_left", 10);
-        rightMargin.AddThemeConstantOverride("margin_right", 6);
         rightMargin.AddThemeConstantOverride("margin_top", 6);
-        rightMargin.AddThemeConstantOverride("margin_bottom", 6);
         hbox.AddChild(rightMargin);
 
         var rightVBox = new VBoxContainer
@@ -977,18 +977,15 @@ public partial class ChatWindow : SLNGWindow
         _outerTabStrip.AddThemeConstantOverride("separation", 4);
         stripPanel.AddChild(_outerTabStrip);
 
-        // Without this margin, a tab page's last row (e.g. FriendsPanel's "Friends: N" count)
-        // sits flush against the window's bottom edge/resize handle -- give every page the same
-        // breathing room instead of margin-ing each one individually.
+        // Only the gap under the tab strip. The sides and the bottom are the window's standard
+        // content inset already (SLNGWindow), so a margin there would be a second inset on top of
+        // it -- which is what this used to be (8 px each side and below).
         var pageMargin = new MarginContainer
         {
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
-        pageMargin.AddThemeConstantOverride("margin_left", 8);
-        pageMargin.AddThemeConstantOverride("margin_right", 8);
         pageMargin.AddThemeConstantOverride("margin_top", 8);
-        pageMargin.AddThemeConstantOverride("margin_bottom", 8);
         parent.AddChild(pageMargin);
 
         _outerPageHost = new Control
