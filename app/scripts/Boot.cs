@@ -321,6 +321,10 @@ public partial class Boot : Control
     private float _agentGapPeak;
 
     private readonly MainThreadWatchdog _watchdog = new();
+
+    // BUG-RENDER-40: counts what the engine itself warns about, by what it said and which of our work
+    // items was running -- see the class. Registered first thing in _Ready, flushed once a frame.
+    private EngineWarningTap? _engineWarningTap;
     private SLNG.App.UI.ButtonBar _buttonBar = null!;
     private SLNG.App.UI.PreferencesWindow _preferencesWindow = null!;
     private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
@@ -394,7 +398,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.25.0-alpha";
+    public const string AppVersion = "v0.25.2-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -442,6 +446,9 @@ public partial class Boot : Control
 
     public override void _Ready()
     {
+        _engineWarningTap = new EngineWarningTap();
+        OS.AddLogger(_engineWarningTap);
+
         // BEFORE anything else: --selftest boots the whole client and only then runs the checks
         // (this scene is the main scene, and SelfTest is invoked at the end of this method), so a
         // smoke test executes the entire login-screen setup -- including everything that writes
@@ -2365,6 +2372,8 @@ public partial class Boot : Control
 
     public override void _Process(double delta)
     {
+        _engineWarningTap?.Flush(delta);
+
         // FEAT-PERF-04: per-frame VRAM back-pressure (raise/lower the LOD bias, shrink resident
         // textures) so the texture-memory budget actually binds on a dense region.
         _gpuCache?.Tick();
