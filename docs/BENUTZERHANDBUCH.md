@@ -143,7 +143,7 @@ Kündigt das Grid einen Neustart der Region an, in der Sie stehen, öffnet sich 
 Das voll ausgestattete Benutzerprofil-Fenster ist zentral für Ihre SL-Identität:
 - **Eigene Bearbeitung:** Bearbeiten Sie Ihre eigene *1st-Life-* und *2nd-Life-Beschreibung*, fügen Sie Ihre Webseite hinzu und setzen Sie Einstellungen (Mature Content, In Search). Alles wird über "Save Profile" live im Grid gespeichert.
 - **Picks & Classifieds:** Bewundern Sie die Picks anderer Avatare. Der Puris Viewer zeigt vollständige Picks (inkl. Snapshot, Text und "Teleport"-Button zum Aufnahmeort) an.
-- **Lokale Notizen:** Sie können jedem Avatar lokale, nur für Sie sichtbare private Notizen hinzufügen.
+- **Private Notizen:** Sie können zu jedem Avatar eine Notiz speichern, die nur Sie sehen. Sie wird mit Ihrem Konto auf dem Grid gespeichert und erscheint deshalb auch in anderen Viewern wie Firestorm, und umgekehrt. Notizen, die Sie früher nur auf diesem Computer gespeichert hatten, werden beim ersten Öffnen des Profils einmalig übernommen, sofern das Grid noch keine Notiz zu dieser Person hat. Antwortet ein Grid nicht (manche OpenSim-Server), bleiben die Notizen ausnahmsweise nur lokal.
 
 ---
 

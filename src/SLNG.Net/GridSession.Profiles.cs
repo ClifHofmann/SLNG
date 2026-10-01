@@ -161,6 +161,24 @@ public sealed partial class GridSession
             p.ProfileURL ?? string.Empty,
             p.AllowPublish,
             p.MaturePublish)));
+
+        // FEAT-UI-39: the same reply carries what a people list wants besides the note -- the
+        // payment-info flags and the account's creation date. The note arrives in its own reply
+        // (OnAvatarNotesReply); the merge keeps whichever came first. After the event above, so a
+        // subscriber that throws there cannot be made worse by this.
+        var payment = AvatarBriefProfile.PaymentFrom(p.Identified, p.Transacted);
+        var bornOn = AvatarBriefProfile.ParseBornOn(p.BornOn);
+        // This UDP reply may only fill in or raise what is known, never lower it. On a grid with the
+        // AgentProfile capability it is the lesser source (Second Life has deprecated it, and a reply
+        // with no flags would read as "no payment info" and wipe what the capability delivered).
+        // Raising is safe because an account only ever gains payment info: PaymentInfo is ordered
+        // Unknown < None < OnFile < Used.
+        MergeBriefProfile(e.AvatarID.Guid,
+            old => old with
+            {
+                Payment = payment > old.Payment ? payment : old.Payment,
+                BornOnUtc = old.BornOnUtc ?? bornOn,
+            });
     }
 
     private void OnAvatarInterestsReply(object? sender, AvatarInterestsReplyEventArgs e)

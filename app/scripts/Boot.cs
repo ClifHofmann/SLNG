@@ -394,7 +394,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.121-alpha";
+    public const string AppVersion = "v0.24.122-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3357,6 +3357,9 @@ public partial class Boot : Control
         _session.AvatarPicksReceived += OnAvatarProfilePicksReceived;
         _session.AvatarPickDetailReceived += OnAvatarProfilePickDetailReceived;
         _session.AvatarClassifiedsReceived += OnAvatarProfileClassifiedsReceived;
+        // FEAT-UI-39: the private note on an avatar (and payment info, age) -- the profile window's
+        // Notes tab shows and saves it. Network thread; EnqueueProfileWork hops to the main thread.
+        _session.BriefProfileUpdated += (s, e) => EnqueueProfileWork(e.AgentId, w => w.ApplyBriefProfile(e));
         // MVP5-2: money that MOVED, as opposed to the balance that changed. Without this the
         // client says nothing at all when somebody pays you -- reported in-world as wanting
         // "wieviel und warum". Off a network thread, hence the deferred hop in the handler.
