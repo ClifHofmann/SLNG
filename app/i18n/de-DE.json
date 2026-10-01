@@ -196,7 +196,7 @@
         "note.tip": "Du hast eine Notiz zu dieser Person. Zum Lesen mit der Maus über das Symbol fahren.",
         "age": "Alter",
         "age.tip": "Kontoalter in Tagen. Rot unter einer Woche, n.a., wenn die Person es verbirgt.",
-        "seen": "Gesehen",
+        "seen": "Zeit",
         "seen.tip": "Wie lange die Person schon in der Nähe ist (h:mm:ss). Beginnt neu, wenn sie zurückkommt.",
         "range": "Distanz",
         "range.tip": "Entfernung zu dir in Metern. Gelb = in Chat-Reichweite, fett = nah genug, um dargestellt zu werden, > = Höhe unbekannt, mindestens so weit.",
