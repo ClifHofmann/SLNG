@@ -555,6 +555,38 @@ public sealed partial class GridSession
         OpenDisplayNameCache(_displayNameCacheDirectory);
     }
 
+    /// <summary>Where the viewer's default map tiles live (<c>MapServerURL</c> in the reference
+    /// viewer's settings.xml). Used only when a Linden grid's login response carries no
+    /// <c>map-server-url</c> of its own.</summary>
+    internal const string DefaultLindenMapServerUrl = "https://map.secondlife.com/";
+
+    /// <summary>The map-tile server for this session, as the reference viewer picks it
+    /// (llstartup.cpp:4044-4056): the login response's <c>map-server-url</c>, else the default --
+    /// but the default only for a Linden grid, since another grid's tiles are not there. Empty
+    /// means "none known": the caller falls back to the region's map image asset.</summary>
+    internal static string ChooseMapServerUrl(string? fromLogin, bool isLindenGrid)
+    {
+        if (!string.IsNullOrWhiteSpace(fromLogin)) return fromLogin.Trim();
+        return isLindenGrid ? DefaultLindenMapServerUrl : "";
+    }
+
+    private volatile string _mapServerUrl = "";
+
+    /// <summary>FEAT-UI-39: base URL of this grid's map-tile server (always ends in '/'), or empty
+    /// if none is known -- see <see cref="ChooseMapServerUrl"/>. Valid once the login response has
+    /// been processed. The radar and the world map build <c>map-1-{x}-{y}-objects.jpg</c> from it.</summary>
+    public string MapServerUrl => _mapServerUrl;
+
+    /// <summary>Remembers the login response's <c>map-server-url</c> for <see cref="MapServerUrl"/>.
+    /// Needs only the response itself, so it runs even when another callback has nothing to do.</summary>
+    private void OnLoginResponseRememberMapServer(
+        bool loginSuccess, bool redirect, string message, string reason, LoginResponseData? reply)
+    {
+        if (!loginSuccess || reply == null) return;
+        var url = ChooseMapServerUrl(reply.MapServerUrl, _isLindenGrid);
+        _mapServerUrl = url.Length == 0 || url.EndsWith('/') ? url : url + "/";
+    }
+
     /// <summary>BUG-NET-23: tells a simulator how much bandwidth to use towards us -- the packet
     /// LibreMetaverse's <c>AgentThrottle.Set</c> sends, without the <c>UdpThrottle.Update</c> that
     /// follows it there. Without it a grid would fall back to its default rates for this agent.</summary>

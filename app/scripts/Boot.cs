@@ -348,6 +348,7 @@ public partial class Boot : Control
     // MVP2-3: minimap radar overlay + world map/search window.
     private SLNG.App.UI.MinimapOverlay _minimapOverlay = null!;
     private SLNG.App.UI.WorldMapWindow _worldMapWindow = null!;
+    private MapTileTextures? _mapTileTextures; // FEAT-UI-39
     // FEAT-UI-18: teleport loading overlay. Fed by GridSession.TeleportProgress events buffered
     // off the network thread into _pendingTeleportProgress and drained in _Process.
     private SLNG.App.UI.TeleportOverlay _teleportOverlay = null!;
@@ -393,7 +394,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.24.120-alpha";
+    public const string AppVersion = "v0.24.121-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3330,7 +3331,12 @@ public partial class Boot : Control
         // for the marker/heading), and the asset plumbing (map tile textures) -- all three only
         // exist from here on, so this can't happen alongside the other window construction in
         // SetupHud().
-        _minimapOverlay.Initialize(_world, _session);
+        // FEAT-UI-39: the region images under the radar. One set per login -- a different grid has
+        // different tiles -- built here because it needs this login's GPU cache and asset service.
+        _mapTileTextures?.Clear();
+        _mapTileTextures = new MapTileTextures(_session, _gpuCache, _assetService,
+            ProjectSettings.GlobalizePath("user://cache/maptiles"));
+        _minimapOverlay.Initialize(_world, _session, _mapTileTextures);
         _worldMapWindow.Initialize(_session, _gpuCache, _assetService, _world);
 
         _session.ChatMessageReceived += OnChatMessage;

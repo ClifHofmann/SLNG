@@ -707,6 +707,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // this runs after AgentManager has taken the agent id and InventoryManager has built the
         // store from the skeleton -- see OnLoginResponseOpenCaches.
         _client.Network.RegisterLoginResponseCallback(OnLoginResponseOpenCaches);
+        _client.Network.RegisterLoginResponseCallback(OnLoginResponseRememberMapServer);
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
         _client.Objects.TerseObjectUpdate += OnTerseObjectUpdate;

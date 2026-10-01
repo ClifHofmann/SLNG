@@ -41,6 +41,14 @@ public partial class MinimapOverlay : SLNGWindow
 
     private World? _world;
     private GridSession? _session;
+    private MapTileTextures? _tileTextures;
+
+    /// <summary>One region's map tile, placed in the CURRENT region's metres (so a neighbour's
+    /// origin is its offset from the current one). The texture is null until it has loaded.</summary>
+    private readonly record struct RadarTile(
+        Texture2D? Texture, System.Numerics.Vector2 Origin, float Width, float Height, bool IsCurrent);
+
+    private readonly List<RadarTile> _tiles = new();
 
     private Label _regionLabel = null!;
     private RadarCanvas _canvas = null!;
@@ -136,6 +144,7 @@ public partial class MinimapOverlay : SLNGWindow
             SizeFlagsVertical = SizeFlags.ExpandFill,
             MouseFilter = MouseFilterEnum.Stop,
             TooltipText = L10n.Tr("ui.minimap.teleport_hint"),
+            ClipContents = true, // a region tile can reach past the canvas edge
         };
         _canvas.OnZoom = Zoom;
         _canvas.OnTeleportClick = HandleTeleportClick;
@@ -189,10 +198,11 @@ public partial class MinimapOverlay : SLNGWindow
 
     /// <summary>Boot hands over the world/session once after both exist. Both are read-only from
     /// here on -- the overlay never mutates world state.</summary>
-    public void Initialize(World world, GridSession session)
+    public void Initialize(World world, GridSession session, MapTileTextures tileTextures)
     {
         _world = world;
         _session = session;
+        _tileTextures = tileTextures;
         // A new session can mean a different grid/region entirely -- a carried-over focus lock
         // or selection would point at an agent id that means nothing there.
         _focusAgentId = null;
@@ -278,8 +288,41 @@ public partial class MinimapOverlay : SLNGWindow
         }
         var center = focusPos ?? ownPos;
 
-        _canvas.Update(width, height, center, ownPos, heading, _visibleRangeMeters, _roster, _selectedAgentId);
+        BuildTiles(regionHandle, center);
+        _canvas.Update(width, height, center, ownPos, heading, _visibleRangeMeters, _roster, _selectedAgentId, _tiles);
         RefreshListIfChanged();
+    }
+
+    /// <summary>The map tiles to draw: the current region always, and any loaded neighbour that
+    /// could reach the canvas. Asking <see cref="MapTileTextures.Get"/> is what starts a load, so a
+    /// neighbour far outside the view is never fetched.</summary>
+    private void BuildTiles(ulong currentHandle, System.Numerics.Vector3? center)
+    {
+        _tiles.Clear();
+        if (_tileTextures == null || _world == null) return;
+
+        double currentX = RegionHandle.OriginX(currentHandle);
+        double currentY = RegionHandle.OriginY(currentHandle);
+        foreach (var (handle, terrain) in _world.Terrains)
+        {
+            bool isCurrent = handle == currentHandle;
+            // Double arithmetic: a neighbour west or south of us has the smaller origin.
+            var origin = new System.Numerics.Vector2(
+                (float)(RegionHandle.OriginX(handle) - currentX),
+                (float)(RegionHandle.OriginY(handle) - currentY));
+            if (!isCurrent && !ReachesView(origin, terrain.Width, terrain.Height, center)) continue;
+            _tiles.Add(new RadarTile(_tileTextures.Get(handle), origin, terrain.Width, terrain.Height, isCurrent));
+        }
+    }
+
+    /// <summary>Generous on purpose: the canvas can be wider than tall, so a square of one full
+    /// visible range around the focus on each side is always enough to cover it.</summary>
+    private bool ReachesView(System.Numerics.Vector2 origin, float width, float height, System.Numerics.Vector3? center)
+    {
+        if (center is not { } c) return false;
+        float reach = _visibleRangeMeters;
+        return origin.X < c.X + reach && origin.X + width > c.X - reach
+            && origin.Y < c.Y + reach && origin.Y + height > c.Y - reach;
     }
 
     /// <summary>Only tears down and rebuilds the roster's Button rows when who's-in-the-list (or
@@ -497,13 +540,17 @@ public partial class MinimapOverlay : SLNGWindow
         private float _heading;
         private float _visibleRangeMeters = DefaultVisibleRangeMeters;
         private readonly List<(Guid AgentId, System.Numerics.Vector3 Position, string Name, System.Numerics.Quaternion? Rotation)> _roster = new();
+        private readonly List<RadarTile> _tiles = new();
         private Guid? _selectedAgentId;
         private bool _hasData;
+
+        // Firestorm tints a neighbour 0.8 grey so the region you are in reads as the brighter one.
+        private static readonly Color NeighbourTint = new(0.8f, 0.8f, 0.8f);
 
         public void Update(int regionWidth, int regionHeight, System.Numerics.Vector3? center,
             System.Numerics.Vector3? ownPos, float heading,
             float visibleRangeMeters, List<(Guid AgentId, System.Numerics.Vector3 Position, string Name, System.Numerics.Quaternion? Rotation)> roster,
-            Guid? selectedAgentId)
+            Guid? selectedAgentId, List<RadarTile> tiles)
         {
             _regionWidth = Math.Max(1, regionWidth);
             _regionHeight = Math.Max(1, regionHeight);
@@ -514,6 +561,8 @@ public partial class MinimapOverlay : SLNGWindow
             _roster.Clear();
             _roster.AddRange(roster);
             _selectedAgentId = selectedAgentId;
+            _tiles.Clear();
+            _tiles.AddRange(tiles);
             _hasData = true;
             QueueRedraw();
         }
@@ -570,6 +619,19 @@ public partial class MinimapOverlay : SLNGWindow
             {
                 var c = projection.ToCanvas(new System.Numerics.Vector2(p.X, p.Y));
                 return new Vector2(c.X, c.Y);
+            }
+
+            // The region images go first, so everything else is drawn over them. Where no region
+            // exists -- or its tile has not arrived -- only the background shows.
+            foreach (var tile in _tiles)
+            {
+                if (tile.Texture == null) continue;
+                // A map tile's top edge is north, and ToCanvas puts north at the top, so the
+                // north-west corner is where the rectangle starts and no flip is needed.
+                var northWest = projection.ToCanvas(new System.Numerics.Vector2(tile.Origin.X, tile.Origin.Y + tile.Height));
+                var extent = new Vector2(tile.Width, tile.Height) * projection.PixelsPerMetre;
+                DrawTextureRect(tile.Texture, new Rect2(new Vector2(northWest.X, northWest.Y), extent), false,
+                    tile.IsCurrent ? Colors.White : NeighbourTint);
             }
 
             // Region boundary, relative to the focus point -- only ever partly visible unless

@@ -176,7 +176,7 @@ Godot `TabContainer`, wrapping the existing `FriendsPanel`).
 - [ ] Later: voice indicator gets real data once `MVP5-1` exists
 - [ ] Later: language column once a source exists
 - [x] Phase 1 — double-click teleport (v0.24.120-alpha, confirmed in-world 2026-10-01)
-- [ ] Phase 2 — tile fetcher + map image (2b object layer)
+- [ ] Phase 2 — tile fetcher + map image (v0.24.121-alpha: `MapTileService`, `MapTileTextures`, own + neighbour regions drawn; in-world test pending on Agni and OpenSim). Still open: 2b object layer; switching `WorldMapWindow` over to the same tiles
 - [ ] Phase 3 — profile / notes data layer
 - [ ] Phase 4 — Tree table, column chooser, sort, persistence (starts with the column-resize spike)
 - [ ] Phase 5 — rings, view wedge, dots, orientation, menus

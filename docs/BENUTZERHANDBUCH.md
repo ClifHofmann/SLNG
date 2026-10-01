@@ -112,6 +112,7 @@ Eines der Highlights des Viewers sind die modernen Navigations- und Karten-Tools
 
 ### Minimap (Radar)
 - Die Minimap zeigt Ihren Avatar im Zentrum und alle Avatare in Ihrer Nähe als Punkte. Sie können stufenlos mit dem Mausrad hinein- und herauszoomen.
+- **Regionsbild:** Unter den Punkten sehen Sie das Kartenbild der Region, wie im Firestorm. Nachbarregionen erscheinen etwas dunkler, und wo keine Region liegt, bleibt der Hintergrund dunkel. Das Bild kommt vom Kartenserver des Grids und wird auf Ihrem Rechner zwischengespeichert; erscheint es nicht sofort, wird es im Hintergrund nachgeladen.
 - **Roster-Liste:** Neben der Karte sehen Sie eine Liste aller erfassten Avatare in der Region.
 - **Radar-Fokus:** Ein Klick auf einen Eintrag in der Liste markiert den Punkt des Avatars auf dem Radar.
 - **Kamera-Fokus:** Ein Doppelklick auf einen Namen dreht Ihre Kamera automatisch und sanft in eine frontale ("Portrait"-) Ansicht des entsprechenden Avatars.
