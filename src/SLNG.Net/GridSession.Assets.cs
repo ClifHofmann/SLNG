@@ -607,6 +607,10 @@ public sealed partial class GridSession
     // asked for again by every anim set that names it.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _animationFailureLogged = new();
 
+    // BUG-ASSET-02: what the region's ViewerAsset capability has refused to give us, for a while. A busy
+    // region has many avatars playing the same animation, and each one asked again.
+    private readonly AssetRefusals _assetRefusals = new();
+
     /// <summary>
     /// Fetches the raw bytes of an animation asset: over the region's <c>ViewerAsset</c> capability
     /// first, the way the reference viewer asks for every asset type
@@ -618,11 +622,28 @@ public sealed partial class GridSession
     /// <c>Transfer failed with status code Error</c>, and the avatar stood in a T-pose for the rest
     /// of the session (2026-09-30, right after the cache was cleared). The asset cache had hidden it
     /// for as long as it was warm.</para>
+    ///
+    /// <para>BUG-ASSET-02: when the capability answers 403, 404 or 410 the answer is a decision, not a
+    /// hiccup. The legacy path asks the same asset service and was refused too in every case seen, and
+    /// the reference viewer has no legacy path at all once the capability exists, so the refusal ends the
+    /// attempt and is remembered (<see cref="AssetRefusals"/>): the next avatar playing the same animation
+    /// costs nothing. Any other failure -- a timeout, a 5xx, no capability yet -- still falls back on UDP.</para>
     /// </summary>
     public async Task<byte[]?> FetchAnimationDataAsync(Guid animId)
     {
+        ulong region = CurrentRegionHandle;
+        if (_assetRefusals.IsRefused(region, animId)) return null;
+
         var viaHttp = await FetchAssetViaViewerAssetAsync(animId, "animatn").ConfigureAwait(false);
-        if (viaHttp is { Length: > 0 }) return viaHttp;
+        if (viaHttp.Bytes is { Length: > 0 }) return viaHttp.Bytes;
+
+        if (viaHttp.Status is { } status && AssetRefusals.IsRefusal(status))
+        {
+            if (_assetRefusals.Remember(region, animId))
+                Console.Error.WriteLine($"[AnimFetch] {animId}: the region refused it (HTTP {(int)status}); " +
+                                        $"not asked again for {_assetRefusals.Lifetime.TotalMinutes:0} minutes");
+            return null;
+        }
 
         var asset = await _client.Assets
             .RequestAssetAsync(new UUID(animId), AssetType.Animation, true, CancellationToken.None)
@@ -633,12 +654,13 @@ public sealed partial class GridSession
         return data;
     }
 
-    /// <summary>One asset over the <c>ViewerAsset</c> capability, or null -- never throws. The
-    /// caller has the UDP path to fall back on.</summary>
-    private async Task<byte[]?> FetchAssetViaViewerAssetAsync(Guid assetId, string typeName)
+    /// <summary>One asset over the <c>ViewerAsset</c> capability -- never throws. The bytes when it was
+    /// served; otherwise null, with the HTTP status when there was an answer (null when there was none:
+    /// no capability yet, a timeout, a dropped connection). The caller has the UDP path to fall back on.</summary>
+    private async Task<(byte[]? Bytes, HttpStatusCode? Status)> FetchAssetViaViewerAssetAsync(Guid assetId, string typeName)
     {
         var cap = _client.Network.CurrentSim?.Caps?.CapabilityURI("ViewerAsset");
-        if (cap is null) return null;
+        if (cap is null) return (null, null);
 
         try
         {
@@ -648,8 +670,8 @@ public sealed partial class GridSession
             try
             {
                 using var response = await _textureHttpClient.GetAsync(url, timeout.Token).ConfigureAwait(false);
-                if (!response.IsSuccessStatusCode) return null;
-                return await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode) return (null, response.StatusCode);
+                return (await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false), response.StatusCode);
             }
             finally
             {
@@ -658,7 +680,7 @@ public sealed partial class GridSession
         }
         catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or UriFormatException)
         {
-            return null;
+            return (null, null);
         }
     }
 }
