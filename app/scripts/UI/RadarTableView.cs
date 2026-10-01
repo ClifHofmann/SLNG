@@ -54,6 +54,7 @@ internal sealed partial class RadarTableView : Control
     private readonly List<TreeItem> _ordered = new();
 
     private TreeItem? _root;
+    private int _iconColumnWidth = 30;
     private string?[] _titles = Array.Empty<string?>();
     private RadarColumn _sortColumn = RadarColumn.Range;
     private bool _sortAscending = true;
@@ -121,6 +122,7 @@ internal sealed partial class RadarTableView : Control
             _columns.Clear();
             _columns.AddRange(columns);
             _tree.Columns = _columns.Count;
+            _iconColumnWidth = MeasureIconColumnWidth();
             for (int i = 0; i < _columns.Count; i++)
             {
                 var info = RadarColumns.Info(_columns[i]);
@@ -228,18 +230,33 @@ internal sealed partial class RadarTableView : Control
         }
     }
 
-    private static (int MinWidth, bool Expand, HorizontalAlignment Align) LayoutOf(RadarColumn column) => column switch
+    private (int MinWidth, bool Expand, HorizontalAlignment Align) LayoutOf(RadarColumn column) => column switch
     {
-        // The name takes whatever the others leave; the numbers are right-aligned and fixed. The
-        // widths leave room for the sort arrow in the title, so changing the sort never shifts
-        // the columns.
+        // The name takes whatever the others leave; the numbers are right-aligned and fixed. Each
+        // fixed width is its widest content plus RadarTree.CellPadding (measured at 12 px, the
+        // widest of English and German), and none is narrower than its title with the sort arrow, so
+        // changing the sort never shifts the columns.
         RadarColumn.Name => (80, true, HorizontalAlignment.Left),
-        // Each width includes the 8 px of cell padding the Tree theme adds (RadarTree).
-        RadarColumn.Age => (50, false, HorizontalAlignment.Right),
-        RadarColumn.Seen => (68, false, HorizontalAlignment.Right),
-        RadarColumn.Range => (72, false, HorizontalAlignment.Right),
-        _ => (30, false, HorizontalAlignment.Center), // the icon columns
+        RadarColumn.Age => (50, false, HorizontalAlignment.Right),   // "Alter ▲" 42; "99999" 35
+        RadarColumn.Seen => (58, false, HorizontalAlignment.Right),  // "12:34:56" 48
+        RadarColumn.Range => (66, false, HorizontalAlignment.Right), // "Distanz ▲" 57; ">1020.00" bold 53
+        _ => (_iconColumnWidth, false, HorizontalAlignment.Center),
     };
+
+    /// <summary>The width of an icon column: the widest glyph an icon cell shows, at the cells' font,
+    /// plus <see cref="RadarTree.CellPadding"/> and a pixel to spare. Measured because an emoji's width
+    /// is the system emoji font's (17 px at 12 px on Windows, less elsewhere), and a column a pixel
+    /// too narrow shows an empty cell: Godot draws only a glyph that fits its cell completely, with
+    /// or without an overrun setting. The header glyphs need less (the Tree gives a column at least
+    /// its title's width, 8 px more than the glyph).</summary>
+    private int MeasureIconColumnWidth()
+    {
+        var font = _tree.GetThemeFont("font");
+        float widest = 0f;
+        foreach (var glyph in RadarIcons.CellGlyphs)
+            widest = Mathf.Max(widest, font.GetStringSize(glyph, HorizontalAlignment.Left, -1, RadarTree.CellFontSize).X);
+        return Mathf.CeilToInt(widest) + RadarTree.CellPadding + 1;
+    }
 
     /// <summary>The age cell shows days, which sorts; the tooltip says the same age the way a person
     /// does -- years, months, days -- and gives the account's creation date (the "rez day").</summary>

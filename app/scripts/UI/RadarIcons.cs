@@ -30,6 +30,13 @@ internal static class RadarIcons
     public const string SortUp = "▲";
     public const string SortDown = "▼";
 
+    /// <summary>Every glyph an icon cell can show: what the table measures its icon columns by, so a
+    /// column is never narrower than the widest of them.</summary>
+    public static readonly string[] CellGlyphs =
+    {
+        Speaking, InRegion, Typing, Sitting, Note, RadarTable.FormatPayment(PaymentInfo.Used),
+    };
+
     public static readonly Color Friend = new(0.31f, 0.76f, 0.42f);
     public static readonly Color Other = new(0.89f, 0.29f, 0.29f);
     public static readonly Color Muted = new(0.55f, 0.55f, 0.55f);

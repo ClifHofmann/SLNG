@@ -14,6 +14,26 @@ public partial class RadarTree : Tree
     /// <summary>A tooltip wraps beyond this width; a short one stays as narrow as its text.</summary>
     private const float MaxTooltipWidth = 320f;
 
+    /// <summary>The font size of the cells; the table measures its glyphs at it.</summary>
+    internal const int CellFontSize = 12;
+
+    // Air between a cell's text and the edge of its row's highlight: without it the first and
+    // last cells' text sat flush against the highlight, which read as "too close to the edge".
+    internal const int CellMarginLeft = 3;
+    internal const int CellMarginRight = 5;
+
+    /// <summary>The Tree's own gap between columns, which it takes out of the width of every cell
+    /// but the first, on top of the cell margins. These cells already carry their own air, so the
+    /// gap only ate into the columns -- and into the icon columns, where a glyph that does not fit
+    /// completely is not drawn at all (see <see cref="CellPadding"/>).</summary>
+    internal const int ColumnGap = 0;
+
+    /// <summary>What a cell loses of its column's width: the text of a cell gets the column width
+    /// minus this, and Godot draws only a glyph that fits into that COMPLETELY -- whatever the
+    /// overrun behaviour, a glyph even one pixel too wide for its cell is dropped, not clipped.
+    /// A column's width is therefore its widest content plus this.</summary>
+    internal const int CellPadding = CellMarginLeft + CellMarginRight + ColumnGap;
+
     public override void _Ready() => ApplyStyle();
 
     public override GodotObject _MakeCustomTooltip(string forText)
@@ -66,14 +86,12 @@ public partial class RadarTree : Tree
         AddThemeColorOverride("font_color", new Color(0.92f, 0.92f, 0.92f));
         AddThemeColorOverride("font_selected_color", Colors.White);
         AddThemeColorOverride("title_button_color", UiTheme.SecondaryText);
-        AddThemeFontSizeOverride("font_size", 12);
+        AddThemeFontSizeOverride("font_size", CellFontSize);
         AddThemeFontSizeOverride("title_button_font_size", 11);
 
-        AddThemeConstantOverride("h_separation", 6);
-        // Air between a cell's text and the edge of its row's highlight: without it the first and
-        // last cells' text sat flush against the highlight, which read as "too close to the edge".
-        AddThemeConstantOverride("inner_item_margin_left", 3);
-        AddThemeConstantOverride("inner_item_margin_right", 5);
+        AddThemeConstantOverride("h_separation", ColumnGap);
+        AddThemeConstantOverride("inner_item_margin_left", CellMarginLeft);
+        AddThemeConstantOverride("inner_item_margin_right", CellMarginRight);
         AddThemeConstantOverride("v_separation", 5);
         AddThemeConstantOverride("draw_guides", 0);
         AddThemeConstantOverride("draw_relationship_lines", 0);
