@@ -72,7 +72,9 @@ public sealed class WorldSimulation : IDisposable
         _source.ObjectPropertiesReceived += OnObjectProperties;
         _source.PhysicsPropertiesReceived += OnPhysicsProperties;
         _source.ObjectMediaReceived += OnObjectMedia;
+        _source.ObjectAnimationReceived += OnObjectAnimation;
         _source.DisplayNameResolved += OnDisplayNameResolved;
+        _world.EntityRemoved += OnEntityRemoved;
     }
 
     // These run on background network threads: enqueue only, never touch the world.
@@ -82,6 +84,7 @@ public sealed class WorldSimulation : IDisposable
     private void OnObjectProperties(object? sender, ObjectPropertiesEvent e) => _pending.Enqueue(e);
     private void OnPhysicsProperties(object? sender, PhysicsPropertiesEvent e) => _pending.Enqueue(e);
     private void OnObjectMedia(object? sender, ObjectMediaEvent e) => _pending.Enqueue(e);
+    private void OnObjectAnimation(object? sender, ObjectAnimationEvent e) => _pending.Enqueue(e);
     private void OnTerrainPatch(object? sender, TerrainPatchEvent e) => _pending.Enqueue(e);
     private void OnTerrainSettings(object? sender, TerrainSettingsEvent e) => _pending.Enqueue(e);
     private void OnRegionDisconnected(object? sender, RegionDisconnectedEvent e) => _pending.Enqueue(e);
@@ -105,6 +108,7 @@ public sealed class WorldSimulation : IDisposable
                 case ObjectPropertiesEvent e: ApplyObjectProperties(e); break;
                 case PhysicsPropertiesEvent e: ApplyPhysicsProperties(e); break;
                 case ObjectMediaEvent e: ApplyObjectMedia(e); break;
+                case ObjectAnimationEvent e: ApplyObjectAnimation(e); break;
                 case TerrainPatchEvent e: ApplyTerrainPatch(e); break;
                 case TerrainSettingsEvent e: ApplyTerrainSettings(e); break;
                 // BUG-NET-24: a region the whole session took with it stays as it was --
@@ -114,6 +118,7 @@ public sealed class WorldSimulation : IDisposable
                 case RegionDisconnectedEvent e:
                     ParkTerrain(e.RegionHandle);
                     _world.RemoveRegion(e.RegionHandle);
+                    DropPendingAnimations(e.RegionHandle); // FEAT-ANIMESH-02: for objects that never arrived
                     _avatarCacheDirty = true; // takes every avatar in that region with it
                     break;
                 case AvatarAppearanceEvent e: ApplyAvatarAppearance(e); break;
@@ -136,6 +141,8 @@ public sealed class WorldSimulation : IDisposable
         while (_pending.TryDequeue(out _)) { }
         _parkedTerrain.Clear();
         _parkedOrder.Clear();
+        _pendingAnimations.Clear();
+        _pendingAnimationNodes.Clear();
         _world.RemoveAllRegions();
         _avatarCacheDirty = true;
     }
@@ -528,6 +535,19 @@ public sealed class WorldSimulation : IDisposable
             // update does not carry -- applying a terse-sourced null would un-mirror every mirror
             // the moment something near it moved.
             prim.ReflectionProbe = e.ReflectionProbe;
+            // And again: the Extended Mesh block is ExtraParams too. A terse-sourced false would
+            // stand an animesh back up as a plain rigged mesh every time it moved, and the sim
+            // signals "no longer animesh" only by omitting the block from a FULL update.
+            prim.IsAnimatedMesh = e.IsAnimatedMesh;
+        }
+
+        // FEAT-ANIMESH-02: ObjectAnimation names a prim by its object UUID. Index it now, and take
+        // up any list that arrived before the object did -- before the notification below, so a
+        // listener's first look at the prim already has it rather than seeing it a beat later.
+        if (e.ObjectId != System.Guid.Empty)
+        {
+            _objectIndex[e.ObjectId] = (e.RegionHandle, e.LocalId);
+            if (TakePendingAnimations(e.ObjectId) is { } held) prim.SignaledAnimations = held;
         }
         _world.NotifyComponentUpdated(entity, prim);
 
@@ -1205,6 +1225,127 @@ public sealed class WorldSimulation : IDisposable
         _world.NotifyComponentUpdated(entity, prim);
     }
 
+    /// <summary>How many ObjectAnimation lists are held for objects that have not arrived yet.
+    /// Past this the OLDEST is given up: an object that never materialises (out of interest range,
+    /// culled, killed before its first update) must not pin its list for the rest of the session.
+    /// Far above any real count -- a region has a handful of animesh, and a list is only held
+    /// until the object's first ObjectUpdate, which normally follows within the same second.</summary>
+    public const int PendingObjectAnimationLimit = 2048;
+
+    private sealed record PendingAnimationList(System.Guid ObjectId, ulong Region, SignaledAnimation[] Animations);
+
+    // Lists for objects that have no entity yet, oldest first, plus a by-UUID handle on each node
+    // so replacing or consuming one is O(1). Pump thread only.
+    private readonly LinkedList<PendingAnimationList> _pendingAnimations = new();
+    private readonly Dictionary<System.Guid, LinkedListNode<PendingAnimationList>> _pendingAnimationNodes = new();
+
+    // Object UUID -> where it lives. The UUID is what ObjectAnimation addresses and the only thing
+    // that identifies the object across a LocalID being recycled; scanning every entity's
+    // MetadataComponent per message (as ApplyObjectProperties does for its rarer message) is what
+    // a region full of animesh would pay for on every animation change. Dropped with the entity
+    // (OnEntityRemoved).
+    private readonly Dictionary<System.Guid, (ulong Region, uint LocalId)> _objectIndex = new();
+
+    /// <summary>FEAT-ANIMESH-02. Mirrors <c>process_object_animation</c> (llviewermessage.cpp:4108):
+    /// the message REPLACES the prim's whole list, an empty list stops everything, and the list is
+    /// kept even if the object has not arrived (the viewer stores it in a map keyed by UUID before it
+    /// looks the object up). Unlike the viewer's map, which is never erased, a held list is dropped
+    /// with its region and the oldest are given up past <see cref="PendingObjectAnimationLimit"/>.</summary>
+    private void ApplyObjectAnimation(ObjectAnimationEvent e)
+    {
+        if (e.ObjectId == System.Guid.Empty) return;
+
+        // The component owns its list: the event's collection belongs to whoever raised it.
+        var animations = e.Animations is { Count: > 0 }
+            ? e.Animations.ToArray()
+            : System.Array.Empty<SignaledAnimation>();
+
+        var entity = FindObjectEntity(e.ObjectId);
+        if (entity == null)
+        {
+            HoldAnimations(e.RegionHandle, e.ObjectId, animations);
+            return;
+        }
+
+        // It has a home now; nothing is waiting for it any more.
+        TakePendingAnimations(e.ObjectId);
+
+        var prim = entity.GetComponent<PrimitiveComponent>();
+        if (prim == null) return;
+
+        // The sim repeats a prim's list whenever anything about its animation state changes. An
+        // unchanged list must not make every listener (the renderer) re-run for it; a changed
+        // sequence id is a change -- it is how the sim restarts an animation already playing.
+        if (prim.SignaledAnimations.SequenceEqual(animations)) return;
+
+        prim.SignaledAnimations = animations;
+        _world.NotifyComponentUpdated(entity, prim);
+    }
+
+    /// <summary>The entity of the object with this UUID, or null if there is none. The index is
+    /// kept exact rather than checked on use: set by every ObjectUpdate, and removed by
+    /// <see cref="OnEntityRemoved"/> whenever its entity leaves the world by any route, so a
+    /// recycled LocalID can never hand one object's list to another.</summary>
+    private Entity? FindObjectEntity(System.Guid objectId)
+        => _objectIndex.TryGetValue(objectId, out var at) ? _world.GetEntity(at.Region, at.LocalId) : null;
+
+    private void HoldAnimations(ulong region, System.Guid objectId, SignaledAnimation[] animations)
+    {
+        // Whatever was held is superseded -- and an empty list is itself the newest word ("stop"),
+        // so it replaces rather than adds: there is nothing to apply later.
+        TakePendingAnimations(objectId);
+        if (animations.Length == 0) return;
+
+        while (_pendingAnimationNodes.Count >= PendingObjectAnimationLimit && _pendingAnimations.First is { } oldest)
+        {
+            _pendingAnimations.RemoveFirst();
+            _pendingAnimationNodes.Remove(oldest.Value.ObjectId);
+        }
+
+        _pendingAnimationNodes[objectId] =
+            _pendingAnimations.AddLast(new PendingAnimationList(objectId, region, animations));
+    }
+
+    /// <summary>Removes and returns the list held for this object, or null if none is.</summary>
+    private SignaledAnimation[]? TakePendingAnimations(System.Guid objectId)
+    {
+        if (!_pendingAnimationNodes.Remove(objectId, out var node)) return null;
+
+        _pendingAnimations.Remove(node);
+        return node.Value.Animations;
+    }
+
+    /// <summary>A region went away: lists held for objects that were to arrive in it never will.</summary>
+    private void DropPendingAnimations(ulong region)
+    {
+        for (var node = _pendingAnimations.First; node != null;)
+        {
+            var next = node.Next;
+            if (node.Value.Region == region)
+            {
+                _pendingAnimations.Remove(node);
+                _pendingAnimationNodes.Remove(node.Value.ObjectId);
+            }
+            node = next;
+        }
+    }
+
+    /// <summary>Fires for every way an entity leaves the world -- a kill, a region unloading, the
+    /// stale local agent being replaced -- so the UUID index never outlives its entity.</summary>
+    private void OnEntityRemoved(object? sender, EntityEventArgs e)
+    {
+        var objectId = e.Entity.GetComponent<MetadataComponent>()?.Id ?? System.Guid.Empty;
+        if (objectId == System.Guid.Empty) return;
+
+        // Only if it still points at THIS entity: a recycled LocalID may already carry another
+        // object whose entry replaced the old one.
+        if (_objectIndex.TryGetValue(objectId, out var at)
+            && at.Region == e.Entity.RegionHandle && at.LocalId == e.Entity.LocalId)
+        {
+            _objectIndex.Remove(objectId);
+        }
+    }
+
     private void ApplyObjectRemoved(ObjectRemovedEvent e)
     {
         // A removal event does not say whether it was an avatar, so assume it might have been.
@@ -1364,5 +1505,7 @@ public sealed class WorldSimulation : IDisposable
         _source.RegionDisconnectedReceived -= OnRegionDisconnected;
         _source.AvatarAppearanceReceived -= OnAvatarAppearance;
         _source.AvatarAnimationReceived -= OnAvatarAnimation;
+        _source.ObjectAnimationReceived -= OnObjectAnimation;
+        _world.EntityRemoved -= OnEntityRemoved;
     }
 }

@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http;
@@ -25,15 +26,127 @@ public sealed partial class GridSession
     /// of LibreMetaverse's own parsing -- see <see cref="_lightPresentByLocalId"/> for why this
     /// can't be read back from the high-level Primitive object. Byte layout matches
     /// Primitive.SetExtraParamsFromBytes: 1 count byte, then per entry a UInt16 type + UInt32
-    /// length + that many payload bytes.</summary>
+    /// length + that many payload bytes. The same scan also reads the Reflection Probe (0x90) and,
+    /// for FEAT-ANIMESH-01, the Extended Mesh (0x70) block.</summary>
     private void OnRawObjectUpdatePacket(object? sender, PacketReceivedEventArgs e)
     {
         if (e.Packet is not ObjectUpdatePacket update) return;
 
+        List<uint>? animatedMeshChanged = null;
         foreach (var block in update.ObjectData)
         {
             _lightPresentByLocalId[block.ID] = ExtraParamsContainsLight(block.ExtraParams);
             _reflectionProbeByLocalId[block.ID] = ExtraParamsReflectionProbe(block.ExtraParams);
+            if (LatchAnimatedMesh(e.Simulator.Handle, block.ID, ExtraParamsAnimatedMesh(block.ExtraParams)))
+                (animatedMeshChanged ??= new List<uint>()).Add(block.ID);
+        }
+
+        // FEAT-ANIMESH-01: this callback runs AFTER LibreMetaverse's own handler has queued the
+        // event for these same blocks (its handler sits ahead of ours in the same invocation
+        // list, and the event itself goes out on a thread-pool work item), so that event may have
+        // been built before the latch above was written. Raised again once, only for an object
+        // whose answer actually changed -- otherwise an animesh would be reported one update late
+        // and lie on its side until something else touched it. Done after the loop so one
+        // misbehaving subscriber cannot stop the rest of the packet's blocks being latched.
+        if (animatedMeshChanged is null) return;
+        foreach (uint localId in animatedMeshChanged)
+        {
+            if (e.Simulator.ObjectsPrimitives.TryGetValue(localId, out Primitive? prim) && prim is not null)
+                RaiseObjectUpdate(e.Simulator, prim, isFullUpdate: true);
+        }
+    }
+
+    /// <summary>
+    /// Whether this ExtraParams buffer carries an Extended Mesh (0x70) block with the animated-mesh
+    /// bit set. False for an absent block, a clear bit, and anything malformed -- a short or
+    /// truncated block must read as "not animesh", never as garbage. FEAT-ANIMESH-01.
+    ///
+    /// <para>Wire layout (lldatapacker.cpp:292-334, llprimitive.cpp:2273-2285): <c>U8 count</c>, then
+    /// per entry <c>U16 type</c>, <c>S32 size</c>, <c>size</c> payload bytes, all little-endian. The
+    /// 0x70 payload is one <c>U32</c> flags word and <c>ANIMATED_MESH_ENABLED_FLAG</c> is bit 0
+    /// (<see cref="SLNG.Core.ExtendedMeshParams"/>). Note the size field is a SIGNED 32-bit value --
+    /// the Light and Reflection-Probe scans above read it as unsigned, which a negative or huge value
+    /// turns into an offset past the end of the buffer; this one checks it against what is
+    /// actually there before stepping over it.</para>
+    ///
+    /// <para>A payload longer than four bytes is read for its first four, as the probe block is:
+    /// if Linden Lab appends fields, the leading word still means what it means today. A payload
+    /// shorter than four is refused.</para>
+    /// </summary>
+    internal static bool ExtraParamsAnimatedMesh(byte[]? data) => data is not null && ScanAnimatedMesh(data);
+
+    private static bool ScanAnimatedMesh(ReadOnlySpan<byte> data)
+    {
+        const int EntryHeaderSize = 6; // U16 type + S32 size
+        if (data.Length < 1) return false;
+
+        int count = data[0];
+        int i = 1;
+        for (int k = 0; k < count; k++)
+        {
+            if (data.Length - i < EntryHeaderSize) return false;
+            ushort type = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(i, 2));
+            int size = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(i + 2, 4));
+            i += EntryHeaderSize;
+
+            // The declared size has to be real before it is used for anything, 0x70 or not: a
+            // block that lies about its length cannot be stepped over, and nothing behind it can
+            // be trusted either.
+            if (size < 0 || size > data.Length - i) return false;
+
+            if (type == SLNG.Core.ExtendedMeshParams.ParamType)
+            {
+                if (size < SLNG.Core.ExtendedMeshParams.WireSize) return false;
+                uint flags = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(i, SLNG.Core.ExtendedMeshParams.WireSize));
+                return (flags & SLNG.Core.ExtendedMeshParams.FlagAnimatedMesh) != 0;
+            }
+            i += size;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// <see cref="ExtraParamsAnimatedMesh"/> for an <c>ObjectUpdateCompressed</c> object, where the
+    /// ExtraParams are not a field of their own but a section in the middle of one blob. The offset
+    /// comes from <see cref="CompressedParticleRepair.TryFindExtraParams"/>, which shares its walk
+    /// with the particle repair. Null means the layout could not be established (too short, cut
+    /// off inside an optional section, or a scratch-pad object whose width the two decoders
+    /// disagree on) -- the caller must then leave what it already knows alone rather than treat it
+    /// as "not animesh". A located but malformed block is an answer: false.
+    /// </summary>
+    internal static bool? CompressedAnimatedMesh(byte[]? block)
+    {
+        if (block is null || !CompressedParticleRepair.TryFindExtraParams(block, out int offset))
+        {
+            return null;
+        }
+        return ScanAnimatedMesh(block.AsSpan(offset));
+    }
+
+    /// <summary>Records whether an object is an animated mesh, and says whether that CHANGED --
+    /// which is what makes a re-raise worth doing. Only the true state is stored: "false" for an
+    /// object never seen as animesh (every ordinary prim, on every update) is not a change and
+    /// costs nothing.</summary>
+    internal bool LatchAnimatedMesh(ulong regionHandle, uint localId, bool animatedMesh) =>
+        animatedMesh
+            ? _animatedMeshObjects.TryAdd((regionHandle, localId), true)
+            : _animatedMeshObjects.TryRemove((regionHandle, localId), out _);
+
+    internal bool IsAnimatedMeshLatched(ulong regionHandle, uint localId) =>
+        _animatedMeshObjects.ContainsKey((regionHandle, localId));
+
+    /// <summary>Drops one object's state without raising anything: it is gone, and its LocalID may
+    /// be handed to a different object that must start clean.</summary>
+    internal void ForgetAnimatedMesh(ulong regionHandle, uint localId) =>
+        _animatedMeshObjects.TryRemove((regionHandle, localId), out _);
+
+    /// <summary>Drops every object of a region that has been disconnected: after a restart the
+    /// same LocalIDs belong to different objects.</summary>
+    internal void ForgetAnimatedMeshRegion(ulong regionHandle)
+    {
+        foreach (var key in _animatedMeshObjects.Keys)
+        {
+            if (key.Region == regionHandle) _animatedMeshObjects.TryRemove(key, out _);
         }
     }
 
@@ -198,6 +311,17 @@ public sealed partial class GridSession
 
     private void OnObjectUpdate(object? sender, PrimEventArgs e) => RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: true);
 
+    /// <summary>FEAT-ANIMESH-02. The sim's <c>ObjectAnimation</c> message for one prim -- see
+    /// <see cref="ObjectAnimationConverter"/>. Every region's, not just the current one: a
+    /// neighbour's animated mesh moves too, and the world holds the neighbour's objects. Passed
+    /// straight on; WorldSimulation queues it and applies it on the pump thread.</summary>
+    private void OnObjectAnimation(object? sender, ObjectAnimationEventArgs e)
+    {
+        var evt = ObjectAnimationConverter.FromWire(e.Simulator.Handle, e.ObjectID, e.Animations);
+        if (Diag.Verbose) Console.Error.WriteLine(ObjectAnimationConverter.Describe(evt));
+        ObjectAnimationReceived?.Invoke(this, evt);
+    }
+
     /// <summary>
     /// Puts back the particle system LibreMetaverse drops from every <c>ObjectUpdateCompressed</c>
     /// object -- see <see cref="CompressedParticleRepair"/> for what it gets wrong and why the
@@ -212,8 +336,20 @@ public sealed partial class GridSession
 
         foreach (var block in packet.ObjectData)
         {
+            if (!CompressedParticleRepair.TryReadLocalId(block.Data, out uint localId))
+            {
+                continue;
+            }
+
+            // FEAT-ANIMESH-01: LibreMetaverse does not parse the Extended Mesh (0x70) ExtraParams
+            // block, and a compressed object carries it in the middle of its one blob, so the
+            // flag is read here -- once, for the cache replay as well, which feeds this same
+            // handler. A layout that cannot be established (null) leaves the latch as it was.
+            bool animatedMeshChanged = GridSession.CompressedAnimatedMesh(block.Data) is bool animatedMesh
+                && LatchAnimatedMesh(e.Simulator.Handle, localId, animatedMesh);
+
             byte[]? raw = CompressedParticleRepair.ExtractParticleBlock(block.Data);
-            if (raw is null || !CompressedParticleRepair.TryReadLocalId(block.Data, out uint localId))
+            if (raw is null && !animatedMeshChanged)
             {
                 continue;
             }
@@ -226,17 +362,26 @@ public sealed partial class GridSession
                 continue;
             }
 
-            var repaired = new Primitive.ParticleSystem(raw, 0);
-            if (prim.ParticleSys.Equals(repaired))
+            // The library's event may have been built before the latch above was written (the
+            // same ordering OnRawObjectUpdatePacket describes), so a change is raised again.
+            bool raise = animatedMeshChanged;
+            if (raw is not null)
             {
+                var repaired = new Primitive.ParticleSystem(raw, 0);
                 // Already correct: an object whose particles have not changed sends the same block
                 // on every compressed update, and re-raising each one would double the work of
                 // every moving emitter in the region.
-                continue;
+                if (!prim.ParticleSys.Equals(repaired))
+                {
+                    prim.ParticleSys = repaired;
+                    raise = true;
+                }
             }
 
-            prim.ParticleSys = repaired;
-            RaiseObjectUpdate(e.Simulator, prim, isFullUpdate: true);
+            if (raise)
+            {
+                RaiseObjectUpdate(e.Simulator, prim, isFullUpdate: true);
+            }
         }
     }
 
@@ -666,7 +811,11 @@ public sealed partial class GridSession
             prim.Flags.HasFlag(PrimFlags.ObjectMove),
             prim.Flags.HasFlag(PrimFlags.ObjectCopy),
             prim.Flags.HasFlag(PrimFlags.ObjectTransfer),
-            prim.Flags.HasFlag(PrimFlags.ObjectYouOwner)));
+            prim.Flags.HasFlag(PrimFlags.ObjectYouOwner),
+            // FEAT-ANIMESH-01: read from the latch, last, right before the event goes out -- see
+            // OnRawObjectUpdatePacket for why this can race the callback that writes it and what
+            // makes that harmless.
+            IsAnimatedMeshLatched(simulator.Handle, prim.LocalID)));
     }
 
     /// <summary>MVP3-3 Phase 1: notices the MOAP "doorbell" (<paramref name="anyFaceHasMedia"/>
@@ -850,6 +999,7 @@ public sealed partial class GridSession
     private void OnKillObject(object? sender, KillObjectEventArgs e)
     {
         CheckAndStopMotionOnKill(e.Simulator, e.ObjectLocalID);
+        ForgetAnimatedMesh(e.Simulator.Handle, e.ObjectLocalID);
         ObjectRemovedReceived?.Invoke(this, new ObjectRemovedEvent(e.Simulator.Handle, e.ObjectLocalID));
     }
 
@@ -858,6 +1008,7 @@ public sealed partial class GridSession
         foreach (var localId in e.ObjectLocalIDs)
         {
             CheckAndStopMotionOnKill(e.Simulator, localId);
+            ForgetAnimatedMesh(e.Simulator.Handle, localId);
             ObjectRemovedReceived?.Invoke(this, new ObjectRemovedEvent(e.Simulator.Handle, localId));
         }
     }

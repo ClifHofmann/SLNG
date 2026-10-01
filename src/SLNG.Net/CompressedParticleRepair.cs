@@ -109,10 +109,7 @@ internal static class CompressedParticleRepair
             return null;
         }
 
-        uint flags = (uint)(data[FlagsOffset]
-            | (data[FlagsOffset + 1] << 8)
-            | (data[FlagsOffset + 2] << 16)
-            | (data[FlagsOffset + 3] << 24));
+        uint flags = ReadFlags(data);
 
         // Nothing below is worth doing for an object that has no particles anyway.
         if ((flags & (HasParticlesLegacy | HasParticlesNew)) == 0)
@@ -120,42 +117,7 @@ internal static class CompressedParticleRepair
             return null;
         }
 
-        int offset = FlagsOffset + 4 + OwnerIdSize;
-
-        if ((flags & HasAngularVelocity) != 0)
-        {
-            offset += 12;
-        }
-
-        if ((flags & HasParent) != 0)
-        {
-            offset += 4;
-        }
-
-        // Tree and scratch pad are mutually exclusive in the decoder, in this order.
-        if ((flags & IsTree) != 0)
-        {
-            offset += 1;
-        }
-        else if ((flags & HasScratchPad) != 0)
-        {
-            if (offset >= data.Length)
-            {
-                return null;
-            }
-            offset += 1 + data[offset];
-        }
-
-        if ((flags & HasText) != 0)
-        {
-            if (!TrySkipString(data, ref offset))
-            {
-                return null;
-            }
-            offset += 4; // text colour
-        }
-
-        if ((flags & HasMediaUrl) != 0 && !TrySkipString(data, ref offset))
+        if (!TryWalkToParticleBlock(data, flags, out int offset))
         {
             return null;
         }
@@ -187,6 +149,117 @@ internal static class CompressedParticleRepair
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Finds where the ExtraParams begin inside a compressed object -- the offset of their
+    /// <c>U8 count</c> byte -- or false when the layout cannot be established with confidence.
+    /// </summary>
+    /// <remarks>
+    /// <para>The ExtraParams sit behind the same optional sections the particle block does, plus the
+    /// legacy particle block itself (viewer: llviewerobject.cpp:1888-1903; simulator:
+    /// LLClientView.cs:8067-8077), so this reuses the one walk above and adds that block. The
+    /// extended particle block (<see cref="HasParticlesNew"/>) is NOT skipped: it is written at
+    /// the very end of the object, behind the texture entry (llvovolume.cpp:520), and moves nothing
+    /// that precedes it.</para>
+    ///
+    /// <para>Refuses a scratch-pad object (<see cref="HasScratchPad"/> without
+    /// <see cref="IsTree"/>). The two decoders we have disagree on that section's width --
+    /// LibreMetaverse and <see cref="ExtractParticleBlock"/> read a one-byte length, the reference
+    /// viewer reads a <c>U32</c> followed by an <c>S32</c>-prefixed blob (llviewerobject.cpp:1836-1839)
+    /// -- and no simulator we know of sends it. The particle repair keeps its one-byte reading; a
+    /// caller that needs a trustworthy offset gets "unknown" rather than a guess.</para>
+    /// </remarks>
+    internal static bool TryFindExtraParams(byte[]? data, out int offset)
+    {
+        offset = 0;
+        if (data is null || data.Length < FlagsOffset + 4 + OwnerIdSize)
+        {
+            return false;
+        }
+
+        uint flags = ReadFlags(data);
+        if ((flags & IsTree) == 0 && (flags & HasScratchPad) != 0)
+        {
+            return false;
+        }
+
+        if (!TryWalkToParticleBlock(data, flags, out int at))
+        {
+            return false;
+        }
+
+        if ((flags & HasParticlesLegacy) != 0)
+        {
+            at += LegacyBlockSize;
+        }
+
+        // The count byte has to exist. (A text section's colour is skipped unchecked by the walk,
+        // so a block cut off right there can leave `at` past the end.)
+        if (at < 0 || at >= data.Length)
+        {
+            return false;
+        }
+
+        offset = at;
+        return true;
+    }
+
+    private static uint ReadFlags(byte[] data)
+        => (uint)(data[FlagsOffset]
+            | (data[FlagsOffset + 1] << 8)
+            | (data[FlagsOffset + 2] << 16)
+            | (data[FlagsOffset + 3] << 24));
+
+    /// <summary>
+    /// Walks the optional sections between the owner id and the particle block, in the decoder's
+    /// own order, and returns where the particle block would start. False if a section's terminator
+    /// or length runs off the data. The caller still has to check that the offset it gets is inside
+    /// the data: the fixed-width skips are not individually bounds-checked.
+    /// </summary>
+    private static bool TryWalkToParticleBlock(byte[] data, uint flags, out int offset)
+    {
+        offset = FlagsOffset + 4 + OwnerIdSize;
+
+        if ((flags & HasAngularVelocity) != 0)
+        {
+            offset += 12;
+        }
+
+        if ((flags & HasParent) != 0)
+        {
+            offset += 4;
+        }
+
+        // Tree and scratch pad are mutually exclusive in the decoder, in this order.
+        if ((flags & IsTree) != 0)
+        {
+            offset += 1;
+        }
+        else if ((flags & HasScratchPad) != 0)
+        {
+            if (offset >= data.Length)
+            {
+                return false;
+            }
+            offset += 1 + data[offset];
+        }
+
+        if ((flags & HasText) != 0)
+        {
+            if (!TrySkipString(data, ref offset))
+            {
+                return false;
+            }
+            offset += 4; // text colour
+        }
+
+        if ((flags & HasMediaUrl) != 0 && !TrySkipString(data, ref offset))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>Advances past a null-terminated string, terminator included. False if the data

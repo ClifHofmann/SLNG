@@ -161,6 +161,30 @@ public partial class ObjectRenderer : Node3D
         // the face frozen on its unanimated placement until the animation happens to step.
         public bool TexAnimNeedsReapply;
 
+        // FEAT-ANIMESH-01: true while this prim's mesh is drawn by its object's CONTROL AVATAR
+        // (AvatarRenderer.ControlAvatar.cs) instead of by MeshInstance -- which then has no mesh,
+        // no material and no collision shape, but stays: child prims, the light and the particle
+        // emitter hang off it, and the cull sweep measures distance from it.
+        public bool ControlAvatarOwned;
+
+        // The rigged mesh handed to the control avatar, and the geometry key it would be cached
+        // under. Held so an object that STOPS being animesh gets its static mesh back without a
+        // second fetch (ReleaseMeshRef drops LoadedMeshData the moment the static mesh goes).
+        public MeshData? RiggedMeshData;
+        public Guid RiggedGeometryKey;
+
+        // The root's animated-mesh flag as of the last UpdateVisual that looked, so a flip is
+        // noticed once and cascaded to the rest of the linkset.
+        public bool AnimeshFlagSeen;
+
+        // FEAT-ANIMESH-02: the animation list this prim had when UpdateVisual last looked, and the
+        // root it was counted under. WorldSimulation replaces a prim's list wholesale and only when
+        // it changed, so a different INSTANCE is a change -- the whole detector is one reference
+        // comparison. Empty (the shared empty array) and no root for the overwhelming majority of
+        // prims.
+        public IReadOnlyList<SignaledAnimation> SeenSignaled = Array.Empty<SignaledAnimation>();
+        public Guid AnimationRoot;
+
         // Sentinel distinct from Guid.Empty (which is a valid "no texture" value) so the
         // first update always applies.
         public static readonly Guid NotLoaded = new("ffffffff-ffff-ffff-ffff-ffffffffffff");
@@ -698,6 +722,11 @@ public partial class ObjectRenderer : Node3D
                 if (viewDSq <= showSq && !state.MeshInstance.Visible) state.MeshInstance.Visible = true;
                 else if (viewDSq > hideSq && state.MeshInstance.Visible) state.MeshInstance.Visible = false;
 
+                // FEAT-ANIMESH-01: a control avatar is not in this dictionary, so its mesh takes the
+                // prim's visibility from here. A lookup per animesh prim per sweep; ordinary prims
+                // skip it on one bool.
+                if (state.ControlAvatarOwned) ControlAvatars?.SetControlAvatarMeshVisible(id, state.MeshInstance.Visible);
+
                 // FEAT-PERF-06: distance shadow-caster cull. Measured on the villa scene: turning
                 // shadows off entirely is worth ~15 FPS, and instancing (a ~10% draw-call cut)
                 // moved the frame rate not at all -- the cost is the shadow DEPTH pass drawing the
@@ -971,6 +1000,11 @@ public partial class ObjectRenderer : Node3D
         // Mesh only when it finds it null, so evicting after `Mesh = null` would re-populate the
         // node with the shared mesh and un-hide an object that just went out of range.
         _instanceGroups?.Leave(state.EntityId);
+
+        // FEAT-ANIMESH-01: a distant animesh must not keep a built skeleton (and its skinned
+        // mesh) alive after the prim's own mesh is let go. It is rebuilt when UpdateVisual
+        // reloads the mesh on the way back into range.
+        ReleaseControlAvatar(state);
 
         state.MeshInstance.Mesh = null;
         state.MeshInstance.MaterialOverride = null;
@@ -1761,6 +1795,13 @@ public partial class ObjectRenderer : Node3D
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
         if (_visuals.TryGetValue(entityId, out var state))
         {
+            // FEAT-ANIMESH-01: derez, region change and teleport all arrive here through the
+            // world's EntityRemoved. The skeleton goes with the prim that was its last mesh.
+            ReleaseControlAvatar(state);
+            _animeshNotRiggedWarned.Remove(entityId);
+            // FEAT-ANIMESH-02: the object's other prims go on playing without this one's list. The
+            // entity is already gone from the world, so the union read next frame leaves it out.
+            if (state.AnimationRoot != Guid.Empty) ControlAvatars?.MarkControlAvatarAnimationsDirty(state.AnimationRoot);
             ReleaseMeshRef(state);
             state.MeshInstance.QueueFree();
             if (_gpuCache != null)
@@ -2339,6 +2380,11 @@ public partial class ObjectRenderer : Node3D
 
             UpdateTextureAnimRegistration(state.EntityId, prim.TextureAnim);
 
+            // FEAT-ANIMESH-02: outside the in-range guard below -- the list lives on the component
+            // whether or not this prim is being drawn, and a plain child out of range can hold the
+            // animation its root's robot is playing.
+            SyncSignaledAnimations(entity, state, prim);
+
             // BUG-RENDER-16: an animation that arrives AFTER the mesh was built changes the merge
             // barrier, and nothing else in UpdateVisual re-plans for it -- a TextureAnim block
             // touches neither the shape nor the face records the two other re-plan triggers watch.
@@ -2350,6 +2396,11 @@ public partial class ObjectRenderer : Node3D
             // position/scale are kept current here so the distance check stays accurate.
             if (!state.ResourcesReleased)
             {
+                // FEAT-ANIMESH-01: a prim whose geometry stopped being an uploaded mesh (it became
+                // a sculpt or a plain prim) has nothing left to skin.
+                if (state.ControlAvatarOwned && !(prim.IsMesh && prim.MeshId != Guid.Empty))
+                    ReleaseControlAvatar(state);
+
                 // Only (re)load the mesh when it actually changes — UpdateVisual fires on every
                 // ObjectUpdate (i.e. every position change), and rebuilding the mesh each time is
                 // what stalls the main thread on a busy region.
@@ -2391,6 +2442,11 @@ public partial class ObjectRenderer : Node3D
                     _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve, lod);
                 }
 
+                // FEAT-ANIMESH-01: does this prim belong to a control avatar, as of now? Settles the
+                // two arrival orders the mesh callback cannot (the flag turning up AFTER the mesh,
+                // and going away again).
+                SyncControlAvatar(entity, state, prim);
+
                 // Re-apply materials when the default texture/material/color changes (a proxy for
                 // "the object's appearance changed"). The mesh-assignment callback also re-applies
                 // once surfaces exist; here covers appearance-only changes on an already-loaded
@@ -2423,6 +2479,14 @@ public partial class ObjectRenderer : Node3D
                         // when the grouping was already right.
                         if (!RePlanSurfaceMerge(state))
                             _ = ApplyFaceMaterialsAsync(state);
+                    }
+                    else if (state.ControlAvatarOwned && state.RiggedMeshData != null)
+                    {
+                        // FEAT-ANIMESH-01: the same edit on a prim whose mesh is drawn by a control
+                        // avatar. The face records decide its surface grouping, so it is re-skinned
+                        // with the new ones; an identical request is dropped on the other side.
+                        ControlAvatars?.SetControlAvatarMesh(state.EntityId, state.RiggedMeshData,
+                            state.LoadedMeshId, state.MeshInstance.Visible);
                     }
                 }
             }
@@ -2546,8 +2610,211 @@ public partial class ObjectRenderer : Node3D
             // LoadAndApplyPrimMeshAsync uses for BUG-RENDER-19.
             if (state.LoadedMeshDetailLevel != lod) return;
 
-            AssignSharedMesh(state, KeyForMesh(meshId, lod), mesh, flipV: true);
+            ApplyArrivedMesh(state, meshId, lod, mesh);
         }, label: "mesh.apply");
+    }
+
+    /// <summary>Where a decoded mesh asset lands once the staleness checks have passed.</summary>
+    private void ApplyArrivedMesh(VisualState state, Guid meshId, MeshDetailLevel lod, MeshData mesh)
+    {
+        // FEAT-ANIMESH-01: a rigged mesh of an animated-mesh object is skinned by that object's
+        // control avatar. Not built here at all -- the unskinned geometry, its materials and its
+        // trimesh shape would all be wrong (and the shape in the wrong place).
+        var geometryKey = KeyForMesh(meshId, lod);
+        if (TryHandOverToControlAvatar(state, geometryKey, meshId, mesh)) return;
+
+        AssignSharedMesh(state, geometryKey, mesh, flipV: true);
+    }
+
+    // ---- FEAT-ANIMESH-01: an animated mesh is skinned by a control avatar -------------------------
+    //
+    // The reference viewer draws an unflagged rigged mesh on the ground as a plain static mesh
+    // (llvovolume.cpp:5809-5820) and so does this renderer. A rigged mesh whose linkset ROOT carries
+    // the animated-mesh flag is different: it belongs to a control avatar, a bodyless avatar
+    // skeleton that AvatarRenderer builds and places on the root prim, and is skinned to it exactly
+    // as a worn mesh is. ObjectRenderer's part is only to decide WHICH prims those are and to hand
+    // them over -- three arrival orders, which all have to land in the same place:
+    //   (a) the flag is known when the mesh arrives      -> TryHandOverToControlAvatar, no static mesh built
+    //   (b) the mesh was assigned statically, THEN the flag turned up -> SyncControlAvatar tears it down
+    //   (c) the flag goes away later                     -> SyncControlAvatar restores the static mesh
+    // The prim's own MeshInstance3D stays in every case: child prims, the light and the particle
+    // emitter hang off it and the cull sweep measures distance from it.
+
+    /// <summary>The renderer that owns control avatars, set by Boot (which builds both). Null means
+    /// no animesh support, and every rigged mesh is drawn the way it always was.</summary>
+    public AvatarRenderer? ControlAvatars { get; set; }
+
+    // Flagged roots already reported as having a mesh that is not rigged. Main-thread only.
+    private readonly HashSet<Guid> _animeshNotRiggedWarned = new();
+
+    /// <summary>Gives a freshly decoded mesh to the control avatar if it belongs there. True means
+    /// the control avatar has it and the caller must NOT build a static mesh.</summary>
+    private bool TryHandOverToControlAvatar(VisualState state, Guid geometryKey, Guid meshId, MeshData data)
+    {
+        var controlAvatars = ControlAvatars;
+        if (controlAvatars == null || _world == null) return false;
+        var entity = _world.GetEntity(state.EntityId);
+        if (entity == null) return false;
+
+        if (data.Skin == null)
+        {
+            // A flagged root whose mesh is not rigged is not an animesh in the viewer either (no
+            // control avatar without a rigged mesh), but the creator meant it to be one -- say so
+            // once instead of leaving a robot that silently stays a statue.
+            if (entity.GetComponent<PrimitiveComponent>() is { IsAnimatedMesh: true, IsMesh: true }
+                && entity.GetComponent<TransformComponent>() is { ParentLocalId: 0 }
+                && _animeshNotRiggedWarned.Add(entity.Id))
+            {
+                Logger.Warn($"[Animesh] root {entity.Id.ToString("N")[..8]} is flagged as animated mesh but its mesh " +
+                            $"asset {meshId.ToString("N")[..8]} has no rig -- drawn as a plain static object");
+            }
+            // A prim that was skinned a moment ago and has been given a mesh with no rig (its
+            // asset id was edited) is an ordinary prim again.
+            ReleaseControlAvatar(state);
+            return false;
+        }
+
+        if (!AnimatedMeshLinkset.IsAnimatedPart(_world, entity, out _))
+        {
+            // Owned a moment ago, no longer animesh, and a mesh has arrived before UpdateVisual
+            // noticed: let go of the skeleton and let the caller draw it statically.
+            ReleaseControlAvatar(state);
+            return false;
+        }
+
+        if (!controlAvatars.SetControlAvatarMesh(state.EntityId, data, meshId, state.MeshInstance.Visible))
+            return false;
+
+        state.RiggedMeshData = data;
+        state.RiggedGeometryKey = geometryKey;
+        if (!state.ControlAvatarOwned)
+        {
+            state.ControlAvatarOwned = true;
+            DropStaticMesh(state);
+        }
+        return true;
+    }
+
+    /// <summary>Stops the prim's own node drawing a mesh -- the geometry, its materials and its
+    /// collision shape -- without touching the node, which its children hang off. Same order as
+    /// <see cref="ReleaseResources"/>.</summary>
+    private void DropStaticMesh(VisualState state)
+    {
+        // Out of the instance group BEFORE the mesh is nulled: Leave restores a member's own Mesh
+        // only when it finds it null.
+        _instanceGroups?.Leave(state.EntityId);
+
+        // An outline cut from the geometry that is going would hang in the air.
+        if (_outlined.ContainsKey(state.EntityId))
+            ApplySelectionOutline(state.EntityId, state.MeshInstance, false, false);
+
+        state.MeshInstance.Mesh = null;
+        state.MeshInstance.MaterialOverride = null;
+        ReleaseMeshRef(state);
+        state.CollisionShape.Shape = null;
+    }
+
+    /// <summary>Lets go of this prim's share of its control avatar. The skeleton itself goes when
+    /// it was the last prim on it.</summary>
+    private void ReleaseControlAvatar(VisualState state)
+    {
+        if (!state.ControlAvatarOwned) return;
+
+        ControlAvatars?.ReleaseControlAvatarMesh(state.EntityId);
+        state.ControlAvatarOwned = false;
+        state.RiggedMeshData = null;
+        state.RiggedGeometryKey = Guid.Empty;
+    }
+
+    /// <summary>Arrival order (c): the object stopped being animesh. Gives the prim the static mesh
+    /// it would have had.</summary>
+    private void RestoreStaticMesh(VisualState state)
+    {
+        var data = state.RiggedMeshData;
+        var key = state.RiggedGeometryKey;
+        ReleaseControlAvatar(state);
+        if (data != null && key != Guid.Empty) AssignSharedMesh(state, key, data, flipV: true);
+    }
+
+    /// <summary>FEAT-ANIMESH-02: tells the object's control avatar that one of its prims' animation
+    /// lists changed, or that the prim moved to another linkset. The avatar plays the union over the
+    /// root and EVERY child, not just the rigged ones, so this is every prim's business and not only
+    /// the ones a control avatar owns.
+    ///
+    /// <para>The common case -- an ordinary prim, no list, never had one -- is one reference
+    /// comparison, a count and a Guid. Nothing here scans the linkset: it only raises a flag on the
+    /// root's avatar, which reads the lists itself once, next frame, however many prims raised it.
+    /// A prim that holds a list also looks up its root (a hop or two) whenever it is updated, which
+    /// is how a re-link is noticed.</para></summary>
+    private void SyncSignaledAnimations(Entity entity, VisualState state, PrimitiveComponent prim)
+    {
+        var controlAvatars = ControlAvatars;
+        if (controlAvatars == null || _world == null) return;
+
+        var signaled = prim.SignaledAnimations;
+        bool changed = !ReferenceEquals(signaled, state.SeenSignaled);
+        if (!changed && signaled.Count == 0 && state.AnimationRoot == Guid.Empty) return;
+
+        // Which object this prim's list belongs to. A prim with no list contributes nothing to
+        // anyone, and one whose root has not arrived yet cannot be counted: the root's control
+        // avatar reads every child's list when it is built, so nothing is lost by not saying so.
+        Guid root = signaled.Count > 0
+            ? AnimatedMeshLinkset.RootOf(_world, entity)?.Id ?? Guid.Empty
+            : Guid.Empty;
+        Guid previous = state.AnimationRoot;
+        if (!changed && root == previous) return;
+
+        if (root != Guid.Empty) controlAvatars.MarkControlAvatarAnimationsDirty(root);
+        if (previous != Guid.Empty && previous != root) controlAvatars.MarkControlAvatarAnimationsDirty(previous);
+
+        state.SeenSignaled = signaled;
+        state.AnimationRoot = root;
+    }
+
+    /// <summary>Re-evaluates, from the world as it is now, whether this prim's mesh belongs to a
+    /// control avatar -- arrival orders (b) and (c).</summary>
+    private void SyncControlAvatar(Entity entity, VisualState state, PrimitiveComponent prim)
+    {
+        if (ControlAvatars == null || _world == null) return;
+
+        CascadeAnimeshFlag(entity, state, prim);
+
+        // Nothing rigged here, which is every ordinary prim: stop before any linkset walk.
+        if (!state.ControlAvatarOwned && state.LoadedMeshData?.Skin == null) return;
+
+        bool animesh = AnimatedMeshLinkset.IsAnimatedPart(_world, entity, out _);
+        if (animesh && !state.ControlAvatarOwned)
+            TryHandOverToControlAvatar(state, state.LoadedGeometryKey, state.LoadedMeshId, state.LoadedMeshData!);
+        else if (!animesh && state.ControlAvatarOwned)
+            RestoreStaticMesh(state);
+    }
+
+    /// <summary>The flag lives on the linkset ROOT, but a CHILD's mesh is what has to move when it
+    /// flips, and nothing about the child changes when only the root's block does -- no update
+    /// reaches it. So when a root's flag flips, the rest of the linkset is told to look again.
+    /// Only prims that already hold a rigged mesh can be affected (the others will read the flag
+    /// when their mesh arrives), which keeps this walk off everything else.</summary>
+    private void CascadeAnimeshFlag(Entity entity, VisualState state, PrimitiveComponent prim)
+    {
+        if (prim.IsAnimatedMesh == state.AnimeshFlagSeen) return;
+        state.AnimeshFlagSeen = prim.IsAnimatedMesh;
+
+        // The viewer ignores the block on a child, so only a root's flipping matters.
+        if (entity.GetComponent<TransformComponent>() is not { ParentLocalId: 0 } || _world == null) return;
+
+        foreach (var (childId, child) in _visuals)
+        {
+            if (childId == state.EntityId) continue;
+            if (!child.ControlAvatarOwned && child.LoadedMeshData?.Skin == null) continue;
+
+            var other = _world.GetEntity(childId);
+            if (other == null || other.RegionHandle != entity.RegionHandle) continue;
+            if (other.GetComponent<TransformComponent>()?.ParentLocalId != entity.LocalId) continue;
+
+            string id = childId.ToString();
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
+                                        () => UpdateVisual(id), $"update:{id}", "visual.update");
+        }
     }
 
     private async System.Threading.Tasks.Task LoadAndApplySculptMeshAsync(VisualState state, Guid sculptId, byte sculptType, byte profileCurve)
@@ -4208,6 +4475,11 @@ public partial class ObjectRenderer : Node3D
 
     private void AssignSharedMesh(VisualState state, Guid geometryKey, MeshData data, bool flipV)
     {
+        // FEAT-ANIMESH-01: every static mesh goes through here, and a prim being given one is by
+        // definition not drawn by a control avatar any more (its geometry source changed under it).
+        // A no-op unless it was.
+        ReleaseControlAvatar(state);
+
         // BUG-RENDER-16: decide the surface grouping BEFORE consulting the cache -- it is part of
         // the key. Kept on the main thread with the rest of this method: it reads the object's
         // face records out of the world and is a handful of struct comparisons.

@@ -252,7 +252,12 @@ public record ObjectUpdateEvent(
     // Same terse-update staleness as IsPhysical and friends: they ride the full ObjectUpdate
     // only, so they are applied under IsFullUpdate.
     bool YouCanModify = false, bool YouCanMove = false, bool YouCanCopy = false,
-    bool YouCanTransfer = false, bool YouAreOwner = false
+    bool YouCanTransfer = false, bool YouAreOwner = false,
+    // FEAT-ANIMESH-01: this prim's Extended Mesh (0x70) ExtraParams block has the animated-mesh
+    // bit set. Read out of the raw packet bytes because LibreMetaverse skips the block; see
+    // ExtendedMeshParams. Per prim -- the viewer honours only the ROOT's. Same terse-update
+    // staleness as the light and reflection-probe fields, so applied under IsFullUpdate.
+    bool IsAnimatedMesh = false
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY
@@ -310,6 +315,21 @@ public record AvatarUpdateEvent(ulong RegionHandle, uint LocalId, Guid AgentId, 
 
 /// <summary>Represents the removal of an object from the simulator's interest list.</summary>
 public record ObjectRemovedEvent(ulong RegionHandle, uint LocalId) : IWorldEvent;
+
+/// <summary>FEAT-ANIMESH-02: the simulator's <c>ObjectAnimation</c> message -- the animations an
+/// animated-mesh PRIM has been told to play. One message per prim, addressed by the prim's object
+/// UUID (not a LocalID, so it can arrive before the object does), and it REPLACES that prim's whole
+/// list: an empty <paramref name="Animations"/> means "stop everything"
+/// (<c>process_object_animation</c>, llviewermessage.cpp:4108-4171).
+///
+/// <para>Exactly what the sim sent for the one prim. Not deduplicated and not unioned across the
+/// linkset -- that belongs to the object's control avatar, which keeps the larger sequence id when
+/// the root and a child both name the same animation (llcontrolavatar.cpp:559-607).</para></summary>
+/// <param name="RegionHandle">The region that sent it.</param>
+/// <param name="ObjectId">The prim's object UUID (<c>Sender.ID</c>), the same id
+/// <see cref="ObjectUpdateEvent.ObjectId"/> carries.</param>
+public record ObjectAnimationEvent(
+    ulong RegionHandle, Guid ObjectId, IReadOnlyList<SignaledAnimation> Animations) : IWorldEvent;
 
 /// <summary>Physics collision shape and material response (Features tab "Physics" section) --
 /// unlike most other prim data, this does NOT ride along ObjectUpdate; the simulator only sends

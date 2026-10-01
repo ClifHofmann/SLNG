@@ -97,6 +97,15 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     // so the high-level API cannot express "this object is a mirror". See ReflectionProbeParams.
     private readonly ConcurrentDictionary<uint, SLNG.Core.ReflectionProbeParams?> _reflectionProbeByLocalId = new();
 
+    // The objects whose most recent raw ObjectUpdate / ObjectUpdateCompressed carried an Extended
+    // Mesh (0x70) block with the animated-mesh bit set (FEAT-ANIMESH-01). LibreMetaverse skips the
+    // block, so this is the only place the flag exists. Holds ONLY the true entries -- every
+    // ordinary prim passes through the latch on every update and none of them belongs here -- and
+    // is keyed by region AS WELL AS LocalID, which the two dictionaries above are not: LocalIDs are
+    // handed out per region, and a neighbour (MultipleSims) routinely reuses the same number.
+    // Pruned on kill and on region disconnect, so no entry outlives its object.
+    private readonly ConcurrentDictionary<(ulong Region, uint LocalId), bool> _animatedMeshObjects = new();
+
     /// <summary>MVP3-3 Phase 1: the last <c>x-mv:</c> media-version string a fetch was already
     /// queued for, per LocalID. LibreMetaverse raises no event when a prim's MOAP media changes
     /// (verified: no <c>ObjectMedia</c> event is ever raised in the pinned 3.1.3), so this is the
@@ -152,6 +161,10 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<PhysicsPropertiesEvent>? PhysicsPropertiesReceived;
 
     public event EventHandler<ObjectMediaEvent>? ObjectMediaReceived;
+
+    /// <summary>FEAT-ANIMESH-02: the animations an animated-mesh prim has been told to play. Raised
+    /// on a LibreMetaverse worker thread, like every other event here.</summary>
+    public event EventHandler<ObjectAnimationEvent>? ObjectAnimationReceived;
 
     public event EventHandler<NameResolvedEvent>? NameResolved;
 
@@ -476,6 +489,8 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
 
     internal void RaiseObjectMedia(ObjectMediaEvent e) => ObjectMediaReceived?.Invoke(this, e);
 
+    internal void RaiseObjectAnimation(ObjectAnimationEvent e) => ObjectAnimationReceived?.Invoke(this, e);
+
     internal void RaiseTerrainPatch(TerrainPatchEvent e) => TerrainPatchReceived?.Invoke(this, e);
 
     internal void RaiseTerrainSettings(TerrainSettingsEvent e) => TerrainSettingsReceived?.Invoke(this, e);
@@ -711,6 +726,10 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
         _client.Objects.TerseObjectUpdate += OnTerseObjectUpdate;
+        // FEAT-ANIMESH-02: what an animated mesh has been told to play. The library raises this for
+        // every ObjectAnimation packet, empty lists included; the region's seed request already
+        // asks for the capability OpenSim gates the message on (Caps.AllCapabilities).
+        _client.Objects.ObjectAnimation += OnObjectAnimation;
         // Repairs the particle system LibreMetaverse loses on every compressed update -- see
         // CompressedParticleRepair. Registered here rather than replacing the library's handler,
         // so it runs after it: LibreMetaverse decodes the object as usual (correctly, apart from
@@ -842,6 +861,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Self.ChatFromSimulator -= OnChatFromSimulator;
         _client.Objects.ObjectUpdate -= OnObjectUpdate;
         _client.Objects.TerseObjectUpdate -= OnTerseObjectUpdate;
+        _client.Objects.ObjectAnimation -= OnObjectAnimation;
         _client.Self.AgentDataReply -= OnAgentDataReply;
         _client.Objects.ObjectPropertiesFamily -= OnObjectPropertiesFamily;
         _client.Objects.ObjectProperties -= OnObjectPropertiesFull;
