@@ -40,6 +40,13 @@ internal readonly struct ExtraParamsScan
     /// <summary>Every entry the count byte promised was read and valid.</summary>
     public bool Complete { get; private init; }
 
+    /// <summary>When <see cref="Complete"/>: how many bytes the ExtraParams occupy, count byte
+    /// included -- which is where whatever follows them in the same buffer begins. A compressed
+    /// object carries sound, name values, the shape, the texture entry and (flag 0x400) the extended
+    /// particle block behind them, so it is the one way to find any of those. Zero otherwise: a walk
+    /// that broke off says nothing about where the section ends.</summary>
+    public int Length { get; private init; }
+
     /// <summary>A Light (0x20) block is present.</summary>
     public bool Light { get; private init; }
 
@@ -126,7 +133,7 @@ internal readonly struct ExtraParamsScan
             i += size;
         }
 
-        return new ExtraParamsScan { Complete = true, Light = light, Probe = probe, AnimatedMesh = animatedMesh };
+        return new ExtraParamsScan { Complete = true, Length = i, Light = light, Probe = probe, AnimatedMesh = animatedMesh };
     }
 
     private static ExtraParamsScan Partial(bool light, ReflectionProbeParams? probe, bool animatedMesh)

@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+
 namespace SLNG.Net;
 
 /// <summary>
@@ -32,6 +34,13 @@ namespace SLNG.Net;
 /// particle system. The first version of this class handled only the media URL, and a child prim
 /// in a linkset (parent id, 4 bytes) came out with a 3-second emitter reading as 1.15 s, a burst
 /// of 100 as 128, and a texture id shifted by four bytes.</para>
+///
+/// <para><b>The extended block</b> (glow and/or a blend function, compressed flag 0x400) is a
+/// different case: it is not ahead of the extra params but the LAST section of the object, behind
+/// the texture entry and texture animation, and it is self-delimiting. The first version of this
+/// class looked for it at the legacy position -- where the extra params are -- and handed those to
+/// the particle parser, which saw a system size that was not 68 and returned an all-default system.
+/// See <see cref="TryFindExtendedParticleBlock"/> (BUG-NET-26).</para>
 /// </summary>
 internal static class CompressedParticleRepair
 {
@@ -52,19 +61,46 @@ internal static class CompressedParticleRepair
     internal const uint HasParent = 0x20;
     internal const uint HasAngularVelocity = 0x80;
 
+    /// <summary>Sections that sit AFTER the extra params and ahead of the extended particle block.
+    /// Not part of the walk to the particle block above; the extended block is found by walking on
+    /// from the extra params past these (see <see cref="TryFindExtendedParticleBlock"/>).</summary>
+    internal const uint HasSound = 0x10;
+    internal const uint HasTextureAnimation = 0x40;
+    internal const uint HasNameValues = 0x100;
+
     /// <summary>Object has an extended particle block (glow and/or a custom blend function), which
     /// OpenSim sends whenever the system is longer than the legacy 86 bytes
-    /// (LLClientView.cs:7645-7649). LibreMetaverse does not handle this flag in the object handler
-    /// at all -- so on top of losing the particles it also fails to skip the block, and every
-    /// field it decodes after it for that object is read from the wrong offset. Recovering the
-    /// particles here does not repair that; it is a separate upstream bug.</summary>
+    /// (LLClientView.cs:7645-7649). Unlike the legacy block it is NOT ahead of the extra params:
+    /// it is the very last section of the object, behind the texture entry and the texture
+    /// animation (llvovolume.cpp:520-523; OpenSim LLClientView.cs `if (haspsnew)` at the end of
+    /// CreateCompressedUpdateBlockZC). LibreMetaverse does not handle the flag at all, but since the
+    /// block is last nothing it does decode is displaced by it -- the particles are simply lost.
+    /// See <see cref="TryFindExtendedParticleBlock"/>.</summary>
     internal const uint HasParticlesNew = 0x400;
 
     internal const int LegacyBlockSize = 86;
 
     /// <summary>Largest block LibreMetaverse's own parser accepts
-    /// (<c>Primitive.ParticleSystem.MaxDataBlockSize</c>).</summary>
+    /// (<c>Primitive.ParticleSystem.MaxDataBlockSize</c>) and the largest the viewer does
+    /// (<c>PS_MAX_DATA_BLOCK_SIZE</c>, llpartdata.cpp:44): both size fields, the 68-byte system, the
+    /// 18 bytes of part data, glow and a blend function.</summary>
     internal const int MaxBlockSize = 98;
+
+    /// <summary>The system section of an extended block (<c>PS_SYS_DATA_BLOCK_SIZE</c>,
+    /// llpartdata.cpp:43). It is preceded by its own S32 size, which must equal this.</summary>
+    private const int SystemDataSize = 68;
+
+    /// <summary>The part data every extended block carries (<c>PS_LEGACY_PART_DATA_BLOCK_SIZE</c>,
+    /// llpartdata.cpp:42); glow and a blend function add two bytes each. Preceded by its own S32
+    /// size.</summary>
+    private const int MinPartDataSize = 18;
+
+    /// <summary>Sound: UUID(16), gain F32(4), flags U8(1), radius F32(4)
+    /// (llviewerobject.cpp:1928-1934).</summary>
+    private const int SoundSize = 25;
+
+    /// <summary>The shape: 16 path bytes and 7 profile bytes (llvolumemessage.cpp:394-450, 152-190).</summary>
+    private const int VolumeParamsSize = 23;
 
     /// <summary>Offset of the compressed flags word: UUID(16) + LocalID(4) + PCode(1) + State(1)
     /// + CRC(4) + Material(1) + ClickAction(1) + Scale(12) + Position(12) + Rotation(12).</summary>
@@ -94,13 +130,19 @@ internal static class CompressedParticleRepair
 
     /// <summary>
     /// Returns the object's particle block, or null if it carries none (or the data is too short
-    /// to hold what its flags claim).
+    /// to hold what its flags claim, or the layout cannot be established).
     /// </summary>
     /// <remarks>
-    /// The extended block is self-describing but its length header is BitPack-encoded, so rather
-    /// than decode that here the slice is taken up to the parser's own maximum. Trailing bytes are
-    /// harmless: the parser reads its fields in order and simply never reaches them. The legacy
-    /// block is taken at exactly 86 bytes, because that length is what selects the legacy branch.
+    /// <para>The bytes come back in the shape <c>new Primitive.ParticleSystem(bytes, 0)</c> parses,
+    /// and that constructor decides the layout from the LENGTH of what it is given
+    /// (<c>data.Length - pos</c>): exactly 86 selects the legacy layout, 87 to 98 the extended one.
+    /// So the legacy block is taken at exactly 86 bytes, and the extended block at exactly its
+    /// declared size (94 to 98).</para>
+    ///
+    /// <para>When both flags are set the extended block wins, as it does in the viewer, which
+    /// unpacks the legacy block first and the extended one last into the same source
+    /// (llviewerobject.cpp:1888-1891, llvovolume.cpp:520-523). If the extended block cannot be used
+    /// the legacy one is still a good description of the emitter, so it is returned instead.</para>
     /// </remarks>
     internal static byte[]? ExtractParticleBlock(byte[] data)
     {
@@ -117,38 +159,151 @@ internal static class CompressedParticleRepair
             return null;
         }
 
+        if ((flags & HasParticlesNew) != 0
+            && TryFindExtendedParticleBlock(data, out int extendedAt, out int extendedLength))
+        {
+            return data[extendedAt..(extendedAt + extendedLength)];
+        }
+
+        if ((flags & HasParticlesLegacy) == 0)
+        {
+            return null;
+        }
+
         if (!TryWalkToParticleBlock(data, flags, out int offset))
         {
             return null;
         }
 
         int available = data.Length - offset;
-        if (offset < 0 || available <= 0)
+        if (offset < 0 || available < LegacyBlockSize)
         {
             return null;
         }
 
-        if ((flags & HasParticlesLegacy) != 0)
+        return data[offset..(offset + LegacyBlockSize)];
+    }
+
+    /// <summary>
+    /// Finds the extended particle block (compressed flag 0x400): where it starts and how long it is,
+    /// or false when it cannot be located with confidence.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Where it is.</b> Last in the object. The viewer reads, in order: owner, angular
+    /// velocity, parent, tree/scratch pad, text, media URL, the legacy particle block, the extra
+    /// params, sound, name values (llviewerobject.cpp:1803-1942), then in
+    /// <c>LLVOVolume::processUpdateMessage</c> the volume params, the texture entry, the texture
+    /// animation and, last, the extended particle block (llvovolume.cpp:445-523). OpenSim writes the
+    /// same order (LLClientView.cs, CreateCompressedUpdateBlockZC: extra params 8072, sound 8078,
+    /// name values 8085, shape 8090-8107, texture entry 8109-8120, texture animation 8121-8129,
+    /// extended particles 8131-8135). The first version looked for it at the legacy position, where
+    /// an object laid out this way has its extra params, and handed those to the particle parser.</para>
+    ///
+    /// <para><b>Why the start is determinable.</b> Nothing in front of it has to be PARSED, only
+    /// stepped over: the extra params end where their entries say
+    /// (<see cref="ExtraParamsScan.Length"/>), sound and the shape are fixed width, name values are
+    /// null-terminated, and the texture entry and texture animation are each an S32 size followed by
+    /// that many bytes (<c>unpackBinaryData</c>, lldatapacker.cpp:292-334).</para>
+    ///
+    /// <para><b>What delimits it.</b> Itself: an S32 system size (68), the system, an S32 part size
+    /// (18, +2 with glow, +2 with a blend function), the part data -- 94 to 98 bytes in all
+    /// (llpartdata.cpp:98-152, 280-309). It is also the last thing in the buffer, but the declared
+    /// size is what is used; anything after it is not part of it. A size this viewer does not know
+    /// (the viewer skips such a block and shows nothing, llpartdata.cpp:286-304) is refused rather
+    /// than guessed at.</para>
+    ///
+    /// <para>False for a scratch-pad object (see <see cref="TryFindExtraParams"/>) and for any
+    /// section that runs off the data.</para>
+    /// </remarks>
+    internal static bool TryFindExtendedParticleBlock(byte[] data, out int offset, out int length)
+    {
+        offset = 0;
+        length = 0;
+
+        if (!TryFindExtraParams(data, out int at))
         {
-            if (available < LegacyBlockSize)
-            {
-                return null;
-            }
-            return data[offset..(offset + LegacyBlockSize)];
+            return false;
         }
 
-        if ((flags & HasParticlesNew) != 0)
+        uint flags = ReadFlags(data);
+
+        var extraParams = ExtraParamsScan.Read(data.AsSpan(at));
+        if (!extraParams.Complete || extraParams.Length < 1)
         {
-            // Must land above the legacy size or the parser takes the wrong branch.
-            int length = Math.Min(available, MaxBlockSize);
-            if (length <= LegacyBlockSize)
-            {
-                return null;
-            }
-            return data[offset..(offset + length)];
+            return false;
+        }
+        at += extraParams.Length;
+
+        if ((flags & HasSound) != 0 && !TryAdvance(data, ref at, SoundSize))
+        {
+            return false;
         }
 
-        return null;
+        if ((flags & HasNameValues) != 0 && !TrySkipString(data, ref at))
+        {
+            return false;
+        }
+
+        // The shape, then the texture entry.
+        if (!TryAdvance(data, ref at, VolumeParamsSize) || !TrySkipSized(data, ref at))
+        {
+            return false;
+        }
+
+        if ((flags & HasTextureAnimation) != 0 && !TrySkipSized(data, ref at))
+        {
+            return false;
+        }
+
+        // The block's own header: S32 system size, the system, S32 part size.
+        const int HeaderSize = 4 + SystemDataSize + 4;
+        if (data.Length - at < HeaderSize
+            || BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(at, 4)) != SystemDataSize)
+        {
+            return false;
+        }
+
+        int partSize = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(at + 4 + SystemDataSize, 4));
+        if (partSize < MinPartDataSize || partSize > MaxBlockSize - HeaderSize
+            || data.Length - at < HeaderSize + partSize)
+        {
+            return false;
+        }
+
+        offset = at;
+        length = HeaderSize + partSize;
+        return true;
+    }
+
+    /// <summary>Steps over a fixed-width section; false if the data ends inside it.</summary>
+    private static bool TryAdvance(byte[] data, ref int offset, int count)
+    {
+        if (count < 0 || data.Length - offset < count)
+        {
+            return false;
+        }
+
+        offset += count;
+        return true;
+    }
+
+    /// <summary>Steps over an S32-size-prefixed section (the texture entry, the texture animation).
+    /// False for a size that is negative or runs past the data: these come off the network.</summary>
+    private static bool TrySkipSized(byte[] data, ref int offset)
+    {
+        if (data.Length - offset < 4)
+        {
+            return false;
+        }
+
+        int size = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(offset, 4));
+        if (size < 0 || size > data.Length - offset - 4)
+        {
+            return false;
+        }
+
+        offset += 4 + size;
+        return true;
     }
 
     /// <summary>
