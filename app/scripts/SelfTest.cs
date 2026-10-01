@@ -164,6 +164,10 @@ public static class SelfTest
         results.Add(CheckAnimeshHandOver(tree));
         results.Add(CheckControlAvatarAnimation(tree));
         results.Add(CheckAnimeshAnimation(tree));
+        {
+            var (dumpPassed, dumpDetail) = ObjectRenderer.SelfTestLiveMaterialDump();
+            results.Add(new Check("live material dump", dumpPassed, dumpDetail));
+        }
         results.AddRange(CheckWindlightPresets());
         results.Add(CheckInstanceSlotMap());
         results.Add(CheckWorkQueueOnceThePumpIsGone());

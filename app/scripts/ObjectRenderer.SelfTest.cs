@@ -391,4 +391,44 @@ public partial class ObjectRenderer
                      "derezzing a child and the root")
             : (false, string.Join("; ", failures));
     }
+
+    /// <summary>
+    /// The click dump's live-material reader against a material built the way the terrace floor's is
+    /// (legacy gloss 30, environment 5, a white specular map with a beige tint, an RGB normal map):
+    /// it must read the real pixels back and predict a matte, not a mirror, surface.
+    /// </summary>
+    private static float PredictedRoughness(string line)
+    {
+        int at = line.LastIndexOf("roughness=", StringComparison.Ordinal);
+        if (at < 0) return float.NaN;
+        var rest = line[(at + "roughness=".Length)..].Split(' ')[0].Replace(',', '.');
+        return float.TryParse(rest, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : float.NaN;
+    }
+
+    internal static (bool Passed, string Detail) SelfTestLiveMaterialDump()
+    {
+        var whiteImage = Image.CreateEmpty(1, 1, false, Image.Format.Rgba8);
+        whiteImage.Fill(new Color(1, 1, 1, 1));
+        var white = ImageTexture.CreateFromImage(whiteImage);
+        var normalImage = Image.CreateEmpty(8, 8, false, Image.Format.Rgb8);
+        normalImage.Fill(new Color(0.5f, 0.5f, 1f));
+        var normal = ImageTexture.CreateFromImage(normalImage);
+
+        var mat = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
+        mat.SetShaderParameter(PrimShaderFamily.HasSpecularTexture, true);
+        mat.SetShaderParameter(PrimShaderFamily.SpecularTexture, white);
+        mat.SetShaderParameter(PrimShaderFamily.SpecularTint, new Godot.Vector3(0.87f, 0.80f, 0.72f));
+        mat.SetShaderParameter(PrimShaderFamily.SpecularGlossiness, 30f / 255f);
+        mat.SetShaderParameter(PrimShaderFamily.SpecularEnvironment, 5f / 255f);
+        mat.SetShaderParameter(PrimShaderFamily.HasNormalTexture, true);
+        mat.SetShaderParameter(PrimShaderFamily.NormalTexture, normal);
+
+        string line = DescribeLiveMaterial(mat);
+        bool ok = line.Contains("has_specular_texture=True") && line.Contains("specularTex=ImageTexture")
+                  && line.Contains("1x1") && line.Contains("meanRGB=(1,1,1)")
+                  && line.Contains("normalTex=ImageTexture") && line.Contains("alpha mean=1")
+                  && PredictedRoughness(line) is > 0.4f and < 0.531f;
+        return (ok, ok ? "reads the bound textures back and predicts a matte floor"
+                       : "dump line was: " + line);
+    }
 }

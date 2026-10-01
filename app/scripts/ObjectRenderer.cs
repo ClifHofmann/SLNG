@@ -1271,6 +1271,150 @@ public partial class ObjectRenderer : Node3D
 
         LogLinksetParts(entity);
         LogFacePlacementDetail(entity, prim);
+        LogLiveMaterials(entity);
+    }
+
+    /// <summary>--diag, on click: what the LIVE surface materials of the clicked object actually hold,
+    /// one line per DISTINCT material, next to what the shader will derive from them.
+    ///
+    /// <para>"The legacy material says gloss 30 and environment 5" is the SL data; what matters for a
+    /// surface that looks wrong is what reached the ShaderMaterial and what the shader then does with
+    /// it, and the gap between the two is where every "glass floor" and "chalk wall" report lives. The
+    /// <c>predicted</c> part is <see cref="SLNG.Core.LegacyShadeMirror"/>, a C# MIRROR of the legacy
+    /// branch of <c>slng_shade</c> -- not a measurement of the GPU -- fed from the textures' real
+    /// pixels read back here. A line whose prediction disagrees with how the face looks says the
+    /// shader (or the textures) is not doing what this mirror says; one that agrees says the live
+    /// values are what to look at. The first line is the object's shadow and draw state.</para></summary>
+    private static void LogLiveMaterials(Entity entity)
+    {
+        var renderer = _instance;
+        if (renderer == null || !renderer._visuals.TryGetValue(entity.Id, out var state)) return;
+        var mi = state.MeshInstance;
+        if (!IsInstanceValid(mi)) return;
+
+        int surfaces = mi.Mesh?.GetSurfaceCount() ?? 0;
+        bool instanced = renderer._instanceGroups?.IsInstanced(entity.Id) == true;
+        GD.Print($"[LiveMaterial] object {entity.LocalId}: castShadow={mi.CastShadow} " +
+                 $"shadowForcedOffByDistance={state.ShadowForcedOffByDistance} giMode={mi.GIMode} layers=0x{mi.Layers:X} " +
+                 $"visible={mi.Visible} instanced={instanced} controlAvatar={state.ControlAvatarOwned} " +
+                 $"surfaces={surfaces} splitChildren={state.SplitChildren?.Count ?? 0} " +
+                 $"boundingRadius={EffectiveBoundingRadius(state):0.##} " +
+                 $"smallObjectShadows={RenderConfig.SmallObjectShadows} shadowCasterDistance={RenderConfig.ShadowCasterDistance:0}");
+
+        var groups = new Dictionary<string, List<int>>();
+        for (int i = 0; i < surfaces; i++)
+        {
+            string line = SurfaceMaterial(state, i) is { } mat
+                ? DescribeLiveMaterial(mat)
+                : $"no ShaderMaterial on this surface (override: {mi.GetSurfaceOverrideMaterial(i)?.GetType().Name ?? "none"})";
+            if (!groups.TryGetValue(line, out var list)) groups[line] = list = new List<int>();
+            list.Add(i);
+        }
+
+        foreach (var (line, list) in groups)
+        {
+            string which = list.Count <= 6
+                ? string.Join(",", list)
+                : $"{string.Join(",", list.Take(6))},... ";
+            GD.Print($"[LiveMaterial]   x{list.Count} surface(s) [{which}] {line}");
+        }
+    }
+
+    private static string DescribeLiveMaterial(ShaderMaterial mat)
+    {
+        static Variant P(ShaderMaterial m, StringName name) => m.GetShaderParameter(name);
+        // An uniform that was never set reads back as nil: the shader's own default applies.
+        static float F(Variant v, float shaderDefault) => v.VariantType == Variant.Type.Nil ? shaderDefault : v.AsSingle();
+        static bool B(Variant v) => v.VariantType != Variant.Type.Nil && v.AsBool();
+
+        bool hasSpec = B(P(mat, PrimShaderFamily.HasSpecularTexture));
+        bool hasNormal = B(P(mat, PrimShaderFamily.HasNormalTexture));
+        float gloss = F(P(mat, PrimShaderFamily.SpecularGlossiness), 0.2f);
+        float env = F(P(mat, PrimShaderFamily.SpecularEnvironment), 0f);
+        float shiny = F(P(mat, PrimShaderFamily.LegacyShininess), 0f);
+        float metallic = F(P(mat, PrimShaderFamily.MetallicFactor), 0f);
+        float roughness = F(P(mat, PrimShaderFamily.RoughnessFactor), 1f);
+        var tintV = P(mat, PrimShaderFamily.SpecularTint);
+        var tint = tintV.VariantType == Variant.Type.Nil ? Godot.Vector3.One : tintV.AsVector3();
+        var albedoV = P(mat, PrimShaderFamily.AlbedoColor);
+        var albedo = albedoV.VariantType == Variant.Type.Nil ? Godot.Colors.White : albedoV.AsColor();
+
+        string specDesc = "none";
+        string normalDesc = "none";
+        var specTexel = Godot.Vector3.One;
+        float normalAlpha = 1f;
+        if (hasSpec) specDesc = DescribeTexture(P(mat, PrimShaderFamily.SpecularTexture), out specTexel, out _);
+        if (hasNormal) normalDesc = DescribeTexture(P(mat, PrimShaderFamily.NormalTexture), out _, out normalAlpha);
+        string albedoTex = B(P(mat, PrimShaderFamily.HasAlbedoTexture))
+            ? DescribeTexture(P(mat, PrimShaderFamily.AlbedoTexture), out _, out _)
+            : "none";
+
+        var shader = mat.Shader;
+        string shaderName = shader == null ? "null" : $"{PrimShaderKindName(shader)}({System.IO.Path.GetFileNameWithoutExtension(shader.ResourcePath)})";
+        string nextPass = mat.NextPass is ShaderMaterial np ? $" nextPass={System.IO.Path.GetFileNameWithoutExtension(np.Shader?.ResourcePath ?? "?")}" : "";
+
+        // The mirror of slng_shade's legacy branch, fed with the real pixels read back above.
+        var predicted = SLNG.Core.LegacyShadeMirror.Predict(new SLNG.Core.LegacyShadeMirror.Inputs(
+            hasSpec, new System.Numerics.Vector3(specTexel.X, specTexel.Y, specTexel.Z),
+            new System.Numerics.Vector3(tint.X, tint.Y, tint.Z), hasNormal, normalAlpha,
+            gloss, env, shiny, metallic, roughness,
+            new System.Numerics.Vector3(albedo.R, albedo.G, albedo.B)));
+
+        return $"shader={shaderName}{nextPass} fullbright={B(P(mat, PrimShaderFamily.Fullbright))} " +
+               $"albedoColor=({albedo.R:0.##},{albedo.G:0.##},{albedo.B:0.##},{albedo.A:0.##}) albedoTex={albedoTex} | " +
+               $"has_specular_texture={hasSpec} specular_tint=({tint.X:0.###},{tint.Y:0.###},{tint.Z:0.###}) " +
+               $"specular_glossiness={gloss:0.####} ({gloss * 255f:0.#}/255) specular_environment={env:0.####} ({env * 255f:0.#}/255) " +
+               $"legacy_shininess={shiny:0.###} metallic_factor={metallic:0.###} roughness_factor={roughness:0.###} | " +
+               $"specularTex={specDesc} | has_normal_texture={hasNormal} has_normal_uv={B(P(mat, PrimShaderFamily.HasNormalUv))} " +
+               $"normalTex={normalDesc} | " +
+               $"PREDICTED (C# mirror of slng_shade, not a GPU readback): glossiness={predicted.Glossiness:0.###} " +
+               $"roughness={predicted.Roughness:0.###} metallic={predicted.Metallic:0.###} specular={predicted.Specular:0.###} " +
+               $"env={predicted.EnvIntensity:0.####}";
+    }
+
+    /// <summary>Size, format and a pixel summary of a texture bound to a surface: what the GPU copy
+    /// actually holds, read back (so a "white" that is not white, or a normal map whose alpha is not
+    /// 1, shows). The summary is a coarse grid, not every texel.</summary>
+    private static string DescribeTexture(Variant v, out Godot.Vector3 meanRgb, out float meanAlpha)
+    {
+        meanRgb = Godot.Vector3.One;
+        meanAlpha = 1f;
+        if (v.VariantType == Variant.Type.Nil || v.AsGodotObject() is not Texture2D tex) return "(no texture)";
+
+        string head = $"{tex.GetClass()}#{tex.GetInstanceId() & 0xFFFFFF:X} {tex.GetWidth()}x{tex.GetHeight()}";
+        Image? img;
+        try { img = tex.GetImage(); }
+        catch (Exception ex) { return $"{head} (readback failed: {ex.GetType().Name})"; }
+        if (img == null || img.IsEmpty()) return $"{head} (no image data)";
+
+        string format = img.GetFormat().ToString();
+        bool mips = img.HasMipmaps();
+        if (img.IsCompressed())
+        {
+            img = (Image)img.Duplicate();
+            if (img.Decompress() != Error.Ok) return $"{head} format={format} (compressed, cannot decompress to read)";
+        }
+
+        int w = img.GetWidth(), h = img.GetHeight();
+        const int Grid = 24;
+        double r = 0, g = 0, b = 0, a = 0;
+        float aMin = 1f, aMax = 0f;
+        int n = 0;
+        for (int gy = 0; gy < Grid; gy++)
+        {
+            for (int gx = 0; gx < Grid; gx++)
+            {
+                var c = img.GetPixel(Math.Min(w - 1, gx * w / Grid), Math.Min(h - 1, gy * h / Grid));
+                r += c.R; g += c.G; b += c.B; a += c.A;
+                aMin = Math.Min(aMin, c.A);
+                aMax = Math.Max(aMax, c.A);
+                n++;
+            }
+        }
+        meanRgb = new Godot.Vector3((float)(r / n), (float)(g / n), (float)(b / n));
+        meanAlpha = (float)(a / n);
+        return $"{head} format={format} mips={mips} meanRGB=({meanRgb.X:0.##},{meanRgb.Y:0.##},{meanRgb.Z:0.##}) " +
+               $"alpha mean={meanAlpha:0.###} min={aMin:0.###} max={aMax:0.###}";
     }
 
     /// <summary>Lists every part of the clicked object's linkset and, for each, whether the

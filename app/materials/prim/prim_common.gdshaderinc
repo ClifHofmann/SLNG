@@ -290,6 +290,10 @@ vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
 // calibrated -- if a future A/B shows the highlight has overshot into too tight, the honest fix
 // is a separate roughness for the two paths (which needs a custom light() or a second material),
 // not quietly restoring the sqrt and giving up the reflection again.
+// The environment intensity at which a legacy face is a full, sharp mirror: Shiny LOW (0.25), the
+// smallest value the build tool produces. Mirrored by LegacyShadeMirror.MirrorFullSharpnessEnvironment.
+const float MIRROR_FULL_SHARPNESS_ENV = 0.25;
+
 float slng_glossiness_to_roughness(float glossiness) {
     float n = glossiness * glossiness * 368.0;
     float ggx_alpha = sqrt(2.0 / (n + 2.0));
@@ -487,7 +491,19 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
         // Load-bearing now in a way it was not before: with `env_intensity` fed by the Shiny
         // level, every shiny prim in the world takes this branch, and interpolating the roughness
         // would have made shiny LOW a blurred smear and only shiny HIGH anything like a mirror.
-        out_roughness = 0.0;
+        //
+        // ...but only for a face that IS a mirror. "Flat, never interpolated by the intensity" was
+        // written for the Shiny levels (0.25 and up) and it is still true of them, but it forced
+        // roughness to exactly 0 for ANY non-zero intensity -- and the Build floater's Environment
+        // slider is one byte, so a material with Environment 5 (0.02, i.e. 2% of a reflection in the
+        // viewer) came out as a perfectly smooth dielectric: its specular term (F0 up to 0.08, not
+        // weighted by the intensity at all) became a sharp mirror of the sky and the probe, modulated
+        // by every texel of the normal map. Reported on the Millenium terrace floor (gloss 30,
+        // environment 5): glass with puddle-like blotches, in Firestorm a matte terracotta. So the
+        // sharp lobe is weighted by how much of a mirror the face is, reaching full sharpness at
+        // MIRROR_FULL_SHARPNESS_ENV -- Shiny LOW, the smallest intensity the build tool can produce
+        // -- which leaves every Shiny level and every real mirror material exactly as it was.
+        out_roughness = mix(out_roughness, 0.0, clamp(env_intensity / MIRROR_FULL_SHARPNESS_ENV, 0.0, 1.0));
         out_metallic = mix(out_metallic, 1.0, env_intensity);
         out_albedo = mix(out_albedo, vec3(0.5), env_intensity);
     }
