@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-39`
 - **Track:** `ui` / `net`
-- **Status:** `🚧 In Progress`
+- **Status:** `✅ Done`
 - **Owner:** `claude`
 - **Agent:** `ux-designer` (window) + `protocol-re` (profile/notes data) + `viewer-parity` (source checks)
 - **Dep:** `MVP2-3` (the current `MinimapOverlay`), sibling of `BUG-UI-11` (neighbour avatars, in-region/on-parcel icon); the Voice column is fed later by `MVP5-1`
