@@ -109,6 +109,40 @@ public partial class AvatarController : Camera3D
         _panOffset += new Vector3(delta.X, delta.Y, 0);
     }
 
+    /// <summary>
+    /// Alt + movement key = camera key, as in the reference viewer's "Camera controls in third person on
+    /// Alt" (key_bindings.xml:54-71): A/Left and D/Right spin around the focus, W/Up and S/Down move the
+    /// camera in and out, E/PageUp and C/PageDown spin over and under; Ctrl+Alt+W/S also spin over/under.
+    /// Works with the avatar standing still, and with an Alt+Click focus point it spins around THAT
+    /// (<see cref="_orbitTarget"/>), because <see cref="RotateCamera"/> only changes the orbit angles.
+    /// The caller has already taken these keys away from the avatar.
+    /// </summary>
+    private void ApplyAltCameraKeys(float dt)
+    {
+        bool spinLeft = Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A);
+        bool spinRight = Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D);
+        bool inward = Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W);
+        bool outward = Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S);
+        bool over = Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up");
+        bool under = Input.IsKeyPressed(Key.C) || Input.IsActionPressed("ui_page_down");
+
+        if (Input.IsKeyPressed(Key.Ctrl)) // Ctrl+Alt+W/S: spin over/under instead of in/out
+        {
+            over |= inward;
+            under |= outward;
+            inward = outward = false;
+        }
+
+        // Same directions as the seated camera keys (A swings one way, D the other); over is a falling
+        // _orbitPitch (the camera rises and looks down), the sign RotateCamera's Y already has.
+        if (spinLeft) RotateCamera(new Vector2(SeatedCameraOrbitSpeed * dt, 0f));
+        if (spinRight) RotateCamera(new Vector2(-SeatedCameraOrbitSpeed * dt, 0f));
+        if (over) RotateCamera(new Vector2(0f, SeatedCameraOrbitSpeed * dt));
+        if (under) RotateCamera(new Vector2(0f, -SeatedCameraOrbitSpeed * dt));
+        if (inward) ZoomCamera(-SeatedCameraZoomSpeed * dt);
+        if (outward) ZoomCamera(SeatedCameraZoomSpeed * dt);
+    }
+
     public void ZoomCamera(float delta)
     {
         _transitioning = false;
@@ -937,6 +971,11 @@ public partial class AvatarController : Camera3D
 
         bool isPoseStand = _holdMode == AvatarHoldMode.PoseStand;
 
+        // Alt held: the movement keys steer the CAMERA, not the avatar (key_bindings.xml:54-71, "Camera
+        // controls in third person on Alt"). Nothing below may see them as walking, turning or flying.
+        bool altCamera = !hasUiFocus && Input.IsKeyPressed(Key.Alt);
+        if (altCamera) ApplyAltCameraKeys((float)delta);
+
         // 1. Follow the Avatar
         var localAgent = _world.GetAllEntities()
             .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
@@ -956,12 +995,12 @@ public partial class AvatarController : Camera3D
             if (transform != null)
             {
                 // Local movement prediction
-                bool isFwd = !isPoseStand && (Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W)) && !hasUiFocus;
-                bool isBack = !isPoseStand && (Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S)) && !hasUiFocus;
-                bool isLeft = !isPoseStand && (Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A)) && !hasUiFocus;
-                bool isRight = !isPoseStand && (Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D)) && !hasUiFocus;
-                bool isUp = !isPoseStand && (Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up")) && !hasUiFocus;
-                bool isDown = !isPoseStand && (Input.IsKeyPressed(Key.Q) || (Input.IsKeyPressed(Key.C) && !Input.IsKeyPressed(Key.Ctrl)) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
+                bool isFwd = !isPoseStand && !altCamera && (Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W)) && !hasUiFocus;
+                bool isBack = !isPoseStand && !altCamera && (Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S)) && !hasUiFocus;
+                bool isLeft = !isPoseStand && !altCamera && (Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A)) && !hasUiFocus;
+                bool isRight = !isPoseStand && !altCamera && (Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D)) && !hasUiFocus;
+                bool isUp = !isPoseStand && !altCamera && (Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up")) && !hasUiFocus;
+                bool isDown = !isPoseStand && !altCamera && (Input.IsKeyPressed(Key.Q) || (Input.IsKeyPressed(Key.C) && !Input.IsKeyPressed(Key.Ctrl)) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
 
                 // Pressing up engages fly automatically (matches the "E = go up" instinct);
                 // Home toggles it off. See _Input. Suspended while sitting -- see isSitting's
@@ -1423,12 +1462,12 @@ public partial class AvatarController : Camera3D
         }
 
         // 2. Handle Movement Input
-        bool fwd = !isPoseStand && (Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W)) && !hasUiFocus;
-        bool back = !isPoseStand && (Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S)) && !hasUiFocus;
-        bool left = !isPoseStand && (Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A)) && !hasUiFocus;
-        bool right = !isPoseStand && (Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D)) && !hasUiFocus;
-        bool up = !isPoseStand && (Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up")) && !hasUiFocus;
-        bool down = !isPoseStand && (Input.IsKeyPressed(Key.Q) || (Input.IsKeyPressed(Key.C) && !Input.IsKeyPressed(Key.Ctrl)) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
+        bool fwd = !isPoseStand && !altCamera && (Input.IsActionPressed("ui_up") || Input.IsKeyPressed(Key.W)) && !hasUiFocus;
+        bool back = !isPoseStand && !altCamera && (Input.IsActionPressed("ui_down") || Input.IsKeyPressed(Key.S)) && !hasUiFocus;
+        bool left = !isPoseStand && !altCamera && (Input.IsActionPressed("ui_left") || Input.IsKeyPressed(Key.A)) && !hasUiFocus;
+        bool right = !isPoseStand && !altCamera && (Input.IsActionPressed("ui_right") || Input.IsKeyPressed(Key.D)) && !hasUiFocus;
+        bool up = !isPoseStand && !altCamera && (Input.IsKeyPressed(Key.E) || Input.IsActionPressed("ui_page_up")) && !hasUiFocus;
+        bool down = !isPoseStand && !altCamera && (Input.IsKeyPressed(Key.Q) || (Input.IsKeyPressed(Key.C) && !Input.IsKeyPressed(Key.Ctrl)) || Input.IsActionPressed("ui_page_down")) && !hasUiFocus;
 
         var curRot = Rotation;
 
