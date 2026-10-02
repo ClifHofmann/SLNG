@@ -24,9 +24,14 @@ public static class LegacyShadeMirror
     /// Declared in prim_common.gdshaderinc and registered in project.godot.</summary>
     public const string LegacySpecularScaleUniform = "slng_legacy_specular_scale";
 
-    /// <summary>1 = today's behaviour; the shader default and the project.godot value are pinned to
-    /// it by a test, so merely shipping the lab changes nothing.</summary>
-    public const float DefaultLegacySpecularScale = 1.0f;
+    /// <summary>The default since v0.25.13: 0 -- no sky/probe veil on a legacy specular-map face (the
+    /// user's A/B choice against the reference viewer, used with <see cref="DefaultViewerSunSpecular"/>).
+    /// The project.godot value and the lab's initial state are pinned to it by a test. It applies only
+    /// to the Opaque variants (prim_opaque, prim_opaque_vspec); every other variant is unscaled.</summary>
+    public const float DefaultLegacySpecularScale = 0.0f;
+
+    /// <summary>The viewer sun highlight (prim_opaque_vspec) is ON by default since v0.25.13.</summary>
+    public const bool DefaultViewerSunSpecular = true;
 
     /// <summary>Upper end of the lab slider (the lower end is 0: no highlight and no reflection).</summary>
     public const float MaxLegacySpecularScale = 1.5f;

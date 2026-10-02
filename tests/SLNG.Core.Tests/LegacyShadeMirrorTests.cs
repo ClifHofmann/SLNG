@@ -148,7 +148,24 @@ public class LegacyShadeMirrorTests
         int legacyBranch = shader.IndexOf("else if (legacy_shininess > 0.0)", StringComparison.Ordinal);
         Assert.True(fold > 0 && scale > fold && scale < legacyBranch, "the scale must follow the metallic fold inside the specular-map branch");
         Assert.Equal(1, shader.Split("out_specular *= " + name).Length - 1);
-        Assert.Equal(1.0f, LegacyShadeMirror.DefaultLegacySpecularScale);
+
+        // The shipped defaults (v0.25.13): veil 0, viewer sun highlight on.
+        Assert.Equal(0.0f, LegacyShadeMirror.DefaultLegacySpecularScale);
+        Assert.True(LegacyShadeMirror.DefaultViewerSunSpecular);
+        Assert.Equal("0.0", value);
+
+        // The scale is compiled in ONLY where the lab owns the highlight or can switch it off: the
+        // two Opaque variants. Every other variant (scissor, hash, blend, double-sided, avatar, HUD,
+        // mirror...) must stay unscaled so those faces keep the specular they always had.
+        var normalized = System.Text.RegularExpressions.Regex.Replace(shader, @"\s+", " ");
+        Assert.Contains("#ifdef SLNG_LAB_SPECULAR_SCALE out_specular *= " + name + "; #endif", normalized);
+        var primDir = Path.Combine(dir.FullName, "app", "materials", "prim");
+        foreach (var f in Directory.GetFiles(primDir, "*.gdshader"))
+        {
+            bool defines = File.ReadAllText(f).Contains("#define SLNG_LAB_SPECULAR_SCALE");
+            bool expected = Path.GetFileName(f) is "prim_opaque.gdshader" or "prim_opaque_vspec.gdshader";
+            Assert.True(defines == expected, Path.GetFileName(f) + (expected ? " must" : " must not") + " define SLNG_LAB_SPECULAR_SCALE");
+        }
     }
 
     // --- the viewer's sun highlight (material lab, prim_opaque_vspec.gdshader) ------------------

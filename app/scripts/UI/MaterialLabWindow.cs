@@ -22,8 +22,8 @@ public partial class MaterialLabWindow : SLNGWindow
         base._Ready(); // no PersistId on purpose: a dev tool does not remember its place
 
         Title = L10n.Tr("ui.material_lab.title");
-        CustomMinimumSize = new Vector2(380, 330);
-        Size = new Vector2(420, 360);
+        CustomMinimumSize = new Vector2(400, 380);
+        Size = new Vector2(440, 430);
         Position = new Vector2(260, 200);
         Visible = false;
 

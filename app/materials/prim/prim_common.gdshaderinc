@@ -295,9 +295,15 @@ vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
 const float MIRROR_FULL_SHARPNESS_ENV = 0.25;
 
 // Material lab (Entwickler > Material-Labor): scales the SPECULAR a face with a specular MAP hands
-// to Godot. Default 1.0 = unchanged. Godot's SPECULAR drives the sun highlight AND the sky/probe
-// reflection (the "veil") together, so this moves both -- that coupling is what the lab exists to
-// make visible. A dev knob, not persisted, never written by anything but the lab window.
+// to Godot. Default 0.0 (the user's A/B choice, with the viewer sun highlight on): no sky/probe
+// "veil" -- the viewer's own environment term for these materials is ~45x smaller than Godot's F0
+// reflection. Godot's SPECULAR drives the sun highlight AND that reflection together, so on the
+// stock Opaque variant 0 also removes the highlight; prim_opaque_vspec owns the highlight itself.
+// A dev knob, not persisted, never written by anything but the lab window and project.godot.
+//
+// Applied ONLY by the variants that define SLNG_LAB_SPECULAR_SCALE before including this file
+// (prim_opaque and prim_opaque_vspec). Scissor, hash, blend, double-sided, avatar and HUD faces
+// have no viewer-highlight variant, so they keep the specular they always had (scale 1).
 global uniform float slng_legacy_specular_scale;
 
 float slng_glossiness_to_roughness(float glossiness) {
@@ -410,7 +416,9 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
 
         // After the metallic fold above on purpose: the lab scales only what Godot reads as the
         // dielectric F0, never the Environment-slider mirror path.
+#ifdef SLNG_LAB_SPECULAR_SCALE
         out_specular *= slng_legacy_specular_scale;
+#endif
     }
     else if (legacy_shininess > 0.0) {
         // No specular map -- with or without a legacy material. `legacy_shininess` is already the

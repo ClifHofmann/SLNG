@@ -7,8 +7,8 @@ namespace SLNG.App;
 
 /// <summary>
 /// State of the developer "Material lab" window: live render knobs for A/B-ing the legacy
-/// material path against the reference viewer. A dev tool -- nothing here is saved, every value
-/// starts at today's behaviour on every launch, and with the window never opened nothing changes.
+/// material path against the reference viewer. A dev tool -- nothing here is saved; every launch
+/// starts at the defaults (veil 0, viewer sun highlight on), which are the shipped rendering.
 /// </summary>
 public static class MaterialLab
 {
@@ -16,9 +16,9 @@ public static class MaterialLab
     /// <see cref="LegacyShadeMirror.LegacySpecularScaleUniform"/>). 1 = unchanged.</summary>
     public static float LegacySpecularScale { get; private set; } = LegacyShadeMirror.DefaultLegacySpecularScale;
 
-    /// <summary>Experiment, default OFF: faces with a specular map on the Opaque variant take the
+    /// <summary>Default ON: faces with a specular map on the Opaque variant take the
     /// reference viewer's own sun highlight (prim_opaque_vspec.gdshader) instead of Godot's GGX lobe.</summary>
-    public static bool ViewerSunSpecular { get; private set; }
+    public static bool ViewerSunSpecular { get; private set; } = LegacyShadeMirror.DefaultViewerSunSpecular;
 
     /// <summary>Raised on the main thread when <see cref="ViewerSunSpecular"/> changes; ObjectRenderer
     /// re-applies the shader choice to every live surface.</summary>
@@ -26,7 +26,8 @@ public static class MaterialLab
 
     /// <summary>True once any knob is off its default; the diag lines only mention the lab then.</summary>
     public static bool Modified =>
-        Math.Abs(LegacySpecularScale - LegacyShadeMirror.DefaultLegacySpecularScale) > 1e-4f || ViewerSunSpecular;
+        Math.Abs(LegacySpecularScale - LegacyShadeMirror.DefaultLegacySpecularScale) > 1e-4f
+        || ViewerSunSpecular != LegacyShadeMirror.DefaultViewerSunSpecular;
 
     public static void SetLegacySpecularScale(float value)
     {
@@ -47,7 +48,7 @@ public static class MaterialLab
     public static void Reset()
     {
         SetLegacySpecularScale(LegacyShadeMirror.DefaultLegacySpecularScale);
-        SetViewerSunSpecular(false);
+        SetViewerSunSpecular(LegacyShadeMirror.DefaultViewerSunSpecular);
     }
 
     /// <summary>One-line state for the <c>[LightBalance]</c> and <c>[LiveMaterial]</c> diag lines.</summary>
